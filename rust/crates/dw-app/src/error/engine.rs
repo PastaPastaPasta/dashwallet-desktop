@@ -29,6 +29,7 @@ codes! {
         SpvNotRunning = "spv_not_running",
         SpvRunning = "spv_running",
         RescanInProgress = "rescan_in_progress",
+        RescanInterrupted = "rescan_interrupted",
         InvalidXpub = "invalid_xpub",
         TxActionRefused = "tx_action_refused",
         NoPeers = "no_peers",
@@ -45,6 +46,7 @@ codes! {
         Internal = "internal",
         OutpointNotFound = "outpoint_not_found",
         StuckFunding = "stuck_funding",
+        ShieldedSpendUnresolved = "shielded_spend_unresolved",
     }
 }
 
@@ -165,8 +167,10 @@ impl From<EngineError> for AppError {
                 Some(ErrorData::Call { call }),
             ),
             E::SpvNotRunning => (EngineCode::SpvNotRunning.into(), None),
+            E::ShieldedSpendUnresolved => (EngineCode::ShieldedSpendUnresolved.into(), None),
             E::SpvRunning => (EngineCode::SpvRunning.into(), None),
             E::RescanInProgress => (EngineCode::RescanInProgress.into(), None),
+            E::RescanInterrupted => (EngineCode::RescanInterrupted.into(), None),
             E::InvalidXpub(_) => (EngineCode::InvalidXpub.into(), None),
             E::TxActionRefused(refusal) => (
                 EngineCode::TxActionRefused.into(),
@@ -265,6 +269,7 @@ mod tests {
             E::SpvNotRunning,
             E::SpvRunning,
             E::RescanInProgress,
+            E::RescanInterrupted,
             E::InvalidXpub(s()),
             E::TxActionRefused(TxActionRefusal::Confirmed),
             E::NoPeers,
@@ -281,6 +286,7 @@ mod tests {
             E::Internal(s()),
             E::OutpointNotFound(dashcore::OutPoint::null()),
             E::StuckFunding(dw_engine::platform::lease::StuckFundingRefusal::NoMarker),
+            E::ShieldedSpendUnresolved,
         ];
         // Every code of `EngineCode` is one of these (the one-to-one check).
         let mut seen: Vec<&str> = Vec::new();

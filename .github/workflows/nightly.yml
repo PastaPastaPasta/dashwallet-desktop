@@ -1,11 +1,14 @@
 # Nightly (roadmap T-03; DASHPAY §6 tiers T1 and GUI):
-# - regtest: the dashd v24 regtest suites of regtest/README.md against a host-built dwcli;
+# - regtest: the dashd v24 regtest suites of regtest/README.md against a host-built dwcli, and
+#   dwcli's tests with each of its debug features (`invitation-create-test`, `platform-addr-fund`,
+#   `mix-shield-test`);
 # - crossui-linux: scripts/crossui-linux-demo.sh (the SwiftCrossUI app driven through AT-SPI under
 #   Xvfb in Docker, M1 and M2 flows);
-# - shielded: the engine with its non-default `shielded` feature (E0-12), built, linted and its
-#   prover warm-up run, so the halo2 build cost stays out of PR CI but the feature does not rot;
-# - release-check: the release leg of dw-engine's tests/mg04b_release_check.rs (MG-04b D71), which
-#   PR CI, testing in debug only, never runs.
+# - shielded: the Orchard prover warm-up in a cold process (E0-12); the pool itself is built and
+#   tested by PR CI since 0.1 turned it on;
+# - release-check: the release legs of dw-engine's tests/mg04b_release_check.rs (MG-04b D71) and
+#   tests/mix_shield_release_check.rs (dwcli's `mix-shield-test`), which PR CI, testing in debug
+#   only, never runs.
 #
 # `schedule` runs only from the repository's default branch. Once the setup steps have passed,
 # every suite step runs even when an earlier one failed, so one run reports them all.
@@ -60,10 +63,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+      # `mix-shield-test` adds only test_move_mixed.py's `coinjoin-test-addresses` (debug builds
+      # only; the release-check job proves it absent from a release build).
       - name: Build dwcli
+        id: dwcli
         working-directory: rust
         run: |
-          cargo build -p dwcli --locked
+          cargo build -p dwcli --features mix-shield-test --locked
           echo "DWCLI=$PWD/target/debug/dwcli" >> "$GITHUB_ENV"
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
@@ -104,10 +110,18 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: regtest/harness
         run: .venv/bin/python -m pytest -v tests/test_l2_tools.py --junitxml="$LOGS/l2-tools.xml"
+      - name: move-mixed (consolidation and move to Core)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: regtest/harness
+        run: .venv/bin/python -m pytest -v tests/test_move_mixed.py --junitxml="$LOGS/move-mixed.xml"
       - name: e0-04 BL-76 (engine SPV against dashd)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: rust
         run: DASHD_PATH="$DASHCORE_DIR/bin/dashd" cargo test -p dw-engine --test e0_04_bl76_regtest -- --nocapture
+      - name: restore-utxos (CoinJoin coins past index 99 against dashd)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: rust
+        run: DASHD_PATH="$DASHCORE_DIR/bin/dashd" cargo test -p dw-engine --test restore_utxos_regtest -- --nocapture
       - name: restore
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: regtest/harness
@@ -133,6 +147,20 @@ jobs:
           regtest/functional/run.sh dwd_masternodes.py --portseed=4731 --loglevel=INFO \
             > "$LOGS/masternodes.log" 2>&1 || { tail -n 200 "$LOGS/masternodes.log"; exit 1; }
           tail -n 20 "$LOGS/masternodes.log"
+      # PR CI runs only the table tests with `invitation-create-test` and `coinjoin::tests` with
+      # `mix-shield-test`. These need dwcli's build, not the regtest image.
+      - name: dwcli tests with the invitation-create-test feature
+        if: ${{ !cancelled() && steps.dwcli.outcome == 'success' }}
+        working-directory: rust
+        run: cargo test -p dwcli --features invitation-create-test --locked --no-fail-fast
+      - name: dwcli tests with the platform-addr-fund feature
+        if: ${{ !cancelled() && steps.dwcli.outcome == 'success' }}
+        working-directory: rust
+        run: cargo test -p dwcli --features platform-addr-fund --locked --no-fail-fast
+      - name: dwcli tests with the mix-shield-test feature
+        if: ${{ !cancelled() && steps.dwcli.outcome == 'success' }}
+        working-directory: rust
+        run: cargo test -p dwcli --features mix-shield-test --locked --no-fail-fast
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -140,11 +168,10 @@ jobs:
           path: regtest-logs/
           if-no-files-found: warn
 
-  # Blocking, unlike the demo below: the feature has no tests of its own yet, so a red build, lint
-  # or warm-up here means the pinned platform revision or our feature wiring broke. PR CI never
-  # builds the feature (docs/research/shielded-cost.md has the cost).
+  # Blocking, unlike the demo below: a red warm-up means the pinned platform revision's prover
+  # broke. PR CI builds and tests the shielded code (docs/research/shielded-cost.md has the cost).
   shielded:
-    name: Engine with shielded feature (E0-12)
+    name: Shielded prover warm-up (E0-12)
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -161,19 +188,12 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
-      - name: Build (dw-engine, its examples and dwcli with the feature)
+      - name: Build the warm-up example
         working-directory: rust
-        run: |
-          cargo build -p dwcli --features dw-engine/shielded --locked
-          cargo build -p dw-engine --features shielded --example shielded_warmup --locked
-      - name: Clippy
-        if: ${{ !cancelled() }}
-        working-directory: rust
-        run: cargo clippy -p dw-engine --all-targets --features shielded --locked -- -D warnings
+        run: cargo build -p dw-engine --example shielded_warmup --locked
       # Builds the Halo 2 proving key in a cold process (about 3 s on agentbox, 30 s in the upstream
       # doc comment); no network.
       - name: Prover warm-up
-        if: ${{ !cancelled() }}
         working-directory: rust
         timeout-minutes: 15
         run: target/debug/examples/shielded_warmup
@@ -202,6 +222,9 @@ jobs:
       - name: mg04b_release_check (release)
         working-directory: rust
         run: cargo test --release -p dw-engine --features test-support --test mg04b_release_check --locked
+      - name: mix_shield_release_check (release)
+        working-directory: rust
+        run: cargo test --release -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked
 
   # Non-blocking: on the runner the demo fails 4 AT-SPI checks, two of them known-intermittent
   # (docs/ci.md, "Known gaps"). A red X here does not turn the nightly red; the regtest job does.

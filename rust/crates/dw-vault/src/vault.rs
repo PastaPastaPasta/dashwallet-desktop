@@ -108,8 +108,8 @@ use crate::signer::{SignerScope, VaultSigner};
 use crate::types::{
     AuthGrant, Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, GrantToken,
     KeyHold, KeySource, LockState, PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS,
-    QuickUnlockPolicy, RevealedMnemonic, SeedDerivation, UnlockScope, VaultConfig, VaultStatus,
-    WalletId, WalletSecret,
+    QuickUnlockPolicy, RevealedMnemonic, SeedDerivation, SignerLife, UnlockScope, VaultConfig,
+    VaultStatus, WalletId, WalletSecret,
 };
 use crate::vote::VoteSigner;
 use crate::{SignerError, VaultError};
@@ -2044,8 +2044,9 @@ impl Vault {
     }
 
     /// A signer limited to one Platform scope (DASHPAY §3.3):
-    /// [`SignerScope::PlatformIdentity`], [`SignerScope::DashPayCrypto`] or
-    /// [`SignerScope::PlatformFunding`], authorized by a redeemed
+    /// [`SignerScope::PlatformIdentity`], [`SignerScope::DashPayCrypto`],
+    /// [`SignerScope::PlatformFunding`] or [`SignerScope::PlatformAddress`],
+    /// authorized by a redeemed
     /// `PlatformOp` grant for `wallet` whose key is the vault's (the vault
     /// held its full-scope key when the grant was authorized). One token
     /// may issue several (a registration needs identity and funding
@@ -2058,8 +2059,8 @@ impl Vault {
     /// The token's caps bound the scope (E0-04 design §3.4), else
     /// `GrantPurposeMismatch`: `PlatformFunding{max_duffs}` needs a token
     /// whose `max_duffs` is not 0 and at least the scope's (the engine asks
-    /// for the funding budget left), and `PlatformIdentity` a token whose
-    /// `max_credits` is not 0. `DashPayCrypto` comes with any `PlatformOp`.
+    /// for the funding budget left), and `PlatformIdentity` and
+    /// `PlatformAddress` a token whose `max_credits` is not 0. `DashPayCrypto` comes with any `PlatformOp`.
     pub fn platform_signer(
         &self,
         wallet: &WalletId,
@@ -2081,6 +2082,65 @@ impl Vault {
         scope: SignerScope,
     ) -> Result<VaultSigner, VaultError> {
         self.scoped_signer(wallet, Some(hold), token, scope)
+    }
+
+    /// The [`SignerScope::ShieldDrainFunding`] signer of `wallet` ("Move
+    /// mixed coins" to Shielded), authorized by a redeemed `Spend` grant
+    /// for that wallet whose key is the vault's: that grant's own signer is
+    /// [`SignerScope::Full`], so this one reaches nothing it does not. Any
+    /// other grant is `GrantPurposeMismatch`, and so is a `max_duffs` of 0
+    /// or above the grant's. A token with its own key issues one only
+    /// through its hold ([`Self::shield_drain_signer_held`]): here it is
+    /// `InvalidArgument`, though its own `Spend` signer issues directly.
+    ///
+    /// The signer stops when `life` drops, whatever key it signs with, as
+    /// well as when the vault locks or changes unlock scope.
+    pub fn shield_drain_signer(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+        max_duffs: u64,
+        life: &SignerLife,
+    ) -> Result<VaultSigner, VaultError> {
+        self.drain_signer(wallet, None, token, max_duffs, life)
+    }
+
+    /// [`Self::shield_drain_signer`] for a token whose key `hold` holds:
+    /// the signer stops when the first of `hold` and `life` drops.
+    pub fn shield_drain_signer_held(
+        &self,
+        wallet: &WalletId,
+        hold: &KeyHold,
+        token: &GrantToken,
+        max_duffs: u64,
+        life: &SignerLife,
+    ) -> Result<VaultSigner, VaultError> {
+        self.drain_signer(wallet, Some(hold), token, max_duffs, life)
+    }
+
+    fn drain_signer(
+        &self,
+        wallet: &WalletId,
+        hold: Option<&KeyHold>,
+        token: &GrantToken,
+        max_duffs: u64,
+        life: &SignerLife,
+    ) -> Result<VaultSigner, VaultError> {
+        let GrantPurpose::Spend { max_duffs: cap } = token.purpose else {
+            return Err(VaultError::GrantPurposeMismatch);
+        };
+        if max_duffs == 0 || max_duffs > cap {
+            return Err(VaultError::GrantPurposeMismatch);
+        }
+        if hold.is_none() && matches!(token.key, KeySource::Own(_)) {
+            return Err(VaultError::InvalidArgument(
+                "an own-key token issues the drain signer through its hold".into(),
+            ));
+        }
+        let scope = SignerScope::ShieldDrainFunding { max_duffs };
+        Ok(self
+            .token_signer(wallet, token, scope, hold)?
+            .with_life(life.watch()))
     }
 
     /// The vote signer of `wallet` (MG-05 §3, scope
@@ -2231,6 +2291,7 @@ impl Vault {
             SignerScope::PlatformIdentity
                 | SignerScope::DashPayCrypto
                 | SignerScope::PlatformFunding { .. }
+                | SignerScope::PlatformAddress
         ) {
             return Err(VaultError::InvalidArgument(format!(
                 "{scope:?} is not a Platform signer scope"
@@ -2247,7 +2308,7 @@ impl Vault {
             SignerScope::PlatformFunding { max_duffs: wanted } => {
                 max_duffs != 0 && wanted <= max_duffs
             }
-            SignerScope::PlatformIdentity => max_credits != 0,
+            SignerScope::PlatformIdentity | SignerScope::PlatformAddress => max_credits != 0,
             _ => true,
         };
         if !granted {
@@ -2401,7 +2462,7 @@ impl Vault {
     /// [`Self::dashpay_crypto_signer`]). The state is read under the same
     /// lock that issues the signer, so an unlock for mixing in between is
     /// refused rather than served with the mixing-only key.
-    fn prompt_free_signer(
+    pub(crate) fn prompt_free_signer(
         &self,
         wallet: &WalletId,
         scope: SignerScope,
@@ -3033,6 +3094,69 @@ mod tests {
         let wipe = redeem(from, GrantPurpose::Wipe, credential);
         refused(v.wipe_wallet_secret(&w, &wipe).map(drop), "wipe");
         assert!(v.has_wallet_secret(&w), "{case}: nothing was wiped");
+    }
+
+    /// Release 0.1: a `PlatformAddress` signer comes from a `PlatformOp`
+    /// token with credits only, and signs with a DIP-17 payment key once
+    /// that key's HASH160 is the address; no other key, no other address.
+    #[test]
+    fn a_platform_address_signer_signs_its_own_address_only() {
+        use dashcore::hashes::{Hash, hash160};
+        use dashcore::sign_message::MessageSignature;
+        use key_wallet::bip32::ExtendedPrivKey;
+
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault_with_wallet(dir.path(), None, 0x5a);
+        let w = [1u8; 32];
+        let no_credits = GrantPurpose::PlatformOp {
+            max_duffs: 1,
+            max_credits: 0,
+        };
+        assert_eq!(
+            v.platform_signer(
+                &w,
+                &redeem(&v, no_credits, Credential::None),
+                SignerScope::PlatformAddress
+            )
+            .map(drop),
+            Err(VaultError::GrantPurposeMismatch)
+        );
+        let s = v
+            .platform_signer(
+                &w,
+                &redeem(&v, PLATFORM_OP, Credential::None),
+                SignerScope::PlatformAddress,
+            )
+            .unwrap();
+        let path = DerivationPath::from_str("m/9'/1'/17'/0'/0'/3").unwrap();
+        let key = ExtendedPrivKey::new_master(Network::Regtest, &[0x5a; 64])
+            .unwrap()
+            .derive_priv(&path)
+            .unwrap();
+        let public = dashcore::secp256k1::PublicKey::from_secret_key(&key.private_key);
+        let hash = *hash160::Hash::hash(&public.serialize()).as_byte_array();
+        assert_eq!(s.platform_address_matches(&path, &hash), Ok(true));
+        let sig = s
+            .sign_platform_address(&path, &hash, b"transition")
+            .unwrap();
+        let recovered = MessageSignature::from_slice(&sig)
+            .unwrap()
+            .recover_pubkey(dashcore::hashes::sha256d::Hash::hash(b"transition"))
+            .unwrap();
+        assert_eq!(recovered.inner, public);
+
+        let mut other = hash;
+        other[0] ^= 1;
+        assert_eq!(s.platform_address_matches(&path, &other), Ok(false));
+        assert!(matches!(
+            s.sign_platform_address(&path, &other, b"transition"),
+            Err(SignerError::KeyMismatch(_))
+        ));
+        let identity = DerivationPath::from_str("m/9'/1'/5'/0'/0'/0'/0'").unwrap();
+        assert!(matches!(
+            s.sign_platform_address(&identity, &hash, b"transition"),
+            Err(SignerError::PathNotAllowed(_))
+        ));
     }
 
     /// Review DW-E0-03 r2 M1: a token redeemed by one vault is refused by

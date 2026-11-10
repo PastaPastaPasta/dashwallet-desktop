@@ -6,6 +6,7 @@
 import { COIN } from "../format/amount";
 import type { Balances } from "../api/generated/Balances";
 import type { AppError } from "../api/generated/AppError";
+import type { CsvUnitName } from "../api/generated/CsvUnitName";
 import type { HistoryRequest } from "../api/generated/HistoryRequest";
 import type { HistoryRows } from "../api/generated/HistoryRows";
 import type { HistorySortName } from "../api/generated/HistorySortName";
@@ -400,6 +401,25 @@ export function historyPage(rows: TxRow[], request: HistoryRequest): HistoryRows
     nextCursor: more ? encodeCursor(tag, page[page.length - 1].key) : null,
     totalMatching: hits.length,
   };
+}
+
+/** `export_history_csv` over `rows` (dash-qt's columns, every field quoted, `"` doubled, `\n` line
+ * ends, signed amounts): the rows the filter and sort select, all of them, not one page. */
+export function historyCsv(rows: TxRow[], filter: Omit<HistoryRequest, "sort" | "cursor" | "limit">, sort: HistorySortName, unit: CsvUnitName, utcOffsetSecs: number): string {
+  const places = { dash: 8, milliDash: 5, microDash: 2, duffs: 0 }[unit];
+  const name = { dash: "DASH", milliDash: "mDASH", microDash: "μDASH", duffs: "duffs" }[unit];
+  const amount = (duffs: number) => (places === 0 ? String(duffs) : (duffs / 10 ** places).toFixed(places));
+  const quote = (s: string) => `"${s.replaceAll('"', '""')}"`;
+  const date = (ts: number | null) => (ts === null ? "" : new Date((ts + utcOffsetSecs) * 1000).toISOString().slice(0, 19));
+  const out = [["Confirmed", "Date", "Type", "Label", "Address", `Amount (${name})`, "ID"].map(quote).join(",")];
+  let cursor: string | null = null;
+  do {
+    const page: HistoryRows = historyPage(rows, { ...filter, sort, cursor, limit: MAX_PAGE });
+    for (const r of page.rows)
+      out.push([r.status.kind === "confirmed" ? "true" : "false", date(r.timestamp), r.txType, r.label ?? "", r.address ?? "", amount(r.amount), r.txid].map(quote).join(","));
+    cursor = page.nextCursor;
+  } while (cursor !== null);
+  return out.join("\n") + "\n";
 }
 
 /** `tx_detail` of `row`: inputs, outputs and a raw size drawn from its txid. */

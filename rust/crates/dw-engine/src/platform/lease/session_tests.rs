@@ -41,6 +41,63 @@ pub(crate) struct Fixture {
     rec: Arc<Recorder>,
     pub(crate) session: Arc<NetworkSession>,
     pub(crate) wallet: WalletId,
+    /// The SPV header chain the session reads, across reopens.
+    pub(crate) chain: Arc<TestChain>,
+}
+
+/// A stand-in SPV header chain with a header at every height: each fork
+/// replaces every block above its height with a new one.
+#[derive(Default)]
+pub(crate) struct TestChain {
+    forks: std::sync::Mutex<Vec<u32>>,
+    /// Heights whose header the store does not have.
+    missing: std::sync::Mutex<std::collections::HashSet<u32>>,
+}
+
+impl TestChain {
+    /// The hash of the block the chain holds at `height` now.
+    pub(crate) fn hash(&self, height: u32) -> dashcore::BlockHash {
+        let forks = self.forks.lock().unwrap();
+        let branch = forks.iter().filter(|f| **f < height).count();
+        let mut bytes = [0xc4; 32];
+        bytes[..4].copy_from_slice(&height.to_le_bytes());
+        bytes[4..12].copy_from_slice(&(branch as u64).to_le_bytes());
+        dashcore::BlockHash::from_byte_array(bytes)
+    }
+
+    /// A fork replaces the blocks above `height`.
+    pub(crate) fn fork_above(&self, height: u32) {
+        self.forks.lock().unwrap().push(height);
+    }
+
+    /// Whether the header store has the header at `height`.
+    pub(crate) fn set_known(&self, height: u32, known: bool) {
+        let mut missing = self.missing.lock().unwrap();
+        if known {
+            missing.remove(&height);
+        } else {
+            missing.insert(height);
+        }
+    }
+
+    fn install(self: &Arc<Self>, session: &NetworkSession) {
+        let chain = Arc::clone(self);
+        session.hub.attach_headers(Arc::new(move |height| {
+            let hash =
+                (!chain.missing.lock().unwrap().contains(&height)).then(|| chain.hash(height));
+            Box::pin(async move { hash })
+        }));
+    }
+}
+
+/// The fixture's session options: every address unreachable.
+fn options() -> crate::SessionOptions {
+    crate::SessionOptions {
+        dapi_addresses: vec!["http://127.0.0.1:1".into()],
+        quorum_url: Some("http://127.0.0.1:1".into()),
+        spv_peers: vec!["127.0.0.1:1".into()],
+        ..Default::default()
+    }
 }
 
 pub(crate) fn fixture(encrypted: bool) -> Fixture {
@@ -60,15 +117,7 @@ pub(crate) fn fixture(encrypted: bool) -> Fixture {
     )
     .unwrap();
     let session = engine
-        .block_on(engine.open_network(
-            DashNetwork::Regtest,
-            crate::SessionOptions {
-                dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                quorum_url: Some("http://127.0.0.1:1".into()),
-                spv_peers: vec!["127.0.0.1:1".into()],
-                ..Default::default()
-            },
-        ))
+        .block_on(engine.open_network(DashNetwork::Regtest, options()))
         .unwrap();
     let pass: Option<&'static [u8]> = encrypted.then_some(PASS);
     engine
@@ -85,16 +134,33 @@ pub(crate) fn fixture(encrypted: bool) -> Fixture {
             },
         ))
         .unwrap();
+    let chain = Arc::new(TestChain::default());
+    chain.install(&session);
     Fixture {
         _dir: dir,
         engine,
         rec,
         session,
         wallet,
+        chain,
     }
 }
 
 impl Fixture {
+    /// A restart: the session closes and opens again on the same data
+    /// root, and every in-memory state (reservations, coins credited by
+    /// hand, history, hooks) is gone.
+    pub(crate) fn reopen(&mut self) {
+        self.engine
+            .block_on(self.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        self.session = self
+            .engine
+            .block_on(self.engine.open_network(DashNetwork::Regtest, options()))
+            .unwrap();
+        self.chain.install(&self.session);
+    }
+
     pub(crate) fn grant(&self, purpose: GrantPurpose, credential: Credential<'_>) -> String {
         self.session
             .vault()
@@ -332,7 +398,7 @@ impl Fixture {
 
     /// Repair of stuck `step`: its self-spend, sent and ChainLocked, then
     /// read. Returns the self-spend.
-    fn repair(&self, step: &'static str) -> dashcore::Transaction {
+    pub(crate) fn repair(&self, step: &'static str) -> dashcore::Transaction {
         let s = &self.session;
         let draft = (self.engine)
             .block_on(s.stuck_funding_draft(self.wallet, step))
@@ -389,6 +455,32 @@ impl Fixture {
             None => permit.note_released(),
             Some((seed, inputs)) => self.record_lock(&permit, seed, inputs),
         }
+        assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
+    }
+
+    /// Shield step `step` after a drain's funding call (a `ShieldDrain`
+    /// lease) signed lock `seed` spending the CoinJoin coins `inputs` and
+    /// failed: `MaybeSent`, its marker standing, its row not tracked.
+    fn stuck_drain(&self, step: &str, seed: u8, inputs: &[OutPoint]) {
+        let grant = self.grant(
+            GrantPurpose::Spend {
+                max_duffs: 10 * COIN,
+            },
+            Credential::None,
+        );
+        let l = self.lease(FlowKind::ShieldDrain, &[grant]).unwrap();
+        let permit = self
+            .engine
+            .block_on(self.session.drain_call_permit(
+                &l,
+                step,
+                COIN,
+                step.into(),
+                crate::platform::shielded_pool::SHIELD_KEY,
+                self.fence(),
+            ))
+            .unwrap();
+        self.record_lock(&permit, seed, inputs);
         assert_eq!(permit.finish(false), FlowOutcome::MaybeSent);
     }
 
@@ -687,6 +779,84 @@ fn a_txdraft_under_a_lease_is_charged_fenced_and_refunded() {
         Credential::None,
     );
     f.engine.block_on(d.prepare(g)).unwrap();
+}
+
+/// DEC-1032 check 2: a shielded pass admitted before a lock (held here as
+/// its read of the session's pass lock) ends before the lock completes:
+/// the synchronous lock's `Done`, and the async lock's `Done` and return,
+/// wait for it. A spend's network call is not waited for.
+#[test]
+fn a_lock_completes_only_after_a_shielded_pass_in_flight_ends() {
+    let f = fixture(true);
+    let passes = || Arc::clone(&f.session.platform.shielded_passes);
+    let pass = f.engine.block_on(passes().read_owned());
+    let status = f.session.lock_vault_sync().unwrap();
+    assert_eq!(status.state, LockState::Locked);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(f.rec.done().is_empty(), "Done before the pass ended");
+    drop(pass);
+    f.eventually("LockProgress::Done", || !f.rec.done().is_empty());
+
+    let pass = f.engine.block_on(passes().read_owned());
+    let s = Arc::clone(&f.session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.session.rt.spawn(async move {
+        let _ = tx.send(s.lock_vault().await.map(drop));
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the async lock returned before the pass ended"
+    );
+    assert_eq!(f.rec.done().len(), 1, "its Done before the pass ended");
+    drop(pass);
+    rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap();
+    assert_eq!(f.rec.done().len(), 2);
+
+    // A spend's hold (its library call, on the network) is not waited for.
+    let spend = f
+        .engine
+        .block_on(f.session.platform.shielded_spends.write());
+    f.engine.block_on(f.session.lock_vault()).unwrap();
+    drop(spend);
+}
+
+/// Opus r1 n2: a wallet's revocation (its removal, Close Wallet) and a
+/// revoking vault operation drop background leases too, so they also end
+/// only after a shielded pass in flight ends.
+#[test]
+fn a_revocation_completes_only_after_a_shielded_pass_in_flight_ends() {
+    let f = fixture(true);
+    let passes = || Arc::clone(&f.session.platform.shielded_passes);
+    let wallet = f.wallet;
+    let pass = f.engine.block_on(passes().read_owned());
+    let s = Arc::clone(&f.session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.session.rt.spawn(async move {
+        drop(s.revoke_wallet(wallet, RevokeCause::WalletClosed).await);
+        let _ = tx.send(());
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the wallet's revocation ended before the pass"
+    );
+    drop(pass);
+    rx.recv_timeout(Duration::from_secs(30)).unwrap();
+
+    let pass = f.engine.block_on(passes().read_owned());
+    let s = Arc::clone(&f.session);
+    let (tx, rx) = std::sync::mpsc::channel();
+    f.session.rt.spawn(async move {
+        let done = s
+            .revoking_vault_op(RevokeCause::PassphraseChange, |_| Ok(()))
+            .await;
+        let _ = tx.send(done);
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the vault operation returned before the pass ended"
+    );
+    drop(pass);
+    rx.recv_timeout(Duration::from_secs(30)).unwrap().unwrap();
 }
 
 #[test]
@@ -1513,6 +1683,11 @@ fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
         key(T::IdentityRegistration, 4, 0),
         "is no top-up's funding key",
     );
+    refused(
+        "shield/0/funding",
+        key(T::IdentityTopUp, 0, 0),
+        "is no shield's funding key",
+    );
     refused("registration/999/funding", own, "has no funding key");
     for wrong in [
         key(T::IdentityRegistration, 5, 0),
@@ -1524,7 +1699,12 @@ fn mode_b_a_funding_permit_refuses_a_step_or_key_it_cannot_vouch_for() {
     let view = l.view().unwrap();
     assert!(!view.call_running && !view.funds_committed);
     assert!(view.budgets.iter().all(|b| b.spent == 0), "nothing charged");
-    for step in [step.as_str(), "topup/i/funding", "registration/999/funding"] {
+    for step in [
+        step.as_str(),
+        "topup/i/funding",
+        "shield/0/funding",
+        "registration/999/funding",
+    ] {
         assert_eq!(s.leases.call_step(f.wallet, step).funding, None, "{step}");
     }
     // The draft's own key: the permit.
@@ -1702,6 +1882,81 @@ impl crate::send::TestBroadcaster for SelfSpendSeam {
         let txid = tx.txid();
         Box::pin(async move { Ok(txid) })
     }
+}
+
+/// Repair of a stuck drain (a shield step whose lock spent CoinJoin
+/// coins): the self-spend takes exactly the CoinJoin coins the lock's
+/// record names that are still unspent, whether or not the wallet holds
+/// other coins (never pooled with them), so it conflicts with the lock;
+/// once it is ChainLocked the step reads not sent and its coins are free.
+#[test]
+fn repair_of_a_stuck_drain_spends_the_locks_coinjoin_inputs_alone() {
+    const STEP: &str = "shield/0/funding";
+    for ordinary in [false, true] {
+        let f = fixture(false);
+        let a = f.credit_coinjoin(1, COIN);
+        let b = f.credit_coinjoin(2, COIN / 10);
+        // A CoinJoin coin the lock did not spend, and a coin of the wallet.
+        f.credit_coinjoin(3, COIN / 100);
+        if ordinary {
+            f.credit(4, COIN);
+        }
+        f.stuck_drain(STEP, 70, &[a, b]);
+        f.refresh();
+        let status = || f.session.leases.funding_status(f.wallet, STEP);
+        assert_eq!(status(), Some(DispatchState::MaybeSent));
+        let tx = f.repair(STEP);
+        let spent: std::collections::HashSet<OutPoint> =
+            tx.input.iter().map(|i| i.previous_output).collect();
+        assert_eq!(spent, [a, b].into(), "ordinary balance: {ordinary}");
+        assert_eq!(status(), Some(DispatchState::NotSent), "{ordinary}");
+        assert!(f.session.leases.unresolved_lock_inputs(f.wallet).is_empty());
+    }
+}
+
+/// Repair of a stuck drain waits for mixing to stop and for another move
+/// of the CoinJoin coins to end: nothing is signed or reserved, and the
+/// grant stays unused.
+#[test]
+fn repair_of_a_stuck_drain_is_refused_while_mixing_or_a_move_runs() {
+    use crate::coinjoin::CoinJoinFailure;
+    const STEP: &str = "shield/0/funding";
+    let f = fixture(false);
+    let a = f.credit_coinjoin(1, COIN);
+    f.stuck_drain(STEP, 70, &[a]);
+    f.refresh();
+    let s = &f.session;
+    s.coinjoin.set_mixing_for_test(f.wallet, true);
+    let mixing = f.engine.block_on(s.stuck_funding_draft(f.wallet, STEP));
+    assert!(
+        matches!(
+            mixing,
+            Err(EngineError::CoinJoin(CoinJoinFailure::MixingActive))
+        ),
+        "{:?}",
+        mixing.map(drop)
+    );
+    s.coinjoin.set_mixing_for_test(f.wallet, false);
+
+    let claim = s.coinjoin.claim_sweep(f.wallet).unwrap();
+    let grant = f.grant(GrantPurpose::Spend { max_duffs: 10_000 }, Credential::None);
+    let moving = (f.engine).block_on(s.resolve_stuck_funding(f.wallet, STEP.into(), grant.clone()));
+    assert!(
+        matches!(
+            moving,
+            Err(EngineError::CoinJoin(CoinJoinFailure::MoveRunning))
+        ),
+        "{moving:?}"
+    );
+    drop(claim);
+    assert!(s.spends.snapshot(&f.wallet).is_empty(), "nothing reserved");
+    (s.vault())
+        .grant_purpose(&grant, dw_vault::GrantKind::Spend, Some(&f.wallet.0))
+        .unwrap();
+    assert_eq!(
+        s.leases.funding_status(f.wallet, STEP),
+        Some(DispatchState::MaybeSent)
+    );
 }
 
 /// E0-04 §6.5 (C9), commit 7, on a real session: Repair's "Resolve stuck
@@ -2611,7 +2866,14 @@ impl Fixture {
 
     /// Credits a confirmed coin of `value` to a fresh CoinJoin-account
     /// address.
-    fn credit_coinjoin(&self, seed: u8, value: u64) -> OutPoint {
+    pub(crate) fn credit_coinjoin(&self, seed: u8, value: u64) -> OutPoint {
+        self.credit_coinjoin_with(seed, value, true)
+    }
+
+    /// Credits a coin of `value` to a fresh CoinJoin-account address,
+    /// confirmed or not (an unconfirmed one is neither mined nor
+    /// InstantSend-locked: not final).
+    pub(crate) fn credit_coinjoin_with(&self, seed: u8, value: u64, confirmed: bool) -> OutPoint {
         let session = Arc::clone(&self.session);
         let id = self.wallet;
         self.engine
@@ -2626,7 +2888,7 @@ impl Fixture {
                         script_pubkey: address.script_pubkey(),
                     };
                     let mut utxo = Utxo::new(outpoint, txout, address, 1, false);
-                    utxo.is_confirmed = true;
+                    utxo.is_confirmed = confirmed;
                     let wallet = session.wallet(&id).await?;
                     (wallet
                         .state_mut()
@@ -3298,6 +3560,46 @@ fn mode_b_the_coinjoin_pass_spends_nothing_while_the_journal_is_not_read() {
     assert_eq!(pass(), None, "the pass spends nothing");
 }
 
+/// RG round 1 G: the automatic CoinJoin pass (and the mixing session,
+/// whose inputs come through it) selects nothing during a replay.
+#[test]
+fn the_coinjoin_pass_selects_nothing_during_a_replay() {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let f = fixture(false);
+    f.credit(4, COIN);
+    let s = &f.session;
+    let w = f.engine.block_on(s.wallet(&f.wallet)).unwrap();
+    let checkpoint = |height: u32| {
+        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+    };
+    let pass = || {
+        f.engine
+            .block_on(s.on_runtime({
+                let (s, w) = (s.clone(), f.wallet);
+                async move {
+                    let fence = s.coin_fence(w).await?;
+                    s.pass_view(&fence).await
+                }
+            }))
+            .unwrap()
+            .is_some()
+    };
+    f.refresh();
+    checkpoint(1_000);
+    assert!(pass());
+    checkpoint(500);
+    assert!(!pass(), "a replay selects nothing");
+    checkpoint(1_000);
+    assert!(pass());
+    // A rescan stopped part way: nothing either, and no error for the pass.
+    let (s2, id) = (Arc::clone(s), f.wallet);
+    (f.engine)
+        .block_on(s.on_runtime(async move { s2.start_rescan(vec![id], 400, |_| 400).await }))
+        .unwrap();
+    assert!(f.engine.block_on(s.cancel_rescan()).unwrap());
+    assert!(!pass(), "a stopped rescan selects nothing");
+}
+
 /// Review Opus closure C-2: a permit that ends while its signer's first
 /// release write is in flight: the write lands, the signer sees the end
 /// and refuses `Locked`, and the vault signs nothing.
@@ -3600,4 +3902,180 @@ fn mg05_a_failed_prepare_refunds_the_masternode_budget() {
     assert_eq!(spent(&l, BudgetPurpose::Masternode), Some(0));
     assert_eq!(spend_of(&l), None);
     assert_eq!(f.reserved(), 0);
+}
+
+/// BL-544: Mode B's funding refresh runs in the background holding the
+/// wallet, and with it the wallet database. Close waits for it, so the
+/// database reopens as soon as `close_network` returns; before, the refresh
+/// still held it and the reopen was `storage_in_use`.
+#[test]
+fn close_waits_for_a_funding_refresh_that_holds_the_wallet() {
+    let mut f = fixture(false);
+    let (hold, held) = tokio::sync::oneshot::channel();
+    *f.session.leases.test_hold_rows.lock().unwrap() = Some(hold);
+    f.session.leases.request_refresh(f.wallet);
+    f.engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(10), held).await })
+        .expect("the refresh reads the wallet")
+        .unwrap();
+    assert!(
+        f.engine
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .expect("the wallet database is free once close returns");
+    assert!(
+        f.session
+            .wallet_infos()
+            .unwrap()
+            .iter()
+            .any(|w| w.wallet_id == f.wallet)
+    );
+}
+
+/// 0.1.x-bal §1: "Move mixed coins" signs nothing while a replay runs (the
+/// filter checkpoint rewound below the highest seen); its plan still
+/// answers.
+#[test]
+fn a_mixed_sweep_is_refused_while_a_replay_runs() {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let f = fixture(false);
+    f.credit_coinjoin(3, COIN);
+    let s = &f.session;
+    let w = f.engine.block_on(s.wallet(&f.wallet)).unwrap();
+    let checkpoint = |height: u32| {
+        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+    };
+    checkpoint(1_000);
+    (s.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: f.wallet.0,
+        height: 1_000,
+    });
+    checkpoint(500);
+    let sweep = crate::coinjoin::SweepDestination::Wallet;
+    let plan = f
+        .engine
+        .block_on(s.mixed_coins_sweep_plan(f.wallet, sweep))
+        .unwrap();
+    assert_eq!(plan.total, COIN);
+    let moved = || {
+        f.engine.block_on(s.move_mixed_coins(
+            f.wallet,
+            sweep,
+            plan.quote_id.clone(),
+            "no grant".into(),
+        ))
+    };
+    assert!(matches!(moved(), Err(EngineError::RescanInProgress)));
+    checkpoint(1_000);
+    let e = moved().unwrap_err();
+    assert!(!matches!(e, EngineError::RescanInProgress), "{e:?}");
+}
+
+/// 0.2 MIX-SHIELD: a `ShieldDrain` lease issues the drain scope alone (no
+/// spend signer, contact crypto, identity key or credits) from a `Spend`
+/// grant's duffs, and from no `PlatformOp` grant; it signs CoinJoin account
+/// 0's inputs and the shielded credit key and nothing else; and the signer
+/// it gave out stops the moment it ends, on the vault's key as on a grant's
+/// own.
+#[test]
+fn a_shield_drain_lease_signs_coinjoin_inputs_and_its_credit_key_only_while_it_holds() {
+    use key_wallet::Signer as _;
+    use std::str::FromStr;
+    let p = |s: &str| key_wallet::DerivationPath::from_str(s).unwrap();
+
+    let f = fixture(true);
+    let g = f.grant(
+        GrantPurpose::Spend {
+            max_duffs: 5 * COIN,
+        },
+        Credential::Passphrase(PASS),
+    );
+    let l = f.lease(FlowKind::ShieldDrain, &[g]).unwrap();
+    assert!(!l.view().unwrap().own_key);
+    let signer = l.uncounted_funding_signer().unwrap();
+    assert_eq!(
+        signer.scope(),
+        dw_vault::SignerScope::ShieldDrainFunding {
+            max_duffs: 5 * COIN
+        }
+    );
+    assert!(l.identity_signer(&[0]).is_err());
+    assert!(l.contact_crypto().is_err());
+    assert_eq!(l.tx_purpose(), None);
+    let sign = |path: &str| f.engine.block_on(signer.sign_ecdsa(&p(path), [1; 32]));
+    sign("m/9'/1'/4'/0'/0/0").unwrap();
+    sign("m/9'/1'/4'/0'/1/3").unwrap();
+    sign("m/9'/1'/5'/5'/0").unwrap();
+    for refused in [
+        "m/44'/1'/0'/0/0",
+        "m/9'/1'/4'/1'/0/0",
+        "m/9'/1'/5'/1'/0",
+        "m/9'/1'/5'/2'/0'/0",
+        "m/9'/1'/5'/0'/0'/0'/0'",
+        "m/9'/1'/17'/0'/0'/0",
+    ] {
+        assert!(
+            matches!(sign(refused), Err(dw_vault::SignerError::PathNotAllowed(_))),
+            "{refused}"
+        );
+    }
+
+    // Only a `Spend` grant funds it.
+    for wrong in [
+        f.platform_op(COIN, 0),
+        f.platform_op(COIN, 1_000),
+        f.grant(GrantPurpose::Governance, Credential::None),
+    ] {
+        assert_eq!(
+            f.lease(FlowKind::ShieldDrain, &[wrong]).unwrap_err(),
+            LeaseError::Invalid
+        );
+    }
+
+    // The lease ends: it issues no signer again, and the vault-key signer
+    // it gave out stops at once, the vault still unlocked.
+    f.session.end_flow(l.id_string()).unwrap();
+    assert!(l.uncounted_funding_signer().is_err());
+    assert!(matches!(
+        sign("m/9'/1'/4'/0'/0/0"),
+        Err(dw_vault::SignerError::Locked)
+    ));
+    // A lock ends a live lease's signer too.
+    let l = f
+        .lease(
+            FlowKind::ShieldDrain,
+            &[f.grant(GrantPurpose::Spend { max_duffs: COIN }, Credential::None)],
+        )
+        .unwrap();
+    let revoked = l.uncounted_funding_signer().unwrap();
+    f.engine
+        .block_on(revoked.sign_ecdsa(&p("m/9'/1'/4'/0'/0/0"), [1; 32]))
+        .unwrap();
+    f.session.lock_vault_sync().unwrap();
+    assert!(matches!(
+        f.engine
+            .block_on(revoked.sign_ecdsa(&p("m/9'/1'/4'/0'/0/0"), [1; 32])),
+        Err(dw_vault::SignerError::Locked)
+    ));
+
+    // On a locked vault the lease holds the grant's own key: its signer
+    // stops the moment the lease ends.
+    let g = f.grant(
+        GrantPurpose::Spend { max_duffs: COIN },
+        Credential::Passphrase(PASS),
+    );
+    let l = f.lease(FlowKind::ShieldDrain, &[g]).unwrap();
+    assert!(l.view().unwrap().own_key);
+    let held = l.uncounted_funding_signer().unwrap();
+    let sign = |path: &str| f.engine.block_on(held.sign_ecdsa(&p(path), [1; 32]));
+    sign("m/9'/1'/4'/0'/0/0").unwrap();
+    f.session.end_flow(l.id_string()).unwrap();
+    assert!(matches!(
+        sign("m/9'/1'/4'/0'/0/0"),
+        Err(dw_vault::SignerError::Locked)
+    ));
 }

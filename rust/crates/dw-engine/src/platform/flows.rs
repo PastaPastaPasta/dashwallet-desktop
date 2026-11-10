@@ -53,6 +53,31 @@ pub enum FlowKind {
     /// A governance proposal's fee transaction under a `Spend` grant
     /// (MG-06 D10, MG-00 D35 "Proposal").
     Proposal,
+    /// "Move to Dash wallet": a withdrawal from the wallet's Platform
+    /// addresses to its Core receive address under a `PlatformOp` grant
+    /// (m4 §7 item 67), signed with the payment-address keys alone.
+    PlatformAddressMove,
+    /// A send to someone else's Platform address (m4 §2.12, 0.2): the same
+    /// payment-address keys as `PlatformAddressMove`, from a fresh
+    /// `PlatformOp` grant redeemed for that one send (never a held lease).
+    PlatformAddressSend,
+    /// Core → Shielded (m4 §2.13): the asset lock under a `PlatformOp`
+    /// grant's `max_duffs`, then its ShieldFromAssetLock.
+    Shield,
+    /// "Add from Dash wallet" (m4 §2.12, 0.2): the asset lock under a
+    /// `PlatformOp` grant's `max_duffs`, then its
+    /// AddressFundingFromAssetLock to the wallet's Platform address.
+    PlatformAddressFund,
+    /// A shielded send or an unshield to Core (m4 §2.13) under a
+    /// `PlatformOp` grant's `max_credits`: the vault's Orchard spend key
+    /// for the wallet's shielded account, and nothing else.
+    ShieldedSpend,
+    /// "Move mixed coins" to Shielded (0.2 MIX-SHIELD): the drain of the
+    /// CoinJoin account into one Core → Shielded lock under a `Spend`
+    /// grant's `max_duffs`, then its ShieldFromAssetLock. Its funding
+    /// signer is `ShieldDrainFunding` (CoinJoin account 0's address keys
+    /// and the shielded credit keys), and nothing else.
+    ShieldDrain,
     /// An evonode's Platform credit withdrawal under a `MasternodeWithdraw`
     /// grant (MG-13 P12): its single-use `MasternodeWithdrawal` signer and
     /// a Credits budget charged the amount plus the fee reserve.
@@ -63,7 +88,8 @@ pub enum FlowKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BudgetPurpose {
-    /// Core duffs for an asset lock (`PlatformOp.max_duffs`).
+    /// Core duffs for an asset lock (`PlatformOp.max_duffs`; a drain's
+    /// `Spend.max_duffs`).
     Funding,
     /// Identity credits for state transitions (`PlatformOp.max_credits`).
     Credits,
@@ -354,10 +380,13 @@ impl DashPay {
     }
 }
 
-/// A Mode B funding step id (§2a.3): `registration/<draft>/funding` or
-/// `topup/<id>/funding`.
+/// A Mode B funding step id (§2a.3): `registration/<draft>/funding`,
+/// `topup/<id>/funding`, (0.1 E1) a shield's `shield/<k>/funding` or (0.2)
+/// a Platform address fund's `paddr/<k>/funding`.
 pub(crate) fn is_funding_step(step: &str) -> bool {
-    (step.starts_with("registration/") || step.starts_with("topup/"))
+    ["registration/", "topup/", "shield/", "paddr/"]
+        .iter()
+        .any(|p| step.starts_with(p))
         && step.ends_with("/funding")
         && step.matches('/').count() == 2
 }

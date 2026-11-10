@@ -33,7 +33,6 @@ import {
   linkText,
   listState,
   marginText,
-  masternodesShown,
   mineRow,
   needsMyVote,
   netRange,
@@ -317,13 +316,10 @@ describe("Mine (MG-06 D24, D15–D17)", () => {
     expect(badgeCount([mine({ kind: "feeUnsent" }, "send: x"), mine({ kind: "readyToSubmit", reason: "noPeerAccepted" }), mine({ kind: "feePaid", confirmations: 0 })], L)).toBe(2);
   });
 
-  it("shows the sidebar item for the setting, a proposal in progress or a collateral-sized coin (D3)", () => {
-    expect(masternodesShown(true, undefined, undefined)).toBe(true);
-    expect(masternodesShown(false, [mine({ kind: "confirming", confirmations: 1 })], undefined)).toBe(true);
-    expect(masternodesShown(false, [mine({ kind: "expired" }), mine({ kind: "feeFailed" })], [5 * COIN])).toBe(false);
-    expect(masternodesShown(false, [], [1_000 * COIN])).toBe(true);
-    expect(masternodesShown(false, [], [4_000 * COIN])).toBe(true);
-    expect(masternodesShown(false, [], [1_000 * COIN + 1])).toBe(false);
+  it("tells a proposal in progress from one that ended or failed", () => {
+    expect(inProgress(mine({ kind: "confirming", confirmations: 1 }))).toBe(true);
+    expect(inProgress(mine({ kind: "expired" }))).toBe(false);
+    expect(inProgress(mine({ kind: "feeFailed" }))).toBe(false);
     expect(inProgress(mine({ kind: "public", status: null }))).toBe(true);
   });
 });

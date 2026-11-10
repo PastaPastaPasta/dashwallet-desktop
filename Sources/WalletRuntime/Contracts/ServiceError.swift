@@ -29,6 +29,9 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let sdk = Self(rawValue: "sdk")
     public static let spv = Self(rawValue: "spv")
     public static let io = Self(rawValue: "io")
+    /// Close or unload refused while a shielded spend's result is unknown
+    /// (0.1 E1, DEC-1046).
+    public static let shieldedSpendUnresolved = Self(rawValue: "shielded_spend_unresolved")
 
     // Vault.
     public static let vaultNoVault = Self(rawValue: "vault.no_vault")
@@ -212,6 +215,9 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     public static let coinjoinVaultLocked = Self(rawValue: "coinjoin.vault_locked")
     public static let coinjoinGrantInvalid = Self(rawValue: "coinjoin.grant_invalid")
     public static let coinjoinNothingToMove = Self(rawValue: "coinjoin.nothing_to_move")
+    public static let coinjoinMixingActive = Self(rawValue: "coinjoin.mixing_active")
+    public static let coinjoinMoveRunning = Self(rawValue: "coinjoin.move_running")
+    public static let coinjoinPlanChanged = Self(rawValue: "coinjoin.plan_changed")
     public static let coinjoinSpvNotRunning = Self(rawValue: "coinjoin.spv_not_running")
     public static let coinjoinNoPeers = Self(rawValue: "coinjoin.no_peers")
     public static let coinjoinBroadcastRejected = Self(rawValue: "coinjoin.broadcast_rejected")
@@ -248,7 +254,7 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     /// `wallet.invalid_mnemonic` / `wallet.already_exists`.
     public static let engineCodes: [ServiceErrorCode] = [
         .invalidArgument, .networkNotOpen, .walletNotFound, .storage, .notImplemented, .internal,
-        .invalidConfig, .storageInUse, .wallet, .sdk, .spv, .io,
+        .invalidConfig, .storageInUse, .wallet, .sdk, .spv, .io, .shieldedSpendUnresolved,
         .vaultNoVault, .vaultAlreadyExists, .vaultLocked, .vaultWrongPassphrase, .vaultThrottled,
         .vaultPassphraseRejected, .vaultNotEncrypted, .vaultAlreadyEncrypted, .vaultGrantInvalid,
         .vaultGrantPurposeMismatch, .vaultMixingOnly, .vaultCredentialRequired, .vaultNoSecret, .vaultQuickUnlockUnavailable,
@@ -299,8 +305,9 @@ public struct ServiceErrorCode: RawRepresentable, Sendable, Hashable, Codable, C
     /// with the table.
     public static let m3EngineCodes: [ServiceErrorCode] = [
         .coinjoinDisabled, .coinjoinWatchOnly, .coinjoinInsufficientFunds, .coinjoinVaultLocked,
-        .coinjoinGrantInvalid, .coinjoinNothingToMove, .coinjoinSpvNotRunning, .coinjoinNoPeers,
-        .coinjoinBroadcastRejected, .masternodeWatchOnly, .masternodeVaultLocked, .masternodeGrantInvalid,
+        .coinjoinGrantInvalid, .coinjoinNothingToMove, .coinjoinMixingActive, .coinjoinMoveRunning, .coinjoinPlanChanged,
+        .coinjoinSpvNotRunning,
+        .coinjoinNoPeers, .coinjoinBroadcastRejected, .masternodeWatchOnly, .masternodeVaultLocked, .masternodeGrantInvalid,
     ]
 }
 

@@ -268,6 +268,24 @@ fn dropping_engine_without_shutdown_releases_storage() {
     );
 }
 
+/// A host that drops its engine and makes another on the same root at once
+/// (the Swift app's lifecycle): the new engine shares the root's instance
+/// lock while the old one's drop thread still holds it, or takes it once
+/// that is gone; it is never refused.
+#[test]
+fn an_engine_made_again_at_once_after_a_drop_opens_its_root() {
+    let dir = dw_testutil::private_tempdir();
+    for _ in 0..50 {
+        let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
+        drop(engine);
+    }
+    let engine = new_engine(dir.path(), Arc::new(Recorder::default()));
+    engine
+        .block_on(engine.open_network(DashNetwork::Regtest, local_opts()))
+        .unwrap();
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 #[test]
 fn second_engine_on_same_data_dir_gets_storage_in_use() {
     let dir = dw_testutil::private_tempdir();

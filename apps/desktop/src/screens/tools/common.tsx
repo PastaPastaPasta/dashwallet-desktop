@@ -15,6 +15,7 @@ const PURPOSE_TEXT: Record<string, string> = {
   spend: "Enter your passphrase to authorize this payment.",
   signMessage: "Enter your passphrase to sign the message.",
   platformOp: "Enter your passphrase to authorize this Dash Platform operation.",
+  platformSend: "Enter your passphrase to authorize this payment.",
 };
 
 /** The passphrase for the grant a tab is waiting on, with U-02's lockout policy. */
@@ -27,7 +28,7 @@ export function GrantSheet({ grants }: { grants: GrantModel }) {
   return (
     // Not closed while the passphrase is checked: the grant it brings has to find its request.
     <Sheet title="Authorize" width="small" testId="grant-sheet" closable={!lock.working} onClose={() => grants.cancel()}>
-      <p className="sheet-text">{PURPOSE_TEXT[request.purpose.kind] ?? "Enter your passphrase to continue."}</p>
+      <p className="sheet-text">{grants.prompt ?? PURPOSE_TEXT[request.purpose.kind] ?? "Enter your passphrase to continue."}</p>
       <PassphrasePrompt
         testId="grant-sheet"
         error={lock.message}

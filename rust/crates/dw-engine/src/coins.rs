@@ -762,7 +762,8 @@ impl NetworkSession {
                 (c.utxo.value(), txid, vout)
             })
             .collect();
-        let locked: HashMap<(String, u32), LockReason> = self
+        let sweep_scope = dw_appdb::local_scope(&id);
+        let (locked, sweep_outs) = self
             .appdb_op(move |db| {
                 if let Some(threshold) =
                     parse_threshold(db.setting(GLOBAL_SCOPE, DUST_PROTECTION_KEY)?)?
@@ -774,28 +775,52 @@ impl NetworkSession {
                         }
                     }
                 }
-                Ok(db
+                let locked: HashMap<(String, u32), LockReason> = db
                     .locks(&id)?
                     .into_iter()
                     .filter(|row| row.is_locked())
                     .map(|row| ((row.txid, row.vout), row.reason))
-                    .collect())
+                    .collect();
+                let sweep_outs = crate::coinjoin::SweepRows::read(db, &sweep_scope)?;
+                Ok((locked, sweep_outs))
             })
             .await?;
+        // A sweep chunk that may be on the network holds its inputs from
+        // every spender, across restarts, while it is pending (`coinjoin.rs`
+        // `sweep_out_state`); a sweep or a resend drops the final records.
+        // Once resolved it holds nothing: the session's own claim of its
+        // inputs goes too, so an input its rival did not take is free.
+        let (states, _) = self.sweep_view(wallet_id, sweep_outs).await;
+        let mut pending = Vec::new();
+        for (o, state) in states {
+            if state == crate::coinjoin::SweepOutState::Pending {
+                pending.push(o);
+            } else {
+                self.spends
+                    .release(&wallet_id, crate::send::SpendOwner::Tx(o.txid()));
+            }
+        }
+        let swept = crate::coinjoin::held_inputs(&pending);
         let unspent: HashSet<OutPoint> = snapshot.coins.iter().map(|c| c.utxo.outpoint).collect();
         self.spends.retain_unspent(&wallet_id, &unspent);
         let reserved = self.spends.snapshot(&wallet_id);
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
+        // A replay re-credits a coin whose spender is still unconfirmed at
+        // close until a block spends it (0.1.x-bal §1): held as Core holds it.
+        let spent = (self.hub.history).read(&wallet_id, crate::history::spent_outpoints);
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             let lock = locked.get(&lock_key(&o));
             coin.user_locked = lock.is_some();
             coin.dust_locked = lock == Some(&LockReason::Dust);
-            let spend_reserved = reserved.contains(&o);
             let lock_reserved = lock_inputs.contains(&o);
             coin.unresolved_lock = !lock_reserved && unresolved.contains(&o);
-            coin.lock_input = !spend_reserved && (lock_reserved || coin.unresolved_lock);
-            coin.reserved = spend_reserved || lock_reserved || coin.unresolved_lock;
+            // A lock's own input stays held as the lock's.
+            let lock_held = lock_reserved || coin.unresolved_lock;
+            let spend_reserved =
+                reserved.contains(&o) || swept.contains(&o) || (spent.contains(&o) && !lock_held);
+            coin.lock_input = !spend_reserved && lock_held;
+            coin.reserved = spend_reserved || lock_held;
         }
         Ok(snapshot)
     }

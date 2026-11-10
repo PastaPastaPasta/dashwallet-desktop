@@ -1,91 +1,130 @@
-# dashwallet-desktop
+# Dash Wallet Desktop
 
-Desktop Dash wallet for macOS, Windows and Linux, replacing dash-qt and built
-the way dashwallet-iOS is: a Rust engine on dashpay/platform's
-`platform-wallet`, a generated Swift binding, a Swift SDK layer, shared view
-models, and native UI (SwiftUI on macOS, SwiftCrossUI on Linux/Windows).
+A desktop Dash wallet for macOS, Windows and Linux, replacing dash-qt. It is a
+[Tauri 2](https://tauri.app) app (React + TypeScript renderer) over a Rust engine built on
+dashpay/platform's `platform-wallet`: Core wallet, DashPay (usernames, contacts, invitations) and
+Platform on one recovery phrase.
 
-Design: [`docs/design/DESIGN.md`](docs/design/DESIGN.md) (authoritative) on top
-of [`docs/design/DESIGN-opus.md`](docs/design/DESIGN-opus.md).
+> **This is an early release. No security review has been done. Use small amounts only.**
+> The binaries are attested by GitHub but not code-signed by Apple or Microsoft. Keep a written copy of your recovery phrase and do not hold more than you can afford to lose.
 
-Product scope and the plan to get there: [`docs/design/DASHPAY.md`](docs/design/DASHPAY.md) (DashPay on the
-desktop, authoritative where it differs from DESIGN.md; wallet-holder masternodes and governance in §5a) and
-[`docs/design/ROADMAP.md`](docs/design/ROADMAP.md) (the task list). Agents also read `CLAUDE.md`.
+## What is in 0.1
+
+| Area | In 0.1 |
+|---|---|
+| Wallet | create, restore (12/24 words), verify the phrase, passphrase lock, auto-lock, several wallets |
+| Network | mainnet or testnet, chosen at onboarding and in Settings (a restart applies it); SPV sync |
+| Home | one balance for everything you can spend, with Core, Shielded and Platform rows; sync status |
+| Core send and receive | address, QR and `dash:` URI, InstantSend, history, transaction detail, coin control, PSBT, sign and verify messages, CSV export of the history |
+| Shielded | shielded balance and receive address, Core → Shielded, send to a shielded address, Shielded → Core. Gated on the network's Platform protocol version: where the pool is not active the app says so |
+| Platform addresses | balance, activity, and "Move to Dash wallet" so restored funds are never stranded (no Platform receive address yet) |
+| Usernames | register (contested and not), status, main name, profile and avatar, top-up and withdraw credits |
+| Contacts | search, send and accept requests, contact list, pay a contact, history with a contact, notifications |
+| Invitations | claim an invitation link |
+| CoinJoin | mixing start and stop, settings, progress (experimental) |
+| Masternodes | governance and username voting screens, hidden until Settings ▸ Show Masternodes is on |
+
+**Not in 0.1:** username marketplace, DEX, Buy & Sell, Explore, DashSpend, CrowdNode, invitation creation,
+transaction metadata, private-key sweep, localization (English only), fiat, masternode registration and
+shared masternodes, shielded-funded registration, Platform ↔ Shielded transfers, auto-update, notarization,
+Windows code signing, hardware wallets. The plan is
+[`docs/research/gap-2026-10-31/RELEASE-PLAN.md`](docs/research/gap-2026-10-31/RELEASE-PLAN.md).
+
+## Latest build
+
+Preview builds of `main`, one click each. They are **unsigned or ad-hoc signed previews** (no notarization, no
+Windows code signing), made by GitHub Actions on every merge to `main`, and they come with no security review:
+small amounts only.
+
+| OS | Latest build |
+|---|---|
+| **macOS** (Apple silicon and Intel) | [**DashWallet-continuous-macos-universal.dmg**](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-macos-universal.dmg) |
+| Windows (x64) | [DashWallet-continuous-windows-x64-setup.exe](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-windows-x64-setup.exe) |
+| Linux (x86_64) | [DashWallet-continuous-linux-x86_64.AppImage](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-linux-x86_64.AppImage), [DashWallet-continuous-linux-amd64.deb](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-linux-amd64.deb) |
+| Checksums | [SHA256SUMS](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/SHA256SUMS) |
+
+The [`continuous` release](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/tag/continuous) says which
+commit it holds. Each merge also keeps its own build, `v<version>-dev.<run>+<commit>`, on the
+[releases page](https://github.com/PastaPastaPasta/dashwallet-desktop/releases), next to the tagged releases
+(`v0.1.0`). Check a download with [`docs/release/verifying.md`](docs/release/verifying.md).
+
+## Install
+
+| OS | File (the per-build and tagged names; the latest-build names above replace `dash-wallet-<version>` with `DashWallet-continuous`) |
+|---|---|
+| macOS | `dash-wallet-<version>-macos-universal.dmg` |
+| Windows | `dash-wallet-<version>-windows-x64-setup.exe` |
+| Linux | `dash-wallet-<version>-linux-x86_64.AppImage` or `dash-wallet-<version>-linux-amd64.deb` |
+
+The binaries are not notarized (macOS) or signed (Windows), so each OS warns on first launch.
+
+- **macOS.** Open the dmg and drag Dash Wallet to Applications. The app is ad-hoc signed only. Right-click
+  the app ▸ **Open** ▸ Open, or clear the quarantine flag once:
+  `xattr -dr com.apple.quarantine "/Applications/Dash Wallet.app"`
+- **Windows.** Run the installer. When SmartScreen says "Windows protected your PC", choose **More info ▸
+  Run anyway**. It installs for the current user. Windows needs the WebView2 runtime, which Windows 11 and
+  current Windows 10 already have.
+- **Linux AppImage.** `chmod +x *.AppImage && ./*.AppImage`. Needs WebKitGTK 4.1
+  (for example Ubuntu 24.04 or Debian 12) and FUSE 2, or run it with `--appimage-extract-and-run`.
+- **Linux .deb.** `sudo apt install ./*.deb` (Debian, Ubuntu). It registers the `dash:`, `pay:`,
+  `dashwallet:` and `dashpay:` links.
+
+## Verify a download
+
+Every published file and every `SHA256SUMS` carries a GitHub build attestation. With the GitHub CLI (logged in: `gh auth login`):
+
+```sh
+gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop
+sha256sum -c --ignore-missing SHA256SUMS      # Linux; on macOS: grep <file name> SHA256SUMS | shasum -a 256 -c
+```
+
+Details, what an attestation does and does not prove, and the release names: [`docs/release/verifying.md`](docs/release/verifying.md).
+There are no PGP signatures; a real release key is a 1.0 task.
+
+## Build from source
+
+Requirements: Rust 1.98.1 (`rust/rust-toolchain.toml`; rustup installs it), protoc 29+, libclang, Node 24 and
+pnpm (the version in `apps/desktop/package.json`). On Linux the Tauri build needs the WebKitGTK development
+packages (`apps/desktop/README.md`, "Setup").
+
+```sh
+cd apps/desktop
+pnpm install --frozen-lockfile
+pnpm tauri dev                  # the app with hot reload, on the real engine
+pnpm tauri build                # the release binary and the bundles for this OS
+```
+
+The bundles land in `rust/target/release/bundle/`. Release builds come from the `Release` workflow on a `v*`
+tag (`.github/workflows/release.yml`, [`docs/ci.md`](docs/ci.md)). For development, read
+[`apps/desktop/README.md`](apps/desktop/README.md) (renderer, tests, launch options, the self-test),
+[`CLAUDE.md`](CLAUDE.md), [`docs/design/DESIGN.md`](docs/design/DESIGN.md) and
+[`docs/design/ROADMAP.md`](docs/design/ROADMAP.md).
 
 ## Layout
 
 ```
+apps/desktop/             Tauri renderer: React 19 + TypeScript + Vite (apps/desktop/README.md)
 rust/                     Cargo workspace (members = crates/*, bin/*)
+  crates/dw-app           the Tauri 2 app: commands over dw-engine, event bridge, deep links
   crates/dw-engine        Engine: tokio runtime, per-network sessions over
                           PlatformWalletManager<SqlitePersister> + dash_sdk::Sdk
-  crates/dw-ffi           UniFFI facade -> libdashwallet_core (staticlib/cdylib)
   crates/dw-vault         Passphrase vault (Argon2id) and OS secret store for the seed
   crates/dw-appdb         App database: labels, payment requests, address book
   crates/dw-uri, dw-units, dw-message, dw-compat   dash-qt-compatible pure libraries
                           (dw-compat: wallet.dat / dumpwallet / descriptor readers and writers)
   crates/dw-psbt          Dash Core PSBT subset (BIP174 v0): parse, analyze, sign, finalize
   crates/dw-console       local RPC console: dash-qt grammar, redaction, Core result shapes
-  crates/dw-desktop       Windows/Linux OS services (autostart, single instance, notifications,
-                          QR from images, log export); macOS uses AppKit instead
+  crates/dw-desktop       OS services (autostart, single instance, notifications, QR from images)
   bin/dwcli               CLI over dw-engine (regtest L1/L2 driver)
-  bin/uniffi-bindgen      pinned bindgen used by scripts/build-core.sh
-Package.swift             single SwiftPM package (targets: DESIGN-opus §1.6)
-Sources/DashWalletCore/Generated/   UniFFI Swift, committed, regenerated by build-core
-Sources/DashKit           EngineClient (actor), EventBus, Amount, SecretBytes, errors
-Sources/WalletRuntime     engine adapters, lifecycle, auth gate, settings (live composition)
-Sources/WalletFeatures    @Observable view models shared by both apps
-Sources/MacUI, DashUIMac  SwiftUI macOS app screens and design system
-Sources/CrossUI, DashUICross, DashWalletCross   SwiftCrossUI app (Linux/Windows, also macOS)
-Apps/macOS/               XcodeGen spec for the macOS app bundle and its XCUITests
-Artifacts/                SE-0482 artifact bundle (gitignored, built locally)
-scripts/                  build-core.sh, disk-guard.sh, lint-imports.sh, linux-docker-test.sh,
-                          crossui-linux-demo.sh
-ci/linux/                 Dockerfile (Rust builder), Dockerfile.swift (Swift + Rust builder),
-                          Dockerfile.crossui + crossui/ (GTK app under Xvfb, AT-SPI harness)
+docs/                     design, contracts, ADRs, research; docs/release holds the release notes
 regtest/                  Dash Core regtest harness (docker compose, pytest, functional tests)
-docs/contracts/           engine API (m1-engine.md, m2-engine.md), Swift seams (m1-swift.md,
-                          m2-swift.md), backup file format (dwbackup-v1.md)
+ci/, .github/workflows/   CI, the nightly run and the release workflow
+Sources/, Package.swift   the earlier Swift apps (see "The earlier Swift apps")
 ```
 
-## Requirements
+## The engine from the command line
 
-- Rust 1.98.1 (`rust/rust-toolchain.toml`; rustup installs it), protoc 29+, libclang
-- Swift 6.3.3 (Xcode 26.6 on macOS)
-- Linux builds: Docker (OrbStack on the dev Mac) for Swift; Rust also builds on the host (see "Linux")
-
-## Build and test (macOS)
-
-```sh
-scripts/build-core.sh                 # cargo build dw-ffi (dev, host triple), regenerate
-                                      # bindings, assemble Artifacts/DashWalletCore.artifactbundle
-swift build
-swift test                            # every Swift suite; DashKit, WalletRuntime and MacUI
-                                      # tests also run against the real Rust static library
-```
-
-`build-core.sh` options: `--triple <rust triple>`, `--profile dev|release|dist`,
-`--no-bindings` (leave the committed Swift alone), `--check-bindings` (fail if the
-committed Swift differs from a fresh generation). It runs `scripts/disk-guard.sh`
-first and aborts below 15 GB free (`DWD_MIN_FREE_GB` overrides).
-
-`build-core.sh` picks the Cargo target dir (DESIGN.md R3), first match wins:
-
-1. `CARGO_TARGET_DIR`;
-2. `$DWD_DEPS_DIR/target` when `DWD_DEPS_DIR` (the shared dependency dir) is set;
-3. on macOS, `~/workspace/dashwallet-desktop-deps/target` when that directory exists (the dev
-   Mac's one shared target dir);
-4. `rust/target`.
-
-A relative `CARGO_TARGET_DIR` or `DWD_DEPS_DIR` is taken from the directory you run the script in.
-
-Linux hosts that build several worktrees at once (agentbox) keep one target dir per checkout
-(case 4) and share compiles through sccache instead. Build only the `dev` profile locally.
-
-Rust tests (every crate in the workspace):
-
-```sh
-cd rust && cargo test --workspace
-```
+`dwcli` drives the engine without a UI. Rust tests for the whole workspace: `cd rust && cargo test --workspace`.
 
 CLI:
 
@@ -133,9 +172,7 @@ against dashd v24 in the regtest `restore` suite, watch-only in `l2-tools`; back
 `rust/crates/dw-engine/tests/r2_compat_offline.rs`. In demo mode these calls answer
 `not_implemented`, and the screens show that error.
 
-## Linux
-
-### Rust on the host
+## Rust on a Linux host
 
 The Rust workspace, `dwcli` and the regtest suites build and run on a plain Linux host. On
 Ubuntu (checked on 26.04, agentbox):
@@ -180,227 +217,23 @@ app, dwcli and the tests never rely on the umask:
   names it and the `chmod go-w` that fixes it. On agentbox `~/workspace/dw-wt` is 0775, so do not
   put a data dir there.
 
-### Swift (Docker)
 
-There is no Swift toolchain for every Linux release (none for Ubuntu 26.04), so the Linux Swift
-targets build and test in the pinned `swift:6.3.3-noble` image:
+## The earlier Swift apps
 
-```sh
-scripts/linux-docker-test.sh
-```
-
-Builds `ci/linux/Dockerfile.swift` (swift:6.3.3-noble + Rust 1.98.1 + protoc) as
-`dwd-linux-swift:<first 12 hex digits of the Dockerfile's SHA-256>` if missing, so an edited
-Dockerfile gets a new image (`DWD_LINUX_IMAGE` names another image), copies the repo into the container, builds the Linux artifact
-variant, checks the committed bindings, and runs `DashKitTests`,
-`DesignTokensTests`, `RepoChecksTests`, `WalletRuntimeTests`, `WalletFeaturesTests`,
-`PlatformServicesDesktopTests` and `SwiftCrossUIPatchTests` with `DWD_HEADLESS=1`. That variable
-removes the SwiftCrossUI app targets from the package graph (the dependency stays
-declared, so `Package.resolved` is unchanged), so no GTK is needed. `SwiftCrossUIPatchTests`
-stays: it tests the vendored SwiftCrossUI's patches over a fake backend, with the framework core
-only.
-`DWD_SWIFT_TEST_FILTER` changes the test filter; `DWD_LINUX_JOBS` sets cargo jobs (default: 8 on macOS;
-elsewhere the host's `CARGO_BUILD_JOBS`, else 8); `DWD_MIN_FREE_GB` sets the disk-guard threshold on the host and
-inside the container.
-
-The cargo target dir and the SwiftPM scratch dir live in Docker volumes (`scripts/docker-volumes.sh`):
-one pair shared by every checkout on macOS, one pair per checkout elsewhere, so worktrees that run
-at the same time never build into the same directory. `DWD_DOCKER_VOLUME_TAG` overrides the key
-(`""` selects the shared pair). Remove a deleted worktree's volumes with `docker volume rm`.
-
-On agentbox (32 vCPU), with images built and the cargo registry warm: `linux-docker-test.sh` takes about
-14 minutes on a fresh checkout (11 of them the in-container core build) and runs 528 Swift tests;
-`crossui-linux-demo.sh` takes about 15 minutes, nearly all of it AT-SPI driving. Pass an output directory as
-the demo's first argument unless you mean to replace the committed screenshots.
-
-## Running the app
-
-There are two apps over the same engine, runtime and view models:
-
-- the macOS app: SwiftUI, `MacUI`, bundled by `Apps/macOS`;
-- the SwiftCrossUI app: `dash-wallet`, GTK on Linux, AppKit on macOS for development, Windows not
-  built yet.
-
-Both need the Rust bundle, so run `scripts/build-core.sh` first. Both have a live mode and a demo mode.
-
-### macOS app
-
-`Apps/macOS/project.yml` is the XcodeGen spec. The generated `DashWallet.xcodeproj` is gitignored.
-
-```sh
-cd Apps/macOS && xcodegen generate
-xcodebuild -project DashWallet.xcodeproj -scheme DashWallet -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' -derivedDataPath ../../.derived build
-"../../.derived/Build/Products/Debug/Dash Wallet.app/Contents/MacOS/Dash Wallet"          # live
-"../../.derived/Build/Products/Debug/Dash Wallet.app/Contents/MacOS/Dash Wallet" --demo   # demo
-```
-
-**Live mode** runs the real engine.
-
-- Data goes to `~/Library/Application Support/org.dashfoundation.DashWallet/`.
-- It opens the last network; the first launch opens mainnet.
-- Switches:
-  - `--datadir <dir>`;
-  - `--network mainnet|testnet|regtest`, honoured on the first launch only;
-  - `--peer host:port`, `--dapi <url>`, `--quorum-url <url>`. Regtest has no default endpoints and
-    needs all three.
-- `dash:` links and dropped `dash:` URIs open the Send page.
-- With the menu bar companion on, closing the window does not quit. Quit shows dash-qt's shutdown
-  window and waits up to 15 s for the engine to shut down.
-- dash-qt's GUI options are accepted as well (`-name` or `--name=value`, see "dash-qt command-line
-  options" below). `-choosedatadir`, or a first run whose default data folder does not exist,
-  shows the data-directory chooser; the choice is saved.
-- M2 windows: Options (⌘,), Tools (Information, Console, Network Traffic, Peers, Repair), Coin
-  Selection, PSBT Operations, Wallets, Create Wallet, Command-line options and About; the File,
-  Settings, Window and Help menus and the Dock menu follow dash-qt's.
-
-**Demo mode** (`--demo`) runs on in-memory sample data.
-
-- Switches: `--demo-scenario funded|fresh|locked|offline` (the demo passphrase is `demo`),
-  `--appearance light|dark` and `--no-menu-bar-extra`.
-
-**Tests:**
-
-- `swift test --filter MacUITests` renders every screen offscreen. It also opens the real engine on
-  a temporary regtest data folder.
-- `DWD_HEADLESS=1 DWD_WRITE_SCREENSHOTS=1 swift test --filter MacUITests` also rewrites
-  `docs/screenshots/m1/*.png` and `docs/screenshots/m2/*.png` (M2 screens: `M2ScreenTests`).
-- The XCUITests (`Apps/macOS/DashWalletUITests`, demo mode) run with `test` in place of `build`.
-  They need a logged-in GUI session and the macOS automation-mode authorization: approve Xcode's
-  prompt, or an administrator runs `automationmodetool enable-automationmode-without-authentication`.
-
-### Linux app (SwiftCrossUI)
-
-```sh
-scripts/build-core.sh
-swift build --product dash-wallet      # needs the GTK 4 development packages; do not set DWD_HEADLESS
-swift run dash-wallet                  # live
-swift run dash-wallet --demo           # demo
-swift run dash-wallet --help
-```
-
-**Live mode** opens the engine through WalletRuntime.
-
-- The data root is `$XDG_DATA_HOME/dashwallet` on Linux and `%APPDATA%\Dash\DashWallet` on Windows;
-  `--datadir PATH` overrides it.
-- It reopens the last network; the first run opens mainnet. `--network
-  mainnet|testnet|regtest|devnet-NAME` picks one.
-- `--connect HOST:PORT` (repeatable) sets SPV peers. `--dapi URL` (repeatable) is required for
-  regtest and devnets.
-- On Linux, closing the window shuts the engine down. The app prints
-  `dash-wallet: engine shut down` when that succeeds.
-
-**Demo mode:** `--demo [funded|locked|onboarding|offline]` (or `DWD_DEMO=1`).
-
-- `--page NAME` picks the first page: `overview`, `send`, `receive`, `transactions`,
-  `address-book`, `sign-verify`, `settings`, `options`, `coin-selection`, `psbt`,
-  `tools-information`, `tools-console`, `tools-peers`, `tools-repair`, `wallets`, `security`,
-  `about`.
-- The demo uses testnet and the passphrase `demo`.
-
-Live and demo mode also take dash-qt's GUI options (below). `-version` is refused: the version
-comes from the engine, and Help ▸ About shows it. The `-choosedatadir` choice lasts for one run.
-The File, Settings, Window and Help menus come from the same shell model as the macOS app's; the
-M2 pages (Options, Coin Selection, PSBT, Tools, Wallets, Security, About) open from them.
-
-The same binary runs on macOS with the AppKit backend for development.
-
-`scripts/crossui-linux-demo.sh [OUT_DIR]` builds the core and the app in Docker and runs them under
-Xvfb. It drives the onboarding and send flows through AT-SPI, in demo mode and live on the real
-engine (results: `docs/screenshots/m1/linux/RESULTS.md`). With `DWD_CROSSUI_SUITE=m2` it runs the M1
-flows as a regression check and then the M2 flows: menus and title, Options and coin selection,
-Tools, PSBT, Wallets / Security / About / transaction details, and a live `-choosedatadir` run
-(results: `docs/screenshots/m2/linux/RESULTS.md`). Before the GUI sessions it also runs
-`SwiftCrossUIPatchTests` (built as the test product). After the send
-and onboarding flows it checks that the app's main thread goes idle.
-
-### dash-qt command-line options
-
-Both apps accept the dash-qt options an SPV wallet can honour (`LaunchArgumentsParser`, QT-006):
-`-testnet`, `-regtest`, `-devnet=<name>`, `-chain=<chain>`, `-datadir=<dir>`, `-choosedatadir`,
-`-resetguisettings`, `-min`, `-splash`, `-lang=<lang>`, `-windowtitle=<name>`, `-help`, `-version`.
-Booleans take `=0`/`=1` and `-no<name>`. Arguments that do not start with `-` are `dash:` URIs and
-must come last. Node-only options (`-server`, `-prune`, …) are refused as unknown, with the
-option named.
-
-### Demo mode in both apps
-
-Demo mode runs the real screens and view models on in-memory services. Both apps use the same ones,
-`Sources/WalletDemo`, which implement the WalletRuntime service protocols.
-
-**Superseded for UI tests (U-07).** The Tauri app's renderer is tested on the fixture backend
-(`apps/desktop/src/fixture`, [`apps/desktop/README.md`](apps/desktop/README.md)), with DashPay, lock-report
-and error scenarios; new UI tests go there. `WalletDemo` and `--demo` stay for the Swift apps until U-08
-removes the Swift targets.
-
-- Units, `dash:` URIs, address checks, message verification, mnemonic checks and QR codes go
-  through the real Rust functions (`EngineFunctions` in WalletRuntime).
-- The rules are the engine's (`docs/contracts/m1-engine.md`), with its error codes: single-use,
-  wallet-bound grants with the §2.2 credential table; recipients validated offline (duplicates,
-  dust, network); payments that spend coins and reserve them while prepared; `send.no_peers`
-  releasing the coins in the `offline` scenario. `Tests/WalletDemoTests` checks this.
-- Scenarios: `funded` (unencrypted), `locked`, `fresh`/`onboarding` (no vault) and `offline`
-  (unencrypted, no peers, three days behind, so the sync overlay shows).
-- The sample wallets' addresses are valid but nobody holds their keys, so signing a message ends in
-  `message.address_no_key`; verification works.
-- Nothing touches the network, and nothing is sent.
-- DESIGN-opus §4.2's fixture-mode engine (IOS-001, milestone M5) is not built.
-
-### CLI
-
-`dwcli` (above) drives the engine without a UI: create, import, sync, send, coins, sign and
-verify, plus the M2 tools, imports, exports, backups and PSBT commands. The regtest suites
-(`l1-sync`, `l1-send`, `l2-tools`, `restore`) use it (`regtest/README.md`, "L1 suites").
+The repository still holds the first two UIs over the same engine: a SwiftUI macOS app and a SwiftCrossUI
+app (`Sources/`, `Apps/macOS`, `Package.swift`, built with `scripts/build-core.sh`). The Tauri app replaces
+them and they are retired after the `swift-final` tag (roadmap U-08). They are not part of a release.
+Their build, test and demo instructions are in this file's history before the 0.1 rewrite
+(`git log -p -- README.md`), and `scripts/linux-docker-test.sh` still runs their Linux tests in CI.
 
 ## Parity
 
 [`docs/parity.md`](docs/parity.md) lists every dash-qt (QT-xxx) and iOS (IOS-xxx) checklist item with its
-status, milestone and test reference.
+status, milestone and test reference. It is re-baselined on the Tauri app in 0.2.
 
 ## Checks
 
-- `scripts/lint-imports.sh` enforces the allowed-imports table per target
-  (also run by `RepoChecksTests`). A new target under `Sources/` needs an
-  entry there.
-- Generated bindings are never hand-edited; regenerate with `build-core.sh`.
-- GitHub Actions runs CI on Linux, macOS and Windows for `main` and `dw/**` pushes, a nightly regtest
-  run, and the UI-gate measurement runs ([`docs/ci.md`](docs/ci.md)). Run screenshots are downloadable
-  artifacts.
-
-## Status
-
-M2 (dash-qt L1 parity) is integrated on `main`, on top of M1. The engine, vault, runtime, view models
-and both apps are merged.
-
-**Engine.** M1 plus:
-
-- multiwallet open/close and load-on-startup, watch-only wallets from an account xpub, xpub export;
-- rescan (from birth or a height), reset chain data, birth-height editing, abandon, resend, unlock dust;
-- the fee policy (SPV: minimum relay fee at every dash-qt target) and dash-qt's coin-control estimate;
-- the local console (Core command names and result shapes, dash-qt redaction);
-- dash-qt import/export, `.dwbackup` backups and automatic backups, PSBT (see "Import formats, backups
-  and PSBT");
-- batched new-transaction events for notifications;
-- desktop OS services for Windows/Linux (`dw-desktop`).
-
-Full-node-only data (mempool, network traffic, smart fees) is never invented: the apps show "—" with
-"Requires full-node data source", or the feature disabled with the reason (DESIGN-opus §1.14).
-
-The regtest suites `l1-sync`, `l1-send`, `l2-tools` and `restore` check the engine against dashd v24.
-
-**Apps.** Both apps run the M1 screens and the M2 ones: dash-qt's menus, Options, Coin Selection and the
-Send-page coin control panel, PSBT Operations, the Tools window (Information, Console, Peers, Repair;
-Network Traffic disabled), Wallets, Security, About and command-line options, the data-directory chooser,
-splash, unreadable-settings question and shutdown window, and the transaction actions and details. The
-macOS app adds the Dock menu, the extended menu bar companion, the Overview shortcut bar and backup
-reminder, Touch ID quick unlock and saved window frames.
-
-**Not verified yet.**
-
-- The macOS XCUITests have not run: macOS needs an automation authorization.
-- No GUI has been exercised against a syncing node or with a real send; the M2 engine paths that demo
-  mode answers with `not_implemented` (PSBT, imports, exports, backups) were not exercised from either app.
-- Linux drop-downs are named after their selected option (SwiftCrossUI fork patch P1 needed).
-- Windows has not been built.
-
-[`docs/parity.md`](docs/parity.md) has the per-item status.
+- Generated bindings are never hand-edited: the Tauri bindings (`apps/desktop/src/api/generated`) come from
+  `cd rust && DW_UPDATE_BINDINGS=1 cargo test -p dw-app`, and CI fails when they are stale.
+- GitHub Actions runs CI on Linux, macOS and Windows for `main` and `dw/**` pushes, a nightly regtest run
+  and the UI-gate measurement runs ([`docs/ci.md`](docs/ci.md)). Run screenshots are downloadable artifacts.

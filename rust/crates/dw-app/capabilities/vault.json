@@ -18,6 +18,7 @@
     "allow-encrypt-vault",
     "allow-change-passphrase",
     "allow-authorize",
+    "allow-authorize-platform-send",
     "allow-authorize-set",
     "allow-revoke-grant",
     "allow-reveal-mnemonic",

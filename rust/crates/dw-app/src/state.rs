@@ -64,6 +64,12 @@ pub struct AppState {
     /// holding [`PaymentPolicy::gate`].
     #[cfg(test)]
     pub(crate) payment_set_pause: StdMutex<Option<(SetPause, Arc<Seam>)>>,
+    /// Test seam: `authorizePlatformSend` passes it between issuing the
+    /// grant (its id kept in `send_grant_issued`) and binding it.
+    #[cfg(test)]
+    pub(crate) send_bind_seam: StdMutex<Option<Arc<Seam>>>,
+    #[cfg(test)]
+    pub(crate) send_grant_issued: StdMutex<Option<String>>,
 }
 
 /// The single source of "require authentication for every payment" for
@@ -176,7 +182,7 @@ impl AppState {
     /// (an in-memory OS store, cheap KDF parameters).
     pub fn new<R: Runtime>(
         app: &AppHandle<R>,
-        launch: LaunchOptions,
+        mut launch: LaunchOptions,
         started: Instant,
         vault: VaultConfig,
         default_data_dir: impl FnOnce() -> Result<PathBuf, AppError>,
@@ -186,6 +192,9 @@ impl AppState {
             Some(dir) => dir.clone(),
             None => default_data_dir()?,
         };
+        // The network onboarding or Settings chose, unless `--network`
+        // named one (release 0.1).
+        launch.apply_network_choice(&data_root);
         // The lock before the engine: a second process on this root stops
         // here, before it opens any wallet database.
         let instance = match app.try_state::<InstanceLock>() {
@@ -235,6 +244,10 @@ impl AppState {
             payment_gate_seam: StdMutex::default(),
             #[cfg(test)]
             payment_set_pause: StdMutex::default(),
+            #[cfg(test)]
+            send_bind_seam: StdMutex::default(),
+            #[cfg(test)]
+            send_grant_issued: StdMutex::default(),
         })
     }
 

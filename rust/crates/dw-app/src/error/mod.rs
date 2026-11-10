@@ -18,6 +18,7 @@ mod engine;
 mod governance;
 mod nested;
 mod platform;
+mod rates;
 
 use serde::Serialize;
 use ts_rs::TS;
@@ -36,8 +37,9 @@ pub use nested::{
 };
 pub use platform::{
     AvatarCode, ContactCode, CreditsCode, IdentityCode, InvitationCode, NameCode, PlatformCode,
-    ProfileCode, RegistrationCode,
+    ProfileCode, RegistrationCode, ShieldedCode,
 };
+pub use rates::RatesCode;
 
 /// Error returned by every command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS, thiserror::Error)]
@@ -77,7 +79,9 @@ pub enum ErrorCode {
     Invitation(InvitationCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
+    Shielded(ShieldedCode),
     Governance(GovernanceCode),
+    Rates(RatesCode),
 }
 
 /// Declares a code enum: each variant serialises as its string, and
@@ -199,6 +203,12 @@ pub enum ErrorData {
         #[serde(with = "crate::dto::credits")]
         max: u64,
     },
+    /// `credits.send_out_of_range`: the least a Platform send may pay, in credits.
+    CreditMinimum {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        min: u64,
+    },
     /// `insufficient_credits`: the identity (Base58) whose balance is short.
     IdentityCredits {
         identity: String,
@@ -290,12 +300,15 @@ pub enum ErrorData {
     /// `governance.vote_rejected`: the check that failed;
     /// `governance.submit_refused`: why (`public`, `expired`, `fee_failed`,
     /// `in_flight`)
-    /// (mg-engine §4).
+    /// (mg-engine §4); `shielded.not_synced`: what Shielded is still
+    /// syncing (`account`, `tree`, `journal`, `core`, `startup`; m4 §2.13);
+    /// `credits.recipient_invalid`: why the address cannot be paid (m4 §2.12).
     Reason { reason: String },
     /// `tx_action_refused`: why the abandon or resend was refused.
     TxAction { refusal: TxActionRefusalName },
     /// `request_not_found`, `height_out_of_range`, `backup.unsupported_version`,
-    /// `psbt.too_large` (bytes): the number named.
+    /// `psbt.too_large` (bytes), `shielded.too_many_inputs` (the coins the
+    /// shield would spend; at most 50 fit): the number named.
     Number { value: u64 },
     /// `contact.details_too_long`: the details' DIP-15 encoding and its cap,
     /// in bytes.
@@ -308,6 +321,15 @@ pub enum ErrorData {
     KeysNetwork { mainnet: bool },
     /// `psbt.fee_rate_too_high`: the offending fee rate in duffs per kB.
     FeeRate { duffs_per_kb: u64 },
+    /// `shielded.not_active`: the network's protocol version and the one
+    /// the shielded pool needs.
+    Protocol {
+        protocol_version: u32,
+        activation_version: u32,
+    },
+    /// `shielded.pool_too_small`: the notes the network's shielded pool
+    /// holds and the number withdrawals need.
+    PoolNotes { notes: u64, required: u64 },
     /// `stuck_funding`: why Repair refused (E0-04 §6.5), and whether the
     /// same Repair may succeed later with nothing done by the user.
     StuckFunding {
@@ -473,7 +495,9 @@ into_code!(
     Invitation(InvitationCode),
     Avatar(AvatarCode),
     Credits(CreditsCode),
+    Shielded(ShieldedCode),
     Governance(GovernanceCode),
+    Rates(RatesCode),
 );
 
 #[cfg(test)]

@@ -7,7 +7,35 @@
 import type { AppError, AppEvent, ErrorCode } from "./generated/commands";
 import { ERROR_CODES } from "./generated/commands";
 import type { AuthGrant } from "./generated/AuthGrant";
+import type { CsvUnitName } from "./generated/CsvUnitName";
+import type { HistoryFilterRequest } from "./generated/HistoryFilterRequest";
+import type { HistorySortName } from "./generated/HistorySortName";
+import type { MoveToCoreOutcome } from "./generated/MoveToCoreOutcome";
+import type { MoveToCoreQuote } from "./generated/MoveToCoreQuote";
+import type { PlatformReceiveAddress } from "./generated/PlatformReceiveAddress";
+import type { PendingPlatformFund } from "./generated/PendingPlatformFund";
+import type { PlatformFundOutcome } from "./generated/PlatformFundOutcome";
+import type { PlatformFundQuote } from "./generated/PlatformFundQuote";
+import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
+import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
+import type { ChosenNetwork } from "./generated/ChosenNetwork";
+import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
+import type { PlatformActivity } from "./generated/PlatformActivity";
+import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance";
+import type { LockFinish } from "./generated/LockFinish";
+import type { LockKind } from "./generated/LockKind";
+import type { ShieldedActivity } from "./generated/ShieldedActivity";
+import type { ShieldedAddress } from "./generated/ShieldedAddress";
+import type { ShieldedSpendOutcome } from "./generated/ShieldedSpendOutcome";
+import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
+import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { ShieldOutcome } from "./generated/ShieldOutcome";
+import type { ShieldQuote } from "./generated/ShieldQuote";
+import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
 import type { Balances } from "./generated/Balances";
+import type { CurrencyRate } from "./generated/CurrencyRate";
+import type { RatesSettings } from "./generated/RatesSettings";
+import type { RatesView } from "./generated/RatesView";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
 import type { ContactQueryArgs } from "./generated/ContactQueryArgs";
@@ -37,6 +65,7 @@ import type { OpenedNetwork } from "./generated/OpenedNetwork";
 import type { RevealedMnemonic } from "./generated/RevealedMnemonic";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { TxDetails } from "./generated/TxDetails";
+import type { TxNoticeRow } from "./generated/TxNoticeRow";
 import type { VaultRecovery } from "./generated/VaultRecovery";
 import type { WalletSummary } from "./generated/WalletSummary";
 import type { AddressClass } from "./generated/AddressClass";
@@ -46,6 +75,13 @@ import type { ChangePolicy } from "./generated/ChangePolicy";
 import type { CoinJoinLimits } from "./generated/CoinJoinLimits";
 import type { CoinJoinSettings } from "./generated/CoinJoinSettings";
 import type { CoinJoinStatus } from "./generated/CoinJoinStatus";
+import type { MixedCoinsDestination } from "./generated/MixedCoinsDestination";
+import type { MixedCoinsSweepPlan } from "./generated/MixedCoinsSweepPlan";
+import type { MixedCoinsConsolidationPlan } from "./generated/MixedCoinsConsolidationPlan";
+import type { MixedShieldQuote } from "./generated/MixedShieldQuote";
+import type { StuckShieldFunding } from "./generated/StuckShieldFunding";
+import type { MixedCoinsResend } from "./generated/MixedCoinsResend";
+import type { MixedCoinsSweepResult } from "./generated/MixedCoinsSweepResult";
 import type { CoinSelectionSummary } from "./generated/CoinSelectionSummary";
 import type { CoinSource } from "./generated/CoinSource";
 import type { FeeMode } from "./generated/FeeMode";
@@ -167,6 +203,9 @@ export interface Backend {
   importWallet(mnemonic: string, bip39Passphrase: string | null, options: ImportOptions): Promise<string>;
   /** `walletId` is `null` only for `changeCredential` (vault.rs). */
   authorize(purpose: GrantPurposeSpec, walletId: string | null, credential: CredentialSpec): Promise<AuthGrant>;
+  /** A grant for the quoted Platform send `operation` alone (its planned debit); `platformSend`
+   * refuses any other grant for it. */
+  authorizePlatformSend(walletId: string, operation: string, credential: CredentialSpec): Promise<AuthGrant>;
   /** One credential check for several grants, all or none (E0-04: "Accept and pay"). */
   authorizeSet(purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): Promise<AuthGrant[]>;
   /** Redeems grants into a flow's lease; returns the lease id a write or a prepare takes. */
@@ -180,8 +219,67 @@ export interface Backend {
   recoverWithMnemonic(walletId: string, mnemonic: string, bip39Passphrase: string, newPassphrase: string): Promise<VaultRecovery>;
   dispatchStatus(walletId: string, artifact: string): Promise<DispatchStateName | null>;
   balance(walletId: string): Promise<Balances | null>;
+  // Lanes E1 and E2's commands; the optional reads answer `null` against a dw-app without them (api/pending.ts).
+  /** The network choice (`get_network_choice`, contract §8). */
+  networkChoice(): Promise<NetworkChoiceView | null>;
+  /** Saves the choice for the next start (`set_network_choice`); the window keeps its network. */
+  setNetworkChoice(network: ChosenNetwork): Promise<NetworkChoiceView>;
+  /** Where the wallet's shielded account stands (`shielded_status`, contract §2.13). */
+  shieldedStatus(walletId: string): Promise<ShieldedStatus | null>;
+  /** The account's receive address, for Receive and its QR. */
+  shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress>;
+  /** Core → Shielded: what `duffs` cost and buy. */
+  shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote>;
+  shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome>;
+  /** Applies a pending lock. */
+  resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome>;
+  /** The Core → Shielded locks Platform is not known to have applied; `null` while dw-app has no such command. */
+  unfinishedTransfers(walletId: string): Promise<UnfinishedTransfers | null>;
+  /** Finishes the unfinished transfer of `kind` at `txid`:`vout` under a `platformOp` grant. */
+  finishTransfer(walletId: string, kind: LockKind, txid: string, vout: number, grant: string): Promise<LockFinish>;
+  /** Shielded → Shielded; `credits` is a decimal string. */
+  shieldedSendQuote(walletId: string, to: string, credits: string): Promise<ShieldedSpendQuote>;
+  /** `confirmUnrecorded`: the user confirmed sending from a wallet with a lost-record spend (DEC-1057);
+   * without it the engine refuses with `shielded.unrecorded_spend`. */
+  shieldedSend(walletId: string, to: string, credits: string, memo: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome>;
+  /** Shielded → Core; `to` null: the wallet's next receive address. */
+  unshieldQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote>;
+  unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome>;
+  /** The account's activity, pending first (`offset`, `limit` ≤ 500). */
+  shieldedHistory(walletId: string, offset: number, limit: number): Promise<ShieldedActivity[] | null>;
+  /** The wallet's Platform addresses (`platform_addresses`, contract §2.12). */
+  platformAddresses(walletId: string): Promise<PlatformAddressBalance | null>;
+  /** Their activity, the newest first (`platform_activity`). */
+  platformActivity(walletId: string): Promise<PlatformActivity[] | null>;
+  /** What "Move to Dash wallet" takes and pays out (`platform_move_to_core_quote`). */
+  platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount): Promise<MoveToCoreQuote>;
+  /** Moves the Platform addresses' credits to `to`, one of the wallet's own receive addresses (the
+   * quote's), under `grant`. */
+  platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome>;
+  /** Reads the Platform addresses from the network now (`platform_addresses_sync`). */
+  platformAddressesSync(walletId: string): Promise<PlatformAddressBalance>;
+  /** The payment account's lowest unused Platform address (`platform_receive_address`), bech32m. */
+  platformReceiveAddress(walletId: string): Promise<PlatformReceiveAddress>;
+  /** What sending `amount` to the Platform address `to` takes (`platform_send_quote`); `retryOf`: the
+   * send this retries ("Retry this payment"), else `null`. */
+  platformSendQuote(walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): Promise<PlatformSendQuote>;
+  /** Sends the quoted `operation` (single use) from the Platform addresses under a fresh `platformOp` `grant` (`platform_send`). */
+  platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome>;
+  /** What "Add from Dash wallet" of `duffs` costs and adds (`platform_fund_quote`). */
+  platformFundQuote(walletId: string, duffs: number): Promise<PlatformFundQuote>;
+  /** Locks `duffs` of the Dash wallet and funds the wallet's Platform receive address under `grant` (`platform_fund`). */
+  platformFund(walletId: string, duffs: number, grant: string): Promise<PlatformFundOutcome>;
+  /** The locks not yet applied (`pending_platform_funds`); `null` while dw-app has no such command. */
+  pendingPlatformFunds(walletId: string): Promise<PendingPlatformFund[] | null>;
+  /** Applies a pending lock (`resume_platform_fund`). */
+  resumePlatformFund(walletId: string, txid: string, grant: string): Promise<PlatformFundOutcome>;
   syncStatus(): Promise<SyncStatus>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
+  /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);
+   * `typeNames` empty: dash-qt's English type names. */
+  exportHistoryCsv(walletId: string, filter: HistoryFilterRequest, sort: HistorySortName, unit: CsvUnitName, typeNames: string[], utcOffsetSecs: number): Promise<string>;
+  /** Notification rows for the transactions a `newTransactions` event names (unknown txids are skipped). */
+  txNotices(walletId: string, txids: string[]): Promise<TxNoticeRow[]>;
   txDetail(walletId: string, txid: string): Promise<TxDetails>;
   /** Which actions the detail sheet offers (Abandon, Resend). */
   txDetailExtras(walletId: string, txid: string): Promise<TxDetailExtrasInfo>;
@@ -192,7 +290,7 @@ export interface Backend {
   // Receive (U-03 D11).
   currentReceiveAddress(walletId: string): Promise<AddressInfo>;
   nextReceiveAddress(walletId: string, label: string | null): Promise<AddressInfo>;
-  createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null): Promise<ReceiveRequest>;
+  createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null, includeUsername: boolean | null): Promise<ReceiveRequest>;
   receiveRequests(walletId: string): Promise<ReceiveRequest[]>;
   deleteReceiveRequest(walletId: string, requestId: number): Promise<null>;
   /** The wallet's DashPay username for the Receive QR (DP3-03); `null` without one. */
@@ -231,6 +329,12 @@ export interface Backend {
   uiSettings(): Promise<UiSettings>;
   /** Saves them; dw-app also sets the window's theme unless `--theme` was given (D3). */
   setUiSettings(settings: UiSettings): Promise<UiSettings>;
+  // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.
+  ratesStatus(): Promise<RatesView>;
+  ratesCurrencies(): Promise<CurrencyRate[]>;
+  setRatesSettings(settings: RatesSettings): Promise<RatesView>;
+  /** "Update now": `rates.off` while no request may be made, `rates.throttled` within 30 s. */
+  refreshRates(): Promise<RatesView>;
   /** Encrypts an unencrypted vault with a `changeCredential` grant; the vault ends locked. */
   encryptVault(newPassphrase: string, grantId: string): Promise<LockStatus>;
   changePassphrase(oldPassphrase: string, newPassphrase: string): Promise<LockStatus>;
@@ -275,6 +379,23 @@ export interface Backend {
   coinjoinStatus(walletId: string): Promise<CoinJoinStatus>;
   startMixing(walletId: string): Promise<null>;
   stopMixing(walletId: string): Promise<null>;
+  /** "Move mixed coins" (IOS-057): the CoinJoin account's chunks and mixed split; refused while mixing. */
+  mixedCoinsSweepPlan(walletId: string, destination: MixedCoinsDestination): Promise<MixedCoinsSweepPlan>;
+  /** Runs the confirmed plan (`quoteId`); `coinjoin.plan_changed` when its coins changed. */
+  moveMixedCoins(walletId: string, destination: MixedCoinsDestination, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult>;
+  /** "Try again" on a chunk of unknown outcome: its recorded bytes again, never a new signature. */
+  resendMixedCoins(walletId: string, txid: string | null): Promise<MixedCoinsResend[]>;
+  /** The consolidation round before a move to Shielded of more coins than one lock takes (50). */
+  mixedCoinsConsolidationPlan(walletId: string): Promise<MixedCoinsConsolidationPlan>;
+  /** Runs the confirmed round (`quoteId`): each transaction pays a fresh address of the CoinJoin account. */
+  consolidateMixedCoins(walletId: string, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult>;
+  /** "Move mixed coins" to Shielded: every coin of the CoinJoin account in one asset lock. */
+  shieldMixedQuote(walletId: string): Promise<MixedShieldQuote>;
+  /** Runs it under a `spend` grant of the quote's `totalDuffs`; pending and finished as any shield. */
+  shieldMixedCoins(walletId: string, grant: string): Promise<ShieldOutcome>;
+  /** The moves into Shielded whose payment may have been sent, each with Repair's price
+   * (`resolveStuckFunding` with its `step` settles it). */
+  stuckShieldFundings(walletId: string): Promise<StuckShieldFunding[]>;
   dashpayStatus(walletId: string): Promise<DashPayStatus>;
   identities(walletId: string): Promise<IdentitySummary[]>;
   dashpayUnreadCount(walletId: string, identity: string): Promise<number>;

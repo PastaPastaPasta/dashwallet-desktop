@@ -134,6 +134,7 @@ impl Masternodes {
             // The fence from the keys to the row's write (BL-352, as MG-04b
             // D63): another call can't take the same keys or coins.
             let fence = s.coin_fence(wallet).await?;
+            let guarded = s.replay_guard(wallet, 0).await?;
             let ctx = s.protx_context(wallet).await?;
             let reg = s.resolve_registration(wallet, &request, &ctx, true).await?;
             let lease = s
@@ -164,6 +165,7 @@ impl Masternodes {
                 let exclude: HashSet<OutPoint> =
                     existing.iter().map(|(u, _, _)| u.outpoint).collect();
                 let coins = s.protx_candidates(&fence, &w, &exclude, None).await?;
+                s.replay_guard(wallet, guarded).await?;
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
                 let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
                     .map_err(EngineError::from)?;
@@ -290,11 +292,12 @@ impl Masternodes {
             build::check_request(&request, s.network.core_network())?;
             // The fence from the keys to the row's write (BL-352).
             let fence = s.coin_fence(wallet).await?;
+            let guarded = s.replay_guard(wallet, 0).await?;
             let ctx = s.protx_context(wallet).await?;
             let reg = s.resolve_registration(wallet, &request, &ctx, true).await?;
             let id = ops::new_id();
             let _flight = s.claim_operation(wallet, &id)?;
-            let row = s.prepared_row(wallet, &fence, &reg, &id, &request).await?;
+            let row = (s.prepared_row(wallet, &fence, &reg, &id, &request, guarded)).await?;
             let inputs = ops::decode_inputs(&row.fee_inputs);
             s.save_operation(wallet, row, inputs).await?;
             drop(fence);
@@ -442,6 +445,7 @@ impl Masternodes {
                 .map_err(|e| EngineError::Internal(format!("stored ProTx terms: {e}")))?;
             let reg = build::registration_of(&terms, s.network.core_network())?;
             let fence = s.coin_fence(wallet).await?;
+            let guarded = s.replay_guard(wallet, 0).await?;
             // The old inputs leave the row's locks first, so the new plan
             // may take the ones still unspent (its own holds don't count
             // against it); one another row holds stays locked (BL-346).
@@ -458,7 +462,7 @@ impl Masternodes {
             })
             .await?;
             let fresh = match s
-                .prepared_row(wallet, &fence, &reg, &operation, &request)
+                .prepared_row(wallet, &fence, &reg, &operation, &request, guarded)
                 .await
             {
                 Ok(fresh) => fresh,
@@ -563,6 +567,7 @@ impl Masternodes {
             let updating = s.masternodes.update_lock().await;
             // The fence from the keys to the row's write (BL-352).
             let fence = s.coin_fence(wallet).await?;
+            let guarded = s.replay_guard(wallet, 0).await?;
             let ctx = s.protx_context(wallet).await?;
             let up = s.resolve_update(wallet, &request, &ctx, true).await?;
             let lease = s
@@ -576,6 +581,7 @@ impl Masternodes {
                 let coins = s
                     .protx_candidates(&fence, &w, &HashSet::new(), None)
                     .await?;
+                s.replay_guard(wallet, guarded).await?;
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
                 let funding = plan_funding(&utxos, &up.outputs(), up.sized_payload(), CHANGE_LEN)
                     .map_err(EngineError::from)?;
@@ -870,6 +876,7 @@ impl NetworkSession {
         reg: &build::Registration,
         id: &str,
         request: &RegistrationRequest,
+        guarded: u32,
     ) -> Result<MasternodeOpRow, MasternodesError> {
         let Collateral::External { address, .. } = &reg.collateral else {
             return Err(EngineError::Internal("not an external collateral".into()).into());
@@ -879,6 +886,7 @@ impl NetworkSession {
         let coins = self
             .protx_candidates(fence, &w, &HashSet::new(), Some(id))
             .await?;
+        self.replay_guard(wallet, guarded).await?;
         let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
         let funding = plan_funding(&utxos, &reg.outputs(), reg.sized_payload(), CHANGE_LEN)
             .map_err(EngineError::from)?;

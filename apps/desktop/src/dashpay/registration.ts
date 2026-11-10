@@ -6,8 +6,10 @@
 // Copy follows Android `strings-dashpay.xml` (v11.9.1), adapted where the desktop differs.
 
 import { hasCode, isAppError } from "../api/backend";
+import { FLOW_NAME } from "../api/lockReport";
 import type { NameAvailability } from "../api/generated/NameAvailability";
 import type { FinishReport } from "../api/generated/FinishReport";
+import type { LockKind } from "../api/generated/LockKind";
 import type { NameOutcome } from "../api/generated/NameOutcome";
 import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
@@ -21,6 +23,19 @@ export const MAX_LABEL = 23;
 
 /** F4: `name_availability` waits for the typing to settle. */
 export const AVAILABILITY_DEBOUNCE_MS = 400;
+
+const UNREAD_KIND: Record<LockKind, string> = { shielded: "Shielded", platformAddress: "Platform" };
+/** The kinds whose transfers couldn't be read, `""` for none. */
+export const unreadText = (kinds: readonly LockKind[]): string =>
+  kinds.length > 0 ? `${kinds.map((k) => UNREAD_KIND[k]).join(" and ")} transfers couldn't be checked; try again.` : "";
+
+const KIND_NAME: Record<LockKind, string> = { shielded: "Shielded", platformAddress: FLOW_NAME.platformAddressFund };
+
+/** Each kind's part of a report that has an "Add from Dash wallet" row, so the two are told apart. */
+const byKindText = (r: FinishReport): string =>
+  r.byKind.some((k) => k.kind === "platformAddress")
+    ? ` ${r.byKind.map((k) => `${KIND_NAME[k.kind]}: ${k.completed} completed${k.stillPending > 0 ? `, ${k.stillPending} still pending` : ""}.`).join(" ")}`
+    : "";
 
 export const REG_COPY = {
   header: (n: 1 | 2, title: string) => `Step ${n} of 2 · ${title}`,
@@ -97,7 +112,8 @@ export const REG_COPY = {
     confirm: "Start a new registration",
     cancel: "Cancel",
   },
-  finished: (r: FinishReport) => `${r.resumed} resumed, ${r.completed} completed, ${r.stillPending} still pending.`,
+  finished: (r: FinishReport) =>
+    `${r.resumed} resumed, ${r.completed} completed, ${r.stillPending} still pending${r.alreadyUsed > 0 ? `, ${r.alreadyUsed} already used` : ""}.${byKindText(r)}${r.unread.length > 0 ? ` ${unreadText(r.unread)}` : ""}`,
 } as const;
 
 // ---------------------------------------------------------------------------------------------

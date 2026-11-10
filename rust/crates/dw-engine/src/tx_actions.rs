@@ -274,25 +274,44 @@ impl NetworkSession {
 
     /// Abandons `root` and its recorded descendants (checks done by the
     /// caller). Returns the abandoned txids.
-    async fn abandon_inner(
+    pub(crate) async fn abandon_inner(
         &self,
         manager: &Manager,
         wallet: WalletId,
         root: Txid,
     ) -> Result<BTreeSet<Txid>, EngineError> {
-        let outcome = {
+        #[cfg(test)]
+        let pause = self.hub.pause_abandon.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause
+                .reached
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            pause.release.notified().await;
+        }
+        // Planned on a copy under the lock that applies it, so the replay
+        // record stored before it covers what is abandoned.
+        let (outcome, checkpoint) = {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let info = wm
                 .get_wallet_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
+            let mut trial = info.core_wallet.clone();
+            let planned = trial
+                .abandon_transaction_with_spends(root, &BTreeMap::new())
+                .abandoned;
+            let checkpoint = self.abandon_rewind(wallet, &planned, &info.core_wallet);
+            if let Some(checkpoint) = checkpoint {
+                self.record_rewind_locked(wallet, info, checkpoint).await?;
+            }
             let outcome = info
                 .core_wallet
                 .abandon_transaction_with_spends(root, &BTreeMap::new());
             if !outcome.abandoned.is_empty() {
                 info.core_wallet.update_balance();
             }
-            outcome
+            (outcome, checkpoint)
         };
         // key-wallet refuses (returns nothing) when it holds the root as
         // settled.
@@ -304,14 +323,7 @@ impl NetworkSession {
             .iter()
             .filter_map(|t| self.hub.history.get(&wallet, t).map(|e| (*t, e.tx)))
             .collect();
-        let mut released: Vec<OutPoint> = txs
-            .iter()
-            .flat_map(|(_, tx)| tx.input.iter().map(|i| i.previous_output))
-            .filter(|o| !abandoned.contains(&o.txid))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        released.sort();
+        let released = self.released(wallet, &abandoned);
 
         let live = self.live()?;
         let persister = Arc::clone(&live.persister);
@@ -366,25 +378,77 @@ impl NetworkSession {
 
         // The released coins come back when the filter scan passes their
         // funding blocks again.
-        let rescan_from = released
-            .iter()
-            .filter_map(|o| self.hub.history.get(&wallet, &o.txid))
-            .filter_map(|e| e.context.block_info().map(|b| b.height()))
-            .min();
-        if let Some(height) = rescan_from {
-            let m = self.manager()?;
-            tokio::task::spawn_blocking(move || {
-                m.spv_rescan_filters_blocking(&wallet.0, height.saturating_sub(1))
-            })
-            .await?;
+        if let Some(checkpoint) = checkpoint {
+            self.rewind_recorded(manager, wallet, checkpoint).await?;
         }
-        // platform-wallet's balance mirror is only refreshed by wallet
-        // events, so the hub reads key-wallet's recomputed balance.
-        self.refresh_wallet_state_from_core(manager, wallet).await;
+        self.refresh_wallet_state(manager, wallet).await;
         let changed: Vec<Txid> = abandoned.iter().copied().collect();
         self.hub.pump.mark_history(wallet, Some(&changed));
         self.hub.pump.mark_balances(wallet);
         Ok(abandoned)
+    }
+
+    /// The coins abandoning `abandoned` releases: their inputs that none of
+    /// them created.
+    fn released(&self, wallet: WalletId, abandoned: &BTreeSet<Txid>) -> Vec<OutPoint> {
+        (abandoned.iter())
+            .filter_map(|t| self.hub.history.get(&wallet, t))
+            .flat_map(|e| e.tx.input.into_iter().map(|i| i.previous_output))
+            .filter(|o| !abandoned.contains(&o.txid))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    /// The checkpoint abandoning `abandoned` rewinds to: below the lowest
+    /// funding height of the wallet's coins it releases, or below the birth
+    /// height when a coin's funding block is unknown. Each transaction's
+    /// coins are the union of the wallet-owned inputs its key-wallet records
+    /// name and those the history's record names (key-wallet holds none for
+    /// a send an earlier session recorded, and may name fewer); one that
+    /// neither holds replays from the birth height. No coins released, no
+    /// rewind.
+    fn abandon_rewind(
+        &self,
+        wallet: WalletId,
+        abandoned: &BTreeSet<Txid>,
+        info: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    ) -> Option<u32> {
+        let birth = info.birth_height().saturating_sub(1);
+        let own = |tx: &Transaction, indexes: &mut dyn Iterator<Item = u32>| -> Vec<OutPoint> {
+            indexes
+                .filter_map(|i| tx.input.get(i as usize))
+                .map(|i| i.previous_output)
+                .collect()
+        };
+        let mut released = BTreeSet::new();
+        for t in abandoned {
+            let records: Vec<_> = (info.accounts.all_accounts().into_iter())
+                .filter_map(|a| a.transactions().get(t))
+                .collect();
+            let entry = self.hub.history.get(&wallet, t);
+            if records.is_empty() && entry.is_none() {
+                return Some(birth);
+            }
+            let recorded = (records.iter())
+                .flat_map(|r| own(&r.transaction, &mut r.input_details.iter().map(|i| i.index)));
+            let held = (entry.iter()).flat_map(|e| own(&e.tx, &mut e.own_inputs.keys().copied()));
+            released.extend(
+                recorded
+                    .chain(held)
+                    .filter(|o| !abandoned.contains(&o.txid)),
+            );
+        }
+        let mut lowest = None::<u32>;
+        for o in &released {
+            let funded = (self.hub.history.get(&wallet, &o.txid))
+                .and_then(|e| e.context.block_info().map(|b| b.height()));
+            match funded {
+                Some(h) => lowest = Some(lowest.map_or(h, |l| l.min(h))),
+                None => return Some(birth),
+            }
+        }
+        lowest.map(|h| h.saturating_sub(1))
     }
 
     /// dash-qt "Resend transaction" (QT-091): hands the stored transaction
@@ -426,6 +490,11 @@ impl NetworkSession {
                 }
                 outcome
             });
+            {
+                let mut resends = this.resends.lock().unwrap_or_else(|p| p.into_inner());
+                resends.retain(|r| !r.is_finished());
+                resends.push(task.abort_handle());
+            }
             match tokio::time::timeout(RESEND_HANDOFF, &mut task).await {
                 Ok(Ok(Err(platform_wallet::PlatformWalletError::TransactionBroadcast(_)))) => {
                     return Err(EngineError::NoPeers);

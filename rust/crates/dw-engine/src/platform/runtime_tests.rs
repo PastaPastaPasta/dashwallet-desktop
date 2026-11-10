@@ -389,6 +389,64 @@ fn give_identity(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) {
     });
 }
 
+/// The Platform loops a session on [`blackhole`] points at it: each pass
+/// any of them has in flight at a stop may still be waiting at the deadline.
+const BLACKHOLED_LOOPS: [&str; 5] = [
+    "identity_sync",
+    "dashpay_sync",
+    "dpns_sync",
+    "platform_address_sync",
+    "shielded_sync",
+];
+
+/// Whether `stopped` is the stop's refusal naming the loops still in flight
+/// at its deadline (`bringup.rs` `stop_platform`): at least one, and only
+/// [`BLACKHOLED_LOOPS`]. Which of them are still in flight depends on timing.
+fn names_only_stuck_loops(stopped: &Result<(), EngineError>) -> bool {
+    let Err(EngineError::Sdk(detail)) = stopped else {
+        return false;
+    };
+    let Some(names) = detail.strip_prefix("SPV stopped, but this Platform work did not end: ")
+    else {
+        return false;
+    };
+    !names.is_empty() && names.split(", ").all(|n| BLACKHOLED_LOOPS.contains(&n))
+}
+
+/// 0.1.x row 66: the stop names whichever loops are still in flight, and on
+/// CI that was `dpns_sync` alone, with the DashPay pass already ended.
+#[test]
+fn the_stop_check_takes_whichever_blackholed_loops_are_stuck() {
+    let refused = |names: &str| -> Result<(), EngineError> {
+        Err(EngineError::Sdk(format!(
+            "SPV stopped, but this Platform work did not end: {names}"
+        )))
+    };
+    for names in [
+        "dpns_sync",
+        "dashpay_sync",
+        "shielded_sync",
+        "identity_sync, dpns_sync, platform_address_sync",
+    ] {
+        assert!(names_only_stuck_loops(&refused(names)), "{names}");
+    }
+    for names in [
+        "",
+        "a vault key read",
+        "dpns_sync, a vault key read",
+        "dpns",
+    ] {
+        assert!(!names_only_stuck_loops(&refused(names)), "{names:?}");
+    }
+    assert!(!names_only_stuck_loops(&Ok(())));
+    assert!(!names_only_stuck_loops(&Err(EngineError::Sdk(
+        "dpns_sync".into()
+    ))));
+    assert!(!names_only_stuck_loops(&Err(EngineError::Wallet(
+        "SPV stopped, but this Platform work did not end: dpns_sync".into()
+    ))));
+}
+
 /// Review DW-E0-05-r1-gpt M1: a loop pass that outlives the drain deadline
 /// makes `stop_spv` fail visibly (SPV is stopped anyway), and the next
 /// `start_spv` does not wait for that pass: the drain is retried inside the
@@ -417,10 +475,7 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
         "stop with a stuck pass took {:?}: {stopped:?}",
         stopping.elapsed()
     );
-    assert!(
-        matches!(&stopped, Err(EngineError::Sdk(detail)) if detail.contains("dashpay_sync")),
-        "{stopped:?}"
-    );
+    assert!(names_only_stuck_loops(&stopped), "{stopped:?}");
     assert_eq!(s.spv_state().unwrap(), SpvState::Stopped);
 
     let starting = Instant::now();
@@ -429,6 +484,40 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     eprintln!("the next start_spv took {took:?}");
     assert!(took < Duration::from_millis(100), "{took:?}");
     assert_eq!(s.spv_state().unwrap(), SpvState::Starting);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// E0-04 Q15, ruling (c), DEC-1032: the library re-sends a stored
+/// unconfirmed shielded spend only from its coordinator's sync pass
+/// (`coordinator.rs:1431`). The library's own loop never runs; the
+/// supervisor drives the passes (`shielded_pool::guarded_pass`) while the
+/// session is open, and the close seals the coordinator: no pass starts
+/// after it, the engine's nor a direct one.
+#[test]
+fn the_close_ends_the_shielded_passes_that_redrive_spends() {
+    let _serial = serial();
+    let dir = dw_testutil::private_tempdir();
+    let hole = blackhole();
+    let (engine, s) = session_on(dir.path(), &hole, false);
+    let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+    give_identity(&engine, &s, id);
+    engine.block_on(s.start_spv()).unwrap();
+    let manager = s.manager().unwrap();
+    // The supervisor's pass, stuck on the silent nodes.
+    wait_until("a shielded pass in flight", Duration::from_secs(30), || {
+        manager.shielded_sync().is_syncing()
+    });
+    assert!(
+        !manager.shielded_sync().is_running(),
+        "the library's loop never runs"
+    );
+
+    let network = s.network.clone();
+    assert!(engine.block_on(engine.close_network(network)).unwrap());
+    assert!(engine.block_on(s.enter()).is_err(), "no engine pass starts");
+    assert!(!manager.shielded_sync().is_running());
+    let pass = engine.block_on(manager.shielded_sync().sync_now(true));
+    assert!(pass.is_empty() && pass.sync_unix_seconds == 0, "{pass:?}");
     engine.block_on(engine.shutdown()).unwrap();
 }
 
@@ -698,8 +787,15 @@ fn a_start_during_an_uncommitted_restore_skips_its_wallet() {
             engine.block_on(s.restore_backup(path, Some(Zeroizing::new(b"bk".to_vec()))))
         })
     };
+    // Admitted: a bring-up status recorded for it, or the catch-up mark its
+    // first bring-up writes (`note_first_bring_up`). A task alone is not:
+    // the contest watch runs one for every wallet of the manager, a held
+    // restore's included, and that pass does nothing for a wallet with no
+    // catch-up (`contest_watch.rs` `watch_contests`). Counting it failed
+    // this test whenever the start's first contest pass was in flight at an
+    // assertion (CI 41289102488).
     let admitted = |s: &NetworkSession| {
-        s.platform.startup_of(&a).is_some() || guard(&s.platform.tasks).contains_key(&a)
+        s.platform.startup_of(&a).is_some() || engine.block_on(s.has_catch_up(a))
     };
 
     // A failing restore, held after registering `a`; SPV starts meanwhile.
@@ -1086,5 +1182,62 @@ fn the_supervisor_runs_the_contest_watch() {
         kinds()[1],
         ("contest_locked".to_string(), "bob@5".to_string())
     );
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// CI 41289102488 (macOS): a reopen right after a close was refused with
+/// `StorageInUse`. The persister's in-process claim goes with its last
+/// reference, and the close returned while another was still held
+/// (platform-wallet's drop names a drain, a wallet handle or an in-flight
+/// read). The close now waits for it, within `PERSISTER_RELEASE`; a holder
+/// that never lets go still keeps the database.
+#[test]
+fn a_close_returns_once_the_wallet_database_is_released() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session(dir.path());
+    let open = || {
+        engine.block_on(engine.open_network(
+            DashNetwork::Regtest,
+            SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+                ..Default::default()
+            },
+        ))
+    };
+    let close = || {
+        assert!(
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        )
+    };
+
+    // A reference held a moment past the close, as an in-flight read's.
+    let held = s.live().unwrap().persister;
+    drop(s);
+    let reader = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        drop(held);
+    });
+    close();
+    let s = open().expect("the close waited for the database");
+    reader.join().unwrap();
+
+    // One held for good: the close returns within its bound, and the
+    // database stays in use until it goes.
+    let held = s.live().unwrap().persister;
+    drop(s);
+    let started = Instant::now();
+    close();
+    assert!(
+        started.elapsed() < crate::session::PERSISTER_RELEASE + Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(matches!(open(), Err(EngineError::StorageInUse(_))));
+    drop(held);
+    open().unwrap();
     engine.block_on(engine.shutdown()).unwrap();
 }

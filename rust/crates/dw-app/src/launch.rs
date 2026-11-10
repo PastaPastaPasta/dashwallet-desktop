@@ -14,7 +14,12 @@ use crate::dto::ThemeName;
 pub struct LaunchOptions {
     /// Data root; `None` = the platform app-data directory.
     pub data_dir: Option<PathBuf>,
+    /// The network `openNetwork` opens when it names none: `--network`, or
+    /// else the saved choice (`dw_engine::network_choice`, read once the
+    /// data root is known), or else mainnet.
     pub network: DashNetwork,
+    /// `--network` was given: it wins over the saved choice.
+    pub network_given: bool,
     /// Render the four gate screens, write every `data-testid` box to this
     /// file and exit (DASHPAY §2.1 G-01). This and the next two are set only
     /// in a build with the `selftest` feature; elsewhere their options are
@@ -36,8 +41,9 @@ pub struct LaunchOptions {
     /// `dashpay:`), as the OS passes a clicked link. The shell takes them
     /// into its queue at start-up (`shell::links`).
     pub links: Vec<String>,
-    /// Start SPV once the network is open.
-    pub sync: bool,
+    /// `--sync` (`Some(true)`) or `--no-sync` (`Some(false)`); see
+    /// [`LaunchOptions::starts_spv`].
+    pub sync: Option<bool>,
     pub spv_peers: Vec<String>,
     pub dapi_addresses: Vec<String>,
     /// The trusted quorum service, instead of the network's default.
@@ -67,12 +73,13 @@ impl Default for LaunchOptions {
         Self {
             data_dir: None,
             network: DashNetwork::Mainnet,
+            network_given: false,
             selftest: None,
             selftest_pause_ms: 0,
             selftest_passphrase_file: None,
             selftest_link_trace: None,
             links: Vec::new(),
-            sync: false,
+            sync: None,
             spv_peers: Vec::new(),
             dapi_addresses: Vec::new(),
             quorum_url: None,
@@ -90,8 +97,11 @@ pub const USAGE: &str = "\
 usage: dash-wallet [options] [link]
   link                   a dash:, pay:, dashwallet: or dashpay: link to open
   --datadir <dir>        data root (default: the platform app-data directory)
-  --network <name>       mainnet | testnet | regtest | devnet-<name> (default mainnet)
-  --sync                 start SPV after opening the network
+  --network <name>       mainnet | testnet | regtest | devnet-<name> (default: the
+                         network chosen in the app, else mainnet)
+  --sync                 start SPV after opening the network (the default on
+                         mainnet and testnet)
+  --no-sync              do not start SPV (tests, CI)
   --spv-peer <ip:port>   connect SPV to this peer only (repeatable)
   --dapi <url>           DAPI endpoint (repeatable)
   --quorum-url <url>     trusted quorum service
@@ -125,6 +135,31 @@ pub fn usage() -> String {
     return format!("{USAGE}{SELFTEST_USAGE}{ENV_USAGE}");
     #[cfg(not(feature = "selftest"))]
     format!("{USAGE}{ENV_USAGE}")
+}
+
+impl LaunchOptions {
+    /// Whether opening the launch network starts SPV: `--sync` or
+    /// `--no-sync` when given, else on for mainnet and testnet (release 0.1:
+    /// sync on by default) and off for the developer networks, whose
+    /// launches name their peers and pass `--sync` (the self-test and E2E
+    /// jobs open regtest without it).
+    pub fn starts_spv(&self) -> bool {
+        self.sync.unwrap_or(matches!(
+            self.network,
+            DashNetwork::Mainnet | DashNetwork::Testnet
+        ))
+    }
+
+    /// Opens the saved network choice of `root` unless `--network` was
+    /// given.
+    pub fn apply_network_choice(&mut self, root: &std::path::Path) {
+        if self.network_given {
+            return;
+        }
+        if let Some(choice) = dw_engine::network_choice::read_network_choice(root) {
+            self.network = choice.network();
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -166,8 +201,12 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<ParseOutcome, St
         match arg.as_str() {
             "--help" | "-h" => return Ok(ParseOutcome::Help),
             "--datadir" => opts.data_dir = Some(PathBuf::from(value("--datadir")?)),
-            "--network" => opts.network = parse_network(&value("--network")?)?,
-            "--sync" => opts.sync = true,
+            "--network" => {
+                opts.network = parse_network(&value("--network")?)?;
+                opts.network_given = true;
+            }
+            "--sync" => opts.sync = Some(true),
+            "--no-sync" => opts.sync = Some(false),
             "--spv-peer" => opts.spv_peers.push(value("--spv-peer")?),
             "--dapi" => opts.dapi_addresses.push(value("--dapi")?),
             "--quorum-url" => opts.quorum_url = Some(value("--quorum-url")?),
@@ -278,7 +317,7 @@ mod tests {
                 name: "paloma".into()
             }
         );
-        assert!(o.sync && o.no_platform);
+        assert!(o.network_given && o.starts_spv() && o.no_platform);
         assert_eq!(o.spv_peers, ["127.0.0.1:19899"]);
         assert_eq!(o.dapi_addresses, ["https://127.0.0.1:2443"]);
         assert_eq!(o.quorum_url.as_deref(), Some("https://127.0.0.1:22444"));
@@ -286,6 +325,38 @@ mod tests {
         assert_eq!(o.initial_protocol_version, Some(9));
         assert_eq!(o.theme, Some(ThemeName::Dark));
         assert_eq!(o.window_size, Some((1000, 620)));
+    }
+
+    #[test]
+    fn spv_starts_by_default_on_mainnet_and_testnet_only() {
+        assert!(run(&[]).starts_spv());
+        assert!(run(&["--network", "testnet"]).starts_spv());
+        assert!(!run(&["--no-sync"]).starts_spv());
+        assert!(!run(&["--network", "testnet", "--no-sync"]).starts_spv());
+        // The developer networks keep `--sync` (the self-test and E2E jobs
+        // open regtest without it).
+        assert!(!run(&["--network", "regtest"]).starts_spv());
+        assert!(run(&["--network", "regtest", "--sync"]).starts_spv());
+        assert!(!run(&["--network", "devnet-paloma"]).starts_spv());
+        // The last of the two wins.
+        assert!(run(&["--no-sync", "--sync"]).starts_spv());
+    }
+
+    #[test]
+    fn the_saved_network_opens_unless_a_flag_names_one() {
+        let root = tempfile::tempdir().unwrap();
+        let choose = |c| dw_engine::network_choice::write_network_choice(root.path(), c).unwrap();
+        choose(dw_engine::network_choice::NetworkChoice::Testnet);
+        let mut o = run(&[]);
+        o.apply_network_choice(root.path());
+        assert_eq!(o.network, DashNetwork::Testnet);
+        assert!(o.starts_spv());
+        let mut o = run(&["--network", "mainnet"]);
+        o.apply_network_choice(root.path());
+        assert_eq!(o.network, DashNetwork::Mainnet);
+        let mut o = run(&[]);
+        o.apply_network_choice(&root.path().join("missing"));
+        assert_eq!(o.network, DashNetwork::Mainnet);
     }
 
     #[test]

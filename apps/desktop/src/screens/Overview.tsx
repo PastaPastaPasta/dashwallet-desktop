@@ -1,58 +1,84 @@
-// Overview (Home), UX-SPEC §4.5: hero band with the balance and breakdown strip, the shortcut
-// card straddling its edge, the DashPay and CoinJoin cards (DP1-08, U-06), the frequent contacts
+// Overview (Home), UX-SPEC §4.5: hero band with the balance, its fiat value (MP-01) and breakdown
+// strip, the shortcut card straddling its edge, the one-time price disclosure, the DashPay and
+// CoinJoin cards (DP1-08, U-06), the frequent contacts
 // (DP3-07), then the recent history in day-group cards.
 
-import { useEffect } from "react";
+import { Fragment, useEffect, type ReactNode } from "react";
 import type { Balances } from "../api/generated/Balances";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
-import { useBackend, useBalance, useHistory, useSyncStatus, type HistoryFilter } from "../api/queries";
-import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
+import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, type HistoryFilter } from "../api/queries";
+import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
 import { useStatusInputs } from "../dashpay/queries";
 import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
+import { RatesConsentCard } from "../fiat/consent";
+import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
+import { coreSubtitle, homeBalance, POOL_ROWS } from "../format/homeBalance";
 import { isSyncing, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
 import { buyCredits } from "./dashpay/MyProfile";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
+import { PlatformMoveCard } from "./PlatformMoveSheet";
+import { ShieldedCard } from "./ShieldedSheet";
+import { TransferSheet, useTransferPools } from "./TransferSheet";
+import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
+import { defaultRoute, transferFor, TRANSFER_COPY } from "../transfer/model";
 
 /** dash-qt's overview shows this many recent transactions. */
 const RECENT_COUNT = 5;
 const RECENT_FILTER: HistoryFilter = { categories: [], text: null, sort: "newestFirst" };
 
-function BreakdownCell({ title, subtitle, amount, unitName, testId }: { title: string; subtitle: string; amount: string; unitName: string; testId: string }) {
+/** `amount` null: not known, shown as "—" with no unit; `undefined`: still being read. */
+function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { title: string; subtitle: string; amount: string | null | undefined; unitName: string; testId: string; fiat?: ReactNode }) {
   return (
     <div className="breakdown-cell" data-testid={testId}>
       <span className="breakdown-text">
         <span className="breakdown-title">{title}</span>
         <span className="breakdown-subtitle">{subtitle}</span>
       </span>
-      <AmountText className="breakdown-amount" text={amount} unitName={unitName} />
+      {amount === null || amount === undefined ? (
+        <span className="breakdown-amount">
+          <span aria-hidden="true">{amount === null ? "—" : "…"}</span>
+          <VisuallyHidden>{amount === null ? "not available" : "loading"}</VisuallyHidden>
+        </span>
+      ) : fiat ? (
+        <span className="breakdown-amounts">
+          <AmountText className="breakdown-amount" text={amount} unitName={unitName} />
+          {fiat}
+        </span>
+      ) : (
+        <AmountText className="breakdown-amount" text={amount} unitName={unitName} />
+      )}
     </div>
   );
 }
 
-function BalanceHero({ balances, network, syncing }: { balances: Balances | null; network: NetworkInfo; syncing: boolean }) {
+function BalanceHero({ balances, shielded, platform, network, syncing }: { balances: Balances | null; shielded: number | null | undefined; platform: number | null | undefined; network: NetworkInfo; syncing: boolean }) {
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
-  const fmt = (duffs: number) => (discreet ? shown.masked() : shown.floored(duffs));
+  const fmt = (duffs: number) => (discreet ? shown.masked() : shown.compact(duffs));
   // dash-qt's `.withUnit` tooltip on amounts (UX-SPEC §5.1); none while masked.
   const full = (duffs: number) => (discreet ? undefined : shown.withUnit(duffs));
   const unit = shown.name;
+  const home = balances && homeBalance(balances, shielded, platform);
+  // Still being read, as against not known: the row waits instead of saying "—".
+  const reading = { core: false, shielded: shielded === undefined, platform: platform === undefined };
+  const fiat = useFiat();
   return (
     <section className="hero" data-testid="hero" aria-label="Balance">
       {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}
       <span className="hero-caption" aria-hidden={!syncing}>
         {syncing ? "Syncing Balance" : " "}
       </span>
-      {balances ? (
+      {home ? (
         <button
           type="button"
           className="hero-amount"
@@ -60,7 +86,7 @@ function BalanceHero({ balances, network, syncing }: { balances: Balances | null
           title={discreet ? "Click to show balance" : "Click to hide balance"}
           onClick={() => ui.set({ discreet: !discreet })}
         >
-          <AmountText text={fmt(balances.total)} unitName={unit} title={full(balances.total)} />
+          <AmountText text={fmt(home.total)} unitName={unit} title={full(home.total)} />
         </button>
       ) : (
         <div className="hero-amount hero-unknown" data-testid="hero-amount" title="Not available until sync completes">
@@ -68,26 +94,48 @@ function BalanceHero({ balances, network, syncing }: { balances: Balances | null
           <span className="hero-unknown-caption">Balance unavailable</span>
         </div>
       )}
-      {balances && (
+      {home && <HeroFiat fiat={fiat} duffs={home.total} hidden={discreet} />}
+      {home && balances && (
         <div className="hero-breakdown" data-testid="hero-breakdown">
-          <BreakdownCell title="Available" subtitle="Spendable now" amount={fmt(balances.confirmed)} unitName={unit} testId="breakdown-available" />
-          <span className="breakdown-divider" aria-hidden="true" />
-          <BreakdownCell title="Pending" subtitle="Awaiting confirmation" amount={fmt(balances.unconfirmed)} unitName={unit} testId="breakdown-pending" />
-          {balances.immature > 0 && (
-            <>
-              <span className="breakdown-divider" aria-hidden="true" />
-              <BreakdownCell
-                title="Immature"
-                subtitle="Mining/masternode rewards maturing"
-                amount={fmt(balances.immature)}
-                unitName={unit}
-                testId="breakdown-immature"
-              />
-            </>
-          )}
+          {POOL_ROWS.map((row, i) => {
+            const duffs = home.pools[row.pool];
+            // Core: what is still arriving shows under it; the others say when they are not known.
+            const subtitle = row.pool === "core" ? coreSubtitle(balances, fmt, row.subtitle) : row.subtitle;
+            return (
+              <Fragment key={row.pool}>
+                {i > 0 && <span className="breakdown-divider" aria-hidden="true" />}
+                <BreakdownCell
+                  title={row.title}
+                  subtitle={subtitle}
+                  amount={duffs !== null ? fmt(duffs) : reading[row.pool] ? undefined : null}
+                  unitName={unit}
+                  testId={`breakdown-${row.pool}`}
+                  fiat={duffs !== null && <FiatLine fiat={fiat} duffs={duffs} hidden={discreet} className="breakdown-fiat" testId={`breakdown-${row.pool}-fiat`} />}
+                />
+              </Fragment>
+            );
+          })}
         </div>
       )}
     </section>
+  );
+}
+
+/** The hero's fiat line and what is said about prices (MP-01): nothing on test networks or with
+ * prices off, so the band keeps its height there. Discreet mode hides the number, not the note. */
+function HeroFiat({ fiat, duffs, hidden }: { fiat: Fiat; duffs: number; hidden: boolean }) {
+  const note = ratesNote(fiat.view);
+  const text = hidden ? null : fiat.text(duffs);
+  if (text === null && note === null) return null;
+  return (
+    <p className="hero-fiat" data-testid="hero-fiat-row">
+      {text !== null && <FiatLine fiat={fiat} duffs={duffs} testId="hero-fiat" />}
+      {note && (
+        <span className={`hero-fiat-note is-${note.tone}`} data-testid="hero-rates-note" title={note.title}>
+          {note.text}
+        </span>
+      )}
+    </p>
   );
 }
 
@@ -99,14 +147,16 @@ function openPay(focusAddress: boolean) {
 
 // U-03 D16: the mobile shortcut bar. The desktop has no camera, so Scan QR opens the address
 // field to paste into, as U-01 routes a scanQr link; Back up comes with the recovery phrase (U-02).
-const SHORTCUTS: { id: string; icon: UsedIcon; title: string; run: (() => void) | null; why?: string }[] = [
+// Transfer opens the sheet at Dash wallet → Shielded, or → Platform when Shielded is not active.
+const SHORTCUTS: { id: string; icon: UsedIcon; title: string; run: ((transfer: () => void) => void) | null; why?: string }[] = [
   { id: "receive", icon: "shortcutReceive", title: "Receive", run: () => navigate("receive") },
   { id: "send", icon: "shortcutSend", title: "Send", run: () => openPay(false) },
+  { id: "transfer", icon: "transfer", title: TRANSFER_COPY.shortcut, run: (transfer) => transfer() },
   { id: "scan", icon: "shortcutScanQR", title: "Scan QR", run: () => openPay(true) },
   { id: "backup", icon: "shortcutBackup", title: "Back up", run: null, why: "Backing up the recovery phrase is not available yet" },
 ];
 
-function ShortcutCard() {
+function ShortcutCard({ onTransfer }: { onTransfer: () => void }) {
   return (
     <nav className="shortcut-card" aria-label="Shortcuts" data-testid="shortcut-card">
       {SHORTCUTS.map((s) => (
@@ -117,7 +167,7 @@ function ShortcutCard() {
           data-testid={`shortcut-${s.id}`}
           aria-disabled={s.run ? undefined : "true"}
           title={s.why}
-          onClick={() => s.run?.()}
+          onClick={() => s.run?.(onTransfer)}
         >
           <Icon id={s.icon} size={46} className="shortcut-icon" />
           <span className="shortcut-title">{s.title}</span>
@@ -158,6 +208,7 @@ function HomeFrequentOf({ walletId, identity }: { walletId: string; identity: st
 
 export function Overview({ walletId, network, onOpen }: { walletId: string; network: NetworkInfo; onOpen: (row: TxRow) => void }) {
   const balance = useBalance(walletId);
+  const pools = usePoolBalances(walletId);
   const sync = useSyncStatus();
   const recent = useHistory(walletId, RECENT_FILTER, RECENT_COUNT);
   const discreet = useUi((s) => s.discreet);
@@ -165,6 +216,9 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   const ctx = useRowContext(network);
   const syncing = !!sync.data && isSyncing(sync.data);
   const percent = sync.data ? syncPercent(sync.data) : null;
+  const b = useBackend();
+  const transferPools = useTransferPools(walletId, network);
+  const transfer = transferFor(b, walletId);
 
   // Cold start (U5): the first frame that shows the balance and history (`mark` is idempotent).
   useEffect(() => {
@@ -174,11 +228,16 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   return (
     <main className="page page-overview" data-testid="page-home">
       <div className="hero-band" data-testid="hero-band">
-        <BalanceHero balances={balance.data ?? null} network={network} syncing={syncing} />
-        <ShortcutCard />
+        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} syncing={syncing} />
+        <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">
+        <RatesConsentCard network={network} />
         <HomeDashPayCard walletId={walletId} network={network} />
+        <ShieldedCard walletId={walletId} network={network} />
+        <PlatformMoveCard walletId={walletId} network={network} platform={pools.platform} dustCredits={pools.platformDust} />
+        <UnfinishedTransfersCard walletId={walletId} network={network} />
+        <TransferSheet walletId={walletId} network={network} />
         <CoinJoinCard walletId={walletId} network={network} />
         {/* Who the wallet pays most is payment history: discreet mode hides it too (D8). */}
         {!discreet && <HomeFrequent walletId={walletId} />}

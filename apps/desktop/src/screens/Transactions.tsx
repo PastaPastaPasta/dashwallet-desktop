@@ -9,16 +9,32 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
-import { useBackend, useHistory } from "../api/queries";
+import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, type HistoryFilter } from "../api/queries";
+import { fileErrorText } from "../app/files";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
-import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext } from "../components/history";
+import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
+import { exportHistory } from "../history/exportCsv";
+import { filterExtra, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
 import { DATE_CHOICES, dateRange, type DateChoice } from "../format/tx";
 
 const PAGE_SIZE = 200;
 const SEARCH_DEBOUNCE_MS = 250;
+
+/** A Platform or Shielded row among the Core ones: titled and tagged, and it opens nothing. */
+const decorateSource = (row: TxRow): RowDecor => {
+  const source = rowSource(row);
+  if (!source) return {};
+  const replaced = isReplacedRow(row);
+  return {
+    title: sourceRowTitle(row),
+    tag: SOURCE_TAG[source],
+    readOnly: true,
+    ...(replaced ? { note: SourceRowText.replaced, hideAmount: true } : isMayLandRow(row) ? { note: SourceRowText.mayLand } : {}),
+  };
+};
 
 const CATEGORIES: { id: string; title: string; categories: TxCategoryName[] }[] = [
   { id: "all", title: "All", categories: [] },
@@ -57,10 +73,41 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   // List mode always shows the newest first (it groups by day); Table mode sorts.
   const order = mode === "table" ? sort : "newestFirst";
   // Query keys are hashed structurally, so a fresh filter object per render is fine.
-  const history = useHistory(walletId, { categories: category.categories, text: text || null, sort: order, ...range, ...(minAmount ? { minAmount } : {}) }, PAGE_SIZE);
-  const rows = useMemo(() => history.data?.pages.flatMap((p) => p.rows) ?? [], [history.data]);
-  const total = history.data?.pages[0]?.totalMatching ?? null;
+  const filter: HistoryFilter = { categories: category.categories, text: text || null, sort: order, ...range, ...(minAmount ? { minAmount } : {}) };
+  const history = useHistory(walletId, filter, PAGE_SIZE);
+  const coreRows = useMemo(() => history.data?.pages.flatMap((p) => p.rows) ?? [], [history.data]);
+  // Platform-address and Shielded activity join the list under "All" with no search text (they
+  // have no type to filter by, and nothing to search); Table mode is the Core columns.
+  const platform = usePlatformActivity(walletId);
+  const shielded = useShieldedHistory(walletId);
+  const extra = useMemo(() => [...(platform.data ?? []).map(platformRow), ...(shielded.data ?? []).map(shieldedRow)], [platform.data, shielded.data]);
+  const withExtra = mode === "list" && category.id === "all" && !text;
+  const extraShown = useMemo(
+    () => (withExtra ? filterExtra(extra, { dateFrom: range.dateFrom, dateTo: range.dateTo, minAmount }) : []),
+    [withExtra, extra, range.dateFrom, range.dateTo, minAmount],
+  );
+  const rows = useMemo(() => mergeActivity(coreRows, !!history.hasNextPage, extraShown), [coreRows, history.hasNextPage, extraShown]);
+  const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
+  // Every extra row the filters keep counts, loaded or not; Export is the Core history only.
+  const total = coreTotal === null ? null : coreTotal + extraShown.length;
   const ctx = useRowContext(network);
+
+  // Export CSV (QT-093): the records the filters select, all pages; the line under the bar says
+  // where the file went, or why not.
+  const [exporting, setExporting] = useState(false);
+  const [exported, setExported] = useState<{ ok: boolean; text: string } | null>(null);
+  const exportCsv = async () => {
+    setExporting(true);
+    setExported(null);
+    try {
+      const path = await exportHistory(backend, walletId, filter, shown.unit, backend.now());
+      if (path !== null) setExported({ ok: true, text: `Exported to ${path}.` });
+    } catch (e) {
+      setExported({ ok: false, text: `The history could not be exported. ${fileErrorText(e)}` });
+    } finally {
+      setExporting(false);
+    }
+  };
 
   // Load the next page when the end of the list scrolls into view. After a failed page the
   // observer stays off until the user retries, so a persistent error cannot loop.
@@ -76,19 +123,35 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     return () => io.disconnect();
   }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
 
+  const exportWhy = exporting ? "Exporting…" : !coreTotal ? "There are no transactions to export yet." : null;
   return (
     <main className={`page page-transactions ${mode === "table" ? "is-table" : ""}`} data-testid="page-activity">
       <div className="page-column">
         <header className="top-intro top-intro-row" data-testid="tx-intro">
           <h1 className="top-intro-title">Activity</h1>
-          <div className="segmented" role="group" aria-label="View" data-testid="tx-mode">
-            {(["list", "table"] as const).map((m) => (
-              <button key={m} type="button" className="segment" aria-pressed={mode === m} data-testid={`tx-mode-${m}`} onClick={() => setMode(m)}>
-                {m === "list" ? "List" : "Table"}
-              </button>
-            ))}
+          <div className="tx-intro-actions">
+            <DashButton variant="tintedGray" size="small" data-testid="tx-export-csv" disabled={exporting || !coreTotal} why={exportWhy} whyId="tx-export-why" onClick={() => void exportCsv()}>
+              Export CSV
+            </DashButton>
+            <div className="segmented" role="group" aria-label="View" data-testid="tx-mode">
+              {(["list", "table"] as const).map((m) => (
+                <button key={m} type="button" className="segment" aria-pressed={mode === m} data-testid={`tx-mode-${m}`} onClick={() => setMode(m)}>
+                  {m === "list" ? "List" : "Table"}
+                </button>
+              ))}
+            </div>
           </div>
         </header>
+        {exportWhy && (
+          <p className="field-hint" id="tx-export-why" data-testid="tx-export-why">
+            {exportWhy}
+          </p>
+        )}
+        {exported && (
+          <p className={exported.ok ? "settings-done" : "form-problem"} role={exported.ok ? "status" : "alert"} data-testid="tx-export-result">
+            {exported.text}
+          </p>
+        )}
         <div className="tx-filter-bar" data-testid="tx-filter-bar">
           <div className="tx-filter-row">
             <label className="search-field" data-testid="tx-search">
@@ -147,13 +210,13 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
         </div>
         {history.isPending ? (
           <LoadingState testId="tx-loading" text="Loading transactions" />
-        ) : history.isError && rows.length === 0 ? (
+        ) : history.isError && coreRows.length === 0 ? (
           <EmptyState testId="tx-error" title="Could not load transactions" message={errorMessage(history.error)} />
         ) : rows.length === 0 ? (
           <EmptyState testId="tx-empty" title="There are no transactions to display" />
         ) : mode === "list" ? (
           <div data-testid="tx-list">
-            <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" />
+            <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" decorate={decorateSource} />
           </div>
         ) : (
           <TxTable rows={rows} ctx={ctx} onOpen={onOpen} sort={sort} onSort={setSort} />

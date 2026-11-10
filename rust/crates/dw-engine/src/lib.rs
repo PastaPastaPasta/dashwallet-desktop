@@ -38,9 +38,15 @@ pub mod masternode_keys;
 pub mod masternodes;
 mod multiwallet;
 mod network;
+pub mod network_choice;
 pub mod platform;
 mod pump;
+pub mod rates;
 mod receive;
+mod replay_record;
+mod restore;
+#[cfg(test)]
+mod restore_tests;
 pub(crate) mod send;
 mod session;
 mod store;
@@ -51,6 +57,12 @@ pub mod sync;
 #[cfg(all(debug_assertions, feature = "test-support"))]
 #[doc(hidden)]
 pub mod test_support;
+
+// The regtest suite's CoinJoin-account funding (dwcli `mix-shield-test`,
+// debug builds only).
+#[cfg(all(debug_assertions, feature = "test-mix-shield"))]
+#[doc(hidden)]
+pub mod mix_shield_test;
 
 /// A marker the release check reads (MG-04b r2-m4): `test_support` gives
 /// it `SHARED_SEND_OVERRIDE`, so its presence shows whether the

@@ -7,7 +7,7 @@ import { useCallback, useId, useState, type ReactNode } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend } from "../../api/queries";
 import { DashButton } from "../../components/basics";
-import { copyWithToast } from "../../components/toast";
+import { CopyDashButton } from "../../components/copy";
 import { useModel } from "../../onboarding/model";
 import type { GrantModel } from "../../tools/grant";
 import { SignVerifyModel } from "../../tools/signVerify";
@@ -101,9 +101,9 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
               {(id) => (
                 <span className="tool-inline-form">
                   <input id={id} className="tool-field mono" data-testid="sign-signature" value={model.signature} readOnly />
-                  <DashButton variant="tintedGray" size="small" data-testid="sign-copy" onClick={() => void copyWithToast(model.signature)}>
+                  <CopyDashButton variant="tintedGray" size="small" data-testid="sign-copy" text={model.signature}>
                     Copy
-                  </DashButton>
+                  </CopyDashButton>
                 </span>
               )}
             </Field>

@@ -658,6 +658,115 @@ fn payment_authentication_is_enforced_over_ipc() {
     );
 }
 
+/// `authorize_platform_send` sizes the grant from the engine's quote: an
+/// operation the engine never quoted is refused before the credential is
+/// checked or any grant issued.
+#[test]
+fn a_platform_send_grant_needs_a_quoted_operation() {
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    for credential in [
+        json!({ "kind": "passphrase", "passphrase": "pw" }),
+        json!({ "kind": "passphrase", "passphrase": "wrong" }),
+    ] {
+        demo.err(
+            "authorize_platform_send",
+            json!({ "walletId": wallet, "operation": format!("op-{:032x}", 7), "credential": credential }),
+            "invalid_argument",
+        );
+    }
+}
+
+/// A vault, a wallet and a quoted send of it (no network): the wallet's id,
+/// the session and the operation.
+fn quoted_send(
+    demo: &Demo,
+) -> (
+    String,
+    dw_engine::WalletId,
+    std::sync::Arc<dw_engine::NetworkSession>,
+    String,
+) {
+    use tauri::Manager;
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let id = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let wallet: dw_engine::WalletId = id.parse().unwrap();
+    let state = demo.app.state::<crate::state::AppState>();
+    let session = tauri::async_runtime::block_on(state.session()).unwrap();
+    let operation = session.quote_send_for_test(wallet, 1000);
+    (id, wallet, session, operation)
+}
+
+fn send_grant_ask(wallet: &str, operation: &str) -> Value {
+    json!({ "walletId": wallet, "operation": operation, "credential": { "kind": "passphrase", "passphrase": "pw" } })
+}
+
+/// A second `authorize_platform_send` for one operation revokes the grant
+/// the first bound: it fails even an ordinary `platformOp` check, and the
+/// new one passes.
+#[test]
+fn a_second_platform_send_grant_revokes_the_first() {
+    let demo = Demo::new();
+    let (id, wallet, session, operation) = quoted_send(&demo);
+    let first = demo.ok("authorize_platform_send", send_grant_ask(&id, &operation))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let second = demo.ok("authorize_platform_send", send_grant_ask(&id, &operation))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let check = |g: &str| {
+        session
+            .vault()
+            .check_grant(g, dw_vault::GrantKind::PlatformOp, Some(&wallet.0))
+    };
+    assert!(check(&first).is_err(), "the replaced grant is revoked");
+    check(&second).expect("the bound grant is live");
+}
+
+/// A bind that fails after its grant was issued (the operation sent or
+/// evicted in between) revokes that grant.
+#[test]
+fn a_failed_platform_send_bind_revokes_the_grant_it_issued() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    let (id, wallet, session, operation) = quoted_send(&demo);
+    let state = demo.app.state::<crate::state::AppState>();
+    let (seam, at_bind) = crate::state::Seam::new(true);
+    *state.send_bind_seam.lock().unwrap() = Some(seam);
+    let key = demo.app.invoke_key().to_string();
+    let ask = send_grant_ask(&id, &operation);
+    let (webview, key, state, session, operation) =
+        (&demo.webview, &key, &state, &session, &operation);
+    let refused = std::thread::scope(move |s| {
+        let call = s.spawn(move || invoke(webview, key, "authorize_platform_send", ask));
+        at_bind.arrived();
+        *state.send_bind_seam.lock().unwrap() = None;
+        session.forget_send_for_test(operation);
+        at_bind.resume();
+        call.join().unwrap()
+    });
+    assert_eq!(refused.unwrap_err()["code"], "invalid_argument");
+    let issued = state
+        .send_grant_issued
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("a grant was issued");
+    let live =
+        session
+            .vault()
+            .check_grant(&issued, dw_vault::GrantKind::PlatformOp, Some(&wallet.0));
+    assert!(live.is_err(), "the grant the bind refused is revoked");
+}
+
 /// On an unencrypted vault there is no credential to ask for: the setting
 /// changes nothing and cannot be changed, so no value stored without a
 /// credential carries over to the vault once encrypted.
@@ -1462,6 +1571,40 @@ fn files_go_through_the_dialog_the_user_answers() {
         ),
         json!(out.to_str().unwrap())
     );
+    // Activity's export: its own purpose, and a typed extension the dialog doubled is collapsed.
+    let doubled = dir.path().join("history.csv.csv");
+    choose(Some(&doubled));
+    let saved = demo.ok(
+        "save_file_as",
+        json!({ "purpose": "historyCsv", "suggestedName": "Dash Wallet history 2026-11-03.csv", "data": "YSxi" }),
+    );
+    let collapsed = dir.path().join("history.csv");
+    assert_eq!(saved, json!(collapsed.to_str().unwrap()));
+    assert_eq!(std::fs::read(&collapsed).unwrap(), b"a,b");
+    assert!(!doubled.exists());
+    // The dialog asked nothing about `history.csv.csv`, which was not there: collapsing onto the
+    // `history.csv` that is there would replace it without the OS's question, so the path stays.
+    choose(Some(&doubled));
+    let saved = demo.ok(
+        "save_file_as",
+        json!({ "purpose": "historyCsv", "suggestedName": "Dash Wallet history 2026-11-03.csv", "data": "eCx5" }),
+    );
+    assert_eq!(saved, json!(doubled.to_str().unwrap()));
+    assert_eq!(std::fs::read(&collapsed).unwrap(), b"a,b");
+    assert_eq!(std::fs::read(&doubled).unwrap(), b"x,y");
+    // The same through the dialog-alone command the engine's writers use.
+    let backup = dir.path().join("a.dwbackup");
+    std::fs::write(&backup, b"keep").unwrap();
+    let backup_doubled = dir.path().join("a.dwbackup.dwbackup");
+    choose(Some(&backup_doubled));
+    assert_eq!(
+        demo.ok(
+            "choose_file_path",
+            json!({ "purpose": "walletBackup", "save": true, "suggestedName": "a.dwbackup" })
+        ),
+        json!(backup_doubled.to_str().unwrap())
+    );
+    assert_eq!(std::fs::read(&backup).unwrap(), b"keep");
     let asked = asked.lock().unwrap();
     let seen: Vec<_> = asked
         .iter()
@@ -1474,6 +1617,17 @@ fn files_go_through_the_dialog_the_user_answers() {
             (FilePurpose::Psbt, false, None),
             (FilePurpose::Csv, true, Some("Addresses.csv")),
             (FilePurpose::WalletBackup, true, Some("Everyday.dwbackup")),
+            (
+                FilePurpose::HistoryCsv,
+                true,
+                Some("Dash Wallet history 2026-11-03.csv")
+            ),
+            (
+                FilePurpose::HistoryCsv,
+                true,
+                Some("Dash Wallet history 2026-11-03.csv")
+            ),
+            (FilePurpose::WalletBackup, true, Some("a.dwbackup")),
         ],
         "a bad payload is refused before any dialog"
     );
@@ -1506,4 +1660,49 @@ fn the_link_trace_command_refuses_without_the_option() {
         json!({ "route": "pay" }),
         "app.not_selftest",
     );
+}
+
+/// E1 r2: a close the engine refused leaves its session open, and the app
+/// keeps it active with its handles, whichever the refusal
+/// (`shielded_spend_unresolved`, or `wallet` while a wallet is still
+/// opening); a close that ended the session drops both.
+#[test]
+fn a_refused_close_keeps_the_active_session() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    demo.open();
+    let state = demo.app.state::<crate::state::AppState>();
+    let session = tauri::async_runtime::block_on(state.session()).unwrap();
+    let refusals = || {
+        [
+            dw_engine::EngineError::ShieldedSpendUnresolved,
+            dw_engine::EngineError::Wallet(
+                "a wallet is still opening; close the network once it is open".into(),
+            ),
+        ]
+    };
+    for (refusal, same) in refusals().into_iter().zip(refusals()) {
+        let code = crate::error::AppError::from(same).code;
+        let mut slot = Some(Arc::clone(&session));
+        let closed = crate::api::network::close_active(&state, &mut slot, Err(refusal));
+        assert_eq!(closed.unwrap_err().code, code);
+        assert!(slot.is_some(), "the session stays active");
+    }
+    assert!(tauri::async_runtime::block_on(state.session()).is_ok());
+
+    // Closed in the engine: a failure then still drops it.
+    assert!(
+        tauri::async_runtime::block_on(state.engine.close_network(DashNetwork::Regtest)).unwrap()
+    );
+    assert!(!session.is_open());
+    let mut slot = Some(session);
+    let closed = crate::api::network::close_active(
+        &state,
+        &mut slot,
+        Err(dw_engine::EngineError::Internal(
+            "the close task ended".into(),
+        )),
+    );
+    assert!(closed.is_err());
+    assert!(slot.is_none());
 }

@@ -15,11 +15,11 @@ export const WalletsText = {
   openAnotherToCloseOrRemove: "Open another wallet first to close or remove this one.",
   noLoadStates: "Closed wallets are not shown: this engine does not list them yet.",
   nameRule: "A wallet name is 1 to 64 characters.",
-  /** IOS-110. */
+  /** IOS-110; the shielded line is E1 r2 R2-4 (removal purges unresolved shielded spends, m4 §2.13). */
   removeQuestion: (name: string, watchOnly: boolean) =>
     watchOnly
       ? `Remove the watch-only wallet ${name} from this computer? Its history and settings are deleted. Its extended public key adds it again.`
-      : `Remove the wallet ${name} from this computer? Its keys, history and settings are deleted. Its recovery phrase, or a backup or export you kept, brings it back.`,
+      : `Remove the wallet ${name} from this computer? Its keys, history and settings are deleted. Its recovery phrase, or a backup or export you kept, brings it back. A shielded payment it already sent may still go through, and its pending record is deleted with the wallet.`,
   removed: (name: string) => `${name} was removed.`,
   watchOnlyHint: "Paste the account's extended public key (tpub or xpub). The wallet shows its balance and history; it cannot spend.",
   watchOnlyAdded: (name: string) => `${name} was added as a watch-only wallet.`,
@@ -61,6 +61,9 @@ export class WalletsModel extends Model {
   /** The wallet whose call runs. */
   busy: string | null = null;
   #seq = 0;
+  /** `error` is a failed read's: the next read that works clears it. An action's refusal is not
+   * cleared by a read (every wallet event reads the list again), only by the next action. */
+  #readFailed = false;
 
   constructor(private readonly api: ListApi) {
     super();
@@ -76,10 +79,12 @@ export class WalletsModel extends Model {
       this.rows = states
         ? states.map((s) => ({ ...s, hasMnemonic: open.get(s.walletId)?.hasMnemonic ?? null }))
         : summaries.map((s) => ({ walletId: s.walletId, name: s.name, loaded: true, loadOnStartup: true, watchOnly: s.watchOnly, hasMnemonic: s.hasMnemonic }));
-      this.error = null;
+      if (this.#readFailed) this.error = null;
+      this.#readFailed = false;
     } catch (e) {
       if (seq !== this.#seq) return;
       this.error = failureText(e);
+      this.#readFailed = true;
     }
     this.loading = false;
     this.changed();
@@ -111,6 +116,7 @@ export class WalletsModel extends Model {
     const row = this.rows.find((r) => r.walletId === walletId);
     if (!row || !this.canClose(row)) {
       this.error = WalletsText.openAnotherFirst;
+      this.#readFailed = false;
       this.changed();
       return false;
     }
@@ -129,6 +135,7 @@ export class WalletsModel extends Model {
     const name = walletName(text);
     if (name === null) {
       this.error = WalletsText.nameRule;
+      this.#readFailed = false;
       this.changed();
       return false;
     }
@@ -139,17 +146,24 @@ export class WalletsModel extends Model {
     if (this.busy) return false;
     this.busy = walletId;
     this.error = null;
+    this.#readFailed = false;
     this.changed();
-    let ok = true;
+    let problem: string | null = null;
     try {
       await call();
     } catch (e) {
-      this.error = failureText(e);
-      ok = false;
+      problem = failureText(e);
     }
     this.busy = null;
     await this.load();
-    return ok;
+    // The reload clears `error` on success: a refusal (a shielded payment still being confirmed, a
+    // wallet still opening) must still be said once the list is read again.
+    if (problem !== null) {
+      this.error = problem;
+      this.#readFailed = false;
+      this.changed();
+    }
+    return problem === null;
   }
 }
 

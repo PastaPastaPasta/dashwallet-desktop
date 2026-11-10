@@ -92,6 +92,7 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo clippy -p dw-app --all-targets --features selftest --locked -- -D warnings
+      - run: cargo clippy -p dwcli --all-targets --features mix-shield-test --locked -- -D warnings
       # Pinned like tauri-driver below; rust-cache keeps the installed binary between runs.
       - name: cargo-deny
         run: cargo install cargo-deny --version 0.20.2 --locked
@@ -131,6 +132,21 @@ jobs:
       - name: dw-app with the selftest feature
         if: ${{ !cancelled() }}
         run: cargo test -p dw-app --features selftest --locked --no-fail-fast
+      # Without the feature (the workspace run above), dwcli has no `coinjoin-test-addresses`; with
+      # it, the command parses and dw-engine's probe sees the test calls, so the nightly's release
+      # leg of mix_shield_release_check isn't vacuous. With `invitation-create-test`, the table
+      # tests cover its `invite create` row. The Nightly runs dwcli's whole suite with each debug
+      # feature.
+      - name: dwcli and dw-engine with the debug features
+        if: ${{ !cancelled() }}
+        run: |
+          cargo test -p dwcli --bin dwcli --features invitation-create-test --locked --no-fail-fast -- --exact \
+            dashpay::tests::the_table_covers_every_dashpay_command \
+            dashpay::tests::every_command_passes_the_session_grammar \
+            dashpay::tests::every_command_reports_its_stub_as_a_json_error | tee "$RUNNER_TEMP/dwcli-table.txt"
+          grep -q '^test result: ok\. 3 passed' "$RUNNER_TEMP/dwcli-table.txt"
+          cargo test -p dwcli --features mix-shield-test --locked --no-fail-fast -- coinjoin::tests
+          cargo test -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked
       # E0-13: the TypeScript bindings and the facade coverage table are generated from dw-app;
       # regenerate them and fail when the committed files differ (or a new file is missing).
       - name: Regenerate the Tauri bindings and check them in
@@ -184,7 +200,7 @@ jobs:
   ui-playwright:
     name: UI tests (Playwright, axe)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     # The browsers and their libraries, pinned to @playwright/test in package.json (bump both).
     # No Rust and no engine: the renderer runs on the fixture backend.
     container:

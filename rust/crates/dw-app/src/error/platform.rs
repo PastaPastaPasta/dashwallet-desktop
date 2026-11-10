@@ -3,7 +3,7 @@
 
 use dw_engine::platform::{
     AvatarError, ContactError, CreditsError, IdentityError, InvitationError, NameError,
-    PlatformError, ProfileError, RegistrationError,
+    PlatformError, ProfileError, RegistrationError, ShieldedError,
 };
 
 use super::{AppError, EngineCode, ErrorData, codes};
@@ -115,6 +115,104 @@ codes! {
         TopUpPending = "credits.top_up_pending",
         WithdrawalOutOfRange = "credits.withdrawal_out_of_range",
         WithdrawalLanded = "credits.withdrawal_landed",
+        MovePending = "credits.move_pending",
+        RecipientInvalid = "credits.recipient_invalid",
+        SendOutOfRange = "credits.send_out_of_range",
+        QuoteChanged = "credits.quote_changed",
+        FundPending = "credits.fund_pending",
+        TooManyInputs = "credits.too_many_inputs",
+    }
+}
+
+codes! {
+    ShieldedCode {
+        NotActive = "shielded.not_active",
+        NotSynced = "shielded.not_synced",
+        InvalidAddress = "shielded.invalid_address",
+        InsufficientFunds = "shielded.insufficient_funds",
+        FundingInsufficient = "shielded.funding_insufficient",
+        BelowMinimum = "shielded.below_minimum",
+        CoinsLocked = "shielded.coins_locked",
+        ShieldPending = "shielded.shield_pending",
+        PoolTooSmall = "shielded.pool_too_small",
+        TooManyInputs = "shielded.too_many_inputs",
+        UnrecordedSpend = "shielded.unrecorded_spend",
+        MixingActive = "shielded.mixing_active",
+        NothingToMove = "shielded.nothing_to_move",
+        CoinsUnconfirmed = "shielded.coins_unconfirmed",
+        MoveRunning = "shielded.move_running",
+        CoinsChanged = "shielded.coins_changed",
+    }
+}
+
+impl From<ShieldedError> for AppError {
+    fn from(e: ShieldedError) -> Self {
+        use ShieldedError as S;
+        let message = e.to_string();
+        let (code, data) = match e {
+            S::NotActive {
+                protocol_version,
+                activation_version,
+            } => (
+                ShieldedCode::NotActive,
+                Some(ErrorData::Protocol {
+                    protocol_version,
+                    activation_version,
+                }),
+            ),
+            S::NotSynced { reason } => (
+                ShieldedCode::NotSynced,
+                Some(ErrorData::Reason {
+                    reason: reason.as_str().into(),
+                }),
+            ),
+            S::InvalidAddress { detail } => (
+                ShieldedCode::InvalidAddress,
+                Some(ErrorData::Reason { reason: detail }),
+            ),
+            S::InsufficientFunds { needed, available } => (
+                ShieldedCode::InsufficientFunds,
+                Some(ErrorData::Credits { needed, available }),
+            ),
+            S::FundingInsufficient { needed, available } => (
+                ShieldedCode::FundingInsufficient,
+                Some(ErrorData::Duffs {
+                    needed: Some(needed),
+                    available,
+                }),
+            ),
+            S::BelowMinimum { min } => (
+                ShieldedCode::BelowMinimum,
+                Some(ErrorData::Number { value: min }),
+            ),
+            S::CoinsLocked => (ShieldedCode::CoinsLocked, None),
+            S::ShieldPending { txid } => {
+                (ShieldedCode::ShieldPending, Some(ErrorData::Txid { txid }))
+            }
+            S::PoolTooSmall { notes, required } => (
+                ShieldedCode::PoolTooSmall,
+                Some(ErrorData::PoolNotes { notes, required }),
+            ),
+            S::TooManyInputs { inputs, .. } => (
+                ShieldedCode::TooManyInputs,
+                Some(ErrorData::Number { value: inputs }),
+            ),
+            S::UnrecordedSpend => (ShieldedCode::UnrecordedSpend, None),
+            S::MixingActive => (ShieldedCode::MixingActive, None),
+            S::NothingToMove => (ShieldedCode::NothingToMove, None),
+            S::CoinsUnconfirmed { coins } => (
+                ShieldedCode::CoinsUnconfirmed,
+                Some(ErrorData::Number { value: coins }),
+            ),
+            S::MoveRunning => (ShieldedCode::MoveRunning, None),
+            S::CoinsChanged => (ShieldedCode::CoinsChanged, None),
+            S::Platform(e) => return e.into(),
+        };
+        AppError {
+            code: code.into(),
+            message,
+            data,
+        }
     }
 }
 
@@ -205,6 +303,7 @@ impl From<PlatformError> for AppError {
             P::InvalidArgument { .. } => (EngineCode::InvalidArgument.into(), None),
             P::NetworkNotOpen => (EngineCode::NetworkNotOpen.into(), None),
             P::WalletNotFound => (EngineCode::WalletNotFound.into(), None),
+            P::RescanInterrupted => (EngineCode::RescanInterrupted.into(), None),
             P::Storage { .. } => (EngineCode::Storage.into(), None),
             P::Internal { .. } => (EngineCode::Internal.into(), None),
         };
@@ -376,6 +475,26 @@ impl From<CreditsError> for AppError {
                 CreditsCode::WithdrawalLanded,
                 Some(ErrorData::Artifact { artifact }),
             ),
+            C::MovePending { id } => (
+                CreditsCode::MovePending,
+                Some(ErrorData::Artifact { artifact: id }),
+            ),
+            C::RecipientInvalid { reason } => (
+                CreditsCode::RecipientInvalid,
+                Some(ErrorData::Reason {
+                    reason: reason.as_str().into(),
+                }),
+            ),
+            C::SendOutOfRange { min } => (
+                CreditsCode::SendOutOfRange,
+                Some(ErrorData::CreditMinimum { min }),
+            ),
+            C::QuoteChanged => (CreditsCode::QuoteChanged, None),
+            C::FundPending { txid } => (CreditsCode::FundPending, Some(ErrorData::Txid { txid })),
+            C::TooManyInputs { inputs, .. } => (
+                CreditsCode::TooManyInputs,
+                Some(ErrorData::Number { value: inputs }),
+            ),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -389,7 +508,8 @@ impl From<CreditsError> for AppError {
 #[cfg(test)]
 mod tests {
     use dw_engine::platform::{
-        BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RevokeCause, UsernameRule,
+        BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RecipientProblem, RevokeCause,
+        ShieldedSyncWait, UsernameRule,
     };
 
     use super::*;
@@ -444,6 +564,7 @@ mod tests {
             PlatformError::InvalidArgument { detail: s() },
             PlatformError::NetworkNotOpen,
             PlatformError::WalletNotFound,
+            PlatformError::RescanInterrupted,
             PlatformError::Storage { detail: s() },
             PlatformError::Internal { detail: s() },
         ];
@@ -540,9 +661,59 @@ mod tests {
             CreditsError::TopUpPending { txid: s() },
             CreditsError::WithdrawalOutOfRange { min: 1, max: 2 },
             CreditsError::WithdrawalLanded { artifact: s() },
+            CreditsError::MovePending { id: s() },
+            CreditsError::RecipientInvalid {
+                reason: RecipientProblem::Network,
+            },
+            CreditsError::SendOutOfRange { min: 1 },
+            CreditsError::QuoteChanged,
+            CreditsError::FundPending { txid: s() },
+            CreditsError::TooManyInputs {
+                inputs: 51,
+                max: 50,
+            },
             CreditsError::Platform(PlatformError::Unavailable),
         ];
         for e in credits {
+            assert_eq!(AppError::from(e.clone()).code_str(), e.code());
+        }
+        let shielded = [
+            ShieldedError::NotActive {
+                protocol_version: 11,
+                activation_version: 12,
+            },
+            ShieldedError::NotSynced {
+                reason: ShieldedSyncWait::Journal,
+            },
+            ShieldedError::InvalidAddress { detail: s() },
+            ShieldedError::InsufficientFunds {
+                needed: 2,
+                available: 1,
+            },
+            ShieldedError::FundingInsufficient {
+                needed: 2,
+                available: 1,
+            },
+            ShieldedError::BelowMinimum { min: 5 },
+            ShieldedError::CoinsLocked,
+            ShieldedError::ShieldPending { txid: s() },
+            ShieldedError::PoolTooSmall {
+                notes: 10,
+                required: 250,
+            },
+            ShieldedError::TooManyInputs {
+                inputs: 51,
+                max: 50,
+            },
+            ShieldedError::UnrecordedSpend,
+            ShieldedError::MixingActive,
+            ShieldedError::NothingToMove,
+            ShieldedError::CoinsUnconfirmed { coins: 2 },
+            ShieldedError::MoveRunning,
+            ShieldedError::CoinsChanged,
+            ShieldedError::Platform(PlatformError::Unavailable),
+        ];
+        for e in shielded {
             assert_eq!(AppError::from(e.clone()).code_str(), e.code());
         }
     }
@@ -562,6 +733,16 @@ mod tests {
                 "needed": "30000000000000000",
                 "remaining": "7"
             })
+        );
+        // DEC-1058 #4: what Shielded is still syncing.
+        let e = AppError::from(ShieldedError::NotSynced {
+            reason: ShieldedSyncWait::Core,
+        });
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(v["code"], "shielded.not_synced");
+        assert_eq!(
+            v["data"],
+            serde_json::json!({"kind": "reason", "reason": "core"})
         );
         let e = AppError::from(NameError::Invalid {
             rules: vec![UsernameRule::NoEdgeHyphen],

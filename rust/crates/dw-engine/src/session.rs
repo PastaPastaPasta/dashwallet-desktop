@@ -3,7 +3,8 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::time::Duration;
 
 use dash_sdk::SdkBuilder;
 use dash_sdk::dapi_grpc::tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
@@ -12,7 +13,6 @@ use dash_spv::{ClientConfig, DevnetConfig};
 use dpp::version::PlatformVersion;
 use dw_appdb::{APP_DB_FILE, APP_DB_LOCK_FILE, AppDb};
 use dw_vault::{VAULT_DIR, Vault, VaultConfig};
-use key_wallet::wallet::balance::WalletCoreBalance;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWalletManager;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
@@ -155,6 +155,26 @@ impl std::fmt::Debug for SessionOptions {
     }
 }
 
+/// How long a close waits for references to the wallet database that others
+/// still hold once it dropped its own (a drain, a wallet handle, an in-flight
+/// read: platform-wallet `manager/mod.rs:1077-1082` at the pin). The
+/// persister's in-process claim on its path goes with the last one, and a
+/// reopen in this process is refused until then.
+pub(crate) const PERSISTER_RELEASE: Duration = Duration::from_secs(3);
+
+/// Waits, within [`PERSISTER_RELEASE`], for the persister's last reference
+/// to go; `false` when one is still held.
+async fn persister_released(persister: &Weak<SqlitePersister>) -> bool {
+    let deadline = tokio::time::Instant::now() + PERSISTER_RELEASE;
+    while persister.strong_count() > 0 {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    true
+}
+
 /// What a session holds while it is open. Taken out on close so the
 /// persister (and its process-wide open-path claim) is released even while
 /// hosts still hold `Arc<NetworkSession>`.
@@ -171,6 +191,8 @@ pub(crate) struct Live {
     pub tap: Arc<crate::platform::journal::ChangesetTap>,
     /// Positive provenance (DEC-125): which Platform data counts as verified.
     pub provenance: Arc<crate::platform::provenance::Provenance>,
+    /// The wallets' unfinished replays (`crate::replay_record`).
+    pub replay: Arc<crate::replay_record::ReplayRecords>,
 }
 
 /// The running event pump: its stop signal and task.
@@ -222,6 +244,12 @@ pub struct NetworkSession {
     /// session, replaced by a later one, cancelled by `lock_vault` and
     /// `close`. (generation, task).
     pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
+    /// The resends' acceptance waits (QT-091), aborted before SPV stops
+    /// (`stop_spv_inner`, and `close` before the manager's shutdown): each
+    /// holds platform-wallet's SPV client read lock for dash-spv's acceptance
+    /// timeout (60 s), and SPV's stop waits for the write lock
+    /// (rs-platform-wallet spv/runtime.rs:321-330, :446).
+    pub(crate) resends: Mutex<Vec<tokio::task::AbortHandle>>,
     /// Mixing state, CoinJoin options and queues (M3, `coinjoin.rs`).
     pub(crate) coinjoin: crate::coinjoin::CoinJoinRuntime,
     /// The masternode follower and its event (MG-03, `masternodes/`).
@@ -423,6 +451,9 @@ impl NetworkSession {
             unloaded,
             Arc::clone(&tap),
         ));
+        let replay = crate::replay_record::ReplayRecords::new(Arc::clone(&appdb));
+        store.install_replay(&replay);
+        hub.attach_replay(&replay);
         for (order, (id, name, created_at)) in (0u64..).zip(names) {
             match id.parse::<WalletId>() {
                 Ok(id) => hub.set_name(
@@ -441,6 +472,7 @@ impl NetworkSession {
             Arc::clone(&store),
             Arc::clone(&hub) as Arc<dyn platform_wallet::PlatformEventHandler>,
         ));
+        replay.start(Arc::downgrade(&manager), Arc::downgrade(&hub));
         trust.attach(
             Arc::new(trust::RuntimeQuorums(Arc::downgrade(&manager.spv_arc()))),
             &provenance,
@@ -520,6 +552,7 @@ impl NetworkSession {
                 appdb: Arc::clone(&appdb),
                 tap,
                 provenance,
+                replay,
             })),
             pump: Mutex::new(None),
             spends: Default::default(),
@@ -530,6 +563,7 @@ impl NetworkSession {
             unclean_previous,
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
+            resends: Mutex::new(Vec::new()),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
             masternodes,
             platform: crate::platform::runtime::PlatformRuntime::new(
@@ -570,8 +604,27 @@ impl NetworkSession {
             session: Arc::downgrade(&session),
         });
         session.leases.install_tracked(tracked.clone());
+        // The persister's tap clears the shielded spend markers (DEC-1057).
+        if let Ok(live) = session.live() {
+            live.store.install_leases(&session.leases);
+        }
         session.leases.install_resumer(tracked);
         session.hub.attach_leases(&session.leases);
+        session.attach_reconcile();
+        session.attach_sweep_resend();
+        session.attach_sweep_news();
+        // Only a header the SPV store holds is evidence for a sweep record:
+        // absent, unreadable or no SPV, its chunk stays pending.
+        let spv = Arc::downgrade(&manager.spv_arc());
+        session.hub.attach_headers(Arc::new(move |height| {
+            let spv = spv.clone();
+            Box::pin(async move {
+                match spv.upgrade()?.header_hash_at(height).await {
+                    platform_wallet::spv::HeaderLookup::Found(hash) => Some(hash),
+                    _ => None,
+                }
+            })
+        }));
         if let Ok(live) = session.live() {
             live.tap.watch_locks(&session.leases);
         }
@@ -605,7 +658,11 @@ impl NetworkSession {
         }
         // Avatars (DP4-02): the toggle, the cache directory's descriptor.
         session.open_avatars(Arc::clone(&appdb)).await;
-        session.apply_stored_lookaheads(&manager).await;
+        // Before SPV starts: no block can replay a coin outside its account.
+        session.restore_loaded_wallets(&manager).await;
+        for id in manager.list_wallet_ids_blocking() {
+            session.resume_replay(&manager, WalletId(id)).await;
+        }
         for id in manager.list_wallet_ids_blocking() {
             session.refresh_wallet_state(&manager, WalletId(id)).await;
             session.load_identity_choices(WalletId(id)).await;
@@ -640,28 +697,12 @@ impl NetworkSession {
         *self.pump.lock().unwrap_or_else(|p| p.into_inner()) = Some(PumpTask { stop, task });
     }
 
-    /// Reads a wallet's balance and scan heights into the hub.
+    /// Reads a wallet's balance and scan heights into the hub, all from
+    /// key-wallet under one read lock. Never from platform-wallet's
+    /// event-fed balance mirror: no event follows the engine's own changes
+    /// to key-wallet state (an abandon, the coins re-placed after a load,
+    /// the duplicate reconcile), so the mirror can keep a total they undid.
     pub(crate) async fn refresh_wallet_state(&self, manager: &Manager, id: WalletId) {
-        let balance = manager.get_wallet(&id.0).await.map(|w| {
-            let b = w.balance();
-            WalletCoreBalance::new(b.confirmed(), b.unconfirmed(), b.immature(), b.locked())
-        });
-        self.store_wallet_state(manager, id, balance).await;
-    }
-
-    /// As [`Self::refresh_wallet_state`], with key-wallet's own balance
-    /// instead of platform-wallet's event-fed mirror (after the engine
-    /// changed key-wallet state directly, e.g. an abandon).
-    pub(crate) async fn refresh_wallet_state_from_core(&self, manager: &Manager, id: WalletId) {
-        self.store_wallet_state(manager, id, None).await;
-    }
-
-    async fn store_wallet_state(
-        &self,
-        manager: &Manager,
-        id: WalletId,
-        balance: Option<WalletCoreBalance>,
-    ) {
         let wm = manager.wallet_manager_arc();
         let wm = wm.read().await;
         let Some(info) = wm.get_wallet_info(&id.0) else {
@@ -671,17 +712,15 @@ impl NetworkSession {
         if let Some(cl) = &core.metadata.last_applied_chain_lock {
             self.hub.note_chainlock(cl.block_height, cl.block_hash);
         }
-        self.hub.set_wallet_state(
-            id,
-            WalletState {
-                birth_height: core.birth_height(),
-                synced_height: core.synced_height(),
-                processed_height: core.last_processed_height(),
-                balance: balance.unwrap_or_else(|| core.balance()),
-                accounts: core.account_balances(),
-                fully_mixed: self.hub.wallet_state(&id).and_then(|s| s.fully_mixed),
-            },
-        );
+        let read = WalletState {
+            birth_height: core.birth_height(),
+            synced_height: core.synced_height(),
+            processed_height: core.last_processed_height(),
+            balance: core.balance(),
+            accounts: core.account_balances(),
+            ..WalletState::default()
+        };
+        self.hub.update_wallet_state(id, |s| s.take_core(read));
     }
 
     pub fn network(&self) -> &DashNetwork {
@@ -811,6 +850,7 @@ impl NetworkSession {
 
     pub(crate) async fn stop_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
         self.leases.spv_stopped();
+        self.abort_resends();
         let stopped = manager.spv().stop().await;
         self.hub.set_spv_running(false);
         self.sink.emit(EngineEvent::SpvStateChanged {
@@ -820,10 +860,22 @@ impl NetworkSession {
         Ok(stopped?)
     }
 
+    /// Ends the resends' acceptance waits ([`Self::resends`]). Nothing is
+    /// lost: dash-spv sent the bytes before the wait, which only maps its
+    /// verdict to a log line, and the wallet keeps the transaction
+    /// unconfirmed, to be resent.
+    fn abort_resends(&self) {
+        let resends = std::mem::take(&mut *self.resends.lock().unwrap_or_else(|p| p.into_inner()));
+        for resend in resends {
+            resend.abort();
+        }
+    }
+
     /// Closes the session: cancels a running bring-up, waits for admitted
     /// operations (review M1), stops the event pump, shuts the manager down
     /// (SPV, coordinators, persistence adapter drain) and releases the
-    /// databases. Must run on the engine runtime.
+    /// databases: it returns once the last reference to the wallet database
+    /// is gone, within [`PERSISTER_RELEASE`]. Must run on the engine runtime.
     pub(crate) async fn close(&self) {
         // A running bring-up ends first (DASHPAY §3.2). It holds no
         // operation guard, so it is cancelled before waiting for the guards,
@@ -838,6 +890,10 @@ impl NetworkSession {
         // call of theirs outlives the session, and none starts after this
         // (MG-13 P4, P8; a quote still running starts no wait).
         self.masternodes.withdrawals.stop().await;
+        // A shielded pass admitted under the leases just dropped ends first,
+        // as the lock's (0.1 E1, DEC-1032); none is admitted for a wallet
+        // holding a stored spend from here.
+        self.drain_shielded_pass().await;
         // Registration flows waiting keyless for a proof hold no lease.
         self.platform.registrations.abort_all();
         let _closing = self.gate.close().await;
@@ -864,8 +920,13 @@ impl NetworkSession {
         let taken = self.live.write().unwrap_or_else(|p| p.into_inner()).take();
         let Some(live) = taken else { return };
         let manager = live.manager;
+        // The gate is closed, so no resend starts after this.
+        self.abort_resends();
         let report = manager.shutdown().await;
         self.hub.set_spv_running(false);
+        if report.all_clean() {
+            live.replay.close(&manager, &self.hub).await;
+        }
         if report.all_clean() && keys_idle {
             let marker = self.data_dir.join(crate::tools::SESSION_MARKER);
             if let Err(e) = std::fs::remove_file(&marker)
@@ -896,22 +957,93 @@ impl NetworkSession {
         //   SpvRuntime -> PlatformEventManager -> BalanceUpdateHandler
         //     -> Arc<ArcSwap<wallets map>> -> Arc<PlatformWallet>
         //     (manager/mod.rs:522, wallet/core/balance_handler.rs:43-45)
-        // `remove_wallet` is an in-memory unload (no persister writes:
-        // manager/wallet_lifecycle.rs:676-900, key-wallet-manager accessors.rs:75).
+        // `remove_wallet` writes nothing through the persister
+        // (manager/wallet_lifecycle.rs:676-900, key-wallet-manager accessors.rs:75),
+        // but with the shielded coordinator configured it purges the
+        // wallet's rows of `shielded.sqlite` (below).
         // Through the wallets' write fence: the close returns after their
         // fenced writes in flight (private details, the bell's `mark_read`).
+        //
+        // DEC-1046: a wallet holding a shielded spend whose result is not
+        // known is not unloaded, as the pin's `remove_wallet` would delete
+        // its stored transition and reservations (`remove_from_manager`).
+        // It stays in the sealed manager, which runs nothing more (SPV
+        // stopped, every loop quiesced sealed and joined, the payment hooks
+        // drained, above), and its persister writes are committed, not
+        // closed: every `store` commits inline (the persister's default
+        // `Immediate` mode, WAL), and a flush here retries any left by a
+        // transient failure (a failed flush is logged, not returned). The
+        // library wrote the spend's record to the shielded store before the
+        // spend returned, best-effort (`arm_redrive_record`,
+        // operations.rs:2983: a failed write is logged, and that spend has
+        // no record to keep; its reservations live in memory only,
+        // file_store.rs:572, and end with the session). The connections stay open until the process
+        // exits, so their last WAL checkpoint does not run; the WAL replays
+        // at the next open, and the rows rehydrate as pending. The cost:
+        // the Arc cycle above keeps the persister's open-path claim, so the
+        // network reopens only in a new process. App quit takes this path
+        // (`Engine::shutdown`); an in-app close is refused beforehand
+        // (`Engine::close_network`), and from that check to this close no
+        // signing shielded call starts, no wallet loads (an import or a
+        // create stores no spend) and the shielded store does not first
+        // open (its open rehydrates the stored spends), so an in-app close
+        // keeps no wallet (`PlatformRuntime::close_preflight`,
+        // `wallet_loads`, E1 r2 R2-3, r3 m1).
+        let mut kept = Vec::new();
         for id in manager.list_wallet_ids_blocking() {
-            let unloaded = self.platform.remove_from_manager(&manager, WalletId(id));
-            if let Err(e) = unloaded.await {
-                tracing::warn!(wallet_id = %hex::encode(id), error = %e, "unload on close failed");
+            let unloaded = (self.platform).remove_from_manager(
+                &self.leases,
+                &manager,
+                WalletId(id),
+                crate::platform::runtime::StoredSpends::Refuse,
+            );
+            match unloaded.await {
+                Ok(()) => {}
+                Err(EngineError::ShieldedSpendUnresolved) => kept.push(id),
+                Err(e) => {
+                    tracing::warn!(wallet_id = %hex::encode(id), error = %e, "unload on close failed");
+                }
             }
         }
+        let holds_database = !kept.is_empty();
+        for id in kept {
+            tracing::info!(
+                wallet_id = %hex::encode(id),
+                "kept loaded at close: a shielded payment is still being confirmed"
+            );
+            let persister = Arc::clone(&live.persister);
+            let flushed = tokio::task::spawn_blocking(move || {
+                platform_wallet::changeset::PlatformWalletPersistence::flush(&*persister, id)
+            })
+            .await;
+            if !matches!(flushed, Ok(Ok(()))) {
+                tracing::warn!(wallet_id = %hex::encode(id), ?flushed, "flush on close failed");
+            }
+        }
+        let persister = Arc::downgrade(&live.persister);
         drop(manager);
         drop(live.store);
         drop(live.persister);
         drop(live.appdb);
         drop(live.tap);
         drop(live.provenance);
+        // The close returns once the database is released, so the network
+        // reopens in this process (CI 41289102488: `StorageInUse` on a
+        // reopen right after a close). Bounded: a holder that never lets go
+        // keeps the database, and its reopen is refused as before. A kept
+        // wallet holds it until the process exits (DEC-1046: only a quit
+        // keeps one), so nothing is waited for then.
+        if holds_database {
+            tracing::info!(
+                network = %self.network,
+                "the wallet database stays held by the wallets kept for their shielded payments"
+            );
+        } else if !persister_released(&persister).await {
+            tracing::warn!(
+                network = %self.network,
+                "the wallet database is still held after the close; reopening it in this process is refused until it is released"
+            );
+        }
         // Per network, so the last to close (§8.5).
         self.leases.close_journal().await;
         self.sink.emit(EngineEvent::SessionClosed {

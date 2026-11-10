@@ -1983,6 +1983,39 @@ fn a_name_landing_before_the_recheck_is_verified_there() {
     assert!(!f.bob_unverified());
 }
 
+/// 0.1.x-bal §1: a rewind of the filter checkpoint while the payment waits
+/// at its money gate, before its coin fence, refuses it: the guard reads
+/// the checkpoint under the fence.
+#[test]
+fn a_rewind_while_the_money_gate_waits_refuses_the_payment() {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Enforcing, Proof::Verified);
+    let checkpoint = |height: u32| {
+        let (s, id) = (Arc::clone(&f.session), f.wallet);
+        f.engine.block_on(async move {
+            let w = s.wallet(&id).await.unwrap();
+            w.state_mut().await.core_wallet.update_synced_height(height);
+        });
+    };
+    checkpoint(1_000);
+    (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: f.wallet.0,
+        height: 1_000,
+    });
+    let d = f.draft(BOB);
+    let refused = f.prepare_held_at(&d, Point::Gated, || {
+        show_username(&f.session, id(BOB), "Bob");
+        platform.answer_domain("Bob", id(BOB));
+        checkpoint(500);
+    });
+    assert!(
+        matches!(refused, Err(EngineError::RescanInProgress)),
+        "{refused:?}"
+    );
+    assert_eq!(f.reserved(BOB), None, "nothing reserved");
+}
+
 /// A reused address another payment's broadcast claimed between its
 /// reservation and its keep (here before the re-check starts) is not kept
 /// again: the payment is refused as spent and no later payment reuses it.

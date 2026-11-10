@@ -28,7 +28,7 @@ function status(patch: Partial<CoinJoinStatus> = {}): CoinJoinStatus {
     state: "idle",
     stopReason: null,
     unavailable: null,
-    balances: { anonymizable: 150_000_000, denominated: 50_000_000, normalizedAnonymized: 25_000_000, fullyMixed: 25_000_000 },
+    balances: { anonymizable: 150_000_000, denominated: 50_000_000, normalizedAnonymized: 25_000_000, fullyMixed: 25_000_000, coinjoinAccount: 0 },
     progress: { overallPercent: 42.7, denominatedPercent: 100, partiallyMixedPercent: 60, mixedPercent: 30, averageRounds: 1.5 },
     amountAndRounds: { amount: 100_000_000, rounds: 4, insufficientInputs: false },
     submittedDenominations: [],
@@ -202,8 +202,13 @@ describe("coinjoinView", () => {
 
   it("S13 done and S14 off; a stop asked for or by Settings is not news", () => {
     expect(view(status({ progress: { ...status().progress, overallPercent: 100 } }))).toMatchObject({ state: "done", title: CoinJoinText.fullyMixed, onHome: false });
-    for (const stopReason of [null, "userRequested", "disabled"] as const)
+    for (const stopReason of [null, "disabled"] as const)
       expect(view(status({ stopReason })), String(stopReason)).toMatchObject({ state: "off", title: CoinJoinText.notStarted, action: { kind: "start" }, onHome: false });
+  });
+
+  it("0.1.x row 25: after the user's own Stop the title is Mixing stopped, with no line, not on Home, Start offered", () => {
+    const v = view(status({ stopReason: "userRequested" }));
+    expect(v).toMatchObject({ state: "off", title: CoinJoinText.stopped, line: null, action: { kind: "start", disabled: false }, onHome: false, dismissable: false });
   });
 });
 

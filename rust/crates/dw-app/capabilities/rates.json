@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "rates",
+  "description": "Prices in fiat (MP-01): the settings, the chosen currency's price, the picker's list and Update now. Granted to the main window only.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-rates-status",
+    "allow-rates-currencies",
+    "allow-set-rates-settings",
+    "allow-refresh-rates"
+  ]
+}

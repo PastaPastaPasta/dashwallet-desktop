@@ -13,6 +13,7 @@ use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
 use super::names::UsernameRule;
 use super::profile::{Profile, ProfileField};
+pub use super::shielded::ShieldedSyncWait;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum PlatformError {
@@ -83,6 +84,9 @@ pub enum PlatformError {
     NetworkNotOpen,
     #[error("wallet not found")]
     WalletNotFound,
+    /// A rescan the user stopped part way must run again (0.1.x-bal §1).
+    #[error("a rescan was interrupted")]
+    RescanInterrupted,
     #[error("storage error: {detail}")]
     Storage { detail: String },
     #[error("internal error: {detail}")]
@@ -115,6 +119,7 @@ impl PlatformError {
             Self::InvalidArgument { .. } => "invalid_argument",
             Self::NetworkNotOpen => "network_not_open",
             Self::WalletNotFound => "wallet_not_found",
+            Self::RescanInterrupted => "rescan_interrupted",
             Self::Storage { .. } => "storage",
             Self::Internal { .. } => "internal",
         }
@@ -501,6 +506,38 @@ pub enum CreditsError {
     /// spent.
     #[error("the earlier withdrawal {artifact} went through; this one does not")]
     WithdrawalLanded { artifact: String },
+    /// An earlier "Move to Dash wallet" of the wallet, `id`, is still
+    /// pending (release 0.1, m4 §2.12): its outcome is read first, so its
+    /// credits are not spent twice.
+    #[error("the move {id} is still pending")]
+    MovePending { id: String },
+    /// A send's recipient is no Platform address it may pay (0.2, m4
+    /// §2.12): a Core or shielded address, one of another network, one of
+    /// the wallet's own, or none.
+    #[error("not a Platform address a send may pay: {}", reason.as_str())]
+    RecipientInvalid {
+        reason: super::platform_addresses::RecipientProblem,
+    },
+    /// A send of fewer than `min` credits (Platform's output minimum), or
+    /// an amount the addresses' inputs cannot carry at the input minimum.
+    #[error("a Platform send takes at least {min} credits")]
+    SendOutOfRange { min: u64 },
+    /// The balances changed since the send was quoted, so signing it now
+    /// would take its fee from another address than the one its Confirm
+    /// named, or take another amount from that address. Nothing was signed
+    /// and the grant is unredeemed: quote it again and review it.
+    #[error("the balances changed since this send was quoted; quote it again")]
+    QuoteChanged,
+    /// An earlier "Add from Dash wallet" of the wallet is not applied yet:
+    /// its lock `txid` waits for its proof or for `resume_platform_fund`,
+    /// and a new one would fund a second lock while it pends.
+    #[error("the fund {txid} is not applied yet")]
+    FundPending { txid: String },
+    /// The asset lock would spend `inputs` coins, more than `max`: its
+    /// InstantSend proof would no longer fit the transition. Combine coins
+    /// first.
+    #[error("the asset lock would spend {inputs} coins, at most {max}")]
+    TooManyInputs { inputs: u64, max: u64 },
     #[error(transparent)]
     Platform(#[from] PlatformError),
 }
@@ -514,6 +551,135 @@ impl CreditsError {
             Self::TopUpPending { .. } => "credits.top_up_pending",
             Self::WithdrawalOutOfRange { .. } => "credits.withdrawal_out_of_range",
             Self::WithdrawalLanded { .. } => "credits.withdrawal_landed",
+            Self::MovePending { .. } => "credits.move_pending",
+            Self::RecipientInvalid { .. } => "credits.recipient_invalid",
+            Self::SendOutOfRange { .. } => "credits.send_out_of_range",
+            Self::QuoteChanged => "credits.quote_changed",
+            Self::FundPending { .. } => "credits.fund_pending",
+            Self::TooManyInputs { .. } => "credits.too_many_inputs",
+            Self::Platform(e) => e.code(),
+        }
+    }
+
+    pub fn platform(&self) -> Option<&PlatformError> {
+        match self {
+            Self::Platform(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// Shielded funds (m4 §2.13). Amounts in credits unless named duffs.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ShieldedError {
+    /// The network's protocol version is below the shielded pool's
+    /// activation: "Shielded is not active on this network yet".
+    #[error(
+        "shielded is not active on this network yet (protocol {protocol_version}, from {activation_version})"
+    )]
+    NotActive {
+        protocol_version: u32,
+        activation_version: u32,
+    },
+    /// Shielded is still syncing: what the call needs is not established
+    /// yet, and it clears on its own (`reason`, DEC-1058 #4). "Shielded is
+    /// still syncing; try again when it finishes." One exception for now:
+    /// `account` is also what a first bind returns when the vault cannot
+    /// give the viewing key (locked, mixing-only, or a watch-only wallet),
+    /// which does not clear by itself: it needs an unlock, or is not
+    /// supported (watch-only). It gets its own refusal in 0.1.x.
+    #[error("shielded is still syncing ({reason})")]
+    NotSynced { reason: ShieldedSyncWait },
+    /// `to` is not a shielded (or, for an unshield, Core) address of the
+    /// network.
+    #[error("not an address of this network: {detail}")]
+    InvalidAddress { detail: String },
+    /// The spendable shielded balance does not cover the spend and its fee.
+    #[error("insufficient shielded funds: {needed} credits needed, {available} available")]
+    InsufficientFunds { needed: u64, available: u64 },
+    /// The Core balance does not cover the asset lock and its fee (duffs).
+    #[error("insufficient funds: {needed} duffs needed, {available} available")]
+    FundingInsufficient { needed: u64, available: u64 },
+    /// The amount does not clear Platform's fee: at least `min` (duffs for a
+    /// shield, credits for a spend).
+    #[error("below the minimum of {min}")]
+    BelowMinimum { min: u64 },
+    /// A coin the funding account holds back would be selected (as
+    /// `credits.coins_locked`).
+    #[error("a locked coin of the funding accounts blocks the asset lock")]
+    CoinsLocked,
+    /// An earlier Core → Shielded lock is not applied yet: `resume_shield`
+    /// applies `txid` rather than funding again.
+    #[error("the shield {txid} is not applied yet")]
+    ShieldPending { txid: String },
+    /// The shield's asset lock would spend `inputs` coins, more than
+    /// `max`: its InstantSend proof would not fit a transition (from about
+    /// 65 inputs), which would strand the lock. "Combine coins first."
+    #[error("the shield needs {inputs} coins; at most {max} fit one asset lock")]
+    TooManyInputs { inputs: u64, max: u64 },
+    /// Platform refused a withdrawal from the pool because the pool holds
+    /// fewer than `required` notes (`InsufficientPoolNotesError`): "Shielded
+    /// withdrawals open once the network's shielded pool has enough
+    /// activity. Try again later." Shielding and shielded sends are exempt.
+    #[error("the shielded pool holds {notes} notes; withdrawals need {required}")]
+    PoolTooSmall { notes: u64, required: u64 },
+    /// The wallet has a shielded payment of unknown result whose record
+    /// was lost (`ShieldedStatus::unrecorded_spends`, DEC-1057): it may
+    /// still go through, and its notes read unspent. A send or unshield
+    /// runs only when confirmed (`confirm_unrecorded`): "A shielded
+    /// payment from before the restart may still go through; confirm to
+    /// send anyway." Nothing was selected or signed.
+    #[error(
+        "a shielded payment from before the restart may still go through; confirm to send anyway"
+    )]
+    UnrecordedSpend,
+    /// "Move mixed coins": the wallet mixes; stop mixing first.
+    #[error("stop mixing first")]
+    MixingActive,
+    /// "Move mixed coins": the CoinJoin account has no coins.
+    #[error("no mixed coins to move")]
+    NothingToMove,
+    /// "Move mixed coins": `coins` of the CoinJoin account are not in a
+    /// block yet, and the move takes them all.
+    #[error("{coins} mixed coins are not confirmed yet")]
+    CoinsUnconfirmed { coins: u64 },
+    /// "Move mixed coins": another move of the wallet's mixed coins (a
+    /// sweep, a consolidation, a send again of its chunks) runs.
+    #[error("a move of the mixed coins is running")]
+    MoveRunning,
+    /// "Move mixed coins": the drain's signer met a coin outside its plan
+    /// or past its grant, so the CoinJoin account changed since the quote;
+    /// nothing was tracked or sent. Quote again.
+    #[error("the mixed coins changed since the move was planned: review it again")]
+    CoinsChanged,
+    #[error(transparent)]
+    Platform(#[from] PlatformError),
+}
+
+impl ShieldedError {
+    /// `shielded.not_synced` waiting for `reason`.
+    pub(crate) fn not_synced(reason: ShieldedSyncWait) -> Self {
+        Self::NotSynced { reason }
+    }
+
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::NotActive { .. } => "shielded.not_active",
+            Self::NotSynced { .. } => "shielded.not_synced",
+            Self::InvalidAddress { .. } => "shielded.invalid_address",
+            Self::InsufficientFunds { .. } => "shielded.insufficient_funds",
+            Self::FundingInsufficient { .. } => "shielded.funding_insufficient",
+            Self::BelowMinimum { .. } => "shielded.below_minimum",
+            Self::CoinsLocked => "shielded.coins_locked",
+            Self::ShieldPending { .. } => "shielded.shield_pending",
+            Self::PoolTooSmall { .. } => "shielded.pool_too_small",
+            Self::TooManyInputs { .. } => "shielded.too_many_inputs",
+            Self::UnrecordedSpend => "shielded.unrecorded_spend",
+            Self::MixingActive => "shielded.mixing_active",
+            Self::NothingToMove => "shielded.nothing_to_move",
+            Self::CoinsUnconfirmed { .. } => "shielded.coins_unconfirmed",
+            Self::MoveRunning => "shielded.move_running",
+            Self::CoinsChanged => "shielded.coins_changed",
             Self::Platform(e) => e.code(),
         }
     }
@@ -681,6 +847,9 @@ impl From<crate::EngineError> for PlatformError {
             }
             E::NetworkNotOpen(_) => Self::NetworkNotOpen,
             E::WalletNotFound(_) => Self::WalletNotFound,
+            // A replay that runs: a wait for sync, as `PwLib::fence` reports it.
+            E::RescanInProgress => Self::ContextUnavailable,
+            E::RescanInterrupted => Self::RescanInterrupted,
             e @ (E::Storage(_) | E::StorageInUse(_) | E::StorageTooNew(_) | E::Io(_)) => {
                 Self::Storage {
                     detail: e.to_string(),
@@ -715,6 +884,11 @@ mod mapping_tests {
                 "network_not_open",
             ),
             (EngineError::WalletNotFound("w".into()), "wallet_not_found"),
+            (
+                EngineError::RescanInProgress,
+                "platform.context_unavailable",
+            ),
+            (EngineError::RescanInterrupted, "rescan_interrupted"),
             (EngineError::Storage("disk".into()), "storage"),
             (
                 EngineError::InsufficientCredits {

@@ -119,6 +119,20 @@ describe("the top-up sheet (IOS-069, AND-078)", () => {
     expect(topUpErrorText(appError("platform.context_unavailable"), amount)).toBe("Waiting for the network to sync and verify this identity. Try again shortly.");
     expect(topUpErrorText(appError("platform.trust_mismatch"), amount)).toBe("This identity's data could not be verified against the network. Nothing was paid.");
     expect(topUpErrorText(appError("platform.will_be_sent"), amount)).toBe("The payment is still being sent. Try again in a minute.");
+    expect(topUpErrorText(appError("rescan_interrupted"), amount)).toBe("The last rescan was interrupted. Finish it in Repair ▸ Rescan before sending.");
+  });
+
+  it("review r3 R3-m2: a refusal with a detail shows the detail (the 50-coin bound and its advice)", () => {
+    // The engine's message for 51 coins, as lock_inputs_tests.rs pins it.
+    const tooMany = appError(
+      "invalid_argument",
+      null,
+      "invalid argument: this payment would use 51 coins and at most 50 can be used: send Dash to your own wallet first to combine them, then try again",
+    );
+    expect(topUpErrorText(tooMany, amount)).toBe(
+      "This payment would use 51 coins and at most 50 can be used: send Dash to your own wallet first to combine them, then try again.",
+    );
+    expect(topUpErrorText(appError("invalid_argument"), amount)).toBe("It stopped with invalid_argument.");
   });
 
   it("D14: an unseen result is dropped once a row's call or Repair overtakes it", async () => {

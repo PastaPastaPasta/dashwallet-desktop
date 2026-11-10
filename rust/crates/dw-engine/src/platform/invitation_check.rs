@@ -16,6 +16,7 @@ use dashcore::consensus::Decodable;
 use dashcore::ephemerealdata::instant_lock::InstantLock;
 use dashcore::{Network, OutPoint, Transaction};
 use dpp::prelude::Identifier;
+use dpp::version::PlatformVersion;
 use dw_uri::deeplink::normalize_invitation;
 use platform_wallet::wallet::identity::crypto::invitation::{
     ParsedInvitation, parse_invitation_uri, voucher_credit_output, wif_network_matches,
@@ -25,7 +26,7 @@ use zeroize::Zeroizing;
 use super::errors::PlatformError;
 use super::invitations::InvitationInvalidReason;
 use super::payments::Counterparty;
-use super::registration_flow::{CONTESTED_LOCK_DUFFS, identity_for};
+use super::registration_flow::{contested_lock_duffs, identity_for};
 use super::trust::BoxFuture;
 
 /// Attempts of the funding transaction's fetch, both byte orders each, as
@@ -85,9 +86,10 @@ pub(crate) enum Checked {
 }
 
 impl Checked {
-    /// A contested name needs at least DP1-02's contested lock (D5).
-    pub(crate) fn contested_allowed(funding_duffs: u64) -> bool {
-        funding_duffs >= CONTESTED_LOCK_DUFFS
+    /// A contested name needs at least DP1-02's contested lock (D5) at the
+    /// network's rules `version`.
+    pub(crate) fn contested_allowed(funding_duffs: u64, version: &PlatformVersion) -> bool {
+        funding_duffs >= contested_lock_duffs(version)
     }
 }
 

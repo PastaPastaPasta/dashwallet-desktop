@@ -15,12 +15,13 @@ use key_wallet::Network;
 use key_wallet::bip32::{ChildNumber, DerivationPath};
 use key_wallet::dip9::{
     DASHPAY_CONTACT_INFO_ENC_TO_USER_ID_CHILD, DASHPAY_CONTACT_INFO_PRIVATE_DATA_CHILD,
-    FEATURE_PURPOSE, FEATURE_PURPOSE_COINJOIN, FEATURE_PURPOSE_DASHPAY,
-    FEATURE_PURPOSE_DASHPAY_AUTO_ACCEPT, FEATURE_PURPOSE_IDENTITIES,
+    FEATURE_PURPOSE, FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_ADDRESS_TOPUP,
+    FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP, FEATURE_PURPOSE_COINJOIN,
+    FEATURE_PURPOSE_DASHPAY, FEATURE_PURPOSE_DASHPAY_AUTO_ACCEPT, FEATURE_PURPOSE_IDENTITIES,
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_AUTHENTICATION,
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS,
     FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION,
-    FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP,
+    FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP, FEATURE_PURPOSE_PLATFORM_PAYMENT,
 };
 
 /// BIP44 purpose.
@@ -119,6 +120,33 @@ pub fn is_coinjoin_path(path: &DerivationPath, network: Network) -> bool {
     p.len() >= 4 && has_dip9_feature(p, network, FEATURE_PURPOSE_COINJOIN)
 }
 
+/// An address key of CoinJoin account 0, `m/9'/coin'/4'/0'/{0,1}/index`
+/// (key-wallet `ManagedAccountType::CoinJoin`'s external and internal
+/// pools): the coins "Move mixed coins" drains into a Shielded lock. Other
+/// CoinJoin accounts, the account node and hardened children are refused.
+pub fn is_coinjoin_address(path: &DerivationPath, network: Network) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    p.len() == 6
+        && has_dip9_feature(p, network, FEATURE_PURPOSE_COINJOIN)
+        && is_hardened(&p[3], 0)
+        && is_chain_and_index(&p[4..])
+}
+
+/// A shielded top-up credit key `m/9'/coin'/5'/5'/index`, `index`
+/// non-hardened (key-wallet `AccountType::AssetLockShieldedAddressTopUp`):
+/// the one-time key of a Core → Shielded lock. Registration, top-up and
+/// invitation credit keys are refused.
+pub fn is_shielded_top_up_credit_key(path: &DerivationPath, network: Network) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    p.len() == 5
+        && has_dip9_feature(p, network, FEATURE_PURPOSE_IDENTITIES)
+        && is_hardened(
+            &p[3],
+            FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP,
+        )
+        && is_normal(&p[4])
+}
+
 /// Whether `path` lies inside a BIP44 account of `network`
 /// (`m/44'/coin'/account'/…`, the account a 31-bit hardened step).
 pub fn is_bip44_path(path: &DerivationPath, network: Network) -> bool {
@@ -213,10 +241,20 @@ fn is_chain_and_index(p: &[ChildNumber]) -> bool {
 
 /// An asset-lock credit key under `m/9'/coin'/5'`: registration
 /// `1'/index`, top-up `2'/index` or `2'/identity'/index`, invitation
-/// `3'/index` (key-wallet `AccountType::Identity*`, whose pools use
-/// non-hardened indices). A hardened last step is refused, so no credit key
+/// `3'/index` (key-wallet `AccountType::Identity*`), Platform address
+/// top-up `4'/index` (`AccountType::AssetLockAddressTopUp`, 0.2 X1b's
+/// Core → own Platform address), shielded top-up `5'/index`
+/// (`AccountType::AssetLockShieldedAddressTopUp`, 0.1 E1's Core →
+/// Shielded), all of whose pools use non-hardened indices. A hardened last step is refused, so no credit key
 /// is ever the top-up account node itself
 /// ([`is_identity_top_up_account`]).
+///
+/// The wallet holds the `4'` and `5'` account xpubs (platform-wallet builds
+/// those locks from them), so no scope allows `KeyUse::Export` of one of
+/// these keys, `SignerScope::Full` included: a non-hardened child private
+/// key next to its account xpub reveals the account xpriv. Nor of their
+/// account nodes ([`is_asset_lock_credit_account`]). A credit key only
+/// signs and gives its public key.
 ///
 /// Before invitation creation (roadmap X3) exports an invitation key:
 /// platform-wallet documents it as hardened (`m/9'/coin'/5'/3'/index'`,
@@ -233,12 +271,58 @@ pub fn is_asset_lock_credit_key(path: &DerivationPath, network: Network) -> bool
     match (hardened_index(&p[3]), p.len()) {
         (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION), 5)
         | (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP), 5)
-        | (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS), 5) => leaf,
+        | (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS), 5)
+        | (Some(FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_ADDRESS_TOPUP), 5)
+        | (Some(FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP), 5) => leaf,
         (Some(FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP), 6) => {
             hardened_index(&p[4]).is_some() && leaf
         }
         _ => false,
     }
+}
+
+/// The account node of an asset-lock credit key
+/// ([`is_asset_lock_credit_key`]): `m/9'/coin'/5'/sub'` for the
+/// registration, top-up, invitation, Platform address and shielded top-up
+/// subfeatures, and an identity's top-up account `2'/identity'`
+/// ([`is_identity_top_up_account`]). Its private key derives every credit
+/// key below it, so no scope allows `KeyUse::Export` of one either. Its
+/// ancestors (`m/9'/coin'/5'`, `m/9'/coin'`, `m/9'`) derive them too and are
+/// not refused here, as `m` is not: the only `Export`s are the auto-accept
+/// key (`16'/…`) and the scan's master key (`m`, by design), so no
+/// operation reaches an ancestor, and a new `Export` of one is a new
+/// operation to rule on.
+pub fn is_asset_lock_credit_account(path: &DerivationPath, network: Network) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    if !has_dip9_feature(p, network, FEATURE_PURPOSE_IDENTITIES) {
+        return false;
+    }
+    let subfeature = p.len() == 4
+        && matches!(
+            hardened_index(&p[3]),
+            Some(
+                FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_REGISTRATION
+                    | FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_TOPUP
+                    | FEATURE_PURPOSE_IDENTITIES_SUBFEATURE_INVITATIONS
+                    | FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_ADDRESS_TOPUP
+                    | FEATURE_PURPOSE_ASSET_LOCK_SUBFEATURE_SHIELDED_ADDRESS_TOPUP
+            )
+        );
+    subfeature || is_identity_top_up_account(path, network)
+}
+
+/// A DIP-17 Platform payment address key of account 0, key class 0
+/// (`m/9'/coin'/17'/0'/0'/index`, key-wallet `AccountType::PlatformPayment`,
+/// whose pool appends a non-hardened index): the one account the engine's
+/// Platform addresses use (release 0.1). Other accounts and key classes are
+/// not reached.
+pub fn is_platform_payment_address(path: &DerivationPath, network: Network) -> bool {
+    let p: &[ChildNumber] = path.as_ref();
+    p.len() == 6
+        && has_dip9_feature(p, network, FEATURE_PURPOSE_PLATFORM_PAYMENT)
+        && is_hardened(&p[3], 0)
+        && is_hardened(&p[4], 0)
+        && is_normal(&p[5])
 }
 
 /// The top-up account of one identity, `m/9'/coin'/5'/2'/identity'`
@@ -274,6 +358,47 @@ mod tests {
         ];
         p.extend(extra);
         p.into()
+    }
+
+    #[test]
+    fn coinjoin_address_and_shielded_credit_key_shapes() {
+        for ok in ["m/9'/1'/4'/0'/0/0", "m/9'/1'/4'/0'/1/41"] {
+            assert!(is_coinjoin_address(&path(ok), Network::Testnet), "{ok}");
+            assert!(!is_coinjoin_address(&path(ok), Network::Mainnet), "{ok}");
+        }
+        for bad in [
+            "m/9'/1'/4'/1'/0/0",
+            "m/9'/1'/4'/0'/2/0",
+            "m/9'/1'/4'/0'/0/0'",
+            "m/9'/1'/4'/0'/0",
+            "m/9'/1'/4'/0'",
+            "m/9'/1'/4'/0'/0/0/0",
+            "m/44'/1'/0'/0/0",
+        ] {
+            assert!(!is_coinjoin_address(&path(bad), Network::Testnet), "{bad}");
+        }
+        assert!(is_shielded_top_up_credit_key(
+            &path("m/9'/1'/5'/5'/3"),
+            Network::Testnet
+        ));
+        assert!(is_shielded_top_up_credit_key(
+            &path("m/9'/5'/5'/5'/0"),
+            Network::Mainnet
+        ));
+        for bad in [
+            "m/9'/1'/5'/5'/3'",
+            "m/9'/1'/5'/5'",
+            "m/9'/1'/5'/1'/0",
+            "m/9'/1'/5'/2'/0",
+            "m/9'/1'/5'/3'/0",
+            "m/9'/1'/5'/5'/0/0",
+            "m/9'/5'/5'/5'/0",
+        ] {
+            assert!(
+                !is_shielded_top_up_credit_key(&path(bad), Network::Testnet),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -445,7 +570,7 @@ mod tests {
         let bip32: Shape = |p, _| is_bip32_address(p);
         let identity: Shape = |p, n| identity_auth_key(p, n).is_some();
         // (shape, a matching path, the dynamic steps, hardened?)
-        let cases: [(&str, Shape, DerivationPath, &[usize], bool); 15] = [
+        let cases: [(&str, Shape, DerivationPath, &[usize], bool); 17] = [
             (
                 "identity",
                 identity,
@@ -508,6 +633,20 @@ mod tests {
                 "credit key leaf",
                 is_asset_lock_credit_key,
                 path("m/9'/1'/5'/1'/4"),
+                &[4],
+                false,
+            ),
+            (
+                "address top-up credit key leaf",
+                is_asset_lock_credit_key,
+                path("m/9'/1'/5'/4'/4"),
+                &[4],
+                false,
+            ),
+            (
+                "shielded top-up credit key leaf",
+                is_asset_lock_credit_key,
+                path("m/9'/1'/5'/5'/4"),
                 &[4],
                 false,
             ),
@@ -578,13 +717,26 @@ mod tests {
             "m/9'/1'/5'/2'/3",
             "m/9'/1'/5'/2'/0'/3",
             "m/9'/1'/5'/3'/2",
+            "m/9'/1'/5'/4'/0",
+            "m/9'/1'/5'/4'/7",
+            "m/9'/1'/5'/5'/0",
         ] {
             assert!(is_asset_lock_credit_key(&path(ok), t), "{ok}");
         }
         for bad in [
             "m/9'/1'/5'/0'/0'",       // identity authentication
             "m/9'/1'/5'/0'/0'/0'/0'", // an identity key
-            "m/9'/1'/5'/4'/0",        // address top-up (not in scope)
+            "m/9'/1'/5'/4'/0'",       // address top-up: hardened leaf
+            "m/9'/1'/5'/4'/0'/0",     // address top-up: another account
+            "m/9'/1'/5'/4'/0/0",      // address top-up: too deep
+            "m/9'/1'/5'/4'",          // the address top-up account node
+            "m/9'/5'/5'/4'/0",        // address top-up: mainnet coin on testnet
+            "m/9'/1'/17'/4'/0",       // another feature (Platform payment)
+            "m/9'/1'/4'/4'/0",        // another feature
+            "m/9'/1'/5'/6'/0",        // an unknown asset-lock subfeature
+            "m/9'/1'/5'/5'/0'",       // hardened leaf
+            "m/9'/1'/5'/5'/0/0",
+            "m/9'/1'/5'/5'",
             "m/9'/1'/5'/1'",
             "m/9'/1'/5'/1'/4'", // hardened leaf
             "m/9'/1'/5'/2'/0'", // the top-up account node
@@ -596,6 +748,23 @@ mod tests {
             "m/9'/1'/4'/1'/0",
         ] {
             assert!(!is_asset_lock_credit_key(&path(bad), t), "{bad}");
+        }
+        // A subfeature step past 31 bits aliases none of the asset-lock pools.
+        for sub in [1, 2, 3, 4, 5] {
+            let aliased: DerivationPath = vec![
+                ChildNumber::Hardened { index: 9 },
+                ChildNumber::Hardened { index: 1 },
+                ChildNumber::Hardened { index: 5 },
+                ChildNumber::Hardened {
+                    index: INDEX_LIMIT | sub,
+                },
+                ChildNumber::Normal { index: 0 },
+            ]
+            .into();
+            assert!(
+                !is_asset_lock_credit_key(&aliased, t),
+                "{sub}' past 31 bits"
+            );
         }
         assert!(is_identity_top_up_account(&path("m/9'/1'/5'/2'/0'"), t));
         for bad in [

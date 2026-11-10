@@ -3,18 +3,19 @@
 // Review opens the confirm sheet, which authenticates, signs and sends; the result follows.
 
 import { useCallback, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { keys, useBackend, useBalance, useLockStatus } from "../../api/queries";
-import { navigate, ui, type PayPrefill } from "../../app/ui";
+import { useBackend, useLockStatus } from "../../api/queries";
+import { ui, type PayPrefill } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton } from "../../components/basics";
 import { AddressBookPicker } from "../tools/AddressBook";
 import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAmountField, useEstimate, useMax, type Phase } from "./form";
-import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced, type Outcome } from "./model";
+import { PayFromPlatform } from "./PayFromPlatform";
+import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
+import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced } from "./model";
 import { ResultSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
 
@@ -31,21 +32,28 @@ export function PayToAddress({
   network: NetworkInfo;
 }) {
   const b = useBackend();
-  const client = useQueryClient();
   const shown = useDisplay(network);
   const locked = useLockStatus().data?.state === "locked";
   const draft = useDraft(walletId, locked);
-  const balance = useBalance(walletId);
 
   const [address, setAddress] = useState(prefill?.address ?? "");
-  const amount = useAmountField(shown, prefill?.amount ? shown.full(prefill.amount) : "");
+  const amount = usePayAmount(shown, prefill?.amount ? shown.full(prefill.amount) : "");
   // Settings ▸ General's default starts each new form (U-04 D5); Max still turns it on.
   const subtractFeeByDefault = () => ui.get().prefs.subtractFeeByDefault;
   const [subtractFee, setSubtractFee] = useState(subtractFeeByDefault);
   const [label, setLabel] = useState(prefill?.label ?? "");
   const [message, setMessage] = useState(prefill?.message ?? "");
   const [advanced, setAdvanced] = useState<Advanced>(coins?.length ? { ...DEFAULT_ADVANCED, coins: "selected", selected: coins } : DEFAULT_ADVANCED);
-  const [phase, setPhase] = useState<Phase>({ kind: "editing" });
+  // A payment that went, or may have, ends the form: paying again is a new payment.
+  const sheets = usePaySheets(walletId, draft, () => {
+    setAddress("");
+    amount.setText("");
+    setSubtractFee(subtractFeeByDefault());
+    setLabel("");
+    setMessage("");
+    setAdvanced(DEFAULT_ADVANCED);
+  });
+  const { phase } = sheets;
   // Closing the confirm or result sheet returns to Review, or to the address of a cleared form.
   const reviewButton = useRef<HTMLButtonElement>(null);
   const addressField = useRef<HTMLInputElement>(null);
@@ -71,6 +79,8 @@ export function PayToAddress({
   });
 
   const addrError = checkedAddr !== "" && addrClass.data ? addressProblem(addrClass.data) : null;
+  // A Platform address is paid from the Platform balance (platform/send.ts), not by a Core draft.
+  const platform = checkedAddr !== "" && checkedAddr === addr && addrClass.data?.kind === "platform";
   const { duffs } = amount;
 
   const recipient =
@@ -78,35 +88,17 @@ export function PayToAddress({
       ? recipientOf({ address: checkedAddr, amount: duffs, subtractFee, label, message })
       : null;
   const spec = draftSpec(recipient, advanced);
+  const available = useAvailable(walletId, advanced, sheets.held);
 
-  const { estimate, general: generalError, fieldError, ready: estimated } = useEstimate(walletId, draft, spec, advanced, locked, shown);
-  const ready = estimated && settled;
+  const { estimate, general: generalError, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || sheets.held, shown);
+  const ready = estimated && settled && !amount.fiat.error;
   const max = useMax(walletId, advanced, shown, (text) => {
     amount.setText(text);
     setSubtractFee(true);
   });
 
   const review = () => {
-    if (ready && estimate.data && spec) setPhase({ kind: "confirm", confirmed: confirmedOf(spec.recipient, estimate.data, spec.change), spec });
-  };
-
-  /** A payment left the editing form behind: start a new one (the draft too). */
-  const reset = () => {
-    setAddress("");
-    amount.setText("");
-    setSubtractFee(subtractFeeByDefault());
-    setLabel("");
-    setMessage("");
-    setAdvanced(DEFAULT_ADVANCED);
-    void draft.close();
-    void client.invalidateQueries({ queryKey: keys.coinsAll(walletId) });
-  };
-
-  const finish = (outcome: Outcome, show: boolean) => {
-    // A sent payment, and one that may have been, ends the form: paying again is a new payment.
-    if (outcome.kind !== "failed") reset();
-    setPhase({ kind: "editing" });
-    if (show && outcome.kind === "sent") navigate("activity", { detail: outcome.txid });
+    if (ready && estimate.data && spec) sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change), spec);
   };
 
   return (
@@ -145,12 +137,17 @@ export function PayToAddress({
               </span>
             )}
           </FormField>
+          {platform ? (
+            <PayFromPlatform walletId={walletId} network={network} to={checkedAddr} amount={amount} onSent={() => setAddress("")} />
+          ) : (
+            <>
           <AmountFields
             shown={shown}
             amount={amount}
             max={max}
             error={fieldError("amount")}
-            available={balance.data?.confirmed}
+            available={available}
+            coins={advanced.coins}
             subtractFee={subtractFee}
             onSubtractFee={setSubtractFee}
           />
@@ -160,9 +157,15 @@ export function PayToAddress({
           <FormField label="Message" hint="Kept with the transaction in this wallet; not sent to the payee.">
             {(p) => <input {...p} data-testid="pay-message" value={message} autoComplete="off" onChange={(e) => setMessage(e.target.value)} />}
           </FormField>
+            </>
+          )}
         </section>
-        <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
-        <PayFooter problem={generalError} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} reviewRef={reviewButton} />
+        {!platform && (
+          <>
+            <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
+            <PayFooter problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
+          </>
+        )}
       </form>
       {picking && <AddressBookPicker walletId={walletId} network={network} purpose="send" onChoose={chosen} onClose={() => setPicking(false)} />}
       {phase.kind === "confirm" && (
@@ -174,8 +177,8 @@ export function PayToAddress({
           network={network}
           draft={draft}
           returnFocus={backToForm}
-          onCancel={() => setPhase({ kind: "editing" })}
-          onOutcome={(outcome) => setPhase({ kind: "result", outcome })}
+          onCancel={sheets.cancel}
+          onOutcome={sheets.outcome}
         />
       )}
       {phase.kind === "result" && (
@@ -184,8 +187,8 @@ export function PayToAddress({
           network={network}
           draft={draft}
           returnFocus={backToForm}
-          onOutcome={(outcome) => setPhase({ kind: "result", outcome })}
-          onDone={(show) => finish(phase.outcome, show)}
+          onOutcome={sheets.outcome}
+          onDone={sheets.done}
         />
       )}
     </>

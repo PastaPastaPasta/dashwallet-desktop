@@ -13,6 +13,9 @@ use std::time::{Duration, Instant};
 
 use dashcore::hashes::Hash;
 use dashcore::{OutPoint, Txid};
+use dpp::version::PlatformVersion;
+use dpp::version::v13::PROTOCOL_VERSION_13;
+use dpp::version::v14::PROTOCOL_VERSION_14;
 use dw_appdb::{AppDb, NewRegistration, RegistrationChange, RegistrationRow};
 use dw_vault::{
     Credential, GrantPurpose, KdfParams, KdfPolicy, LockState, MemoryOsStore, VaultConfig,
@@ -20,7 +23,7 @@ use dw_vault::{
 use zeroize::Zeroizing;
 
 use super::errors::{NameError, PlatformError, RegistrationError};
-use super::flows::FlowKind;
+use super::flows::{BudgetPurpose, FlowKind};
 use super::lease::mode_b::{TrackedRow, TrackedStatus, index_trusted};
 use super::lease::{CallPermit, FundingKey, Lease, StoredLock};
 use super::names::NameOutcome;
@@ -430,6 +433,9 @@ struct World {
     profiles: BTreeMap<String, ProfileRecord>,
     /// `register_name` fails with this (MJ-1).
     name_error: Option<NameError>,
+    /// A replay's refusal (0.1.x-bal §1), `funding_permit`'s as
+    /// `PwLib::fence`'s.
+    replay: Option<PlatformError>,
     /// Publishing a profile fails with this (MJ-1).
     profile_error: Option<PlatformError>,
     /// With `profile_error`: the put landed all the same (an earlier put
@@ -452,6 +458,9 @@ struct World {
     fund_script: Option<FundScript>,
     hang: Option<(Call, When)>,
     contested: BTreeSet<String>,
+    /// The network's protocol version `platform_version` answers; `None`:
+    /// 13, mainnet's and testnet's floor at the pin.
+    protocol_version: Option<u32>,
     /// The proof `wait_proof` delivers (`None`: it times out).
     proof_arrives: bool,
     /// Every `wait_proof` bound asked for.
@@ -652,6 +661,10 @@ impl RegistrationLib for Fake {
         Ok(self.w().spendable)
     }
 
+    async fn replay_refusal(&self) -> Option<PlatformError> {
+        self.w().replay.clone()
+    }
+
     fn funding_hold(&self) -> Option<RegistrationWait> {
         if self.startup_hold.load(Ordering::SeqCst) {
             let session = self.session.upgrade().expect("the fixture's session");
@@ -670,6 +683,9 @@ impl RegistrationLib for Fake {
         key: FundingKey,
         lock_duffs: u64,
     ) -> Result<CallPermit, FundError> {
+        if let Some(e) = self.w().replay.clone() {
+            return Err(FundError::Refused(e));
+        }
         if self.permit_hold.load(Ordering::SeqCst) {
             self.hung.store(true, Ordering::SeqCst);
             while self.permit_hold.load(Ordering::SeqCst) {
@@ -991,6 +1007,11 @@ impl RegistrationLib for Fake {
 
     async fn name_credits(&self, _: &str) -> Result<u64, NameError> {
         Ok(NAME_CREDITS)
+    }
+
+    async fn platform_version(&self) -> &'static PlatformVersion {
+        let version = self.w().protocol_version.unwrap_or(PROTOCOL_VERSION_13);
+        PlatformVersion::get(version).unwrap()
     }
 
     async fn credit_balance(&self, _: &str) -> Result<Option<u64>, PlatformError> {
@@ -1481,7 +1502,17 @@ fn the_funding_cap_and_balance_are_checked_before_a_row_exists() {
         .block_on(registration::quote(&*lib, &request(CONTESTED)))
         .unwrap();
     assert!(contested.contested);
-    assert_eq!(contested.lock_duffs, flow::CONTESTED_LOCK_DUFFS);
+    // 0.25 DASH before protocol version 14 (iOS's figure)...
+    assert_eq!(contested.lock_duffs, 25_000_000);
+    // ...0.15 DASH from it, where the contest fund fell to 0.1 DASH.
+    lib.w().protocol_version = Some(PROTOCOL_VERSION_14);
+    let cheaper = f
+        .engine
+        .block_on(registration::quote(&*lib, &request(CONTESTED)))
+        .unwrap();
+    assert_eq!(cheaper.lock_duffs, 15_000_000);
+    assert_eq!(cheaper.fee_duffs, contested.fee_duffs);
+    lib.w().protocol_version = None;
 
     // One duff short of the cap.
     let g = f.grant(
@@ -1580,6 +1611,70 @@ fn the_funding_step_refuses_a_lock_past_the_lease_cap() {
         .unwrap();
     f.settle(draft);
     assert_eq!(phase(&f.row(draft)), Phase::Done);
+}
+
+/// 0.1.x-bal §1: a funding refused because a replay runs (`PwLib::fence`)
+/// waits for sync, as `funding_hold` does, not for the network, also when
+/// the replay's re-credits read as held coins (no `CoinsLocked`); it funds
+/// once the replay is done.
+#[test]
+fn a_funding_refused_during_a_replay_waits_for_sync() {
+    for protected in [0, 1] {
+        let f = fixture(false);
+        let lib = f.fake();
+        let draft = f.insert(core_row(PLAIN));
+        lib.w().replay = Some(PlatformError::ContextUnavailable);
+        lib.w().spendable.protected = protected;
+        let g = f.grant(COIN, 10 * COIN * 1000, Credential::None);
+        let lease = f
+            .engine
+            .block_on(
+                f.session
+                    .begin_lease(f.wallet, FlowKind::Registration, &[g]),
+            )
+            .unwrap();
+        f.spawn(&lib, draft, Some(lease));
+        // The call sets `InstantSend` before the refused permit.
+        eventually("the funding waits for sync", || {
+            f.status(&lib, draft).waiting == Some(RegistrationWait::Sync)
+        });
+        assert_eq!((f.row(draft).error, lib.w().funds), (None, 0));
+        (lib.w().replay, lib.w().spendable.protected) = (None, 0);
+        f.settle(draft);
+        assert_eq!(phase(&f.row(draft)), Phase::Done);
+    }
+}
+
+/// 0.1.x-bal §1: a rescan the user stopped part way holds the funding
+/// until a rescan runs again, which nothing waits for: the step fails
+/// `rescan_interrupted` (retryable), also with held coins, and funds once
+/// the rescan has run.
+#[test]
+fn a_funding_after_a_cancelled_rescan_fails_until_it_runs_again() {
+    for protected in [0, 1] {
+        let f = fixture(false);
+        let lib = f.fake();
+        let draft = f.insert(core_row(PLAIN));
+        lib.w().replay = Some(PlatformError::RescanInterrupted);
+        lib.w().spendable.protected = protected;
+        let g = f.grant(COIN, 10 * COIN * 1000, Credential::None);
+        let lease = (f.engine)
+            .block_on(
+                f.session
+                    .begin_lease(f.wallet, FlowKind::Registration, &[g]),
+            )
+            .unwrap();
+        f.drive(&lib, draft, Some(lease), false);
+        let status = f.status(&lib, draft);
+        assert_eq!(status.waiting, None);
+        assert_eq!(status.failure.unwrap().code, "rescan_interrupted");
+        assert_eq!(lib.w().funds, 0);
+        (lib.w().replay, lib.w().spendable.protected) = (None, 0);
+        let g = f.grant(COIN, 10 * COIN * 1000, Credential::None);
+        resume(&f, &lib, draft, Some(g));
+        f.settle(draft);
+        assert_eq!(phase(&f.row(draft)), Phase::Done);
+    }
 }
 
 /// Restore rule 2: a restored row behind reality adopts the lock the other
@@ -2702,6 +2797,47 @@ fn unknown_funding_with_tracked_lock_still_refuses_discard() {
     assert_eq!(status.failure.unwrap().code, "registration.unsupported");
     assert!(f.discard(&lib, draft).is_err());
     assert_eq!(f.rows().len(), 1);
+}
+
+/// 0.1.x-bal §1: while a replay runs (here one no event announced) a held
+/// coin is no `CoinsLocked`: `PwLib::fence` refuses for the replay first.
+#[test]
+fn a_replay_outranks_a_held_coin() {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    let f = fixture(false);
+    let (wallet, outpoint) = f.coin();
+    f.engine
+        .block_on(f.session.lock_outpoints(f.wallet, vec![outpoint]))
+        .unwrap();
+    let lib = f.pw_lib(&wallet);
+    let checkpoint = |height| {
+        (f.engine).block_on(async {
+            (lib.wallet.state_mut().await.core_wallet).update_synced_height(height)
+        })
+    };
+    checkpoint(1_000);
+    (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: f.wallet.0,
+        height: 1_000,
+    });
+    let fence = || f.engine.block_on(lib.fence()).map(drop);
+    assert_eq!(fence(), Err(FundError::CoinsLocked));
+    checkpoint(500);
+    assert_eq!(
+        f.engine.block_on(lib.replay_refusal()),
+        Some(PlatformError::ContextUnavailable)
+    );
+    assert_eq!(
+        fence(),
+        Err(FundError::Refused(PlatformError::ContextUnavailable))
+    );
+    // A cancelled rescan's hold: refused, not a wait.
+    checkpoint(1_000);
+    (f.session.hub).update_wallet_state(f.wallet, |s| s.replay_cancelled = Some(500));
+    assert_eq!(
+        fence(),
+        Err(FundError::Refused(PlatformError::RescanInterrupted))
+    );
 }
 
 /// R1-07: a user-locked coin is outside the funding balance, and since the
@@ -4134,3 +4270,249 @@ mod invitation;
 mod ledger;
 mod rules;
 mod step2;
+
+/// Review r2 R2-m3: the funding of a registration or top-up (one
+/// `PwLib::fund_lock`, `topup.rs`'s `fund` too) spends at most 50 coins. A
+/// lock only 51 of the wallet's coins reach is refused before anything is
+/// selected or signed: no signature released, no coin reserved.
+#[test]
+fn a_lock_needing_more_than_fifty_coins_is_refused_before_signing() {
+    let f = fixture(false);
+    let wallet = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+    // 50 of them fall short of the lock; all 51 cover it and the fee.
+    let value = flow::LOCK_DUFFS / 51 + 1_000;
+    let coins: Vec<OutPoint> = f.engine.block_on(async {
+        let address = wallet
+            .core()
+            .next_receive_address_for_account(0)
+            .await
+            .unwrap();
+        let mut state = wallet.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        (0..51)
+            .map(|vout| {
+                let outpoint = OutPoint::new(Txid::from_byte_array([0xed; 32]), vout);
+                let mut utxo = key_wallet::Utxo::new(
+                    outpoint,
+                    dashcore::TxOut {
+                        value,
+                        script_pubkey: address.script_pubkey(),
+                    },
+                    address.clone(),
+                    1,
+                    false,
+                );
+                utxo.is_confirmed = true;
+                account.utxos.insert(outpoint, utxo);
+                outpoint
+            })
+            .collect()
+    });
+    let lib = f.pw_lib(&wallet);
+    let lease = f.lease();
+    let draft = prepared(&f, 1);
+    let (funded, released) = f.engine.block_on(async {
+        let call = permit(&lib, &lease, draft, 1).await.unwrap();
+        let funded = lib
+            .fund_lock(
+                platform_wallet::AssetLockFundingType::IdentityRegistration,
+                flow::LOCK_DUFFS,
+                1,
+                &call,
+            )
+            .await;
+        let released = call.signatures().released();
+        call.finish(false);
+        (funded, released)
+    });
+    let Err(FundError::Refused(PlatformError::InvalidArgument { detail })) = funded else {
+        panic!("{funded:?}")
+    };
+    assert!(detail.contains("would use 51 coins"), "{detail}");
+    assert_eq!(released, 0, "nothing signed");
+    assert!(
+        coins.iter().all(|c| !reads_reserved(&f, *c)),
+        "nothing selected"
+    );
+}
+
+/// 51 confirmed coins of `value` at txid 0xec…, on the wallet's BIP44 account.
+fn small_coins(f: &Fixture, wallet: &platform_wallet::PlatformWallet, value: u64) -> Vec<OutPoint> {
+    f.engine.block_on(async {
+        let address = wallet
+            .core()
+            .next_receive_address_for_account(0)
+            .await
+            .unwrap();
+        let mut state = wallet.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        (0..51)
+            .map(|vout| {
+                let outpoint = OutPoint::new(Txid::from_byte_array([0xec; 32]), vout);
+                let mut utxo = key_wallet::Utxo::new(
+                    outpoint,
+                    dashcore::TxOut {
+                        value,
+                        script_pubkey: address.script_pubkey(),
+                    },
+                    address.clone(),
+                    1,
+                    false,
+                );
+                utxo.is_confirmed = true;
+                account.utxos.insert(outpoint, utxo);
+                outpoint
+            })
+            .collect()
+    })
+}
+
+/// 0.1.x row 62: 51 coins of 60,000 duffs. The fewest that reach the
+/// 3,000,000-duff lock are 50, so the early check passes; the fee needs
+/// the 51st. Through the real build, the capped signer refuses the
+/// selection when the builder shows it, before any signature: nothing is
+/// released, so the call ends `Cancelled` with its Funding charge
+/// refunded, the fence keeps no ended call of it, no lock is tracked, no
+/// coin stays reserved, the step reads `NotSent` with no release (nothing
+/// for Repair), and once the coins are consolidated the same draft funds
+/// again at once.
+#[test]
+fn a_lock_of_51_needed_coins_is_refused_before_its_first_signature() {
+    use super::flows::DispatchState;
+    use super::lease::FlowOutcome;
+    let f = fixture(false);
+    let wallet = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+    assert_eq!(flow::LOCK_DUFFS, 50 * 60_000);
+    let coins = small_coins(&f, &wallet, 60_000);
+    let lib = f.pw_lib(&wallet);
+    let lease = f.lease();
+    let draft = prepared(&f, 1);
+    let step = flow::funding_step(draft);
+    let before = lease.available(BudgetPurpose::Funding).unwrap();
+    let (funded, released, outcome) = f.engine.block_on(async {
+        let call = permit(&lib, &lease, draft, 1).await.unwrap();
+        let funded = lib
+            .fund_lock(
+                platform_wallet::AssetLockFundingType::IdentityRegistration,
+                flow::LOCK_DUFFS,
+                1,
+                &call,
+            )
+            .await;
+        let released = call.signatures().released();
+        (funded, released, call.finish(false))
+    });
+    let Err(FundError::NotSent(PlatformError::InvalidArgument { detail })) = funded else {
+        panic!("{funded:?}")
+    };
+    assert_eq!(released, 0, "refused before any signature");
+    assert_eq!(outcome, FlowOutcome::Cancelled);
+    assert_eq!(
+        lease.available(BudgetPurpose::Funding).unwrap(),
+        before,
+        "its Funding charge refunded"
+    );
+    assert_eq!(
+        f.session.leases.ended_funding_steps(f.wallet),
+        Vec::<String>::new(),
+        "the fence keeps no ended call of it"
+    );
+    assert!(!f.session.leases.funding_signatures_out(f.wallet));
+    assert!(
+        f.engine
+            .block_on(f.session.leases.refresh_funding(f.wallet))
+    );
+    assert_eq!(
+        f.session.leases.funding_status(f.wallet, &step),
+        Some(DispatchState::NotSent)
+    );
+    let views = f.session.leases.registration_funding_steps(f.wallet);
+    assert!(
+        (views.unwrap().iter())
+            .filter(|v| v.draft == draft)
+            .all(|v| v.released_at.is_none() && v.signed.is_empty()),
+        "no release and no lock: nothing for Repair"
+    );
+    assert!(
+        f.engine
+            .block_on(wallet.asset_locks().list_tracked_locks())
+            .is_empty(),
+        "no lock tracked, so none sent"
+    );
+    assert!(
+        coins.iter().all(|c| !reads_reserved(&f, *c)),
+        "selection released"
+    );
+    assert!(detail.contains("would use 51 coins"), "{detail}");
+    // Consolidated: one coin instead of the 51. The draft funds at once.
+    f.engine.block_on(async {
+        let mut state = wallet.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        for c in &coins {
+            account.utxos.remove(c);
+        }
+    });
+    let (_, coin) = f.coin();
+    let inputs = f.engine.block_on(async {
+        let call = permit(&lib, &lease, draft, 1).await.unwrap();
+        let (_, inputs) = build_and_track(&f, &wallet, 1, &call).await;
+        call.finish(true);
+        inputs
+    });
+    assert_eq!(inputs, vec![coin]);
+}
+
+/// 0.2 MIX-SHIELD: a "Move mixed coins" drain's lease funds no
+/// registration: refused `grant_invalid` before a row exists, its budget
+/// untouched.
+#[test]
+fn a_drain_lease_starts_no_registration() {
+    let f = fixture(false);
+    let lib = f.fake();
+    let g = f
+        .session
+        .vault()
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: 10 * COIN,
+            },
+            Some(&f.wallet.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let lease = f
+        .engine
+        .block_on(f.session.begin_lease(f.wallet, FlowKind::ShieldDrain, &[g]))
+        .unwrap();
+    let err = f
+        .engine
+        .block_on(registration::start(
+            &f.session,
+            f.wallet,
+            Arc::clone(&lib),
+            request(PLAIN),
+            lease.id_string(),
+        ))
+        .unwrap_err();
+    assert_eq!(err.code(), "platform.grant_invalid");
+    // Nor does "Finish transfers" take it (`authority`, past `grant_cap`).
+    let err = f
+        .engine
+        .block_on(registration::finish(
+            &f.session,
+            f.wallet,
+            &*lib,
+            lease.id_string(),
+        ))
+        .unwrap_err();
+    assert_eq!(err.code(), "platform.grant_invalid");
+    assert!(f.rows().is_empty());
+    assert_eq!(lease.available(BudgetPurpose::Funding).unwrap(), 10 * COIN);
+}

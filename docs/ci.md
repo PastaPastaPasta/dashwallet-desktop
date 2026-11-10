@@ -8,7 +8,7 @@ job's `GITHUB_TOKEN` is read-only (`contents: read`).
 | Workflow | Triggers | What it runs |
 |---|---|---|
 | [`ci.yml`](../.github/workflows/ci.yml) | push to `main` and `dw/**`, pull requests, manual | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
-| [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the engine with its `shielded` feature; the MG-04b release check; the Linux GUI (AT-SPI) demo |
+| [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the shielded prover warm-up; the MG-04b release check; the Linux GUI (AT-SPI) demo |
 | [`gate.yml`](../.github/workflows/gate.yml) | manual only | G-02 / G-03 measurement scripts on the chosen OSes |
 | [`tauri-selftest.yml`](../.github/workflows/tauri-selftest.yml) | manual only | the Tauri app (G-01) built, run with `--selftest` and launched for a screenshot on macOS and Windows |
 
@@ -32,7 +32,7 @@ row):
 | protoc 29.3 (release zip, every OS) | `ci/github/install-protoc.sh`; the `ci/linux` Dockerfiles | SHA-256 per asset, kept in the script and the Dockerfiles (protobuf publishes none) |
 | swiftly 1.1.1 (Linux) | `ci/github/linux-swiftly.sh` | SHA-256 per architecture; swiftly then GPG-verifies the Swift toolchain |
 | Windows App Runtime 1.5 installer | `ci.yml`, windows-swift | the resolved `download.microsoft.com` URL, SHA-256 (`Get-FileHash`) and a valid Microsoft Authenticode signature |
-| Dash Core v24.0.0-rc.2 | `regtest/scripts/fetch-dashcore.sh` | SHA-256 per platform, also on every cache restore |
+| Dash Core v24.0.0 | `regtest/scripts/fetch-dashcore.sh` | SHA-256 per platform, also on every cache restore |
 | dash_hash 1.4.0 | `nightly.yml`; `regtest/Dockerfile` | SHA-256 of the commit archive; of the tag archive in the image |
 | uv 0.12.23 | `nightly.yml` | version pinned through `astral-sh/setup-uv` |
 | Swift 6.3.3 for Windows | `compnerd/gha-setup-swift` | exact release from swift.org over HTTPS; **the action checks neither a hash nor a signature** (accepted: pinned version, non-blocking and gate jobs only) |
@@ -42,7 +42,7 @@ row):
 | Job | Runner | Steps |
 |---|---|---|
 | Rust lint | `ubuntu-24.04` | `ci/github/windows-paths.py`: every tracked path can be checked out on Windows (no reserved device names such as `nul`, no trailing dot or space, none of `<>:"\|?*\` or control characters), since Git for Windows refuses the whole checkout otherwise; `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `cargo install cargo-deny --version 0.20.2 --locked`, then `cargo deny --locked check advisories` (BL-151): `Cargo.lock` against the RustSec database, so a new advisory against a locked crate fails the job until the lock is bumped. The ignores, each with its reason and when to drop it, are in `rust/deny.toml`: unmaintained crates with no compatible replacement (`proc-macro-error` in the gtk3/tauri stack, `basic-toml` under uniffi's askama, zbus 5's `zvariant`/`zbus_names`/`zvariant_derive`) and zip 8's extract advisories, reached only by tenderdash-proto-compiler's build script; licenses, bans and sources are not checked |
-| Rust tests (Linux) | `ubuntu-24.04` | `cargo test --workspace --locked`; then the Tauri bindings regenerated (`DW_UPDATE_BINDINGS=1 cargo test -p dw-app` for `codegen` and `coverage`) and `git diff --exit-code` over `apps/desktop/src/api/generated` and `docs/design/E0-13-facade-coverage.md` (E0-13) |
+| Rust tests (Linux) | `ubuntu-24.04` | `cargo test --workspace --locked`; dwcli's three table tests with `--features invitation-create-test`, failing unless exactly 3 pass; then the Tauri bindings regenerated (`DW_UPDATE_BINDINGS=1 cargo test -p dw-app` for `codegen` and `coverage`) and `git diff --exit-code` over `apps/desktop/src/api/generated` and `docs/design/E0-13-facade-coverage.md` (E0-13) |
 | Tauri renderer | `ubuntu-24.04`, Node 24, pnpm | `apps/desktop`: `pnpm install --frozen-lockfile`, `pnpm tokens:check`, `pnpm typecheck`, `pnpm test` (vitest, including the per-facade command test and the fixture backend against a mocked IPC), then `pnpm build` and `pnpm build:fixture`, each checked by `scripts/check-bundle.mjs` (see "UI tests") |
 | UI tests (Playwright, axe) | `ubuntu-24.04` in the container `mcr.microsoft.com/playwright:v1.64.0-noble` | no Rust and no engine: `pnpm build:fixture`, then `playwright test` in Chromium and WebKit on the fixture backend (see "UI tests"); `test-results/` and the HTML report uploaded as `ui-playwright` |
 | Tauri E2E (tauri-driver, Linux) | `ubuntu-24.04` | `linux-host-deps.sh tauri` (WebKitGTK, `webkit2gtk-driver`, Xvfb), `cargo install tauri-driver --version 2.1.0 --locked`, then `xvfb-run -a pnpm e2e:tauri`: the debug app with the production renderer and the real engine, driven through one smoke flow; screenshots and logs uploaded as `e2e-tauri-linux` |
@@ -186,9 +186,10 @@ purpose. The per-state screenshots of the other suites are artifacts only.
 
 | Job | What |
 |---|---|
-| Regtest suites (T1) | `dwcli` built on the runner; the regtest image built; then, once that setup has passed, each as its own step so one failure does not hide the rest: the harness smoke tests, `l1-sync`, `l1-send`, `l2-tools`, `restore`, the functional tests `dwd_mn_chainlock.py` and `dwd_coinjoin_probe.py` (Docker), the `coinjoin` suite (`dwd_coinjoin_client.py`) and the `masternodes` suite (`dwd_masternodes.py`) on the host against the verified v24 release from `regtest/scripts/fetch-dashcore.sh`. JUnit XML and logs are uploaded as `regtest-logs`. |
-| Engine with shielded feature (E0-12) | `dw-engine`'s non-default `shielded` feature (`platform-wallet/shielded` and `platform-wallet-storage/shielded`: halo2, orchard), which no PR job builds: `cargo build -p dwcli --features dw-engine/shielded --locked`; the `shielded_warmup` example; `cargo clippy -p dw-engine --all-targets --features shielded --locked -- -D warnings`; then the example run, which builds the Halo 2 proving key in a cold process (no network). Cold cost: [`docs/research/shielded-cost.md`](research/shielded-cost.md). |
+| Regtest suites (T1) | `dwcli` built on the runner; the regtest image built; then, once that setup has passed, each as its own step so one failure does not hide the rest: the harness smoke tests, `l1-sync`, `l1-send`, `l2-tools`, `move-mixed`, `restore`, the functional tests `dwd_mn_chainlock.py` and `dwd_coinjoin_probe.py` (Docker), the `coinjoin` suite (`dwd_coinjoin_client.py`) and the `masternodes` suite (`dwd_masternodes.py`) on the host against the verified v24 release from `regtest/scripts/fetch-dashcore.sh`; then, once `dwcli` has built, its tests with each debug feature: `--features invitation-create-test`, `--features platform-addr-fund` and `--features mix-shield-test`. JUnit XML and logs are uploaded as `regtest-logs`. |
+| Shielded prover warm-up (E0-12) | The `shielded_warmup` example (`cargo build -p dw-engine --example shielded_warmup --locked`), run in a cold process: it builds the Halo 2 proving key (no network). The shielded pool (`platform-wallet/shielded`, `platform-wallet-storage/shielded`: halo2, orchard) is on in every build since 0.1, so PR CI builds, lints and tests it. Cost: [`docs/research/shielded-cost.md`](research/shielded-cost.md). |
 | Release check (MG-04b sending override) | The release leg of `dw-engine`'s `tests/mg04b_release_check.rs` (MG-04b D71): `cargo test --release -p dw-engine --features test-support --test mg04b_release_check --locked`. Its `const` assert fails the build if the shared-masternode sending override is compiled into a release build; PR CI runs only the debug legs. |
+| Release check (dwcli `mix-shield-test`) | The release leg of `dw-engine`'s `tests/mix_shield_release_check.rs`: `cargo test --release -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked`. Its `const` assert fails the build if the regtest suite's test-only CoinJoin calls (`mix_shield_test`) are compiled into a release build; the nightly builds its `dwcli` with `--features mix-shield-test` (debug) for `move-mixed`. |
 | SwiftCrossUI AT-SPI demo (GUI, Linux) | **non-blocking** (see "Known gaps"): `scripts/crossui-linux-demo.sh` with `DWD_CROSSUI_SUITE=m2` (the M1 flows, then the M2 flows), uploaded as `crossui-linux-demo` |
 
 GitHub runs `schedule` triggers only from the repository's default branch (see "Known gaps"). Until then,
@@ -225,6 +226,92 @@ that has it.
 
 The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwright browsers, the
 10,000-transaction regtest wallet and anything else a measurement needs are fetched by the script itself.
+
+## `release.yml` (PK-01, PK-02; 0.1)
+
+On every push, pull request and dispatch (see Triggers below), and on a tag `v*`. One job per OS builds the release-profile app without the
+`selftest` feature (`rust-cache` keys `release-<os>`; Node 24, pnpm; the Windows `unistd` shim as in
+`ci.yml`):
+
+| Job | Runner | Output (staged by `ci/github/release-stage.sh` as `dash-wallet-<version>-<suffix>`) | Measured (cold cache, rel6) |
+|---|---|---|---|
+| macOS | `macos-latest` | `pnpm tauri build --target universal-apple-darwin --bundles dmg`: `macos-universal.dmg`, ad-hoc signed (`signingIdentity "-"` in `tauri.conf.json`), not notarized | 45 min (build 42) |
+| Windows | `windows-latest` | `pnpm tauri build --bundles nsis`: `windows-x64-setup.exe`, unsigned | 33 min (build 28) |
+| Linux | `ubuntu-24.04` | `pnpm tauri build --bundles appimage,deb`: `linux-x86_64.AppImage`, `linux-amd64.deb` | 16 min (build 13) |
+
+Each job then launches the built app for 30 s on an empty `--datadir` with `--network regtest --no-platform
+--dapi https://127.0.0.1:1 --window-size 960x640` (nothing syncs, nothing leaves the runner), fails if the
+process dies, and uploads `launch-<os>`. Linux runs the AppImage under Xvfb (`linux-release-launch.sh`);
+Windows silently installs the NSIS setup into a private directory and launches the installed exe
+(`windows-launch-screenshot.ps1`); macOS mounts the staged dmg and launches the app copied out of it
+(`macos-launch-screenshot.sh`). **Only the Linux screenshot shows the app.** On the hosted macOS and Windows
+runners the screen capture is black or shows the runner console although the window exists (a real Windows 11
+VM renders the same build), so there the check is "the process is alive after 30 s", with the window title
+logged; real screenshots of those two come from a person at release time.
+
+The `checksums` job downloads the three `dist-<os>` artifacts, writes `SHA256SUMS` in `sha256sum` format
+(file names only), checks it with `sha256sum -c` and uploads everything as `release-v<version>`.
+`ci/github/release-version.sh` names the files: the tag's version for a tag (a plain `vX.Y.Z` must equal
+`tauri.conf.json`), else `<version>-dev.<run>.g<short sha>`.
+
+**Triggers and publishing (DEC-1058).** The workflow runs on pushes to every branch, on tags `v*`, on pull requests
+and on `workflow_dispatch`; all of them build and upload CI artifacts with `contents: read`. Only the `publish` job
+has write permissions (`contents`, `id-token`, `attestations`), and its `if` admits a push to `main` or to a release
+tag only when the read-only `decide` job (`ci/github/release-decide.sh`) says `publish=true`: the trigger is a push
+to `main` or a tag `vX.Y.Z[-rc.N]`, in `PastaPastaPasta/dashwallet-desktop`, **and the commit is an ancestor of a
+freshly fetched `origin/main`**. A fork's pull request, a branch, a dispatch, a dry-run tag and a release tag on a
+commit outside `main` therefore never start the job that holds the write token. This check is code of the pushed
+commit, like the workflow, so it cannot stop a tag whose own workflow file was edited; that needs an environment
+deployment policy or a tag ruleset in the repository settings. `release-publish.sh` repeats the ancestry check
+(second line). `decide` also gates the build: a branch push or pull request that changes only `docs/`, `*.md`, the
+Swift trees (`Sources`, `Tests`, `Apps`, `Vendor`, `Package.*`) or the unrelated workflows skips the three build
+jobs and so `checksums` (`script-tests` still runs); main, tags and dispatches always build. A new push to a branch
+or pull request cancels that ref's running release build (main and tags are never cancelled). The `publish` job checks
+out the full history, runs `ci/github/release-publish.sh` and publishes:
+
+- push to `main`: an immutable prerelease `v<version>-dev.<run>+<short sha>` (never edited; skipped if it exists)
+  and the rolling prerelease `continuous` with stable names `DashWallet-continuous-<os-arch>.<ext>` and its own
+  `SHA256SUMS`. `continuous` is replaced as one generation, with a transaction record (the asset `txn.json`: old and
+  new commit, old and new notes, the hash of the new `SHA256SUMS`): recover from an interrupted earlier run (in every
+  run, an older one too, which then leaves `continuous` alone), upload the record and every new file as `<name>.new`,
+  then per name rename the old asset `<name>.old` and the new one `<name>` (`SHA256SUMS` last), move the tag, rewrite
+  the notes, and only then delete the `.old` assets and the record. Any failure after the first rename, and a cancel
+  (SIGINT/SIGTERM), rolls back: every name is restored from its `.old`, the tag and the notes go back (also when the
+  failing API call had in fact taken effect). The API is not atomic, so for tens of seconds during the renames a file
+  can be missing for the two calls between its renames, or newer than the `SHA256SUMS` next to it (downloaders retry;
+  see `verifying.md`). A hard kill or an API outage can leave canonical names missing, `.new`/`.old` leftovers,
+  mismatched checksums, or a tag and notes that describe the other generation, until the next publish, whose first
+  step repairs all of it: leftover `.new` deleted; a missing name restored from its `.old`; if the binaries do not match
+  `SHA256SUMS` the whole old generation is restored, else the `.old` copies are dropped; then the record says which
+  generation the assets are, and the tag and notes are set to match it. By hand: rename each `<name>.old` over the
+  missing or new `<name>`, delete stray `<name>.new` and `txn.json`, set the tag and notes to the commit of the assets,
+  or re-run the publish job. The tag moves after the assets and never backwards (an older run finishing late leaves
+  `continuous` alone, after repairing).
+- push of a tag `vX.Y.Z[-rc.N]` (on `main`): a full release for `vX.Y.Z` (GitHub marks the highest version
+  Latest), a prerelease for `-rc.N`, with the run's files (notes from
+  `docs/release/X.Y.Z-notes.md`), nothing rolling. `v0.0.0-rel<N>` dry-run tags only build.
+- `actions/attest-build-provenance` runs before the release is written, on every file (the four bundles and both
+  `SHA256SUMS`); the stable-named copies have the same bytes, so one attestation covers both.
+
+The publish concurrency group is per ref (`release-publish-main`, and one per tag), never cancelling. GitHub
+keeps one pending job per group and cancels the older pending one when another arrives, and builds finish out of
+order: a burst of pushes can skip the immutable release of a middle commit, and `continuous` can end one commit
+behind main until the next push publishes (it never moves backwards, and its notes name its commit). A tag's
+release cannot be displaced by a main push. Repository setting: "Immutable releases" must stay **off**, since
+`continuous` renames and deletes assets and moves its tag (the per-build releases are immutable by this workflow's
+own rule, not the setting). An interrupted `gh release create` can leave a draft or an incomplete release; the
+script then fails with a message rather than treating it as done, and the leftover is deleted by hand. The `decide` job
+(read-only) runs `release-publish.sh classify`; `publish` needs its verdict as well as a push to `main` or a `v*`
+tag. Dev tags (`v*-dev.*`) do not trigger the workflow. `gh` reads that fail with anything other than a 404 are never read as "absent". The publish script does all the
+reads that decide what to write (the immutable release, the `continuous` tag, release and asset list) before its first
+write, so a failure there stops it with nothing written; the reads of a recovery or rollback come later, and a failure
+there stops that step (the immutable release may already exist by then).
+
+The `script-tests` job runs `ci/github/release-publish-test.sh` (a fake `gh` and a
+scratch git repository: which triggers publish and which refuse, the decide verdicts including an off-main tag, and
+the `continuous` swap under a failed write, an outage and a kill at every write) on every run. For a dry run against
+the real repository: `DRY_RUN=1 ci/github/release-publish.sh publish` after `prepare` runs the reads and prints
+each write. Nothing is signed by hand and no PGP key is involved before 1.0; see `docs/release/verifying.md`.
 
 ## `tauri-selftest.yml` (G-02)
 

@@ -9,8 +9,10 @@
 use dw_coinjoin::{denoms, settings};
 use dw_engine::coinjoin::{
     AmountAndRounds, CoinJoinBalances as EngineBalances, CoinJoinStatus as EngineStatus,
+    ConsolidationPlan,
     MixingState, PoolMessage, PoolState, ProgressInfo, RecoveryReport, SessionInfo, StatusCode,
-    StopReason, SweepChunkInfo, SweepDestination, SweepPlan, SweepResult, Unavailable,
+    StopReason, SweepChunkInfo, SweepDestination, SweepPlan, SweepResend, SweepResendState,
+    SweepResult, Unavailable,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -19,7 +21,10 @@ use crate::dto::mirror_enum;
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
 
-pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
+pub(crate) const EXCLUDED: &[(&str, &str)] = &[(
+    "NetworkSession::coinjoin_addresses_for_test",
+    "test only: dwcli's `mix-shield-test` funds the CoinJoin account for the regtest suite (debug builds only)",
+)];
 
 /// The CoinJoin options (Options, CoinJoin, QT-046). Global for the
 /// network; mixing state is per wallet (QT-049).
@@ -293,6 +298,9 @@ pub struct CoinJoinBalances {
     /// Fully mixed by the QT-043 rule: the panel's "CoinJoin Balance" and
     /// what the CoinJoin send page may spend.
     pub fully_mixed: u64,
+    /// Every free coin of the CoinJoin account, mixed or not: the move card
+    /// shows while it is above zero.
+    pub coinjoin_account: u64,
 }
 
 impl From<EngineBalances> for CoinJoinBalances {
@@ -302,12 +310,14 @@ impl From<EngineBalances> for CoinJoinBalances {
             denominated,
             normalized_anonymized,
             fully_mixed,
+            coinjoin_account,
         } = b;
         CoinJoinBalances {
             anonymizable,
             denominated,
             normalized_anonymized,
             fully_mixed,
+            coinjoin_account,
         }
     }
 }
@@ -536,6 +546,16 @@ pub struct MixedCoinsSweepPlan {
     /// 1000-duff threshold, mixed or not).
     pub total: u64,
     pub chunks: Vec<MixedCoinsChunk>,
+    /// Of `total`, the coins with the wallet's rounds.
+    pub fully_mixed: u64,
+    /// Of `total`, the CoinJoin account's other coins (short of the rounds,
+    /// collaterals): the move takes the whole account.
+    pub not_fully_mixed: u64,
+    /// The account's coins that wait for a confirmation: no chunk spends a
+    /// coin with unconfirmed parents.
+    pub unconfirmed: u32,
+    /// What `move_mixed_coins` takes to run exactly this plan.
+    pub quote_id: String,
 }
 
 impl From<SweepPlan> for MixedCoinsSweepPlan {
@@ -544,11 +564,64 @@ impl From<SweepPlan> for MixedCoinsSweepPlan {
             destination,
             total,
             chunks,
+            fully_mixed,
+            not_fully_mixed,
+            unconfirmed,
+            quote_id,
         } = p;
         MixedCoinsSweepPlan {
             destination: destination.into(),
             total,
             chunks: chunks.into_iter().map(Into::into).collect(),
+            fully_mixed,
+            not_fully_mixed,
+            unconfirmed,
+            quote_id,
+        }
+    }
+}
+
+/// The consolidation round before a move to Shielded (iOS #1221): the
+/// CoinJoin account's final coins combined, at most 500 per transaction,
+/// each onto one fresh address of the same CoinJoin account.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MixedCoinsConsolidationPlan {
+    /// What leaves the coins it combines: the outputs plus the fees. The
+    /// outputs stay in the CoinJoin account.
+    pub total: u64,
+    /// One transaction each.
+    pub chunks: Vec<MixedCoinsChunk>,
+    pub fully_mixed: u64,
+    pub not_fully_mixed: u64,
+    /// The CoinJoin account's coins once the round confirms.
+    pub coins_after: u32,
+    /// The account's coins that wait for a confirmation, which the round
+    /// leaves.
+    pub unconfirmed: u32,
+    /// What `consolidate_mixed_coins` takes to run exactly this plan.
+    pub quote_id: String,
+}
+
+impl From<ConsolidationPlan> for MixedCoinsConsolidationPlan {
+    fn from(p: ConsolidationPlan) -> Self {
+        let ConsolidationPlan {
+            total,
+            chunks,
+            fully_mixed,
+            not_fully_mixed,
+            coins_after,
+            unconfirmed,
+            quote_id,
+        } = p;
+        MixedCoinsConsolidationPlan {
+            total,
+            chunks: chunks.into_iter().map(Into::into).collect(),
+            fully_mixed,
+            not_fully_mixed,
+            coins_after,
+            unconfirmed,
+            quote_id,
         }
     }
 }
@@ -559,14 +632,55 @@ impl From<SweepPlan> for MixedCoinsSweepPlan {
 #[serde(rename_all = "camelCase")]
 pub struct MixedCoinsSweepResult {
     pub txids: Vec<String>,
+    /// What left the CoinJoin account in the transactions sent:
+    /// `received + fee`.
     pub moved: u64,
+    /// Of `moved`, what arrives at the destination.
+    pub received: u64,
+    /// Of `moved`, the network fees.
+    pub fee: u64,
     pub remaining: u64,
     /// The code of the error that stopped the sweep; `null` when complete.
     pub failure_code: Option<String>,
     /// With `coinjoin.broadcast_unknown`: the chunk that may be on the
-    /// network (display txid), its coins reserved until the wallet sees
-    /// them spent.
+    /// network (display txid), its coins reserved until a block or an
+    /// InstantSend lock shows it, or a block spends one of them otherwise;
+    /// `resend_mixed_coins` sends its recorded bytes again.
     pub unknown_txid: Option<String>,
+}
+
+/// What sending a recorded chunk again came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum MixedCoinsResendState {
+    /// The network took it; its coins stay reserved until a block or an
+    /// InstantSend lock shows it.
+    Sent,
+    /// No verdict, or refused this time (a peer may hold the first send):
+    /// its coins stay reserved, and it is sent again on the next reconnect.
+    Unknown,
+    /// A block or an InstantSend lock shows it, or a block spent one of its
+    /// coins in another transaction: nothing is held for it any more.
+    Resolved,
+}
+
+mirror_enum!(SweepResendState => MixedCoinsResendState { Sent, Unknown, Resolved });
+
+/// One recorded chunk sent again (display txid).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MixedCoinsResend {
+    pub txid: String,
+    pub state: MixedCoinsResendState,
+}
+
+impl From<SweepResend> for MixedCoinsResend {
+    fn from(r: SweepResend) -> Self {
+        MixedCoinsResend {
+            txid: r.txid.to_string(),
+            state: r.state.into(),
+        }
+    }
 }
 
 impl From<SweepResult> for MixedCoinsSweepResult {
@@ -574,6 +688,8 @@ impl From<SweepResult> for MixedCoinsSweepResult {
         let SweepResult {
             txids,
             moved,
+            received,
+            fee,
             remaining,
             failure_code,
             unknown_txid,
@@ -581,6 +697,8 @@ impl From<SweepResult> for MixedCoinsSweepResult {
         MixedCoinsSweepResult {
             txids,
             moved,
+            received,
+            fee,
             remaining,
             failure_code,
             unknown_txid,
@@ -690,22 +808,62 @@ commands! {
     }
 
     /// "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks of
-    /// at most 500 inputs. `grantId`: a `Spend` grant of at least the plan's
-    /// total. Stops at the first failing chunk and reports what moved.
+    /// at most 500 inputs. `quoteId`: the confirmed plan's (refused
+    /// `coinjoin.plan_changed` when the coins are no longer its own);
+    /// `grantId`: a `Spend` grant of at least the plan's total. Stops at the
+    /// first failing chunk and reports what moved.
     #[facade("NetworkSession::move_mixed_coins")]
     fn move_mixed_coins(
         state,
         wallet_id: String,
         destination: MixedCoinsDestination,
+        quote_id: String,
         grant_id: String,
     ) -> MixedCoinsSweepResult {
         let id = parse_wallet_id(&wallet_id)?;
         let result = state
             .session()
             .await?
-            .move_mixed_coins(id, destination.into(), grant_id)
+            .move_mixed_coins(id, destination.into(), quote_id, grant_id)
             .await?;
         Ok(result.into())
+    }
+
+    /// The consolidation round before a move to Shielded. Reads coins only.
+    #[facade("NetworkSession::mixed_coins_consolidation_plan")]
+    fn mixed_coins_consolidation_plan(state, wallet_id: String) -> MixedCoinsConsolidationPlan {
+        let id = parse_wallet_id(&wallet_id)?;
+        let session = state.session().await?;
+        Ok(session.mixed_coins_consolidation_plan(id).await?.into())
+    }
+
+    /// Runs the consolidation round: every transaction pays one fresh
+    /// address of the wallet's own CoinJoin account. `quoteId`: the
+    /// confirmed plan's; `grantId`: a `Spend` grant of at least the plan's
+    /// total. Stops at the first failing chunk and reports what went out.
+    #[facade("NetworkSession::consolidate_mixed_coins")]
+    fn consolidate_mixed_coins(
+        state,
+        wallet_id: String,
+        quote_id: String,
+        grant_id: String,
+    ) -> MixedCoinsSweepResult {
+        let id = parse_wallet_id(&wallet_id)?;
+        let session = state.session().await?;
+        Ok(session.consolidate_mixed_coins(id, quote_id, grant_id).await?.into())
+    }
+
+    /// "Try again" on a chunk of unknown outcome: sends the transaction
+    /// recorded for it, never signing again. `txid`: that chunk (display
+    /// txid); `null`: every recorded chunk. Refused while a move of the
+    /// wallet runs.
+    #[facade("NetworkSession::resend_mixed_coins")]
+    fn resend_mixed_coins(state, wallet_id: String, txid: Option<String>) -> Vec<MixedCoinsResend> {
+        let id = parse_wallet_id(&wallet_id)?;
+        let txid = txid.as_deref().map(crate::dto::parse_txid).transpose()?;
+        let session = state.session().await?;
+        let sent = session.resend_mixed_coins(id, txid).await?;
+        Ok(sent.into_iter().map(Into::into).collect())
     }
 }
 

@@ -647,6 +647,10 @@ pub struct TxDraft {
     /// them: only Repair's self-spend sets any (E0-04 §6.5,
     /// [`crate::coins::WalletCoin::self_spend_selectable`]).
     exempt: HashSet<OutPoint>,
+    /// The exempt coins are CoinJoin coins, the inputs of a lock that
+    /// drained the CoinJoin account: coin control takes those alone, never
+    /// pooled with other coins, signed as a CoinJoin payment is.
+    coinjoin_exempt: bool,
     /// Stands in for the library's broadcast, so the leased hand-off runs
     /// end to end without SPV (E0-04 L5, review P2a r1 F3).
     #[cfg(test)]
@@ -749,15 +753,17 @@ impl NetworkSession {
         self: &Arc<Self>,
         wallet_id: WalletId,
     ) -> Result<Arc<TxDraft>, EngineError> {
-        self.new_draft(wallet_id, HashSet::new())
+        self.new_draft(wallet_id, HashSet::new(), false)
     }
 
     /// A new draft whose coin control may spend `exempt` although tracked
-    /// asset locks reserve them (Repair's self-spend, E0-04 §6.5).
+    /// asset locks reserve them (Repair's self-spend, E0-04 §6.5): CoinJoin
+    /// coins alone with `coinjoin_exempt`, else the funding accounts'.
     pub(crate) fn new_draft(
         self: &Arc<Self>,
         wallet_id: WalletId,
         exempt: HashSet<OutPoint>,
+        coinjoin_exempt: bool,
     ) -> Result<Arc<TxDraft>, EngineError> {
         let _op = self.try_enter()?;
         let manager = self.manager()?;
@@ -777,6 +783,7 @@ impl NetworkSession {
                 data: None,
             }),
             exempt,
+            coinjoin_exempt,
             #[cfg(test)]
             broadcaster: Mutex::new(None),
         }))
@@ -799,7 +806,7 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let fence = this.coin_fence(wallet_id).await?;
-            let (coins, _) = this.source_coins(&fence, &source, &HashSet::new()).await?;
+            let (coins, _) = (this.source_coins(&fence, &source, &HashSet::new(), false)).await?;
             Ok(coins.iter().map(Utxo::value).sum())
         })
         .await
@@ -807,12 +814,14 @@ impl NetworkSession {
 
     /// The coins `source` offers and the wallet height they were read at,
     /// under the fenced wallet's coin fence; coin control may also take the
-    /// `exempt` ones a tracked asset lock reserves.
+    /// `exempt` ones a tracked asset lock reserves (only those, CoinJoin
+    /// coins, with `coinjoin_exempt`).
     pub(crate) async fn source_coins(
         &self,
         fence: &CoinFence,
         source: &CoinSource,
         exempt: &HashSet<OutPoint>,
+        coinjoin_exempt: bool,
     ) -> Result<(Vec<Utxo>, u32), EngineError> {
         if *source == CoinSource::FullyMixedOnly {
             let view = self.mix_view(fence).await?;
@@ -820,7 +829,8 @@ impl NetworkSession {
         }
         let wallet = self.wallet(&fence.wallet_id()).await?;
         let snapshot = self.coin_snapshot(fence, &wallet).await?;
-        Ok((candidates(&snapshot, source, exempt)?, snapshot.height))
+        let coins = candidates(&snapshot, source, exempt, coinjoin_exempt)?;
+        Ok((coins, snapshot.height))
     }
 
     pub(crate) async fn wallet(
@@ -834,13 +844,29 @@ impl NetworkSession {
     }
 }
 
+/// The CoinJoin source's rule, then the fee cap. dash-qt's CoinJoin page
+/// makes no change output, so the rest is fee (`CoinType::ONLY_FULLY_MIXED`,
+/// Dash Core v24.0.0-rc.6 8d195f18 wallet/spend.cpp:995-999).
+fn finish(mut plan: Plan, coinjoin: bool, change_len: usize) -> Result<Plan, SendFailure> {
+    if coinjoin && let Some(change) = plan.change.take() {
+        plan.fee += change;
+        plan.estimated_size -= plan::output_size(change_len);
+    }
+    if plan.fee > MAX_TX_FEE {
+        return Err(SendFailure::AbsurdFee { fee: plan.fee });
+    }
+    Ok(plan)
+}
+
 /// The coins `source` offers to a build. Coin control may also take an
 /// `exempt` coin that only a tracked asset lock reserves; automatic
-/// selection never does.
+/// selection never does. With `coinjoin_exempt` it takes exempt CoinJoin
+/// coins only.
 fn candidates(
     snapshot: &CoinSnapshot,
     source: &CoinSource,
     exempt: &HashSet<OutPoint>,
+    coinjoin_exempt: bool,
 ) -> Result<Vec<Utxo>, EngineError> {
     match source {
         CoinSource::Any => Ok(snapshot
@@ -859,9 +885,13 @@ fn candidates(
                     .iter()
                     .find(|c| c.utxo.outpoint == *o)
                     .filter(|c| {
-                        c.send_account
-                            && (c.chosen_selectable(snapshot.height)
-                                || (exempt.contains(o) && c.self_spend_selectable(snapshot.height)))
+                        let lock_input =
+                            exempt.contains(o) && c.self_spend_selectable(snapshot.height);
+                        if coinjoin_exempt {
+                            c.coinjoin_account && lock_input
+                        } else {
+                            c.send_account && (c.chosen_selectable(snapshot.height) || lock_input)
+                        }
                     })
                     .map(|c| c.utxo.clone())
                     .ok_or_else(|| SendFailure::OutpointUnavailable(*o).into())
@@ -873,6 +903,12 @@ fn candidates(
 impl TxDraft {
     pub fn wallet_id(&self) -> WalletId {
         self.wallet_id
+    }
+
+    /// Whether the draft spends CoinJoin coins a lock's record names
+    /// (Repair's self-spend of a drain, [`NetworkSession::new_draft`]).
+    pub(crate) fn spends_coinjoin(&self) -> bool {
+        self.coinjoin_exempt
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, DraftState> {
@@ -966,7 +1002,7 @@ impl TxDraft {
             self.session
                 .check_payment_lock(self.wallet_id, pair, None)?;
         }
-        let coinjoin = state.source == CoinSource::FullyMixedOnly;
+        let coinjoin = state.source == CoinSource::FullyMixedOnly || self.coinjoin_exempt;
         if coinjoin && !matches!(state.change, ChangeTarget::Auto) {
             return Err(EngineError::InvalidArgument(
                 "the CoinJoin source pays its change as fee; only the automatic change policy applies"
@@ -975,7 +1011,7 @@ impl TxDraft {
         }
         let (coins, height) = self
             .session
-            .source_coins(fence, &state.source, &self.exempt)
+            .source_coins(fence, &state.source, &self.exempt, self.coinjoin_exempt)
             .await?;
         let outputs: Vec<PlanOutput> = (state.recipients.iter())
             .map(|r| PlanOutput {
@@ -998,7 +1034,7 @@ impl TxDraft {
             CoinSource::Outpoints(_) => InputChoice::UseAll(&coins),
             _ => InputChoice::Select(&coins),
         };
-        let mut plan =
+        let plan =
             plan::plan(choice, &outputs, state.fee, change_len, height).map_err(|e| match e {
                 // The CoinJoin page's own message (dash-qt "Insufficient
                 // mixed funds").
@@ -1010,15 +1046,7 @@ impl TxDraft {
                 }
                 e => SendFailure::from(e),
             })?;
-        if coinjoin && let Some(change) = plan.change.take() {
-            // dash-qt's CoinJoin page: no change output, the rest is fee
-            // (`CoinType::ONLY_FULLY_MIXED`, wallet/spend.cpp:980-995).
-            plan.fee += change;
-            plan.estimated_size -= plan::output_size(change_len);
-        }
-        if plan.fee > MAX_TX_FEE {
-            return Err(SendFailure::AbsurdFee { fee: plan.fee }.into());
-        }
+        let plan = finish(plan, coinjoin, change_len)?;
         let resolved = Resolved {
             plan,
             recipients: state.recipients,
@@ -1094,6 +1122,7 @@ impl TxDraft {
             return Err(SendFailure::WatchOnly.into());
         }
         let fence = session.coin_fence(wallet_id).await?;
+        let guarded = session.replay_guard(wallet_id, 0).await?;
         let lease = session
             .lease_for(&wallet_id, &grant_id)
             .transpose()
@@ -1105,7 +1134,7 @@ impl TxDraft {
             lease
                 .check_tx_signer(purpose)
                 .map_err(|e| lease_failure(e, 0))?;
-            return self.prepare_leased(lease.clone(), purpose, fence).await;
+            return (self.prepare_leased(lease.clone(), purpose, fence, guarded)).await;
         }
         // No key to sign with (locked or mixing-only vault, and the grant
         // does not carry its own key) fails before the plan. A grant that is
@@ -1145,6 +1174,7 @@ impl TxDraft {
             signer,
             None,
             fence,
+            guarded,
         )
         .await
     }
@@ -1159,6 +1189,7 @@ impl TxDraft {
         lease: Lease,
         purpose: crate::platform::BudgetPurpose,
         fence: CoinFence,
+        guarded: u32,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         let r = self.resolve(&fence).await?;
         let wallet = self.session.wallet(&self.wallet_id).await?;
@@ -1182,6 +1213,7 @@ impl TxDraft {
             signer,
             Some(charge),
             fence,
+            guarded,
         )
         .await
     }
@@ -1235,8 +1267,11 @@ impl TxDraft {
         signer: dw_vault::VaultSigner,
         charge: Option<SpendCharge>,
         fence: CoinFence,
+        guarded: u32,
     ) -> Result<Arc<PreparedTx>, EngineError> {
         self.session.coin_fences.prepare_pause_point().await;
+        // The coins are read: a rewind since the guard refuses them.
+        (self.session).replay_guard(self.wallet_id, guarded).await?;
         let session = &self.session;
         let wallet_id = self.wallet_id;
         let network = self.network();

@@ -1,5 +1,5 @@
 //! E0-09 DashPay commands: `dashpay`, `identity`, `name`, `contact`,
-//! `pay-contact`, `profile` and `invite`. They call the facade only
+//! `pay-contact`, `profile` and `invite`, and 0.1's `shielded`. They call the facade only
 //! (`NetworkSession::dashpay`, `docs/contracts/m4-dashpay-engine.md`), never
 //! platform-wallet, so the T2/T3 suites drive DashPay the way a UI host does.
 //!
@@ -41,10 +41,10 @@ use clap::{Args, Parser, Subcommand};
 use dw_engine::platform::{
     ActivityFilter, AvatarChange, AvatarError, AvatarSize, AvatarSource, BearerSecret,
     ContactError, ContactQuery, ContactSection, ContactSort, CreditsError, DashPay, FlowKind,
-    GrantAction, GrantRequest, IdentityError, InitialProfile, InvitationError, NameError,
-    PlatformError, PrivateDetails, ProfileBaseline, ProfileEdit, ProfileError, RegistrationError,
-    RegistrationFunding, RegistrationRequest, RegistrationWait, ScannedCode, WithdrawAmount,
-    check_username,
+    GrantAction, GrantRequest, IdentityError, InitialProfile, InvitationError, LockKindId,
+    NameError, PlatformError, PrivateDetails, ProfileBaseline, ProfileEdit, ProfileError,
+    RegistrationError, RegistrationFunding, RegistrationRequest, RegistrationWait, ScannedCode,
+    ShieldedError, WithdrawAmount, check_username,
 };
 use dw_engine::{
     ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, SendFailure, TASK_PANICKED,
@@ -124,6 +124,97 @@ pub enum DashPayCommand {
         common: Common,
         #[command(subcommand)]
         cmd: InviteCmd,
+    },
+    /// Platform addresses (release 0.1): the balance, its activity and
+    /// "Move to Dash wallet".
+    PlatformAddr {
+        #[command(flatten)]
+        common: Common,
+        #[command(subcommand)]
+        cmd: PlatformAddrCmd,
+    },
+    /// Shielded funds (0.1): the wallet's account in Platform's shielded
+    /// pool. Core amounts in duffs, pool amounts in credits.
+    Shielded {
+        #[command(flatten)]
+        common: Common,
+        #[command(subcommand)]
+        cmd: ShieldedCmd,
+    },
+}
+
+/// An unfinished transfer's kind.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, clap::ValueEnum)]
+pub enum TransferKind {
+    Shielded,
+    PlatformAddress,
+}
+
+impl From<TransferKind> for LockKindId {
+    fn from(k: TransferKind) -> Self {
+        match k {
+            TransferKind::Shielded => LockKindId::Shielded,
+            TransferKind::PlatformAddress => LockKindId::PlatformAddress,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum ShieldedCmd {
+    /// The account's status: active, balance, pending, sync.
+    Status,
+    /// Run a sync pass now, then the status.
+    Sync,
+    /// The shielded receive address.
+    Address,
+    /// Core -> Shielded: an asset lock of `--duffs` from the Core balance
+    /// into the pool.
+    Shield {
+        #[arg(long)]
+        duffs: u64,
+        /// Print the quote only.
+        #[arg(long)]
+        quote_only: bool,
+    },
+    /// Apply a pending Core -> Shielded lock, or check one of unknown
+    /// consumption again (the same lock; only a proved apply settles it).
+    ShieldResume { txid: String },
+    /// Shielded -> Shielded: send `--credits` to a shielded address.
+    Send {
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        credits: u64,
+        /// At most 36 bytes.
+        #[arg(long)]
+        memo: Option<String>,
+        #[arg(long)]
+        quote_only: bool,
+        /// Send even though a payment from before a restart may still go
+        /// through (`shielded.unrecorded_spend`).
+        #[arg(long)]
+        confirm_unrecorded: bool,
+    },
+    /// Shielded -> Core: withdraw `--credits` to a Core address, or to a
+    /// fresh receive address of the wallet.
+    Unshield {
+        #[arg(long)]
+        credits: u64,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        quote_only: bool,
+        /// Withdraw even though a payment from before a restart may still
+        /// go through (`shielded.unrecorded_spend`).
+        #[arg(long)]
+        confirm_unrecorded: bool,
+    },
+    /// The shielded history, pending rows first, then newest first.
+    History {
+        #[arg(long, default_value_t = 0)]
+        offset: u32,
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
     },
 }
 
@@ -291,6 +382,18 @@ pub enum IdentityCmd {
     FinishAssetLocks {
         #[command(flatten)]
         caps: Caps,
+    },
+    /// The wallet's unfinished transfers: Core -> Shielded locks whose
+    /// Platform side is not known to have happened, its own and restored.
+    UnfinishedTransfers,
+    /// Finish one unfinished transfer on the same lock (only a proved
+    /// apply finishes it).
+    FinishTransfer {
+        txid: String,
+        #[arg(long, default_value_t = 0)]
+        vout: u32,
+        #[arg(long, value_enum, default_value_t = TransferKind::Shielded)]
+        kind: TransferKind,
     },
     /// Derive an asset-lock key for the faucet (developer builds).
     FaucetKey {
@@ -584,6 +687,43 @@ pub enum ProfileCmd {
 }
 
 #[derive(Subcommand)]
+pub enum PlatformAddrCmd {
+    /// The balance and the funded addresses, as the last sync pass left
+    /// them.
+    Status,
+    /// The activity rows, newest first (a pending move settled first).
+    Activity,
+    /// Run a sync pass now and print the balance after it.
+    Sync,
+    /// "Move to Dash wallet": withdraw to the wallet's own Core receiving
+    /// address.
+    MoveToCore {
+        #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+        credits: Option<u64>,
+        /// Every input at or above the input minimum, less the fee, at
+        /// most Platform's largest withdrawal.
+        #[arg(long)]
+        all: bool,
+        /// Print the quote only.
+        #[arg(long)]
+        quote_only: bool,
+    },
+    /// Test only (the release-0.1 smoke; debug builds with the
+    /// `platform-addr-fund` feature): fund the first Platform address from
+    /// the Core balance with an asset lock of `duffs`.
+    #[cfg(feature = "platform-addr-fund")]
+    Fund {
+        #[arg(long)]
+        duffs: u64,
+    },
+}
+
+/// What `platform-addr fund`'s Spend grant allows above the lock: the
+/// asset lock transaction's fee.
+#[cfg(feature = "platform-addr-fund")]
+const FUND_FEE_ALLOWANCE: u64 = 100_000;
+
+#[derive(Subcommand)]
 pub enum InviteCmd {
     /// Claim an invitation read from stdin: stash it, quote, authorize and
     /// start the registration it funds. The link stays stashed (also with
@@ -693,6 +833,7 @@ fn platform_params(e: &PlatformError) -> Value {
         | P::LeaseExpired
         | P::NetworkNotOpen
         | P::WalletNotFound
+        | P::RescanInterrupted
         | P::Identity(IdentityError::NotFound)
         | P::Profile(ProfileError::Empty | ProfileError::UnsupportedContract) => json!({}),
         P::InsufficientCredits { needed, available } => {
@@ -800,11 +941,47 @@ fn credits_params(e: &CreditsError) -> Value {
             json!({"needed": needed, "available": available})
         }
         CreditsError::BelowMinimum { min } => json!({"min": min}),
-        CreditsError::CoinsLocked => json!({}),
+        CreditsError::CoinsLocked | CreditsError::QuoteChanged => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
         CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
+        CreditsError::MovePending { id } => json!({"id": id}),
+        CreditsError::RecipientInvalid { reason } => json!({"reason": reason.as_str()}),
+        CreditsError::SendOutOfRange { min } => json!({"min": min}),
+        CreditsError::FundPending { txid } => json!({"txid": txid}),
+        CreditsError::TooManyInputs { inputs, max } => json!({"inputs": inputs, "max": max}),
         CreditsError::Platform(p) => platform_params(p),
+    }
+}
+
+fn shielded_params(e: &ShieldedError) -> Value {
+    match e {
+        ShieldedError::NotActive {
+            protocol_version,
+            activation_version,
+        } => {
+            json!({"protocol_version": protocol_version, "activation_version": activation_version})
+        }
+        ShieldedError::NotSynced { reason } => json!({"reason": reason}),
+        ShieldedError::CoinsLocked
+        | ShieldedError::UnrecordedSpend
+        | ShieldedError::MixingActive
+        | ShieldedError::NothingToMove
+        | ShieldedError::MoveRunning
+        | ShieldedError::CoinsChanged => json!({}),
+        ShieldedError::CoinsUnconfirmed { coins } => json!({"coins": coins}),
+        ShieldedError::InvalidAddress { detail } => json!({"detail": detail}),
+        ShieldedError::InsufficientFunds { needed, available }
+        | ShieldedError::FundingInsufficient { needed, available } => {
+            json!({"needed": needed, "available": available})
+        }
+        ShieldedError::BelowMinimum { min } => json!({"min": min}),
+        ShieldedError::ShieldPending { txid } => json!({"txid": txid}),
+        ShieldedError::PoolTooSmall { notes, required } => {
+            json!({"notes": notes, "required": required})
+        }
+        ShieldedError::TooManyInputs { inputs, max } => json!({"inputs": inputs, "max": max}),
+        ShieldedError::Platform(p) => platform_params(p),
     }
 }
 
@@ -830,6 +1007,7 @@ facade_error!(
     ContactError => contact_params,
     AvatarError => avatar_params,
     CreditsError => credits_params,
+    ShieldedError => shielded_params,
 );
 
 impl From<VaultError> for CliError {
@@ -1249,7 +1427,9 @@ fn common(cmd: &mut DashPayCommand) -> &mut Common {
         | DashPayCommand::Contact { common, .. }
         | DashPayCommand::PayContact { common, .. }
         | DashPayCommand::Profile { common, .. }
-        | DashPayCommand::Invite { common, .. } => common,
+        | DashPayCommand::Invite { common, .. }
+        | DashPayCommand::PlatformAddr { common, .. }
+        | DashPayCommand::Shielded { common, .. } => common,
     }
 }
 
@@ -1450,6 +1630,117 @@ fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Valu
         }
         DashPayCommand::Profile { cmd, .. } => profile_cmd(ctx, cmd),
         DashPayCommand::Invite { cmd, .. } => invite_cmd(ctx, cmd, stdin),
+        DashPayCommand::PlatformAddr { cmd, .. } => platform_addr_cmd(ctx, cmd),
+        DashPayCommand::Shielded { cmd, .. } => shielded_cmd(ctx, cmd),
+    }
+}
+
+fn platform_addr_cmd(ctx: &Ctx, cmd: PlatformAddrCmd) -> Result<Value, CliError> {
+    let dp = ctx.dashpay()?;
+    match cmd {
+        PlatformAddrCmd::Status => out(ctx.block_on(dp.platform_addresses())?),
+        PlatformAddrCmd::Activity => out(ctx.block_on(dp.platform_activity())?),
+        PlatformAddrCmd::Sync => out(ctx.block_on(dp.sync_platform_addresses())?),
+        PlatformAddrCmd::MoveToCore {
+            credits,
+            all: _,
+            quote_only,
+        } => {
+            let amount = credits.map_or(WithdrawAmount::All, |credits| WithdrawAmount::Credits {
+                credits,
+            });
+            let quote = ctx.block_on(dp.move_to_core_quote(amount))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome = ctx.block_on(dp.move_to_core(amount, quote.to.clone(), grant))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        #[cfg(feature = "platform-addr-fund")]
+        PlatformAddrCmd::Fund { duffs } => {
+            let address = ctx.grant(
+                &dp,
+                GrantPurpose::PlatformOp {
+                    max_duffs: 0,
+                    max_credits: 1,
+                },
+            )?;
+            let spend = ctx.grant(
+                &dp,
+                GrantPurpose::Spend {
+                    max_duffs: duffs.saturating_add(FUND_FEE_ALLOWANCE),
+                },
+            )?;
+            let funded =
+                ctx.session
+                    .fund_platform_addresses_for_test(dp.wallet_id(), duffs, address, spend);
+            out(ctx.block_on(funded)?)
+        }
+    }
+}
+
+fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
+    let dp = ctx.dashpay()?;
+    match cmd {
+        ShieldedCmd::Status => out(ctx.block_on(dp.shielded_status())?),
+        ShieldedCmd::Sync => out(ctx.block_on(dp.shielded_sync())?),
+        ShieldedCmd::Address => out(ctx.block_on(dp.shielded_receive_address())?),
+        ShieldedCmd::Shield { duffs, quote_only } => {
+            let quote = ctx.block_on(dp.shield_quote(duffs))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome = ctx.block_on(dp.shield_from_core(duffs, grant))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        ShieldedCmd::ShieldResume { txid } => {
+            // As `identity top-up-resume`: the apply signs with the lock's
+            // funding key, which a funding budget unlocks; it spends none.
+            let grant = ctx.platform_op(
+                &dp,
+                GrantRequest {
+                    max_duffs: 1,
+                    max_credits: 0,
+                },
+            )?;
+            out(ctx.block_on(dp.resume_shield(txid, grant))?)
+        }
+        ShieldedCmd::Send {
+            to,
+            credits,
+            memo,
+            quote_only,
+            confirm_unrecorded,
+        } => {
+            let quote = ctx.block_on(dp.shielded_send_quote(to.clone(), credits))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome =
+                ctx.block_on(dp.shielded_send(to, credits, memo, grant, confirm_unrecorded))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        ShieldedCmd::Unshield {
+            credits,
+            to,
+            quote_only,
+            confirm_unrecorded,
+        } => {
+            let quote = ctx.block_on(dp.unshield_quote(credits, to.clone()))?;
+            if quote_only {
+                return Ok(json!({"quote": quote}));
+            }
+            let grant = ctx.platform_op(&dp, quote.grant)?;
+            let outcome =
+                ctx.block_on(dp.unshield_to_core(credits, to, grant, confirm_unrecorded))?;
+            Ok(json!({"quote": quote, "outcome": outcome}))
+        }
+        ShieldedCmd::History { offset, limit } => {
+            out(ctx.block_on(dp.shielded_history(offset, limit))?)
+        }
     }
 }
 
@@ -1592,6 +1883,19 @@ fn identity_cmd(ctx: &Ctx, cmd: IdentityCmd) -> Result<Value, CliError> {
         IdentityCmd::FinishAssetLocks { caps } => {
             let grant = ctx.platform_op(&dp, caps.into())?;
             out(ctx.block_on(dp.finish_asset_locks(grant))?)
+        }
+        IdentityCmd::UnfinishedTransfers => out(ctx.block_on(dp.unfinished_transfers())?),
+        IdentityCmd::FinishTransfer { txid, vout, kind } => {
+            // As `shielded shield-resume`: the lock's key signs, which a
+            // funding budget unlocks; it spends none.
+            let grant = ctx.platform_op(
+                &dp,
+                GrantRequest {
+                    max_duffs: 1,
+                    max_credits: 0,
+                },
+            )?;
+            out(ctx.block_on(dp.finish_transfer(kind.into(), txid, vout, grant))?)
         }
         IdentityCmd::FaucetKey { caps } => {
             let grant = ctx.platform_op(&dp, caps.into())?;
@@ -2139,6 +2443,16 @@ mod tests {
     use super::*;
     use crate::{Cli, Command};
 
+    /// DEC-1058 #4: what Shielded is still syncing rides in the params.
+    #[test]
+    fn a_not_synced_refusal_names_what_it_waits_for() {
+        use dw_engine::platform::ShieldedSyncWait;
+        let e = ShieldedError::NotSynced {
+            reason: ShieldedSyncWait::Journal,
+        };
+        assert_eq!(shielded_params(&e), json!({"reason": "journal"}));
+    }
+
     /// D15 (Sol r1): an accept that went through and a payment that did
     /// not is a partial success, never a plain error.
     #[test]
@@ -2193,13 +2507,27 @@ mod tests {
         "pay-contact",
         "profile",
         "invite",
+        "platform-addr",
+        "shielded",
     ];
 
     /// The rows whose calls have real bodies (DP1-05, DP1-03, E0-04, DP2-01,
-    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01, DP4-01, DP6-01, DP5-02), with the
+    /// DP2-03, DP1-02, DP2-02, DP1-06, DP3-01, DP4-01, DP6-01, DP5-02, 0.1 E1), with the
     /// line each prints on the tests' wallet, which has no identity and no
     /// Platform.
     const IMPLEMENTED: &[(&str, &str)] = &[
+        // Release 0.1 (lane E2): the Platform addresses.
+        (
+            "platform-addr status",
+            r#"{"ok":true,"result":{"credits":0,"movable_credits":0,"duffs":0,"addresses":[],"synced_at":null,"syncing":false}}"#,
+        ),
+        ("platform-addr activity", r#"{"ok":true,"result":[]}"#),
+        // Offline (DAPI refuses): the pass and the plan's proved read.
+        ("platform-addr sync", UNAVAILABLE),
+        (
+            "platform-addr move-to-core --credits 5 --quote-only",
+            UNAVAILABLE,
+        ),
         // A new wallet, offline: SPV has not caught up (BL-153).
         (
             "dashpay status",
@@ -2253,11 +2581,19 @@ mod tests {
         ),
         (
             "identity finish-asset-locks --max-credits 50000",
-            r#"{"ok":true,"result":{"resumed":0,"completed":0,"still_pending":0}}"#,
+            r#"{"ok":true,"result":{"resumed":0,"completed":0,"still_pending":0,"already_used":0,"by_kind":[],"unread":[]}}"#,
         ),
         (
             "identity faucet-key",
             r#"{"ok":false,"error":{"code":"platform.feature_off","message":"feature off: faucet","params":{"feature":"faucet"}}}"#,
+        ),
+        (
+            "identity unfinished-transfers",
+            r#"{"ok":true,"result":{"locks":[],"complete":false,"unread":[]}}"#,
+        ),
+        (
+            "identity finish-transfer ab12",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: txid is not a hex txid","params":{"detail":"txid is not a hex txid"}}}"#,
         ),
         (
             "dashpay dispatch-status ab12",
@@ -2350,6 +2686,46 @@ mod tests {
         ("invite forget L", NOT_STASHED),
         // DP5-02.
         ("invite status L", NOT_STASHED),
+        // DP5-02 T2, debug builds with its feature only: the phrase file is
+        // read before anything is funded.
+        #[cfg(feature = "invitation-create-test")]
+        (
+            "invite create --duffs 100000 --phrase-file /nonexistent/p --out /nonexistent/l",
+            NO_FILE,
+        ),
+        // 0.1 E1: regtest's floor (13) is past the activation; the new
+        // wallet's account binds from the vault, and is not ready: no pass
+        // has scanned it this session (Platform is not started here). The
+        // address is the random wallet's (see the run below).
+        (
+            "shielded status",
+            r#"{"ok":true,"result":{"active":true,"protocol_version":13,"activation_version":12,"ready":false,"balance":0,"pending":0,"pending_shields":[],"unresolved_spends":[],"unrecorded_spends":[],"synced_index":null,"last_sync_at":null,"syncing":false,"prover_ready":false}}"#,
+        ),
+        ("shielded sync", NO_PLATFORM),
+        (
+            "shielded address",
+            r#"{"ok":true,"result":{"address":"tdash1z…","account":0}}"#,
+        ),
+        (
+            "shielded shield --duffs 100000",
+            r#"{"ok":false,"error":{"code":"shielded.below_minimum","message":"below the minimum of 212852","params":{"min":212852}}}"#,
+        ),
+        (
+            "shielded shield-resume ab12",
+            r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: txid is not a hex txid","params":{"detail":"txid is not a hex txid"}}}"#,
+        ),
+        (
+            "shielded send --to tZ --credits 5 --memo hi",
+            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a shielded address of this network","params":{"detail":"not a shielded address of this network"}}}"#,
+        ),
+        (
+            "shielded unshield --credits 5 --to yA",
+            r#"{"ok":false,"error":{"code":"shielded.invalid_address","message":"not an address of this network: not a Dash address","params":{"detail":"not a Dash address"}}}"#,
+        ),
+        (
+            "shielded history --offset 1 --limit 5",
+            r#"{"ok":true,"result":[]}"#,
+        ),
     ];
 
     const NOT_STASHED: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a stashed link id","params":{"detail":"not a stashed link id"}}}"#;
@@ -2368,7 +2744,7 @@ mod tests {
 
     /// A fresh wallet before `start_spv`: nothing ran, and quorum keys come
     /// from the trusted service (DEC-168's degraded mode, E0-10b).
-    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted"}}"#;
+    const SYNC_STATUS: &str = r#"{"ok":true,"result":{"startup":"not_run","last_pass":null,"pending_contact_crypto":0,"loops":[{"sync_loop":"identity_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dash_pay_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"dpns_sync","running":false,"last_run_at":null,"next_run_at":null},{"sync_loop":"platform_address_sync","running":false,"last_run_at":null,"next_run_at":null}],"quorum_source":"trusted"}}"#;
 
     /// `I` and `C` are not identity ids.
     const NOT_BASE58: &str = r#"{"ok":false,"error":{"code":"invalid_argument","message":"invalid argument: not a Base58 identity id","params":{"detail":"not a Base58 identity id"}}}"#;
@@ -2381,6 +2757,8 @@ mod tests {
     const NO_FILE: &str = r#"{"ok":false,"error":{"code":"io","message":"io error: No such file or directory (os error 2)","params":{}}}"#;
     #[cfg(windows)]
     const NO_FILE: &str = r#"{"ok":false,"error":{"code":"io","message":"io error: The system cannot find the path specified. (os error 3)","params":{}}}"#;
+    /// `platform.unavailable`: an offline read.
+    const UNAVAILABLE: &str = r#"{"ok":false,"error":{"code":"platform.unavailable","message":"platform unavailable","params":{}}}"#;
     /// `avatar.fetch_failed` (DP4-02).
     const FETCH_FAILED: &str = r#"{"ok":false,"error":{"code":"avatar.fetch_failed","message":"avatar fetch failed","params":{}}}"#;
 
@@ -2396,6 +2774,13 @@ mod tests {
     /// that fills in a body moves its rows on to the next stub, or gives
     /// the row its line in [`IMPLEMENTED`].
     const TABLE: &[(&str, &str)] = &[
+        ("platform-addr status", "DashPay.platform_addresses"),
+        ("platform-addr activity", "DashPay.platform_activity"),
+        ("platform-addr sync", "DashPay.sync_platform_addresses"),
+        (
+            "platform-addr move-to-core --credits 5 --quote-only",
+            "DashPay.move_to_core_quote",
+        ),
         ("dashpay status", "DashPay.status"),
         ("dashpay sync", "DashPay.sync_now"),
         ("dashpay sync-status", "DashPay.sync_status"),
@@ -2442,6 +2827,11 @@ mod tests {
             "DashPay.finish_asset_locks",
         ),
         ("identity faucet-key", "DashPay.prepare_faucet_lock"),
+        (
+            "identity unfinished-transfers",
+            "DashPay.unfinished_transfers",
+        ),
+        ("identity finish-transfer ab12", "DashPay.finish_transfer"),
         (
             "identity top-up --identity I --duffs 100000",
             "DashPay.top_up_quote",
@@ -2555,6 +2945,28 @@ mod tests {
         ("invite status L", "NetworkSession.invitation_status"),
         ("invite pending", "NetworkSession.pending_invitations"),
         ("invite forget L", "NetworkSession.forget_invitation"),
+        #[cfg(feature = "invitation-create-test")]
+        (
+            "invite create --duffs 100000 --phrase-file /nonexistent/p --out /nonexistent/l",
+            "DashPay.grant_request",
+        ),
+        ("shielded status", "DashPay.shielded_status"),
+        ("shielded sync", "DashPay.shielded_sync"),
+        ("shielded address", "DashPay.shielded_receive_address"),
+        ("shielded shield --duffs 100000", "DashPay.shield_quote"),
+        ("shielded shield-resume ab12", "DashPay.resume_shield"),
+        (
+            "shielded send --to tZ --credits 5 --memo hi",
+            "DashPay.shielded_send_quote",
+        ),
+        (
+            "shielded unshield --credits 5 --to yA",
+            "DashPay.unshield_quote",
+        ),
+        (
+            "shielded history --offset 1 --limit 5",
+            "DashPay.shielded_history",
+        ),
     ];
 
     /// Parses a command line (no argument holds a space).
@@ -2607,6 +3019,10 @@ mod tests {
         }
         // Tested on its own below.
         assert!(want.remove("dashpay session"));
+        // The smoke's funding: debug builds with its feature only, no test.
+        if cfg!(feature = "platform-addr-fund") {
+            assert!(want.remove("platform-addr fund"));
+        }
         let have: BTreeSet<_> = TABLE.iter().map(|(args, _)| path(args)).collect();
         assert_eq!(have, want);
     }
@@ -2628,6 +3044,7 @@ mod tests {
                     "C" => ID2,
                     "L" | "D" => "d1",
                     "yA" => "yTw4tvqFpDXagzVgq6v2WShbBBUYoMnCXp",
+                    "tZ" => "tdash1zqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
                     "ab12" => &hex,
                     t => t,
                 })
@@ -3039,7 +3456,19 @@ mod tests {
             assert!(TABLE.iter().any(|(args, _)| args == row), "{row:?}");
         }
         for (args, call) in TABLE {
-            let line = envelope(&run(&engine, &session, args));
+            let mut line = envelope(&run(&engine, &session, args));
+            if *args == "shielded address" {
+                let address = &mut line["result"]["address"];
+                assert!(address.as_str().unwrap().starts_with("tdash1z"), "{line}");
+                *address = json!("tdash1z…");
+            }
+            // Whether the prover is built by now depends on the machine (CI
+            // runners finish it before this row); only its type is checked.
+            let result = line.get_mut("result");
+            if let Some(ready) = result.and_then(|r| r.get_mut("prover_ready")) {
+                assert!(ready.is_boolean(), "{line}");
+                *ready = json!(false);
+            }
             assert!(!line.to_string().contains("SECRET"), "{args:?}");
             if let Some((_, want)) = IMPLEMENTED.iter().find(|(row, _)| row == args) {
                 let want: Value = serde_json::from_str(want).unwrap();

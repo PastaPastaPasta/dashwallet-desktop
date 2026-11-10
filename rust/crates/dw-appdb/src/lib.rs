@@ -40,6 +40,20 @@ mod rows;
 mod shared_sessions;
 mod shared_standby;
 pub use avatar::AvatarRow;
+
+/// A `tx_fiat` row: the price a transaction was first seen at (MP-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxFiat {
+    pub txid: String,
+    /// ISO 4217.
+    pub currency: String,
+    /// Fiat per 1 DASH, an exact decimal string.
+    pub price: String,
+    /// UNIX seconds the price is from.
+    pub rate_at: u64,
+    /// `ctx` or `bitPayDashCentral`.
+    pub source: String,
+}
 pub use dashpay_journal::{ContestWatch, JournalEntry, JournalPage, JournalRow};
 pub use holds::Holder;
 pub use mn_withdrawals::{
@@ -225,7 +239,7 @@ pub(crate) static CHILD_STARTS: std::sync::RwLock<()> = std::sync::RwLock::new((
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
 /// with an insert trigger that skips rows of a removed wallet (migration
 /// `V2026101302`, DEC-210). Settings are cleared by scope.
-pub(crate) const WALLET_TABLES: [&str; 18] = [
+pub(crate) const WALLET_TABLES: [&str; 19] = [
     "wallets",
     "address_book",
     "labels",
@@ -244,6 +258,7 @@ pub(crate) const WALLET_TABLES: [&str; 18] = [
     "masternode_ops",
     "shared_mn_sessions",
     "shared_mn_standby",
+    "tx_fiat",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -401,6 +416,7 @@ impl LabelKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiveRequestRow {
+    pub include_username: Option<bool>,
     pub id: i64,
     pub created_at: u64,
     pub address: String,
@@ -929,6 +945,51 @@ impl AppDb {
         Ok(())
     }
 
+    /// Stamps each transaction with the price it was first seen at
+    /// (`tx_fiat`, MP-01): a transaction that has a stamp keeps it.
+    pub fn stamp_tx_fiat(&self, wallet_id: &str, stamps: &[TxFiat], now: u64) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO tx_fiat (wallet_id, txid, currency, price, rate_at, source, stamped_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT (wallet_id, txid) DO NOTHING",
+            )?;
+            for s in stamps {
+                stmt.execute(params![
+                    wallet_id,
+                    s.txid,
+                    s.currency,
+                    s.price,
+                    s.rate_at as i64,
+                    s.source,
+                    now as i64
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every `tx_fiat` stamp of a wallet.
+    pub fn tx_fiat(&self, wallet_id: &str) -> Result<Vec<TxFiat>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT txid, currency, price, rate_at, source FROM tx_fiat WHERE wallet_id = ?1",
+        )?;
+        let rows = stmt.query_map([wallet_id], |r| {
+            Ok(TxFiat {
+                txid: r.get(0)?,
+                currency: r.get(1)?,
+                price: r.get(2)?,
+                rate_at: r.get::<_, i64>(3)? as u64,
+                source: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// `(txid, created_at)` of every `tx_meta` row of a wallet: when this
     /// device first saw (or sent) the transaction.
     pub fn tx_seen_times(&self, wallet_id: &str) -> Result<Vec<(String, u64)>> {
@@ -963,20 +1024,37 @@ impl AppDb {
         label: Option<&str>,
         message: Option<&str>,
     ) -> Result<i64> {
+        self.add_receive_request_with_username(
+            wallet_id, created_at, address, amount, label, message, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_receive_request_with_username(
+        &self,
+        wallet_id: &str,
+        created_at: u64,
+        address: &str,
+        amount: Option<u64>,
+        label: Option<&str>,
+        message: Option<&str>,
+        include_username: Option<bool>,
+    ) -> Result<i64> {
         let amount = amount
             .map(|a| i64::try_from(a).map_err(|_| AppDbError::Corrupt(format!("amount {a}"))))
             .transpose()?;
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO receive_requests (wallet_id, created_at, address, amount, label, message)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO receive_requests (wallet_id, created_at, address, amount, label, message, include_username)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 wallet_id,
                 created_at as i64,
                 address,
                 amount,
                 label,
-                message
+                message,
+                include_username
             ],
         )?;
         if conn.changes() == 0 {
@@ -989,7 +1067,7 @@ impl AppDb {
     pub fn receive_requests(&self, wallet_id: &str) -> Result<Vec<ReceiveRequestRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, created_at, address, amount, label, message FROM receive_requests
+            "SELECT id, created_at, address, amount, label, message, include_username FROM receive_requests
              WHERE wallet_id = ?1 ORDER BY created_at DESC, id DESC",
         )?;
         let rows = stmt.query_map([wallet_id], |r| {
@@ -1000,6 +1078,7 @@ impl AppDb {
                 amount: r.get::<_, Option<i64>>(3)?.map(|a| a as u64),
                 label: r.get(4)?,
                 message: r.get(5)?,
+                include_username: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1201,6 +1280,20 @@ impl AppDb {
     /// before another store holds a different key (MG-03 D34).
     pub fn set_setting_durable(&self, scope: &str, key: &str, value: Option<&str>) -> Result<()> {
         self.durably(|conn| Self::put_setting(conn, scope, key, value))
+    }
+
+    /// Several settings of `scope` (a `None` value deletes its key) in one
+    /// transaction, durable as [`Self::set_setting_durable`] when it returns
+    /// `Ok`: all of them or none.
+    pub fn set_settings_durable(&self, scope: &str, writes: &[(&str, Option<&str>)]) -> Result<()> {
+        self.durably(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            for (key, value) in writes {
+                Self::put_setting(&tx, scope, key, *value)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     fn put_setting(conn: &Connection, scope: &str, key: &str, value: Option<&str>) -> Result<()> {
@@ -1645,7 +1738,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026103101);
+        assert_eq!(db.schema_version().unwrap(), 2026111002);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();
@@ -1725,6 +1818,39 @@ mod tests {
         drop(db);
         durability_sim::power_loss(&path);
         assert_eq!(value("durable").as_deref(), Some("2"), "the delete is lost");
+    }
+
+    /// Several settings commit together or not at all, durably.
+    #[test]
+    fn settings_in_one_batch_commit_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(APP_DB_FILE);
+        drop(AppDb::open(&path).unwrap());
+        let value = |key: &str| AppDb::open(&path).unwrap().setting("g", key).unwrap();
+
+        durability_sim::arm(&path, false);
+        let db = AppDb::open(&path).unwrap();
+        db.set_setting("g", "gone", Some("0")).unwrap();
+        db.set_settings_durable("g", &[("a", Some("1")), ("b", Some("2")), ("gone", None)])
+            .unwrap();
+        drop(db);
+        durability_sim::power_loss(&path);
+        assert_eq!(value("a").as_deref(), Some("1"));
+        assert_eq!(value("b").as_deref(), Some("2"));
+        assert_eq!(value("gone"), None);
+
+        // A refused write in the batch leaves every one of them unwritten.
+        let db = AppDb::open(&path).unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER no_bad BEFORE INSERT ON settings_kv WHEN NEW.key = 'bad'
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        let refused = db.set_settings_durable("g", &[("a", Some("9")), ("bad", Some("x"))]);
+        assert!(refused.is_err());
+        assert_eq!(db.setting("g", "a").unwrap().as_deref(), Some("1"));
+        assert_eq!(db.setting("g", "bad").unwrap(), None);
     }
 
     /// D27: the durable write commits under `synchronous=FULL` (a trigger
@@ -1916,6 +2042,101 @@ mod tests {
         assert_eq!(
             db.wallets().unwrap(),
             vec![(W.to_string(), "Savings".to_string(), 3)]
+        );
+    }
+
+    #[test]
+    fn a_fiat_stamp_is_written_once() {
+        let db = AppDb::open_in_memory().unwrap();
+        let t1 = "a".repeat(64);
+        let stamp = |price: &str, currency: &str| TxFiat {
+            txid: t1.clone(),
+            currency: currency.into(),
+            price: price.into(),
+            rate_at: 100,
+            source: "ctx".into(),
+        };
+        db.stamp_tx_fiat(W, &[stamp("49.0967", "USD")], 110)
+            .unwrap();
+        // A later price, or another currency, never replaces it.
+        db.stamp_tx_fiat(W, &[stamp("52.1", "EUR")], 500).unwrap();
+        assert_eq!(db.tx_fiat(W).unwrap(), vec![stamp("49.0967", "USD")]);
+        assert!(db.tx_fiat(W2).unwrap().is_empty());
+        // The schema refuses what is not a stamp: a price that is not the
+        // engine's decimal (1 to 15 digits, a dot and 1 to 12 more, above
+        // zero) among them.
+        for price in [
+            ".",
+            "1.2.3",
+            "1.",
+            ".5",
+            "0",
+            "0.000",
+            "1234567890123456",
+            "1.1234567890123",
+            "1e3",
+            "",
+        ] {
+            assert!(
+                db.stamp_tx_fiat(
+                    W,
+                    &[TxFiat {
+                        txid: "c".repeat(64),
+                        ..stamp(price, "USD")
+                    }],
+                    1
+                )
+                .is_err(),
+                "{price:?}"
+            );
+        }
+        for (i, price) in ["123456789012345", "0.000000000001", "1.123456789012"]
+            .into_iter()
+            .enumerate()
+        {
+            let txid = format!("{i:0>64}");
+            db.stamp_tx_fiat(
+                W,
+                &[TxFiat {
+                    txid,
+                    ..stamp(price, "USD")
+                }],
+                1,
+            )
+            .unwrap();
+        }
+        assert!(
+            db.stamp_tx_fiat(
+                W,
+                &[TxFiat {
+                    txid: "b".repeat(64),
+                    ..stamp("-1", "USD")
+                }],
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            db.stamp_tx_fiat(
+                W,
+                &[TxFiat {
+                    txid: "b".repeat(64),
+                    ..stamp("1", "usd")
+                }],
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            db.stamp_tx_fiat(
+                W,
+                &[TxFiat {
+                    txid: "short".into(),
+                    ..stamp("1", "USD")
+                }],
+                1
+            )
+            .is_err()
         );
     }
 

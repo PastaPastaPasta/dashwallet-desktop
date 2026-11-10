@@ -14,9 +14,11 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
+import { landSend, PENDING_HANDLERS } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
 import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type ScenarioName, type World } from "./scenarios";
+import { receivePayment } from "./send";
 import { FIXTURE_NOW } from "./wallet";
 
 /** Present in every fixture build and in no production build (scripts/check-bundle.mjs). */
@@ -30,6 +32,9 @@ export interface FixtureOptions {
   /** Every engine command answers after this many ms (loading states). `launch_info` does not
    * wait: dw-app answers it from its launch options, before the window shows anything. */
   delayMs?: number;
+  /** Commands whose first call is held from the page's start (`hold=<command>`): a read that is still
+   * out when the screen shows. `release(command)` lets it answer. A relaunch holds them again. */
+  holds?: CommandName[];
 }
 
 export interface FixtureHandle {
@@ -38,6 +43,9 @@ export interface FixtureHandle {
   readonly world: World;
   /** Sends an engine event, as dw-app's bridge would. */
   emit(event: AppEvent): void;
+  /** A payment of `duffs` arrives at the wallet's current receiving address (the next one is current
+   * from then on): its row, `historyChanged` and `newTransactions`. Returns the address paid. */
+  receivePayment(duffs: number, walletId?: string, to?: string): string;
   /** Queues links as dw-app's shell routed them and says so (`linksPending`), as a clicked link
    * or a second launch would. */
   deliverLinks(routes: LinkRoute[]): void;
@@ -48,8 +56,13 @@ export interface FixtureHandle {
   /** Holds the next call of `command`: it answers from the world as it is when called, but only
    * once the returned function is called (a reply that arrives late). */
   hold(command: CommandName): () => void;
+  /** Releases the call a `hold=` URL option held at the start (no-op when none is out). */
+  release(command: CommandName): void;
   /** Every command called so far, in order. */
   readonly calls: string[];
+  /** Platform takes a held send after all (its row becomes `done`, the credits are debited), with
+   * no signal to the app, as the engine settles it between two reads. */
+  landPlatformSend(id: string): void;
   /** One step of `draft`'s registration run, where the network would answer (DP1-09);
    * `false` when it has no run. */
   advanceRegistration(draft: string, walletId?: string): boolean;
@@ -87,6 +100,13 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   const failures = new Map(Object.entries(opts.failures ?? {}) as [CommandName, ErrorClass][]);
   const calls: string[] = [];
   const held = new Map<string, Promise<void>>();
+  const startHold = (command: string) => {
+    let release = () => {};
+    held.set(command, new Promise<void>((r) => (release = r)));
+    return () => release();
+  };
+  const startReleases = new Map<string, () => void>();
+  for (const c of opts.holds ?? []) startReleases.set(c, startHold(c));
   const ctx: Ctx = { world, emit: (event) => void emit(ENGINE_EVENT, event) };
 
   const UNDELAYED = new Set(["launch_info", "ui_settings"]);
@@ -97,7 +117,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       if (opts.delayMs && !UNDELAYED.has(cmd)) await new Promise((r) => setTimeout(r, opts.delayMs));
       const cls = failures.get(cmd as CommandName);
       if (cls) throw sampleError(cls);
-      const handler = HANDLERS[cmd as CommandName] as ((args: unknown, ctx: Ctx) => unknown) | undefined;
+      const handler = (HANDLERS[cmd as CommandName] ?? PENDING_HANDLERS[cmd]) as ((args: unknown, ctx: Ctx) => unknown) | undefined;
       if (!handler) throw notImplemented(cmd);
       const result = handler(payload ?? {}, ctx);
       const release = held.get(cmd);
@@ -115,17 +135,15 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     scenario: opts.scenario,
     world,
     emit: ctx.emit,
+    receivePayment: (duffs, walletId = FIXTURE_WALLET_ID, to) => receivePayment(ctx, walletId, duffs, to),
     deliverLinks: (routes) => {
       world.links.push(...routes);
       void emit(SHELL_EVENT, { kind: "linksPending" } satisfies ShellEvent);
     },
     shellCommand: (command) => void emit(SHELL_EVENT, { kind: "command", command } satisfies ShellEvent),
     fail: (command, cls) => (cls ? failures.set(command, cls) : failures.delete(command)),
-    hold: (command) => {
-      let release = () => {};
-      held.set(command, new Promise<void>((r) => (release = r)));
-      return () => release();
-    },
+    hold: startHold,
+    release: (command) => void startReleases.get(command)?.(),
     advanceRegistration: (draft, walletId = FIXTURE_WALLET_ID) => registrationRun.advance(ctx, walletId, draft),
     failRegistration: (draft, code, retryable, walletId = FIXTURE_WALLET_ID) => registrationRun.fail(ctx, walletId, draft, code, retryable),
     relaunch: () => {
@@ -133,12 +151,15 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       location.reload();
     },
     calls,
+    landPlatformSend: (id) => {
+      if (world.pending.platform) landSend(world.pending.platform, id);
+    },
     now: FIXTURE_NOW,
     locale: "en-US",
   };
 }
 
-/** `?scenario=<name>&theme=light|dark&fail=<command>:<class>&delay=<ms>`. `fail` repeats; an
+/** `?scenario=<name>&theme=light|dark&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
  * `error-<class>` scenario is `funded` with `list_wallets` failing with that class. Unknown
  * names throw, so a typo in a test URL fails loudly instead of showing the default. */
 export function fixtureOptionsFromUrl(search: string): FixtureOptions {
@@ -161,6 +182,11 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
     if (!Object.hasOwn(COMMANDS, command) || !cls || !isErrorClass(cls)) throw new Error(`bad fail=${f}: expected <command>:<error class>`);
     failures[command as CommandName] = cls;
   }
+  const holds: CommandName[] = [];
+  for (const c of p.getAll("hold")) {
+    if (!Object.hasOwn(COMMANDS, c)) throw new Error(`bad hold=${c}: not a command`);
+    holds.push(c as CommandName);
+  }
   const delay = Number(p.get("delay") ?? 0);
-  return { scenario, theme, failures, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
+  return { scenario, theme, failures, holds, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
 }

@@ -15,9 +15,11 @@ pub enum EngineError {
     InvalidArgument(String),
     #[error("network session is not open: {0}")]
     NetworkNotOpen(String),
-    /// The wallet database for this network is still held by a previous
-    /// session in this process (SqlitePersister's open-path registry).
-    #[error("wallet storage already open in this process: {0}")]
+    /// The data root is held by another process (its instance lock,
+    /// `dw_fs::instance`), or the wallet database for this network is still
+    /// held by a previous session in this process (SqlitePersister's
+    /// open-path registry).
+    #[error("wallet storage in use: {0}")]
     StorageInUse(String),
     #[error("storage error: {0}")]
     Storage(String),
@@ -62,9 +64,14 @@ pub enum EngineError {
     /// The call needs the SPV client stopped (`reset_chain_data`).
     #[error("spv is running")]
     SpvRunning,
-    /// A rescan the engine started is still running.
+    /// A rescan runs (`start_rescan`), or a spend meets a replay of the
+    /// filter scan: the wallet checkpoint is below the highest one seen
+    /// (`replay_guard`).
     #[error("a rescan is in progress")]
     RescanInProgress,
+    /// A rescan the user stopped part way must run again before a spend.
+    #[error("a rescan was interrupted")]
+    RescanInterrupted,
     /// Not a BIP44 account-level extended public key of this network.
     #[error("invalid xpub: {0}")]
     InvalidXpub(String),
@@ -149,6 +156,12 @@ pub enum EngineError {
     /// the identity's code (`contact.*`, `platform.*`, `identity.*`).
     #[error("contact: {0}")]
     Contact(crate::platform::ContactError),
+    /// Close Wallet, or an in-app network close or switch, while a wallet
+    /// holds a shielded spend whose result is not known (DEC-1046, m4
+    /// §2.13): unloading it would delete the library's stored transition
+    /// and its reservations (platform-wallet has no detach at the pin).
+    #[error("a shielded payment is still being confirmed; wait, or quit and reopen the app")]
+    ShieldedSpendUnresolved,
 }
 
 impl EngineError {
@@ -173,6 +186,7 @@ impl EngineError {
             EngineError::SpvNotRunning => "spv_not_running",
             EngineError::SpvRunning => "spv_running",
             EngineError::RescanInProgress => "rescan_in_progress",
+            EngineError::RescanInterrupted => "rescan_interrupted",
             EngineError::InvalidXpub(_) => "invalid_xpub",
             EngineError::TxActionRefused(_) => "tx_action_refused",
             EngineError::NoPeers => "no_peers",
@@ -199,6 +213,7 @@ impl EngineError {
             EngineError::Masternode(_) => "masternode",
             EngineError::StuckFunding(_) => "stuck_funding",
             EngineError::Contact(_) => "contact",
+            EngineError::ShieldedSpendUnresolved => "shielded_spend_unresolved",
         }
     }
 }

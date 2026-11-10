@@ -9,7 +9,7 @@ use std::sync::Arc;
 use dw_appdb::dispatch::{
     CallRows, DISPATCH_DB_FILE, DispatchJournal, DispatchRow, JournalOpen, StepRow,
 };
-use dw_vault::{GrantKind, GrantPurpose, SignerScope, Vault, VaultError, VaultStatus};
+use dw_vault::{GrantKind, GrantPurpose, SignerLife, SignerScope, Vault, VaultError, VaultStatus};
 use key_wallet::bip32::DerivationPath;
 use zeroize::Zeroizing;
 
@@ -21,15 +21,20 @@ use crate::platform::flows::{FlowKind, RevokeCause};
 use crate::platform::signers::VaultContactCrypto;
 use crate::{EngineError, NetworkSession, WalletId};
 
+use crate::platform::shielded_pool::drain_passes;
+
 /// Which vault grant kinds a flow's lease may carry: a `PlatformOp`, plus a
 /// `Spend` for "Accept and pay"'s payment (§16.1); a contact payment's own
-/// lease only the `Spend` (DP3-01), as a proposal's fee (MG-06 D10); the
-/// masternode flows their own grant alone (MG-05 §4), as a masternode
-/// withdrawal (MG-13 P12).
+/// lease only the `Spend` (DP3-01), as a proposal's fee (MG-06 D10) and a
+/// CoinJoin drain its coins (0.2 MIX-SHIELD: no `PlatformOp` grant reaches a
+/// CoinJoin coin); the masternode flows their own grant alone (MG-05 §4), as
+/// a masternode withdrawal (MG-13 P12).
 fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
     match flow {
         FlowKind::AcceptAndPay => &[GrantKind::PlatformOp, GrantKind::Spend],
-        FlowKind::ContactPayment | FlowKind::Proposal => &[GrantKind::Spend],
+        FlowKind::ContactPayment | FlowKind::Proposal | FlowKind::ShieldDrain => {
+            &[GrantKind::Spend]
+        }
         FlowKind::Voting => &[GrantKind::Governance],
         FlowKind::MasternodeRegistration
         | FlowKind::KeyChange
@@ -44,7 +49,12 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::ContactRequest
         | FlowKind::Accept
         | FlowKind::PrivateDetails
-        | FlowKind::EnableDashPayKeys => &[GrantKind::PlatformOp],
+        | FlowKind::EnableDashPayKeys
+        | FlowKind::PlatformAddressMove
+        | FlowKind::PlatformAddressSend
+        | FlowKind::Shield
+        | FlowKind::PlatformAddressFund
+        | FlowKind::ShieldedSpend => &[GrantKind::PlatformOp],
     }
 }
 
@@ -129,6 +139,30 @@ pub(crate) fn issue(
             None => vault.platform_signer(&wallet.0, token, scope),
         };
         match token.purpose() {
+            GrantPurpose::PlatformOp { max_credits, .. }
+                if matches!(
+                    flow,
+                    FlowKind::PlatformAddressMove | FlowKind::PlatformAddressSend
+                ) =>
+            {
+                // "Move to Dash wallet" (release 0.1) and a send to a
+                // Platform address (0.2): the DIP-17 payment keys alone, no
+                // identity key and no contact crypto.
+                out.credits = max_credits;
+                if max_credits > 0 {
+                    out.signers.platform_address =
+                        Some(scoped(SignerScope::PlatformAddress).map_err(issuing)?);
+                }
+            }
+            GrantPurpose::PlatformOp { max_duffs, .. } if flow == FlowKind::PlatformAddressFund => {
+                // "Add from Dash wallet" (0.2): the asset-lock credit keys
+                // alone, no identity key and no contact crypto.
+                out.funding = max_duffs;
+                if max_duffs > 0 {
+                    out.signers.funding =
+                        Some(scoped(SignerScope::PlatformFunding { max_duffs }).map_err(issuing)?);
+                }
+            }
             GrantPurpose::PlatformOp {
                 max_duffs,
                 max_credits,
@@ -140,11 +174,37 @@ pub(crate) fn issue(
                     out.signers.funding =
                         Some(scoped(SignerScope::PlatformFunding { max_duffs }).map_err(issuing)?);
                 }
-                if max_credits > 0 {
+                if max_credits > 0 && flow == FlowKind::ShieldedSpend {
+                    // The shielded spend key, and no identity key (§7 item 72).
+                    let spend_key = match &key {
+                        Some(hold) => vault.shielded_spend_key_held(&wallet.0, hold, token),
+                        None => vault.shielded_spend_key(&wallet.0, token),
+                    };
+                    out.signers.shielded = Some(spend_key.map_err(issuing)?);
+                } else if max_credits > 0 {
                     out.signers.identity =
                         Some(scoped(SignerScope::PlatformIdentity).map_err(issuing)?);
                 }
                 out.signers.crypto = Some(scoped(SignerScope::DashPayCrypto).map_err(issuing)?);
+            }
+            GrantPurpose::Spend { max_duffs } if flow == FlowKind::ShieldDrain => {
+                // "Move mixed coins" to Shielded: the drain's inputs and the
+                // lock's credit key alone, as an asset lock's funding; no
+                // spend signer, no other input, no identity key, no contact
+                // crypto. The signer stops when the lease drops its life,
+                // whatever key it signs with.
+                out.funding = max_duffs;
+                if max_duffs > 0 {
+                    let life = SignerLife::new();
+                    let signer = match &key {
+                        Some(hold) => {
+                            vault.shield_drain_signer_held(&wallet.0, hold, token, max_duffs, &life)
+                        }
+                        None => vault.shield_drain_signer(&wallet.0, token, max_duffs, &life),
+                    };
+                    out.signers.funding = Some(signer.map_err(issuing)?);
+                    out.signers.life = Some(life);
+                }
             }
             GrantPurpose::Spend { max_duffs } => {
                 out.spend = max_duffs;
@@ -270,22 +330,42 @@ impl NetworkSession {
 
     /// Locks the vault (§8.1): revokes every lease and drops the background
     /// leases before the first await, runs this request's own vault gate,
-    /// and returns after the drain, within `max(H, T_gate)` of the call.
+    /// and returns after the drain, within `max(H, T_gate)` of the call,
+    /// and after a shielded pass in flight ends ([`Self::drain_shielded_pass`]).
     /// Cancels a pending [`Self::relock_after`] timer.
     pub async fn lock_vault(self: &Arc<Self>) -> Result<LockReport, EngineError> {
         let _op = self.try_enter()?;
         self.manager()?;
         self.cancel_relock();
         let this = Arc::clone(self);
-        Ok(self
-            .leases
-            .lock(RevokeCause::Lock, move || this.vault_gate())
-            .await)
+        let passes = Arc::clone(&self.platform.shielded_passes);
+        let report = (self.leases)
+            .lock_then(RevokeCause::Lock, move || this.vault_gate(), async move {
+                drain_passes(&passes).await
+            })
+            .await;
+        Ok(report)
+    }
+
+    /// A shielded pass admitted under the background leases the lock just
+    /// dropped ends before the lock completes, at its `LockProgress::Done`
+    /// (the async lock's return; the synchronous lock returns before it)
+    /// (0.1 E1, DEC-1032): it may re-send
+    /// a stored spend, as a leased call admitted before a freeze may finish
+    /// in its drain. Every pass holds the pass lock to read from its
+    /// admission to its end; once this write is had, the next pass is
+    /// admitted only while each wallet holding such a spend holds its
+    /// background lease again (`shielded_pool::admit_pass`). It waits for
+    /// the pass's end, which the SDK's request settings bound
+    /// (`shielded_pool::drain_passes`).
+    pub(crate) async fn drain_shielded_pass(&self) {
+        drain_passes(&self.platform.shielded_passes).await;
     }
 
     /// The synchronous lock (`Vault.lock()`, the console, the relock
-    /// timer): the freeze and this request's vault gate inline; the drain
-    /// continues in the background and ends with `LockProgress::Done`.
+    /// timer): the freeze and this request's vault gate inline; the drain,
+    /// a shielded pass in flight's among it, continues in the background
+    /// and ends with `LockProgress::Done`.
     /// Never block-waits on the runtime. Revokes leases even on a vault
     /// that is already locked.
     pub fn lock_vault_sync(&self) -> Result<VaultStatus, EngineError> {
@@ -297,8 +377,14 @@ impl NetworkSession {
 
     /// A lock without admission (the relock timer holds its own).
     pub(crate) fn lock_now(&self) -> VaultStatus {
+        // A shielded pass admitted before the freeze ends before `Done`
+        // (`drain_shielded_pass`); none is admitted after it for a wallet
+        // holding a stored spend (its background lease is gone).
+        let passes = Arc::clone(&self.platform.shielded_passes);
         self.leases
-            .lock_sync(RevokeCause::Lock, || self.vault_gate())
+            .lock_sync_then(RevokeCause::Lock, || self.vault_gate(), async move {
+                drain_passes(&passes).await
+            })
     }
 
     /// One lock request's vault gate: ends the epoch and every grant issued
@@ -381,6 +467,9 @@ impl NetworkSession {
                 .await;
             freeze.gate_done();
             freeze.drain().await;
+            // The background leases went with the freeze: a shielded pass
+            // admitted under them ends first (DEC-1032).
+            this.drain_shielded_pass().await;
             freeze.finish(this.vault.status());
             this.ensure_background().await;
             out
@@ -396,6 +485,9 @@ impl NetworkSession {
     pub(crate) async fn revoke_wallet(&self, wallet: WalletId, cause: RevokeCause) -> Freeze {
         let mut freeze = self.leases.freeze(cause, Scope::Wallet(wallet), false);
         freeze.drained().await;
+        // The wallet's background lease went with the freeze: a shielded
+        // pass admitted under it ends first (DEC-1032).
+        self.drain_shielded_pass().await;
         freeze
     }
 
@@ -412,6 +504,9 @@ impl NetworkSession {
         freeze.drain().await;
         freeze.finish(self.vault.status());
         self.leases.abort_tasks();
+        // The refreshes and resume passes hold the session's wallets: none
+        // outlives the close (BL-544).
+        self.leases.background.close().await;
     }
 
     /// The background `DashPayCrypto` of `wallet` (§4.5), created on

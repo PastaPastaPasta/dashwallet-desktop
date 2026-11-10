@@ -3,13 +3,15 @@
 // with the fee line and Review.
 
 import { useId, useState, type ReactNode, type Ref } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import { keys, useBackend } from "../../api/queries";
+import { navigate } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
+import { FiatSecondary, FiatToggle, useFiatEntry } from "../../fiat/entry";
 import type { useDisplay } from "../../format/display";
-import { changePolicy, coinSource, feeMode, sendErrorText, type Advanced, type Confirmed, type Outcome, type PayRecipient } from "./model";
+import { availableLabel, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 /** How long a field stays unchanged before it is checked and the draft estimated (U-03 D5). */
@@ -19,6 +21,37 @@ type Shown = ReturnType<typeof useDisplay>;
 
 /** Where a form is: editing, confirming, or showing the result. */
 export type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec } | { kind: "result"; outcome: Outcome };
+
+/** A Pay form's sheets (U-03): Review's confirm, then the result. While either is up the form
+ * estimates nothing (`held`), so the payment's own events re-check nothing behind them. A payment
+ * that went, or may have, ends the form at once (`clear`); its draft stays open until the result
+ * sheet closes, as unknown's Try again rebroadcasts through it. A failed one leaves the form as it was. */
+export function usePaySheets(walletId: string, draft: DraftApi, clear: () => void) {
+  const client = useQueryClient();
+  const [phase, setPhase] = useState<Phase>({ kind: "editing" });
+  const outcome = (o: Outcome) => {
+    if (o.kind !== "failed") clear();
+    setPhase({ kind: "result", outcome: o });
+  };
+  const done = (show: boolean) => {
+    if (phase.kind !== "result") return;
+    const o = phase.outcome;
+    if (o.kind !== "failed") {
+      void draft.close();
+      void client.invalidateQueries({ queryKey: keys.coinsAll(walletId) });
+    }
+    setPhase({ kind: "editing" });
+    if (show && o.kind === "sent") navigate("activity", { detail: o.txid });
+  };
+  return {
+    phase,
+    held: phase.kind === "confirm" || (phase.kind === "result" && phase.outcome.kind !== "failed"),
+    review: (confirmed: Confirmed, spec: DraftSpec) => setPhase({ kind: "confirm", confirmed, spec }),
+    cancel: () => setPhase({ kind: "editing" }),
+    outcome,
+    done,
+  };
+}
 
 export function FormField({
   label,
@@ -78,10 +111,34 @@ export function useAmountField(shown: Shown, initial: string) {
   return { text, setText, duffs, error, settled: checked === typed };
 }
 
+/** Pay's amount field with its fiat entry (MP-01): the form reads `fiat.error` too, so Review is
+ * never open while the field shows one. */
+export function usePayAmount(shown: Shown, initial: string) {
+  const amount = useAmountField(shown, initial);
+  return { ...amount, fiat: useFiatEntry(shown, amount) };
+}
+
+/** What the chosen coin source can spend (the engine's `maxSpendable`), for "Available"; `undefined`
+ * while it loads or when "Selected coins" has none yet. Under the coin keys, so coin events refresh it,
+ * except while `hold` (a sheet is up). */
+export function useAvailable(walletId: string, advanced: Advanced, hold: boolean): number | undefined {
+  const b = useBackend();
+  const source = coinSource(advanced);
+  const none = advanced.coins === "selected" && advanced.selected.length === 0;
+  const available = useQuery({
+    queryKey: [...keys.coinsAll(walletId), "available", source] as const,
+    queryFn: () => b.maxSpendable(walletId, source, feeMode(advanced) ?? feeMode(DEFAULT_ADVANCED)!),
+    enabled: !none && !hold,
+    retry: false,
+  });
+  return none ? undefined : available.data;
+}
+
 /** The draft's live estimate of `spec` and what its refusal says: on a field, or under the form
  * (`general`, with what holds the payment back besides). `hold`: estimate nothing (locked, or the
  * form says why not). */
 export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec | null, advanced: Advanced, hold: boolean, shown: Shown) {
+  const b = useBackend();
   const { chain, amountUnit } = shown;
   // Under the wallet's coin keys: a payment or new coins refresh the estimate (events.ts).
   const estimate = useQuery({
@@ -91,15 +148,34 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
     retry: false,
     gcTime: 0,
   });
-  const refusal = estimate.isError ? sendErrorText(estimate.error, chain, amountUnit) : null;
+  // A normal payment leaves a mixing wallet's mixed and mixing coins alone: say where they are.
+  const normal = spec?.source.kind === "any";
+  const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: normal });
+  // A disabled query keeps its cached data: the hints are for the normal source alone.
+  const { fullyMixed = 0, denominated = 0 } = mixing.data?.balances ?? {};
+  const hints = normal ? { mixed: fullyMixed > 0, mixing: denominated > fullyMixed } : undefined;
+  const refusal = estimate.isError ? sendErrorText(estimate.error, chain, amountUnit, hints) : null;
+  // A fully mixed payment refused as an absurd fee: offer Subtract fee with what it would send,
+  // from the engine's own estimate of it (MX-FEE); a refusal of that too leaves the reason alone.
+  const mixed = estimate.isError && spec ? mixedFeeText(estimate.error, spec, chain, amountUnit) : null;
+  const subtracted = mixed && spec ? { ...spec, recipient: withSubtractFee(spec.recipient) } : null;
+  const offer = useQuery({
+    queryKey: [...keys.coinsAll(walletId), "estimate", subtracted] as const,
+    queryFn: () => draft.estimate(subtracted!),
+    enabled: !!subtracted && !hold,
+    retry: false,
+    gcTime: 0,
+  });
   let general: string | null = null;
-  if (estimate.isError) general = refusal ? (refusal.field ? null : refusal.text) : errorMessage(estimate.error);
+  if (mixed) general = mixed;
+  // A refusal of a field shows under it and here too: Review's reason is the footer's.
+  else if (estimate.isError) general = refusal ? refusal.text : errorMessage(estimate.error);
   else if (advanced.coins === "selected" && advanced.selected.length === 0) general = "Choose the coins to pay with.";
   else if (!feeMode(advanced)) general = "Enter a custom fee rate.";
   else if (advanced.changeAddress !== null && advanced.changeAddress.trim() === "") general = "Enter the custom change address.";
   const fieldError = (f: "address" | "amount") => (refusal?.field === f ? refusal.text : null);
   const ready = !!spec && estimate.isSuccess && !estimate.isFetching && !hold;
-  return { estimate, general, fieldError, ready };
+  return { estimate, general, fieldError, ready, offer: subtracted && offer.isSuccess ? offer.data.totalSent : null };
 }
 
 /** Max (U-03): everything the chosen coins can pay, the fee subtracted from it. */
@@ -119,32 +195,44 @@ export function useMax(walletId: string, advanced: Advanced, shown: Shown, set: 
   return { run, error, disabled: !fee };
 }
 
-/** The amount with Max, then Subtract fee (U-03). `error`: the estimate's refusal of the amount. */
+/** The amount with Max, then Subtract fee (U-03), and the fiat toggle with the other unit under it
+ * (MP-01). `error`: the estimate's refusal of the amount. */
 export function AmountFields({
   shown,
   amount,
   max,
   error,
   available,
+  coins,
   subtractFee,
   onSubtractFee,
   inputRef,
 }: {
   shown: Shown;
-  amount: ReturnType<typeof useAmountField>;
+  amount: ReturnType<typeof usePayAmount>;
   max: ReturnType<typeof useMax>;
   error: string | null;
   available: number | undefined;
+  /** The coin source `available` counts. */
+  coins: CoinChoice;
   subtractFee: boolean;
   onSubtractFee: (on: boolean) => void;
   inputRef?: Ref<HTMLInputElement>;
 }) {
+  const { fiat } = amount;
   return (
     <>
       <FormField
-        label={`Amount (${shown.name})`}
-        error={amount.error ?? error ?? max.error}
-        hint={available !== undefined && <>Available: {shown.full(available)} {shown.name}</>}
+        label={`Amount (${fiat.unitName})`}
+        error={fiat.error ?? amount.error ?? error ?? max.error}
+        hint={
+          (available !== undefined || fiat.toggle.shown) && (
+            <>
+              <FiatSecondary entry={fiat} duffs={amount.duffs} testId="pay-amount-other" />
+              {available !== undefined && <>{availableLabel(coins)}: {shown.full(available)} {shown.name}</>}
+            </>
+          )
+        }
       >
         {(p) => (
           <span className="amount-entry">
@@ -152,12 +240,13 @@ export function AmountFields({
               {...p}
               ref={inputRef}
               data-testid="pay-amount"
-              value={amount.text}
+              value={fiat.value}
               inputMode="decimal"
               autoComplete="off"
-              placeholder={shown.placeholder}
-              onChange={(e) => amount.setText(e.target.value)}
+              placeholder={fiat.placeholder}
+              onChange={(e) => fiat.onChange(e.target.value)}
             />
+            <FiatToggle entry={fiat} shown={shown} testId="pay-amount-toggle" />
             <DashButton variant="tintedBlue" size="small" data-testid="pay-max" onClick={() => void max.run()} disabled={max.disabled}>
               Max
             </DashButton>
@@ -172,35 +261,60 @@ export function AmountFields({
   );
 }
 
+const PAY_INCOMPLETE = "Enter an address and an amount first.";
+const PAY_CHECKING = "Checking the payment…";
+
 /** The fee line, or what holds the payment back; then Review. */
 export function PayFooter({
   problem,
   fee,
   shown,
   ready,
+  incomplete,
   reviewRef,
+  offer,
 }: {
   problem: string | null;
+  /** Subtract fee would send this amount; its button turns it on (MX-FEE). Pass it only for settled fields. */
+  offer?: { amount: number; accept: () => void } | null;
+  /** The form has no address or amount to estimate yet (as against an estimate still being worked out). */
+  incomplete: boolean;
   /** The estimate's fee, when there is one for the current form. */
   fee: number | null;
   shown: Shown;
   ready: boolean;
   reviewRef: Ref<HTMLButtonElement>;
 }) {
+  const waiting = incomplete ? PAY_INCOMPLETE : PAY_CHECKING;
   return (
     <div className="pay-footer" data-testid="pay-footer">
       <div className="pay-footer-text" aria-live="polite">
         {problem ? (
-          <span className="form-problem" data-testid="pay-problem">
-            {problem}
-          </span>
+          <>
+            <span className="form-problem" id="pay-reason" data-testid="pay-problem">
+              {problem}
+            </span>
+            {/* Outside #pay-reason, so Review's description stays the reason alone. */}
+            {offer && (
+              <span className="form-problem" data-testid="pay-offer">
+                {" "}With Subtract fee it would send <AmountText text={shown.full(offer.amount)} unitName={shown.name} glyph={false} />.{" "}
+                <DashButton variant="tintedBlue" size="small" data-testid="pay-subtract-offer" onClick={offer.accept}>
+                  Turn on Subtract fee
+                </DashButton>
+              </span>
+            )}
+          </>
         ) : fee !== null ? (
-          <span className="pay-fee-line" data-testid="pay-fee-line">
+          <span className="pay-fee-line" id="pay-reason" data-testid="pay-fee-line">
             Network fee <AmountText text={shown.full(fee)} unitName={shown.name} glyph={false} />
+          </span>
+        ) : !ready ? (
+          <span className="field-hint" id="pay-reason" data-testid="pay-incomplete">
+            {waiting}
           </span>
         ) : null}
       </div>
-      <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready}>
+      <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready} why={problem ?? waiting} whyId="pay-reason">
         Review
       </DashButton>
     </div>

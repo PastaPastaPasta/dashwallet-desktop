@@ -16,4 +16,9 @@ denominated: number, normalizedAnonymized: number,
  * Fully mixed by the QT-043 rule: the panel's "CoinJoin Balance" and
  * what the CoinJoin send page may spend.
  */
-fullyMixed: number, };
+fullyMixed: number,
+/**
+ * Every free coin of the CoinJoin account, mixed or not: the move card
+ * shows while it is above zero.
+ */
+coinjoinAccount: number, };

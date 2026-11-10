@@ -304,6 +304,8 @@ impl Masternodes {
             // The fence from the keys to the row's write (D63): another
             // creation call can't take the same owner key or coins.
             let fence = s.coin_fence(wallet).await?;
+            // Before an address is issued (`own_row`); `shared_reserve` re-checks.
+            s.replay_guard(wallet, 0).await?;
             let mut ctx = s.protx_context(wallet).await?;
 
             // The draft's table and terms, labels first (D28).
@@ -518,6 +520,8 @@ impl Masternodes {
             require_v24(&s).await?;
             // The fence from the keys to the row's write (D63).
             let fence = s.coin_fence(wallet).await?;
+            // Before an address is issued (`own_row`); `shared_reserve` re-checks.
+            s.replay_guard(wallet, 0).await?;
             let mut ctx = s.protx_context(wallet).await?;
             let (_flight, l) = s
                 .claim_loaded(

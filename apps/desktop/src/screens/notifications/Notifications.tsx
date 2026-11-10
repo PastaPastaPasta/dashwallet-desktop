@@ -4,6 +4,7 @@
 
 import { useEffect, useId, useRef, type RefObject } from "react";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
+import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { DashPayEventInfo } from "../../api/generated/DashPayEventInfo";
 import { errorMessage } from "../../api/backend";
 import { navigate, ui, useUi } from "../../app/ui";
@@ -16,11 +17,13 @@ import { useContactActions, useContactList, useContactsOwner, useHasKeys } from 
 import { detailDate } from "../../format/tx";
 import { eventLink, eventText, feedOf, namesFrom, popoverCut, type NameOf } from "../../notifications/model";
 import { useEventFeed, useReadOnOpen } from "../../notifications/queries";
+import { useReceived } from "../../payments/received";
 import { useModel } from "../../onboarding/model";
 import { Avatar } from "../contacts/Avatar";
 import { useActionToast, useRefocus } from "../contacts/afterAction";
 import { RequestButtons } from "../contacts/RequestButtons";
 import { Page } from "../Routes";
+import { ReceivedSection } from "./Received";
 import { GrantSheet, Outcome } from "../tools/common";
 
 /** What a view of the bell reads: the feed, read on opening, the names its events use, and the
@@ -65,7 +68,7 @@ function openEvent(e: DashPayEventInfo) {
 
 /** The popover under the bell (D11). Escape or a click outside closes it, except while an action
  * or its passphrase prompt is open; `close` gives focus back to the bell. */
-export function NotificationsPopover({ walletId, identity, id, close }: { walletId: string; identity: string; id: string; close: () => void }) {
+export function NotificationsPopover({ walletId, identity, network, id, close }: { walletId: string; identity: string; network: NetworkInfo; id: string; close: () => void }) {
   const { feed, shown, nameOf, actions, hasKeys } = useBell(walletId, identity);
   useModel(actions);
   const root = useRef<HTMLDivElement>(null);
@@ -97,7 +100,8 @@ export function NotificationsPopover({ walletId, identity, id, close }: { wallet
     close();
     then();
   };
-  const empty = feed.isSuccess && cut.pending.length === 0 && cut.fresh.length === 0;
+  const payments = useReceived(walletId);
+  const empty = feed.isSuccess && cut.pending.length === 0 && cut.fresh.length === 0 && payments.length === 0;
   return (
     <div className="bell-popover card-l1" id={id} role="dialog" aria-labelledby={`${id}-title`} ref={root} data-testid="bell-popover">
       <h2 className="bell-title" id={`${id}-title`} tabIndex={-1} ref={heading}>
@@ -114,6 +118,7 @@ export function NotificationsPopover({ walletId, identity, id, close }: { wallet
           No new notifications
         </p>
       )}
+      <ReceivedSection walletId={walletId} network={network} limit={5} onOpen={(txid) => go(() => ui.set({ detail: txid }))} />
       {cut.pending.length > 0 && (
         <Requests contacts={cut.pending} more={cut.morePending} actions={actions} hasKeys={hasKeys} onOpen={(c) => go(() => openContact(c))} onDone={onDone} testId="bell-requests" />
       )}
@@ -128,14 +133,23 @@ export function NotificationsPopover({ walletId, identity, id, close }: { wallet
 }
 
 /** The Notifications page (D12): every request waiting and every event, a page at a time. */
-export function NotificationsPage({ walletId }: { walletId: string }) {
+export function NotificationsPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const { owner } = useContactsOwner(walletId);
+  const received = useReceived(walletId);
   let body;
   // Another main identity starts the view over: its own feed, read and marked afresh.
   if (owner.kind === "identity") body = <NotificationsView key={owner.identity} walletId={walletId} identity={owner.identity} />;
   else if (owner.kind === "starting") body = <LoadingState testId="notifications-starting" text="Starting DashPay…" />;
-  else body = <EmptyState testId="notifications-no-identity" title="No notifications" message="Create a username to get contact requests and payments from contacts." />;
-  return <Page route="notifications">{body}</Page>;
+  else if (received.length === 0) body = <EmptyState testId="notifications-no-identity" title="No notifications" message="Create a username to get contact requests and payments from contacts." />;
+  else body = null;
+  return (
+    <Page route="notifications">
+      <div className="notifications" data-testid="notifications-payments">
+        <ReceivedSection walletId={walletId} network={network} onOpen={(txid) => ui.set({ detail: txid })} />
+      </div>
+      {body}
+    </Page>
+  );
 }
 
 function NotificationsView({ walletId, identity }: { walletId: string; identity: string }) {
@@ -143,6 +157,7 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
   useModel(actions);
   const root = useRef<HTMLDivElement>(null);
   const onDone = useRequestDone(walletId, shown.pending, root, () => root.current?.closest("main")?.querySelector("h1"));
+  const hasPayments = useReceived(walletId).length > 0;
   if (feed.isPending) return <LoadingState testId="notifications-loading" text="Loading notifications…" />;
   if (feed.isError && !feed.data)
     return (
@@ -160,7 +175,7 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
   return (
     <div className="notifications" data-testid="notifications" ref={root}>
       <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="notifications-outcome" />
-      {shown.pending.length === 0 && shown.fresh.length === 0 && shown.earlier.length === 0 && (
+      {!hasPayments && shown.pending.length === 0 && shown.fresh.length === 0 && shown.earlier.length === 0 && (
         <EmptyState testId="notifications-empty" title="No notifications yet" message="Contact requests and payments from your contacts show here." />
       )}
       {shown.pending.length > 0 && <Requests contacts={shown.pending} more={0} actions={actions} hasKeys={hasKeys} onOpen={openContact} onDone={onDone} testId="notifications-requests" />}

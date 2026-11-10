@@ -202,7 +202,7 @@ test("Mine: a slow Submit says Sending… and keeps the row (D17)", async ({ pag
   await expect(page.getByTestId("mine-chip-desktop-wallet-i18n")).toHaveText("Fee paid");
 });
 
-test("the sidebar shows Masternodes only with the setting or a proposal in progress", async ({ page }) => {
+test("the sidebar shows Masternodes only with the setting", async ({ page }) => {
   await page.goto(fixtureUrl("funded", "light"));
   await page.getByTestId("toolbar").waitFor();
   await expect(page.getByTestId("sidebar-masternodes")).toHaveCount(0);
@@ -277,6 +277,24 @@ async function toReview(page: Page, name = "desktop-translations") {
   await page.getByTestId("create-continue").click();
   await expect(page.getByTestId("create-review")).toBeVisible();
 }
+
+for (const theme of THEMES)
+  test(`create waits for the payment amount parse, ${theme}`, async ({ page }) => {
+    await open(page, "governance", theme);
+    await page.getByTestId("governance-create").click();
+    await page.getByTestId("create-name").fill("desktop-translations");
+    await page.getByTestId("create-url").fill("https://www.dashcentral.org/p/desktop-translations");
+    await page.getByTestId("create-continue").click();
+    const before = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "parse_amount").length);
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("parse_amount"));
+    await page.getByTestId("create-amount").fill("10");
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "parse_amount").length)).toBeGreaterThan(before);
+    await expect(page.getByTestId("create-continue")).toBeDisabled();
+    await expect(page.getByTestId("create-error-payment_amount")).toHaveCount(0);
+    await release.evaluate((f) => f());
+    await page.getByTestId("create-continue").click();
+    await expect(page.getByTestId("create-review")).toBeVisible();
+  });
 
 const createCalls = (page: Page) => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "governance_create_proposal").length);
 

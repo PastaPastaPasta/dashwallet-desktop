@@ -182,6 +182,17 @@ impl Recorder {
     }
 }
 
+/// The regtest session's options: SPV from `node` only, no Platform.
+fn session_options(node: &Dashd) -> SessionOptions {
+    SessionOptions {
+        dapi_addresses: vec!["http://127.0.0.1:1".into()],
+        quorum_url: Some("http://127.0.0.1:1".into()),
+        spv_peers: vec![format!("127.0.0.1:{}", node.p2p_port)],
+        no_platform: true,
+        ..Default::default()
+    }
+}
+
 struct Fixture {
     engine: Engine,
     session: Arc<NetworkSession>,
@@ -206,16 +217,7 @@ impl Fixture {
         )
         .unwrap();
         let session = engine
-            .block_on(engine.open_network(
-                DashNetwork::Regtest,
-                SessionOptions {
-                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                    quorum_url: Some("http://127.0.0.1:1".into()),
-                    spv_peers: vec![format!("127.0.0.1:{}", node.p2p_port)],
-                    no_platform: true,
-                    ..Default::default()
-                },
-            ))
+            .block_on(engine.open_network(DashNetwork::Regtest, session_options(node)))
             .unwrap();
         engine
             .block_on(session.vault_op(|v| v.create(None)))
@@ -450,5 +452,182 @@ fn a_leased_first_settles_by_the_wallets_sightings_against_dashd() {
         f.rec.resolved(f.wallet, &txid),
         vec![DispatchResolution::Sent],
         "announced once, through the block"
+    );
+}
+
+/// The fee delta that makes dashd refuse a payment: its modified fee falls
+/// below the minimum relay fee (Core v24.0.0-rc.2 validation.cpp:1027-1060).
+const REFUSING_DELTA: i64 = -10 * COIN as i64;
+
+/// A wallet with one confirmed coin and an unconfirmed payment the engine
+/// broadcast itself, its txid resent, the resend still in its acceptance
+/// wait. With one peer dash-spv withholds the payment from no one, so no
+/// echo can count, and a resend of a txid it already tracks emits no event:
+/// the wait runs dash-spv's full 60 s, holding platform-wallet's SPV client
+/// read lock, which SPV's stop waits for. dashd refuses the payment, so a
+/// later session can only find it in the wallet's own store, never in
+/// dashd's mempool.
+fn resent_payment(dir: &Path, node: &Dashd) -> (Fixture, String) {
+    node.cli(&["createwallet", "miner"]);
+    node.mine(101);
+    let f = Fixture::new(dir, node);
+    let to = f.receive_address();
+    node.cli(&["-rpcwallet=miner", "sendtoaddress", &to, "1.0"]);
+    node.mine(1);
+    f.start_spv();
+    f.wait_scanned(node.height());
+
+    let payee = node.cli(&["-rpcwallet=miner", "getnewaddress"]);
+    let draft = f.session.new_tx_draft(f.wallet).unwrap();
+    draft
+        .set_recipients(vec![Recipient {
+            address: payee,
+            amount: COIN / 10,
+            subtract_fee_from_amount: false,
+            label: None,
+            message: None,
+        }])
+        .unwrap();
+    let grant = f.grant(GrantPurpose::Spend {
+        max_duffs: COIN / 2,
+    });
+    let prepared = f.engine.block_on(draft.prepare(grant)).unwrap();
+    let txid = prepared.summary().txid.clone();
+    node.cli(&["prioritisetransaction", &txid, &REFUSING_DELTA.to_string()]);
+    match f.engine.block_on(draft.broadcast(prepared)) {
+        Err(EngineError::Send(SendFailure::BroadcastUnknown { .. })) => {}
+        other => panic!("dashd refuses it, so no acceptance is seen ({other:?})"),
+    }
+    assert!(!node.in_mempool(&txid));
+    assert!(f.wallet_has(&txid));
+    let id = std::str::FromStr::from_str(&txid).unwrap();
+    let started = Instant::now();
+    f.engine
+        .block_on(f.session.resend_transaction(f.wallet, id))
+        .unwrap();
+    // The call returns early only when the wait ends within the hand-off.
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "the wait ended at once"
+    );
+    (f, txid)
+}
+
+/// QT-091 against dashd: a resend's acceptance wait never holds the
+/// session's close. Aborting the wait loses nothing: the reopened wallet
+/// still holds the payment unconfirmed, and a resend from it gets it mined.
+#[test]
+fn a_resends_acceptance_wait_does_not_hold_the_close() {
+    let Some(dashd) = std::env::var_os("DASHD_PATH").map(PathBuf::from) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let dir = dw_testutil::private_tempdir();
+    let node_dir = dir.path().join("dashd");
+    std::fs::create_dir(&node_dir).unwrap();
+    let node = Dashd::start(&dashd, &node_dir);
+    let (f, txid) = resent_payment(dir.path(), &node);
+    let started = Instant::now();
+    assert!(
+        f.engine
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(30),
+        "the close waited for the resend's acceptance wait: {took:?}"
+    );
+
+    let session = f
+        .engine
+        .block_on(
+            f.engine
+                .open_network(DashNetwork::Regtest, session_options(&node)),
+        )
+        .unwrap();
+    let detail = |session: &Arc<NetworkSession>| {
+        f.engine.block_on(session.tx_detail(f.wallet, txid.clone()))
+    };
+    let reopened = detail(&session).unwrap();
+    assert!(
+        reopened.block_height.is_none() && reopened.status.confirmations == 0,
+        "{:?}",
+        reopened.status
+    );
+    f.engine.block_on(session.start_spv()).unwrap();
+    let deadline = Instant::now() + LOAD_WAIT;
+    // dashd ignores a txid it refused until its tip moves (v24.0.0-rc.2
+    // net_processing.cpp:2359-2366, :5016).
+    node.cli(&[
+        "prioritisetransaction",
+        &txid,
+        &(-REFUSING_DELTA).to_string(),
+    ]);
+    node.mine(1);
+    let id = std::str::FromStr::from_str(&txid).unwrap();
+    while let Err(e) = f.engine.block_on(session.resend_transaction(f.wallet, id)) {
+        assert!(
+            matches!(e, EngineError::NoPeers | EngineError::SpvNotRunning)
+                && Instant::now() < deadline,
+            "{e:?}"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    while !node.in_mempool(&txid) {
+        assert!(Instant::now() < deadline, "{txid} never reached dashd");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    node.mine(1);
+    let height = node.height();
+    while detail(&session).unwrap().block_height != Some(height) {
+        assert!(
+            Instant::now() < deadline,
+            "{txid} never confirmed in the wallet"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// QT-091 against dashd: nor does it hold SPV's stop (Stop, Change peers).
+#[test]
+fn a_resends_acceptance_wait_does_not_hold_the_spv_stop() {
+    let Some(dashd) = std::env::var_os("DASHD_PATH").map(PathBuf::from) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let dir = dw_testutil::private_tempdir();
+    let node_dir = dir.path().join("dashd");
+    std::fs::create_dir(&node_dir).unwrap();
+    let node = Dashd::start(&dashd, &node_dir);
+    let (f, _) = resent_payment(dir.path(), &node);
+    let started = Instant::now();
+    f.engine.block_on(f.session.stop_spv()).unwrap();
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(30),
+        "SPV's stop waited for the resend's acceptance wait: {took:?}"
+    );
+}
+
+/// QT-091 against dashd: nor the engine's shutdown, which the app's exit
+/// runs unbounded (dw-app lib.rs, `RunEvent::Exit`).
+#[test]
+fn a_resends_acceptance_wait_does_not_hold_the_engine_shutdown() {
+    let Some(dashd) = std::env::var_os("DASHD_PATH").map(PathBuf::from) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let dir = dw_testutil::private_tempdir();
+    let node_dir = dir.path().join("dashd");
+    std::fs::create_dir(&node_dir).unwrap();
+    let node = Dashd::start(&dashd, &node_dir);
+    let (f, _) = resent_payment(dir.path(), &node);
+    let started = Instant::now();
+    f.engine.block_on(f.engine.shutdown()).unwrap();
+    let took = started.elapsed();
+    assert!(
+        took < Duration::from_secs(30),
+        "the engine's shutdown waited for the resend's acceptance wait: {took:?}"
     );
 }

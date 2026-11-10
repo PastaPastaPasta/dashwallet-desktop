@@ -1,5 +1,6 @@
 // Transaction detail sheet (UX-SPEC §4.9, C23 medium): iOS TxDetail header with the dash-qt
-// facts (research 02 §4.6), the label editor, and Abandon / Resend where they apply (U-03 D15).
+// facts (research 02 §4.6), the label editor, and Abandon / Resend where they apply (U-03 D15). With prices
+// (MP-01), what the payment was worth when first seen (its stamp, rates-engine §6) and its value now.
 
 import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -8,6 +9,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
+import type { TxFiat } from "../api/generated/TxFiat";
 import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
 import { navigate, ui, useUi } from "../app/ui";
 import { AmountText, Chip, DashButton, Icon } from "../components/basics";
@@ -17,7 +19,9 @@ import { Sheet } from "../components/sheet";
 import { CopyValue, DetailRow } from "../components/detail";
 import { findContact, subtitle } from "../contacts/model";
 import { contactListQuery, useContactsOwner } from "../contacts/queries";
+import { FiatLine, timeText, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
+import { fiatText } from "../format/fiat";
 import { Avatar } from "./contacts/Avatar";
 import { contactLetters, contactName, detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
 
@@ -40,6 +44,22 @@ function statusText(s: TxStatusInfo): string {
       return s.chainLocked ? `${base}, locked via ChainLocks` : s.instantLocked ? `${base}, verified via InstantSend` : base;
     }
   }
+}
+
+const STAMP_SOURCE = { ctx: "rates.ctx.com", bitPayDashCentral: "BitPay and DashCentral" } as const;
+
+/** "$12.34 when received": the amount at the price it was first seen with, in that price's own
+ * currency; nothing when it has no stamp. */
+function FiatThen({ stamp, duffs, sent, internal, locale }: { stamp: TxFiat; duffs: number; sent: boolean; internal: boolean; locale: string | undefined }) {
+  const text = fiatText(duffs, stamp.price, stamp.currency, locale);
+  if (text === null) return null;
+  const when = internal ? "at the time" : sent ? "when sent" : "when received";
+  const date = new Date(stamp.rateAt * 1000).toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
+  return (
+    <p className="tx-detail-fiat-then" data-testid="tx-detail-fiat-then" title={`Price from ${date}, ${timeText(stamp.rateAt, locale)}, from ${STAMP_SOURCE[stamp.source]}`}>
+      {text} {when}
+    </p>
+  );
 }
 
 /** The transaction's label (QT-093): saved on Save, cleared when empty. */
@@ -241,12 +261,18 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
   const unit = display.name;
   // The DashPay contact of the record whose title and address the sheet shows (DP3-02 D24).
   const contact = contactName(row?.counterparty);
+  const fiat = useFiat();
+  const discreet = useUi((s) => s.discreet);
+  const now = discreet ? null : fiat.text(shown.duffs);
+  // A stamp is history, shown while prices are on, today's price or not; off hides every value.
+  const stamp = !discreet && fiat.view && fiat.view.state.kind !== "off" ? row?.fiatThen : undefined;
   return (
     <>
       <div className="tx-detail-summary" data-testid="tx-detail-summary">
         <Icon id={headerIcon} size={50} />
         <h3 className="tx-detail-title">{row ? txTitle({ ...row, amount }) : "Transaction"}</h3>
         <AmountText className="tx-detail-amount" text={display.full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />
+        {stamp && <FiatThen stamp={stamp} duffs={shown.duffs} sent={amount < 0} internal={!shown.signed} locale={backend.locale} />}
         <div className="tx-detail-status">
           {chip && <Chip tone={isProblem(d.status) ? "danger" : "info"}>{chip}</Chip>}
           {date && <span className="tx-detail-date">{detailDate(date, backend.locale)}</span>}
@@ -263,6 +289,11 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
         {d.fee !== null && (
           <DetailRow label="Network fee">
             <AmountText text={display.full(d.fee)} unitName={unit} glyph={false} />
+          </DetailRow>
+        )}
+        {now !== null && (
+          <DetailRow label="Value now" testId="tx-detail-value-now">
+            <FiatLine fiat={fiat} duffs={shown.duffs} testId="tx-detail-value-now-text" />
           </DetailRow>
         )}
         <DetailRow label="Status">{statusText(d.status)}</DetailRow>

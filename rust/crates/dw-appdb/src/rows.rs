@@ -235,7 +235,7 @@ mod tests {
             .unwrap();
         a.set_label(&w, LabelKind::Tx, &"00".repeat(32), Some("rent"), 13)
             .unwrap();
-        a.add_receive_request(&w, 14, "yRecv", Some(5), Some("l"), None)
+        a.add_receive_request_with_username(&w, 14, "yRecv", Some(5), Some("l"), None, Some(true))
             .unwrap();
         a.set_setting(&w, "dust", Some("1")).unwrap();
         a.set_setting(&other, "dust", Some("2")).unwrap();
@@ -253,6 +253,10 @@ mod tests {
         assert_eq!(b.setting(&w, "dust").unwrap().as_deref(), Some("1"));
         assert_eq!(b.setting(&other, "dust").unwrap(), None);
         assert_eq!(b.receive_requests(&w).unwrap().len(), 1);
+        assert_eq!(
+            b.receive_requests(&w).unwrap()[0].include_username,
+            Some(true)
+        );
         assert_eq!(
             b.book_entry(&w, "yAddr").unwrap().unwrap().label.as_deref(),
             Some("Alice é")

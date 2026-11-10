@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IpcBackend } from "../api/tauri";
 import { installFixture, type FixtureHandle } from "../fixture";
 import { FIXTURE_PASSPHRASE as PASS, FIXTURE_WALLET_ID as A, SECOND_WALLET_ID as B, type ScenarioName } from "../fixture/scenarios";
-import { WRONG_PASSPHRASE } from "../onboarding/model";
+import { failureText, WRONG_PASSPHRASE } from "../onboarding/model";
+import { appError } from "../onboarding/testWorld";
 import { RemoveWalletModel, walletName, WalletsModel, WalletsText, WatchOnlyModel } from "./wallets";
 
 let fixture: FixtureHandle;
@@ -38,6 +39,53 @@ describe("wallets list", () => {
     // Its data stays: opening it again brings it back, on the startup list too.
     await model.open(B);
     expect(model.rows[1]).toMatchObject({ loaded: true, loadOnStartup: true, hasMnemonic: true });
+  });
+
+  it("E1_closeWalletSaysAShieldedPaymentIsStillBeingConfirmed", () => {
+    // DEC-1046: the engine refuses Close Wallet while a shielded payment's result is unknown.
+    const refused = { code: "shielded_spend_unresolved", message: "refused", data: null };
+    expect(failureText(refused)).toBe("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
+  });
+
+  it("a refused Close keeps its reason after the list is read again", async () => {
+    const model = new WalletsModel(b);
+    await model.load();
+    fixture.world.settings.unloadRefusal = "unresolved";
+    expect(await model.close(B)).toBe(false);
+    expect(model.error).toBe("A shielded payment is still being confirmed. Wait, or quit and reopen the app.");
+    expect(model.rows[1].loaded).toBe(true);
+    fixture.world.settings.unloadRefusal = "opening";
+    expect(await model.close(B)).toBe(false);
+    expect(model.error).toBe("A wallet is still opening; close the network once it is open.");
+    // The next call that works clears it.
+    fixture.world.settings.unloadRefusal = null;
+    expect(await model.close(B)).toBe(true);
+    expect(model.error).toBeNull();
+  });
+
+  it("a refusal or a guard message is not cleared by a later read, even after a failed one", async () => {
+    let fails = 1;
+    const api = {
+      walletLoadStates: () => b.walletLoadStates(),
+      listWallets: async () => {
+        if (fails-- > 0) throw appError("internal" as never);
+        return b.listWallets();
+      },
+      loadWallet: (id: string) => b.loadWallet(id),
+      unloadWallet: (id: string) => b.unloadWallet(id),
+      setLoadOnStartup: (id: string, on: boolean) => b.setLoadOnStartup(id, on),
+      renameWallet: (id: string, name: string) => b.renameWallet(id, name),
+    };
+    const model = new WalletsModel(api);
+    await model.load();
+    expect(model.error).not.toBeNull(); // the failed read's own error
+    await model.rename(A, ""); // a guard message of the model's own
+    expect(model.error).toBe(WalletsText.nameRule);
+    await model.load(); // a read that works, as every wallet event brings
+    expect(model.error).toBe(WalletsText.nameRule);
+    // The next action clears it.
+    await model.rename(A, "Main");
+    expect(model.error).toBeNull();
   });
 
   it("QT101_theLastOpenWalletCannotBeClosed", async () => {
@@ -134,6 +182,13 @@ describe("remove wallet", () => {
     expect(WalletsText.removeQuestion("Main", false)).toMatch(/recovery phrase, or a backup or export you kept/);
     expect(WalletsText.removeQuestion("Watcher", true)).toMatch(/extended public key adds it again/);
     expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/recovery phrase/);
+  });
+
+  it("E1_removalWarnsThatASentShieldedPaymentMayStillGoThroughAndItsRecordIsDeleted", () => {
+    const question = WalletsText.removeQuestion("Main", false);
+    expect(question).toMatch(/shielded payment it already sent may still go through/);
+    expect(question).toMatch(/its pending record is deleted with the wallet/);
+    expect(WalletsText.removeQuestion("Watcher", true)).not.toMatch(/shielded/);
   });
 
   it("IOS110_anUnencryptedVaultRemovesWithoutAPassphrase", async () => {

@@ -6,6 +6,7 @@ import type { PsbtAnalysis } from "../../api/generated/PsbtAnalysis";
 import {
   addressProblem,
   authRefusal,
+  availableLabel,
   broadcastFailure,
   changePolicy,
   coinSource,
@@ -18,7 +19,9 @@ import {
   outpointKey,
   outpointOf,
   recipientOf,
+  mixedFeeText,
   sendErrorText,
+  withSubtractFee,
 } from "./model";
 
 const err = (code: AppError["code"], data: AppError["data"] = null): AppError => ({ code, message: code, data });
@@ -77,7 +80,9 @@ describe("the form's draft", () => {
 
   it("explains addresses it cannot pay", () => {
     expect(addressProblem({ kind: "core", scriptHash: false })).toBeNull();
-    expect(addressProblem({ kind: "platform" })).toMatch(/Platform address/);
+    // Paid from the Platform balance (PayFromPlatform), not refused.
+    expect(addressProblem({ kind: "platform" })).toBeNull();
+    expect(addressProblem({ kind: "shielded" })).toMatch(/shielded address/);
     expect(addressProblem({ kind: "invalid", problem: { kind: "invalidBase58Prefix" } })).toBe("This address is not valid on this network.");
     expect(addressProblem({ kind: "invalid", problem: { kind: "invalidBase58Length" } })).toMatch(/not valid/);
   });
@@ -91,8 +96,55 @@ describe("the engine's refusals", () => {
       "The total exceeds your balance when the 0.00000374 tDASH transaction fee is included.",
     );
     expect(sendErrorText(err("send.absurd_fee"), "test")).toEqual({ text: "The fee is absurdly high.", field: null });
+    // 0.1.x-bal §1: the engine refuses a payment while a replay runs.
+    // A replay ends by itself and needs no Repair; a stopped rescan does.
+    const running = sendErrorText(err("rescan_in_progress"), "test");
+    expect(running).toEqual({ text: "The wallet is catching up with the network. You can send once it has finished.", field: null });
+    expect(running?.text).not.toMatch(/Repair|Rescan/);
+    expect(sendErrorText(err("rescan_interrupted"), "test")).toEqual({
+      text: "The last rescan was interrupted. Finish it in Repair ▸ Rescan before sending.",
+      field: null,
+    });
     expect(sendErrorText(err("wallet_not_found"), "test")).toBeNull();
     expect(sendErrorText(new Error("x"), "test")).toBeNull();
+  });
+
+  it("names what a normal payment can spend when the amount is over it, and where mixed coins are", () => {
+    const over = err("send.amount_exceeds_balance", { kind: "duffs", needed: null, available: 65_276_809 });
+    const plain = "The amount exceeds your balance.";
+    const base = "The amount exceeds the 0.65276809 tDASH a normal payment can spend.";
+    const where = "To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).";
+    // No mixing or mixed coins, or another source: the refusal keeps its plain text.
+    expect(sendErrorText(over, "test", "DASH")?.text).toBe(plain);
+    expect(sendErrorText(over, "test", "DASH", { mixed: false, mixing: false })?.text).toBe(plain);
+    expect(sendErrorText(over, "test", "DASH", { mixed: true, mixing: false })).toEqual({ text: `${base} ${where}`, field: "amount" });
+    expect(sendErrorText(over, "test", "DASH", { mixed: true, mixing: true })?.text).toBe(
+      `${base} ${where} Coins still being mixed can be spent that way once mixing finishes.`,
+    );
+    // Only mixing coins: no pointer to switch now, since nothing is fully mixed yet; they stay apart.
+    expect(sendErrorText(over, "test", "DASH", { mixed: false, mixing: true })?.text).toBe(
+      `${base} Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).`,
+    );
+    // Without the engine's figure there is nothing to name.
+    expect(sendErrorText(err("send.amount_exceeds_balance"), "test", "DASH", { mixed: true, mixing: false })?.text).toBe(plain);
+  });
+
+  it("labels Available with the coin source it counts", () => {
+    expect(availableLabel("any")).toBe("Available");
+    expect(availableLabel("mixed")).toBe("Available (fully mixed)");
+    expect(availableLabel("selected")).toBe("Available (selected coins)");
+  });
+
+  it("says why a fully mixed payment's fee is absurd: no change, the rest is fee (MX-FEE)", () => {
+    const mixed = { recipient, source: { kind: "fullyMixedOnly" } } as const;
+    const absurd = err("send.absurd_fee", { kind: "fee", fee: 10_000_200, available: null });
+    expect(mixedFeeText(absurd, mixed, "test")).toBe("Fully mixed coins are spent in whole denominations, so the 0.10000200 tDASH left over would go to fees.");
+    expect(mixedFeeText(err("send.absurd_fee"), mixed, "test")).toBe("Fully mixed coins are spent in whole denominations, so what is left over would go to fees.");
+    // Not for other coins, a payment already subtracting the fee, or another refusal.
+    expect(mixedFeeText(absurd, { ...mixed, source: { kind: "any" } }, "test")).toBeNull();
+    expect(mixedFeeText(absurd, { ...mixed, recipient: withSubtractFee(recipient) }, "test")).toBeNull();
+    expect(mixedFeeText(err("send.dust_amount"), mixed, "test")).toBeNull();
+    expect(withSubtractFee(recipient)).toEqual({ ...recipient, subtractFeeFromAmount: true });
   });
 
   it("is not sent only when the engine released a first attempt (E0-13 D8)", () => {

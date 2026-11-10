@@ -22,6 +22,7 @@ import type { BackupSummary } from "./BackupSummary";
 import type { Balances } from "./Balances";
 import type { BroadcastOutcome } from "./BroadcastOutcome";
 import type { ChangePolicy } from "./ChangePolicy";
+import type { ChosenNetwork } from "./ChosenNetwork";
 import type { CoinJoinLimits } from "./CoinJoinLimits";
 import type { CoinJoinRecoveryReport } from "./CoinJoinRecoveryReport";
 import type { CoinJoinSettings } from "./CoinJoinSettings";
@@ -47,6 +48,7 @@ import type { CostTable } from "./CostTable";
 import type { CreatedWallet } from "./CreatedWallet";
 import type { CredentialSpec } from "./CredentialSpec";
 import type { CsvUnitName } from "./CsvUnitName";
+import type { CurrencyRate } from "./CurrencyRate";
 import type { CurrentVoteRow } from "./CurrentVoteRow";
 import type { DashPayEventPage } from "./DashPayEventPage";
 import type { DashPayProfile } from "./DashPayProfile";
@@ -85,19 +87,27 @@ import type { KeyMaterialInput } from "./KeyMaterialInput";
 import type { LaunchInfo } from "./LaunchInfo";
 import type { Lease } from "./Lease";
 import type { LinkRoute } from "./LinkRoute";
+import type { LockFinish } from "./LockFinish";
+import type { LockKind } from "./LockKind";
 import type { LockOutcome } from "./LockOutcome";
 import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
+import type { MixedCoinsConsolidationPlan } from "./MixedCoinsConsolidationPlan";
 import type { MixedCoinsDestination } from "./MixedCoinsDestination";
+import type { MixedCoinsResend } from "./MixedCoinsResend";
 import type { MixedCoinsSweepPlan } from "./MixedCoinsSweepPlan";
 import type { MixedCoinsSweepResult } from "./MixedCoinsSweepResult";
+import type { MixedShieldQuote } from "./MixedShieldQuote";
 import type { MnemonicCheck } from "./MnemonicCheck";
 import type { MnemonicLanguageName } from "./MnemonicLanguageName";
+import type { MoveToCoreOutcome } from "./MoveToCoreOutcome";
+import type { MoveToCoreQuote } from "./MoveToCoreQuote";
 import type { MyProposal } from "./MyProposal";
 import type { NameAvailability } from "./NameAvailability";
 import type { NameChoice } from "./NameChoice";
 import type { NameOutcome } from "./NameOutcome";
 import type { NameVoteCast } from "./NameVoteCast";
+import type { NetworkChoiceView } from "./NetworkChoiceView";
 import type { NetworkData } from "./NetworkData";
 import type { NetworkInfo } from "./NetworkInfo";
 import type { NodeSummary } from "./NodeSummary";
@@ -107,9 +117,17 @@ import type { OpenedNetwork } from "./OpenedNetwork";
 import type { OutPoint } from "./OutPoint";
 import type { PaymentLockInfo } from "./PaymentLockInfo";
 import type { PeerSummary } from "./PeerSummary";
+import type { PendingPlatformFund } from "./PendingPlatformFund";
 import type { PendingTopUp } from "./PendingTopUp";
+import type { PlatformActivity } from "./PlatformActivity";
+import type { PlatformAddressBalance } from "./PlatformAddressBalance";
+import type { PlatformFundOutcome } from "./PlatformFundOutcome";
+import type { PlatformFundQuote } from "./PlatformFundQuote";
 import type { PlatformPacing } from "./PlatformPacing";
 import type { PlatformReachability } from "./PlatformReachability";
+import type { PlatformReceiveAddress } from "./PlatformReceiveAddress";
+import type { PlatformSendOutcome } from "./PlatformSendOutcome";
+import type { PlatformSendQuote } from "./PlatformSendQuote";
 import type { PreparedTxHandle } from "./PreparedTxHandle";
 import type { PreparedTxSummary } from "./PreparedTxSummary";
 import type { PrivateContactDetails } from "./PrivateContactDetails";
@@ -124,6 +142,8 @@ import type { PublishStateName } from "./PublishStateName";
 import type { QrMatrix } from "./QrMatrix";
 import type { QuickUnlockPolicy } from "./QuickUnlockPolicy";
 import type { QuorumSource } from "./QuorumSource";
+import type { RatesSettings } from "./RatesSettings";
+import type { RatesView } from "./RatesView";
 import type { ReceiveRequest } from "./ReceiveRequest";
 import type { RecentNotice } from "./RecentNotice";
 import type { Recipient } from "./Recipient";
@@ -138,8 +158,16 @@ import type { ScreenScanMode } from "./ScreenScanMode";
 import type { SessionSettings } from "./SessionSettings";
 import type { ShellEvent } from "./ShellEvent";
 import type { ShellSync } from "./ShellSync";
+import type { ShieldOutcome } from "./ShieldOutcome";
+import type { ShieldQuote } from "./ShieldQuote";
+import type { ShieldedActivity } from "./ShieldedActivity";
+import type { ShieldedAddress } from "./ShieldedAddress";
+import type { ShieldedSpendOutcome } from "./ShieldedSpendOutcome";
+import type { ShieldedSpendQuote } from "./ShieldedSpendQuote";
+import type { ShieldedStatus } from "./ShieldedStatus";
 import type { SpvStateName } from "./SpvStateName";
 import type { StashedLinkInfo } from "./StashedLinkInfo";
+import type { StuckShieldFunding } from "./StuckShieldFunding";
 import type { StuckTopUpFunding } from "./StuckTopUpFunding";
 import type { SuperblockDate } from "./SuperblockDate";
 import type { SyncLoopStatus } from "./SyncLoopStatus";
@@ -154,6 +182,7 @@ import type { TxEstimate } from "./TxEstimate";
 import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
+import type { UnfinishedTransfers } from "./UnfinishedTransfers";
 import type { UriParse } from "./UriParse";
 import type { UserHit } from "./UserHit";
 import type { UsernameCheck } from "./UsernameCheck";
@@ -239,8 +268,9 @@ export function probeUnlisted(): Promise<string> {
  * active one, opening it if needed and closing the network that was
  * active, with its draft handles. When it is already active, the open
  * session is kept and `settings` are ignored. Opening the launch
- * network of a `--sync` launch starts SPV; a failed start leaves the
- * network open, readable offline.
+ * network starts SPV on mainnet and testnet unless the app was launched
+ * with `--no-sync`, and on another network with `--sync`; a failed
+ * start leaves the network open, readable offline.
  */
 export function openNetwork(network: string | null, settings: SessionSettings | null): Promise<OpenedNetwork> {
   return invoke<OpenedNetwork>("open_network", { network, settings });
@@ -259,6 +289,22 @@ export function closeNetwork(): Promise<boolean> {
  */
 export function activeNetwork(): Promise<NetworkInfo | null> {
   return invoke<NetworkInfo | null>("active_network");
+}
+
+/**
+ * The saved network choice (mainnet or testnet) and whether the app
+ * must restart to open it.
+ */
+export function getNetworkChoice(): Promise<NetworkChoiceView> {
+  return invoke<NetworkChoiceView>("get_network_choice");
+}
+
+/**
+ * Saves the network the app opens from the next start (onboarding,
+ * Settings); the running session is left as it is.
+ */
+export function setNetworkChoice(network: ChosenNetwork): Promise<NetworkChoiceView> {
+  return invoke<NetworkChoiceView>("set_network_choice", { network });
 }
 
 /**
@@ -364,6 +410,21 @@ export function changePassphrase(oldPassphrase: string, newPassphrase: string): 
  */
 export function authorize(purpose: GrantPurposeSpec, walletId: string | null, credential: CredentialSpec): Promise<AuthGrant> {
   return invoke<AuthGrant>("authorize", { purpose, walletId, credential });
+}
+
+/**
+ * `authorize` for the quoted Platform send `operation`
+ * (`platformSendQuote`): a `platformOp` grant with no duffs and the
+ * quote's `credits` (its planned debit), bound to that operation:
+ * `platformSend` refuses any other grant for it, the grant left unused
+ * (`platform.grant_invalid`). It is an ordinary `platformOp` grant
+ * otherwise, as `authorize` issues. A grant an earlier call bound is
+ * revoked, and so is this one if the bind fails. An unknown or sent
+ * operation is `invalid_argument`, and nothing is issued. The payment
+ * rule is `authorize`'s.
+ */
+export function authorizePlatformSend(walletId: string, operation: string, credential: CredentialSpec): Promise<AuthGrant> {
+  return invoke<AuthGrant>("authorize_platform_send", { walletId, operation, credential });
 }
 
 /**
@@ -629,8 +690,8 @@ export function addresses(walletId: string, filter: AddressFilter): Promise<Arra
  * Stores a payment request on a freshly issued address. An amount of 0
  * means any amount.
  */
-export function createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null): Promise<ReceiveRequest> {
-  return invoke<ReceiveRequest>("create_receive_request", { walletId, amount, label, message });
+export function createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null, includeUsername: boolean | null): Promise<ReceiveRequest> {
+  return invoke<ReceiveRequest>("create_receive_request", { walletId, amount, label, message, includeUsername });
 }
 
 /**
@@ -650,8 +711,7 @@ export function receiveUsername(walletId: string): Promise<string | null> {
 
 /**
  * "Include my username in payment requests" for the wallet (DP3-03b);
- * on by default. Off, `receiveUsername` is `null` and requests carry
- * no username.
+ * off by default. Requests can override this default individually.
  */
 export function usernameInRequests(walletId: string): Promise<boolean> {
   return invoke<boolean>("username_in_requests", { walletId });
@@ -1388,11 +1448,40 @@ export function mixedCoinsSweepPlan(walletId: string, destination: MixedCoinsDes
 
 /**
  * "Move mixed coins" (IOS-057): sweeps the CoinJoin account in chunks of
- * at most 500 inputs. `grantId`: a `Spend` grant of at least the plan's
- * total. Stops at the first failing chunk and reports what moved.
+ * at most 500 inputs. `quoteId`: the confirmed plan's (refused
+ * `coinjoin.plan_changed` when the coins are no longer its own);
+ * `grantId`: a `Spend` grant of at least the plan's total. Stops at the
+ * first failing chunk and reports what moved.
  */
-export function moveMixedCoins(walletId: string, destination: MixedCoinsDestination, grantId: string): Promise<MixedCoinsSweepResult> {
-  return invoke<MixedCoinsSweepResult>("move_mixed_coins", { walletId, destination, grantId });
+export function moveMixedCoins(walletId: string, destination: MixedCoinsDestination, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult> {
+  return invoke<MixedCoinsSweepResult>("move_mixed_coins", { walletId, destination, quoteId, grantId });
+}
+
+/**
+ * The consolidation round before a move to Shielded. Reads coins only.
+ */
+export function mixedCoinsConsolidationPlan(walletId: string): Promise<MixedCoinsConsolidationPlan> {
+  return invoke<MixedCoinsConsolidationPlan>("mixed_coins_consolidation_plan", { walletId });
+}
+
+/**
+ * Runs the consolidation round: every transaction pays one fresh
+ * address of the wallet's own CoinJoin account. `quoteId`: the
+ * confirmed plan's; `grantId`: a `Spend` grant of at least the plan's
+ * total. Stops at the first failing chunk and reports what went out.
+ */
+export function consolidateMixedCoins(walletId: string, quoteId: string, grantId: string): Promise<MixedCoinsSweepResult> {
+  return invoke<MixedCoinsSweepResult>("consolidate_mixed_coins", { walletId, quoteId, grantId });
+}
+
+/**
+ * "Try again" on a chunk of unknown outcome: sends the transaction
+ * recorded for it, never signing again. `txid`: that chunk (display
+ * txid); `null`: every recorded chunk. Refused while a move of the
+ * wallet runs.
+ */
+export function resendMixedCoins(walletId: string, txid: string | null): Promise<Array<MixedCoinsResend>> {
+  return invoke<Array<MixedCoinsResend>>("resend_mixed_coins", { walletId, txid });
 }
 
 /**
@@ -1658,6 +1747,96 @@ export function creditsWithdrawals(walletId: string, identity: string): Promise<
 }
 
 /**
+ * The Platform addresses' balance as the last sync pass left them.
+ */
+export function platformAddresses(walletId: string): Promise<PlatformAddressBalance> {
+  return invoke<PlatformAddressBalance>("platform_addresses", { walletId });
+}
+
+/**
+ * The Platform addresses' activity, the newest first.
+ */
+export function platformActivity(walletId: string): Promise<Array<PlatformActivity>> {
+  return invoke<Array<PlatformActivity>>("platform_activity", { walletId });
+}
+
+/**
+ * Runs a Platform-address sync pass now and returns the balance after.
+ */
+export function platformAddressesSync(walletId: string): Promise<PlatformAddressBalance> {
+  return invoke<PlatformAddressBalance>("platform_addresses_sync", { walletId });
+}
+
+/**
+ * What "Move to Dash wallet" of `amount` takes and pays out.
+ */
+export function platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount): Promise<MoveToCoreQuote> {
+  return invoke<MoveToCoreQuote>("platform_move_to_core_quote", { walletId, amount });
+}
+
+/**
+ * Moves `amount` of the Platform addresses' credits to `to` (the
+ * quote's: one of the wallet's Core receiving addresses) under `grant`.
+ */
+export function platformMoveToCore(walletId: string, amount: WithdrawAmount, to: string, grant: string): Promise<MoveToCoreOutcome> {
+  return invoke<MoveToCoreOutcome>("platform_move_to_core", { walletId, amount, to, grant });
+}
+
+/**
+ * The wallet's Platform receive address: the lowest unused one.
+ */
+export function platformReceiveAddress(walletId: string): Promise<PlatformReceiveAddress> {
+  return invoke<PlatformReceiveAddress>("platform_receive_address", { walletId });
+}
+
+/**
+ * What sending `amount` to the Platform address `to` takes; `retryOf`
+ * names the send this retries ("Retry this payment"), else `null`.
+ */
+export function platformSendQuote(walletId: string, to: string, amount: WithdrawAmount, retryOf: string | null): Promise<PlatformSendQuote> {
+  return invoke<PlatformSendQuote>("platform_send_quote", { walletId, to, amount, retryOf });
+}
+
+/**
+ * Sends the quoted `operation` (its recipient and amount, once) under
+ * `grant`, a fresh `platformOp` grant.
+ */
+export function platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome> {
+  return invoke<PlatformSendOutcome>("platform_send", { walletId, operation, grant });
+}
+
+/**
+ * What adding `duffs` of the Core balance to the wallet's Platform
+ * address costs and adds.
+ */
+export function platformFundQuote(walletId: string, duffs: number): Promise<PlatformFundQuote> {
+  return invoke<PlatformFundQuote>("platform_fund_quote", { walletId, duffs });
+}
+
+/**
+ * "Add from Dash wallet": adds `duffs` of the Core balance to the
+ * wallet's Platform address under `grant`.
+ */
+export function platformFund(walletId: string, duffs: number, grant: string): Promise<PlatformFundOutcome> {
+  return invoke<PlatformFundOutcome>("platform_fund", { walletId, duffs, grant });
+}
+
+/**
+ * This install's "Add from Dash wallet" locks not applied yet.
+ */
+export function pendingPlatformFunds(walletId: string): Promise<Array<PendingPlatformFund>> {
+  return invoke<Array<PendingPlatformFund>>("pending_platform_funds", { walletId });
+}
+
+/**
+ * Applies the pending fund lock `txid` under `grant` ("Pending —
+ * finish", "Check again").
+ */
+export function resumePlatformFund(walletId: string, txid: string, grant: string): Promise<PlatformFundOutcome> {
+  return invoke<PlatformFundOutcome>("resume_platform_fund", { walletId, txid, grant });
+}
+
+/**
  * The caps of the grant `action` needs.
  */
 export function grantRequest(walletId: string, identity: string, action: GrantAction): Promise<GrantRequest> {
@@ -1783,6 +1962,129 @@ export function trustedQuorumsOnly(): Promise<boolean> {
  */
 export function setTrustedQuorumsOnly(on: boolean): Promise<null> {
   return invoke<null>("set_trusted_quorums_only", { on });
+}
+
+/**
+ * The wallet's shielded account: whether the network takes shielded
+ * transitions, the balance, pending moves and sync.
+ */
+export function shieldedStatus(walletId: string): Promise<ShieldedStatus> {
+  return invoke<ShieldedStatus>("shielded_status", { walletId });
+}
+
+/**
+ * Runs a shielded sync pass now; returns the status after.
+ */
+export function shieldedSync(walletId: string): Promise<ShieldedStatus> {
+  return invoke<ShieldedStatus>("shielded_sync", { walletId });
+}
+
+/**
+ * The wallet's shielded receive address, for Receive and its QR.
+ */
+export function shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress> {
+  return invoke<ShieldedAddress>("shielded_receive_address", { walletId });
+}
+
+/**
+ * What moving `duffs` of the Core balance into the pool costs and buys.
+ */
+export function shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote> {
+  return invoke<ShieldQuote>("shield_quote", { walletId, duffs });
+}
+
+/**
+ * Core → Shielded: moves `duffs` of the Core balance into the pool
+ * under `grant`.
+ */
+export function shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome> {
+  return invoke<ShieldOutcome>("shield_from_core", { walletId, duffs, grant });
+}
+
+/**
+ * What "Move mixed coins" to Shielded would move: the CoinJoin
+ * account's coins in one asset lock.
+ */
+export function shieldMixedQuote(walletId: string): Promise<MixedShieldQuote> {
+  return invoke<MixedShieldQuote>("shield_mixed_quote", { walletId });
+}
+
+/**
+ * The wallet's moves into Shielded whose payment may have been sent,
+ * each with what Tools ▸ Repair would spend to settle it.
+ */
+export function stuckShieldFundings(walletId: string): Promise<Array<StuckShieldFunding>> {
+  return invoke<Array<StuckShieldFunding>>("stuck_shield_fundings", { walletId });
+}
+
+/**
+ * "Move mixed coins" to Shielded under `grant`, a `Spend` grant of the
+ * quote's `totalDuffs`.
+ */
+export function shieldMixedCoins(walletId: string, grant: string): Promise<ShieldOutcome> {
+  return invoke<ShieldOutcome>("shield_mixed_coins", { walletId, grant });
+}
+
+/**
+ * Applies the pending Core → Shielded lock `txid` under `grant`, or
+ * checks one of unknown consumption again ("Check again").
+ */
+export function resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome> {
+  return invoke<ShieldOutcome>("resume_shield", { walletId, txid, grant });
+}
+
+/**
+ * What sending `credits` (a decimal string) to the shielded address
+ * `to` costs.
+ */
+export function shieldedSendQuote(walletId: string, to: string, credits: string): Promise<ShieldedSpendQuote> {
+  return invoke<ShieldedSpendQuote>("shielded_send_quote", { walletId, to, credits });
+}
+
+/**
+ * Shielded → Shielded: sends `credits` to `to` under `grant`.
+ */
+export function shieldedSend(walletId: string, to: string, credits: string, memo: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
+  return invoke<ShieldedSpendOutcome>("shielded_send", { walletId, to, credits, memo, grant, confirmUnrecorded });
+}
+
+/**
+ * What moving `credits` back to Core costs (`to`: a Core address of the
+ * network, `null` for the wallet's next receive address).
+ */
+export function unshieldQuote(walletId: string, credits: string, to: string | null): Promise<ShieldedSpendQuote> {
+  return invoke<ShieldedSpendQuote>("unshield_quote", { walletId, credits, to });
+}
+
+/**
+ * Shielded → Core: withdraws `credits` to `to` under `grant`.
+ */
+export function unshieldToCore(walletId: string, credits: string, to: string | null, grant: string, confirmUnrecorded: boolean): Promise<ShieldedSpendOutcome> {
+  return invoke<ShieldedSpendOutcome>("unshield_to_core", { walletId, credits, to, grant, confirmUnrecorded });
+}
+
+/**
+ * The wallet's shielded history for Activity, pending first, then
+ * newest first (`limit` at most 500).
+ */
+export function shieldedHistory(walletId: string, offset: number, limit: number): Promise<Array<ShieldedActivity>> {
+  return invoke<Array<ShieldedActivity>>("shielded_history", { walletId, offset, limit });
+}
+
+/**
+ * The wallet's funding locks whose Platform side is not known to have
+ * happened (its own and those a restore read back).
+ */
+export function unfinishedTransfers(walletId: string): Promise<UnfinishedTransfers> {
+  return invoke<UnfinishedTransfers>("unfinished_transfers", { walletId });
+}
+
+/**
+ * Finishes the unfinished transfer of `kind` at `txid`:`vout` under
+ * `grant`, on the same lock; only a proved apply finishes it.
+ */
+export function finishTransfer(walletId: string, kind: LockKind, txid: string, vout: number, grant: string): Promise<LockFinish> {
+  return invoke<LockFinish>("finish_transfer", { walletId, kind, txid, vout, grant });
 }
 
 /**
@@ -2340,6 +2642,37 @@ export function governanceSubmitProposal(walletId: string, hash: string): Promis
 }
 
 /**
+ * The settings and the chosen currency's price and state now.
+ */
+export function ratesStatus(): Promise<RatesView> {
+  return invoke<RatesView>("rates_status");
+}
+
+/**
+ * Every currency with a price that has not expired, for the picker;
+ * empty while prices are off.
+ */
+export function ratesCurrencies(): Promise<Array<CurrencyRate>> {
+  return invoke<Array<CurrencyRate>>("rates_currencies");
+}
+
+/**
+ * Saves and applies the settings: off stops every request at once.
+ * `rates.invalid_currency` for a code that is not three capital letters.
+ */
+export function setRatesSettings(settings: RatesSettings): Promise<RatesView> {
+  return invoke<RatesView>("set_rates_settings", { settings });
+}
+
+/**
+ * "Update now": one attempt; `rates.off` while no request may be made,
+ * `rates.throttled` within 30 seconds of the last attempt.
+ */
+export function refreshRates(): Promise<RatesView> {
+  return invoke<RatesView>("refresh_rates");
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -2404,6 +2737,8 @@ export type CommandArgs = {
   open_network: { network: string | null; settings: SessionSettings | null };
   close_network: {  };
   active_network: {  };
+  get_network_choice: {  };
+  set_network_choice: { network: ChosenNetwork };
   existing_networks: {  };
   lock_status: {  };
   unlock: { passphrase: string };
@@ -2416,6 +2751,7 @@ export type CommandArgs = {
   encrypt_vault: { newPassphrase: string; grantId: string };
   change_passphrase: { oldPassphrase: string; newPassphrase: string };
   authorize: { purpose: GrantPurposeSpec; walletId: string | null; credential: CredentialSpec };
+  authorize_platform_send: { walletId: string; operation: string; credential: CredentialSpec };
   authorize_set: { purposes: Array<GrantPurposeSpec>; walletId: string | null; credential: CredentialSpec };
   revoke_grant: { grantId: string };
   reveal_mnemonic: { walletId: string; grantId: string };
@@ -2448,7 +2784,7 @@ export type CommandArgs = {
   current_receive_address: { walletId: string };
   next_receive_address: { walletId: string; label: string | null };
   addresses: { walletId: string; filter: AddressFilter };
-  create_receive_request: { walletId: string; amount: number | null; label: string | null; message: string | null };
+  create_receive_request: { walletId: string; amount: number | null; label: string | null; message: string | null; includeUsername: boolean | null };
   receive_requests: { walletId: string };
   receive_username: { walletId: string };
   username_in_requests: { walletId: string };
@@ -2542,7 +2878,10 @@ export type CommandArgs = {
   generate_coinjoin_salt: { walletId: string };
   coinjoin_recovery_scan: { walletId: string };
   mixed_coins_sweep_plan: { walletId: string; destination: MixedCoinsDestination };
-  move_mixed_coins: { walletId: string; destination: MixedCoinsDestination; grantId: string };
+  move_mixed_coins: { walletId: string; destination: MixedCoinsDestination; quoteId: string; grantId: string };
+  mixed_coins_consolidation_plan: { walletId: string };
+  consolidate_mixed_coins: { walletId: string; quoteId: string; grantId: string };
+  resend_mixed_coins: { walletId: string; txid: string | null };
   discover_identities: { walletId: string; grant: string };
   identities: { walletId: string };
   identity_detail: { walletId: string; identity: string };
@@ -2578,6 +2917,18 @@ export type CommandArgs = {
   credits_withdraw_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
+  platform_addresses: { walletId: string };
+  platform_activity: { walletId: string };
+  platform_addresses_sync: { walletId: string };
+  platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
+  platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; grant: string };
+  platform_receive_address: { walletId: string };
+  platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
+  platform_send: { walletId: string; operation: string; grant: string };
+  platform_fund_quote: { walletId: string; duffs: number };
+  platform_fund: { walletId: string; duffs: number; grant: string };
+  pending_platform_funds: { walletId: string };
+  resume_platform_fund: { walletId: string; txid: string; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
   resolve_stuck_funding: { walletId: string; step: string; grant: string };
@@ -2594,6 +2945,22 @@ export type CommandArgs = {
   quorum_source: {  };
   trusted_quorums_only: {  };
   set_trusted_quorums_only: { on: boolean };
+  shielded_status: { walletId: string };
+  shielded_sync: { walletId: string };
+  shielded_receive_address: { walletId: string };
+  shield_quote: { walletId: string; duffs: number };
+  shield_from_core: { walletId: string; duffs: number; grant: string };
+  shield_mixed_quote: { walletId: string };
+  stuck_shield_fundings: { walletId: string };
+  shield_mixed_coins: { walletId: string; grant: string };
+  resume_shield: { walletId: string; txid: string; grant: string };
+  shielded_send_quote: { walletId: string; to: string; credits: string };
+  shielded_send: { walletId: string; to: string; credits: string; memo: string | null; grant: string; confirmUnrecorded: boolean };
+  unshield_quote: { walletId: string; credits: string; to: string | null };
+  unshield_to_core: { walletId: string; credits: string; to: string | null; grant: string; confirmUnrecorded: boolean };
+  shielded_history: { walletId: string; offset: number; limit: number };
+  unfinished_transfers: { walletId: string };
+  finish_transfer: { walletId: string; kind: LockKind; txid: string; vout: number; grant: string };
   dashpay_contacts: { walletId: string; identity: string; query: ContactQueryArgs };
   dashpay_contact: { walletId: string; identity: string; contact: string };
   dashpay_pending_setup_count: { walletId: string };
@@ -2660,6 +3027,10 @@ export type CommandArgs = {
   governance_create_proposal: { walletId: string; draft: ProposalDraft; grant: string };
   governance_my_proposals: { walletId: string };
   governance_submit_proposal: { walletId: string; hash: string };
+  rates_status: {  };
+  rates_currencies: {  };
+  set_rates_settings: { settings: RatesSettings };
+  refresh_rates: {  };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -2679,6 +3050,8 @@ export type CommandResults = {
   open_network: OpenedNetwork;
   close_network: boolean;
   active_network: NetworkInfo | null;
+  get_network_choice: NetworkChoiceView;
+  set_network_choice: NetworkChoiceView;
   existing_networks: Array<NetworkData>;
   lock_status: LockStatus;
   unlock: LockStatus;
@@ -2691,6 +3064,7 @@ export type CommandResults = {
   encrypt_vault: LockStatus;
   change_passphrase: LockStatus;
   authorize: AuthGrant;
+  authorize_platform_send: AuthGrant;
   authorize_set: Array<AuthGrant>;
   revoke_grant: null;
   reveal_mnemonic: RevealedMnemonic;
@@ -2818,6 +3192,9 @@ export type CommandResults = {
   coinjoin_recovery_scan: CoinJoinRecoveryReport;
   mixed_coins_sweep_plan: MixedCoinsSweepPlan;
   move_mixed_coins: MixedCoinsSweepResult;
+  mixed_coins_consolidation_plan: MixedCoinsConsolidationPlan;
+  consolidate_mixed_coins: MixedCoinsSweepResult;
+  resend_mixed_coins: Array<MixedCoinsResend>;
   discover_identities: number;
   identities: Array<IdentitySummary>;
   identity_detail: IdentityDetail;
@@ -2853,6 +3230,18 @@ export type CommandResults = {
   credits_withdraw_quote: WithdrawQuote;
   credits_withdraw: WithdrawOutcome;
   credits_withdrawals: Array<Withdrawal>;
+  platform_addresses: PlatformAddressBalance;
+  platform_activity: Array<PlatformActivity>;
+  platform_addresses_sync: PlatformAddressBalance;
+  platform_move_to_core_quote: MoveToCoreQuote;
+  platform_move_to_core: MoveToCoreOutcome;
+  platform_receive_address: PlatformReceiveAddress;
+  platform_send_quote: PlatformSendQuote;
+  platform_send: PlatformSendOutcome;
+  platform_fund_quote: PlatformFundQuote;
+  platform_fund: PlatformFundOutcome;
+  pending_platform_funds: Array<PendingPlatformFund>;
+  resume_platform_fund: PlatformFundOutcome;
   grant_request: GrantRequest;
   dispatch_status: DispatchStateName | null;
   resolve_stuck_funding: BroadcastOutcome;
@@ -2869,6 +3258,22 @@ export type CommandResults = {
   quorum_source: QuorumSource;
   trusted_quorums_only: boolean;
   set_trusted_quorums_only: null;
+  shielded_status: ShieldedStatus;
+  shielded_sync: ShieldedStatus;
+  shielded_receive_address: ShieldedAddress;
+  shield_quote: ShieldQuote;
+  shield_from_core: ShieldOutcome;
+  shield_mixed_quote: MixedShieldQuote;
+  stuck_shield_fundings: Array<StuckShieldFunding>;
+  shield_mixed_coins: ShieldOutcome;
+  resume_shield: ShieldOutcome;
+  shielded_send_quote: ShieldedSpendQuote;
+  shielded_send: ShieldedSpendOutcome;
+  unshield_quote: ShieldedSpendQuote;
+  unshield_to_core: ShieldedSpendOutcome;
+  shielded_history: Array<ShieldedActivity>;
+  unfinished_transfers: UnfinishedTransfers;
+  finish_transfer: LockFinish;
   dashpay_contacts: ContactList;
   dashpay_contact: ContactDetailInfo | null;
   dashpay_pending_setup_count: number;
@@ -2935,6 +3340,10 @@ export type CommandResults = {
   governance_create_proposal: MyProposal;
   governance_my_proposals: Array<MyProposal>;
   governance_submit_proposal: MyProposal;
+  rates_status: RatesView;
+  rates_currencies: Array<CurrencyRate>;
+  set_rates_settings: RatesView;
+  refresh_rates: RatesView;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -2956,6 +3365,8 @@ export const COMMANDS: Record<CommandName, string> = {
   open_network: "network",
   close_network: "network",
   active_network: "network",
+  get_network_choice: "network",
+  set_network_choice: "network",
   existing_networks: "network",
   lock_status: "vault",
   unlock: "vault",
@@ -2968,6 +3379,7 @@ export const COMMANDS: Record<CommandName, string> = {
   encrypt_vault: "vault",
   change_passphrase: "vault",
   authorize: "vault",
+  authorize_platform_send: "vault",
   authorize_set: "vault",
   revoke_grant: "vault",
   reveal_mnemonic: "vault",
@@ -3095,6 +3507,9 @@ export const COMMANDS: Record<CommandName, string> = {
   coinjoin_recovery_scan: "coinjoin",
   mixed_coins_sweep_plan: "coinjoin",
   move_mixed_coins: "coinjoin",
+  mixed_coins_consolidation_plan: "coinjoin",
+  consolidate_mixed_coins: "coinjoin",
+  resend_mixed_coins: "coinjoin",
   discover_identities: "identity",
   identities: "identity",
   identity_detail: "identity",
@@ -3130,6 +3545,18 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_withdraw_quote: "identity",
   credits_withdraw: "identity",
   credits_withdrawals: "identity",
+  platform_addresses: "identity",
+  platform_activity: "identity",
+  platform_addresses_sync: "identity",
+  platform_move_to_core_quote: "identity",
+  platform_move_to_core: "identity",
+  platform_receive_address: "identity",
+  platform_send_quote: "identity",
+  platform_send: "identity",
+  platform_fund_quote: "identity",
+  platform_fund: "identity",
+  pending_platform_funds: "identity",
+  resume_platform_fund: "identity",
   grant_request: "identity",
   dispatch_status: "identity",
   resolve_stuck_funding: "identity",
@@ -3146,6 +3573,22 @@ export const COMMANDS: Record<CommandName, string> = {
   quorum_source: "identity",
   trusted_quorums_only: "identity",
   set_trusted_quorums_only: "identity",
+  shielded_status: "identity",
+  shielded_sync: "identity",
+  shielded_receive_address: "identity",
+  shield_quote: "identity",
+  shield_from_core: "identity",
+  shield_mixed_quote: "identity",
+  stuck_shield_fundings: "identity",
+  shield_mixed_coins: "identity",
+  resume_shield: "identity",
+  shielded_send_quote: "identity",
+  shielded_send: "identity",
+  unshield_quote: "identity",
+  unshield_to_core: "identity",
+  shielded_history: "identity",
+  unfinished_transfers: "identity",
+  finish_transfer: "identity",
   dashpay_contacts: "social",
   dashpay_contact: "social",
   dashpay_pending_setup_count: "social",
@@ -3212,6 +3655,10 @@ export const COMMANDS: Record<CommandName, string> = {
   governance_create_proposal: "governance",
   governance_my_proposals: "governance",
   governance_submit_proposal: "governance",
+  rates_status: "rates",
+  rates_currencies: "rates",
+  set_rates_settings: "rates",
+  refresh_rates: "rates",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -3257,6 +3704,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "spv_not_running",
   "spv_running",
   "rescan_in_progress",
+  "rescan_interrupted",
   "invalid_xpub",
   "tx_action_refused",
   "no_peers",
@@ -3273,6 +3721,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "internal",
   "outpoint_not_found",
   "stuck_funding",
+  "shielded_spend_unresolved",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",
@@ -3366,6 +3815,9 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "coinjoin.spv_not_running",
   "coinjoin.no_peers",
   "coinjoin.broadcast_rejected",
+  "coinjoin.mixing_active",
+  "coinjoin.move_running",
+  "coinjoin.plan_changed",
   "masternode.watch_only",
   "masternode.vault_locked",
   "masternode.grant_invalid",
@@ -3440,6 +3892,28 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.top_up_pending",
   "credits.withdrawal_out_of_range",
   "credits.withdrawal_landed",
+  "credits.move_pending",
+  "credits.recipient_invalid",
+  "credits.send_out_of_range",
+  "credits.quote_changed",
+  "credits.fund_pending",
+  "credits.too_many_inputs",
+  "shielded.not_active",
+  "shielded.not_synced",
+  "shielded.invalid_address",
+  "shielded.insufficient_funds",
+  "shielded.funding_insufficient",
+  "shielded.below_minimum",
+  "shielded.coins_locked",
+  "shielded.shield_pending",
+  "shielded.pool_too_small",
+  "shielded.too_many_inputs",
+  "shielded.unrecorded_spend",
+  "shielded.mixing_active",
+  "shielded.nothing_to_move",
+  "shielded.coins_unconfirmed",
+  "shielded.move_running",
+  "shielded.coins_changed",
   "governance.sync_disabled",
   "governance.not_synced",
   "governance.proposal_not_found",
@@ -3452,4 +3926,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "governance.contest_closed",
   "governance.not_a_contender",
   "governance.not_implemented",
+  "rates.invalid_currency",
+  "rates.throttled",
+  "rates.off",
+  "rates.storage",
 ];

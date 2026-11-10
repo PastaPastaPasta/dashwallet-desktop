@@ -42,6 +42,23 @@ pub enum FlowKindName {
     Dissolution,
     /// A governance proposal's fee under a `spend` grant (MG-06).
     Proposal,
+    /// "Move to Dash wallet": Platform-address credits to Core, under a
+    /// `platformOp` grant.
+    PlatformAddressMove,
+    /// A send to a Platform address under a fresh `platformOp` grant: one
+    /// send, never a lease.
+    PlatformAddressSend,
+    /// Core → Shielded: an asset lock under a `platformOp` grant's duffs.
+    Shield,
+    /// "Add from Dash wallet": an asset lock under a `platformOp` grant's
+    /// duffs, applied to the wallet's Platform address.
+    PlatformAddressFund,
+    /// A shielded send or an unshield to Core under a `platformOp` grant's
+    /// credits.
+    ShieldedSpend,
+    /// "Move mixed coins" to Shielded: the CoinJoin account drained into one
+    /// lock under a `spend` grant's duffs.
+    ShieldDrain,
     /// An evonode's Platform credit withdrawal under a
     /// `masternodeWithdraw` grant (MG-13).
     MasternodeWithdraw,
@@ -51,12 +68,14 @@ mirror_enum!(FlowKind => FlowKindName {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
     MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal,
+    PlatformAddressMove, PlatformAddressSend, Shield, PlatformAddressFund, ShieldedSpend, ShieldDrain,
     MasternodeWithdraw
 });
 mirror_enum!(FlowKindName => FlowKind {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
     MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal,
+    PlatformAddressMove, PlatformAddressSend, Shield, PlatformAddressFund, ShieldedSpend, ShieldDrain,
     MasternodeWithdraw
 });
 

@@ -14,6 +14,7 @@ import { bridgeEvents } from "./api/events";
 import { BackendContext } from "./api/queries";
 import { inTauri, IpcBackend } from "./api/tauri";
 import { App, LaunchContext } from "./app/App";
+import { installContextMenuGuard } from "./app/contextMenuGuard";
 import { installDropGuard } from "./app/dropGuard";
 import { exposeSelftest, runTauriSelftest } from "./app/selftest";
 import { milestones } from "./app/startup";
@@ -48,6 +49,8 @@ async function boot() {
   if (fixturePassphrase !== null) exposeSelftest(backend, client, fixturePassphrase);
 
   installDropGuard();
+  // A release build (not `vite dev`) has no default context menu outside text fields (DEC-1058 #8).
+  installContextMenuGuard(import.meta.env.PROD);
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <QueryClientProvider client={client}>

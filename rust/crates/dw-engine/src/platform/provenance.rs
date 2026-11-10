@@ -187,6 +187,12 @@ impl Provenance {
             .collect()
     }
 
+    /// The fallback latch is set: a trusted-service quorum key may have
+    /// verified a proof. In memory.
+    pub(crate) fn fallback_used(&self) -> bool {
+        self.fallback_used.load(Ordering::SeqCst)
+    }
+
     /// Whether `entity` must be treated as unverified: the fallback has been
     /// used and no verification of this content is on record (DEC-183: a
     /// record of other content does not count). In memory.

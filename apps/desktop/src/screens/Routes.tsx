@@ -9,6 +9,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { ui, useUi, type PayTab, type Route } from "../app/ui";
 import { PayToAddress } from "./pay/PayToAddress";
 import { PayToContact } from "./pay/PayToContact";
+import { ShieldedSendLink } from "./ShieldedSheet";
 
 const TITLES: Record<Route, string> = {
   home: "Home",
@@ -32,12 +33,16 @@ const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "
 };
 
 /** `wide`: the page's tables take the window's width, as Activity's table mode does. */
-export function Page({ route, wide = false, children }: { route: Route; wide?: boolean; children?: ReactNode }) {
+export function Page({ route, wide = false, badge, children }: { route: Route; wide?: boolean; badge?: ReactNode; children?: ReactNode }) {
   return (
     <main className={wide ? "page page-wide" : "page"} data-testid={`page-${route}`}>
       <div className="page-column">
         <header className="top-intro">
-          <h1 className="top-intro-title">{TITLES[route]}</h1>
+          <h1 className="top-intro-title">
+            {TITLES[route]}
+            {badge && " "}
+            {badge}
+          </h1>
         </header>
         {children}
       </div>
@@ -140,6 +145,7 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
           <PayToContact walletId={walletId} network={network} />
         )}
       </Tabs>
+      <ShieldedSendLink walletId={walletId} network={network} />
     </Page>
   );
 }

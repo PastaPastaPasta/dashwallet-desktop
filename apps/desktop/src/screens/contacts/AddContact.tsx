@@ -10,7 +10,7 @@ import { useDebounced } from "../../app/useDebounced";
 import { Chip, DashButton, Icon } from "../../components/basics";
 import { CopyValue } from "../../components/detail";
 import { QrCode } from "../../components/qr";
-import { copyWithToast } from "../../components/toast";
+import { CopyDashButton } from "../../components/copy";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import {
   ADD_TABS,
@@ -57,6 +57,13 @@ const select = (contact: string) => ui.set({ contact, addContact: null, contactP
 function close() {
   ui.set({ addContact: null, contactPrefill: null });
   requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="contacts-add"]')?.focus());
+}
+
+function focusContact(target: HTMLElement | null) {
+  if (!target) return;
+  target.focus({ preventScroll: true });
+  const box = target.getBoundingClientRect();
+  if (box.top < 0 || box.bottom > window.innerHeight || box.left < 0 || box.right > window.innerWidth) target.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
 export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: AddContactIntent | null; link: ContactPrefill | null }) {
@@ -169,7 +176,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
 
   // A new candidate takes focus (D15).
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => heading.current?.focus(), [c]);
+  useEffect(() => focusContact(heading.current), [c]);
   // Send leaves once the re-read says the request went: focus goes to the line that says so (D5).
   const status = useRef<HTMLDivElement>(null);
   const toast = useActionToast(ctx.walletId);
@@ -296,6 +303,11 @@ function useOptionalModel<M extends ContactActions>(model: M | null): M | null {
 /** Search (D3): every hit of the prefix, with how it relates to the identity. */
 function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity: string; query: string; onPick: (hit: HitFields) => void }) {
   const [text, setText] = useState(query);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const tabs = document.activeElement?.closest('[role="tablist"]');
+    if (!tabs || !input.current?.closest(".add-contact")?.contains(tabs)) focusContact(input.current);
+  }, [query]);
   // Another intent's search text (Show more on another search).
   useEffect(() => setText(query), [query]);
   const typed = networkPrefix(text);
@@ -361,7 +373,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
     <div className="add-contact-search">
       <label className="search-field" data-testid="add-contact-search">
         <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
-        <input type="search" value={text} placeholder="Search username" aria-label="Search username" onChange={(e) => setText(e.target.value)} autoFocus={query !== ""} />
+        <input ref={input} type="search" value={text} placeholder="Search username" aria-label="Search username" onChange={(e) => setText(e.target.value)} />
       </label>
       {results()}
     </div>
@@ -510,9 +522,9 @@ function MyQrTab({ walletId, identity }: { walletId: string; identity: string })
             {state.link}
           </p>
           <span className="add-contact-actions">
-            <DashButton variant="tintedBlue" size="small" data-testid="add-contact-copy-link" onClick={() => void copyWithToast(state.link)}>
+            <CopyDashButton variant="tintedBlue" size="small" data-testid="add-contact-copy-link" text={state.link}>
               Copy Link
-            </DashButton>
+            </CopyDashButton>
           </span>
         </>
       );

@@ -330,7 +330,6 @@ fn app_builder<R: Runtime>(
                     .and_then(|root| settings::read(root).theme)
             });
             let window_size = launch.window_size;
-            let title = window_title(&launch.network);
             let handle = app.handle();
             let state = AppState::new(handle, launch, started, vault, || {
                 handle
@@ -338,6 +337,8 @@ fn app_builder<R: Runtime>(
                     .app_data_dir()
                     .map_err(|e| AppError::app(AppCode::DataDir, e.to_string()))
             })?;
+            // After the state: it resolves the saved network choice.
+            let title = window_title(&state.launch.network);
             app.manage(state);
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title(&title)?;
@@ -444,7 +445,21 @@ mod tests {
         // The refused open wrote nothing into the root.
         assert_eq!(entries(), before);
         drop(first);
-        open().expect("the root opens again once its holder is gone");
+        // The engine releases its storage, and with it the root, on its
+        // drop thread, shortly after the state is dropped.
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match open() {
+                Ok(_) => break,
+                Err(e)
+                    if e.code_str() == AppCode::AlreadyRunning.as_str()
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(e) => panic!("the root opens again once its holder is gone: {e:?}"),
+            }
+        }
     }
 
     #[test]

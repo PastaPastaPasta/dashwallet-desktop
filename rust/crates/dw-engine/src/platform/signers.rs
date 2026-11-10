@@ -3,6 +3,9 @@
 //!
 //! - [`VaultIdentitySigner`]: dpp `Signer<IdentityPublicKey>` for state
 //!   transitions, scope `PlatformIdentity`;
+//! - [`VaultPlatformAddressSigner`]: dpp `Signer<PlatformAddress>` for a
+//!   Platform-address spend ("Move to Dash wallet"), scope
+//!   `PlatformAddress`, counting into its call permit;
 //! - [`VaultContactCrypto`]: platform-wallet `ContactCryptoProvider` for the
 //!   DIP-15 contact crypto, scope `DashPayCrypto` (never signs);
 //! - [`VaultScanKey`]: platform-wallet `ScanKeyResolver` for the identity
@@ -37,8 +40,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dashcore::secp256k1::{PublicKey, SecretKey, ecdsa};
+use dashcore::{OutPoint, ScriptBuf, Transaction};
 use dpp::ProtocolError;
-use dpp::address_funds::AddressWitness;
+use dpp::address_funds::{AddressWitness, PlatformAddress};
 use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::signer::Signer;
 use dpp::identity::{IdentityPublicKey, KeyID, KeyType};
@@ -46,7 +50,7 @@ use dpp::platform_value::BinaryData;
 use dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dw_vault::{ScanKey, SignerError, SignerScope, VaultSigner};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
-use key_wallet::{ExtendedPubKeySigner, Signer as _, SignerMethod};
+use key_wallet::{ExtendedPubKeySigner, Signer as _, SignerMethod, Utxo};
 use platform_wallet::manager::startup::ScanKeyError;
 use platform_wallet::{
     ContactCryptoProvider, ContactInfoOpened, ContactInfoSealed, PlatformWalletError,
@@ -281,6 +285,86 @@ impl Signer<IdentityPublicKey> for VaultIdentitySigner {
     }
 }
 
+/// Platform-address signer (dpp `Signer<PlatformAddress>`) for the P2PKH
+/// addresses of `paths`, each at its DIP-17 path (release 0.1, "Move to
+/// Dash wallet"). The vault signs only once the key at the path hashes to
+/// the address ([`VaultSigner::sign_platform_address`]); every signature is
+/// counted into the call permit as [`VaultIdentitySigner`]'s are. A P2SH
+/// address, or one not in `paths`, is never signed for.
+#[derive(Debug, Clone)]
+pub struct VaultPlatformAddressSigner {
+    signer: VaultSigner,
+    paths: BTreeMap<[u8; 20], DerivationPath>,
+    count: Arc<SignatureCount>,
+}
+
+impl VaultPlatformAddressSigner {
+    /// `signer` must have scope `PlatformAddress`.
+    pub(crate) fn new(
+        signer: VaultSigner,
+        paths: BTreeMap<[u8; 20], DerivationPath>,
+        count: Arc<SignatureCount>,
+    ) -> Result<Self, EngineError> {
+        require_scope(&signer, SignerScope::PlatformAddress)?;
+        Ok(Self {
+            signer,
+            paths,
+            count,
+        })
+    }
+
+    fn path(&self, address: &PlatformAddress) -> Option<(&[u8; 20], &DerivationPath)> {
+        match address {
+            PlatformAddress::P2pkh(hash) => self.paths.get_key_value(hash),
+            PlatformAddress::P2sh(_) => None,
+        }
+    }
+}
+
+#[async_trait]
+impl Signer<PlatformAddress> for VaultPlatformAddressSigner {
+    async fn sign(
+        &self,
+        address: &PlatformAddress,
+        data: &[u8],
+    ) -> Result<BinaryData, ProtocolError> {
+        let Some((hash, path)) = self.path(address) else {
+            return Err(ProtocolError::ExternalSignerError(
+                "not an address of this wallet's Platform payment keys".into(),
+            ));
+        };
+        // Counted before the vault is asked, refused once the permit ended.
+        let Some(signing) = self.count.begin() else {
+            return Err(ProtocolError::ExternalSignerError(
+                SignerError::Locked.to_string(),
+            ));
+        };
+        match self.signer.sign_platform_address(path, hash, data) {
+            Ok(signature) => {
+                signing.released();
+                Ok(signature.to_vec().into())
+            }
+            Err(e) => {
+                self.count.observe_err(&e);
+                Err(ProtocolError::ExternalSignerError(e.to_string()))
+            }
+        }
+    }
+
+    async fn sign_create_witness(
+        &self,
+        address: &PlatformAddress,
+        data: &[u8],
+    ) -> Result<AddressWitness, ProtocolError> {
+        let signature = self.sign(address, data).await?;
+        Ok(AddressWitness::P2pkh { signature })
+    }
+
+    fn can_sign_with(&self, address: &PlatformAddress) -> bool {
+        self.path(address).is_some() && !self.count.closed()
+    }
+}
+
 /// The lease's `PlatformFunding` signer during one Mode B funding call
 /// (E0-04 §2a.3): it delegates every call to the vault signer and reports
 /// each released signature (its sighash kept, §2a.6), and any `Locked` refusal, to the
@@ -300,6 +384,178 @@ pub struct CountingFundingSigner {
     signer: VaultSigner,
     count: Arc<SignatureCount>,
     release: Arc<FundingRelease>,
+    /// At most this many inputs signed ([`Self::with_input_cap`]).
+    cap: Option<Arc<InputCap>>,
+    /// Only a drain's planned build ([`Self::with_drain_cap`]).
+    drain: Option<Arc<DrainCap>>,
+}
+
+/// What one drain's build must spend and pay: the plan's coins (outpoint,
+/// path, value), at most `max_duffs` in all, a fee of at most `fee_bound`
+/// (the quote's), a credit of at least `minimum_lock_duffs` (the
+/// library's drain minimum, `build.rs` `DrainAll`) to `credit_script` (the
+/// step's funding key).
+#[derive(Debug, Clone)]
+pub(crate) struct DrainPlan {
+    pub coins: Vec<(OutPoint, DerivationPath, u64)>,
+    pub max_duffs: u64,
+    pub fee_bound: u64,
+    pub minimum_lock_duffs: u64,
+    pub credit_script: ScriptBuf,
+}
+
+/// Why a drain's signer refused its build, before any signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrainRefusal {
+    /// The build's inputs or outputs are not the plan's.
+    CoinsChanged,
+    /// Its credit is below the library's drain minimum.
+    BelowMinimum { min: u64 },
+}
+
+/// Per path, the sighashes a drain signed there.
+type SignedByPath = BTreeMap<DerivationPath, BTreeSet<[u8; 32]>>;
+
+/// The coins one drain may sign: at each path at most as many distinct
+/// sighashes as its plan has coins there, each standing for the next
+/// largest of their values, and at most `max_duffs` in all. The vault
+/// signs sighashes and cannot see the debit; a drain's builder selects
+/// every final coin of the account under the wallet's write lock, where
+/// nothing can be read, so this is where its debit is bounded.
+///
+/// Before any of that, the builder shows the signer the finalized
+/// transaction and the coins it selected ([`Self::approve`]): it signs
+/// nothing unless they are exactly the plan's.
+#[derive(Debug)]
+struct DrainCap {
+    max_duffs: u64,
+    /// Per path, the plan's coin values there, largest first.
+    coins: BTreeMap<DerivationPath, Vec<u64>>,
+    /// The plan's coins by outpoint.
+    inputs: BTreeMap<OutPoint, u64>,
+    fee_bound: u64,
+    minimum_lock_duffs: u64,
+    credit_script: ScriptBuf,
+    /// Per path, the sighashes signed there; and their values' sum.
+    signed: std::sync::Mutex<(SignedByPath, u64)>,
+    refusal: std::sync::Mutex<Option<DrainRefusal>>,
+}
+
+impl DrainCap {
+    fn new(plan: DrainPlan) -> Self {
+        let mut by_path: BTreeMap<DerivationPath, Vec<u64>> = BTreeMap::new();
+        let mut inputs = BTreeMap::new();
+        for (outpoint, path, value) in plan.coins {
+            by_path.entry(path).or_default().push(value);
+            inputs.insert(outpoint, value);
+        }
+        for values in by_path.values_mut() {
+            values.sort_unstable_by(|a, b| b.cmp(a));
+        }
+        Self {
+            max_duffs: plan.max_duffs,
+            coins: by_path,
+            inputs,
+            fee_bound: plan.fee_bound,
+            minimum_lock_duffs: plan.minimum_lock_duffs,
+            credit_script: plan.credit_script,
+            signed: std::sync::Mutex::default(),
+            refusal: std::sync::Mutex::default(),
+        }
+    }
+
+    fn refuse(&self, refusal: DrainRefusal) {
+        let mut slot = self.refusal.lock().unwrap_or_else(|p| p.into_inner());
+        slot.get_or_insert(refusal);
+    }
+
+    /// Whether the build of `tx` over `inputs` is the plan's: exactly its
+    /// coins at their values, each in a block (an InstantSend lock is not
+    /// enough), within the grant; one output, the burn of the credit; one
+    /// credit, to the step's key, short of the coins' sum by at most the
+    /// quote's fee bound and at least the library's drain minimum (as
+    /// `build.rs` judges it, after signing).
+    fn approve(&self, tx: &Transaction, inputs: &[Utxo]) -> Result<(), DrainRefusal> {
+        use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+        let changed = Err(DrainRefusal::CoinsChanged);
+        let spent: BTreeMap<OutPoint, u64> =
+            inputs.iter().map(|u| (u.outpoint, u.value())).collect();
+        if spent.len() != inputs.len() || spent != self.inputs {
+            return changed;
+        }
+        if inputs.iter().any(|u| !u.is_confirmed) {
+            return changed;
+        }
+        let total = spent.values().try_fold(0u64, |sum, v| sum.checked_add(*v));
+        let Some(total) = total.filter(|t| *t <= self.max_duffs) else {
+            return changed;
+        };
+        let Some(TransactionPayload::AssetLockPayloadType(payload)) =
+            &tx.special_transaction_payload
+        else {
+            return changed;
+        };
+        let ([credit], [burn]) = (payload.credit_outputs.as_slice(), tx.output.as_slice()) else {
+            return changed;
+        };
+        if credit.script_pubkey != self.credit_script
+            || !burn.script_pubkey.is_op_return()
+            || burn.value != credit.value
+            || credit.value > total
+            || credit.value < total.saturating_sub(self.fee_bound)
+        {
+            return changed;
+        }
+        if credit.value < self.minimum_lock_duffs {
+            return Err(DrainRefusal::BelowMinimum {
+                min: self.minimum_lock_duffs,
+            });
+        }
+        Ok(())
+    }
+
+    /// Whether `sighash` may be signed at `path`: one already signed there
+    /// (an identical retry), or a planned coin's within the grant.
+    fn admits(&self, path: &DerivationPath, sighash: [u8; 32]) -> bool {
+        let mut signed = self.signed.lock().unwrap_or_else(|p| p.into_inner());
+        let (by_path, sum) = &mut *signed;
+        let at = by_path.entry(path.clone()).or_default();
+        if at.contains(&sighash) {
+            return true;
+        }
+        let next = (self.coins.get(path))
+            .and_then(|values| values.get(at.len()))
+            .map(|value| sum.saturating_add(*value))
+            .filter(|next| *next <= self.max_duffs);
+        match next {
+            Some(next) => {
+                at.insert(sighash);
+                *sum = next;
+                true
+            }
+            None => {
+                self.refuse(DrainRefusal::CoinsChanged);
+                false
+            }
+        }
+    }
+}
+
+/// The input cap of one funding call's signer: the distinct sighashes it
+/// signed, at most `max`.
+#[derive(Debug)]
+struct InputCap {
+    max: usize,
+    signed: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
+}
+
+impl InputCap {
+    /// Whether `sighash` may be signed: one already signed (an identical
+    /// retry) or a new one within the cap.
+    fn admits(&self, sighash: [u8; 32]) -> bool {
+        let mut signed = self.signed.lock().unwrap_or_else(|p| p.into_inner());
+        signed.contains(&sighash) || (signed.len() < self.max && signed.insert(sighash))
+    }
 }
 
 impl CountingFundingSigner {
@@ -312,7 +568,49 @@ impl CountingFundingSigner {
             signer,
             count,
             release,
+            cap: None,
+            drain: None,
         }
+    }
+
+    /// Signs only `plan`'s build: one whose inputs or outputs are not the
+    /// plan's is refused when the builder shows it, before any signature
+    /// (`approve_inputs`), and a signature at a path past its planned coins,
+    /// or past the grant, before the vault is asked; either abandons the
+    /// call, as [`Self::with_input_cap`]'s.
+    pub(crate) fn with_drain_cap(mut self, plan: DrainPlan) -> Self {
+        self.drain = Some(Arc::new(DrainCap::new(plan)));
+        self
+    }
+
+    /// Why the drain cap refused the build, if it did.
+    pub(crate) fn drain_refusal(&self) -> Option<DrainRefusal> {
+        let drain = self.drain.as_ref()?;
+        *drain.refusal.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Signs at most `max` inputs (a shield's lock, whose InstantSend proof
+    /// stops fitting a transition from about 65 inputs). A build of more is
+    /// refused when the builder shows it, before any signature
+    /// (`approve_inputs`), so the call releases nothing and ends
+    /// `Cancelled`. Behind that, the first input past `max` is refused
+    /// before the vault is asked; either abandons the call
+    /// ([`SignatureCount::abandon`]), so it signs nothing more and no
+    /// complete transaction of it exists.
+    /// key-wallet's builder releases the build's reservation when its
+    /// signer fails (`build_signed_reserved`), and platform-wallet tracks
+    /// and sends nothing of a build that failed.
+    pub(crate) fn with_input_cap(mut self, max: usize) -> Self {
+        self.cap = Some(Arc::new(InputCap {
+            max,
+            signed: std::sync::Mutex::default(),
+        }));
+        self
+    }
+
+    /// Whether the input cap refused an input.
+    pub(crate) fn capped(&self) -> bool {
+        self.cap.is_some() && self.count.abandoned()
     }
 
     fn note<T>(&self, r: Result<T, SignerError>) -> Result<T, SignerError> {
@@ -336,6 +634,28 @@ impl key_wallet::Signer for CountingFundingSigner {
         path: &DerivationPath,
         sighash: [u8; 32],
     ) -> Result<(ecdsa::Signature, PublicKey), SignerError> {
+        if self.count.abandoned() {
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: the call's build was refused for its inputs"
+            )));
+        }
+        if let Some(cap) = &self.cap
+            && !cap.admits(sighash)
+        {
+            self.count.abandon();
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: more than {} inputs",
+                cap.max
+            )));
+        }
+        if let Some(drain) = &self.drain
+            && !drain.admits(path, sighash)
+        {
+            self.count.abandon();
+            return Err(SignerError::PathNotAllowed(format!(
+                "{path}: no coin of the drain's plan within its grant"
+            )));
+        }
         let Some(signing) = self.count.begin() else {
             return Err(SignerError::Locked);
         };
@@ -365,6 +685,29 @@ impl key_wallet::Signer for CountingFundingSigner {
 
     async fn public_key(&self, path: &DerivationPath) -> Result<PublicKey, SignerError> {
         self.note(self.signer.public_key(path).await)
+    }
+
+    async fn approve_inputs(&self, tx: &Transaction, inputs: &[Utxo]) -> Result<(), SignerError> {
+        if let Some(drain) = &self.drain
+            && let Err(refusal) = drain.approve(tx, inputs)
+        {
+            drain.refuse(refusal);
+            self.count.abandon();
+            return Err(SignerError::PathNotAllowed(format!(
+                "the drain's build is not its plan's: {refusal:?}"
+            )));
+        }
+        if let Some(cap) = &self.cap
+            && inputs.len() > cap.max
+        {
+            self.count.abandon();
+            return Err(SignerError::PathNotAllowed(format!(
+                "{} inputs, more than {}",
+                inputs.len(),
+                cap.max
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -713,5 +1056,215 @@ mod tests {
                 "self.signer copied out: {shown}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod drain_cap_tests {
+    use std::str::FromStr;
+
+    use dashcore::hashes::Hash;
+
+    use super::*;
+
+    fn path(i: u32) -> DerivationPath {
+        DerivationPath::from_str(&format!("m/9'/1'/4'/0'/0/{i}")).unwrap()
+    }
+
+    fn outpoint(i: u32) -> OutPoint {
+        OutPoint::new(dashcore::Txid::from_byte_array([7; 32]), i)
+    }
+
+    fn plan(coins: &[(u32, u64)], max_duffs: u64) -> DrainPlan {
+        DrainPlan {
+            coins: (coins.iter().enumerate())
+                .map(|(n, (i, v))| (outpoint(n as u32), path(*i), *v))
+                .collect(),
+            max_duffs,
+            fee_bound: 10,
+            minimum_lock_duffs: 1,
+            credit_script: credit_script(),
+        }
+    }
+
+    fn cap(coins: &[(u32, u64)], max_duffs: u64) -> DrainCap {
+        DrainCap::new(plan(coins, max_duffs))
+    }
+
+    fn refused(c: &DrainCap) -> Option<DrainRefusal> {
+        *c.refusal.lock().unwrap()
+    }
+
+    fn credit_script() -> ScriptBuf {
+        ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array([5; 20]))
+    }
+
+    /// A confirmed coin of the plan's `n`-th outpoint.
+    fn utxo(n: u32, value: u64) -> Utxo {
+        let script = ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array([n as u8; 20]));
+        let address = dashcore::Address::from_script(&script, dashcore::Network::Testnet).unwrap();
+        let txout = dashcore::TxOut {
+            value,
+            script_pubkey: script,
+        };
+        let mut u = Utxo::new(outpoint(n), txout, address, 100, false);
+        u.is_confirmed = true;
+        u
+    }
+
+    /// The drain's lock over `inputs`: one burn of `credit` and one credit
+    /// output of it to `script`.
+    fn lock_tx(inputs: &[Utxo], credit: u64, script: ScriptBuf) -> Transaction {
+        use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
+        use dashcore::blockdata::transaction::special_transaction::asset_lock::AssetLockPayload;
+        Transaction {
+            version: 3,
+            lock_time: 0,
+            input: (inputs.iter())
+                .map(|u| dashcore::TxIn {
+                    previous_output: u.outpoint,
+                    ..Default::default()
+                })
+                .collect(),
+            output: vec![dashcore::TxOut {
+                value: credit,
+                script_pubkey: ScriptBuf::new_op_return(&[]),
+            }],
+            special_transaction_payload: Some(TransactionPayload::AssetLockPayloadType(
+                AssetLockPayload {
+                    version: 1,
+                    credit_outputs: vec![dashcore::TxOut {
+                        value: credit,
+                        script_pubkey: script,
+                    }],
+                },
+            )),
+        }
+    }
+
+    /// A drain's build is approved only when its inputs are exactly the
+    /// plan's confirmed coins within the grant and its outputs the burn of
+    /// one credit to the step's key, within the quote's fee bound; a
+    /// credit below the library's drain minimum is refused for that.
+    #[test]
+    fn a_drain_cap_approves_the_planned_build_only() {
+        let c = cap(&[(0, 100), (1, 50)], 150);
+        let coins = [utxo(0, 100), utxo(1, 50)];
+        let ok = |c: &DrainCap, inputs: &[Utxo], tx: &Transaction| c.approve(tx, inputs);
+        let tx = lock_tx(&coins, 145, credit_script());
+        assert_eq!(ok(&c, &coins, &tx), Ok(()));
+        assert_eq!(
+            ok(&c, &coins, &lock_tx(&coins, 140, credit_script())),
+            Ok(()),
+            "the fee bound itself"
+        );
+
+        let changed = Err(DrainRefusal::CoinsChanged);
+        // The coins.
+        let extra = [utxo(0, 100), utxo(1, 50), utxo(2, 10)];
+        assert_eq!(
+            ok(&c, &extra, &lock_tx(&extra, 155, credit_script())),
+            changed,
+            "an extra coin"
+        );
+        assert_eq!(
+            ok(&c, &coins[..1], &lock_tx(&coins[..1], 95, credit_script())),
+            changed,
+            "a coin missing"
+        );
+        let bigger = [utxo(0, 100), utxo(1, 60)];
+        assert_eq!(
+            ok(&c, &bigger, &lock_tx(&bigger, 155, credit_script())),
+            changed,
+            "a planned outpoint's value"
+        );
+        let mut is_only = [utxo(0, 100), utxo(1, 50)];
+        is_only[1].is_confirmed = false;
+        is_only[1].is_instantlocked = true;
+        assert_eq!(
+            ok(&c, &is_only, &tx),
+            changed,
+            "an InstantSend-locked coin out of its block"
+        );
+        let twice = [utxo(0, 100), utxo(0, 100)];
+        assert_eq!(ok(&c, &twice, &tx), changed, "an input twice");
+        let low_grant = cap(&[(0, 100), (1, 50)], 149);
+        assert_eq!(ok(&low_grant, &coins, &tx), changed, "past the grant");
+
+        // The outputs.
+        let other_key = ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array([6; 20]));
+        assert_eq!(
+            ok(&c, &coins, &lock_tx(&coins, 145, other_key)),
+            changed,
+            "another key's credit"
+        );
+        assert_eq!(
+            ok(&c, &coins, &lock_tx(&coins, 139, credit_script())),
+            changed,
+            "a fee past the bound"
+        );
+        assert_eq!(
+            ok(&c, &coins, &lock_tx(&coins, 151, credit_script())),
+            changed,
+            "a credit past the coins"
+        );
+        let mut change = tx.clone();
+        change.output.push(dashcore::TxOut {
+            value: 1,
+            script_pubkey: credit_script(),
+        });
+        assert_eq!(ok(&c, &coins, &change), changed, "a second output");
+        let mut burn = tx.clone();
+        burn.output[0].value = 144;
+        assert_eq!(
+            ok(&c, &coins, &burn),
+            changed,
+            "a burn other than the credit"
+        );
+        let mut plain = tx.clone();
+        plain.special_transaction_payload = None;
+        assert_eq!(ok(&c, &coins, &plain), changed, "no asset lock payload");
+
+        // The library's drain minimum, judged on the credit.
+        let mut floor = plan(&[(0, 100), (1, 50)], 150);
+        floor.minimum_lock_duffs = 146;
+        let c = DrainCap::new(floor);
+        assert_eq!(
+            ok(&c, &coins, &tx),
+            Err(DrainRefusal::BelowMinimum { min: 146 })
+        );
+        assert_eq!(
+            ok(&c, &coins, &lock_tx(&coins, 146, credit_script())),
+            Ok(())
+        );
+    }
+
+    /// A drain's signer signs each planned coin once (a retry of the same
+    /// sighash again), no path outside the plan, no more coins at a path
+    /// than planned, and nothing past the grant.
+    #[test]
+    fn a_drain_cap_admits_the_planned_coins_within_the_grant_only() {
+        // A grant well above the coins: only the plan bounds these.
+        let c = cap(&[(0, 100), (1, 50), (1, 30)], 1_000);
+        assert!(c.admits(&path(0), [1; 32]));
+        assert!(c.admits(&path(0), [1; 32]), "an identical retry");
+        assert!(c.admits(&path(1), [2; 32]));
+        assert!(c.admits(&path(1), [3; 32]));
+        assert_eq!(refused(&c), None);
+        assert!(
+            !c.admits(&path(1), [4; 32]),
+            "a third coin at a two-coin path"
+        );
+        assert_eq!(refused(&c), Some(DrainRefusal::CoinsChanged));
+        assert!(
+            !cap(&[(0, 100)], 100).admits(&path(7), [1; 32]),
+            "an unplanned path"
+        );
+
+        // The grant: the next coin's value would pass it.
+        let c = cap(&[(0, 100), (1, 50)], 120);
+        assert!(c.admits(&path(0), [1; 32]));
+        assert!(!c.admits(&path(1), [2; 32]));
+        assert_eq!(refused(&c), Some(DrainRefusal::CoinsChanged));
     }
 }

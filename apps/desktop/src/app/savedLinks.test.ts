@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { StashedLinkKindName } from "../api/generated/StashedLinkKindName";
 import { appError } from "../onboarding/testWorld";
-import { offerReady, offerTarget, openedAgo, removeErrorText, savedLinkRows, SavedLinksText } from "./savedLinks";
+import { liveLinkCount, noteLiveLink, offerReady, offerTarget, openedAgo, removeErrorText, savedLinkRows, SavedLinksText } from "./savedLinks";
 
 describe("saved links", () => {
   it("DP5-01 says when a link was opened", () => {
@@ -35,6 +35,17 @@ describe("saved links", () => {
     expect(rows[0].when).toBe("Opened 1 minute ago");
   });
 
+  it("DP5-01 lists two links saved in distinct seconds newest first, whatever order the engine gives", () => {
+    const older = { id: "a".padStart(32, "0"), kind: "payment" as const, stashedAt: 1_800_000_000, expiresAt: 1_800_600_000 };
+    const newer = { id: "b".padStart(32, "0"), kind: "invitation" as const, stashedAt: 1_800_000_060, expiresAt: 1_802_600_000 };
+    const now = 1_800_000_120;
+    for (const given of [[older, newer], [newer, older]]) {
+      const rows = savedLinkRows(given, now);
+      expect(rows.map((r) => r.id)).toEqual([newer.id, older.id]);
+      expect(rows.map((r) => r.when)).toEqual(["Opened 1 minute ago", "Opened 2 minutes ago"]);
+    }
+  });
+
   it("DP5-01 offers once a wallet shows, unlocked, with nothing in front", () => {
     const ok = { pending: true, hasWallet: true, locked: false, covered: false };
     expect(offerReady(ok)).toBe(true);
@@ -57,5 +68,13 @@ describe("saved links", () => {
   it("DP5-03 D12: a Remove refused for a claim's hold says so; other refusals as they are", () => {
     expect(removeErrorText(appError("invalid_argument", null, "the invitation is in use by a claim in progress"))).toBe(SavedLinksText.held);
     expect(removeErrorText(appError("platform.unavailable", null, "unavailable"))).toBe("unavailable");
+  });
+});
+
+describe("live links", () => {
+  it("count the links applied, so an offer that began earlier can tell it was overtaken", () => {
+    const before = liveLinkCount();
+    expect(noteLiveLink()).toBe(before + 1);
+    expect(liveLinkCount()).toBe(before + 1);
   });
 });

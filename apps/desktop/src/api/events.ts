@@ -9,11 +9,17 @@ import type { AppEvent } from "./generated/commands";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { PlatformChangeName } from "./generated/PlatformChangeName";
+import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
 import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
+import { announceReceived } from "../payments/received";
+import { onMoveSettled } from "../platform/move";
+import { onRecoverySettled } from "../recovery/model";
+import { onShieldedSettled } from "../shielded/flow";
 import { keys } from "./queries";
+import { announceable, feedSync } from "./syncDisplay";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
  * engine's identity read was not live, so it proves nothing), and no Platform signal follows when
@@ -40,7 +46,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // The Platform loops start and stop with SPV, also without one (DP6-03 D6).
     case "spvStateChanged":
     case "sync":
-      return [keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll];
+      return [keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
       // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).
@@ -89,13 +95,17 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
           return [keys.dashpayAll];
       }
     case "coinJoin":
-      return [keys.coinjoinStatus(event.walletId)];
+      return [keys.coinjoinStatus(event.walletId), keys.coinsAll(event.walletId)];
     // The store, the sync state or the list's voting keys changed (≤ 1 Hz, mg-engine §5). A new
     // block sends none, so the tip-derived clock and statuses go stale until the next (MG-02 D96).
     case "governance":
       return [keys.governanceAll];
+    // A fetch, a setting, a price turning stale or expiring, mainnet opened or closed (MP-01).
+    case "rates":
+      return [keys.ratesAll];
     // No screen reads these yet (the notice and masternode views come with their tasks).
     // `masternodes` also follows a shared-masternode session change (mn-engine §6, MG-04b).
+    // `newTransactions` is announced above (payments/received.ts), not read as a query.
     case "newTransactions":
     case "notice":
     case "masternodes":
@@ -128,6 +138,18 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   };
   const unsubscribe = await backend.onEvent((event) => {
     if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
+    // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
+    // below. Not the query's, which only follows once its refetch is back.
+    if (event.kind === "sync") feedSync(backend, event.status);
+    // A payment that arrives while the app is open is announced (toast, bell, Receive); a batch the
+    // sync found on catching up is not news. The engine's `catchUp` is "SPV is not idle" at that
+    // moment, which a payment found in a new block can be too: so it is news when the engine's own
+    // latest reading says caught up, or a caught-up wallet is a few blocks short of it for a minute
+    // at most (`announceable`). A wallet that has not been caught up yet is catching up. The smoothed
+    // display never decides this.
+    if (event.kind === "newTransactions" && (!event.catchUp || announceable(backend))) {
+      void announceReceived(backend, event.walletId, event.txids);
+    }
     if (event.kind === "historyChanged" || (event.kind === "platform" && rereadsHistory(event.change.domain))) {
       // Refetch only the first page of each list: every history_page call re-reads the whole
       // history in the engine, and during sync events arrive up to 4 times a second (contacts
@@ -159,6 +181,9 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
       for (const queryKey of stale) {
         if (queryKey === keys.dashpayStatusAll)
           void client.invalidateQueries({ queryKey, predicate: (q) => withoutIdentity((q.state.data as DashPayStatus | undefined)?.kind) });
+        else if (queryKey === keys.unfinishedTransfersAll)
+          // Only a list that was partial is read again: sync events arrive up to 4 times a second.
+          void client.invalidateQueries({ queryKey, predicate: (q) => (q.state.data as UnfinishedTransfers | null | undefined)?.complete === false });
         else if (queryKey !== keys.lockReconcile) void client.invalidateQueries({ queryKey });
         else {
           const now = Date.now();
@@ -179,10 +204,18 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
   const stopTopUps = onTopUpSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   // DP6-02: a withdrawal that ended moved the balance and the recent withdrawals.
   const stopWithdrawals = onWithdrawSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  // 0.1: a Platform-address move or a shielded call that ended moved the pools and Activity's rows.
+  const stopMoves = onMoveSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  const stopShielded = onShieldedSettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
+  // A finished transfer leaves the unfinished list and joins the Shielded balance.
+  const stopRecovery = onRecoverySettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   return () => {
     stopReconcile();
     stopTopUps();
     stopWithdrawals();
+    stopMoves();
+    stopShielded();
+    stopRecovery();
     unsubscribe();
   };
 }

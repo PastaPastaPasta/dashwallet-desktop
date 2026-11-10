@@ -25,6 +25,7 @@ const SAMPLES: Samples = {
   duffs: { code: "send.amount_exceeds_balance", data: { kind: "duffs", needed: 5_000_000_000, available: 3_019_698_287 } },
   credits: { code: "platform.insufficient_credits", data: { kind: "credits", needed: "120000000", available: "4000000" } },
   creditRange: { code: "credits.withdrawal_out_of_range", data: { kind: "creditRange", min: "1190000", max: "50000000000000" } },
+  creditMinimum: { code: "credits.send_out_of_range", data: { kind: "creditMinimum", min: "500000" } },
   identityCredits: {
     code: "insufficient_credits",
     data: { kind: "identityCredits", identity: "4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF", needed: "120000000", available: "4000000" },
@@ -73,6 +74,8 @@ const SAMPLES: Samples = {
   wallet: { code: "backup.already_exists", data: { kind: "wallet", walletId: W } },
   keysNetwork: { code: "compat.network_mismatch", data: { kind: "keysNetwork", mainnet: true } },
   feeRate: { code: "psbt.fee_rate_too_high", data: { kind: "feeRate", duffsPerKb: 1_000_000 } },
+  protocol: { code: "shielded.not_active", data: { kind: "protocol", protocolVersion: 11, activationVersion: 12 } },
+  poolNotes: { code: "shielded.pool_too_small", data: { kind: "poolNotes", notes: 12, required: 250 } },
   stuckFunding: {
     code: "stuck_funding",
     data: { kind: "stuckFunding", refusal: { kind: "spendUnsettled", txid: TXID }, retryLater: true },

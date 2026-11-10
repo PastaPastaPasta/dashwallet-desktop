@@ -139,37 +139,46 @@ def _prepared_txid(lines: list[str], proc: subprocess.Popen, timeout: float = 30
 def test_abandon_never_relayed_releases_inputs_and_resend_reaches_dashd(main, regtest_node, funded_miner):
     """QT-091 / IOS-034.
 
-    Abandon: the wallet's 2 DASH coin is first spent by a transaction A that dashd takes into
-    its mempool (submitted by the test from a `--no-broadcast` build). A second payment B from
-    the same coin is then broadcast by the engine: dashd refuses it (mempool conflict) and,
-    with no reject message on the p2p network, dash-spv reports no verdict. B is in the wallet
-    as unconfirmed and has never been relayed. Abandoning it marks it Abandoned and the coin is
-    spendable again once the abandon's rescan passes the coin's block. Mining then confirms A.
+    Abandon: a payment B from the wallet's 2 DASH coin is broadcast by the engine, and dashd
+    refuses it: the test lowered B's fee in dashd's eyes beforehand (`prioritisetransaction`,
+    which dashd's relay-fee check honours), so B is "min relay fee not met" on every relay.
+    With no reject message on the p2p network, dash-spv reports no verdict. B is in the wallet as unconfirmed and has never been relayed.
+    Abandoning it marks it Abandoned and the coin is spendable again once the abandon's rescan
+    passes the coin's block. B's txid is known before its broadcast because the build is
+    deterministic (same coin, recipients, fee and change address; lock time 0; RFC 6979).
 
-    Resend: a payment C left unmined (no verdict) is resent; dashd receives another `tx`
-    message from the SPV peer, and C confirms once mined. platform-wallet also re-sends
-    unconfirmed own transactions when a session loads and dash-spv sends a txid once per
-    session, so the dashd log cannot tell the resend's message from that re-dispatch: the
-    test proves the call succeeds with a connected peer and the transaction reaches dashd."""
+    No conflicting transaction is involved: dash-spv fetches dashd's mempool at each session,
+    so the wallet would see a conflicting spend and refuse B (test_mempool_spend_makes_the_coin_unavailable).
+
+    Resend: a payment C from the released coin, left unmined (no verdict), is resent; dashd
+    receives another `tx` message from the SPV peer, and C confirms once mined. The resend runs
+    in a process of its own, whose dash-spv has not sent C yet (it sends a txid once per
+    session), and the SQLite backend stages no unconfirmed sends for platform-wallet's load
+    replay, so that message is the resend's."""
     height = tip(regtest_node)
     main.sync(height)
     coins = main.utxos()
     coin = next(o for o, amount, _ in coins if amount == 2 * COIN)
     recipient = funded_miner.getnewaddress()
+    pay_b = ("--to", f"{recipient}:{COIN // 4}", "--coin", coin, "--change", main.address())
 
-    out = main.run(
-        "send", main.wallet, "--sync-height", str(height), "--to", f"{recipient}:{COIN // 2}",
-        "--coin", coin, "--no-broadcast",
-    )
-    raw_a = main.line("raw", out).split()[1]
-    txid_a = regtest_node.rpc.sendrawtransaction(raw_a)
+    dry = [
+        fields(main.line("prepared", main.run(
+            "send", main.wallet, "--sync-height", str(height), *pay_b, "--no-broadcast",
+        )))["txid"]
+        for _ in range(2)
+    ]
+    assert dry[0] == dry[1], dry
+    assert regtest_node.rpc.prioritisetransaction(dry[0], -10 * COIN)
 
-    proc, lines = _send_in_background(main, height, "--to", f"{recipient}:{COIN // 4}", "--coin", coin)
+    proc, lines = _send_in_background(main, height, *pay_b)
     txid_b = _prepared_txid(lines, proc)
-    assert txid_b != txid_a
+    assert txid_b == dry[0]
     proc.wait(timeout=180)  # send.broadcast_unknown after dash-spv's 60 s acceptance timeout
     assert proc.returncode != 0, lines
     assert txid_b not in regtest_node.rpc.getrawmempool()
+    # dashd's own reason for B (validation.cpp AcceptToMemoryPool under -debug=mempool).
+    assert f"{txid_b} min relay fee not met" in regtest_node.logs()
 
     rows = {r[0]: r for r in history(main)}
     assert rows[txid_b][4] == "Unconfirmed", rows[txid_b]
@@ -187,15 +196,16 @@ def test_abandon_never_relayed_releases_inputs_and_resend_reaches_dashd(main, re
     # A restart keeps it abandoned.
     assert {r[0]: r for r in history(main)}[txid_b][4] == "Abandoned"
 
-    # dashd mines A: the coin is spent by A, and A's change comes back.
+    # A block later B is still out of dashd and abandoned, and the coin still unspent.
     regtest_node.mine(1)
     height = tip(regtest_node)
     main.sync(height)
-    assert coin not in [o for o, _, _ in main.utxos()]
-    assert txid_a in {r[0] for r in history(main)}
+    assert txid_b not in regtest_node.rpc.getrawmempool()
+    assert {r[0]: r for r in history(main)}[txid_b][4] == "Abandoned"
+    assert coin in [o for o, _, _ in main.utxos()]
 
-    # Resend of an unmined payment C.
-    proc, lines = _send_in_background(main, height, "--to", f"{recipient}:{COIN // 10}")
+    # Resend of an unmined payment C, from the coin the abandon released.
+    proc, lines = _send_in_background(main, height, "--to", f"{recipient}:{COIN // 10}", "--coin", coin)
     txid_c = _prepared_txid(lines, proc)
     wait_until(lambda: txid_c in regtest_node.rpc.getrawmempool(), timeout=90, what="C in dashd's mempool")
     proc.wait(timeout=180)
@@ -211,6 +221,49 @@ def test_abandon_never_relayed_releases_inputs_and_resend_reaches_dashd(main, re
     assert rows[txid_c][4] in ("Confirming", "Confirmed"), rows[txid_c]
     assert "refused Confirmed" in main.run("resend", main.wallet, txid_c, "--sync-height", str(height))
     assert "refused Confirmed" in main.run("abandon", main.wallet, txid_c, "--sync-height", str(height))
+
+
+def test_mempool_spend_makes_the_coin_unavailable(main, regtest_node, funded_miner):
+    """dash-spv fetches dashd's mempool when it connects, so the wallet sees a spend A of its
+    coin that dashd holds unconfirmed; a payment B choosing that coin is then refused, as Core's
+    wallet counts a mempool spend as spent (v24.0.0-rc.2 wallet/wallet.cpp:740-754, IsSpent)."""
+    funded_miner.sendtoaddress(main.address(), Decimal("1.5"))
+    regtest_node.mine(1)
+    height = tip(regtest_node)
+    main.sync(height)
+    coin = next(o for o, amount, _ in main.utxos() if amount == duffs(Decimal("1.5")))
+    recipient = funded_miner.getnewaddress()
+    out = main.run(
+        "send", main.wallet, "--sync-height", str(height), "--to", f"{recipient}:{COIN // 2}",
+        "--coin", coin, "--no-broadcast",
+    )
+    txid_a = regtest_node.rpc.sendrawtransaction(main.line("raw", out).split()[1])
+
+    # A session that stays connected receives A from dashd's mempool: dash-spv asks for it
+    # once filters are synced, and dashd answers on its inventory trickle.
+    def seen() -> bool:
+        out = main.run(
+            "watch-events", "--sync-height", str(height), "--linger-secs", "20", "--timeout-secs", "60",
+        )
+        return any(txid_a in line for line in out if line.startswith("newtx ")) or txid_a in {
+            r[0] for r in history(main)
+        }
+
+    wait_until(seen, timeout=180, what="A in the wallet")
+    assert {r[0]: r for r in history(main)}[txid_a][4] == "Unconfirmed"
+
+    proc = subprocess.run(
+        [*main.base, "send", main.wallet, "--sync-height", str(height),
+         "--to", f"{recipient}:{COIN // 4}", "--coin", coin, "--no-broadcast"],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert proc.returncode != 0, proc.stdout
+    assert f"outpoint {coin} is unavailable" in proc.stderr, proc.stderr[-2000:]
+
+    regtest_node.mine(1)
+    height = tip(regtest_node)
+    main.sync(height)
+    assert coin not in [o for o, _, _ in main.utxos()]
 
 
 def test_watch_only_wallet_sees_funds_and_cannot_sign(root, main, regtest_node, funded_miner):

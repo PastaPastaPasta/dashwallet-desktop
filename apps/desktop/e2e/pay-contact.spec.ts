@@ -38,6 +38,73 @@ async function send(page: Page) {
   await page.getByTestId("pay-confirm-send").click();
 }
 
+test("PAY-MIX Available and the over-balance refusal follow the coin source here too", async ({ page }) => {
+  const errors = await openPay(page);
+  // Unmixed 0.5 and one fully mixed 0.100001 coin (re-smoke 2 §3b): a contact is paid from the former.
+  await world(page, (w) => {
+    const wallet = w.wallets[0];
+    const c = wallet.coins[0];
+    const coin = (vout: number, amount: number, extra: object) => ({ ...c, outpoint: { ...c.outpoint, vout }, amount, spendable: true, confirmations: 10, ...extra });
+    wallet.coins = [coin(1, 50_000_000, { coinjoinDenominated: false, coinjoinRounds: null }), coin(2, 10_000_100, { coinjoinDenominated: true, coinjoinRounds: 4 })];
+    w.coinjoin.mixers[wallet.summary.walletId] = {
+      state: "idle",
+      stopReason: null,
+      status: { kind: "idle" },
+      progress: { overallPercent: 10, denominatedPercent: 10, partiallyMixedPercent: 10, mixedPercent: 10, averageRounds: 4 },
+      sessions: [],
+      queueSize: 0,
+    };
+  });
+  await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
+  await page.getByTestId("pay-frequent-chip").first().click();
+  await expect(page.getByText("Available: 0.50000000 tDASH")).toBeVisible();
+  await page.getByTestId("pay-amount").fill("0.8");
+  const reason =
+    "The amount exceeds the 0.50000000 tDASH a normal payment can spend. To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).";
+  await expect(page.locator(".field-error")).toHaveText(reason);
+  await expect(page.getByTestId("pay-problem")).toHaveText(reason);
+  await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  await page.getByTestId("pay-advanced").locator("summary").click();
+  await page.getByTestId("coin-choice-mixed").check();
+  await page.getByTestId("pay-amount").fill("0.05");
+  await expect(page.getByText("Available (fully mixed): 0.10000100 tDASH")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("PAY-MIX r1 a refusal under Selected coins gives no normal-payment or mixing advice", async ({ page }) => {
+  await openPay(page);
+  // Normal coins 0.1 and 0.4, a fully mixed 0.100001, a mixer with some of each.
+  await world(page, (w) => {
+    const wallet = w.wallets[0];
+    const c = wallet.coins[0];
+    const coin = (vout: number, amount: number, extra: object) => ({ ...c, outpoint: { ...c.outpoint, vout }, amount, spendable: true, confirmations: 10, ...extra });
+    wallet.coins = [
+      coin(1, 10_000_000, { coinjoinDenominated: false, coinjoinRounds: null }),
+      coin(2, 40_000_000, { coinjoinDenominated: false, coinjoinRounds: null }),
+      coin(3, 10_000_100, { coinjoinDenominated: true, coinjoinRounds: 4 }),
+    ];
+    w.coinjoin.mixers[wallet.summary.walletId] = {
+      state: "idle",
+      stopReason: null,
+      status: { kind: "idle" },
+      progress: { overallPercent: 40, denominatedPercent: 100, partiallyMixedPercent: 60, mixedPercent: 10, averageRounds: 1.5 },
+      sessions: [],
+      queueSize: 0,
+    };
+  });
+  await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
+  await page.getByTestId("pay-frequent-chip").first().click();
+  await page.getByTestId("pay-amount").fill("0.2");
+  await page.getByTestId("pay-advanced").locator("summary").click();
+  await expect(page.getByTestId("pay-continue")).toBeEnabled();
+  await page.getByTestId("coin-choice-selected").check();
+  await page.getByRole("checkbox", { name: /^Use 0\.10 / }).check();
+  const plain = "The amount exceeds your balance.";
+  await expect(page.locator(".field-error")).toHaveText(plain);
+  await expect(page.getByTestId("pay-problem")).toHaveText(plain);
+});
+
 test("IOS-050 pays a frequent contact; the confirm sheet names them and Activity attributes it", async ({ page }) => {
   const errors = await openPay(page);
   await expect(page.getByTestId("pay-frequent-chip").locator(".pay-frequent-name")).toHaveText(["Bob Builder", "dave"]);
@@ -294,3 +361,94 @@ for (const theme of THEMES) {
     });
   }
 }
+
+test("ROW73 coins that change while the confirm sheet is up re-check nothing behind it, and Cancel checks again", async ({ page }) => {
+  await openPay(page);
+  await page.getByTestId("pay-frequent-chip").first().click();
+  const form = page.getByTestId("pay-contact-form");
+  const available = page.getByText(/^Available: /);
+  await expect(available).toBeVisible();
+  const before = await available.textContent();
+  await fillAmount(page, "0.01");
+  // Every coin goes (another device spent them), and the engine says so.
+  await page.evaluate(`(() => {
+    const f = window.__dwFixture;
+    const w = f.world.wallets[0];
+    for (const u of w.coins) u.spendable = false;
+    f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId: w.summary.walletId, balances: w.summary.balances });
+  })()`);
+  const calls = () => page.evaluate(() => window.__dwFixture!.calls.length);
+  let last = -1;
+  await expect
+    .poll(
+      async () => {
+        const n = await calls();
+        const quiet = n === last;
+        last = n;
+        return quiet;
+      },
+      { intervals: [750], timeout: 15_000 },
+    )
+    .toBe(true);
+  await expect(form.locator(".field-error")).toHaveCount(0);
+  await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+  await expect(available).toHaveText(before!);
+  await page.getByTestId("pay-confirm-cancel").click();
+  await expect(page.getByTestId("pay-problem")).toContainText("The amount exceeds");
+  await expect(page.getByTestId("pay-continue")).toBeDisabled();
+});
+
+test("ROW73 a payment of all the normal funds shows no refusal behind its result, and Close starts a new payment", async ({ page }) => {
+  await openPay(page);
+  // One unmixed coin and one still being mixed; the fixture's mixing figures are shares of the confirmed balance.
+  await world(page, (w) => {
+    const wallet = w.wallets[0];
+    const c = wallet.coins[0];
+    const coin = (vout: number, amount: number, extra: object) => ({ ...c, outpoint: { ...c.outpoint, vout }, amount, spendable: true, confirmations: 10, ...extra });
+    wallet.coins = [coin(1, 50_000_000, { coinjoinDenominated: false, coinjoinRounds: null }), coin(2, 100_001_000, { coinjoinDenominated: true, coinjoinRounds: 1 })];
+    const b = wallet.summary.balances!;
+    wallet.summary = { ...wallet.summary, balances: { ...b, confirmed: 150_001_000, total: b.total - b.confirmed + 150_001_000 } };
+    w.coinjoin.mixers[wallet.summary.walletId] = {
+      state: "idle",
+      stopReason: null,
+      status: { kind: "idle" },
+      progress: { overallPercent: 20, denominatedPercent: 100, partiallyMixedPercent: 100, mixedPercent: 0, averageRounds: 1 },
+      sessions: [],
+      queueSize: 0,
+    };
+  });
+  await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
+  await page.getByTestId("pay-frequent-chip").first().click();
+  await page.getByTestId("pay-subtract-fee").check();
+  await page.getByTestId("pay-amount").fill("0.5");
+  await page.getByTestId("pay-fee-line").waitFor();
+  await page.getByTestId("pay-continue").and(page.locator(":enabled")).click();
+  await send(page);
+  await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+  // The payment's events reach the form behind the result: wait until the app is quiet again.
+  const calls = () => page.evaluate(() => [...window.__dwFixture!.calls]);
+  const at = (await calls()).lastIndexOf("draft_broadcast");
+  await expect.poll(async () => (await calls()).length).toBeGreaterThan(at + 1);
+  let last = -1;
+  await expect
+    .poll(
+      async () => {
+        const n = (await calls()).length;
+        const quiet = n === last;
+        last = n;
+        return quiet;
+      },
+      { intervals: [750], timeout: 15_000 },
+    )
+    .toBe(true);
+  const form = page.getByTestId("pay-contact-form");
+  await expect(form.locator(".field-error")).toHaveCount(0);
+  await expect(page.getByTestId("pay-problem")).toHaveCount(0);
+
+  await page.getByTestId("pay-result-close").click();
+  await expect(page.getByTestId("pay-result")).toHaveCount(0);
+  await expect(page.getByTestId("pay-amount")).toHaveValue("");
+  await expect(form.locator(".field-error")).toHaveCount(0);
+  await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  expect((await calls()).filter((c) => c === "draft_prepare" || c === "draft_broadcast")).toEqual(["draft_prepare", "draft_broadcast"]);
+});

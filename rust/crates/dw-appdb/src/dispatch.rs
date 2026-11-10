@@ -59,6 +59,19 @@
 //!   removal deletes it, so it outlives the wallet's own store (whose
 //!   `Consumed` mark a removal erases) as long as the `signed_lock` row of
 //!   the top-up's `Sent` step does.
+//! - Schema 9 adds `shielded_redrive` (0.1 E1, E0-04 Q15 ruling (c),
+//!   DEC-1032): the audit of shielded spends whose broadcast the library
+//!   could not confirm, one row per spend (its activity row's id) with
+//!   Platform's hash of the signed transition the library persisted to
+//!   re-send. No sweep and no removal deletes it.
+//! - Schema 10 adds `shielded_unrecorded` and its nullifiers (0.1 E1
+//!   R3-1, DEC-1057): a shielded spend whose broadcast the library could
+//!   not confirm and whose record it failed to store, so nothing of the
+//!   library's keeps it past the session. The engine's marker: the wallet,
+//!   the spend's activity id, its anchor and the nullifiers it spent, each
+//!   flagged once a proved scan (or a proved result) shows it spent. The
+//!   marker goes when all are, or with the wallet's removal; nothing else
+//!   deletes it.
 //! - `meta` holds the schema version, the creation time and the per-wallet
 //!   `seeded:<wallet hex>` marks.
 //!
@@ -90,7 +103,7 @@ pub const DISPATCH_DB_FILE: &str = "dispatch.sqlite";
 /// self-spend provenance), 5 (no `durable_record` flag) and 6 (no
 /// `funding_release`); every migration only adds, except that 6 → 7 clears
 /// the flags schema 6 set.
-pub const DISPATCH_SCHEMA: u32 = 8;
+pub const DISPATCH_SCHEMA: u32 = 10;
 
 const SCHEMA_BASE: &str = "
 CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
@@ -287,6 +300,49 @@ CREATE TABLE top_up_settled (
 /// Version 7 → 8: `top_up_settled` is new and empty.
 const MIGRATE_V7: &str = "UPDATE meta SET v = 8 WHERE k = 'schema';";
 
+/// Version 9 (0.1 E1, DEC-1032): each shielded spend the library holds to
+/// re-send, by its activity row's id, with Platform's hash of the signed
+/// transition (SHA-256 of its bytes); the first write's stands. `IF NOT
+/// EXISTS`: a journal taken back to an older schema version by hand (as
+/// the migration tests do) may still hold it.
+const SHIELDED_REDRIVE: &str = "
+CREATE TABLE IF NOT EXISTS shielded_redrive (
+  wallet     BLOB NOT NULL CHECK (length(wallet) = 32),
+  activity   BLOB NOT NULL CHECK (length(activity) = 32),
+  transition BLOB NOT NULL CHECK (length(transition) = 32),
+  at         INTEGER NOT NULL,
+  PRIMARY KEY (wallet, activity)
+) WITHOUT ROWID;
+";
+
+/// Version 8 → 9: `shielded_redrive` is new and empty.
+const MIGRATE_V8: &str = "UPDATE meta SET v = 9 WHERE k = 'schema';";
+
+/// Version 10 (0.1 E1 R3-1, DEC-1057): the engine's marker of each
+/// shielded spend of unknown result the library kept no record of, by its
+/// activity row's id, with the anchor it was built on and one row per
+/// nullifier it spent (`spent` once a proved scan or result shows it
+/// spent). `IF NOT EXISTS`, as `shielded_redrive`.
+const SHIELDED_UNRECORDED: &str = "
+CREATE TABLE IF NOT EXISTS shielded_unrecorded (
+  wallet   BLOB NOT NULL CHECK (length(wallet) = 32),
+  activity BLOB NOT NULL CHECK (length(activity) = 32),
+  anchor   BLOB NOT NULL CHECK (length(anchor) = 32),
+  at       INTEGER NOT NULL,
+  PRIMARY KEY (wallet, activity)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS shielded_unrecorded_nullifier (
+  wallet    BLOB NOT NULL CHECK (length(wallet) = 32),
+  activity  BLOB NOT NULL CHECK (length(activity) = 32),
+  nullifier BLOB NOT NULL CHECK (length(nullifier) = 32),
+  spent     INTEGER NOT NULL DEFAULT 0 CHECK (spent IN (0, 1)),
+  PRIMARY KEY (wallet, activity, nullifier)
+) WITHOUT ROWID;
+";
+
+/// Version 9 → 10: the markers are new and empty.
+const MIGRATE_V9: &str = "UPDATE meta SET v = 10 WHERE k = 'schema';";
+
 /// How a top-up's lock was settled ([`DispatchJournal::settle_top_up`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopUpSettled {
@@ -329,6 +385,20 @@ impl DiskState {
 }
 
 /// One `dispatch` row.
+/// A shielded spend's marker (schema 10, DEC-1057): its result is not
+/// known and the library kept no record of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecordedSpend {
+    /// The spend's activity row's id.
+    pub activity: [u8; 32],
+    /// The anchor it was built on.
+    pub anchor: [u8; 32],
+    /// Unix seconds of the marker's write.
+    pub at: u64,
+    /// Each nullifier it spent, by nullifier, `true` once seen spent.
+    pub nullifiers: Vec<([u8; 32], bool)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchRow {
     pub wallet: [u8; 32],
@@ -911,7 +981,7 @@ impl DispatchJournal {
                 .optional()?;
             match schema {
                 Some(v) if v == i64::from(DISPATCH_SCHEMA) => {}
-                Some(v @ 1..=7) => {
+                Some(v @ 1..=9) => {
                     if v == 1 {
                         tx.execute_batch(STEP_LOG)?;
                         tx.execute_batch(MIGRATE_V1)?;
@@ -937,8 +1007,16 @@ impl DispatchJournal {
                         tx.execute_batch(RELEASE)?;
                         tx.execute_batch(MIGRATE_V6)?;
                     }
-                    tx.execute_batch(TOP_UP_SETTLED)?;
-                    tx.execute_batch(MIGRATE_V7)?;
+                    if v <= 7 {
+                        tx.execute_batch(TOP_UP_SETTLED)?;
+                        tx.execute_batch(MIGRATE_V7)?;
+                    }
+                    if v <= 8 {
+                        tx.execute_batch(SHIELDED_REDRIVE)?;
+                        tx.execute_batch(MIGRATE_V8)?;
+                    }
+                    tx.execute_batch(SHIELDED_UNRECORDED)?;
+                    tx.execute_batch(MIGRATE_V9)?;
                 }
                 Some(v) if v > i64::from(DISPATCH_SCHEMA) => {
                     return Ok(JournalOpen::NewerSchema(
@@ -961,6 +1039,8 @@ impl DispatchJournal {
             tx.execute_batch(TOMBSTONE)?;
             tx.execute_batch(RELEASE)?;
             tx.execute_batch(TOP_UP_SETTLED)?;
+            tx.execute_batch(SHIELDED_REDRIVE)?;
+            tx.execute_batch(SHIELDED_UNRECORDED)?;
             tx.execute(
                 "INSERT INTO meta (k, v) VALUES ('schema', ?1), ('created_at', ?2)",
                 params![i64::from(DISPATCH_SCHEMA), now as i64],
@@ -1279,6 +1359,173 @@ impl DispatchJournal {
         Ok(rows)
     }
 
+    /// Records that the library holds the shielded spend `activity` of
+    /// `wallet` to re-send as the transition whose hash is `transition`
+    /// (schema 9). The first record stands; `true` when this one was new.
+    pub fn record_shielded_redrive(
+        &self,
+        wallet: &[u8; 32],
+        activity: &[u8; 32],
+        transition: &[u8; 32],
+        now: u64,
+    ) -> Result<bool> {
+        let added = self.conn().execute(
+            "INSERT OR IGNORE INTO shielded_redrive (wallet, activity, transition, at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![&wallet[..], &activity[..], &transition[..], now as i64],
+        )?;
+        Ok(added == 1)
+    }
+
+    /// The shielded spends of `wallet` on record (schema 9), as
+    /// `(activity, transition)`, by activity.
+    pub fn shielded_redrives(&self, wallet: &[u8; 32]) -> Result<Vec<([u8; 32], [u8; 32])>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT activity, transition FROM shielded_redrive WHERE wallet = ?1 ORDER BY activity",
+        )?;
+        let rows = stmt
+            .query_map(params![&wallet[..]], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?
+            .map(|row| {
+                let (activity, transition) = row?;
+                Ok((
+                    fixed(activity, "shielded_redrive.activity")?,
+                    fixed(transition, "shielded_redrive.transition")?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Marks the shielded spend `activity` of `wallet`, whose result is
+    /// not known and which the library kept no record of, built on
+    /// `anchor` and spending `nullifiers` (schema 10, DEC-1057), in one
+    /// transaction. The first marker stands; `true` when this one was new.
+    /// A marker spends at least one nullifier.
+    pub fn record_unrecorded_spend(
+        &self,
+        wallet: &[u8; 32],
+        activity: &[u8; 32],
+        anchor: &[u8; 32],
+        nullifiers: &[[u8; 32]],
+        now: u64,
+    ) -> Result<bool> {
+        if nullifiers.is_empty() {
+            return Err(AppDbError::Corrupt(
+                "a shielded spend marker spends no nullifier".into(),
+            ));
+        }
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let added = tx.execute(
+            "INSERT OR IGNORE INTO shielded_unrecorded (wallet, activity, anchor, at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![&wallet[..], &activity[..], &anchor[..], now as i64],
+        )? == 1;
+        if added {
+            for nullifier in nullifiers {
+                tx.execute(
+                    "INSERT OR IGNORE INTO shielded_unrecorded_nullifier \
+                     (wallet, activity, nullifier) VALUES (?1, ?2, ?3)",
+                    params![&wallet[..], &activity[..], &nullifier[..]],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(added)
+    }
+
+    /// The marked shielded spends of `wallet` (schema 10), by activity.
+    pub fn unrecorded_spends(&self, wallet: &[u8; 32]) -> Result<Vec<UnrecordedSpend>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT activity, anchor, at FROM shielded_unrecorded WHERE wallet = ?1 \
+             ORDER BY activity",
+        )?;
+        let markers = stmt
+            .query_map(params![&wallet[..]], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut nullifiers = conn.prepare(
+            "SELECT nullifier, spent FROM shielded_unrecorded_nullifier \
+             WHERE wallet = ?1 AND activity = ?2 ORDER BY nullifier",
+        )?;
+        markers
+            .into_iter()
+            .map(|(activity, anchor, at)| {
+                let rows = nullifiers
+                    .query_map(params![&wallet[..], &activity], |r| {
+                        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)? != 0))
+                    })?
+                    .map(|row| {
+                        let (nullifier, spent) = row?;
+                        Ok((
+                            fixed(nullifier, "shielded_unrecorded_nullifier.nullifier")?,
+                            spent,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(UnrecordedSpend {
+                    activity: fixed(activity, "shielded_unrecorded.activity")?,
+                    anchor: fixed(anchor, "shielded_unrecorded.anchor")?,
+                    at: at as u64,
+                    nullifiers: rows,
+                })
+            })
+            .collect()
+    }
+
+    /// Flags `nullifiers` of `wallet` spent in its markers (schema 10),
+    /// from a proved scan or a proved result, then deletes each marker all
+    /// of whose nullifiers are; returns their activity ids. A partial set
+    /// keeps the marker, its flags recorded.
+    pub fn note_spent_nullifiers(
+        &self,
+        wallet: &[u8; 32],
+        nullifiers: &[[u8; 32]],
+    ) -> Result<Vec<[u8; 32]>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut flagged = 0;
+        for nullifier in nullifiers {
+            flagged += tx.execute(
+                "UPDATE shielded_unrecorded_nullifier SET spent = 1 \
+                 WHERE wallet = ?1 AND nullifier = ?2 AND spent = 0",
+                params![&wallet[..], &nullifier[..]],
+            )?;
+        }
+        if flagged == 0 {
+            return Ok(Vec::new());
+        }
+        let cleared = {
+            let mut stmt = tx.prepare(
+                "SELECT activity FROM shielded_unrecorded u WHERE wallet = ?1 AND NOT EXISTS ( \
+                 SELECT 1 FROM shielded_unrecorded_nullifier n \
+                 WHERE n.wallet = u.wallet AND n.activity = u.activity AND n.spent = 0)",
+            )?;
+            stmt.query_map(params![&wallet[..]], |r| r.get::<_, Vec<u8>>(0))?
+                .map(|row| fixed(row?, "shielded_unrecorded.activity"))
+                .collect::<Result<Vec<_>>>()?
+        };
+        for activity in &cleared {
+            for table in ["shielded_unrecorded", "shielded_unrecorded_nullifier"] {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE wallet = ?1 AND activity = ?2"),
+                    params![&wallet[..], &activity[..]],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(cleared)
+    }
+
     /// Appends `artifact`'s resolution (DEC-154). `NotSent` supersedes its
     /// markers so far: the engine refunds and reports it only after this
     /// returned (review P2a r1 F2). `Sent` is written once; a repeated
@@ -1461,6 +1708,14 @@ impl DispatchJournal {
             tx.execute("DELETE FROM meta WHERE k = ?1", params![seeded_key(wallet)])?;
         }
         let erased = compact(&tx, Some(wallet))?;
+        // The wallet's shielded spend markers go with it (DEC-1057): its
+        // notes and keys are deleted, so nothing is left to send them.
+        for table in ["shielded_unrecorded", "shielded_unrecorded_nullifier"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE wallet = ?1"),
+                params![&wallet[..]],
+            )?;
+        }
         tx.commit()?;
         // Best effort: the delete committed, and the caller forgets what it
         // erased, so no checkpoint error may report it as failed.
@@ -2043,7 +2298,10 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 8, "through versions 2, 3, 4, 5, 6 and 7 to 8");
+        assert_eq!(
+            schema, 10,
+            "through versions 2, 3, 4, 5, 6, 7, 8 and 9 to 10"
+        );
         let old: bool = j
             .conn()
             .query_row(
@@ -2123,7 +2381,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 8);
+        assert_eq!(schema, 10);
         assert_mode_b_tables(&j);
         assert_eq!(j.load_calls().unwrap(), CallRows::default());
         // The new tables take writes; a reopen keeps them.
@@ -2173,7 +2431,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 8);
+        assert_eq!(schema, 10);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!((rows.funding.len(), rows.self_spends.len()), (1, 1));
@@ -2244,7 +2502,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 8);
+        assert_eq!(schema, 10);
         let rows = j.load_calls().unwrap();
         assert_eq!(
             (rows.funding.len(), rows.signed_locks.len()),
@@ -2285,7 +2543,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 8);
+        assert_eq!(schema, 10);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!(rows.funding.len(), 1);
@@ -2319,6 +2577,7 @@ mod tests {
                 .execute_batch(
                     "DROP TABLE funding_release;
                      DROP TABLE top_up_settled;
+                     DROP TABLE shielded_redrive;
                      UPDATE meta SET v = 6 WHERE k = 'schema'",
                 )
                 .unwrap();
@@ -2330,7 +2589,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 8);
+        assert_eq!(schema, 10);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert!(
@@ -2408,7 +2667,10 @@ mod tests {
         let step = "topup/0-0/funding";
         let marker = j.insert_funding_step(&W, step, &T, &KEY, 2).unwrap();
         j.conn()
-            .execute_batch("DROP TABLE top_up_settled; UPDATE meta SET v = 7 WHERE k = 'schema';")
+            .execute_batch(
+                "DROP TABLE top_up_settled; DROP TABLE shielded_redrive;
+                 UPDATE meta SET v = 7 WHERE k = 'schema';",
+            )
             .unwrap();
         drop(j);
         let JournalOpen::Ready(j) = DispatchJournal::open(&path, 3).unwrap() else {
@@ -2418,12 +2680,163 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 8);
+        assert_eq!(schema, 10);
         assert_eq!(j.load_calls().unwrap().funding[0].seq, marker);
         assert!(j.top_ups_settled(&W).unwrap().is_empty());
         j.settle_top_up(&W, &[7; 32], TopUpSettled::Applied, 4)
             .unwrap();
         assert_eq!(j.top_ups_settled(&W).unwrap().len(), 1);
+    }
+
+    /// Version 8 → 9 adds `shielded_redrive`, empty, and keeps every row; a
+    /// spend's first record stands, and the erasure of its wallet's rows
+    /// keeps it.
+    #[test]
+    fn a_version_8_journal_gains_the_shielded_redrive_audit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 1).unwrap() else {
+            panic!("newer schema");
+        };
+        j.settle_top_up(&W, &[7; 32], TopUpSettled::Applied, 2)
+            .unwrap();
+        j.conn()
+            .execute_batch("DROP TABLE shielded_redrive; UPDATE meta SET v = 8 WHERE k = 'schema';")
+            .unwrap();
+        drop(j);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 3).unwrap() else {
+            panic!("newer schema");
+        };
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 10);
+        assert_eq!(j.top_ups_settled(&W).unwrap().len(), 1);
+        assert!(j.shielded_redrives(&W).unwrap().is_empty());
+
+        assert!(
+            j.record_shielded_redrive(&W, &[2; 32], &[20; 32], 4)
+                .unwrap()
+        );
+        assert!(
+            j.record_shielded_redrive(&W, &[1; 32], &[10; 32], 4)
+                .unwrap()
+        );
+        assert!(
+            !j.record_shielded_redrive(&W, &[1; 32], &[11; 32], 5)
+                .unwrap(),
+            "the first record stands"
+        );
+        j.erase_wallet(&W, true).unwrap();
+        assert_eq!(
+            j.shielded_redrives(&W).unwrap(),
+            [([1; 32], [10; 32]), ([2; 32], [20; 32])]
+        );
+        assert!(j.shielded_redrives(&[9; 32]).unwrap().is_empty());
+    }
+
+    /// Version 9 → 10 adds the shielded spend markers, empty, and keeps
+    /// every row. A marker clears only once all of its nullifiers are seen
+    /// spent, a partial set keeping it with its flags; the first marker
+    /// stands; one without nullifiers is refused; the wallet's erasure
+    /// deletes its markers and no other wallet's.
+    #[test]
+    fn a_version_9_journal_gains_the_unrecorded_spend_markers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 1).unwrap() else {
+            panic!("newer schema");
+        };
+        j.record_shielded_redrive(&W, &[1; 32], &[10; 32], 2)
+            .unwrap();
+        j.conn()
+            .execute_batch(
+                "DROP TABLE shielded_unrecorded; DROP TABLE shielded_unrecorded_nullifier;
+                 UPDATE meta SET v = 9 WHERE k = 'schema';",
+            )
+            .unwrap();
+        drop(j);
+        let JournalOpen::Ready(j) = DispatchJournal::open(&path, 3).unwrap() else {
+            panic!("newer schema");
+        };
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 10);
+        assert_eq!(j.shielded_redrives(&W).unwrap().len(), 1);
+        assert!(j.unrecorded_spends(&W).unwrap().is_empty());
+        assert_eq!(j.pragmas().unwrap().synchronous, 2, "written FULL");
+
+        let (a, b) = ([5; 32], [6; 32]);
+        assert!(
+            j.record_unrecorded_spend(&W, &a, &[50; 32], &[[1; 32], [2; 32]], 4)
+                .unwrap()
+        );
+        assert!(
+            !j.record_unrecorded_spend(&W, &a, &[51; 32], &[[3; 32]], 5)
+                .unwrap(),
+            "the first marker stands"
+        );
+        assert!(
+            j.record_unrecorded_spend(&W, &b, &[60; 32], &[[3; 32]], 4)
+                .unwrap()
+        );
+        assert!(
+            j.record_unrecorded_spend(&W, &a, &[50; 32], &[], 4)
+                .is_err()
+        );
+        let other = [9; 32];
+        assert!(
+            j.record_unrecorded_spend(&other, &a, &[50; 32], &[[1; 32], [2; 32]], 4)
+                .unwrap()
+        );
+        assert_eq!(
+            j.unrecorded_spends(&W).unwrap()[0],
+            UnrecordedSpend {
+                activity: a,
+                anchor: [50; 32],
+                at: 4,
+                nullifiers: vec![([1; 32], false), ([2; 32], false)],
+            }
+        );
+
+        // A partial set keeps the marker, flagged.
+        assert!(
+            j.note_spent_nullifiers(&W, &[[1; 32], [7; 32]])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            j.unrecorded_spends(&W).unwrap()[0].nullifiers,
+            [([1; 32], true), ([2; 32], false)]
+        );
+        // The rest clears it, across calls; the other wallet's stays.
+        assert_eq!(j.note_spent_nullifiers(&W, &[[2; 32]]).unwrap(), [a]);
+        assert_eq!(
+            j.unrecorded_spends(&W)
+                .unwrap()
+                .iter()
+                .map(|m| m.activity)
+                .collect::<Vec<_>>(),
+            [b]
+        );
+        assert_eq!(j.unrecorded_spends(&other).unwrap().len(), 1);
+        assert!(j.note_spent_nullifiers(&W, &[[2; 32]]).unwrap().is_empty());
+
+        j.erase_wallet(&W, true).unwrap();
+        assert!(j.unrecorded_spends(&W).unwrap().is_empty());
+        assert_eq!(j.unrecorded_spends(&other).unwrap().len(), 1);
+        let left: i64 = j
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM shielded_unrecorded_nullifier WHERE wallet = ?1",
+                params![&W[..]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     /// A release (schema 7, review R6-01) is written only against a

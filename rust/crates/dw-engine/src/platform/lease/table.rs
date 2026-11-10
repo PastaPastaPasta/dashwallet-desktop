@@ -10,7 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
-use dw_vault::{KeyHold, VaultSigner, VoteSigner};
+use dw_vault::{KeyHold, ShieldedSpendKey, SignerLife, VaultSigner, VoteSigner};
 use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::task::AbortHandle;
@@ -70,6 +70,14 @@ pub(crate) struct Signers {
     pub(crate) masternode: Option<VaultSigner>,
     /// The vote signer (MG-05 §3): no `VaultSigner`, so no transaction.
     pub(crate) vote: Option<VoteSigner>,
+    /// `PlatformAddress`: "Move to Dash wallet"'s DIP-17 payment keys.
+    pub(crate) platform_address: Option<VaultSigner>,
+    /// A `ShieldedSpend` lease's Orchard spend key (0.1 E1), in place of
+    /// the identity signer its `PlatformOp` grant would issue.
+    pub(crate) shielded: Option<ShieldedSpendKey>,
+    /// A `ShieldDrain` lease's signer life: its funding signer stops when
+    /// the lease drops it, on the vault's key too (0.2 MIX-SHIELD).
+    pub(crate) life: Option<SignerLife>,
     /// `MasternodeWithdrawal`, single use (MG-13 P3, P12).
     pub(crate) withdrawal: Option<VaultSigner>,
 }
@@ -331,6 +339,9 @@ pub struct LeaseTable {
     pub(crate) tracked: OnceLock<Arc<dyn super::mode_b::TrackedLocks>>,
     /// Serializes Mode B's snapshot refreshes.
     pub(crate) refresh: tokio::sync::Mutex<()>,
+    /// The refreshes and resume passes running in the background, which
+    /// close waits for (BL-544).
+    pub(crate) background: Arc<super::background::Background>,
     /// The catch-up's resume path (H6 part 2); the session installs it.
     pub(crate) resumer: OnceLock<Arc<dyn super::resume::Resumer>>,
     /// The table itself, for work a J step's effects start.
@@ -339,6 +350,10 @@ pub struct LeaseTable {
     /// source reads with the real wallet's.
     #[cfg(test)]
     pub(crate) test_rows: Mutex<HashMap<WalletId, Vec<super::mode_b::TrackedRow>>>,
+    /// Tests: the next read of a wallet's tracked rows signals here once it
+    /// holds the wallet, then never ends on its own.
+    #[cfg(test)]
+    pub(crate) test_hold_rows: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl std::fmt::Debug for LeaseTable {
@@ -382,10 +397,13 @@ impl LeaseTable {
             journal: Default::default(),
             tracked: OnceLock::new(),
             refresh: tokio::sync::Mutex::new(()),
+            background: Arc::default(),
             resumer: OnceLock::new(),
             me: me.clone(),
             #[cfg(test)]
             test_rows: Default::default(),
+            #[cfg(test)]
+            test_hold_rows: Default::default(),
         })
     }
 
@@ -932,6 +950,29 @@ impl Lease {
         let signer = self.signer(BudgetPurpose::Credits, |s| s.identity.as_ref(), budget)?;
         VaultIdentitySigner::new(signer, identity_indices.iter().copied())
             .map_err(|_| LeaseError::Vault("identity signer scope"))
+    }
+
+    /// The Platform-address signer a call's permit hands out
+    /// (`PlatformAddress`, a `PlatformAddressMove` lease's only signer):
+    /// the permit's J step already charged the call's quote.
+    pub(crate) fn call_platform_address_signer(&self) -> Result<VaultSigner, LeaseError> {
+        self.signer(
+            BudgetPurpose::Credits,
+            |s| s.platform_address.as_ref(),
+            |e| e.credits.granted(),
+        )
+    }
+
+    /// The shielded spend key a call's permit hands out (0.1 E1): the
+    /// permit's J step already charged the call's quote, so the Credits
+    /// budget may be at 0.
+    pub(crate) fn call_shielded_spend_key(&self) -> Result<ShieldedSpendKey, LeaseError> {
+        self.with_entry(BudgetPurpose::Credits, |e| {
+            if !e.credits.granted() {
+                return Err(LeaseError::NeedsGrant(BudgetPurpose::Credits));
+            }
+            (e.signers.shielded.clone()).ok_or(LeaseError::NeedsGrant(BudgetPurpose::Credits))
+        })
     }
 
     /// The asset-lock funding signer (`PlatformFunding`, cap fixed at

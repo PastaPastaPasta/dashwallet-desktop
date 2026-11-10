@@ -26,6 +26,11 @@ const DASHPAY_HIDDEN: Duration = Duration::from_secs(60);
 /// contests have their watch (`contest_watch.rs`).
 const MARKETPLACE: Duration = Duration::from_secs(600);
 const MARKETPLACE_ENDING: Duration = Duration::from_secs(60);
+/// The Platform-address balance pass (release 0.1): a window showing it,
+/// none (the library's default is 15 s; a pass is a proof query per
+/// address-tree branch).
+const PLATFORM_ADDRESSES_VISIBLE: Duration = Duration::from_secs(60);
+const PLATFORM_ADDRESSES_HIDDEN: Duration = Duration::from_secs(300);
 
 /// How long a stop or close waits for the bring-up's blocking vault work (a
 /// keyring read) after cancelling it. A read that takes longer is stuck, for
@@ -80,6 +85,17 @@ pub(super) struct LockView {
     pub(super) locks: u64,
 }
 
+/// What [`PlatformRuntime::remove_from_manager`] does when the wallet holds
+/// a shielded spend whose result is not known (DEC-1046).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StoredSpends {
+    /// The wallet stays: `ShieldedSpendUnresolved` (Close Wallet, the
+    /// close, a restore's rollback).
+    Refuse,
+    /// The user removes the wallet: its stored spends go with it.
+    Purge,
+}
+
 /// The session's Platform state (DASHPAY §3.1 `PlatformRuntime`).
 pub(crate) struct PlatformRuntime {
     /// `false` for a chain without Platform (`SessionOptions::no_platform`):
@@ -99,6 +115,50 @@ pub(crate) struct PlatformRuntime {
     /// The loops were started and not stopped since; read by passes that
     /// were scheduled earlier.
     pub(super) loops_on: Arc<AtomicBool>,
+    /// Held to read by each shielded pass from its admission to its end; to
+    /// write by the drain of a lock, a revocation or the close
+    /// (`shielded_pool::guarded_pass`, 0.1 E1), and by every change to the
+    /// wallets a pass covers: a wallet's load, its shielded bind, its
+    /// removal from the manager, the coordinator's configuration (E1 r1
+    /// R1-3). So the wallets the library's pass syncs and re-sends for are
+    /// the ones its admission checked.
+    pub(crate) shielded_passes: Arc<tokio::sync::RwLock<()>>,
+    /// A test's pause of the next shielded pass, after its admission and
+    /// before the library's pass (`shielded_pool::guarded_pass`).
+    #[cfg(test)]
+    pub(crate) pass_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// Held to read by each shielded pass, before `shielded_passes`; to
+    /// write by a spend from its library call to its record, so no pass
+    /// runs meanwhile. Apart from `shielded_passes` so a lock's drain waits
+    /// for the passes only, not for a spend's network call.
+    pub(crate) shielded_spends: tokio::sync::RwLock<()>,
+    /// Held to read by each shielded call that signs (a send, an unshield,
+    /// a shield, its "Check again") from before it enters the session to
+    /// its end; to write by an in-app close from its check of the wallets
+    /// to its commit (`Engine::close_network`, E1 r2 R2-3), which a call
+    /// running refuses. So no spend starts between that check and the
+    /// close.
+    pub(crate) close_preflight: tokio::sync::RwLock<()>,
+    /// Held to read by a wallet's load from before it enters the session
+    /// to its end; to write by an in-app close, which waits (bounded) for
+    /// the loads in flight rather than refusing, then holds it to its
+    /// commit. So no wallet holding a stored spend loads between the
+    /// close's check and the close.
+    pub(crate) wallet_loads: tokio::sync::RwLock<()>,
+    /// A test's pause of the close's check after its first wallet, with
+    /// that wallet (`NetworkSession::holds_shielded_spends`).
+    #[cfg(test)]
+    pub(crate) close_check_pause: Mutex<Option<super::shielded_pool::CheckPause>>,
+    /// Each wallet's shielded call lock (`shielded_pool::wallet_lock`).
+    pub(crate) shielded_calls: std::sync::Mutex<
+        std::collections::HashMap<WalletId, std::sync::Weak<tokio::sync::Mutex<()>>>,
+    >,
+    /// The addresses each wallet's running fund applies hold
+    /// (`platform_moves::FundHold`).
+    pub(crate) fund_holds: super::platform_moves::FundHolds,
+    /// The shield locks of unknown consumption marked this session, kept
+    /// also in `app.sqlite` (`shielded_pool::ShieldedLib::unknown_locks`).
+    pub(crate) shield_unknown: std::sync::Mutex<std::collections::HashSet<dashcore::Txid>>,
     pub(super) key_work: Arc<KeyWork>,
     /// Wallets a restore has begun storing and has not committed or rolled
     /// back (review r2 M4).
@@ -119,6 +179,8 @@ pub(crate) struct PlatformRuntime {
     pub(crate) avatars: super::avatar::AvatarRuntime,
     /// The registration flows running in this process (DP1-02).
     pub(crate) registrations: Arc<super::registration_flow::Flows>,
+    /// The quoted Platform sends not yet sent (`platform_moves::SendOps`).
+    pub(crate) send_ops: super::platform_moves::SendOps,
     /// A test's network for the invitation checks (DP5-02).
     #[cfg(test)]
     pub(crate) invitation_net: Mutex<Option<Arc<dyn super::invitation_check::InvitationNet>>>,
@@ -362,6 +424,17 @@ impl PlatformRuntime {
             }),
             tasks: Mutex::new(HashMap::new()),
             loops_on: Arc::new(AtomicBool::new(false)),
+            shielded_passes: Arc::default(),
+            #[cfg(test)]
+            pass_pause: Mutex::new(None),
+            shielded_spends: tokio::sync::RwLock::new(()),
+            close_preflight: tokio::sync::RwLock::new(()),
+            wallet_loads: tokio::sync::RwLock::new(()),
+            #[cfg(test)]
+            close_check_pause: Mutex::new(None),
+            shielded_calls: std::sync::Mutex::default(),
+            fund_holds: Arc::default(),
+            shield_unknown: std::sync::Mutex::default(),
             key_work: Arc::default(),
             restoring: Mutex::new(HashMap::new()),
             events: AtomicU64::new(0),
@@ -371,6 +444,7 @@ impl PlatformRuntime {
             users: Default::default(),
             avatars: Default::default(),
             registrations: Default::default(),
+            send_ops: Default::default(),
             #[cfg(test)]
             invitation_net: Mutex::new(None),
             contests: Default::default(),
@@ -625,15 +699,36 @@ impl PlatformRuntime {
     }
 
     /// Takes wallet `id` out of `manager` (a removal, an unload, a restore's
-    /// rollback): its fenced writes in flight (private details, the bell's
-    /// `mark_read`) land first and none lands afterwards ([`super::private_details::WriteFences`]), and its
+    /// rollback, the close): its fenced writes in flight (private details,
+    /// the bell's `mark_read`) land first and none lands afterwards ([`super::private_details::WriteFences`]), and its
     /// digests leave memory.
+    ///
+    /// The engine's only route to platform-wallet's `remove_wallet`, which
+    /// at the pin always purges the wallet's shielded store, its stored
+    /// spends included (`wallet_lifecycle.rs:847-850` →
+    /// `coordinator.rs:878-902` → `file_store.rs:880-901`). So with
+    /// [`StoredSpends::Refuse`] a wallet holding a spend whose result is
+    /// not known stays (`ShieldedSpendUnresolved`, DEC-1046), as does one
+    /// with a marked spend (`leases`' journal, DEC-1057); only the
+    /// user's removal of the wallet passes [`StoredSpends::Purge`]. The
+    /// removal runs with no shielded pass in flight (`shielded_passes`,
+    /// R1-3): the coordinator's set of wallets changes only between passes.
+    /// Every caller ended the wallet's permits first (its revocation, the
+    /// close's), so no spend of it stores a transition after the check.
     pub(crate) async fn remove_from_manager(
         &self,
+        leases: &super::lease::LeaseTable,
         manager: &Manager,
         id: WalletId,
+        spends: StoredSpends,
     ) -> Result<(), EngineError> {
         let _fence = self.contacts.fences.removal(id).await;
+        let _passes = self.shielded_passes.write().await;
+        if spends == StoredSpends::Refuse
+            && super::shielded_pool::holds_unresolved(leases, manager, id).await
+        {
+            return Err(EngineError::ShieldedSpendUnresolved);
+        }
         manager.remove_wallet(&id.0).await?;
         self.contacts.digests.forget(&id);
         Ok(())
@@ -648,6 +743,35 @@ impl PlatformRuntime {
 }
 
 impl NetworkSession {
+    /// Whether a loaded wallet holds a shielded spend whose result is not
+    /// known: an in-app close of the session is refused then (DEC-1046,
+    /// `Engine::close_network`). A signing shielded call in flight, which
+    /// may store one before the close's gate lets it end, holds
+    /// `close_preflight` to read and refuses the close there; an unload in
+    /// flight is no payment, and the close's gate waits for it. `false`
+    /// once closed. Only under [`PlatformRuntime::close_preflight`] held to
+    /// write does the answer hold until the close commits.
+    pub(crate) async fn holds_shielded_spends(&self) -> bool {
+        let Ok(live) = self.live() else {
+            return false;
+        };
+        for id in live.manager.list_wallet_ids_blocking() {
+            let id = WalletId(id);
+            if super::shielded_pool::holds_unresolved(&self.leases, &live.manager, id).await {
+                return true;
+            }
+            #[cfg(test)]
+            {
+                let pause = guard(&self.platform.close_check_pause).take();
+                if let Some(pause) = pause {
+                    let _ = pause.reached.send(id);
+                    let _ = pause.resume.await;
+                }
+            }
+        }
+        false
+    }
+
     /// Whether SPV is starting or running ([`Self::spv_state`] tells which).
     /// While starting, calls that need a running SPV (`rescan`,
     /// `rotate_peers`, a broadcast) still fail as when it is stopped.
@@ -694,6 +818,7 @@ impl NetworkSession {
                 next_run_at: last.filter(|_| running).map(|t| t + every.as_secs()),
             };
         let (identity, dashpay, dpns) = (m.identity_sync(), m.dashpay_sync(), m.dpns_sync());
+        let addresses = m.platform_address_sync();
         Ok(vec![
             status(
                 SyncLoop::IdentitySync,
@@ -712,6 +837,12 @@ impl NetworkSession {
                 dpns.is_running(),
                 dpns.last_sync_unix_seconds(),
                 dpns.interval(),
+            ),
+            status(
+                SyncLoop::PlatformAddressSync,
+                addresses.is_running(),
+                addresses.last_sync_unix_seconds(),
+                addresses.interval(),
             ),
         ])
     }
@@ -767,5 +898,12 @@ impl NetworkSession {
         } else {
             MARKETPLACE
         });
+        manager
+            .platform_address_sync()
+            .set_interval(if c.window_visible {
+                PLATFORM_ADDRESSES_VISIBLE
+            } else {
+                PLATFORM_ADDRESSES_HIDDEN
+            });
     }
 }

@@ -23,7 +23,9 @@ const MG_PROPOSALS: i64 = 2026102001;
 const PROTX_OPS: i64 = 2026102101;
 const SHARED_SESSIONS: i64 = 2026102201;
 const SHARED_STANDBY: i64 = 2026103001;
-const MG_WITHDRAWALS: i64 = 2026103101;
+const TX_FIAT: i64 = 2026110501;
+const REQUEST_USERNAME: i64 = 2026111001;
+const MG_WITHDRAWALS: i64 = 2026111002;
 
 const DP_TABLES: [&str; 10] = [
     "dp_avatar",
@@ -107,6 +109,8 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             PROTX_OPS,
             SHARED_SESSIONS,
             SHARED_STANDBY,
+            TX_FIAT,
+            REQUEST_USERNAME,
             MG_WITHDRAWALS
         ]
     );
@@ -180,6 +184,8 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             PROTX_OPS,
             SHARED_SESSIONS,
             SHARED_STANDBY,
+            TX_FIAT,
+            REQUEST_USERNAME,
             MG_WITHDRAWALS
         ]
     );
@@ -233,27 +239,29 @@ fn reopening_and_rerunning_change_nothing() {
             PROTX_OPS,
             SHARED_SESSIONS,
             SHARED_STANDBY,
+            TX_FIAT,
+            REQUEST_USERNAME,
             MG_WITHDRAWALS
         ]
     );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
 }
 
-/// MG-13 P16: the upgrade from the previous schema (`V2026103001`) adds
+/// MG-13 P16: the upgrade from the previous schema (`V2026111001`) adds
 /// the withdrawal and barrier tables, empty, and keeps the operations the
 /// engine's backfill then reads; it writes no barrier itself (dw-appdb
 /// doesn't read `terms`), and the backfill marker is not set.
 #[test]
-fn upgrade_from_shared_standby_adds_the_withdrawal_tables() {
+fn upgrade_from_request_username_adds_the_withdrawal_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     {
         let mut conn = Connection::open(&path).unwrap();
         embedded::migrations::runner()
-            .set_target(Target::Version(SHARED_STANDBY as i32))
+            .set_target(Target::Version(REQUEST_USERNAME as i32))
             .run(&mut conn)
             .unwrap();
-        assert_eq!(*versions(&conn).last().unwrap(), SHARED_STANDBY);
+        assert_eq!(*versions(&conn).last().unwrap(), REQUEST_USERNAME);
         conn.execute(
             "INSERT INTO masternode_ops (id, wallet_id, kind, terms, request, signed_tx, txid,
                  pro_tx_hash, fee, created_at, signed_at)
@@ -361,6 +369,12 @@ fn shipped_migrations_are_unchanged() {
                 "mg_shared_standby".to_string(),
                 CHECKSUM_SHARED_STANDBY
             ),
+            (TX_FIAT, "tx_fiat".to_string(), CHECKSUM_TX_FIAT),
+            (
+                REQUEST_USERNAME,
+                "request_username".to_string(),
+                CHECKSUM_REQUEST_USERNAME
+            ),
             (
                 MG_WITHDRAWALS,
                 "mg_withdrawals".to_string(),
@@ -385,6 +399,8 @@ const CHECKSUM_MG_PROPOSALS: u64 = 6981014660522877648;
 const CHECKSUM_PROTX_OPS: u64 = 8127766132692660851;
 const CHECKSUM_SHARED_SESSIONS: u64 = 10802667430796242021;
 const CHECKSUM_SHARED_STANDBY: u64 = 6265244453823859058;
+const CHECKSUM_TX_FIAT: u64 = 16250844939786173904;
+const CHECKSUM_REQUEST_USERNAME: u64 = 9240954005103932665;
 const CHECKSUM_MG_WITHDRAWALS: u64 = 6908476277065692744;
 
 #[test]
@@ -948,6 +964,12 @@ fn insert_any_row(conn: &Connection, table: &str, wallet: &str) -> usize {
             ("pro_tx_hash", _) if table == "shared_mn_standby" => {
                 "'0000000000000000000000000000000000000000000000000000000000000000'"
             }
+            ("txid", _) if table == "tx_fiat" => {
+                "'0000000000000000000000000000000000000000000000000000000000000000'"
+            }
+            ("currency", _) if table == "tx_fiat" => "'USD'",
+            ("price", _) if table == "tx_fiat" => "'49.0967'",
+            ("source", _) if table == "tx_fiat" => "'ctx'",
             ("source", _) => "'created'",
             ("role", _) => "'coordinator'",
             ("kind", _) if table == "labels" => "'tx'",
@@ -1607,5 +1629,41 @@ fn a_lock_file_that_is_the_database_is_refused() {
         );
     } else {
         refused.unwrap();
+    }
+}
+
+#[test]
+fn request_username_upgrade_keeps_legacy_requests_and_checks_overrides() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        embedded::migrations::runner()
+            .set_target(Target::Version(TX_FIAT as i32))
+            .run(&mut conn)
+            .unwrap();
+        conn.execute(
+            "INSERT INTO receive_requests (wallet_id, created_at, address, label) VALUES (?1, 1, 'yDemo', 'Rent')",
+            [W],
+        )
+        .unwrap();
+    }
+    let db = AppDb::open(&path).unwrap();
+    let rows = db.receive_requests(W).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].label.as_deref(), Some("Rent"));
+    assert_eq!(rows[0].include_username, None);
+    let conn = db.conn();
+    assert!(
+        conn.execute("UPDATE receive_requests SET include_username = 2", [])
+            .is_err()
+    );
+    for value in [0, 1] {
+        conn.execute("UPDATE receive_requests SET include_username = ?1", [value])
+            .unwrap();
+        assert_eq!(
+            count(&conn, "SELECT include_username FROM receive_requests"),
+            value
+        );
     }
 }

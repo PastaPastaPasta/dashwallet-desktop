@@ -34,10 +34,12 @@
 //! [`CallPermit::funding_signer`], which counts like the identity signer.
 //!
 //! Mode B residual (D5, design Q8): the cap is not re-checked against the
-//! call's own coin selection. key-wallet signs input by input inside
-//! `build_asset_lock_with_signer`, with no transaction-level hook before
-//! the first signature where the engine could read the selected inputs and
-//! the fee, so the exact debit is checked only in Mode A (at `register`).
+//! call's own coin selection. key-wallet shows the signer the selected
+//! inputs before the first signature (`Signer::approve_inputs`, since the
+//! rust-dashcore pin 8e7ad2c1), but the funding signer checks only the
+//! input bound and a shield's plan there (`lock_inputs::Capped`,
+//! `CountingFundingSigner`), not the debit, so the exact debit is checked
+//! only in Mode A (at `register`).
 //! `fee_bound_worst` is an upper bound instead: the fee of spending every
 //! coin of the funding accounts, at most key-wallet's 500 inputs (it
 //! refuses a larger selection). It counts the coins when the permit is
@@ -51,6 +53,7 @@ use std::sync::{Arc, Mutex};
 use dw_appdb::dispatch::StoredFundingKey;
 use dw_vault::SignerError;
 use platform_wallet::AssetLockFundingType;
+use platform_wallet::wallet::shielded::OrchardKeySet;
 use tokio::time::Instant;
 
 use super::budget::Charge;
@@ -62,7 +65,9 @@ use super::table::{Effects, Inner, Lease, LeaseTable};
 use super::{FlowOutcome, LeaseError, LeaseId};
 use crate::WalletId;
 use crate::platform::flows::BudgetPurpose;
-use crate::platform::signers::{CountingFundingSigner, VaultIdentitySigner};
+use crate::platform::signers::{
+    CountingFundingSigner, VaultIdentitySigner, VaultPlatformAddressSigner,
+};
 
 /// A funding step's key (§2a.3, §2a.5): what platform-wallet's tracked
 /// asset-lock rows carry (`TrackedAssetLock`'s `funding_type`,
@@ -198,6 +203,10 @@ pub struct SignatureCount {
     /// A lock the call signed was recorded: its funding signer signs no
     /// other sighash ([`Self::admits`]).
     recorded: AtomicBool,
+    /// The call's build was refused partway by its funding signer's input
+    /// cap ([`Self::abandon`]): no transaction of its signatures can be
+    /// complete, and its signers sign nothing more.
+    abandoned: AtomicBool,
 }
 
 /// One signature asked of the vault under a [`SignatureCount`] (counted in
@@ -296,6 +305,22 @@ impl SignatureCount {
         !sighashes.is_empty()
             && sighashes.iter().all(|s| signed.contains(s))
             && signed.iter().all(|s| sighashes.contains(s))
+    }
+
+    /// The funding signer refused an input of the call's build past its
+    /// cap (a shield's lock, at most 50 inputs) and signs nothing more for
+    /// the call. Each signature it released is `SIGHASH_ALL`, so it commits
+    /// to every input of that build, the refused one among them, whose
+    /// signature never exists: no transaction carrying any of them can be
+    /// valid, and the call's end reads `Cancelled` (unless an earlier call
+    /// of the step left a marker).
+    pub(crate) fn abandon(&self) {
+        self.abandoned.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`Self::abandon`] ran.
+    pub(crate) fn abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::SeqCst)
     }
 
     pub(crate) fn note_locked(&self) {
@@ -473,6 +498,9 @@ pub struct CallPermit {
     step: Option<CallStep>,
     /// Handed back to the caller: the library call may have started.
     started: bool,
+    /// Positive evidence that nothing the call signed can reach the wire
+    /// ([`Self::abort_unsent`]).
+    unsent: AtomicBool,
     deadline: Instant,
     done: bool,
 }
@@ -752,6 +780,7 @@ impl Lease {
             signatures: Arc::default(),
             prior_marker,
             started: step.is_none(),
+            unsent: AtomicBool::new(false),
             step,
             deadline: took.deadline,
             done: false,
@@ -760,6 +789,17 @@ impl Lease {
 }
 
 impl CallPermit {
+    /// Positive evidence that nothing this call signed can reach the wire:
+    /// its signer refused a signature before the transaction was complete
+    /// (the asset-lock input bound, `lock_inputs`: the builder returns the
+    /// signer's error before a complete transaction exists, key-wallet
+    /// `transaction_builder.rs:939-940`). Its end then reads `Cancelled`, the
+    /// step resolved `NotSent`, though signatures were released; unless an
+    /// earlier call of the step may be out (`prior_marker`).
+    pub(crate) fn abort_unsent(&self) {
+        self.unsent.store(true, Ordering::SeqCst);
+    }
+
     /// The count the call's signers report to.
     pub fn signatures(&self) -> Arc<SignatureCount> {
         Arc::clone(&self.signatures)
@@ -786,6 +826,42 @@ impl CallPermit {
             .lease
             .call_identity_signer(identity_indices)?
             .counting(self.signatures()))
+    }
+
+    /// The lease's Platform-address signer for the addresses of `paths`
+    /// (HASH160 → DIP-17 path), counting into this permit as
+    /// [`Self::identity_signer`]'s does: a `PlatformAddressMove` lease's.
+    pub(crate) fn platform_address_signer(
+        &self,
+        paths: std::collections::BTreeMap<[u8; 20], key_wallet::bip32::DerivationPath>,
+    ) -> Result<VaultPlatformAddressSigner, LeaseError> {
+        let signer = self.lease.call_platform_address_signer()?;
+        VaultPlatformAddressSigner::new(signer, paths, self.signatures())
+            .map_err(|_| LeaseError::Vault("platform address signer scope"))
+    }
+
+    /// The Orchard key set of the lease's shielded spend key (0.1 E1),
+    /// counted into this permit as one released signature: the library's
+    /// spend proves and signs with the key set itself, so once it is out
+    /// the spend may be, and the permit keeps its quote. None once the
+    /// permit ended.
+    pub(crate) fn shielded_keys(&self) -> Result<OrchardKeySet, LeaseError> {
+        let key = self.lease.call_shielded_spend_key()?;
+        let count = self.signatures();
+        let Some(signing) = count.begin() else {
+            return Err(LeaseError::Locked);
+        };
+        match key.keys() {
+            Ok(keys) => {
+                signing.released();
+                Ok(keys)
+            }
+            Err(SignerError::Locked) => {
+                count.note_locked();
+                Err(LeaseError::Locked)
+            }
+            Err(_) => Err(LeaseError::Vault("shielded spend key")),
+        }
     }
 
     /// The lease's funding signer for `create_funded_asset_lock_proof`,
@@ -871,7 +947,14 @@ impl CallPermit {
         // A call never handed out never started: nothing of it was sent.
         let outcome = if ok {
             FlowOutcome::Sent
-        } else if !self.started || (released == 0 && !self.prior_marker) {
+        } else if !self.started
+            || ((released == 0
+                || self.unsent.load(Ordering::SeqCst)
+                || self.signatures.abandoned())
+                && !self.prior_marker)
+        {
+            // Nothing signed, or nothing that can complete a transaction
+            // (`abort_unsent`, `SignatureCount::abandon`).
             FlowOutcome::Cancelled
         } else {
             FlowOutcome::MaybeSent

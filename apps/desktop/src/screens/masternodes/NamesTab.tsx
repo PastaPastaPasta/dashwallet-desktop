@@ -11,7 +11,7 @@ import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { DashButton, Icon } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
-import { copyWithToast } from "../../components/toast";
+import { CopyIconButton } from "../../components/copy";
 import { nodeName } from "../../governance/model";
 import {
   contestChip,
@@ -239,9 +239,7 @@ function NamePane({ contest, names, watchOnly, now, onVote }: { contest: Contest
                       <span className="mono" title={r.identity}>
                         {r.title}
                       </span>
-                      <button type="button" className="copy-button" aria-label={`Copy identity ${r.title}`} title="Copy identity" onClick={() => void copyWithToast(r.identity!)}>
-                        <Icon id="copy" size={16} />
-                      </button>
+                      <CopyIconButton text={r.identity!} label={`Copy identity ${r.title}`} title="Copy identity" size={16} />
                     </span>
                   ) : (
                     r.title

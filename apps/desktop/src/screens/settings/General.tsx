@@ -1,6 +1,6 @@
 // Settings ▸ General (QT-135…141, QT-075, IOS-104…106): the display settings (saved as they
 // change, D2), dust protection, the username in payment requests (DP3-03b), the window's network
-// (D6), the rows that come later (D7) and Reset Options (D8).
+// (D6), local currency (MP-01), the rows that come later (D7) and Reset Options (D8).
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useMemo, useState } from "react";
@@ -11,13 +11,15 @@ import { useLaunch } from "../../app/App";
 import { DEFAULT_PREFS, useUi } from "../../app/ui";
 import { useTurnOnGovernance } from "../../governance/queries";
 import { DashButton } from "../../components/basics";
+import { NetworkPicker, useNetworkPicker } from "../../components/networkPicker";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { QuestionSheet, Sheet } from "../../components/sheet";
 import { failureText } from "../../onboarding/model";
-import { DEFAULT_DUST, DIGIT_CHOICES, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
+import { DEFAULT_DUST, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
 import { savePrefs, settledPending } from "../../settings/prefs";
 import { SettingsDashPayCard } from "../dashpay/MyProfile";
 import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
+import { LocalCurrencyCard } from "./LocalCurrency";
 import { PrivacyCard } from "./Privacy";
 
 const THEMES: { theme: ThemeName | null; label: string; id: string }[] = [
@@ -103,24 +105,6 @@ export function GeneralTab() {
             ))}
           </div>
         </div>
-        <div className="settings-row">
-          <label className="settings-row-title" htmlFor={`${id}-digits`}>
-            Decimal digits on Home
-          </label>
-          <select
-            id={`${id}-digits`}
-            className="settings-select"
-            data-testid="settings-digits"
-            value={prefs.decimalDigits}
-            onChange={(e) => void save({ decimalDigits: Number(e.target.value) })}
-          >
-            {DIGIT_CHOICES.map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
-        </div>
         <label className="checkbox-row">
           <input
             type="checkbox"
@@ -132,24 +116,16 @@ export function GeneralTab() {
         </label>
         <ShowMasternodesRow checked={prefs.showMasternodes} save={save} />
       </SettingsCard>
+      <LocalCurrencyCard />
       <DustCard />
       <PrivacyCard />
       <NetworkCard />
       <SettingsDashPayCard />
       <SettingsCard title="Coming later" testId="settings-not-yet">
         <NotYetRow testId="settings-language" title="User interface language" why="Dash Wallet is in English only until the translations (MP-14)." />
-        <NotYetRow testId="settings-currency" title="Local currency" why="exchange rates come with MP-01." />
         <NotYetRow testId="settings-notifications" title="Notifications" why="DashPay notifications come with DP2-09, Windows notifications with W-02." />
         <NotYetRow testId="settings-start-on-login" title="Start Dash Wallet on system login" why="it comes with the installers (W-02, PK)." />
         <NotYetRow testId="settings-proxy" title="Connect through a SOCKS5 proxy or Tor" why="the engine has no proxy setting yet." />
-      </SettingsCard>
-      <SettingsCard title="Not used by this wallet" testId="settings-spv-footnote">
-        <Hint>Dash Wallet does not keep the whole blockchain, so these Dash Core options do not apply:</Hint>
-        <ul className="settings-list">
-          {OptionsText.spvFootnote.map((o) => (
-            <li key={o}>{o}</li>
-          ))}
-        </ul>
       </SettingsCard>
       <SettingsCard title="Reset" testId="settings-reset-card">
         <Done text={resetDone ? OptionsText.resetDone : null} testId="settings-reset-done" />
@@ -264,10 +240,12 @@ function DustCard() {
   );
 }
 
-/** The window's network and data directory; switching is U-04b (D6). */
+/** The window's network and data directory, and the network the next start opens (the 0.1
+ * release plan; D6's switch without a restart is U-04b). */
 function NetworkCard() {
   const { network } = useLaunch();
   const node = useNodeInfo();
+  const picker = useNetworkPicker();
   return (
     <SettingsCard title="Network" testId="settings-network">
       <dl className="detail-list settings-details">
@@ -278,11 +256,7 @@ function NetworkCard() {
           {node.data ? <CopyValue value={node.data.dataDir} label="data directory" mono /> : pendingText(node)}
         </DetailRow>
       </dl>
-      <NotYetRow
-        testId="settings-switch-network"
-        title="Switch network"
-        why="it comes with U-04b. To open another network, start Dash Wallet with --network testnet, devnet-<name> or regtest."
-      />
+      <NetworkPicker state={picker} testId="settings-network-choice" />
     </SettingsCard>
   );
 }
@@ -303,7 +277,7 @@ function ShowMasternodesRow({ checked, save }: { checked: boolean; save: (patch:
         <input type="checkbox" data-testid="settings-show-masternodes" checked={checked} onChange={(e) => void change(e.target.checked)} />
         Show Masternodes
       </label>
-      <Hint>Shows Masternodes in the sidebar even without a masternode, a collateral or a proposal: to read and vote on proposals.</Hint>
+      <Hint>Shows Masternodes in the sidebar: to read and vote on proposals and to vote on usernames. It is off until you turn it on.</Hint>
       {ask && (
         <QuestionSheet
           title="Load governance data?"

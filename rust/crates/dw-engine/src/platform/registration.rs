@@ -22,6 +22,7 @@ use super::names::valid_label;
 use super::registration_flow::{self as flow, PwLib, RegistrationLib};
 use super::registration_ledger::{Ledger, Standing};
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
+use super::unfinished::{LockKindId, TransfersReport};
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
 
@@ -219,12 +220,23 @@ pub struct RegistrationFailure {
     pub available: Option<u64>,
 }
 
-/// Tools ▸ Repair "Finish transfers".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Tools ▸ Repair "Finish transfers". The totals count every finish it
+/// ran, the unfinished transfers' (§2.14) too.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinishReport {
     pub resumed: u32,
     pub completed: u32,
     pub still_pending: u32,
+    /// Transfers Platform reported already used for their exact output
+    /// (unproved; type-4 Core → Platform address locks): taken as finished
+    /// elsewhere, no longer listed, not settled.
+    pub already_used: u32,
+    /// The unfinished transfers' part, per kind that had any.
+    pub by_kind: Vec<TransfersReport>,
+    /// The kinds whose unfinished transfers could not be read (the
+    /// journal unread, the kind's side not open): none of their locks is
+    /// counted, so "nothing pending" is not known for them.
+    pub unread: Vec<LockKindId>,
 }
 
 impl DashPay {
@@ -307,16 +319,20 @@ impl DashPay {
     }
 
     /// Also applies the wallet's proved top-up locks that Platform has not
-    /// taken (DP1-06, `topup.rs`).
+    /// taken (DP1-06, `topup.rs`), then the unfinished transfers (§2.14),
+    /// one at a time.
     pub async fn finish_asset_locks(
         &self,
         grant: String,
     ) -> Result<FinishReport, RegistrationError> {
         let wallet = self.wallet_id;
-        self.on_lib(move |session, _, lib| async move {
+        // Its shields sign as `resume_shield` does: admitted as a signing
+        // call (`on_pool_signing`).
+        self.run_lib(true, move |session, _, lib| async move {
             let lease = authority(&session, wallet, &grant).await?;
             let mut report = finish_under(&session, wallet, &*lib, &lease).await?;
             super::topup::finish(&session, wallet, &*lib, &lease, &mut report).await;
+            super::unfinished::finish_all(&session, wallet, &lease, &mut report).await;
             Ok(report)
         })
         .await
@@ -339,11 +355,28 @@ impl DashPay {
         F: FnOnce(Arc<NetworkSession>, Arc<Manager>, Arc<PwLib>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T, RegistrationError>> + Send + 'static,
     {
+        self.run_lib(false, body).await
+    }
+
+    /// [`Self::on_lib`]; `signing`: admitted under the session's
+    /// `close_preflight` first, as `shielded_pool::on_pool_signing` is, so
+    /// an in-app close is refused while it runs.
+    async fn run_lib<T, F, Fut>(&self, signing: bool, body: F) -> Result<T, RegistrationError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<NetworkSession>, Arc<Manager>, Arc<PwLib>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T, RegistrationError>> + Send + 'static,
+    {
         let session = Arc::clone(&self.session);
         let wallet_id = self.wallet_id;
         self.session
             .rt
             .spawn(async move {
+                // Before the session's gate, as `run_on_pool` takes it.
+                let _admitted = match signing {
+                    true => Some(session.platform.close_preflight.read().await),
+                    false => None,
+                };
                 let _op = session.enter().await.map_err(PlatformError::from)?;
                 let (manager, lib) = PwLib::open(&session, wallet_id).await?;
                 body(Arc::clone(&session), manager, Arc::new(lib)).await
@@ -437,7 +470,7 @@ async fn plan<L: RegistrationLib>(
         RegistrationFunding::CoreBalance => {
             let credits = credits.saturating_add(flow::IDENTITY_CREATE_CREDITS);
             let floor = if check.contested {
-                flow::CONTESTED_LOCK_DUFFS
+                flow::contested_lock_duffs(lib.platform_version().await)
             } else {
                 flow::LOCK_DUFFS
             };
@@ -623,9 +656,21 @@ pub(super) async fn funding_cap(
     wallet: WalletId,
     grant: &str,
 ) -> Result<u64, PlatformError> {
-    if let Some(lease) = session.lease_for(&wallet, grant) {
-        return Ok(lease?.available(BudgetPurpose::Funding)?);
+    grant_cap(session, wallet, grant, BudgetPurpose::Funding).await
+}
+
+/// The `purpose` cap `grant` gives (a lease's remaining budget, or a
+/// vault grant's `PlatformOp` cap), read without redeeming it.
+pub(super) async fn grant_cap(
+    session: &Arc<NetworkSession>,
+    wallet: WalletId,
+    grant: &str,
+    purpose: BudgetPurpose,
+) -> Result<u64, PlatformError> {
+    if let Some(lease) = named_lease(session, wallet, grant) {
+        return Ok(lease?.available(purpose)?);
     }
+    let budget = purpose;
     let vault = session.vault.clone();
     let grant = grant.to_owned();
     let purpose = tokio::task::spawn_blocking(move || {
@@ -636,8 +681,9 @@ pub(super) async fn funding_cap(
         detail: e.to_string(),
     })?
     .map_err(PlatformError::from)?;
-    match purpose {
-        GrantPurpose::PlatformOp { max_duffs, .. } => Ok(max_duffs),
+    match (purpose, budget) {
+        (GrantPurpose::PlatformOp { max_duffs, .. }, BudgetPurpose::Funding) => Ok(max_duffs),
+        (GrantPurpose::PlatformOp { max_credits, .. }, BudgetPurpose::Credits) => Ok(max_credits),
         _ => Err(PlatformError::GrantInvalid),
     }
 }
@@ -650,7 +696,7 @@ async fn grant_funds(
     wallet: WalletId,
     grant: &str,
 ) -> Result<bool, PlatformError> {
-    if let Some(lease) = session.lease_for(&wallet, grant) {
+    if let Some(lease) = named_lease(session, wallet, grant) {
         return match lease?.call_funding_signer() {
             Ok(_) => Ok(true),
             Err(LeaseError::NeedsGrant(BudgetPurpose::Funding)) => Ok(false),
@@ -660,6 +706,21 @@ async fn grant_funds(
     Ok(funding_cap(session, wallet, grant).await? > 0)
 }
 
+/// The lease `grant` names, if it names one of this wallet. A "Move mixed
+/// coins" drain's is `grant_invalid`: its funding signer signs CoinJoin
+/// coins, for the drain alone (0.2 MIX-SHIELD).
+fn named_lease(
+    session: &NetworkSession,
+    wallet: WalletId,
+    grant: &str,
+) -> Option<Result<Lease, PlatformError>> {
+    let lease = session.lease_for(&wallet, grant)?;
+    Some(match lease {
+        Ok(lease) if lease.flow() == FlowKind::ShieldDrain => Err(PlatformError::GrantInvalid),
+        lease => lease.map_err(PlatformError::from),
+    })
+}
+
 /// A facade call's `grant`: a lease of this wallet, or a vault grant
 /// redeemed into a new registration lease.
 async fn authority(
@@ -667,15 +728,14 @@ async fn authority(
     wallet: WalletId,
     grant: &str,
 ) -> Result<Lease, RegistrationError> {
-    let lease = match session.lease_for(&wallet, grant) {
-        Some(lease) => lease,
-        None => {
-            session
-                .begin_lease(wallet, FlowKind::Registration, &[grant.to_owned()])
-                .await
-        }
+    let lease = match named_lease(session, wallet, grant) {
+        Some(lease) => lease?,
+        None => session
+            .begin_lease(wallet, FlowKind::Registration, &[grant.to_owned()])
+            .await
+            .map_err(PlatformError::from)?,
     };
-    Ok(lease.map_err(PlatformError::from)?)
+    Ok(lease)
 }
 
 pub(crate) async fn start<L: RegistrationLib + 'static>(
@@ -1264,11 +1324,7 @@ async fn finish_under<L: RegistrationLib>(
     lib: &L,
     lease: &Lease,
 ) -> Result<FinishReport, RegistrationError> {
-    let mut report = FinishReport {
-        resumed: 0,
-        completed: 0,
-        still_pending: 0,
-    };
+    let mut report = FinishReport::default();
     let (locks, identities) = (lib.tracked_locks().await, lib.identities().await);
     let held = lib.funding_hold().is_some();
     let now = crate::events::unix_now();

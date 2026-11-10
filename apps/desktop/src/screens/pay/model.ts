@@ -4,6 +4,7 @@
 // DashPay contact (DP3-06) shares all of it; its own parts are in contact.ts.
 
 import { hasCode, isAppError, retryAfterSecs } from "../../api/backend";
+import { RESCAN_INTERRUPTED, RESCAN_RUNNING } from "../../app/rescan";
 import type { AddressClass } from "../../api/generated/AddressClass";
 import type { AppError } from "../../api/generated/AppError";
 import type { ChangePolicy } from "../../api/generated/ChangePolicy";
@@ -103,6 +104,17 @@ export const isContact = (r: PayRecipient): r is ContactRecipient => "contact" i
 
 export const subtractsFee = (r: PayRecipient) => (isContact(r) ? r.subtractFee : r.subtractFeeFromAmount);
 
+export const withSubtractFee = (r: PayRecipient): PayRecipient => (isContact(r) ? { ...r, subtractFee: true } : { ...r, subtractFeeFromAmount: true });
+
+/** Why a fully mixed payment without Subtract fee is refused as an absurd fee (MX-FEE): a CoinJoin
+ * spend makes no change (Dash Core v24 `ONLY_FULLY_MIXED`), so what the coins hold beyond the
+ * amount is fee; `null` for any other refusal or payment. */
+export function mixedFeeText(e: unknown, spec: { recipient: PayRecipient; source: CoinSource }, chain: Chain, unit: Unit = "DASH"): string | null {
+  if (spec.source.kind !== "fullyMixedOnly" || subtractsFee(spec.recipient) || !hasCode(e, "send.absurd_fee")) return null;
+  const fee = e.data?.kind === "fee" ? `the ${formatWithUnit(unit, e.data.fee, false, "standard", chain)} ` : "what is ";
+  return `Fully mixed coins are spent in whole denominations, so ${fee}left over would go to fees.`;
+}
+
 export function recipientOf(input: PayInput): Recipient {
   return {
     address: input.address,
@@ -119,9 +131,9 @@ export function recipientOf(input: PayInput): Recipient {
 export function addressProblem(c: AddressClass): string | null {
   switch (c.kind) {
     case "core":
-      return null;
     case "platform":
-      return "This is a Dash Platform address. Pay it from Platform, not from this wallet.";
+      // A Platform address is paid from the Platform balance (PayFromPlatform).
+      return null;
     case "shielded":
       return "This is a shielded address. This wallet cannot pay shielded addresses yet.";
     case "invalid":
@@ -133,9 +145,27 @@ export function addressProblem(c: AddressClass): string | null {
 
 export type Field = "address" | "amount" | null;
 
+/** What a wallet that mixes has beyond what a normal payment spends: fully mixed coins, and coins
+ * mixing has not finished. Both stay out of a normal payment (the 0.1.0 release notes). */
+export interface MixHints {
+  mixed: boolean;
+  mixing: boolean;
+}
+
+/** The "Available" hint's label for the coin source it counts. */
+export const availableLabel = (coins: CoinChoice) => (coins === "mixed" ? "Available (fully mixed)" : coins === "selected" ? "Available (selected coins)" : "Available");
+
+/** The amount is over what a normal payment spends, on a wallet with mixed or mixing coins. */
+function overNormalFunds(spendable: string, { mixed, mixing }: MixHints): string {
+  const text = `The amount exceeds the ${spendable} a normal payment can spend.`;
+  if (!mixed) return `${text} Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).`;
+  const where = `${text} To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).`;
+  return mixing ? `${where} Coins still being mixed can be spent that way once mixing finishes.` : where;
+}
+
 /** dash-qt's send-dialog text for a refusal (`SendCoinsDialog::processSendCoinsReturn`), and the
  * field it belongs to; `null` when the error is not a send refusal. */
-export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH"): { text: string; field: Field } | null {
+export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix?: MixHints): { text: string; field: Field } | null {
   if (!isAppError(e)) return null;
   const amount = (duffs: number) => formatWithUnit(unit, duffs, false, "standard", chain);
   switch (e.code) {
@@ -155,7 +185,7 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH"): { 
     case "send.amount_too_small_after_fee":
       return { text: "The amount is too small to pay its share of the fee.", field: "amount" };
     case "send.amount_exceeds_balance":
-      return { text: "The amount exceeds your balance.", field: "amount" };
+      return { text: e.data?.kind === "duffs" && mix && (mix.mixed || mix.mixing) ? overNormalFunds(amount(e.data.available), mix) : "The amount exceeds your balance.", field: "amount" };
     case "send.amount_with_fee_exceeds_balance": {
       const fee = e.data?.kind === "fee" ? e.data.fee : null;
       return {
@@ -191,6 +221,10 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH"): { 
       return { text: "Its coins were spent meanwhile. Review the payment again.", field: null };
     case "send.no_peers":
       return { text: "No connection to the Dash network. The payment was not sent.", field: null };
+    case "rescan_in_progress":
+      return { text: RESCAN_RUNNING, field: null };
+    case "rescan_interrupted":
+      return { text: RESCAN_INTERRUPTED, field: null };
     case "send.broadcast_rejected":
       return {
         text: `The network rejected the transaction${e.data?.kind === "reason" ? `: ${e.data.reason}` : ""}. The payment was not sent.`,

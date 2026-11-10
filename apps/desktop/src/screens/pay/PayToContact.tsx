@@ -9,7 +9,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { ContactRecipient } from "../../api/generated/ContactRecipient";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { keys, useBalance, useLockStatus, useWallets } from "../../api/queries";
+import { useLockStatus, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon } from "../../components/basics";
@@ -25,8 +25,8 @@ import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, resolveText, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
-import { AmountFields, draftSpec, FormField, PayFooter, useAmountField, useEstimate, useMax, type Phase } from "./form";
-import { confirmedOf, DEFAULT_ADVANCED, type Advanced, type Outcome } from "./model";
+import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
+import { confirmedOf, DEFAULT_ADVANCED, type Advanced } from "./model";
 import { ResultSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
 
@@ -197,7 +197,6 @@ function ContactForm({
   const lockState = useLockStatus().data?.state;
   const locked = lockState === "locked";
   const draft = useDraft(walletId, locked);
-  const balance = useBalance(walletId);
   const watchOnly = useWallets().data?.find((w) => w.walletId === walletId)?.watchOnly;
   const detail = useContactDetail(walletId, identity, contact);
   const hasKeys = useHasKeys(walletId, identity);
@@ -226,12 +225,19 @@ function ContactForm({
   const summary = detail.data?.summary;
   const payee = summary ? payeeOf(summary) : (shownAs ?? payeeOf({ contact, alias: null, displayName: null, username: null }));
 
-  const amount = useAmountField(shown, "");
+  const amount = usePayAmount(shown, "");
   const subtractFeeByDefault = () => ui.get().prefs.subtractFeeByDefault;
   const [subtractFee, setSubtractFee] = useState(subtractFeeByDefault);
   const [note, setNote] = useState("");
   const [advanced, setAdvanced] = useState<Advanced>(DEFAULT_ADVANCED);
-  const [phase, setPhase] = useState<Phase>({ kind: "editing" });
+  // As To an address: a payment that went, or may have, ends the form; the payee stays.
+  const sheets = usePaySheets(walletId, draft, () => {
+    amount.setText("");
+    setSubtractFee(subtractFeeByDefault());
+    setNote("");
+    setAdvanced(DEFAULT_ADVANCED);
+  });
+  const { phase } = sheets;
   const reviewButton = useRef<HTMLButtonElement>(null);
   const amountField = useRef<HTMLInputElement>(null);
   const backToForm = () => (reviewButton.current?.disabled === false ? reviewButton.current : amountField.current);
@@ -240,29 +246,16 @@ function ContactForm({
   const recipient: ContactRecipient | null =
     typeof duffs === "number" && duffs > 0 ? { identity, contact, amount: duffs, subtractFee, note: note.trim() || null } : null;
   const spec = draftSpec(recipient, advanced);
-  const { estimate, general, fieldError, ready: estimated } = useEstimate(walletId, draft, spec, advanced, locked || held, shown);
-  const ready = estimated && amount.settled;
+  const available = useAvailable(walletId, advanced, sheets.held);
+  const { estimate, general, fieldError, ready: estimated, offer } = useEstimate(walletId, draft, spec, advanced, locked || held || sheets.held, shown);
+  const ready = estimated && amount.settled && !amount.fiat.error;
   const max = useMax(walletId, advanced, shown, (text) => {
     amount.setText(text);
     setSubtractFee(true);
   });
 
   const review = () => {
-    if (ready && estimate.data && spec) setPhase({ kind: "confirm", confirmed: confirmedOf(spec.recipient, estimate.data, spec.change), spec });
-  };
-  const reset = () => {
-    amount.setText("");
-    setSubtractFee(subtractFeeByDefault());
-    setNote("");
-    setAdvanced(DEFAULT_ADVANCED);
-    void draft.close();
-    void client.invalidateQueries({ queryKey: keys.coinsAll(walletId) });
-  };
-  const finish = (outcome: Outcome, show: boolean) => {
-    // As To an address: a payment that went, or may have, ends the form; the payee stays.
-    if (outcome.kind !== "failed") reset();
-    setPhase({ kind: "editing" });
-    if (show && outcome.kind === "sent") navigate("activity", { detail: outcome.txid });
+    if (ready && estimate.data && spec) sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change), spec);
   };
 
   return (
@@ -300,7 +293,8 @@ function ContactForm({
                 amount={amount}
                 max={max}
                 error={fieldError("amount")}
-                available={balance.data?.confirmed}
+                available={available}
+            coins={advanced.coins}
                 subtractFee={subtractFee}
                 onSubtractFee={setSubtractFee}
                 inputRef={amountField}
@@ -310,7 +304,7 @@ function ContactForm({
               </FormField>
             </section>
             <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
-            <PayFooter problem={general} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} reviewRef={reviewButton} />
+            <PayFooter problem={general} offer={offer === null || !amount.settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
           </>
         )}
       </form>
@@ -323,8 +317,8 @@ function ContactForm({
           network={network}
           draft={draft}
           returnFocus={backToForm}
-          onCancel={() => setPhase({ kind: "editing" })}
-          onOutcome={(outcome) => setPhase({ kind: "result", outcome })}
+          onCancel={sheets.cancel}
+          onOutcome={sheets.outcome}
           contact={{
             identity,
             payee,
@@ -342,8 +336,8 @@ function ContactForm({
           network={network}
           draft={draft}
           returnFocus={backToForm}
-          onOutcome={(outcome) => setPhase({ kind: "result", outcome })}
-          onDone={(show) => finish(phase.outcome, show)}
+          onOutcome={sheets.outcome}
+          onDone={sheets.done}
         />
       )}
     </>

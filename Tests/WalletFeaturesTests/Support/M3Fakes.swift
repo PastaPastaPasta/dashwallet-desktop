@@ -87,10 +87,11 @@ final class FakeCoinJoin: CoinJoinControlling, MixedCoinsMoving, NetworkStatisti
         return plan
     }
 
-    func move(wallet: WalletID, destination: MixedCoinsDestination, grant: AuthGrant) async throws(ServiceError)
+    func move(wallet: WalletID, plan confirmed: MixedCoinsSweepPlan, grant: AuthGrant) async throws(ServiceError)
         -> MixedCoinsSweepResult
     {
         guard let plan = sweepPlan.current, let result = moveResult.current else { throw notConfigured("move") }
+        guard confirmed.quoteId == plan.quoteId else { throw ServiceError(code: .coinjoinPlanChanged) }
         guard case .spend(let max) = grant.purpose, max >= plan.total else { throw ServiceError(code: .coinjoinGrantInvalid) }
         moveGrants.withLock { $0.append(grant) }
         return result

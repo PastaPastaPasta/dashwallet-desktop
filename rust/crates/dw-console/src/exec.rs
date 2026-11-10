@@ -76,6 +76,8 @@ pub(crate) fn engine_failure(e: EngineError) -> ConsoleFailure {
             code::WALLET_ERROR,
             "Wallet is currently rescanning. Abort existing rescan or wait.",
         ),
+        // A stopped `rescanblockchain` (v24.0.0-rc.6 src/wallet/rpc/backup.cpp:85).
+        EngineError::RescanInterrupted => rpc(code::MISC_ERROR, "Rescan aborted by user."),
         EngineError::Vault(VaultError::Locked | VaultError::MixingOnly) => rpc(
             code::WALLET_UNLOCK_NEEDED,
             "Error: Please enter the wallet passphrase with walletpassphrase first.",

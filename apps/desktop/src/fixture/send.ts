@@ -126,7 +126,7 @@ export interface ReceiveWorld {
   usernameInRequests: boolean;
 }
 
-export const newReceiveWorld = (): ReceiveWorld => ({ firstUnused: 0, issued: 0, requests: [], nextRequest: 1, usernameInRequests: true });
+export const newReceiveWorld = (): ReceiveWorld => ({ firstUnused: 0, issued: 0, requests: [], nextRequest: 1, usernameInRequests: false });
 
 /** The funded wallet's coins: the confirmed ones add up to `FUNDED_BALANCES.confirmed`; the
  * unconfirmed one (neither mined nor InstantSend-locked) cannot be spent yet. */
@@ -166,10 +166,16 @@ export function buildCoins(variant: HistoryVariant): Utxo[] {
 const BASE58_RE = new RegExp(`^[${BASE58}]+$`);
 
 /** dw-uri's `classify` for the fixture's address shapes: Base58 P2PKH/P2SH of the network
- * (`y`/`8` off mainnet, `X`/`7` on it), and Platform's bech32m HRPs. */
+ * (`y`/`8` off mainnet, `X`/`7` on it), and bech32m at the network's HRP (`dash` on mainnet,
+ * `tdash` off it): a shielded address's type byte 0x10 reads `z` first, a Platform P2PKH's 0xb0
+ * `k` and a P2SH's 0x80 `s`. Another network's HRP is not an address here. */
 export function classifyAddress(network: string, text: string): AddressClass {
   const t = text.trim();
-  if (/^t?dash1[02-9ac-hj-np-z]+$/.test(t)) return { kind: "platform" };
+  const bech = /^(t?dash)1([02-9ac-hj-np-z]+)$/.exec(t);
+  if (bech) {
+    if (bech[1] !== (network === "mainnet" ? "dash" : "tdash")) return { kind: "invalid", problem: { kind: "notBech32mOrBase58" } };
+    return bech[2].startsWith("z") ? { kind: "shielded" } : { kind: "platform" };
+  }
   if (!BASE58_RE.test(t)) return { kind: "invalid", problem: { kind: "notBech32mOrBase58" } };
   if (t.length !== 34) return { kind: "invalid", problem: { kind: "invalidBase58Length" } };
   const [p2pkh, p2sh] = network === "mainnet" ? ["X", "7"] : ["y", "8"];
@@ -208,8 +214,8 @@ export function paymentUri(address: string, amount: number | null, label: string
   return `dash:${address}${query.length ? `?${query.join("&")}` : ""}`;
 }
 
-/** The username requests and the Receive QR carry: none while the wallet's opt-out is off. */
-const requestUsername = (world: World, w: FixtureWallet): string | null => (w.receive.usernameInRequests ? mainUsername(world.dashpay) : null);
+/** An explicit request choice overrides the wallet default. */
+const requestUsername = (world: World, w: FixtureWallet, includeUsername?: boolean | null): string | null => ((includeUsername ?? w.receive.usernameInRequests) ? mainUsername(world.dashpay) : null);
 
 /** A stored request as a read shows it: `username` and its `uri` follow the current main name. */
 const withUsername = (r: ReceiveRequest, username: string | null): ReceiveRequest => ({
@@ -275,19 +281,29 @@ function checkRate(fee: FeeMode) {
 
 /** The coins `source` may spend, largest first. */
 function sourceCoins(wallet: FixtureWallet, source: CoinSource): Utxo[] {
-  const coins = wallet.coins.filter((u) => u.spendable);
+  const coins = wallet.coins.filter((u) => u.spendable && !u.reserved && !u.userLocked);
   return pickCoins(coins, source).toSorted((a, b) => b.amount - a.amount);
 }
 
+/** A coin of a funding account (BIP44, BIP32, DashPay), as against the CoinJoin account's. */
+const isSendAccount = (u: Utxo) => !u.coinjoinDenominated && u.coinjoinRounds === null;
+
+/** The CoinJoin rounds that make a denomination fully mixed (the engine's default target). */
+const MIXED_ROUNDS = 4;
+const isFullyMixed = (u: Utxo) => u.coinjoinRounds !== null && u.coinjoinRounds >= MIXED_ROUNDS;
+
 function pickCoins(coins: Utxo[], source: CoinSource): Utxo[] {
   switch (source.kind) {
+    // A normal payment leaves the CoinJoin account's coins, mixed or still mixing, alone.
     case "any":
-      return coins;
+      return coins.filter(isSendAccount);
     case "fullyMixedOnly":
-      return coins.filter((u) => u.coinjoinRounds !== null);
+      return coins.filter(isFullyMixed);
     case "outpoints":
       return source.outpoints.map((o) => {
-        const u = coins.find((x) => sameOutpoint(x.outpoint, o));
+        // Selected coins are send-account coins only: a CoinJoin coin reads as unavailable
+        // (dw-engine coins.rs:626-630 collects them `send_account = false`; send/mod.rs:875-881).
+        const u = coins.find((x) => sameOutpoint(x.outpoint, o) && isSendAccount(x));
         if (!u) throw fail("send.outpoint_unavailable", "coin unavailable", { kind: "outpoint", txid: o.txid, vout: o.vout });
         return u;
       });
@@ -336,8 +352,9 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   let base = feeWith(inputs.length, true);
   let change: number | null = sum - pay - (subtract ? 0 : base);
   let rest = 0;
-  // Change below dust is not made: the transaction is smaller and the rest goes to the fee.
-  if (change < DUST) {
+  // Change at or below dust is not made (as plan.rs: change only when the rest is above dust): the
+  // transaction is smaller and the rest goes to the fee.
+  if (change <= DUST) {
     base = feeWith(inputs.length, false);
     rest = sum - pay - (subtract ? 0 : base);
     if (rest < 0) {
@@ -346,8 +363,12 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
     }
     change = null;
   }
-  const fee = base + rest;
-  const totalSent = subtract ? pay - base : pay;
+  // A dust rest pays the fee first; subtract-fee recipients pay only what it leaves (plan.rs).
+  const reduce = subtract ? Math.max(0, base - rest) : 0;
+  let fee = (subtract ? reduce : base) + rest;
+  const totalSent = pay - reduce;
+  // A fully mixed spend makes no change: the rest is fee (dw-engine `send::finish`).
+  if (d.source.kind === "fullyMixedOnly" && change !== null) [fee, change] = [fee + change, null];
   if (subtract && totalSent < DUST) throw fail("send.amount_too_small_after_fee", "amount too small after the fee", { kind: "recipient", index: 0 });
   if (fee > MAX_TX_FEE) throw fail("send.absurd_fee", "absurd fee", { kind: "fee", fee, available: null });
   return { fee, sizeBytes: sizeOf(inputs.length, outputs + (change === null ? 0 : 1)), inputCount: inputs.length, change, totalSent, inputs };
@@ -403,6 +424,43 @@ export interface SendDeps {
 const unknownHandle = (h: number) => fail("app.unknown_handle", `unknown handle: ${h}`);
 
 /** An address of the wallet's receiving chain: the same one for an index every run. */
+/** A payment of `duffs` to the wallet's current receiving address (or to `to`), as the engine reports one: the row,
+ * the address used (the next one is current from now on), `historyChanged` and `newTransactions`.
+ * Returns the paid address. */
+export function receivePayment(ctx: Ctx, walletId: string, duffs: number, to?: string): string {
+  const w = ctx.world.wallets.find((x) => x.summary.walletId === walletId)!;
+  const current = receiveAddress(w, w.receive.firstUnused, null).address;
+  const address = to ?? current;
+  const txid = (0xfeed0000 + w.rows.length).toString(16).padStart(64, "0");
+  w.rows = [
+    {
+      txid,
+      recordIndex: 0,
+      txType: "recvWithAddress",
+      category: "received",
+      status: { kind: "confirming", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
+      timestamp: secs(FIXTURE_NOW),
+      blockHeight: null,
+      amount: duffs,
+      fee: null,
+      address,
+      label: null,
+      countsTowardBalance: true,
+      involvesWatchOnly: false,
+    },
+    ...w.rows,
+  ];
+  // Only the engine's current address moves it on; an address issued by "New address" does not.
+  if (address === current) {
+    w.receive.firstUnused += 1;
+    w.receive.issued = Math.max(w.receive.issued, w.receive.firstUnused);
+  }
+  const network = ctx.world.launch.network.dirName;
+  ctx.emit({ kind: "historyChanged", network, walletId, txids: [txid] });
+  ctx.emit({ kind: "newTransactions", network, walletId, txids: [txid], count: 1, catchUp: false });
+  return address;
+}
+
 function receiveAddress(wallet: FixtureWallet, index: number, label: string | null): AddressInfo {
   const seed = parseInt(wallet.summary.walletId.slice(0, 6), 16) + index * 7919;
   return {
@@ -530,7 +588,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       wallet(world, walletId).coins.filter(
         (u) =>
           (filter.includeLocked || !u.userLocked) &&
-          (!filter.fullyMixedOnly || u.coinjoinRounds !== null) &&
+          (!filter.fullyMixedOnly || isFullyMixed(u)) &&
           (filter.minConfirmations === null || u.confirmations >= filter.minConfirmations),
       ),
     coin_selection_summary: ({ walletId, outpoints, payAmounts, fee, allChangeToFee }, { world }) => {
@@ -775,10 +833,11 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       return receiveAddress(w, w.receive.firstUnused, null);
     },
     next_receive_address: ({ walletId, label }, { world }) => issueAddress(wallet(world, walletId), label),
-    create_receive_request: ({ walletId, amount, label, message }, { world }) => {
+    create_receive_request: ({ walletId, amount, label, message, includeUsername }, { world }) => {
       const w = wallet(world, walletId);
       const { address } = issueAddress(w, label);
       const request: ReceiveRequest = {
+        includeUsername: includeUsername ?? null,
         id: w.receive.nextRequest++,
         createdAt: secs(FIXTURE_NOW),
         address,
@@ -789,15 +848,14 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         uri: "",
       };
       // Before it is stored: an amount out of range stores nothing, as the engine.
-      const shown = withUsername(request, requestUsername(world, w));
+      const shown = withUsername(request, requestUsername(world, w, includeUsername));
       w.receive.requests = [request, ...w.receive.requests];
       return shown;
     },
     // The username is the current main name, not stored (DP3-03 D18).
     receive_requests: ({ walletId }, { world }) => {
       const w = wallet(world, walletId);
-      const username = requestUsername(world, w);
-      return w.receive.requests.map((r) => withUsername(r, username));
+      return w.receive.requests.map((r) => withUsername(r, requestUsername(world, w, r.includeUsername)));
     },
     receive_username: ({ walletId }, { world }) => requestUsername(world, wallet(world, walletId)),
     username_in_requests: ({ walletId }, { world }) => wallet(world, walletId).receive.usernameInRequests,

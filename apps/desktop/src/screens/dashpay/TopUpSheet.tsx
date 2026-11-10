@@ -85,7 +85,7 @@ function AmountStep({ flow, costs, network, amount }: { flow: TopUpFlow; costs: 
         <DashButton variant="tintedGray" size="large" type="button" data-testid="topup-cancel" onClick={() => flow.close()}>
           {TOPUP_COPY.amount.cancel}
         </DashButton>
-        <DashButton variant="filledBlue" size="large" type="submit" data-testid="topup-next" disabled={duffs === null}>
+        <DashButton variant="filledBlue" size="large" type="submit" data-testid="topup-next" disabled={duffs === null} why="Enter an amount first.">
           {TOPUP_COPY.amount.next}
         </DashButton>
       </div>

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
+import { orAbsent, orUnavailable } from "./pending";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
 import type { AddressPurposeName } from "./generated/AddressPurposeName";
@@ -41,6 +42,7 @@ export class IpcBackend implements Backend {
   importWallet = cmd.importWallet;
   authorize = cmd.authorize;
   authorizeSet = cmd.authorizeSet;
+  authorizePlatformSend = (...a: Parameters<typeof cmd.authorizePlatformSend>) => orUnavailable(cmd.authorizePlatformSend(...a));
   beginFlow = cmd.beginFlow;
   endFlow = cmd.endFlow;
   revokeGrant = cmd.revokeGrant;
@@ -50,6 +52,36 @@ export class IpcBackend implements Backend {
   balance = (walletId: string) => cmd.balance(walletId);
   syncStatus = () => cmd.syncStatus();
   historyPage = cmd.historyPage;
+  exportHistoryCsv = cmd.exportHistoryCsv;
+  txNotices = cmd.txNotices;
+  // Against a dw-app without the command (api/pending.ts): the optional reads answer `null` (orAbsent),
+  // the calls that mean nothing without it fail with a message the screen shows (orUnavailable).
+  networkChoice = () => orAbsent(cmd.getNetworkChoice());
+  setNetworkChoice = (...a: Parameters<typeof cmd.setNetworkChoice>) => orUnavailable(cmd.setNetworkChoice(...a));
+  shieldedStatus = (walletId: string) => orAbsent(cmd.shieldedStatus(walletId));
+  shieldedReceiveAddress = (...a: Parameters<typeof cmd.shieldedReceiveAddress>) => orUnavailable(cmd.shieldedReceiveAddress(...a));
+  shieldQuote = (...a: Parameters<typeof cmd.shieldQuote>) => orUnavailable(cmd.shieldQuote(...a));
+  shieldFromCore = (...a: Parameters<typeof cmd.shieldFromCore>) => orUnavailable(cmd.shieldFromCore(...a));
+  resumeShield = (...a: Parameters<typeof cmd.resumeShield>) => orUnavailable(cmd.resumeShield(...a));
+  unfinishedTransfers = (walletId: string) => orAbsent(cmd.unfinishedTransfers(walletId));
+  finishTransfer = (...a: Parameters<typeof cmd.finishTransfer>) => orUnavailable(cmd.finishTransfer(...a));
+  shieldedSendQuote = (...a: Parameters<typeof cmd.shieldedSendQuote>) => orUnavailable(cmd.shieldedSendQuote(...a));
+  shieldedSend = (...a: Parameters<typeof cmd.shieldedSend>) => orUnavailable(cmd.shieldedSend(...a));
+  unshieldQuote = (...a: Parameters<typeof cmd.unshieldQuote>) => orUnavailable(cmd.unshieldQuote(...a));
+  unshieldToCore = (...a: Parameters<typeof cmd.unshieldToCore>) => orUnavailable(cmd.unshieldToCore(...a));
+  shieldedHistory = (walletId: string, offset: number, limit: number) => orAbsent(cmd.shieldedHistory(walletId, offset, limit));
+  platformAddresses = (walletId: string) => orAbsent(cmd.platformAddresses(walletId));
+  platformActivity = (walletId: string) => orAbsent(cmd.platformActivity(walletId));
+  platformMoveToCoreQuote = (...a: Parameters<typeof cmd.platformMoveToCoreQuote>) => orUnavailable(cmd.platformMoveToCoreQuote(...a));
+  platformMoveToCore = (...a: Parameters<typeof cmd.platformMoveToCore>) => orUnavailable(cmd.platformMoveToCore(...a));
+  platformAddressesSync = (...a: Parameters<typeof cmd.platformAddressesSync>) => orUnavailable(cmd.platformAddressesSync(...a));
+  platformReceiveAddress = (...a: Parameters<typeof cmd.platformReceiveAddress>) => orUnavailable(cmd.platformReceiveAddress(...a));
+  platformSendQuote = (...a: Parameters<typeof cmd.platformSendQuote>) => orUnavailable(cmd.platformSendQuote(...a));
+  platformSend = (...a: Parameters<typeof cmd.platformSend>) => orUnavailable(cmd.platformSend(...a));
+  platformFundQuote = (...a: Parameters<typeof cmd.platformFundQuote>) => orUnavailable(cmd.platformFundQuote(...a));
+  platformFund = (...a: Parameters<typeof cmd.platformFund>) => orUnavailable(cmd.platformFund(...a));
+  pendingPlatformFunds = (walletId: string) => orAbsent(cmd.pendingPlatformFunds(walletId));
+  resumePlatformFund = (...a: Parameters<typeof cmd.resumePlatformFund>) => orUnavailable(cmd.resumePlatformFund(...a));
   txDetail = cmd.txDetail;
   txDetailExtras = cmd.txDetailExtras;
   setTxLabel = cmd.setTxLabel;
@@ -86,6 +118,10 @@ export class IpcBackend implements Backend {
   paymentAuthentication = () => cmd.paymentAuthentication();
   uiSettings = () => cmd.uiSettings();
   setUiSettings = cmd.setUiSettings;
+  ratesStatus = () => cmd.ratesStatus();
+  ratesCurrencies = () => cmd.ratesCurrencies();
+  setRatesSettings = cmd.setRatesSettings;
+  refreshRates = () => cmd.refreshRates();
   encryptVault = cmd.encryptVault;
   changePassphrase = cmd.changePassphrase;
   setPaymentAuthentication = cmd.setPaymentAuthentication;
@@ -120,6 +156,14 @@ export class IpcBackend implements Backend {
   coinjoinStatus = cmd.coinjoinStatus;
   startMixing = cmd.startMixing;
   stopMixing = cmd.stopMixing;
+  mixedCoinsSweepPlan = cmd.mixedCoinsSweepPlan;
+  moveMixedCoins = cmd.moveMixedCoins;
+  resendMixedCoins = cmd.resendMixedCoins;
+  mixedCoinsConsolidationPlan = cmd.mixedCoinsConsolidationPlan;
+  consolidateMixedCoins = cmd.consolidateMixedCoins;
+  shieldMixedQuote = cmd.shieldMixedQuote;
+  shieldMixedCoins = cmd.shieldMixedCoins;
+  stuckShieldFundings = cmd.stuckShieldFundings;
   dashpayStatus = cmd.dashpayStatus;
   identities = cmd.identities;
   dashpayUnreadCount = cmd.dashpayUnreadCount;

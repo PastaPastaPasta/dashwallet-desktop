@@ -214,11 +214,13 @@ impl NetworkSession {
         // The fence from the reward address and the coins to the row's
         // write and its hand-off (BL-352's order).
         let fence = self.coin_fence(wallet).await?;
+        let guarded = self.replay_guard(wallet, 0).await?;
         self.check_no_pending_maintenance(wallet, hash, None)
             .await?;
         let mut plan = self
             .plan_share_update(wallet, &request, hash, &ctx, &fence, true)
             .await?;
+        self.replay_guard(wallet, guarded).await?;
         let lease = self.shared_lease(wallet, grant).await?;
         let id = ops::new_id();
         let result = async {

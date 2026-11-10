@@ -357,8 +357,11 @@ impl NetworkSession {
         reuse: Option<&str>,
     ) -> Result<(Selected, Option<RecordedChange>), MasternodesError> {
         let w = self.wallet(&fence.wallet_id()).await?;
-        let candidates = self.shared_candidates(fence, &w, id, also).await?;
-        self.shared_selection(&w, candidates, target, reuse).await
+        (self.replay_guarded(fence.wallet_id(), async {
+            let candidates = self.shared_candidates(fence, &w, id, also).await?;
+            self.shared_selection(&w, candidates, target, reuse).await
+        }))
+        .await
     }
 
     /// This wallet's coins of `outpoints` with their scripts and key paths,

@@ -24,7 +24,6 @@ use key_wallet::account::{Account, AccountType, StandardAccountType};
 use key_wallet::bip32::{ChildNumber, ExtendedPubKey};
 use key_wallet::wallet::Wallet;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
-use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use key_wallet::wallet::root_extended_keys::RootExtendedPubKey;
 use platform_wallet::changeset::{
     AccountAddressPoolEntry, AccountRegistrationEntry, PlatformWalletChangeSet,
@@ -258,6 +257,8 @@ impl NetworkSession {
 
     /// dash-qt "Close Wallet": unloads a loaded wallet. Its data stays; its
     /// prepared, unsent payments lose their reservations. Idempotent.
+    /// `ShieldedSpendUnresolved` while it holds a shielded spend whose
+    /// result is not known (DEC-1046).
     pub async fn unload_wallet(self: &Arc<Self>, id: WalletId) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
@@ -268,6 +269,22 @@ impl NetworkSession {
                 return Ok(());
             }
             this.require_wallet(&id)?;
+            // A shielded call of the wallet in flight (a send, an unshield,
+            // a shield) ends first and none starts until the unload is
+            // done: a spend's library call outlives its permit's drain, and
+            // may store its transition up to its end.
+            let _shielded = crate::platform::shielded_pool::wallet_lock(&this, id)
+                .lock_owned()
+                .await;
+            // DEC-1046: unloading a wallet that holds a shielded spend of
+            // unknown result would delete its stored transition (no detach
+            // at the pin); refused before anything of it changes, and again
+            // at the removal (fail closed).
+            if crate::platform::shielded_pool::holds_unresolved(&this.leases, &live.manager, id)
+                .await
+            {
+                return Err(EngineError::ShieldedSpendUnresolved);
+            }
             // E0-04 §8.6: the wallet's leases end and its permits drain.
             let _barrier = this
                 .revoke_wallet(id, crate::platform::RevokeCause::WalletClosed)
@@ -277,8 +294,19 @@ impl NetworkSession {
             // Its discoveries end first, as for a removal: none may apply
             // what it finds to the wallet once it is loaded again.
             let _discoveries = this.platform.recovery.end_discoveries(id).await;
-            if let Err(e) = this.platform.remove_from_manager(&live.manager, id).await {
+            if let Err(e) = (this.platform)
+                .remove_from_manager(
+                    &this.leases,
+                    &live.manager,
+                    id,
+                    crate::platform::runtime::StoredSpends::Refuse,
+                )
+                .await
+            {
                 live.store.set_unloaded(id.0, false);
+                // The revocation dropped its background lease, without
+                // which every shielded pass of the network is held back.
+                this.spawn_ensure_background();
                 return Err(e);
             }
             this.hub.unload_wallet(&id);
@@ -301,21 +329,47 @@ impl NetworkSession {
     pub async fn load_wallet(self: &Arc<Self>, id: WalletId) -> Result<(), EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
+            // A wallet loads with its stored shielded spends: not between an
+            // in-app close's check and its commit (E1 r2 R2-3).
+            let _admitted = this.platform.wallet_loads.read().await;
             let _op = this.enter().await?;
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             if !live.store.is_unloaded(&id.0) {
                 return this.require_wallet(&id);
             }
+            // The wallet joins the shielded passes' set: not while one is in
+            // flight (R1-3, `PlatformRuntime::shielded_passes`).
+            let passes = this.platform.shielded_passes.write().await;
+            // Spends wait from before the wallet is published until its
+            // stored replay is resumed (`WalletState::loading`); a store
+            // SPV commits for it meanwhile ends no record
+            // (`ReplayRecords::committed`).
+            this.hub.update_wallet_state(id, |s| s.loading = true);
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
                 live.store.set_unloaded(id.0, true);
+                this.hub.unload_wallet(&id);
                 return Err(e.into());
             }
             if live.manager.get_wallet(&id.0).await.is_none() {
                 live.store.set_unloaded(id.0, true);
+                this.hub.unload_wallet(&id);
                 return Err(EngineError::WalletNotFound(id.to_string()));
             }
+            drop(passes);
+            this.restore_loaded_wallet(&live.manager, id).await;
+            #[cfg(test)]
+            let pause = this.hub.pause_load.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause
+                    .reached
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                pause.release.notified().await;
+            }
+            this.resume_replay(&live.manager, id).await;
+            this.hub.update_wallet_state(id, |s| s.loading = false);
             this.refresh_wallet_state(&live.manager, id).await;
             this.load_identity_choices(id).await;
             this.load_payment_locks(id).await;
@@ -477,13 +531,12 @@ impl NetworkSession {
                 .get_wallet(&id.0)
                 .await
                 .ok_or_else(|| EngineError::Internal(format!("watch-only wallet {id} did not load")))?;
-            if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD
-                && let Err(e) = wallet
-                    .core()
-                    .set_gap_limit(AccountTypePreference::BIP44, account, lookahead)
-                    .await
-            {
-                tracing::warn!(wallet_id = %id, error = %e, "could not set the watch-only lookahead");
+            if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD {
+                if let Err(e) = crate::keys::apply_lookahead(&wallet, lookahead).await {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not set the watch-only lookahead");
+                }
+                // Raised again at every load, as a seed import's.
+                this.store_lookahead(id, lookahead).await;
             }
             this.refresh_wallet_state(&live.manager, id).await;
             let default_name = this.next_default_name();

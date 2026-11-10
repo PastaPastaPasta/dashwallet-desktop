@@ -1,18 +1,21 @@
 // Tools ▸ Repair (QT-117, QT-148, IOS-034, IOS-113, E0-04 C9): rescans with progress and Cancel
 // (D10), the wallet's birth height, removing unconfirmed transactions and resetting chain data
-// (each asks first, D11), resolving a registration's or a top-up's stuck funding (D12, DP1-10
-// D16), and finishing stranded asset locks (DP1-09 D10). Unrecorded asset locks wait on DP1-02's
-// facade call.
+// (each asks first, D11), resolving a registration's, a top-up's or a move into Shielded's stuck
+// funding (D12, DP1-10 D16), and finishing stranded asset locks (DP1-09 D10). Unrecorded asset
+// locks wait on DP1-02's facade call.
 
 import { useEffect, useId, useState } from "react";
+import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useQueryClient } from "@tanstack/react-query";
-import { keys, useBackend } from "../../api/queries";
+import { keys, useBackend, useUnfinishedTransfers } from "../../api/queries";
+import { unreadText } from "../../dashpay/registration";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
+import { useDisplay } from "../../format/display";
 import { useModel } from "../../onboarding/model";
 import type { GrantModel } from "../../tools/grant";
-import { isTopUp, RepairModel, RepairText, type Confirmation } from "../../tools/repair";
+import { isShield, isTopUp, RepairModel, RepairText, shieldBlockedText, type Confirmation } from "../../tools/repair";
 import { NotYet, Outcome, ToolCard, useReloadOnSync } from "./common";
 
 /** The rescan's progress is read this often while one runs (D10). */
@@ -24,10 +27,13 @@ const QUESTION: Record<Confirmation, { title: string; text: string; action: stri
   resolveStuck: { title: RepairText.resolveStuck, text: RepairText.resolveStuckQuestion, action: "Send to yourself" },
 };
 
-export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: WalletSummary }) {
+export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wallet: WalletSummary; network: NetworkInfo }) {
   const b = useBackend();
+  const shown = useDisplay(network);
+  const amount = (duffs: number) => `${shown.compact(duffs)} ${shown.name}`;
   const client = useQueryClient();
   const [model] = useState(() => new RepairModel(b, grants, wallet.walletId));
+  const unfinished = useUnfinishedTransfers(wallet.walletId);
   useModel(model);
   const [from, setFrom] = useState("");
   const [birth, setBirth] = useState("");
@@ -41,8 +47,19 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
 
   const { state } = model;
   const outcome = state.kind === "done" ? { ok: true, text: state.text } : state.kind === "failed" ? { ok: false, text: state.text } : null;
+  const target = state.kind === "confirming" ? state.target : undefined;
   const question =
-    state.kind !== "confirming" ? null : state.target && isTopUp(state.target) ? { ...QUESTION.resolveStuck, text: RepairText.resolveStuckTopUpQuestion } : QUESTION[state.what];
+    state.kind !== "confirming"
+      ? null
+      : target && isShield(target) && target.repair
+        ? {
+            title: RepairText.resolveStuck,
+            text: RepairText.resolveStuckShieldQuestion(target.repair.mixed, target.repair.inputs, amount(target.repair.totalDuffs), amount(target.repair.feeDuffs)),
+            action: `Send back and pay ${amount(target.repair.feeDuffs)}`,
+          }
+        : target && isTopUp(target)
+          ? { ...QUESTION.resolveStuck, text: RepairText.resolveStuckTopUpQuestion }
+          : QUESTION[state.what];
   const fraction = model.progressFraction;
   return (
     <div className="tool-stack" data-testid="tools-repair">
@@ -153,9 +170,43 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
           </ul>
         </ToolCard>
       )}
+      {model.stuckShields.length > 0 && (
+        <ToolCard title="Stuck moves into Shielded" testId="repair-stuck-shields">
+          <p className="placeholder-note">
+            Whether these moves' payment reached the network is unknown, so no new move into Shielded can start. Repair settles each with a payment back to
+            your own wallet; you confirm its coins and its fee first.
+          </p>
+          <ul className="tool-list">
+            {model.stuckShields.map((f) => (
+              <li key={f.step} data-testid={`repair-stuck-${f.step}`}>
+                <span>
+                  {RepairText.shield(f.repair?.mixed ?? false)}.{" "}
+                  {f.repair
+                    ? RepairText.shieldRepair(f.repair.mixed, f.repair.inputs, amount(f.repair.totalDuffs), amount(f.repair.feeDuffs))
+                    : f.blocked && shieldBlockedText(f.blocked)}
+                </span>
+                <DashButton
+                  variant="tintedBlue"
+                  size="small"
+                  data-testid={`repair-resolve-${f.step}`}
+                  disabled={model.busy || !f.repair}
+                  onClick={() => model.ask("resolveStuck", f)}
+                >
+                  Send the coins back…
+                </DashButton>
+              </li>
+            ))}
+          </ul>
+        </ToolCard>
+      )}
       {model.stuckUnreadable && (
         <p className="placeholder-note" data-testid="repair-stuck-unreadable">
           {RepairText.stuckUnreadable}
+        </p>
+      )}
+      {model.stuckShieldsUnreadable && (
+        <p className="placeholder-note" data-testid="repair-stuck-shields-unreadable">
+          {RepairText.stuckShieldsUnreadable}
         </p>
       )}
       {model.stuckTopUpsUnreadable && (
@@ -165,8 +216,13 @@ export function RepairTab({ grants, wallet }: { grants: GrantModel; wallet: Wall
       )}
       <ToolCard title="Finish transfers" testId="repair-finish">
         <p className="placeholder-note">
-          Finishes username registrations and credit top-ups whose payment was sent but never completed. Nothing more is paid.
+          Finishes username registrations, credit top-ups, and transfers to Shielded or to your Platform addresses whose payment was sent but never completed. Nothing more is paid.
         </p>
+        {unfinished.data && unfinished.data.unread.length > 0 && (
+          <p className="placeholder-note" role="status" data-testid="repair-unfinished-unread">
+            {unreadText(unfinished.data.unread)}
+          </p>
+        )}
         <div className="tool-actions">
           <DashButton variant="tintedBlue" size="small" data-testid="repair-finish-transfers" disabled={model.busy} onClick={() => void model.finishTransfers()}>
             Finish transfers

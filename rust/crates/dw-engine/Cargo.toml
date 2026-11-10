@@ -8,22 +8,22 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Off by default: the Orchard shielded pool pulls in halo2 (build time, binary
-# size, prover warm-up; E0-12, docs/research/shielded-cost.md). Enables the
-# platform-wallet shielded wallet and its SqlitePersister tables.
-shielded = ["platform-wallet/shielded", "platform-wallet-storage/shielded"]
 # A request through a session's own SDK for dwcli's log redaction test
 # (MG-03 D37), and DP5-02's invitation maker, enabled only by dwcli's
 # dev-dependency and its `invitation-create-test` feature. The module also
 # needs `debug_assertions`, so a release or dist build never has it (D40).
 test-support = []
+# `NetworkSession::fund_platform_addresses_for_test`, for dwcli's
+# `platform-addr-fund` feature only (debug builds; release 0.1's smoke).
+test-fund = []
+# `mix_shield_test`, for dwcli's `mix-shield-test` feature only (the
+# regtest suite of "move mixed coins"). The module also needs
+# `debug_assertions`; `tests/mix_shield_release_check.rs` proves it absent
+# from a release build.
+test-mix-shield = []
 # Debug builds only: the engine's masternode-withdrawal fault points and
 # `DW_FAULT=<point>` (MG-13 §3 fault sweep, T2 (4)), with dw-appdb's.
 fault-inject = ["dw-appdb/fault-inject"]
-
-[[example]]
-name = "shielded_warmup"
-required-features = ["shielded"]
 
 [dependencies]
 platform-wallet = { workspace = true }
@@ -96,6 +96,9 @@ dw-appdb = { workspace = true, features = ["test-mutations", "durability-sim", "
 dw-vault = { workspace = true, features = ["insecure-test-kdf", "fault-inject"] }
 dw-message = { workspace = true }
 serde_json = "1"
+# Encodes the ChainLock a regtest test writes into the wallet's store, as the
+# store's own codec does (the crate the graph already uses).
+bincode = { package = "grovedb-bincode", version = "=2.1.0" }
 tempfile = { workspace = true }
 # private_tempdir(): engine data roots that pass the storage permission check under any umask.
 dw-testutil = { workspace = true }

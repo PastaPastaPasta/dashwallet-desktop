@@ -164,7 +164,7 @@ fn test_qt_046_coinjoin_calls_answer_and_check_their_wallet() {
         not_implemented: "NetworkSession.mixed_coins_sweep_plan.shielded"
     );
     assert_code!(
-        rt.block_on(s.move_mixed_coins(WALLET.into(), MixedCoinsDestination::Shielded, "g".into())),
+        rt.block_on(s.move_mixed_coins(WALLET.into(), MixedCoinsDestination::Shielded, "q".into(), "g".into())),
         not_implemented: "NetworkSession.move_mixed_coins.shielded"
     );
 
@@ -252,6 +252,9 @@ fn m3_error_codes_match_the_contract() {
             CoinJoinError::VaultLocked,
             CoinJoinError::GrantInvalid,
             CoinJoinError::NothingToMove,
+            CoinJoinError::MixingActive,
+            CoinJoinError::MoveRunning,
+            CoinJoinError::PlanChanged,
             CoinJoinError::SpvNotRunning,
             CoinJoinError::NoPeers,
             CoinJoinError::BroadcastRejected { reason: d() },

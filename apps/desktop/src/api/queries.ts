@@ -4,11 +4,20 @@
 import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
+import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
+import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { ShieldQuote } from "./generated/ShieldQuote";
+import type { WithdrawAmount } from "./generated/WithdrawAmount";
+import { creditsToDuffs } from "./pending";
+import { feedSync, rawSync, readTicket, useShownSync } from "./syncDisplay";
+import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
 import type { IdentitySummary } from "./generated/IdentitySummary";
+import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockProgress } from "./generated/LockProgress";
+import { hasPendingMove } from "../platform/move";
 import { reconcileLockReport } from "./lockReport";
 import { isChangingUsernameInRequests } from "./username";
 
@@ -33,6 +42,25 @@ export const keys = {
   lockDrain: ["lockDrain"] as const,
   wallets: ["wallets"] as const,
   balance: (walletId: string) => ["balance", walletId] as const,
+  // Under "dashpay" like the Platform keys: `platform{domain:"shielded"}` re-reads them all.
+  shieldedStatus: (walletId: string) => ["dashpay", "shielded", "status", walletId] as const,
+  shieldedHistory: (walletId: string) => ["dashpay", "shielded", "history", walletId] as const,
+  shieldedAddress: (walletId: string) => ["dashpay", "shielded", "address", walletId] as const,
+  unfinishedTransfers: (walletId: string) => ["dashpay", "unfinished", walletId] as const,
+  unfinishedTransfersAll: ["dashpay", "unfinished"] as const,
+  shieldedQuote: (walletId: string, request: string) => ["shieldedQuote", walletId, request] as const,
+  // Under "dashpay": a `platform{domain:"platformAddresses"}` event is a domain events.ts does not
+  // name, which it answers by invalidating everything under that prefix.
+  platformAddresses: (walletId: string) => ["dashpay", "platformAddresses", walletId] as const,
+  platformActivity: (walletId: string) => ["dashpay", "platformActivity", walletId] as const,
+  // Not under "dashpay": a quote is a proven network read, which a signal must not repeat while Confirm is open.
+  platformMoveQuote: (walletId: string) => ["platformMoveQuote", walletId] as const,
+  platformReceiveAddress: (walletId: string) => ["dashpay", "platformReceiveAddress", walletId] as const,
+  platformFundQuote: (walletId: string, duffs: number) => ["platformFundQuote", walletId, duffs] as const,
+  // Under "dashpay" so the settle invalidation (events.ts) re-reads the unfinished locks.
+  pendingPlatformFunds: (walletId: string) => ["dashpay", "pendingPlatformFunds", walletId] as const,
+  platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
+  networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
   history: (walletId: string, filter: HistoryFilter, limit: number) => ["history", walletId, filter, limit] as const,
@@ -64,6 +92,10 @@ export const keys = {
   coinjoinSettings: ["coinjoin", "settings"] as const,
   /** Every governance read (the `governance_*` commands, BL-232): a `governance` event makes them all stale. */
   governanceAll: ["governance"] as const,
+  /** Prices (MP-01): `ratesStatus` and `ratesCurrencies`; a `rates` event makes them stale. */
+  ratesAll: ["rates"] as const,
+  ratesStatus: ["rates", "status"] as const,
+  ratesCurrencies: ["rates", "currencies"] as const,
   /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
   dashpayAll: ["dashpay"] as const,
   /** Every wallet's DashPay status: sync moves `noIdentity`'s `waitingForSync` (BL-153 D9). */
@@ -110,9 +142,178 @@ export function useBalance(walletId: string) {
   return useQuery({ queryKey: keys.balance(walletId), queryFn: () => b.balance(walletId) });
 }
 
+/** The wallet's Platform addresses; `null` while dw-app has no such command (api/pending.ts). */
+export function usePlatformAddresses(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.platformAddresses(walletId), queryFn: () => b.platformAddresses(walletId), retry: false });
+}
+
+export const PENDING_MOVE_REFETCH_MS = 30_000;
+
+/** How soon Platform activity is read again: while a move or send is pending or may still land (it settles in the engine within minutes). */
+// A move or send that may still execute, or an add from the Dash wallet not applied yet, settles
+// within minutes: look again.
+export const platformActivityRefetchMs = (data: readonly PlatformActivity[] | null | undefined): number | false =>
+  hasPendingMove(data) || data?.some((a) => a.kind === "fromCore" && a.state === "pending") ? PENDING_MOVE_REFETCH_MS : false;
+
+/** The Platform-address activity rows, newest first; `null` while dw-app has no such command. */
+export function usePlatformActivity(walletId: string) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.platformActivity(walletId),
+    queryFn: () => b.platformActivity(walletId),
+    retry: false,
+    refetchInterval: (q) => platformActivityRefetchMs(q.state.data),
+  });
+}
+
+/** What "Move to Dash wallet" would take and pay out, read while its sheet asks to confirm. */
+export function usePlatformMoveQuote(walletId: string, enabled: boolean) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.platformMoveQuote(walletId),
+    queryFn: () => b.platformMoveToCoreQuote(walletId, { kind: "all" }),
+    enabled,
+    retry: false,
+    gcTime: 0,
+  });
+}
+
+/** The wallet's Platform receive address, read while Receive's "Receive on Platform" card is open.
+ * Under "dashpay": a Platform sync event reads it again (it changes once the address is funded). */
+export function usePlatformReceiveAddress(walletId: string, enabled: boolean) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.platformReceiveAddress(walletId), queryFn: () => b.platformReceiveAddress(walletId), enabled, retry: false });
+}
+
+/** What sending `amount` to the Platform address `to` takes; `null` amount: no quote yet. */
+export function usePlatformSendQuote(walletId: string, to: string, amount: WithdrawAmount | null) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.platformSendQuote(walletId, to, amount === null ? "" : amount.kind === "all" ? "all" : amount.credits),
+    queryFn: () => b.platformSendQuote(walletId, to, amount!, null),
+    enabled: amount !== null && to !== "",
+    retry: false,
+    gcTime: 0,
+  });
+}
+
+/** What "Add from Dash wallet" of `duffs` costs and adds; `null` duffs: no quote yet. */
+export function usePlatformFundQuote(walletId: string, duffs: number | null) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.platformFundQuote(walletId, duffs ?? 0),
+    queryFn: () => b.platformFundQuote(walletId, duffs!),
+    enabled: duffs !== null,
+    retry: false,
+    gcTime: 0,
+  });
+}
+
+/** The locks "Add from Dash wallet" made that are not applied yet; `null` while dw-app has no such command. */
+export function usePendingPlatformFunds(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.pendingPlatformFunds(walletId), queryFn: () => b.pendingPlatformFunds(walletId), retry: false });
+}
+
+/** The shielded account's status; `null` while dw-app has no such command (api/pending.ts). */
+export function useShieldedStatus(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.shieldedStatus(walletId), queryFn: () => b.shieldedStatus(walletId), retry: false });
+}
+
+/** The Core → Shielded locks not known to be applied; `null` while dw-app has no such command. */
+export function useUnfinishedTransfers(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.unfinishedTransfers(walletId), queryFn: () => b.unfinishedTransfers(walletId), retry: false });
+}
+
+/** The shielded activity rows, pending first; `null` while dw-app has no such command. */
+export function useShieldedHistory(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.shieldedHistory(walletId), queryFn: () => b.shieldedHistory(walletId, 0, 200), retry: false });
+}
+
+/** A quote of either kind, with the grant it asks for. */
+export type ShieldedQuoteView = { kind: "add"; quote: ShieldQuote } | { kind: "spend"; quote: ShieldedSpendQuote };
+
+/** The pool's balance in duffs (a credit is a thousandth of one); `null` while it is no reading:
+ * the command is absent, the network is not active or the account has not been scanned yet. */
+export function shieldedDuffs(status: ShieldedStatus | null): number | null {
+  return status?.active && status.ready ? creditsToDuffs(status.balance) : null;
+}
+
+/** What `request` costs and buys, read while the sheet asks to confirm it. */
+export function useShieldedQuote(walletId: string, request: ShieldedRequest | null) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: keys.shieldedQuote(walletId, JSON.stringify(request)),
+    queryFn: async (): Promise<ShieldedQuoteView> => {
+      switch (request?.kind) {
+        case "add": {
+          return { kind: "add", quote: await b.shieldQuote(walletId, request.duffs) };
+        }
+        case "send": {
+          return { kind: "spend", quote: await b.shieldedSendQuote(walletId, request.to, request.credits) };
+        }
+        case "out": {
+          return { kind: "spend", quote: await b.unshieldQuote(walletId, request.credits, null) };
+        }
+        default:
+          throw new Error("nothing to quote");
+      }
+    },
+    enabled: request !== null && request.kind !== "resume",
+    retry: false,
+    gcTime: 0,
+  });
+}
+
+/** The shielded and Platform balances in duffs; `null` while dw-app has no command for one
+ * (api/pending.ts) or it failed, `undefined` while it is being read. */
+export function usePoolBalances(walletId: string) {
+  const shielded = useShieldedStatus(walletId);
+  const platform = usePlatformAddresses(walletId);
+  return {
+    shielded: shielded.isError ? null : shielded.data === undefined ? undefined : shieldedDuffs(shielded.data),
+    // What a move of everything would take (`movableCredits`): Home counts that, not a remainder too small to move.
+    platform: platform.isError ? null : platform.data === undefined ? undefined : (platform.data?.duffs ?? null),
+    /** Credits on the Platform addresses that are too small to move (`credits - movableCredits`). */
+    platformDust: platform.data ? String(BigInt(platform.data.credits) - BigInt(platform.data.movableCredits)) : "0",
+  };
+}
+
+/** The saved network choice and how this run relates to it; `null` while dw-app has no such command. */
+export function useNetworkChoice() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.networkChoice, queryFn: () => b.networkChoice(), retry: false });
+}
+
+/** The sync as the status bar and the screens show it: the engine's reading, with a new block's
+ * one-block flap smoothed away (api/syncDisplay.ts). The query itself holds the raw reading. */
 export function useSyncStatus() {
   const b = useBackend();
-  return useQuery({ queryKey: keys.sync, queryFn: () => b.syncStatus() });
+  const client = useQueryClient();
+  const query = useQuery({
+    queryKey: keys.sync,
+    queryFn: async ({ signal }) => {
+      const ticket = readTicket(b);
+      const raw = await b.syncStatus();
+      // A reply that was superseded or cancelled is not a reading: the query keeps the newest one.
+      if (signal.aborted) return rawSync(b) ?? raw;
+      if (!feedSync(b, raw, Date.now(), ticket)) {
+        // An engine event took the place of this read, and the event's snapshot may already be behind
+        // the engine's live state: while this read was still out, invalidating it started no second
+        // one. Once it has settled, read again, which begins after the event.
+        setTimeout(() => void client.invalidateQueries({ queryKey: keys.sync }), 0);
+        return rawSync(b) ?? raw;
+      }
+      return raw;
+    },
+  });
+  const shown = useShownSync(b);
+  // The query's own state, with `data` the shown status once there is one.
+  return query.data === undefined ? query : { ...query, data: shown ?? query.data };
 }
 
 /** Pages of `limit` records; `fetchNextPage` follows the engine's keyset cursor. */
@@ -147,7 +348,7 @@ export function useReceiveUsername(walletId: string) {
   return useQuery({ queryKey: keys.receiveUsername(walletId), queryFn: () => b.receiveUsername(walletId) });
 }
 
-/** "Include my username in payment requests" for the wallet (DP3-03b); on by default. Off while a change of it is under way (D22). */
+/** The wallet's username default (DP3-03b): absent/"0" is off, "1" is on. Explicit per-request choices override it. Off while a change is under way (D22). */
 export function useUsernameInRequests(walletId: string) {
   const b = useBackend();
   return useQuery({
@@ -157,7 +358,7 @@ export function useUsernameInRequests(walletId: string) {
 }
 
 /**
- * Whether the wallet's request URIs may show its username now (DP3-03b D22): only once the
+ * Whether the Receive QR and requests without an override may show the username now (DP3-03b D22): only once the
  * setting has read on. A failed read is off; `undefined` until it first answers.
  */
 export function useUsernameAllowed(walletId: string): boolean | undefined {

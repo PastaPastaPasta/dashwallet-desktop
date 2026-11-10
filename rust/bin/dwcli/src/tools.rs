@@ -142,7 +142,9 @@ fn flag(b: bool) -> u8 {
 }
 
 /// Starts SPV (if needed) and waits until every loaded wallet scanned
-/// `height`.
+/// `height` and a peer is connected; each wait gets `timeout`. Used by
+/// resend, rescan, abandon, watch-events, node-info and console
+/// (`--sync-height`), which all expect a live connection.
 fn sync_all(
     engine: &Engine,
     session: &Arc<NetworkSession>,
@@ -157,13 +159,30 @@ fn sync_all(
         .collect();
     if ids.is_empty() {
         crate::pay::ensure_spv_running(engine, session, timeout)?;
-        return wait_tip(session, height, timeout);
     }
     for id in ids {
         wait_for_height(engine, session, id, height, timeout)?;
     }
     // Stored scan heights are known before SPV reports; wait for SPV too.
-    wait_tip(session, height, timeout)
+    wait_tip(session, height, timeout)?;
+    // So is the stored header tip: both can be met before any peer
+    // connects (Nightly 11-01: a resend answered "no connected peers").
+    wait_peer(session, timeout)
+}
+
+/// Waits until SPV has a connected peer.
+fn wait_peer(session: &NetworkSession, timeout: Duration) -> Result<(), String> {
+    let start = Instant::now();
+    loop {
+        let snapshot = session.sync_snapshot().map_err(|e| e.to_string())?;
+        if snapshot.connected_peers > 0 {
+            return Ok(());
+        }
+        if start.elapsed() > timeout {
+            return Err(format!("no peer connected in {timeout:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// Waits until SPV's header tip reaches `height`.

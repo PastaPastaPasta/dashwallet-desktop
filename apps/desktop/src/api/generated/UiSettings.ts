@@ -32,7 +32,13 @@ autoLockSecs: number | null,
  */
 subtractFeeByDefault: boolean,
 /**
- * Settings ▸ General ▸ Show Masternodes: the sidebar item shows even
- * without a masternode, a collateral or a proposal (MG-00 D1, D2).
+ * Settings ▸ General ▸ Show Masternodes: the Masternodes sidebar item and
+ * route (Governance, Username voting) are hidden until it is on (MG-00
+ * D1, D2; the 0.1 release plan).
  */
-showMasternodes: boolean, };
+showMasternodes: boolean,
+/**
+ * The 0.1 pre-release notice was dismissed: it is shown once, on the
+ * first run.
+ */
+preReleaseNoticeDismissed: boolean, };

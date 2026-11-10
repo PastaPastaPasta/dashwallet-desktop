@@ -8,11 +8,12 @@ import type { RegistrationQuote } from "../api/generated/RegistrationQuote";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RescanStart } from "../api/generated/RescanStart";
 import type { RescanStatus } from "../api/generated/RescanStatus";
+import type { StuckShieldFunding } from "../api/generated/StuckShieldFunding";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "./testApi";
 import { GrantModel } from "./grant";
-import { RepairModel, RepairText, stuckFundingText } from "./repair";
+import { RepairModel, RepairText, shieldBlockedText, stuckFundingText } from "./repair";
 
 const reg = (draft: string, waiting: RegistrationStatus["waiting"]): RegistrationStatus => ({
   draft,
@@ -77,9 +78,10 @@ function setup(lock = {}) {
     registrationQuote: vi.fn(async () => QUOTE),
     finishAssetLocks: vi.fn(async (walletId: string, grant: string) => {
       calls.push(`finish ${walletId.slice(0, 2)} ${grant}`);
-      return { resumed: 2, completed: 1, stillPending: 1 };
+      return { resumed: 2, completed: 1, stillPending: 1, alreadyUsed: 0, byKind: [], unread: [] };
     }),
     creditsStuckTopUpFundings: vi.fn(async (): Promise<StuckTopUpFunding[]> => []),
+    stuckShieldFundings: vi.fn(async (): Promise<StuckShieldFunding[]> => []),
     identities: vi.fn(async () => [{ identity: "alice-id", index: 0, mainName: "alice" } as IdentitySummary]),
   };
   const grants = new GrantModel(vault.api);
@@ -259,6 +261,78 @@ describe("Stuck funding (E0-04 C9, U-05 D12)", () => {
     expect(api.identities).not.toHaveBeenCalled();
     await model.refresh();
     expect(model.stuckTopUpsUnreadable).toBe(false);
+  });
+
+  it("lists a stuck move into Shielded with Repair's price, asks with its fee and pays at most that fee", async () => {
+    const { model, api, calls, vault } = setup({ encrypted: false });
+    const step = "shield/0/funding";
+    const stuck: StuckShieldFunding = { step, state: "maybeSent", repair: { mixed: true, inputs: 2, totalDuffs: 110_001_100, feeDuffs: 340 }, blocked: null };
+    api.stuckShieldFundings.mockResolvedValue([stuck]);
+    await model.refresh();
+    expect(model.stuckShields).toEqual([stuck]);
+    model.ask("resolveStuck", model.stuckShields[0]);
+    expect(model.state).toMatchObject({ kind: "confirming", what: "resolveStuck", target: { step } });
+    expect(calls).toEqual([]);
+    api.stuckShieldFundings.mockResolvedValue([]);
+    await model.confirm();
+    expect(vault.calls.authorize[0]).toMatchObject({ purpose: { kind: "spend", maxDuffs: 340 }, walletId: WALLET_A });
+    expect(api.feePolicy).not.toHaveBeenCalled();
+    expect(calls).toEqual([`resolve a1 ${step} grant-1`]);
+    expect(model.state).toEqual({ kind: "done", text: RepairText.resolvedShield("ab".repeat(32)) });
+    expect(model.stuckShields).toEqual([]);
+  });
+
+  it("a stuck move Repair refuses now is listed with why, and is never asked", async () => {
+    const { model, api, calls } = setup({ encrypted: false });
+    const blocked = { reason: "spendUnsettled", retryLater: true } as const;
+    api.stuckShieldFundings.mockResolvedValue([{ step: "shield/1/funding", state: "maybeSent", repair: null, blocked }]);
+    await model.refresh();
+    expect(model.stuckShields).toHaveLength(1);
+    model.ask("resolveStuck", model.stuckShields[0]);
+    expect(model.state).toEqual({ kind: "idle" });
+    await model.resolveStuck(model.stuckShields[0]);
+    expect(calls).toEqual([]);
+    expect(shieldBlockedText(blocked)).toBe(
+      "Repair can't send these coins back yet: An earlier payment from this wallet is not confirmed yet. Check again later.",
+    );
+  });
+
+  it("a stuck move Repair can never settle says so, and that moves into Shielded stay paused", () => {
+    const text = shieldBlockedText({ reason: "noKnownLock", retryLater: false });
+    expect(text).toBe(
+      "Repair can't send these coins back: No payment of this move is known, so nothing shows which coins to send back. New moves into Shielded stay paused while this move is open.",
+    );
+    expect(text).not.toMatch(/\byet\b|registration/);
+  });
+
+  it("a failed read of the stuck moves into Shielded is said, not hidden", async () => {
+    const { model, api } = setup();
+    api.stuckShieldFundings.mockRejectedValueOnce(appError("platform.unavailable"));
+    await model.refresh();
+    expect([model.stuckShields, model.stuckShieldsUnreadable]).toEqual([[], true]);
+    await model.refresh();
+    expect(model.stuckShieldsUnreadable).toBe(false);
+  });
+
+  it("names a stuck move and what Repair does about it", () => {
+    expect(RepairText.shield(true)).toBe("A move of mixed coins into Shielded may have been sent");
+    expect(RepairText.shield(false)).toBe("A move into Shielded may have been sent");
+    expect(RepairText.shieldRepair(true, 2, "1.1 DASH", "0.0000034 DASH")).toBe(
+      "Repair sends the move's 2 mixed coins (1.1 DASH) back to your wallet's main balance, at a network fee of 0.0000034 DASH. You can move Dash into Shielded again once that payment is confirmed.",
+    );
+    expect(RepairText.resolveStuckShieldQuestion(true, 1, "1 DASH", "0.000002 DASH")).toBe(
+      "Send the move's mixed coin (1 DASH) back to your wallet's main balance? You pay a network fee of 0.000002 DASH. Whether the move's payment reached the network is settled either way.",
+    );
+  });
+
+  it("a stuck shield from the main balance says Repair sends every spendable coin of it", () => {
+    expect(RepairText.shieldRepair(false, 4, "2 DASH", "0.000006 DASH")).toBe(
+      "Repair sends all 4 spendable coins of your main balance (2 DASH) back to your wallet, at a network fee of 0.000006 DASH. You can move Dash into Shielded again once that payment is confirmed.",
+    );
+    expect(RepairText.resolveStuckShieldQuestion(false, 4, "2 DASH", "0.000006 DASH")).toBe(
+      "Send all 4 spendable coins of your main balance (2 DASH) back to your wallet? You pay a network fee of 0.000006 DASH. Whether the move's payment reached the network is settled either way.",
+    );
+    expect(RepairText.shieldRepair(false, 1, "1 DASH", "0.000002 DASH")).toMatch(/^Repair sends the one spendable coin of your main balance \(1 DASH\)/);
   });
 
   it("a cancelled passphrase sends nothing", async () => {

@@ -34,9 +34,13 @@ import type { Withdrawal } from "../api/generated/Withdrawal";
 import { buildCoins, newReceiveWorld, newSendWorld, type ReceiveWorld, type SendWorld } from "./send";
 import { newToolsWorld, type ToolsWorld } from "./tools";
 import { newSettingsWorld, withAutomaticBackups, type SettingsWorld } from "./settings";
+import { restoredFundLock, restoredLock } from "./recovery";
+import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from "./pending";
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
+import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
+import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FIXTURE_NOW, FUNDED_BALANCES, makeIds, prng, secs, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
@@ -112,6 +116,10 @@ export interface World {
   coinjoin: CoinJoinWorld;
   /** Governance: sync, proposals, voting masternodes and own proposals (governance.ts, MG-09). */
   governance: GovernanceWorld;
+  /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
+  rates: RatesWorld;
+  /** The commands dw-app does not have yet: network choice, shielded and Platform balances (pending.ts). */
+  pending: PendingWorld;
 }
 
 /** A vault grant: single use (`used` once redeemed or revoked); `ownKey` when it was issued
@@ -207,6 +215,8 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default"): Wor
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
+    rates: newRatesWorld(),
+    pending: newPendingWorld(),
   };
 }
 
@@ -547,6 +557,275 @@ function withInvitation(w: World, status?: InvitationStatus): World {
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t),
+  /** The first run: the pre-release notice is up (the other scenarios start past it). */
+  "pre-release-notice": (t) => {
+    const w = base(t);
+    w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
+    return w;
+  },
+  /** The first run on a new install: no wallet, and the notice is up. */
+  "no-wallet-first-run": (t) => {
+    const w = base(t);
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
+    return w;
+  },
+  /** The first run after the vault exists but settings.json does not: locked, the notice is up. */
+  "locked-first-run": (t) => {
+    const w = buildWorld("locked", t);
+    w.settings.ui = { ...w.settings.ui, preReleaseNoticeDismissed: false };
+    return w;
+  },
+  /** No wallet yet, and Mainnet chosen while this window is on testnet: Welcome asks for a restart. */
+  "no-wallet-network-restart": (t) => {
+    const w = base(t);
+    w.wallets = [];
+    w.phrases = {};
+    w.lock = { ...unlocked([]), state: "noVault", encrypted: false };
+    w.pending.networkChoice = { chosen: "mainnet", saved: true };
+    return w;
+  },
+  /** The funded wallet when dw-app has no shielded or Platform command: Home shows "—" for both. */
+  "pools-absent": (t) => {
+    const w = base(t);
+    w.pending.shielded = null;
+    w.pending.platform = null;
+    return w;
+  },
+  /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
+  "shielded-inactive": (t) => {
+    const w = base(t);
+    w.pending.shielded!.active = false;
+    return w;
+  },
+  /** Platform addresses holding only what is too small to move: Home counts none of it. */
+  "platform-dust": (t) => {
+    const w = base(t);
+    w.pending.platform!.addresses = [{ address: w.pending.platform!.addresses[0].address, credits: "1500000" }];
+    return w;
+  },
+  /** Movable Platform credits and a remainder on another address too small to move. */
+  "platform-partly-dust": (t) => {
+    const w = base(t);
+    w.pending.platform!.dust = "1500000";
+    return w;
+  },
+  /** The next send to a Platform address gets no answer from Platform: it stays pending. */
+  "platform-send-pending": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextSend = "pending";
+    return w;
+  },
+  /** The next send is not taken in time (failed by height): it may still land. Its retry is taken. */
+  "platform-send-failed": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextSend = "failed";
+    w.pending.platform!.thenSend = "done";
+    return w;
+  },
+  /** A send that failed by height and may still land (0.01 to the fixture's payee): only its exact retry is taken. */
+  "platform-send-failed-may-land": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "ps-held", kind: "send", state: "failed", credits: "1000000000", address: null, to: PLATFORM_PAYEE, expectedDuffs: null, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    p.terms["ps-held"] = sendTerms(PLATFORM_PAYEE, 1_000_000_000n);
+    return w;
+  },
+  /** A move that failed by height and may still land: Move stays offered (a move at the same inputs follows it). */
+  "platform-move-failed-may-land": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "pm-held", kind: "moveToCore", state: "failed", credits: "40000000000", address: null, to: p.activity[0].address, expectedDuffs: 39_998_000, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    return w;
+  },
+  /** The next "Add from Dash wallet" is applied (as the base world does). */
+  "paddr-fund-applies": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextFund = "done";
+    return w;
+  },
+  /** A lock of "Add from Dash wallet" waiting for its proof: the card shows Finish. */
+  "paddr-fund-proof-waiting": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const txid = "f0aa".padEnd(64, "d");
+    p.funds = [{ txid, duffs: 50_000_000, proved: false, consumptionUnknown: false, state: "confirming" }];
+    p.activity = [{ id: `fund-${txid}`, kind: "fromCore", state: "pending", credits: String(50_000_000n * 1000n - 56_000_000n), address: p.receive.address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 600, mayLand: false, estimated: true }, ...p.activity];
+    return w;
+  },
+  /** The next "Add from Dash wallet" locks, then its approval ends before the apply: "Locked, not applied" offers Finish. */
+  "paddr-fund-approval-ended": (t) => {
+    const w = base(t);
+    w.pending.platform!.nextFund = "approvalEnded";
+    return w;
+  },
+  /** A lock waiting to be applied whose first Finish is refused `platform.needs_grant`: the refusal offers Finish on it. */
+  "paddr-fund-resume-ended": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    p.funds = [{ txid: "f0dd".padEnd(64, "d"), duffs: 50_000_000, proved: true, consumptionUnknown: false, state: "ready" }];
+    p.nextResume = "needsGrant";
+    return w;
+  },
+  /** A lock that may already be applied (`consumption_unknown`): "Checking", and Check again. */
+  "paddr-fund-checking": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const txid = "f0bb".padEnd(64, "d");
+    p.funds = [{ txid, duffs: 50_000_000, proved: true, consumptionUnknown: true, state: "checking" }];
+    p.activity = [{ id: `fund-${txid}`, kind: "fromCore", state: "pending", credits: String(50_000_000n * 1000n - 56_000_000n), address: p.receive.address, to: null, expectedDuffs: null, feeCredits: null, at: Math.floor(FIXTURE_NOW.getTime() / 1000) - 600, mayLand: false, estimated: true }, ...p.activity];
+    return w;
+  },
+  /** An own lock worth less than the Platform fee: the card says why it can't be added, with no Finish, and a new add is allowed. */
+  "paddr-fund-too-small": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const txid = "f0cc".padEnd(64, "d");
+    p.funds = [{ txid, duffs: 5_000, proved: true, consumptionUnknown: false, state: "tooSmall" }];
+    return w;
+  },
+  /** A send Platform has not confirmed: Pay from Platform and Move wait for it. */
+  "platform-send-held": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [{ id: "ps-held", kind: "send", state: "pending", credits: "1000000000", address: null, to: PLATFORM_PAYEE, expectedDuffs: null, feeCredits: null, at: at - 600, mayLand: true, estimated: false }, ...p.activity];
+    return w;
+  },
+  /** No credits on the Platform addresses: Pay from Platform says so. */
+  "platform-empty": (t) => {
+    const w = base(t);
+    w.pending.platform!.addresses = [];
+    w.pending.platform!.activity = [];
+    return w;
+  },
+  /** A move the engine replaced with a retry (done), among the Platform activity. */
+  "platform-replaced": (t) => {
+    const w = base(t);
+    const p = w.pending.platform!;
+    const at = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    p.activity = [
+      { id: "pm-retry", kind: "moveToCore", state: "done", credits: "30000000000", address: null, to: p.activity[0].address, expectedDuffs: 29_998_000, feeCredits: "2000000", at: at - 3600, mayLand: false, estimated: false },
+      { id: "pm-old", kind: "moveToCore", state: "replaced", credits: "30000000000", address: null, to: null, expectedDuffs: null, feeCredits: null, at: at - 7200, mayLand: false, estimated: false },
+      ...p.activity,
+    ];
+    return w;
+  },
+  /** A wallet that starts one block short of the tip and has never been caught up. */
+  "sync-one-behind": (t) => {
+    const w = base(t);
+    const s = w.sync;
+    w.sync = { ...s, caughtUp: false, activePhase: "filters", phases: s.phases.map((p) => ({ ...p, currentHeight: p.targetHeight! - 1, done: false })) };
+    return w;
+  },
+  /** Shielded is on and its account is not established yet: its actions wait and say why. */
+  "shielded-syncing": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    return w;
+  },
+  /** Shielded is not ready and an earlier shield is waiting to be finished. */
+  "shielded-syncing-pending": (t) => {
+    const w = base(t);
+    w.pending.shielded!.ready = false;
+    w.pending.shielded!.balance = "0";
+    w.pending.shielded!.pendingShields = [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false, consumptionUnknown: false }];
+    return w;
+  },
+  /** A shield lock that may already be applied (`consumption_unknown`): "Checking", and Check again. */
+  "shielded-checking": (t) => {
+    const w = base(t);
+    w.pending.shielded!.pendingShields = [{ txid: "c0ffee01".repeat(8), duffs: 50_000_000, proved: true, consumptionUnknown: true }];
+    return w;
+  },
+  /** A spend of unknown result whose record was lost (DEC-1057): sends and moves need a confirmation. */
+  "shielded-unrecorded": (t) => {
+    const w = base(t);
+    w.pending.shielded!.unrecorded = [{ activityId: "sh-9", since: Math.floor(FIXTURE_NOW.getTime() / 1000) - 3600 }];
+    return w;
+  },
+  /** Shielded is ready and holds nothing: Send and Move wait for a balance. */
+  "shielded-empty": (t) => {
+    const w = base(t);
+    w.pending.shielded!.balance = "0";
+    return w;
+  },
+  /** Shielded has too few notes to withdraw from. */
+  "shielded-pool-small": (t) => {
+    const w = base(t);
+    w.pending.shielded!.poolTooSmall = true;
+    return w;
+  },
+  /** One restored Core → Shielded lock of 0.5 DASH that Platform has not applied: Home offers Finish. */
+  "recovery-one": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000)];
+    return w;
+  },
+  /** Three restored locks: two ready, one that may already be applied. */
+  "recovery-restored-mixed": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredLock(2, 25_000_000), restoredLock(3, 10_000_000, "checking")];
+    return w;
+  },
+  /** Only a restored lock that may already be applied: "Checking", and Check again (the second one applies it). */
+  "recovery-checking": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "checking")];
+    w.pending.recovery.checksBeforeApply = 1;
+    return w;
+  },
+  /** A restored lock still waiting for its confirmations: Home has no card. */
+  "recovery-confirming": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "confirming")];
+    return w;
+  },
+  /** A restored lock on a network that does not take Shielded yet: Home has no card. */
+  "recovery-not-active": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000, "notActive")];
+    return w;
+  },
+  /** A ready restored lock, its transaction's second credit output (which this version can't finish) and
+   * a lock worth less than the Platform fee: Home offers Finish for the first only. */
+  "recovery-unsupported": (t) => {
+    const w = base(t);
+    const first = restoredLock(1, 50_000_000);
+    w.pending.recovery.locks = [first, { ...first, vout: 1, duffs: 20_000_000, state: "unsupported" }, { ...restoredLock(2, 5_000), state: "tooSmall" }];
+    return w;
+  },
+  /** One restored "Add from Dash wallet" lock of 0.5 DASH that Platform has not applied: Home offers Finish. */
+  "paddr-recovery-restored": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredFundLock(1, 50_000_000)];
+    return w;
+  },
+  /** A restored "Add from Dash wallet" lock, ready, while the shielded side can't be read. */
+  "paddr-recovery-shielded-unread": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredFundLock(1, 50_000_000)];
+    w.pending.recovery.unread = ["shielded"];
+    return w;
+  },
+  /** A restored Shielded lock and a restored "Add from Dash wallet" lock, both ready. */
+  "paddr-recovery-mixed": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000), restoredFundLock(2, 25_000_000)];
+    return w;
+  },
+  /** The first finish ends `platform.unavailable`; a retry is applied. */
+  "recovery-finish-fails": (t) => {
+    const w = base(t);
+    w.pending.recovery.locks = [restoredLock(1, 50_000_000)];
+    w.pending.recovery.failures = 1;
+    return w;
+  },
   /** A new wallet: no history, zero balance. */
   empty: (t) => base(t, "empty"),
   /** No wallet on the network yet, and no vault. */
@@ -1019,6 +1298,14 @@ const SCENARIOS = {
   ...coinjoinScenarios(base),
   // Governance (MG-09): governance.ts.
   ...governanceScenarios(base),
+  // Prices in fiat (MP-01): rates.ts.
+  ...ratesScenarios(base),
+  // Transfer (POLISH 25): transfer.ts.
+  ...transferScenarios(base),
+  /** A new install on Mainnet: onboarding's last step carries the price disclosure. */
+  "fiat-first-run": (t): World => onMainnet(buildWorld("no-wallet", t)),
+  /** `dashpay-registered` with prices: paying a contact with the fiat toggle. */
+  "fiat-contacts": (t): World => withPrices(buildWorld("dashpay-registered", t)),
 } satisfies Record<string, (theme: ThemeName | null) => World>;
 
 export type ScenarioName = keyof typeof SCENARIOS;

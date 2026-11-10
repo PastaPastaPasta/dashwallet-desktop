@@ -11,7 +11,7 @@ import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { UriRejected } from "../api/generated/UriRejected";
 import { inTauri, tauriTools } from "../api/tauri";
 import { showToast } from "../components/toast";
-import { SavedLinksText } from "./savedLinks";
+import { noteLiveLink, SavedLinksText } from "./savedLinks";
 import { navigate, openPayForm, ui } from "./ui";
 
 const PAYMENT_REJECTED: Record<UriRejected["kind"], string> = {
@@ -114,6 +114,7 @@ export const WIPE_OPEN = "The link was not opened: close “Delete all wallet da
  * and a wipe that then failed would say so nowhere (D38). */
 export function applyLink(route: LinkRoute) {
   if (ui.get().wiping) return showToast(WIPE_OPEN);
+  noteLiveLink();
   ui.set({ dialog: null });
   switch (route.kind) {
     case "pay": {

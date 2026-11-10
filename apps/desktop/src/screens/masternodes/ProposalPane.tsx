@@ -7,7 +7,8 @@ import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { ProposalRow } from "../../api/generated/ProposalRow";
 import type { VotingMasternode } from "../../api/generated/VotingMasternode";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
-import { AmountText, DashButton, Icon } from "../../components/basics";
+import { AmountText, DashButton } from "../../components/basics";
+import { CopyIconButton } from "../../components/copy";
 import { copyWithToast } from "../../components/toast";
 import { useDisplay } from "../../format/display";
 import {
@@ -73,18 +74,14 @@ export function ProposalPane({
             <span className="mono" title={row.paymentAddress}>
               {shortAddress(row.paymentAddress)}
             </span>
-            <button type="button" className="copy-button" aria-label="Copy address" title="Copy address" onClick={copy(row.paymentAddress)}>
-              <Icon id="copy" size={20} />
-            </button>
+            <CopyIconButton text={row.paymentAddress} label="Copy address" />
           </dd>
           <dt>Link</dt>
           <dd className="copy-value">
             <span className="mg-pane-link" title={GovText.linkNote} data-testid="proposal-pane-link">
               {linkText(row.url)}
             </span>
-            <button type="button" className="copy-button" aria-label="Copy link" title="Copy link" onClick={copy(row.url)}>
-              <Icon id="copy" size={20} />
-            </button>
+            <CopyIconButton text={row.url} label="Copy link" />
           </dd>
         </dl>
         <div className="mg-stack mg-pane-votes">

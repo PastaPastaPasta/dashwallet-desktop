@@ -14,11 +14,11 @@
 //! transactions, and `Other` for mixed debit transactions.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::RwLock;
 
 use dashcore::blockdata::transaction::special_transaction::TransactionType as SpecialType;
-use dashcore::{Address, Network, ScriptBuf, Transaction, Txid};
+use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
 use key_wallet::managed_account::transaction_record::TransactionRecord;
 use key_wallet::transaction_checking::TransactionContext;
 
@@ -151,6 +151,9 @@ pub struct TxRecord {
     /// The DashPay identity on the other side of a contact payment, sent
     /// or received (DP3-02, `platform/attribution.rs`).
     pub counterparty: Option<Counterparty>,
+    /// The price the transaction was first seen at (MP-01); `None` when it
+    /// was not stamped (no back-fill).
+    pub fiat_then: Option<crate::rates::TxFiat>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -291,16 +294,70 @@ fn merge_context(old: &TransactionContext, new: &TransactionContext) -> Transact
     }
 }
 
+/// The outpoints the wallet's transactions spend by Dash Core's
+/// `CWallet::IsSpent` (v24.0.0-rc.6 8d195f18 wallet/wallet.cpp:755-770): the
+/// spender is in a block, or out of one (depth 0, :4072-4082) and not
+/// abandoned. A conflicted spender (depth < 0) does not count. The store has
+/// no conflict state: a spender out of a block is conflicted when another
+/// transaction in a block spends one of its inputs, and so are its
+/// descendants out of a block, as `MarkConflicted` marks them through
+/// `RecursiveUpdateTxState` (:1388-1458). A block spending one of its
+/// inputs that is not the wallet's is not seen (BIP158 filters match the
+/// wallet's scripts only): such a spender holds its other inputs until it
+/// is abandoned.
+pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint> {
+    let mined = |e: &TxEntry| e.context.block_info().is_some();
+    let in_block: HashMap<OutPoint, Txid> = (txs.iter().filter(|(_, e)| mined(e)))
+        .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
+        .collect();
+    // As `status_of`: an InstantSend lock outranks the abandon.
+    let abandoned = |e: &TxEntry| {
+        e.abandoned && !e.instant_locked && !matches!(e.context, TransactionContext::InstantSend(_))
+    };
+    let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
+    let mut todo = Vec::new();
+    for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
+        for i in &e.tx.input {
+            children.entry(i.previous_output.txid).or_default().push(*t);
+            if in_block.get(&i.previous_output).is_some_and(|b| b != t) {
+                todo.push(*t);
+            }
+        }
+    }
+    let mut conflicted = HashSet::new();
+    while let Some(t) = todo.pop() {
+        if conflicted.insert(t) {
+            todo.extend(children.get(&t).into_iter().flatten());
+        }
+    }
+    (txs.iter())
+        .filter(|(t, e)| mined(e) || !(abandoned(e) || conflicted.contains(*t)))
+        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+        .collect()
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct WalletHistory {
     pub txs: HashMap<Txid, TxEntry>,
 }
 
+/// Whether `record` is the wallet's own. A DashPay contact's account
+/// (`AccountType::is_contact_owned`, key-wallet `account_type.rs:257-300`)
+/// watches the contact's coins: its records (the contact spending what we
+/// paid them, or the output side of our payment) are never the wallet's
+/// activity. Our payment to a contact shows from the paying account's record.
+pub(crate) fn is_wallets(record: &TransactionRecord) -> bool {
+    !record.account_type.is_contact_owned()
+}
+
 impl WalletHistory {
     /// Merges a platform-wallet record. `seen_at` is set as the first-seen
     /// time when the transaction is new to the store. Returns whether it was
-    /// new.
+    /// new; a contact's record ([`is_wallets`]) is skipped (false).
     pub fn upsert(&mut self, record: &TransactionRecord, seen_at: Option<u64>) -> bool {
+        if !is_wallets(record) {
+            return false;
+        }
         let new = !self.txs.contains_key(&record.txid);
         let entry = self.txs.entry(record.txid).or_insert_with(|| TxEntry {
             tx: record.transaction.clone(),
@@ -821,12 +878,13 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
     }
 }
 
-/// Labels the history shows: transaction labels by txid, address labels by
-/// address.
+/// What dw-appdb adds to the history: transaction labels by txid, address
+/// labels by address, price stamps by txid (MP-01).
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Labels {
     pub tx: HashMap<String, String>,
     pub address: HashMap<String, String>,
+    pub fiat: HashMap<String, crate::rates::TxFiat>,
 }
 
 /// Every record of one transaction.
@@ -865,6 +923,7 @@ pub(crate) fn records_of(
             counts_toward_balance: counts,
             involves_watch_only: false,
             counterparty: side.and_then(|s| view.payees.counterparty(&s.contact)),
+            fiat_then: labels.fiat.get(&txid_s).cloned(),
         })
         .collect();
     (records, d, status)
@@ -1192,7 +1251,9 @@ pub(crate) fn detail_of(
 mod tests {
     use dashcore::hashes::Hash;
     use dashcore::{BlockHash, OutPoint, PubkeyHash, ScriptBuf, TxIn, TxOut, Witness};
-    use key_wallet::transaction_checking::BlockInfo;
+    use key_wallet::account::{AccountType, StandardAccountType};
+    use key_wallet::managed_account::transaction_record::{InputDetail, TransactionDirection};
+    use key_wallet::transaction_checking::{BlockInfo, TransactionType};
 
     use super::*;
 
@@ -1330,6 +1391,106 @@ mod tests {
         assert_eq!(records[0].timestamp, Some(1_700_000_000));
     }
 
+    fn record(
+        t: &Transaction,
+        account: AccountType,
+        inputs: Vec<InputDetail>,
+        net: i64,
+    ) -> TransactionRecord {
+        TransactionRecord::new(
+            t.clone(),
+            account,
+            in_block(20, 2),
+            TransactionType::Standard,
+            TransactionDirection::Outgoing,
+            inputs,
+            Vec::new(),
+            net,
+        )
+    }
+
+    /// TB-RESMOKE r-4-18/19: a contact spends the output we paid them, which
+    /// their account (watched, never ours) records with the spent coin as
+    /// its input. That is not the wallet's activity. Our payment to them
+    /// shows once, from the paying account's record, net of its fee, and
+    /// the CSV export lists the same.
+    #[test]
+    fn a_contacts_records_stay_out_of_activity() {
+        let bip44 = AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+        let contact = AccountType::DashpayExternalAccount {
+            index: 0,
+            user_identity_id: [1; 32],
+            friend_identity_id: [2; 32],
+        };
+        let theirs = hash_addr(70);
+        let mut h = WalletHistory::default();
+        let fund = tx(vec![foreign_input(7)], vec![out(1_000_000, &hash_addr(1))]);
+        assert!(h.upsert(&record(&fund, bip44, Vec::new(), 1_000_000), None));
+        let pay = tx(
+            vec![input(fund.txid(), 0)],
+            vec![out(250_000, &theirs), out(749_000, &hash_addr(9))],
+        );
+        let ours = InputDetail {
+            index: 0,
+            value: 1_000_000,
+            address: hash_addr(1),
+        };
+        assert!(h.upsert(&record(&pay, bip44, vec![ours], -251_000), None));
+        assert!(!h.upsert(&record(&pay, contact, Vec::new(), 250_000), None));
+        let spend = tx(
+            vec![input(pay.txid(), 0)],
+            vec![out(249_000, &hash_addr(80))],
+        );
+        let their_coin = InputDetail {
+            index: 0,
+            value: 250_000,
+            address: theirs,
+        };
+        assert!(!h.upsert(&record(&spend, contact, vec![their_coin], -250_000), None));
+
+        assert!(
+            !h.txs.contains_key(&spend.txid()),
+            "no Activity entry for the contact's spend"
+        );
+        let mut f = Fixture::new();
+        f.history = h.txs;
+        let view = f.view(20);
+        let mut rows: Vec<TxRecord> = (f.history.iter())
+            .flat_map(|(id, e)| records_of(id, e, &view, &Labels::default()).0)
+            .collect();
+        rows.sort_by_key(|r| r.amount);
+        let paid: Vec<&TxRecord> = rows
+            .iter()
+            .filter(|r| r.txid == pay.txid().to_string())
+            .collect();
+        assert_eq!(paid.len(), 1, "our payment shows once");
+        assert_eq!(
+            (paid[0].amount, paid[0].fee),
+            (-251_000, Some(1_000)),
+            "net of its fee"
+        );
+        assert_eq!(rows.len(), 2, "the funding and the payment");
+
+        let csv = crate::csv_export::write_csv(
+            &rows,
+            false,
+            dw_units::Unit::Duffs,
+            dw_units::Chain::Test,
+            &[],
+            0,
+        );
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 3, "a header and the same two rows: {csv}");
+        assert!(
+            lines[1].contains("\"-251000\"") && lines[1].contains(&pay.txid().to_string()),
+            "{csv}"
+        );
+        assert!(!csv.contains(&spend.txid().to_string()));
+    }
+
     #[test]
     fn send_has_one_record_per_payee_and_fee_on_the_first() {
         let mut f = Fixture::new();
@@ -1465,6 +1626,39 @@ mod tests {
         assert_eq!(op_return_payload(&data).as_deref(), Some("dead"));
     }
 
+    /// rates-engine §6: the stamp a transaction was first seen with rides
+    /// on each of its records; one with no stamp has none.
+    #[test]
+    fn the_price_stamp_rides_on_every_record() {
+        let mut f = Fixture::new();
+        let stamped = f.add(entry(
+            tx(
+                vec![foreign_input(7)],
+                vec![out(1_000, &hash_addr(1)), out(2_000, &hash_addr(2))],
+            ),
+            TransactionContext::Mempool,
+        ));
+        let plain = f.add(entry(
+            tx(vec![foreign_input(8)], vec![out(3_000, &hash_addr(1))]),
+            TransactionContext::Mempool,
+        ));
+        let stamp = crate::rates::TxFiat {
+            currency: "EUR".into(),
+            price: "44.12".into(),
+            rate_at: 1_793_835_763,
+            source: crate::rates::RateSourceId::Ctx,
+        };
+        let labels = Labels {
+            fiat: HashMap::from([(stamped.to_string(), stamp.clone())]),
+            ..Labels::default()
+        };
+        let (records, ..) = records_of(&stamped, &f.history[&stamped], &f.view(5), &labels);
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|r| r.fiat_then.as_ref() == Some(&stamp)));
+        let (records, ..) = records_of(&plain, &f.history[&plain], &f.view(5), &labels);
+        assert!(records.iter().all(|r| r.fiat_then.is_none()));
+    }
+
     #[test]
     fn chainlock_confirms_at_once_and_instantsend_counts() {
         let mut f = Fixture::new();
@@ -1564,6 +1758,7 @@ mod tests {
             counts_toward_balance: true,
             involves_watch_only: false,
             counterparty: None,
+            fiat_then: None,
         }
     }
 

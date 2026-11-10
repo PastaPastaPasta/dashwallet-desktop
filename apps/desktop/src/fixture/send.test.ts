@@ -43,9 +43,10 @@ async function prepared(r: Recipient) {
 describe("fixture receive username (DP3-03)", () => {
   it("is the main name, and a stored request follows it when read", async () => {
     expect(await cmd.receiveUsername(W)).toBeNull();
-    const plain = await cmd.createReceiveRequest(W, null, "Rent", null);
+    const plain = await cmd.createReceiveRequest(W, null, "Rent", null, null);
     expect(plain).toMatchObject({ username: null, uri: `dash:${plain.address}?label=Rent` });
     fixture.world.dashpay = registered();
+    await cmd.setUsernameInRequests(W, true);
     expect(await cmd.receiveUsername(W)).toBe("alice");
     const [stored] = await cmd.receiveRequests(W);
     expect(stored).toMatchObject({ id: plain.id, username: "alice", uri: `dash:${plain.address}?label=Rent&user=alice` });
@@ -56,13 +57,14 @@ describe("fixture receive username (DP3-03)", () => {
 
   it("leaves the username out while the wallet's opt-out is off, and stored requests follow (DP3-03b)", async () => {
     fixture.world.dashpay = registered();
+    await cmd.setUsernameInRequests(W, true);
     expect(await cmd.usernameInRequests(W)).toBe(true);
-    const stored = await cmd.createReceiveRequest(W, null, "Rent & co", null);
+    const stored = await cmd.createReceiveRequest(W, null, "Rent & co", null, null);
     expect(stored.uri).toBe(`dash:${stored.address}?label=Rent%20%26%20co&user=alice`);
     await cmd.setUsernameInRequests(W, false);
     expect(await cmd.usernameInRequests(W)).toBe(false);
     expect(await cmd.receiveUsername(W)).toBeNull();
-    const fresh = await cmd.createReceiveRequest(W, null, null, null);
+    const fresh = await cmd.createReceiveRequest(W, null, null, null, null);
     expect(fresh).toMatchObject({ username: null, uri: `dash:${fresh.address}` });
     expect((await cmd.receiveRequests(W)).map((r) => [r.username, r.uri])).toEqual([
       [null, `dash:${fresh.address}`],
@@ -73,8 +75,21 @@ describe("fixture receive username (DP3-03)", () => {
     await expect(cmd.setUsernameInRequests("ff".repeat(32), false)).rejects.toMatchObject({ code: "wallet_not_found" });
   });
 
+  it("defaults off and persists a per-request opt-in without changing the wallet setting", async () => {
+    fixture.world.dashpay = registered();
+    expect(await cmd.usernameInRequests(W)).toBe(false);
+    const plain = await cmd.createReceiveRequest(W, null, null, null, false);
+    const named = await cmd.createReceiveRequest(W, null, "Rent", null, true);
+    expect(plain.username).toBeNull();
+    expect(named.username).toBe("alice");
+    expect(await cmd.usernameInRequests(W)).toBe(false);
+    expect(await cmd.receiveRequests(W)).toEqual([named, plain]);
+    await cmd.setUsernameInRequests(W, true);
+    expect((await cmd.receiveRequests(W))[1].username).toBeNull();
+  });
+
   it("stores no request whose amount is out of range", async () => {
-    await expect(cmd.createReceiveRequest(W, -1, "Rent", null)).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(cmd.createReceiveRequest(W, -1, "Rent", null, null)).rejects.toMatchObject({ code: "invalid_argument" });
     expect(await cmd.receiveRequests(W)).toEqual([]);
   });
 });
@@ -99,6 +114,32 @@ describe("fixture send engine", () => {
     await cmd.draftSetSource(mixed, { kind: "fullyMixedOnly" });
     expect(await cmd.draftEstimate(mixed).catch((e) => e)).toMatchObject({ code: "send.insufficient_mixed_funds", data: { kind: "duffs", available: 0 } });
     expect(await cmd.draftEstimate(99).catch((e) => e)).toMatchObject({ code: "app.unknown_handle" });
+  });
+
+  it("pays a fully mixed spend's rest as fee, and a dust rest pays a subtracted fee first (MX-FEE)", async () => {
+    const main = fixture.world.wallets[0];
+    const coin = main.coins[0];
+    main.coins.push(...[1, 2].map((vout) => ({ ...coin, outpoint: { ...coin.outpoint, vout: 90 + vout }, amount: 10_000_100, coinjoinRounds: 4 })));
+    const mixed = async (r: Recipient) => {
+      const d = await draftFor(r);
+      await cmd.draftSetSource(d, { kind: "fullyMixedOnly" });
+      return cmd.draftEstimate(d).catch((e: cmd.AppError) => e);
+    };
+    expect(await mixed(pay(10_000_000))).toMatchObject({ code: "send.absurd_fee", data: { kind: "fee", fee: 10_000_200 } });
+    expect(await mixed(pay(10_000_000, { subtractFeeFromAmount: true }))).toEqual({ fee: 192, sizeBytes: 192, inputCount: 1, change: null, totalSent: 9_999_908 });
+  });
+
+  it("lists only a send account's coins for Selected coins, as the engine does (coins.rs:626-630, send/mod.rs:875-881)", async () => {
+    const main = fixture.world.wallets[0];
+    const coin = main.coins[0];
+    const mixed = { ...coin, outpoint: { ...coin.outpoint, vout: 95 }, amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: 4 };
+    main.coins.push(mixed);
+    const fee = { kind: "recommended", targetBlocks: 6 } as const;
+    expect(await cmd.maxSpendable(W, { kind: "outpoints", outpoints: [coin.outpoint] }, fee)).toBe(coin.amount);
+    expect(await cmd.maxSpendable(W, { kind: "outpoints", outpoints: [mixed.outpoint] }, fee).catch((e) => e)).toMatchObject({
+      code: "send.outpoint_unavailable",
+      data: { kind: "outpoint", txid: mixed.outpoint.txid, vout: 95 },
+    });
   });
 
   it("requires a passphrase for a spend grant while every payment needs authentication", async () => {
@@ -218,7 +259,7 @@ describe("fixture send engine", () => {
     expect(await cmd.currentReceiveAddress(W)).toEqual(current);
     const next = await cmd.nextReceiveAddress(W, null);
     expect(next.address).not.toBe(current.address);
-    const r = await cmd.createReceiveRequest(W, 25_000_000, "Rent", null);
+    const r = await cmd.createReceiveRequest(W, 25_000_000, "Rent", null, null);
     expect(r.uri).toBe(`dash:${r.address}?amount=0.25&label=Rent`);
     expect(await cmd.receiveRequests(W)).toEqual([r]);
     await cmd.deleteReceiveRequest(W, r.id);
@@ -230,6 +271,12 @@ describe("fixture send engine", () => {
 describe("fixture text helpers", () => {
   it("classifies the fixture's address shapes", () => {
     expect(classifyAddress("testnet", PAYEE)).toEqual({ kind: "core", scriptHash: false });
+    // Bech32m at the network's HRP: shielded (type byte 0x10, `z`) apart from Platform (`k`, `s`).
+    expect(classifyAddress("testnet", "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h")).toEqual({ kind: "platform" });
+    expect(classifyAddress("testnet", "tdash1sq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h")).toEqual({ kind: "platform" });
+    expect(classifyAddress("testnet", "tdash1zq0k8yv6m2e3x9n4c5w7a8s0d2f4g6h8j0k2l4m6n8p0q2r4s6t8u0v2w4x6y8z0a2c4e6g8j0m2")).toEqual({ kind: "shielded" });
+    expect(classifyAddress("mainnet", "dash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h")).toEqual({ kind: "platform" });
+    expect(classifyAddress("mainnet", "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h")).toMatchObject({ kind: "invalid" });
     expect(classifyAddress("mainnet", PAYEE)).toMatchObject({ kind: "invalid", problem: { kind: "invalidBase58Prefix" } });
     expect(classifyAddress("testnet", "y123")).toMatchObject({ kind: "invalid", problem: { kind: "invalidBase58Length" } });
     expect(classifyAddress("testnet", "hello world")).toMatchObject({ kind: "invalid", problem: { kind: "notBech32mOrBase58" } });

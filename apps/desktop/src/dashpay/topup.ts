@@ -5,13 +5,14 @@
 
 import type { Backend } from "../api/backend";
 import { hasCode, isAppError } from "../api/backend";
+import { RESCAN_INTERRUPTED } from "../app/rescan";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { CostTable } from "../api/generated/CostTable";
 import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { TopUpOutcome } from "../api/generated/TopUpOutcome";
 import { failureText, Model } from "../onboarding/model";
-import { GrantModel } from "../tools/grant";
+import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { PROFILE_COPY } from "./profile";
 import { COPY } from "./status";
 
@@ -118,6 +119,8 @@ export function topUpErrorText(e: unknown, amount: (duffs: number) => string, di
       return "The payment is still being sent. Try again in a minute.";
     case "platform.context_unavailable":
       return "Waiting for the network to sync and verify this identity. Try again shortly.";
+    case "rescan_interrupted":
+      return RESCAN_INTERRUPTED;
     case "platform.trust_mismatch":
       return "This identity's data could not be verified against the network. Nothing was paid.";
     case "platform.unavailable":
@@ -127,6 +130,13 @@ export function topUpErrorText(e: unknown, amount: (duffs: number) => string, di
       return "Unlock the wallet fully and try again.";
     case "platform.grant_exceeded":
       return "The cost went above what you approved.";
+    case "invalid_argument": {
+      // The engine's detail, when there is one, is the advice (the 50-coin bound of a payment).
+      const detail = e.message.replace(/^invalid argument:\s*/, "").trim();
+      if (detail === "" || detail === e.code) return `It stopped with ${e.code}.`;
+      const text = detail[0].toUpperCase() + detail.slice(1);
+      return /[.!?]$/.test(text) ? text : `${text}.`;
+    }
     default:
       return `It stopped with ${e.code}.`;
   }
@@ -180,6 +190,7 @@ export class TopUpFlow extends Model {
   ) {
     super();
     this.grants = new GrantModel(api);
+    this.grants.prompt = PAYMENT_PROMPT;
     this.grants.subscribe(() => this.changed());
   }
 

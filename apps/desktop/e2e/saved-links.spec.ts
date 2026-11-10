@@ -36,8 +36,12 @@ async function axe(page: Page) {
 test("DP5-01 a link opened before any wallet survives onboarding and opens once", async ({ page }) => {
   const errors = await open(page, "no-wallet-vault");
   await page.getByTestId("onboarding-welcome").waitFor();
+  // The fixture stamps each stashed link with the page's Date.now() in whole seconds. Pin it so the
+  // payment (first) and the invitation (second) are saved a minute apart, with no wall-clock wait.
+  await page.clock.setFixedTime(new Date("2026-11-01T12:00:00Z"));
   await deliver(page, [PAY]);
   await expect(toast(page)).toHaveText("Link saved. It opens once your wallet is set up.");
+  await page.clock.setFixedTime(new Date("2026-11-01T12:01:00Z"));
   await deliver(page, [INVITATION]);
   await expect(toast(page)).toHaveText("Invitation saved. It is waiting for you once your wallet is set up.");
   expect(await world(page, (w) => w.stash.map((s) => s.info.kind))).toEqual(["payment", "invitation"]);
@@ -60,7 +64,13 @@ test("DP5-01 a link opened before any wallet survives onboarding and opens once"
   await page.keyboard.press("Enter");
   await expect(sheet).toBeVisible();
   await expect(sheet.getByTestId("saved-link")).toHaveCount(2);
-  await expect(sheet.getByTestId("saved-link")).toContainText(["Payment request", "DashPay invitation"]);
+  // Each kind is listed exactly once ...
+  for (const kind of ["Payment request", "DashPay invitation"]) {
+    await expect(sheet.getByTestId("saved-link").filter({ hasText: kind })).toHaveCount(1);
+  }
+  // ... and newest first (savedLinkRows): the invitation, saved a minute after the payment, is first.
+  await expect(sheet.getByTestId("saved-link").nth(0)).toContainText("DashPay invitation");
+  await expect(sheet.getByTestId("saved-link").nth(1)).toContainText("Payment request");
   await axe(page);
 
   // The payment request opens Pay, prefilled, and leaves the stash.
@@ -127,3 +137,61 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 }
+
+test("DP5-01 a link delivered before the wallet list loads wins: no dialog over its claim screen", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  // The shell shows while the wallets load, so a live invitation applies before the launch offer
+  // can start; once the wallet shows, the offer finds the invitation saved and must not open
+  // its dialog over the claim screen.
+  await page.goto(fixtureUrl("invitation-valid", "light", "&hold=list_wallets"));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate((r) => window.__dwFixture!.deliverLinks([r]), INVITATION);
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("take_links"))).toBe(true);
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
+  await page.evaluate(() => window.__dwFixture!.release("list_wallets"));
+  await expect(page.getByTestId("claim")).toBeVisible();
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 150))));
+  expect(await page.getByTestId("saved-links").count()).toBe(0);
+  await expect(page.getByTestId("claim")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("DP5-01 a link delivered while the launch offer is still reading wins: no dialog over its claim screen", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  // The launch offer's stash read is out (it answers with the stash as it was when asked: one
+  // invitation), when the shell delivers a live invitation that opens its claim screen.
+  await page.goto(fixtureUrl("invitation-valid", "light", "&hold=stashed_links"));
+  await page.getByTestId("toolbar").waitFor();
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("stashed_links"))).toBe(true);
+  await page.evaluate((r) => window.__dwFixture!.deliverLinks([r]), INVITATION);
+  await expect(page.getByTestId("claim")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.release("stashed_links"));
+  // The answer has been handled once a frame and a short wait have passed; read, not retried.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 150))));
+  expect(await page.getByTestId("saved-links").count()).toBe(0);
+  await expect(page.getByTestId("claim")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("DP5-01 a link delivered while locked at launch wins at unlock: its claim screen stays usable", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  // An existing wallet launched by an invitation link: the vault is locked, the claim screen
+  // opens behind the lock screen, and the unlock's offer finds the invitation saved.
+  await page.goto(fixtureUrl("locked", "light"));
+  await page.getByTestId("lock-screen").waitFor();
+  await deliver(page, [INVITATION]);
+  await expect.poll(() => world(page, (w) => w.stash.length)).toBe(1);
+  await expect(page.getByTestId("page-joinDashPay")).toBeAttached();
+  await page.getByTestId("lock-field").fill("demo");
+  await page.keyboard.press("Enter");
+  await expect(page.getByTestId("claim")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("stashed_links"))).toBe(true);
+  // The answer has been handled once a frame and a short wait have passed; read, not retried.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 150))));
+  expect(await page.locator(".sheet-scrim").count()).toBe(0);
+  await page.getByTestId("claim-notNow").click({ timeout: 5_000 });
+  // Not now from the Join DashPay entry leaves the claim for Create username.
+  await expect(page.getByTestId("claim")).toHaveCount(0);
+  await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
+  expect(errors).toEqual([]);
+});

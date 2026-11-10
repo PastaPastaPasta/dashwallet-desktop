@@ -214,6 +214,7 @@ mod tests {
             counts_toward_balance: true,
             involves_watch_only: v["watch_only"].as_bool().unwrap_or(false),
             counterparty: None,
+            fiat_then: None,
         }
     }
 

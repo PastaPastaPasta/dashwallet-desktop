@@ -10,7 +10,7 @@
 name: ${DWD_COMPOSE_PROJECT:-dwd-regtest}
 
 x-image: &image
-  image: dwd-regtest-dashd:24.0.0-rc.2
+  image: dwd-regtest-dashd:24.0.0
   build:
     context: .
     dockerfile: Dockerfile
@@ -21,6 +21,7 @@ services:
     environment:
       DWD_RPC_USER: ${DWD_RPC_USER:-dwd}
       DWD_RPC_PASSWORD: ${DWD_RPC_PASSWORD:-dwd}
+      DWD_DASHD_ARGS: ${DWD_DASHD_ARGS:-}
     ports:
       - "127.0.0.1:${DWD_RPC_HOST_PORT:-19898}:19898"
       - "127.0.0.1:${DWD_P2P_HOST_PORT:-19899}:19899"

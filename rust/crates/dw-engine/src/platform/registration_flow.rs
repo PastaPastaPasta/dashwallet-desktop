@@ -48,6 +48,7 @@ use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProo
 use dpp::identity::{Identity, IdentityPublicKey, KeyID};
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
+use dpp::version::PlatformVersion;
 use dw_appdb::{
     Adoption, AppDb, AppDbError, LockOutpoint, NewRegistration, RegistrationChange,
     RegistrationRow, RegistrationUpdate,
@@ -76,8 +77,25 @@ use crate::{NetworkSession, WalletId};
 /// The asset lock of a registration with a plain name: 0.03 DASH, as the
 /// iOS wallet locks (`DWDashPayConstants.m`).
 pub(crate) const LOCK_DUFFS: u64 = 3_000_000;
-/// With a contested name: 0.25 DASH (iOS), which covers the contest fund.
-pub(crate) const CONTESTED_LOCK_DUFFS: u64 = 25_000_000;
+/// What a contested name's lock holds past the contest fund: iOS's 0.25
+/// DASH (`DWDashPayConstants.m`) less the 0.2 DASH fund it was set for,
+/// which pays the identity, the name's fees and leaves some credits.
+const CONTESTED_LOCK_MARGIN_DUFFS: u64 = 5_000_000;
+
+/// The least a registration with a contested name locks at the network's
+/// protocol version: the contest's fund (rs-platform-version's
+/// `contested_document_vote_resolution_fund_required_amount`, the fund to
+/// join a contest under 250 contenders) and [`CONTESTED_LOCK_MARGIN_DUFFS`].
+/// 0.25 DASH before protocol version 14, 0.15 DASH from it (its fund fell
+/// from 0.2 to 0.1 DASH). A contest past 250 contenders asks more, and the
+/// plan's credits (the name's own cost) then raise the lock above this.
+pub(crate) fn contested_lock_duffs(version: &PlatformVersion) -> u64 {
+    let fund = version
+        .fee_version
+        .vote_resolution_fund_fees
+        .contested_document_vote_resolution_fund_required_amount;
+    fund.div_ceil(CREDITS_PER_DUFF) + CONTESTED_LOCK_MARGIN_DUFFS
+}
 /// One duff locked is this many credits on Platform.
 pub(crate) const CREDITS_PER_DUFF: u64 = 1_000;
 /// What a Core-funded registration's grant asks past the lock and its fee:
@@ -229,6 +247,18 @@ pub(crate) enum FundError {
     /// broadcast rejection, or no lock built at all (coin selection, the
     /// build, a key). Positive evidence of `NotSent` (H12).
     NotSent(PlatformError),
+    /// The funding signer's input cap refused the build (a shield's lock
+    /// needing more than `max` coins): nothing tracked or sent, the inputs
+    /// free, the call `Cancelled` (`CountingFundingSigner::with_input_cap`).
+    TooManyInputs { max: u64 },
+    /// A drain's signer refused a coin outside its plan or past its grant
+    /// (`CountingFundingSigner::with_drain_cap`): nothing tracked or sent,
+    /// the call `Cancelled`.
+    CoinsChanged,
+    /// A drain's signer refused a build whose credit is below the
+    /// library's drain minimum: nothing signed, tracked or sent, the call
+    /// `Cancelled`.
+    BelowMinimum { min: u64 },
     /// Any other failure after the call started.
     Failed(PlatformError),
 }
@@ -240,6 +270,12 @@ pub(crate) trait RegistrationLib: Send + Sync {
     /// The wallet's identities: (index, base58 id).
     fn identities(&self) -> impl Future<Output = Vec<(u32, String)>> + Send;
     fn spendable(&self) -> impl Future<Output = Result<Spendable, PlatformError>> + Send;
+    /// A replay read live (0.1.x-bal §1), whose re-credits read held (no
+    /// `CoinsLocked`): `ContextUnavailable` while one runs (a sync wait),
+    /// `RescanInterrupted` while a rescan the user stopped must run again.
+    fn replay_refusal(&self) -> impl Future<Output = Option<PlatformError>> + Send {
+        async { None }
+    }
     /// What holds a funding (§3.4 Restore rule 1, §2.2 rule 5's hold):
     /// `None` once SPV has synced and the wallet's DashPay bring-up (DP1-05's
     /// same-seed discovery; the library's asset-lock reconstruction runs
@@ -336,6 +372,9 @@ pub(crate) trait RegistrationLib: Send + Sync {
     ) -> impl Future<Output = Result<(), PlatformError>> + Send;
     /// What `register_name`'s grant asks for `label`, in credits.
     fn name_credits(&self, label: &str) -> impl Future<Output = Result<u64, NameError>> + Send;
+    /// The network's rules, after one proven read of its protocol version
+    /// (`protocol.rs`): the contested lock follows them.
+    fn platform_version(&self) -> impl Future<Output = &'static PlatformVersion> + Send;
     /// The identity's credits; `None` when Platform does not know it.
     fn credit_balance(
         &self,
@@ -2160,6 +2199,12 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             ));
         }
         if spendable.protected > 0 {
+            if let Some(e) = self.lib.replay_refusal().await {
+                return Ok(match e {
+                    PlatformError::ContextUnavailable => Step::Wait(RegistrationWait::Sync),
+                    e => self.failed(&e),
+                });
+            }
             return Ok(Step::Fail(RegistrationError::CoinsLocked.code(), true));
         }
         if spendable.duffs < needed {
@@ -2267,10 +2312,11 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
             )) if artifact == step => self.maybe_sent().await,
             // P2b's gate named another tracked lock the catch-up has not
             // resent yet (`FundingBlock::Row`, by its txid): nothing of the
-            // step's is out, and the funding waits for the catch-up.
-            Err(FundError::Refused(PlatformError::WillBeSent { .. })) => {
-                Ok(Step::Wait(RegistrationWait::Sync))
-            }
+            // step's is out, and the funding waits for the catch-up. A
+            // replay (`fence`) waits as well.
+            Err(FundError::Refused(
+                PlatformError::WillBeSent { .. } | PlatformError::ContextUnavailable,
+            )) => Ok(Step::Wait(RegistrationWait::Sync)),
             Err(FundError::Refused(e)) => Ok(self.failed(&e)),
             Err(FundError::CoinsLocked) => {
                 Ok(Step::Fail(RegistrationError::CoinsLocked.code(), true))
@@ -2715,6 +2761,14 @@ impl<'a, L: RegistrationLib> Driver<'a, L> {
                 self.failed(&e)
             }
             Err(FundError::CoinsLocked) => Step::Fail(RegistrationError::CoinsLocked.code(), true),
+            // A shield's funding only; no proof wait returns it.
+            Err(
+                e @ (FundError::TooManyInputs { .. }
+                | FundError::CoinsChanged
+                | FundError::BelowMinimum { .. }),
+            ) => self.failed(&PlatformError::Internal {
+                detail: format!("{e:?}"),
+            }),
         }
     }
 
@@ -3141,7 +3195,7 @@ pub(crate) fn lock_status(
     }
 }
 
-fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
+pub(super) fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
     use platform_wallet::PlatformWalletError as E;
     match e {
         E::FinalityTimeout(_) => FundError::IsTimeout,
@@ -3221,6 +3275,8 @@ impl PwLib {
             .coin_fence(self.wallet_id)
             .await
             .map_err(refused)?;
+        // The builder would select a coin a replay re-credited (0.1.x-bal §1).
+        self.replay_permit().await?;
         let snapshot = self.session.fenced_coins(&fence).await.map_err(refused)?;
         if spendable_of(&snapshot).protected > 0 {
             return Err(FundError::CoinsLocked);
@@ -3239,12 +3295,89 @@ impl PwLib {
         identity_index: u32,
         permit: &CallPermit,
     ) -> Result<OutPoint, FundError> {
-        let signer = permit
-            .funding_signer()
-            .map_err(|e| FundError::Refused(e.into()))?;
-        self.wallet
+        // The input bound (`lock_inputs`): refused with nothing selected,
+        // or past it at the signer, before the first signature.
+        super::lock_inputs::check(&self.wallet, duffs)
+            .await
+            .map_err(FundError::Refused)?;
+        let signer = super::lock_inputs::Capped::new(
+            permit
+                .funding_signer()
+                .map_err(|e| FundError::Refused(e.into()))?,
+        );
+        // Again at the call: the builder selects under the wallet manager's
+        // write lock, where nothing can be read (the signer runs under it),
+        // so a rewind between this read and that lock is not seen.
+        self.replay_permit().await?;
+        let funded = self
+            .wallet
             .asset_locks()
             .create_funded_asset_lock_proof(duffs, 0, funding_type, identity_index, &signer)
+            .await;
+        match funded {
+            Ok((_, _, outpoint)) => Ok(outpoint),
+            // The signer refused before the transaction was complete: the
+            // builder released its selection and nothing can be out, so the
+            // step ends `NotSent`, not possibly sent (review r3 R3-m1).
+            Err(_) if signer.refused() => {
+                permit.abort_unsent();
+                Err(FundError::NotSent(signer.refusal()))
+            }
+            Err(e) => Err(fund_error(e)),
+        }
+    }
+
+    /// A shield lock that drains CoinJoin account 0 (every final coin of
+    /// it, the fee out of the lock), signed by `signer`, a drain signer of
+    /// the call's permit; one below `minimum_lock_duffs` is dropped before
+    /// it is tracked or sent.
+    pub(crate) async fn fund_drain_with(
+        &self,
+        minimum_lock_duffs: u64,
+        signer: &super::signers::CountingFundingSigner,
+    ) -> Result<OutPoint, FundError> {
+        use super::shielded_pool::SHIELD_KEY;
+        use key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingAccount;
+        use platform_wallet::wallet::asset_lock::AssetLockBuildAmount;
+        self.replay_permit().await?;
+        self.wallet
+            .asset_locks()
+            .create_funded_asset_lock_proof_with_funding(
+                AssetLockBuildAmount::DrainAll {
+                    minimum_lock_duffs: Some(minimum_lock_duffs),
+                },
+                AssetLockFundingAccount::CoinJoin { account_index: 0 },
+                SHIELD_KEY.funding_type,
+                SHIELD_KEY.identity_index,
+                signer,
+            )
+            .await
+            .map(|(_, _, outpoint)| outpoint)
+            .map_err(fund_error)
+    }
+
+    /// The build of [`Self::fund_lock`] with `signer`, a funding signer of
+    /// the call's permit, without its `lock_inputs` bound: a shield's lock
+    /// caps its inputs at its own signer
+    /// (`CountingFundingSigner::with_input_cap`).
+    /// [`RegistrationLib::replay_refusal`] as a funding refusal.
+    async fn replay_permit(&self) -> Result<(), FundError> {
+        self.replay_refusal()
+            .await
+            .map_or(Ok(()), |e| Err(FundError::Refused(e)))
+    }
+
+    pub(crate) async fn fund_lock_with(
+        &self,
+        funding_type: platform_wallet::AssetLockFundingType,
+        duffs: u64,
+        identity_index: u32,
+        signer: &super::signers::CountingFundingSigner,
+    ) -> Result<OutPoint, FundError> {
+        self.replay_permit().await?;
+        self.wallet
+            .asset_locks()
+            .create_funded_asset_lock_proof(duffs, 0, funding_type, identity_index, signer)
             .await
             .map(|(_, _, outpoint)| outpoint)
             .map_err(fund_error)
@@ -3285,15 +3418,16 @@ impl RegistrationLib for PwLib {
         Ok(spendable_of(&snapshot))
     }
 
+    async fn replay_refusal(&self) -> Option<PlatformError> {
+        match self.session.replay_guard(self.wallet_id, 0).await {
+            Err(crate::EngineError::RescanInProgress) => Some(PlatformError::ContextUnavailable),
+            Err(crate::EngineError::RescanInterrupted) => Some(PlatformError::RescanInterrupted),
+            _ => None,
+        }
+    }
+
     fn funding_hold(&self) -> Option<RegistrationWait> {
-        let synced = self
-            .session
-            .hub
-            .tracker
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .caught_up();
-        if !synced {
+        if !wallet_synced(&self.session, self.wallet_id) {
             return Some(RegistrationWait::Sync);
         }
         self.claim_hold()
@@ -3584,12 +3718,27 @@ impl RegistrationLib for PwLib {
         super::dashpay::DashPay::name_credits_for_flow(Arc::clone(&self.sdk), label).await
     }
 
+    async fn platform_version(&self) -> &'static PlatformVersion {
+        super::protocol::refreshed(&self.sdk).await;
+        self.sdk.version()
+    }
+
     async fn credit_balance(&self, identity: &str) -> Result<Option<u64>, PlatformError> {
         use dash_sdk::platform::Fetch;
         use dash_sdk::query_types::IdentityBalance;
         let id = parse_identity(identity)?;
         Ok(IdentityBalance::fetch(&self.sdk, id).await?)
     }
+}
+
+/// SPV and `wallet`'s scan have caught up, as the session's hub saw them
+/// (a replay; `fence` reads it live, 0.1.x-bal §1).
+pub(crate) fn wallet_synced(session: &NetworkSession, wallet: WalletId) -> bool {
+    let synced = (session.hub.tracker.lock())
+        .unwrap_or_else(PoisonError::into_inner)
+        .caught_up();
+    let state = session.hub.wallet_state(&wallet);
+    synced && !state.is_some_and(|s| s.synced_height < s.scan_target)
 }
 
 #[cfg(test)]

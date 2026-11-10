@@ -101,6 +101,26 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: reached through `Masternodes::untrack` and `detach_key` (MG-03 D8, MG-00 D22)",
     ),
     (
+        "Vault::shielded_viewing_key",
+        "internal: the engine binds the Orchard account's viewing key from it, prompt-free, at the Platform start or the first shielded call (m4 §2.13); never a host's",
+    ),
+    (
+        "Vault::shielded_spend_key",
+        "internal: reached through `DashPay::shielded_send` and `unshield_to_core`, which redeem their `ShieldedSpend` grant for one spend (m4 §2.13)",
+    ),
+    (
+        "Vault::shield_drain_signer",
+        "internal: the shield drain (\"Move mixed coins\" to Shielded) issues its funding signer from the `Spend` grant it redeems, inside its lease; never a host's",
+    ),
+    (
+        "Vault::shield_drain_signer_held",
+        "internal: the shield drain's funding signer for a token whose key the drain's lease holds; never a host's",
+    ),
+    (
+        "Vault::shielded_spend_key_held",
+        "internal: the engine's shielded spends read the spend key under the call permit's key hold (m4 §2.13); never a host's",
+    ),
+    (
         "Vault::grant_identity_key_matches",
         "internal: the engine's contact-request writes ask it before they redeem a grant (DP2-02); the UI sees the refusal",
     ),
@@ -850,6 +870,63 @@ commands! {
         let grant = grants
             .pop()
             .ok_or_else(|| AppError::new(EngineCode::Internal, "no grant issued"))?;
+        Ok(grant.into())
+    }
+
+    /// `authorize` for the quoted Platform send `operation`
+    /// (`platformSendQuote`): a `platformOp` grant with no duffs and the
+    /// quote's `credits` (its planned debit), bound to that operation:
+    /// `platformSend` refuses any other grant for it, the grant left unused
+    /// (`platform.grant_invalid`). It is an ordinary `platformOp` grant
+    /// otherwise, as `authorize` issues. A grant an earlier call bound is
+    /// revoked, and so is this one if the bind fails. An unknown or sent
+    /// operation is `invalid_argument`, and nothing is issued. The payment
+    /// rule is `authorize`'s.
+    #[facade(
+        "DashPay::platform_send_grant",
+        "NetworkSession::vault_op",
+        "Vault::authorize",
+        "DashPay::platform_send_bind"
+    )]
+    fn authorize_platform_send(
+        state,
+        wallet_id: String,
+        operation: String,
+        credential: CredentialSpec
+    ) -> AuthGrant {
+        // The secret first: an early return must not drop it unwrapped.
+        let credential = OwnedCredential::from(credential);
+        let wallet = parse_wallet_id(&wallet_id)?;
+        let session = state.session().await?;
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let cap = dashpay.platform_send_grant(operation.clone()).await?;
+        let purpose = GrantPurpose::PlatformOp {
+            max_duffs: cap.max_duffs,
+            max_credits: cap.max_credits,
+        };
+        let grant = issue_grants(&state, &[purpose], credential, move |v, credential| {
+            v.authorize(purpose, Some(&wallet.0), credential)
+                .map(|g| vec![g])
+        })
+        .await?
+        .pop()
+        .ok_or_else(|| AppError::new(EngineCode::Internal, "no grant issued"))?;
+        #[cfg(test)]
+        {
+            *state.send_grant_issued.lock().unwrap() = Some(grant.id.clone());
+            crate::state::Seam::pass_slot(&state.send_bind_seam).await;
+        }
+        match dashpay.platform_send_bind(operation, grant.id.clone()).await {
+            Ok(replaced) => {
+                if let Some(old) = replaced {
+                    session.vault().revoke_grant(&old);
+                }
+            }
+            Err(e) => {
+                session.vault().revoke_grant(&grant.id);
+                return Err(e.into());
+            }
+        }
         Ok(grant.into())
     }
 

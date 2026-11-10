@@ -12,8 +12,11 @@ mod flows;
 mod invitations;
 mod keys;
 mod names;
+mod platform_addresses;
 mod registration;
+mod shielded;
 mod startup;
+mod unfinished;
 
 use dw_engine::platform::{BearerSecret, FlowKind};
 
@@ -24,17 +27,39 @@ use self::credits::{
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
 use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary};
+use self::platform_addresses::{
+    MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
+    PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
+    PlatformSendOutcome, PlatformSendQuote,
+};
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
 };
+use self::shielded::{
+    MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
+    ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding,
+};
 use self::startup::{DashPayStatus, DashPaySyncStatus, QuorumSource, SyncPassReport};
+use self::unfinished::{LockFinish, LockKind, UnfinishedTransfers};
 use crate::api::send::BroadcastOutcome;
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
+    (
+        "NetworkSession::fund_platform_addresses_for_test",
+        "test only: dwcli's testnet smoke funds a Platform address; the 0.1 app has no receive or fund path",
+    ),
+    (
+        "NetworkSession::quote_send_for_test",
+        "test only: dw-app's IPC tests quote a send without the network to authorize its grant",
+    ),
+    (
+        "NetworkSession::forget_send_for_test",
+        "test only: dw-app's IPC tests drop a quoted send between a grant's issue and its bind",
+    ),
     (
         "NetworkSession::dashpay",
         "internal: every DashPay command obtains it via state.dashpay",
@@ -401,6 +426,125 @@ commands! {
         Ok(list.into_iter().map(Into::into).collect())
     }
 
+    // Platform addresses (m4 §2.12).
+
+    /// The Platform addresses' balance as the last sync pass left them.
+    #[facade("DashPay::platform_addresses")]
+    fn platform_addresses(state, wallet_id: String) -> PlatformAddressBalance {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_addresses().await?.into())
+    }
+
+    /// The Platform addresses' activity, the newest first.
+    #[facade("DashPay::platform_activity")]
+    fn platform_activity(state, wallet_id: String) -> Vec<PlatformActivity> {
+        let rows = state.dashpay(&wallet_id).await?.platform_activity().await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// Runs a Platform-address sync pass now and returns the balance after.
+    #[facade("DashPay::sync_platform_addresses")]
+    fn platform_addresses_sync(state, wallet_id: String) -> PlatformAddressBalance {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.sync_platform_addresses().await?.into())
+    }
+
+    /// What "Move to Dash wallet" of `amount` takes and pays out.
+    #[facade("DashPay::move_to_core_quote")]
+    fn platform_move_to_core_quote(
+        state,
+        wallet_id: String,
+        amount: WithdrawAmount,
+    ) -> MoveToCoreQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.move_to_core_quote(amount.into()).await?.into())
+    }
+
+    /// Moves `amount` of the Platform addresses' credits to `to` (the
+    /// quote's: one of the wallet's Core receiving addresses) under `grant`.
+    #[facade("DashPay::move_to_core")]
+    fn platform_move_to_core(
+        state,
+        wallet_id: String,
+        amount: WithdrawAmount,
+        to: String,
+        grant: String,
+    ) -> MoveToCoreOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.move_to_core(amount.into(), to, grant).await?.into())
+    }
+
+    /// The wallet's Platform receive address: the lowest unused one.
+    #[facade("DashPay::platform_receive_address")]
+    fn platform_receive_address(state, wallet_id: String) -> PlatformReceiveAddress {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_receive_address().await?.into())
+    }
+
+    /// What sending `amount` to the Platform address `to` takes; `retryOf`
+    /// names the send this retries ("Retry this payment"), else `null`.
+    #[facade("DashPay::platform_send_quote")]
+    fn platform_send_quote(
+        state,
+        wallet_id: String,
+        to: String,
+        amount: WithdrawAmount,
+        retry_of: Option<String>,
+    ) -> PlatformSendQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_send_quote(to, amount.into(), retry_of).await?.into())
+    }
+
+    /// Sends the quoted `operation` (its recipient and amount, once) under
+    /// `grant`, a fresh `platformOp` grant.
+    #[facade("DashPay::platform_send")]
+    fn platform_send(
+        state,
+        wallet_id: String,
+        operation: String,
+        grant: String,
+    ) -> PlatformSendOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_send(operation, grant).await?.into())
+    }
+
+    /// What adding `duffs` of the Core balance to the wallet's Platform
+    /// address costs and adds.
+    #[facade("DashPay::platform_fund_quote")]
+    fn platform_fund_quote(state, wallet_id: String, duffs: u64) -> PlatformFundQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_fund_quote(duffs).await?.into())
+    }
+
+    /// "Add from Dash wallet": adds `duffs` of the Core balance to the
+    /// wallet's Platform address under `grant`.
+    #[facade("DashPay::platform_fund")]
+    fn platform_fund(state, wallet_id: String, duffs: u64, grant: String) -> PlatformFundOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_fund(duffs, grant).await?.into())
+    }
+
+    /// This install's "Add from Dash wallet" locks not applied yet.
+    #[facade("DashPay::pending_platform_funds")]
+    fn pending_platform_funds(state, wallet_id: String) -> Vec<PendingPlatformFund> {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let pending = dashpay.pending_platform_funds().await?;
+        Ok(pending.into_iter().map(Into::into).collect())
+    }
+
+    /// Applies the pending fund lock `txid` under `grant` ("Pending —
+    /// finish", "Check again").
+    #[facade("DashPay::resume_platform_fund")]
+    fn resume_platform_fund(
+        state,
+        wallet_id: String,
+        txid: String,
+        grant: String,
+    ) -> PlatformFundOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.resume_platform_fund(txid, grant).await?.into())
+    }
+
     // Grants, flows and leases.
 
     /// The caps of the grant `action` needs.
@@ -545,5 +689,176 @@ commands! {
     fn set_trusted_quorums_only(state, on: bool) -> () {
         state.developer_build()?;
         Ok(state.session().await?.set_trusted_quorums_only(on).await?)
+    }
+
+    // Shielded funds (m4 §2.13).
+
+    /// The wallet's shielded account: whether the network takes shielded
+    /// transitions, the balance, pending moves and sync.
+    #[facade("DashPay::shielded_status")]
+    fn shielded_status(state, wallet_id: String) -> ShieldedStatus {
+        Ok(state.dashpay(&wallet_id).await?.shielded_status().await?.into())
+    }
+
+    /// Runs a shielded sync pass now; returns the status after.
+    #[facade("DashPay::shielded_sync")]
+    fn shielded_sync(state, wallet_id: String) -> ShieldedStatus {
+        Ok(state.dashpay(&wallet_id).await?.shielded_sync().await?.into())
+    }
+
+    /// The wallet's shielded receive address, for Receive and its QR.
+    #[facade("DashPay::shielded_receive_address")]
+    fn shielded_receive_address(state, wallet_id: String) -> ShieldedAddress {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.shielded_receive_address().await?.into())
+    }
+
+    /// What moving `duffs` of the Core balance into the pool costs and buys.
+    #[facade("DashPay::shield_quote")]
+    fn shield_quote(state, wallet_id: String, duffs: u64) -> ShieldQuote {
+        Ok(state.dashpay(&wallet_id).await?.shield_quote(duffs).await?.into())
+    }
+
+    /// Core → Shielded: moves `duffs` of the Core balance into the pool
+    /// under `grant`.
+    #[facade("DashPay::shield_from_core")]
+    fn shield_from_core(state, wallet_id: String, duffs: u64, grant: String) -> ShieldOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.shield_from_core(duffs, grant).await?.into())
+    }
+
+    /// What "Move mixed coins" to Shielded would move: the CoinJoin
+    /// account's coins in one asset lock.
+    #[facade("DashPay::shield_mixed_quote")]
+    fn shield_mixed_quote(state, wallet_id: String) -> MixedShieldQuote {
+        Ok(state.dashpay(&wallet_id).await?.shield_mixed_quote().await?.into())
+    }
+
+    /// The wallet's moves into Shielded whose payment may have been sent,
+    /// each with what Tools ▸ Repair would spend to settle it.
+    #[facade("DashPay::stuck_shield_fundings")]
+    fn stuck_shield_fundings(state, wallet_id: String) -> Vec<StuckShieldFunding> {
+        let stuck = state.dashpay(&wallet_id).await?.stuck_shield_fundings().await?;
+        Ok(stuck.into_iter().map(Into::into).collect())
+    }
+
+    /// "Move mixed coins" to Shielded under `grant`, a `Spend` grant of the
+    /// quote's `totalDuffs`.
+    #[facade("DashPay::shield_mixed_coins")]
+    fn shield_mixed_coins(state, wallet_id: String, grant: String) -> ShieldOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.shield_mixed_coins(grant).await?.into())
+    }
+
+    /// Applies the pending Core → Shielded lock `txid` under `grant`, or
+    /// checks one of unknown consumption again ("Check again").
+    #[facade("DashPay::resume_shield")]
+    fn resume_shield(state, wallet_id: String, txid: String, grant: String) -> ShieldOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.resume_shield(txid, grant).await?.into())
+    }
+
+    /// What sending `credits` (a decimal string) to the shielded address
+    /// `to` costs.
+    #[facade("DashPay::shielded_send_quote")]
+    fn shielded_send_quote(
+        state,
+        wallet_id: String,
+        to: String,
+        credits: String,
+    ) -> ShieldedSpendQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay.shielded_send_quote(to, credits).await?.into())
+    }
+
+    /// Shielded → Shielded: sends `credits` to `to` under `grant`.
+    #[facade("DashPay::shielded_send")]
+    fn shielded_send(
+        state,
+        wallet_id: String,
+        to: String,
+        credits: String,
+        memo: Option<String>,
+        grant: String,
+        confirm_unrecorded: bool,
+    ) -> ShieldedSpendOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay
+            .shielded_send(to, credits, memo, grant, confirm_unrecorded)
+            .await?
+            .into())
+    }
+
+    /// What moving `credits` back to Core costs (`to`: a Core address of the
+    /// network, `null` for the wallet's next receive address).
+    #[facade("DashPay::unshield_quote")]
+    fn unshield_quote(
+        state,
+        wallet_id: String,
+        credits: String,
+        to: Option<String>,
+    ) -> ShieldedSpendQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay.unshield_quote(credits, to).await?.into())
+    }
+
+    /// Shielded → Core: withdraws `credits` to `to` under `grant`.
+    #[facade("DashPay::unshield_to_core")]
+    fn unshield_to_core(
+        state,
+        wallet_id: String,
+        credits: String,
+        to: Option<String>,
+        grant: String,
+        confirm_unrecorded: bool,
+    ) -> ShieldedSpendOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let credits = shielded::parse_credits(&credits)?;
+        Ok(dashpay
+            .unshield_to_core(credits, to, grant, confirm_unrecorded)
+            .await?
+            .into())
+    }
+
+    /// The wallet's shielded history for Activity, pending first, then
+    /// newest first (`limit` at most 500).
+    #[facade("DashPay::shielded_history")]
+    fn shielded_history(
+        state,
+        wallet_id: String,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<ShieldedActivity> {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let rows = dashpay.shielded_history(offset, limit).await?;
+        Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    // Unfinished transfers (m4 §2.14).
+
+    /// The wallet's funding locks whose Platform side is not known to have
+    /// happened (its own and those a restore read back).
+    #[facade("DashPay::unfinished_transfers")]
+    fn unfinished_transfers(state, wallet_id: String) -> UnfinishedTransfers {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.unfinished_transfers().await?.into())
+    }
+
+    /// Finishes the unfinished transfer of `kind` at `txid`:`vout` under
+    /// `grant`, on the same lock; only a proved apply finishes it.
+    #[facade("DashPay::finish_transfer")]
+    fn finish_transfer(
+        state,
+        wallet_id: String,
+        kind: LockKind,
+        txid: String,
+        vout: u32,
+        grant: String,
+    ) -> LockFinish {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.finish_transfer(kind.into(), txid, vout, grant).await?.into())
     }
 }

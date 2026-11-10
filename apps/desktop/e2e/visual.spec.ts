@@ -3,7 +3,7 @@ import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { STATES as COINJOIN, pressStart } from "./coinjoin";
 import { CARDS, CHIP_TEXT, CHIPS } from "./dashpay";
 import { fileDialogAnswers, WIDE_PNG } from "./editProfile";
-import { authorize, fixtureUrl, fontsReady, SCREENS, show, THEMES, type Theme } from "./helpers";
+import { authorize, fixtureUrl, fontsReady, openTransfer, SCREENS, show, THEMES, type Theme } from "./helpers";
 import { openIdentities } from "./identities";
 import { IDENTITY } from "../src/fixture/dashpay";
 import { showSettingsView, type SettingsView } from "./settings";
@@ -55,6 +55,48 @@ const ONBOARDING: Record<string, (page: Page) => Promise<void>> = {
 };
 
 const LATER: Record<string, { scenario: string; go: (page: Page) => Promise<void> }> = {
+  // 0.2 X1b: Receive on Platform open, Pay from Platform with its quote, and its confirm.
+  "platform-receive": {
+    scenario: "funded",
+    go: async (page) => {
+      await page.getByTestId("sidebar-receive").click();
+      await page.getByTestId("receive-qr").waitFor();
+      await page.getByTestId("platform-receive-toggle").click();
+      await page.getByTestId("platform-receive-qr").waitFor();
+    },
+  },
+  "platform-pay": {
+    scenario: "funded",
+    go: async (page) => {
+      await page.getByTestId("sidebar-pay").click();
+      await page.getByTestId("pay-tabs-address").click();
+      await page.getByTestId("pay-address").fill("tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h");
+      await page.getByTestId("pay-amount").fill("0.01");
+      await page.getByTestId("pay-fee-line").waitFor();
+    },
+  },
+  "platform-pay-confirm": {
+    scenario: "funded",
+    go: async (page) => {
+      await page.getByTestId("sidebar-pay").click();
+      await page.getByTestId("pay-tabs-address").click();
+      await page.getByTestId("pay-address").fill("tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h");
+      await page.getByTestId("pay-amount").fill("0.01");
+      await page.getByTestId("pay-fee-line").waitFor();
+      await page.getByTestId("pay-continue").click();
+      await page.getByTestId("platform-send-confirm").waitFor();
+    },
+  },
+  "platform-fund": {
+    scenario: "funded",
+    go: async (page) => {
+      await openTransfer(page, "coreToPlatform");
+      await page.getByTestId("transfer-amount").fill("0.5");
+      await page.getByTestId("transfer-continue").click();
+      await page.getByTestId("platform-fund-confirm").waitFor();
+      await expect(page.getByTestId("platform-fund-confirm")).toContainText("You receive about");
+    },
+  },
   "lock-wait": { scenario: "locked-throttled", go: (page) => page.getByTestId("lock-error").getByText("try again").waitFor() },
   forgot: {
     scenario: "locked-two-wallets",
@@ -145,6 +187,48 @@ for (const theme of THEMES) {
   }
 }
 
+// MIX-SHIELD: Repair's card for a move into Shielded that may have been sent, alone, and its question.
+for (const theme of THEMES) {
+  test(`visual tools-repair-stuck-shield ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("coinjoin-move", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => {
+      window.__dwFixture!.world.coinjoin.drainUnknown = "stuck";
+      window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" });
+    });
+    const card = page.getByTestId("repair-stuck-shields");
+    await card.waitFor();
+    await card.scrollIntoViewIfNeeded();
+    await fontsReady(page);
+    await expect(card).toHaveScreenshot(`${theme}-tools-repair-stuck-shield.png`, { animations: "disabled", caret: "hide" });
+    await page.getByTestId("repair-resolve-shield/0/funding").click();
+    const sheet = page.getByTestId("repair-confirm");
+    await sheet.waitFor();
+    await fontsReady(page);
+    await expect(sheet).toHaveScreenshot(`${theme}-tools-repair-stuck-shield-confirm.png`, { animations: "disabled", caret: "hide" });
+  });
+
+  // A shield from the main balance: Repair sends every spendable coin of it.
+  test(`visual tools-repair-stuck-shield-plain ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("coinjoin-move", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => {
+      window.__dwFixture!.world.pending.shielded!.shieldUnknown = true;
+      window.__dwFixture!.shellCommand({ kind: "tools", tab: "repair" });
+    });
+    const card = page.getByTestId("repair-stuck-shields");
+    await card.waitFor();
+    await card.scrollIntoViewIfNeeded();
+    await fontsReady(page);
+    await expect(card).toHaveScreenshot(`${theme}-tools-repair-stuck-shield-plain.png`, { animations: "disabled", caret: "hide" });
+    await page.getByTestId("repair-resolve-shield/1/funding").click();
+    const sheet = page.getByTestId("repair-confirm");
+    await sheet.waitFor();
+    await fontsReady(page);
+    await expect(sheet).toHaveScreenshot(`${theme}-tools-repair-stuck-shield-plain-confirm.png`, { animations: "disabled", caret: "hide" });
+  });
+}
+
 // DP6-03: Information's DashPay card alone (the tab's own shot ends above it), running on SPV
 // quorum keys and in the degraded mode.
 for (const theme of THEMES) {
@@ -161,6 +245,95 @@ for (const theme of THEMES) {
       await expect(card).toHaveScreenshot(`${theme}-tools-dashpay-card-${scenario}.png`, { animations: "disabled", caret: "hide" });
     });
   }
+}
+
+// MP-01: Home with prices on Mainnet (fresh, stale, unavailable, the one-time disclosure),
+// Settings ▸ General's Local currency card with its picker, Activity's rows and table with their
+// values, and the transaction detail with its price stamp and value now.
+const FIAT_HOME = ["fiat", "fiat-stale", "fiat-unavailable", "fiat-disclosure"];
+
+for (const theme of THEMES) {
+  for (const scenario of FIAT_HOME) {
+    test(`visual home-${scenario} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      await page.getByTestId("hero").waitFor();
+      await page.locator("[data-testid=hero-fiat-row], [data-testid=rates-consent-card]").first().waitFor();
+      await shoot(page, `home-${scenario}`, theme);
+    });
+  }
+  test(`visual settings-currency ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("fiat", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    const card = page.getByTestId("settings-currency");
+    await card.getByTestId("settings-currency-USD").waitFor();
+    await card.scrollIntoViewIfNeeded();
+    await fontsReady(page);
+    await expect(card).toHaveScreenshot(`${theme}-settings-currency.png`, { animations: "disabled", caret: "hide" });
+  });
+  for (const mode of ["list", "table"] as const) {
+    test(`visual activity-fiat-${mode} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl("fiat", theme));
+      await page.getByTestId("hero").waitFor();
+      await page.getByTestId("sidebar-activity").click();
+      await page.getByTestId(`tx-mode-${mode}`).click();
+      await page.locator(mode === "table" ? "[data-testid=tx-table-value]" : ".tx-row-fiat").first().waitFor();
+      await page.mouse.move(0, 0);
+      await shoot(page, `activity-fiat-${mode}`, theme);
+    });
+  }
+  // Pay to an address with 10.00 typed in USD, its Confirm with the values, and a Receive request in USD.
+  for (const view of ["pay-fiat", "pay-confirm-fiat", "receive-fiat"] as const) {
+    test(`visual ${view} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl("fiat", theme));
+      await page.getByTestId("hero").waitFor();
+      const where = view === "receive-fiat" ? "request" : "pay";
+      if (where === "pay") {
+        await page.getByTestId("sidebar-pay").click();
+        await page.getByTestId("pay-tabs-address").click();
+        await page.getByTestId("pay-address").fill("XXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd");
+      } else {
+        await page.getByTestId("sidebar-receive").click();
+      }
+      await page.getByTestId(`${where}-amount-toggle`).click();
+      await page.getByTestId(`${where}-amount`).fill(where === "pay" ? "10.00" : "25.50");
+      await page.getByTestId(`${where}-amount-other`).waitFor();
+      if (view === "pay-confirm-fiat") {
+        await page.getByTestId("pay-continue").and(page.locator(":enabled")).waitFor();
+        await page.getByTestId("pay-continue").click();
+        await page.getByTestId("pay-confirm-passphrase").waitFor();
+      } else if (where === "pay") {
+        await page.getByTestId("pay-fee-line").waitFor();
+      }
+      await page.mouse.move(0, 0);
+      await shoot(page, view, theme);
+    });
+  }
+  // Receive's stored requests with their value now.
+  test(`visual receive-requests-fiat ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("fiat", theme));
+    await page.getByTestId("hero").waitFor();
+    await page.getByTestId("sidebar-receive").click();
+    await page.getByTestId("request-label").fill("Dinner");
+    await page.getByTestId("request-amount").fill("1.5");
+    await page.getByTestId("request-create").and(page.locator(":enabled")).waitFor();
+    await page.getByTestId("request-create").click();
+    await page.getByTestId("request-sheet").waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByTestId("request-sheet").waitFor({ state: "detached" });
+    await page.locator("[data-testid^=request-fiat-]").first().waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "receive-requests-fiat", theme);
+  });
+  test(`visual tx-detail-fiat ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("fiat", theme));
+    await page.getByTestId("hero").waitFor();
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(".tx-row").first().click();
+    await page.getByTestId("tx-detail-fiat-then").waitFor();
+    await page.getByTestId("tx-detail-value-now").waitFor();
+    await shoot(page, "tx-detail-fiat", theme);
+  });
 }
 
 const SETTINGS: SettingsView[] = ["general", "security", "wallets", "backups", "about", "exportSheet"];
@@ -468,6 +641,9 @@ for (const theme of THEMES) {
 // Settings ▸ CoinJoin.
 const COINJOIN_PAGES = ["off", "mixing", "paused", "locked"] as const;
 
+/** The CoinJoin page's move card, where it shows, knows whether Shielded is offered. */
+const moveCardSettled = (page: Page) => page.waitForFunction(() => document.querySelector("[data-testid=coinjoin-move][data-shielded=loading]") === null);
+
 for (const theme of THEMES) {
   for (const [state, { scenario, start, home }] of Object.entries(COINJOIN)) {
     if (!home) continue;
@@ -490,9 +666,41 @@ for (const theme of THEMES) {
       await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
       await page.locator(`[data-testid=coinjoin-status][data-state=${state}]`).waitFor();
       await page.getByTestId("coinjoin-levels").locator("fieldset").waitFor();
+      await moveCardSettled(page);
+      // Below the status bar otherwise: the move card's buttons in view.
+      if (state === "mixing" || state === "paused") await page.getByTestId("coinjoin-move").scrollIntoViewIfNeeded();
       await shoot(page, `coinjoin-page-${state}`, theme);
     });
   }
+  // "Move mixed coins" (IOS-057): the plan, the refusal while mixing, a partial outcome;
+  // into Shielded, the quote and the consolidation round.
+  for (const [name, scenario, button, ready] of [
+    ["move-mixed-confirm", "coinjoin-move", "coinjoin-move-open", "[data-testid=move-mixed-body][data-step=confirm]"],
+    ["move-mixed-mixing", "coinjoin-move-mixing", "coinjoin-move-open", "[data-testid=move-mixed-body][data-step=mixing]"],
+    ["move-mixed-shield", "coinjoin-move", "coinjoin-move-shield", "[data-testid=move-mixed-body][data-step=confirm]"],
+    ["move-mixed-combine", "coinjoin-move-many", "coinjoin-move-shield", "[data-testid=move-mixed-body][data-step=combine]"],
+  ] as const) {
+    test(`visual ${name} ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl(scenario, theme));
+      await page.getByTestId("toolbar").waitFor();
+      await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
+      await page.getByTestId(button).click();
+      await page.locator(ready).waitFor();
+      await moveCardSettled(page);
+      await shoot(page, name, theme);
+    });
+  }
+  test(`visual move-mixed-partial ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("coinjoin-move-partial", theme));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
+    await page.getByTestId("coinjoin-move-open").click();
+    await page.getByTestId("move-mixed-confirm").click();
+    await authorize(page);
+    await page.locator("[data-testid=move-mixed-body][data-outcome=partial]").waitFor();
+    await moveCardSettled(page);
+    await shoot(page, "move-mixed-partial", theme);
+  });
   test(`visual settings-coinjoin ${theme}`, async ({ page }) => {
     await page.goto(fixtureUrl("funded", theme));
     await page.getByTestId("toolbar").waitFor();
@@ -779,5 +987,30 @@ for (const theme of THEMES) {
     await page.getByTestId("name-vote-result").waitFor();
     await page.mouse.move(0, 0);
     await shoot(page, "names-vote-result", theme);
+  });
+}
+
+// Unfinished transfers on Home: the card for a restored Core → Shielded lock in each state, and
+// the Details sheet with a lock this version can't finish.
+for (const theme of THEMES) {
+  for (const scenario of ["recovery-one", "recovery-restored-mixed", "recovery-checking"]) {
+    test(`visual unfinished-card ${scenario} ${theme}`, async ({ page }) => {
+      await page.clock.setFixedTime(FIXTURE_NOW);
+      await page.goto(fixtureUrl(scenario, theme));
+      const card = page.getByTestId("unfinished-card");
+      await expect(card.getByTestId("unfinished-text")).toBeVisible();
+      await fontsReady(page);
+      await expect(card).toHaveScreenshot(`${theme}-unfinished-card-${scenario}.png`, SHOT);
+    });
+  }
+  test(`visual unfinished-sheet recovery-unsupported ${theme}`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("recovery-unsupported", theme));
+    await page.getByTestId("unfinished-details").click();
+    const sheet = page.getByTestId("unfinished-sheet");
+    await expect(sheet.getByTestId("unfinished-row").first()).toBeVisible();
+    await page.mouse.move(0, 0);
+    await fontsReady(page);
+    await expect(sheet).toHaveScreenshot(`${theme}-unfinished-sheet-recovery-unsupported.png`, SHOT);
   });
 }

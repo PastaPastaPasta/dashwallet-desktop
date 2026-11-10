@@ -183,6 +183,7 @@ fn bench_rows(rows: u32) -> HistoryRows {
                     counts_toward_balance: true,
                     involves_watch_only: false,
                     counterparty: None,
+                    fiat_then: None,
                 }
             })
             .collect(),

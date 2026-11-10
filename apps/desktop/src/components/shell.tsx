@@ -9,6 +9,7 @@ import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { navigate, ui, useUi, type Route } from "../app/ui";
 import { namesState, type NamesState } from "../dashpay/status";
+import { ExperimentalBadge } from "./basics";
 import { isSyncing, syncPercent, syncState } from "../format/sync";
 import { Avatar } from "../screens/contacts/Avatar";
 
@@ -53,6 +54,19 @@ const MASTERNODES: SidebarItem = {
   ),
 };
 
+/** Settings, last and apart: pinned to the foot of the sidebar (DEC-1058 #7). */
+const SETTINGS: SidebarItem = {
+  route: "settings",
+  title: "Settings",
+  icon: (
+    <>
+      <circle cx="10" cy="10" r="2.5" />
+      <circle cx="10" cy="10" r="5.5" />
+      <path d="M10 2v2.5M10 15.5V18M2 10h2.5M15.5 10H18M4.3 4.3l1.8 1.8M13.9 13.9l1.8 1.8M4.3 15.7l1.8-1.8M13.9 6.1l1.8-1.8" />
+    </>
+  ),
+};
+
 /** Sections behind a feature that is off: Explore until its task. CoinJoin
  * shows, as in dash-qt, whose `-enablecoinjoin` is on by default (D-row "sidebar"). */
 const EXPLORE_ENABLED = false;
@@ -69,35 +83,43 @@ export function Sidebar({ joined, requests, masternodes }: { joined: boolean; re
     : { route: "joinDashPay", title: "Join DashPay", icon: CONTACTS_ICON };
   const items = [HOME, PAY, RECEIVE, contacts, ACTIVITY, COINJOIN, ...(EXPLORE_ENABLED ? [EXPLORE] : []), ...(masternodes.shown ? [MASTERNODES] : [])];
   const badges: Partial<Record<Route, number>> = { contacts: requests, masternodes: masternodes.badge };
+  const item = (item: SidebarItem) => {
+    const current = item.route === route;
+    const count = badges[item.route] ?? 0;
+    const badge = count > 0 ? count : null;
+    return (
+      <li key={item.route}>
+        <button
+          type="button"
+          className={`sidebar-item ${current ? "is-current" : ""}`}
+          data-testid={`sidebar-${item.route}`}
+          aria-current={current ? "page" : undefined}
+          onClick={() => navigate(item.route)}
+        >
+          <svg className="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true">
+            {item.icon}
+          </svg>
+          <span className="sidebar-title">
+            {item.title}
+            {item.route === "coinJoin" && " "}
+            {item.route === "coinJoin" && <ExperimentalBadge testId="sidebar-coinJoin-experimental" />}
+          </span>
+          {badge !== null && (
+            <span className="sidebar-badge" data-testid={`sidebar-${item.route}-badge`} aria-label={`${badge} waiting`}>
+              {badgeText(badge)}
+            </span>
+          )}
+        </button>
+      </li>
+    );
+  };
   return (
     <nav className="sidebar" aria-label="Main" data-testid="sidebar">
       <ul role="list" className="sidebar-list">
-        {items.map((item) => {
-          const current = item.route === route;
-          const count = badges[item.route] ?? 0;
-          const badge = count > 0 ? count : null;
-          return (
-            <li key={item.route}>
-              <button
-                type="button"
-                className={`sidebar-item ${current ? "is-current" : ""}`}
-                data-testid={`sidebar-${item.route}`}
-                aria-current={current ? "page" : undefined}
-                onClick={() => navigate(item.route)}
-              >
-                <svg className="sidebar-icon" viewBox="0 0 20 20" aria-hidden="true">
-                  {item.icon}
-                </svg>
-                <span className="sidebar-title">{item.title}</span>
-                {badge !== null && (
-                  <span className="sidebar-badge" data-testid={`sidebar-${item.route}-badge`} aria-label={`${badge} waiting`}>
-                    {badgeText(badge)}
-                  </span>
-                )}
-              </button>
-            </li>
-          );
-        })}
+        {items.map(item)}
+      </ul>
+      <ul role="list" className="sidebar-list sidebar-foot">
+        {item(SETTINGS)}
       </ul>
     </nav>
   );

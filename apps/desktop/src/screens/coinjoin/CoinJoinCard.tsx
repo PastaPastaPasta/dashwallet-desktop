@@ -5,7 +5,7 @@
 import { useId, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { navigate } from "../../app/ui";
-import { DashButton, Icon } from "../../components/basics";
+import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
 import { QuestionSheet } from "../../components/sheet";
 import { announcement, CoinJoinText, type CoinJoinView, type ViewActionKind } from "../../coinjoin/model";
 import { useCoinJoinView, useDismissedStop, useMixingAction } from "../../coinjoin/queries";
@@ -86,6 +86,8 @@ export function CoinJoinCard({ walletId, network }: { walletId: string; network:
             <button type="button" className="coinjoin-card-open" data-testid="coinjoin-card-open" onClick={() => navigate("coinJoin")}>
               {view.title}
             </button>
+            {" "}
+            <ExperimentalBadge testId="coinjoin-card-experimental" />
             {view.busy && <span className="spinner coinjoin-spinner" aria-hidden="true" />}
           </h2>
           <ViewFacts view={view} testId="coinjoin-card" />

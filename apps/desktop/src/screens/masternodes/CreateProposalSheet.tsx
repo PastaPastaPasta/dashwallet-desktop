@@ -82,6 +82,7 @@ export function CreateProposalSheet({
   const [first, setFirst] = useState<number | null>(null);
   const [count, setCount] = useState(1);
   const amount = useAmountField(shown, "");
+  const amountPending = !amount.settled || (amount.text.trim() !== "" && amount.duffs === undefined);
   const [payTo, setPayTo] = useState<"new" | "other">("new");
   const [other, setOther] = useState("");
   /** The new receive address, taken once per sheet (labelled with the proposal's name). */
@@ -158,12 +159,13 @@ export function CreateProposalSheet({
       return;
     }
     if (step === 2) {
+      if (amountPending) return;
       const p: FieldErrors = {};
       if (first === null) p.first_payment = fieldText("first_payment", network.kind);
       if (amount.error || !amount.duffs) p.payment_amount = amount.error ?? "Enter the amount of each payment.";
       if (payTo === "other" && other.trim() === "") p.payment_address = fieldText("payment_address", network.kind);
       setErrors(p);
-      if (Object.keys(p).length > 0 || !amount.settled) return;
+      if (Object.keys(p).length > 0) return;
       if (payTo === "new" && fresh === null) {
         try {
           setFresh((await b.nextReceiveAddress(wallet.walletId, `Proposal ${name}`)).address);
@@ -472,7 +474,7 @@ export function CreateProposalSheet({
               </DashButton>
             )}
             {step < 3 ? (
-              <DashButton type="submit" variant="filledBlue" size="medium" data-testid="create-continue" disabled={step === 2 && !amount.settled}>
+              <DashButton type="submit" variant="filledBlue" size="medium" data-testid="create-continue" disabled={step === 2 && amountPending}>
                 Continue
               </DashButton>
             ) : (

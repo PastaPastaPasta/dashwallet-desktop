@@ -1,12 +1,15 @@
 // History components (UX-SPEC C7, C8, C9, C25, C26): day-group cards of iOS transaction rows,
-// and Activity's table mode (dash-qt's columns).
+// and Activity's table mode (dash-qt's columns). With a price shown (MP-01), each amount has its value now
+// under it, and the table a value column; discreet mode leaves them out.
 
 import { useId, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { useBackend } from "../api/queries";
 import type { HistorySortName } from "../api/generated/HistorySortName";
+import { FiatLine, useFiat, type Fiat } from "../fiat/rates";
 import { useDisplay, type Display } from "../format/display";
+import { useUi } from "../app/ui";
 import { Avatar } from "../screens/contacts/Avatar";
 import {
   contactAside,
@@ -43,12 +46,18 @@ export interface RowContext {
   display: Display;
   locale: string | undefined;
   now: Date;
+  /** Each amount's value now (rates-engine §2). */
+  fiat: Fiat;
+  /** Discreet mode: no fiat value shows. */
+  discreet: boolean;
 }
 
-/** Display unit, locale and clock the rows of a screen format with. */
+/** Display unit, locale, clock and price the rows of a screen format with. */
 export function useRowContext(network: NetworkInfo): RowContext {
   const backend = useBackend();
-  return { display: useDisplay(network), locale: backend.locale, now: backend.now() };
+  const fiat = useFiat();
+  const discreet = useUi((s) => s.discreet);
+  return { display: useDisplay(network), locale: backend.locale, now: backend.now(), fiat, discreet };
 }
 
 /** Test id of a row: stable across engines and runs for the same transaction record. */
@@ -59,12 +68,20 @@ export const rowTestId = (row: TxRow) => `tx-row-${row.txid.slice(0, 10)}-${row.
 export interface RowDecor {
   title?: string;
   leading?: ReactNode;
+  /** The row's source, as a tag beside the time (Platform rows among the Core ones). */
+  tag?: string;
+  /** The row opens nothing: it is not a button. */
+  readOnly?: boolean;
+  /** Replaces the status chip with a neutral note (not a problem). */
+  note?: string;
+  /** The row shows no amount (it has none to show). */
+  hideAmount?: boolean;
 }
 
 function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext; onOpen: (row: TxRow) => void; decorate?: (row: TxRow) => RowDecor }) {
   const decor = decorate?.(row);
   const title = decor?.title ?? txTitle(row);
-  const chip = txChip(row.status);
+  const chip = decor?.note ?? txChip(row.status);
   const trailing = trailingStatus(row.status);
   const date = rowDate(row);
   const shown = shownAmount(row.amount, row.txType);
@@ -74,23 +91,36 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
   const leading =
     decor?.leading ??
     (letters !== null ? <Avatar letters={letters} identity={row.counterparty?.identity} /> : <Icon id={TX_ICON[txIcon(row.txType, row.status, row.amount)]} size={30} className="tx-row-icon" />);
+  const body = (
+    <>
+      {leading}
+      <span className="tx-row-text">
+        <span className={`tx-row-title ${isProblem(row.status) ? "is-problem" : ""}`}>{title}</span>
+        {aside && <VisuallyHidden>{aside}</VisuallyHidden>}
+        <span className="tx-row-subtitle">
+          {date && <span className="tx-row-time">{timeOfDay(date, ctx.locale)}</span>}
+          {decor?.tag && <Chip tone="info">{decor.tag}</Chip>}
+          {chip && <Chip tone={isProblem(row.status) ? "danger" : "info"}>{chip}</Chip>}
+        </span>
+      </span>
+      <span className="tx-row-trailing">
+        {trailing && <span className="tx-row-status">{trailing}</span>}
+        {!decor?.hideAmount && <AmountText className="tx-row-amount" text={amount} unitName={ctx.display.name} />}
+        {!decor?.hideAmount && <FiatLine fiat={ctx.fiat} duffs={shown.duffs} hidden={ctx.discreet} className="tx-row-fiat" testId={`${rowTestId(row)}-fiat`} />}
+      </span>
+    </>
+  );
   return (
     <li className="tx-row-item">
-      <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>
-        {leading}
-        <span className="tx-row-text">
-          <span className={`tx-row-title ${isProblem(row.status) ? "is-problem" : ""}`}>{title}</span>
-          {aside && <VisuallyHidden>{aside}</VisuallyHidden>}
-          <span className="tx-row-subtitle">
-            {date && <span className="tx-row-time">{timeOfDay(date, ctx.locale)}</span>}
-            {chip && <Chip tone={isProblem(row.status) ? "danger" : "info"}>{chip}</Chip>}
-          </span>
-        </span>
-        <span className="tx-row-trailing">
-          {trailing && <span className="tx-row-status">{trailing}</span>}
-          <AmountText className="tx-row-amount" text={amount} unitName={ctx.display.name} />
-        </span>
-      </button>
+      {decor?.readOnly ? (
+        <div className="tx-row is-readonly" data-testid={rowTestId(row)} data-txid={row.txid}>
+          {body}
+        </div>
+      ) : (
+        <button type="button" className="tx-row" data-testid={rowTestId(row)} data-txid={row.txid} onClick={() => onOpen(row)}>
+          {body}
+        </button>
+      )}
     </li>
   );
 }
@@ -207,6 +237,7 @@ export function TxTable({
   sort: HistorySortName;
   onSort: (s: HistorySortName) => void;
 }) {
+  const value = ctx.fiat.shown && !ctx.discreet ? ctx.fiat.view?.rate?.currency : undefined;
   return (
     <div className="card-l1 table-card" data-testid="tx-table">
       <table className="data-table tx-table">
@@ -218,6 +249,11 @@ export function TxTable({
             <th scope="col">Type</th>
             <th scope="col">Address / Label</th>
             <SortHeader column="amount" title={`Amount (${ctx.display.name})`} sort={sort} onSort={onSort} className="num" />
+            {value && (
+              <th scope="col" className="num" data-testid="tx-table-value">
+                Value ({value})
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -240,6 +276,11 @@ export function TxTable({
                   {rowParty(row)}
                 </td>
                 <td className="num">{ctx.display.full(shown.duffs, shown.signed)}</td>
+                {value && (
+                  <td className={`num${ctx.fiat.stale ? " is-stale" : ""}`} title={ctx.fiat.staleTitle} data-testid={`table-${rowTestId(row)}-fiat`}>
+                    {ctx.fiat.text(shown.duffs)}
+                  </td>
+                )}
               </tr>
             );
           })}

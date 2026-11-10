@@ -51,7 +51,10 @@
 //! account) is not unique per step: every top-up of an identity carries
 //! the same one, and a `Consumed` row stays. A top-up's step (its marker
 //! under an `IdentityTopUp` key) therefore matches only its own signed
-//! locks ([`own_row`]; DP1-06, as §2a.6 foresaw): every lock a call of it
+//! locks ([`own_row`]; DP1-06, as §2a.6 foresaw), and so does a shield's
+//! (0.1 E1: every shield funds under the one `AssetLockShieldedAddressTopUp`
+//! key of account 0) and a Platform address fund's (0.2 X1b: every one
+//! under the one `AssetLockAddressTopUp` key of account 0): every lock a call of it
 //! signed has its durable record before it can be stored or sent (§2a.7),
 //! so they are all of its rows, across restarts too. Any other step matches by
 //! its draft's own key and its marker's: the J step that marks it records
@@ -584,10 +587,11 @@ pub(crate) fn derive_funding(
     }
 }
 
-/// Whether tracked row `r` matches `step`: a top-up's (its marker under
-/// an `IdentityTopUp` key) by being one of its `signed` locks (module
-/// doc); else by the draft's own key, or by the marker's unless the row
-/// preceded the marker (`foreign`).
+/// Whether tracked row `r` matches `step`: a top-up's, a shield's or a
+/// Platform address fund's (its marker under a [`signed_lock_key`]) by
+/// being one of its `signed` locks
+/// (module doc); else by the draft's own key, or by the marker's unless the
+/// row preceded the marker (`foreign`).
 fn matches_step(
     s: &Snapshot,
     step: &str,
@@ -596,14 +600,23 @@ fn matches_step(
     signed: &[SignedLock],
     r: &TrackedRow,
 ) -> bool {
-    if info
-        .funding
-        .is_some_and(|k| k.funding_type == AssetLockFundingType::IdentityTopUp)
-    {
+    if info.funding.is_some_and(|k| signed_lock_key(&k)) {
         return signed.iter().any(|l| l.txid == r.txid);
     }
     s.drafts.iter().any(|d| d.step == step && d.matches(&r.key))
         || (info.funding.as_ref() == Some(&r.key) && !foreign.is_some_and(|f| f.contains(&r.txid)))
+}
+
+/// A funding key many steps share, so a step's rows are its own signed
+/// locks (module doc): a top-up's, a Platform address fund's, or a
+/// shield's.
+fn signed_lock_key(key: &FundingKey) -> bool {
+    matches!(
+        key.funding_type,
+        AssetLockFundingType::IdentityTopUp
+            | AssetLockFundingType::AssetLockAddressTopUp
+            | AssetLockFundingType::AssetLockShieldedAddressTopUp
+    )
 }
 
 /// The first unattributed row (module doc) that may be `step`'s lock: of
@@ -883,6 +896,13 @@ fn top_up_step_order(step: &str) -> (u32, u32) {
         .and_then(|s| s.split_once('-'))
         .and_then(|(i, k)| Some((i.parse().ok()?, k.parse().ok()?)))
         .unwrap_or((u32::MAX, u32::MAX))
+}
+
+fn shield_step_order(step: &str) -> (u32, u32) {
+    let k = (step.strip_prefix("shield/"))
+        .and_then(|s| s.strip_suffix("/funding"))
+        .and_then(|k| k.parse().ok());
+    (k.unwrap_or(u32::MAX), 0)
 }
 
 /// Why Repair's "Resolve stuck funding" (§6.5, §16.10 C9) refuses a step.
@@ -1173,13 +1193,15 @@ impl LeaseTable {
     }
 
     /// Spawns [`Self::refresh_funding`] for `wallet`: the changeset tap and
-    /// a funding call's end, neither of which may wait for it.
+    /// a funding call's end, neither of which may wait for it. Tracked, so
+    /// close waits for it to let go of the wallet; none starts after close
+    /// (BL-544).
     pub(crate) fn request_refresh(self: &Arc<Self>, wallet: WalletId) {
         if self.tracked.get().is_none() {
             return;
         }
         let table = Arc::clone(self);
-        self.rt.spawn(async move {
+        self.background.spawn(&self.rt, async move {
             table.refresh_funding(wallet).await;
         });
     }
@@ -1289,6 +1311,18 @@ impl LeaseTable {
         self.with_j(|i, _| funding_gate(i, wallet, step))
     }
 
+    /// The steps of `wallet`'s ended calls whose signers' locks the fence
+    /// still recognises.
+    #[cfg(test)]
+    pub(crate) fn ended_funding_steps(&self, wallet: WalletId) -> Vec<String> {
+        self.with_j(|i, _| {
+            (i.fence.ended_funding.iter())
+                .filter(|f| f.wallet == wallet)
+                .map(|f| f.step.clone())
+                .collect()
+        })
+    }
+
     /// Whether `wallet`'s tracked rows were read this session.
     pub(crate) fn has_tracked_snapshot(&self, wallet: WalletId) -> bool {
         self.with_j(|i, _| i.mode_b.snapshots.contains_key(&wallet))
@@ -1381,6 +1415,30 @@ impl LeaseTable {
         })
     }
 
+    /// The txids of the asset locks `wallet`'s shield funding steps
+    /// (`shield/<k>/funding`) signed: every lock a dw shield funded (0.1
+    /// E1). `None` until the dispatch journal is read.
+    pub(crate) fn shield_lock_txids(&self, wallet: WalletId) -> Option<HashSet<Txid>> {
+        self.with_j(|i, _| {
+            (i.fence.journal == JournalState::Ready).then(|| {
+                i.fence
+                    .signed_lock_txids_where(&wallet, |s| s.starts_with("shield/"))
+            })
+        })
+    }
+
+    /// The txids of the asset locks `wallet`'s Platform address fund steps
+    /// (`paddr/<k>/funding`) signed: every lock a dw "Add from Dash wallet"
+    /// funded (0.2). `None` until the dispatch journal is read.
+    pub(crate) fn fund_lock_txids(&self, wallet: WalletId) -> Option<HashSet<Txid>> {
+        self.with_j(|i, _| {
+            (i.fence.journal == JournalState::Ready).then(|| {
+                i.fence
+                    .signed_lock_txids_where(&wallet, |s| s.starts_with("paddr/"))
+            })
+        })
+    }
+
     /// The top-up locks of `wallet` the journal records settled (schema 8,
     /// DP1-06): a proved apply or the user's word, kept as long as the
     /// journal keeps those locks' `signed_lock` rows (a wallet's removal
@@ -1405,6 +1463,118 @@ impl LeaseTable {
         let backend = self.journal.get().ok_or("the journal is closed")?;
         (self.rt)
             .spawn_blocking(move || backend.settle_top_up(&wallet.0, &txid.to_byte_array(), how))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Records the shielded spends `redrives` of `wallet` the library holds
+    /// to re-send, `(activity, transition)` (schema 9, 0.1 E1, DEC-1032);
+    /// each first record stands. On the blocking pool.
+    pub(crate) async fn record_shielded_redrives(
+        &self,
+        wallet: WalletId,
+        redrives: Vec<super::fence::ShieldedRedrive>,
+    ) -> Result<(), String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                (redrives.iter()).try_for_each(|(activity, transition)| {
+                    backend.record_shielded_redrive(&wallet.0, activity, transition)
+                })
+            })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Marks the shielded spend `activity` of `wallet`, of unknown result
+    /// and with no record of the library's, built on `anchor` and spending
+    /// `nullifiers` (schema 10, DEC-1057), in dispatch.sqlite
+    /// (`synchronous=FULL`). On the blocking pool.
+    pub(crate) async fn record_unrecorded_spend(
+        &self,
+        wallet: WalletId,
+        activity: [u8; 32],
+        anchor: [u8; 32],
+        nullifiers: Vec<[u8; 32]>,
+    ) -> Result<(), String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                backend.record_unrecorded_spend(&wallet.0, &activity, &anchor, &nullifiers)
+            })
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// The marked shielded spends of `wallet` (schema 10); none while the
+    /// journal is not open (nothing can be marked then). On the blocking
+    /// pool.
+    pub(crate) async fn unrecorded_spends(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<dw_appdb::dispatch::UnrecordedSpend>, String> {
+        let Some(backend) = self.journal.get() else {
+            return Ok(Vec::new());
+        };
+        (self.rt)
+            .spawn_blocking(move || backend.unrecorded_spends(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Whether `wallet` has a marked shielded spend; `true` when the
+    /// markers cannot be read (fail closed).
+    pub(crate) async fn marks_unrecorded(&self, wallet: WalletId) -> bool {
+        match self.unrecorded_spends(wallet).await {
+            Ok(markers) => !markers.is_empty(),
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers could not be read");
+                true
+            }
+        }
+    }
+
+    /// Flags `nullifiers` of `wallet` seen spent, from a proved scan or a
+    /// proved result as the persister accepted it, and clears each marker
+    /// all of whose are (DEC-1057). Synchronous: the persister's tap calls
+    /// it inline.
+    pub(crate) fn note_spent_nullifiers(&self, wallet: WalletId, nullifiers: &[[u8; 32]]) {
+        let Some(backend) = self.journal.get() else {
+            return;
+        };
+        match backend.note_spent_nullifiers(&wallet.0, nullifiers) {
+            Ok(cleared) => {
+                for activity in cleared {
+                    tracing::info!(
+                        wallet_id = %wallet,
+                        activity = %hex::encode(activity),
+                        "a marked shielded spend's notes are all spent"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(wallet_id = %wallet, error = %e, "the shielded spend markers were not updated");
+            }
+        }
+    }
+
+    /// The open journal's `synchronous` pragma (2 = FULL), which the
+    /// markers are written under.
+    #[cfg(test)]
+    pub(crate) fn journal_synchronous(&self) -> Option<i64> {
+        self.journal.get().and_then(|j| j.synchronous())
+    }
+
+    /// The shielded spends of `wallet` on record (schema 9),
+    /// `(activity, transition)`. On the blocking pool.
+    #[cfg(test)]
+    pub(crate) async fn shielded_redrives(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<super::fence::ShieldedRedrive>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || backend.shielded_redrives(&wallet.0))
             .await
             .map_err(|e| e.to_string())?
     }
@@ -1454,6 +1624,13 @@ impl LeaseTable {
         self.with_j(|i, _| i.fence.journal == JournalState::Ready)
     }
 
+    /// Whether the dispatch journal is not read (before the session opens,
+    /// or after it closes), as opposed to read, or found unopenable or of a
+    /// newer schema (which does not clear).
+    pub(crate) fn journal_loading(&self) -> bool {
+        self.with_j(|i, _| i.fence.journal == JournalState::NotLoaded)
+    }
+
     /// [`Self::unresolved_lock_inputs`] of every wallet with a funding
     /// marker: what `broadcast_psbt`, which names no wallet, refuses.
     pub(crate) fn unresolved_lock_inputs_of_any(&self) -> HashSet<OutPoint> {
@@ -1474,24 +1651,50 @@ impl LeaseTable {
         &self,
         wallet: WalletId,
     ) -> Result<Vec<(String, DispatchState)>, FundingStepsUnavailable> {
+        self.stuck_steps(wallet, "topup/", top_up_step_order, |_, _, _| true)
+    }
+
+    /// `wallet`'s shield funding steps (`shield/<k>/funding`, a shield's or
+    /// a drain's) that the funding gate holds as possibly sent, as
+    /// [`Self::stuck_top_up_steps`]: each refuses every later shield and
+    /// drain (`shielded_pool.rs` `next_step`) until it settles or Repair
+    /// resolves it. In step order. A step whose lock was broadcast and
+    /// waits for its proof or its apply is not stuck: `pending_shields`
+    /// lists that lock and `resume_shield` applies it.
+    pub(crate) fn stuck_shield_steps(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<(String, DispatchState)>, FundingStepsUnavailable> {
+        self.stuck_steps(wallet, "shield/", shield_step_order, |i, wallet, step| {
+            !(step_rows(i, wallet, step).iter()).any(|r| r.status == TrackedStatus::Broadcast)
+        })
+    }
+
+    fn stuck_steps(
+        &self,
+        wallet: WalletId,
+        prefix: &str,
+        order: fn(&str) -> (u32, u32),
+        stuck: fn(&Inner, WalletId, &str) -> bool,
+    ) -> Result<Vec<(String, DispatchState)>, FundingStepsUnavailable> {
         self.with_j(|i, _| {
             if i.fence.journal != JournalState::Ready
                 || (i.fence.unreadable_funding.iter())
-                    .any(|(w, s)| *w == wallet && s.starts_with("topup/"))
+                    .any(|(w, s)| *w == wallet && s.starts_with(prefix))
             {
                 return Err(FundingStepsUnavailable);
             }
             let mut out: Vec<(String, DispatchState)> = (i.fence.funding_steps_of(&wallet))
                 .into_iter()
-                .filter(|s| s.starts_with("topup/"))
+                .filter(|s| s.starts_with(prefix))
                 .filter_map(|s| match funding_gate(i, wallet, &s) {
                     Some(FundingBlock::Step(Some(
                         state @ (DispatchState::MaybeSent | DispatchState::WillBeSent),
-                    ))) => Some((s, state)),
+                    ))) if stuck(i, wallet, &s) => Some((s, state)),
                     _ => None,
                 })
                 .collect();
-            out.sort_by(|(a, _), (b, _)| (top_up_step_order(a), a).cmp(&(top_up_step_order(b), b)));
+            out.sort_by(|(a, _), (b, _)| (order(a), a).cmp(&(order(b), b)));
             Ok(out)
         })
     }
@@ -1599,6 +1802,14 @@ impl TrackedLocks for SessionTracked {
     async fn rows(&self, wallet: WalletId) -> Option<Vec<TrackedRow>> {
         let session = self.session.upgrade()?;
         let w = session.wallet(&wallet).await.ok()?;
+        #[cfg(test)]
+        {
+            let hold = session.leases.test_hold_rows.lock().unwrap().take();
+            if let Some(held) = hold {
+                let _ = held.send(());
+                std::future::pending::<()>().await;
+            }
+        }
         // Not `list_tracked_locks`: it reads a wallet whose info is gone
         // (a removal in flight) as no rows, which would read `None` for a
         // funded step. Here that is unknown: the snapshot stays.
@@ -1751,18 +1962,54 @@ impl NetworkSession {
     ///
     /// Refused `invalid_argument` before anything is charged or marked
     /// (review M-3, M-4): a step that is no funding step; a top-up step
-    /// whose `key` is no `IdentityTopUp` key; a registration step whose
+    /// whose `key` is no `IdentityTopUp` key, a shield step (0.1 E1)
+    /// whose `key` is no `AssetLockShieldedAddressTopUp` key, or a Platform
+    /// address fund step (0.2) whose `key` is no `AssetLockAddressTopUp`
+    /// key; a registration step whose
     /// `key` is not its draft's own (`DraftKey`, from `app.sqlite`), or
     /// whose draft has no known key: a row under another key would be
     /// found by neither the marker nor the draft; and a `fence` of another
-    /// wallet. A top-up step needs no draft: its rows are its own signed
-    /// locks (module doc), and DP1-06 never calls a step again unless it
-    /// reads `None` or `NotSent` (`topup.rs`).
+    /// wallet. A top-up, shield or fund step needs no draft: its rows are
+    /// its own signed locks (module doc), and none of those flows calls a
+    /// step again unless it reads `None` or `NotSent` (`topup.rs`,
+    /// `shielded_pool.rs`, `platform_fund.rs`).
     pub async fn funding_call_permit(
         &self,
         lease: &Lease,
         label: impl Into<String>,
         amount: u64,
+        step: String,
+        key: FundingKey,
+        fence: CoinFence,
+    ) -> Result<CallPermit, PlatformError> {
+        self.quoted_funding_call_permit(lease, label, amount, None, step, key, fence)
+            .await
+    }
+
+    /// [`Self::funding_call_permit`] for a drain of the CoinJoin account:
+    /// the lock's fee comes out of its inputs, so the
+    /// quote is `inputs_duffs`, their sum, with no fee bound added.
+    pub(crate) async fn drain_call_permit(
+        &self,
+        lease: &Lease,
+        label: impl Into<String>,
+        inputs_duffs: u64,
+        step: String,
+        key: FundingKey,
+        fence: CoinFence,
+    ) -> Result<CallPermit, PlatformError> {
+        self.quoted_funding_call_permit(lease, label, inputs_duffs, Some(0), step, key, fence)
+            .await
+    }
+
+    /// The permit of both: `fee_bound_worst` the wallet's when `None`.
+    #[allow(clippy::too_many_arguments)]
+    async fn quoted_funding_call_permit(
+        &self,
+        lease: &Lease,
+        label: impl Into<String>,
+        amount: u64,
+        fee_bound_worst: Option<u64>,
         step: String,
         key: FundingKey,
         fence: CoinFence,
@@ -1774,12 +2021,32 @@ impl NetworkSession {
         if !is_funding_step(&step) {
             return refuse(format!("{step} is not a funding step"));
         }
-        let top_up = step.starts_with("topup/");
-        if top_up && key.funding_type != AssetLockFundingType::IdentityTopUp {
-            return refuse(format!("{key:?} is no top-up's funding key"));
+        let own_key = if step.starts_with("topup/") {
+            Some((AssetLockFundingType::IdentityTopUp, "top-up"))
+        } else if step.starts_with("shield/") {
+            Some((
+                AssetLockFundingType::AssetLockShieldedAddressTopUp,
+                "shield",
+            ))
+        } else if step.starts_with("paddr/") {
+            Some((
+                AssetLockFundingType::AssetLockAddressTopUp,
+                "Platform address fund",
+            ))
+        } else {
+            None
+        };
+        if let Some((funding_type, flow)) = own_key
+            && key.funding_type != funding_type
+        {
+            return refuse(format!("{key:?} is no {flow}'s funding key"));
         }
+        let top_up = own_key.is_some();
         let wallet = lease.wallet();
-        let fee_bound_worst = self.fee_bound_worst(wallet).await?;
+        let fee_bound_worst = match fee_bound_worst {
+            Some(bound) => bound,
+            None => self.fee_bound_worst(wallet).await?,
+        };
         if !self.leases.refresh_funding(wallet).await {
             return Err(LeaseError::FundingBlocked(FundingBlock::RowsUnknown).into());
         }

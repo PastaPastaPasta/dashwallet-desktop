@@ -133,6 +133,41 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.withdraw_quote",
     "DashPay.withdraw",
     "DashPay.withdrawals",
+    // Release 0.1 (lane E2): the Platform addresses.
+    "DashPay.platform_addresses",
+    "DashPay.platform_activity",
+    "DashPay.sync_platform_addresses",
+    "DashPay.move_to_core_quote",
+    "DashPay.move_to_core",
+    // 0.2 X1b slice 1: Platform receive and sends.
+    "DashPay.platform_receive_address",
+    "DashPay.platform_send_quote",
+    "DashPay.platform_send",
+    "DashPay.platform_send_grant",
+    "DashPay.platform_send_bind",
+    // 0.2 X1b slice 1: "Add from Dash wallet".
+    "DashPay.platform_fund_quote",
+    "DashPay.platform_fund",
+    "DashPay.pending_platform_funds",
+    "DashPay.resume_platform_fund",
+    // 0.1 E1: shielded funds.
+    "DashPay.shielded_status",
+    "DashPay.shielded_sync",
+    "DashPay.shielded_receive_address",
+    "DashPay.shield_quote",
+    "DashPay.shield_from_core",
+    "DashPay.resume_shield",
+    "DashPay.shield_mixed_quote",
+    "DashPay.stuck_shield_fundings",
+    "DashPay.shield_mixed_coins",
+    "DashPay.shielded_send_quote",
+    "DashPay.shielded_send",
+    "DashPay.unshield_quote",
+    "DashPay.unshield_to_core",
+    "DashPay.shielded_history",
+    // 0.2 RECOVERY: unfinished transfers.
+    "DashPay.unfinished_transfers",
+    "DashPay.finish_transfer",
 ];
 
 /// The facade's files in `src/platform/` (m4-dashpay-engine.md §0). A new
@@ -148,9 +183,12 @@ const FACADE: &[&str] = &[
     "names.rs",
     "notifications.rs",
     "payments.rs",
+    "platform_addresses.rs",
     "profile.rs",
     "registration.rs",
+    "shielded.rs",
     "startup.rs",
+    "unfinished.rs",
 ];
 
 /// Files of `src/platform/` that are not part of the facade: the module
@@ -173,7 +211,10 @@ const FACADE: &[&str] = &[
 /// pipeline's guard, decoder, cache and tests (DP4-02), the mobile
 /// wallets' dHash (DP4-03 D27), the Identities page's reads with their
 /// tests (DP6-01), the withdrawal with its network seam and tests (DP6-02),
-/// and the invitation checks with their tests (DP5-02).
+/// the invitation checks with their tests (DP5-02), the network's
+/// protocol version (release 0.1), the shielded funds' library side
+/// with its tests (0.1 E1), and the unfinished transfers' kinds and runner
+/// with their tests (0.2 recovery).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -201,6 +242,8 @@ const NOT_FACADE: &[&str] = &[
     "journal_tests.rs",
     "keys_policy.rs",
     "lease",
+    "lock_inputs.rs",
+    "lock_inputs_tests.rs",
     "mod.rs",
     "money_gate.rs",
     "money_gate_tests.rs",
@@ -213,6 +256,11 @@ const NOT_FACADE: &[&str] = &[
     "private_details_tests.rs",
     "profile_tests.rs",
     "profiles.rs",
+    "platform_fund.rs",
+    "platform_fund_tests.rs",
+    "platform_moves.rs",
+    "platform_moves_tests.rs",
+    "protocol.rs",
     "provenance.rs",
     "recovery.rs",
     "recovery_tests.rs",
@@ -228,6 +276,13 @@ const NOT_FACADE: &[&str] = &[
     "registration_tests.rs",
     "runtime.rs",
     "runtime_tests.rs",
+    "shield_drain.rs",
+    "shield_drain_lib_tests.rs",
+    "shield_drain_tests.rs",
+    "shielded_close_tests.rs",
+    "shielded_pool.rs",
+    "shielded_tests",
+    "shielded_tests.rs",
     "signers.rs",
     "startup_status.rs",
     "status.rs",
@@ -235,6 +290,11 @@ const NOT_FACADE: &[&str] = &[
     "topup_tests.rs",
     "trust.rs",
     "trust_tests.rs",
+    "unfinished_conformance.rs",
+    "unfinished_funds.rs",
+    "unfinished_locks.rs",
+    "unfinished_locks_tests.rs",
+    "unfinished_shields.rs",
     "users.rs",
     "users_tests.rs",
     "withdrawal.rs",
@@ -907,6 +967,7 @@ fn error_codes_match_the_contract() {
             PlatformError::InvalidArgument { detail: s() },
             PlatformError::NetworkNotOpen,
             PlatformError::WalletNotFound,
+            PlatformError::RescanInterrupted,
             PlatformError::Storage { detail: s() },
             PlatformError::Internal { detail: s() },
         ],
@@ -1033,8 +1094,55 @@ fn error_codes_match_the_contract() {
             CreditsError::WithdrawalLanded {
                 artifact: String::new(),
             },
+            CreditsError::MovePending { id: String::new() },
+            CreditsError::RecipientInvalid {
+                reason: dw_engine::platform::RecipientProblem::Own,
+            },
+            CreditsError::SendOutOfRange { min: 0 },
+            CreditsError::QuoteChanged,
+            CreditsError::FundPending {
+                txid: String::new(),
+            },
+            CreditsError::TooManyInputs { inputs: 0, max: 0 },
         ],
         CreditsError::code,
+    );
+    check_domain(
+        &enums,
+        "ShieldedError",
+        &[
+            ShieldedError::NotActive {
+                protocol_version: 0,
+                activation_version: 0,
+            },
+            ShieldedError::NotSynced {
+                reason: ShieldedSyncWait::Account,
+            },
+            ShieldedError::InvalidAddress { detail: s() },
+            ShieldedError::InsufficientFunds {
+                needed: 0,
+                available: 0,
+            },
+            ShieldedError::FundingInsufficient {
+                needed: 0,
+                available: 0,
+            },
+            ShieldedError::BelowMinimum { min: 0 },
+            ShieldedError::CoinsLocked,
+            ShieldedError::ShieldPending { txid: s() },
+            ShieldedError::TooManyInputs { inputs: 0, max: 0 },
+            ShieldedError::PoolTooSmall {
+                notes: 0,
+                required: 0,
+            },
+            ShieldedError::UnrecordedSpend,
+            ShieldedError::MixingActive,
+            ShieldedError::NothingToMove,
+            ShieldedError::CoinsUnconfirmed { coins: 0 },
+            ShieldedError::MoveRunning,
+            ShieldedError::CoinsChanged,
+        ],
+        ShieldedError::code,
     );
 
     let mut checked = [
@@ -1047,6 +1155,7 @@ fn error_codes_match_the_contract() {
         "PlatformError",
         "ProfileError",
         "RegistrationError",
+        "ShieldedError",
     ]
     .to_vec();
     checked.sort_unstable();
@@ -1174,7 +1283,8 @@ as_platform_via_accessor!(
     ContactError,
     InvitationError,
     AvatarError,
-    CreditsError
+    CreditsError,
+    ShieldedError
 );
 
 #[derive(Default)]
@@ -1449,6 +1559,51 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await
                 .map(drop),
             dp.withdrawals(s()).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
+
+        // Release 0.1 (lane E2): the Platform addresses refuse an unknown
+        // wallet.
+        for refused in [
+            dp.platform_addresses().await.map(drop),
+            dp.platform_activity().await.map(drop),
+            dp.sync_platform_addresses().await.map(drop),
+            dp.move_to_core_quote(WithdrawAmount::All).await.map(drop),
+            dp.move_to_core(WithdrawAmount::All, s(), s())
+                .await
+                .map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
+        // 0.1 E1: shielded funds refuse an unknown wallet.
+        for refused in [
+            dp.shielded_status().await.map(drop),
+            dp.shielded_sync().await.map(drop),
+            dp.shielded_receive_address().await.map(drop),
+            dp.shield_quote(1).await.map(drop),
+            dp.shield_from_core(1, s()).await.map(drop),
+            dp.resume_shield(s(), s()).await.map(drop),
+            dp.shield_mixed_quote().await.map(drop),
+            dp.stuck_shield_fundings().await.map(drop),
+            dp.shield_mixed_coins(s()).await.map(drop),
+            dp.shielded_send_quote(s(), 1).await.map(drop),
+            dp.shielded_send(s(), 1, None, s(), false).await.map(drop),
+            dp.unshield_quote(1, None).await.map(drop),
+            dp.unshield_to_core(1, None, s(), false).await.map(drop),
+            dp.shielded_history(0, 10).await.map(drop),
+        ] {
+            assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
+        }
+        // 0.2 RECOVERY: unfinished transfers refuse an unknown wallet.
+        for refused in [
+            dp.unfinished_transfers().await.map(drop),
+            dp.finish_transfer(LockKindId::Shielded, s(), 0, s())
+                .await
+                .map(drop),
+            dp.finish_transfer(LockKindId::PlatformAddress, s(), 0, s())
+                .await
+                .map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
