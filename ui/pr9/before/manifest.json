@@ -1,0 +1,486 @@
+[
+  {
+    "file": "home-wide-light.png",
+    "state": "home-wide",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "home-compact-light.png",
+    "state": "home-compact",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 900,
+      "height": 900
+    }
+  },
+  {
+    "file": "withdrawal-form-light.png",
+    "state": "withdrawal-form",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "withdrawal-confirm-light.png",
+    "state": "withdrawal-confirm",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "mixing-empty-light.png",
+    "state": "mixing-empty",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "coinjoin-mixing",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "mixing-insufficient-light.png",
+    "state": "mixing-insufficient",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "coinjoin-mixing",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "max-pending-light.png",
+    "state": "max-pending",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "max-complete-light.png",
+    "state": "max-complete",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-dash-light.png",
+    "state": "receive-dash",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "request-opt-in-light.png",
+    "state": "request-opt-in",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "request-confirm-light.png",
+    "state": "request-confirm",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "settings-footer-light.png",
+    "state": "settings-footer",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "home-wide-dark.png",
+    "state": "home-wide",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "home-compact-dark.png",
+    "state": "home-compact",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 900,
+      "height": 900
+    }
+  },
+  {
+    "file": "withdrawal-form-dark.png",
+    "state": "withdrawal-form",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "withdrawal-confirm-dark.png",
+    "state": "withdrawal-confirm",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "mixing-empty-dark.png",
+    "state": "mixing-empty",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "coinjoin-mixing",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "mixing-insufficient-dark.png",
+    "state": "mixing-insufficient",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "coinjoin-mixing",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "max-pending-dark.png",
+    "state": "max-pending",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "max-complete-dark.png",
+    "state": "max-complete",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-dash-dark.png",
+    "state": "receive-dash",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "request-opt-in-dark.png",
+    "state": "request-opt-in",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "request-confirm-dark.png",
+    "state": "request-confirm",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "settings-footer-dark.png",
+    "state": "settings-footer",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-platform-light.png",
+    "state": "receive-platform",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-platform-dark.png",
+    "state": "receive-platform",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "contacts-open-light.png",
+    "state": "contacts-open",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    }
+  },
+  {
+    "file": "contacts-search-light.png",
+    "state": "contacts-search",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    }
+  },
+  {
+    "file": "contacts-selected-light.png",
+    "state": "contacts-selected",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    }
+  },
+  {
+    "file": "settings-privacy-light.png",
+    "state": "settings-privacy",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "contacts-open-dark.png",
+    "state": "contacts-open",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    }
+  },
+  {
+    "file": "contacts-search-dark.png",
+    "state": "contacts-search",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    }
+  },
+  {
+    "file": "contacts-selected-dark.png",
+    "state": "contacts-selected",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    }
+  },
+  {
+    "file": "settings-privacy-dark.png",
+    "state": "settings-privacy",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "transfer-running-light.png",
+    "state": "transfer-running",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-shielded-light.png",
+    "state": "receive-shielded",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "transfer-running-dark.png",
+    "state": "transfer-running",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-shielded-dark.png",
+    "state": "receive-shielded",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "home-dust-light.png",
+    "state": "home-dust",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "platform-partly-dust",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-syncing-light.png",
+    "state": "receive-syncing",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "shielded-syncing",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "home-dust-dark.png",
+    "state": "home-dust",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "platform-partly-dust",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-syncing-dark.png",
+    "state": "receive-syncing",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "shielded-syncing",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "fund-reserved-light.png",
+    "state": "fund-reserved",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "fund-reserved-dark.png",
+    "state": "fund-reserved",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  }
+]
