@@ -2,7 +2,7 @@
 // address; Request payment stores a request on a fresh address and shows it; the requested
 // payments list keeps them (dash-qt's Receive tab, QT-081…085).
 
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
 import { errorMessage, hasCode } from "../api/backend";
 import type { AddressInfo } from "../api/generated/AddressInfo";
@@ -27,7 +27,7 @@ import { receivedText } from "./notifications/Received";
 import { shortAddress } from "../format/tx";
 import { shieldedSyncing, SHIELDED_SYNCING_TEXT } from "../shielded/syncing";
 import { Page } from "./Routes";
-import { ShieldedReceiveBody } from "./ShieldedSheet";
+import { useShieldedReceiveContent } from "./ShieldedSheet";
 
 const QR_SIDE = 200;
 
@@ -55,7 +55,7 @@ function qrUsername(included: boolean | undefined, username: UseQueryResult<stri
   return username.data ?? last;
 }
 
-function AddressCard({ walletId, network, selector, hidden }: { walletId: string; network: NetworkInfo; selector: ReactNode; hidden: boolean }) {
+function useDashReceiveContent(walletId: string, network: NetworkInfo) {
   const b = useBackend();
   const current = useReceiveAddress(walletId);
   // "New address" issues one (dash-qt getNewDestination); it is shown until the page closes.
@@ -96,8 +96,8 @@ function AddressCard({ walletId, network, selector, hidden }: { walletId: string
       setProblem(hasCode(e, "gap_limit") ? "Every address inside the gap limit is in use already. Wait for a payment to one of them." : errorMessage(e));
     }
   };
-  return (
-    <section hidden={hidden} className="receive-card card-l1" aria-labelledby="receive-address-title" data-testid="receive-card">
+  return {
+    before: <>
       <h2 id="receive-address-title" className="card-title">
         Your Dash address
       </h2>
@@ -119,7 +119,8 @@ function AddressCard({ walletId, network, selector, hidden }: { walletId: string
           </div>
         </>
       )}
-      {selector}
+    </>,
+    after: <>
       {shown && (!current.isError || fresh) && (
         <>
           <p className="address-full" data-testid="receive-address">
@@ -143,8 +144,8 @@ function AddressCard({ walletId, network, selector, hidden }: { walletId: string
           {problem}
         </p>
       )}
-    </section>
-  );
+    </>,
+  };
 }
 
 export const PLATFORM_RECEIVE_COPY = {
@@ -157,11 +158,12 @@ export const PLATFORM_RECEIVE_COPY = {
 } as const;
 
 /** The selected Platform address uses a bare QR; Dash payment URIs cannot carry it. */
-function PlatformReceiveCard({ walletId, selector }: { walletId: string; selector: ReactNode }) {
+function usePlatformReceiveContent(walletId: string, enabled: boolean) {
   const b = useBackend();
   const client = useQueryClient();
-  const address = usePlatformReceiveAddress(walletId, true);
+  const address = usePlatformReceiveAddress(walletId, enabled);
   useEffect(() => {
+    if (!enabled) return;
     let live = true;
     b.platformAddressesSync(walletId)
       .then(() => live && void client.invalidateQueries({ queryKey: ["dashpay"] }))
@@ -169,11 +171,11 @@ function PlatformReceiveCard({ walletId, selector }: { walletId: string; selecto
     return () => {
       live = false;
     };
-  }, [b, client, walletId]);
+  }, [b, client, walletId, enabled]);
   const C = PLATFORM_RECEIVE_COPY;
-  return (
-    <section className="receive-card card-l1" data-testid="platform-receive">
-      <h2 className="card-title">Your Platform address</h2>
+  return {
+    before: <>
+      <h2 id="receive-address-title" className="card-title">Your Platform address</h2>
       {address.isError ? (
         <p className="form-problem" role="alert" data-testid="platform-receive-error">
           {C.failed} {errorMessage(address.error)}
@@ -185,7 +187,12 @@ function PlatformReceiveCard({ walletId, selector }: { walletId: string; selecto
           <div className="receive-qr">
             <Qr text={address.data.address} label={`QR code of ${address.data.address}`} testId="platform-receive-qr" />
           </div>
-          {selector}
+        </>
+      )}
+    </>,
+    after: <>
+      {!address.isError && address.data && (
+        <>
           <p className="address-full" data-testid="platform-receive-address">
             {address.data.address}
           </p>
@@ -196,10 +203,9 @@ function PlatformReceiveCard({ walletId, selector }: { walletId: string; selecto
           </div>
         </>
       )}
-      {!address.data && selector}
       <p className="field-hint" data-testid="platform-receive-warning">{C.warning}</p>
-    </section>
-  );
+    </>,
+  };
 }
 
 function RequestForm({ walletId, network, onCreated, hidden }: { walletId: string; network: NetworkInfo; onCreated: (r: ReceiveRequest) => void; hidden: boolean }) {
@@ -463,24 +469,25 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
       ))}
     </div>
   );
-  const address = pool === "dash" ? null : pool === "platform" ? (
-    <PlatformReceiveCard walletId={walletId} selector={selector} />
-  ) : (
-    <section className="receive-card card-l1" data-testid="shielded-receive-section">
-      <h2 className="card-title">Your Shielded address</h2>
-      {shieldedSyncing(shielded.data) ? (
-        <>
-          <p className="field-hint" data-testid="shielded-receive-why">{SHIELDED_SYNCING_TEXT}</p>
-          {selector}
-        </>
-      ) : <ShieldedReceiveBody walletId={walletId} network={network} selector={selector} />}
-    </section>
-  );
+  const dashContent = useDashReceiveContent(walletId, network);
+  const platformContent = usePlatformReceiveContent(walletId, pool === "platform");
+  const syncing = shieldedSyncing(shielded.data);
+  const shieldedContent = useShieldedReceiveContent(walletId, network, pool === "shielded" && !syncing);
+  const content = pool === "dash" ? dashContent : pool === "platform" ? platformContent : {
+    before: <>
+      <h2 id="receive-address-title" className="card-title">Your Shielded address</h2>
+      {syncing ? <p className="field-hint" data-testid="shielded-receive-why">{SHIELDED_SYNCING_TEXT}</p> : <>{shieldedContent.text}{shieldedContent.before}</>}
+    </>,
+    after: syncing ? null : shieldedContent.after,
+  };
   return (
     <Page route="receive">
       <div className="receive-columns">
-        <AddressCard walletId={walletId} network={network} selector={pool === "dash" ? selector : null} hidden={pool !== "dash"} />
-        {address}
+        <section className="receive-card card-l1" aria-labelledby="receive-address-title" data-testid={pool === "dash" ? "receive-card" : pool === "platform" ? "platform-receive" : "shielded-receive-section"}>
+          {content.before}
+          {selector}
+          {content.after}
+        </section>
         <RequestForm walletId={walletId} network={network} onCreated={setShown} hidden={pool !== "dash"} />
       </div>
       <RequestList walletId={walletId} network={network} onShow={setShown} />

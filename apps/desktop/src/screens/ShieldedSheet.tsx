@@ -4,7 +4,7 @@
 // address with its QR that Receive shows. The card says "not active on this network yet" while the
 // network does not take shielded transitions, and is not there while dw-app has no such commands.
 
-import { useId, useState, type ReactNode } from "react";
+import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
@@ -311,33 +311,36 @@ export function ShieldedSheet({ flow, walletId, network, status }: { flow: Shiel
 }
 
 /** The Shielded address with its QR (Receive's Shielded section). */
-export function ShieldedReceiveBody({ walletId, network, selector }: { walletId: string; network: NetworkInfo; selector?: ReactNode }) {
+export function useShieldedReceiveContent(walletId: string, network: NetworkInfo, enabled = true) {
   const b = useBackend();
   const fmt = useFormats(network);
-  const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false });
-  return (
-    <>
-      <p className="sheet-text">{C.receive.text}</p>
+  const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled });
+  return {
+    text: <p className="sheet-text">{C.receive.text}</p>,
+    before: <>
       {address.isError ? (
         <p className="form-problem" role="alert" data-testid="shielded-receive-error">
           {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
         </p>
       ) : address.data ? (
-        <div className="receive-body" data-testid="shielded-receive">
-          <Qr text={address.data.address} label={`QR code of ${address.data.address}`} testId="shielded-receive-qr" />
-          {selector}
-          <p className="withdraw-to" data-testid="shielded-receive-address">
-            <CopyValue value={address.data.address} label="Shielded address" mono />
-          </p>
-        </div>
+        <Qr text={address.data.address} label={`QR code of ${address.data.address}`} testId="shielded-receive-qr" />
       ) : (
         <p className="sheet-text" role="status">
           {C.receive.loading}
         </p>
       )}
-      {!address.data && selector}
-    </>
-  );
+    </>,
+    after: !address.isError && address.data ? (
+      <p className="withdraw-to" data-testid="shielded-receive-address">
+        <CopyValue value={address.data.address} label="Shielded address" mono />
+      </p>
+    ) : null,
+  };
+}
+
+export function ShieldedReceiveBody({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const content = useShieldedReceiveContent(walletId, network);
+  return <>{content.text}<div className="receive-body" data-testid="shielded-receive">{content.before}{content.after}</div></>;
 }
 
 /** Home's Shielded card: its title opens Transfer from Shielded; the locks to finish and the payments

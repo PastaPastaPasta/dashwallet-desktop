@@ -75,6 +75,73 @@ for (const theme of ["light", "dark"] as const) {
     expect(await focused!.evaluate((el) => el.isConnected && el === document.activeElement)).toBe(true);
   });
 
+  for (const pool of ["dash", "platform", "shielded"] as const)
+    test(`Receive keeps its selector after a failed ${pool} refresh, ${theme}`, async ({ page }) => {
+      await page.goto(fixtureUrl("funded", theme));
+      await page.getByTestId("sidebar-receive").click();
+      if (pool !== "dash") await page.getByTestId(pool === "platform" ? "platform-receive-toggle" : "shielded-receive-open").click();
+      await expect(page.getByTestId(pool === "dash" ? "receive-qr" : `${pool}-receive-qr`)).toBeVisible();
+      await page.evaluate((pool) => {
+        const f = window.__dwFixture!;
+        const walletId = f.world.wallets[0].summary.walletId;
+        f.fail(pool === "dash" ? "current_receive_address" : pool === "platform" ? "platform_receive_address" : "shielded_receive_address", "none");
+        f.emit(pool === "dash" ? { kind: "historyChanged", network: "testnet", walletId, txids: [] } : { kind: "platform", network: "testnet", walletId, change: { domain: "names" } });
+      }, pool);
+      await expect(page.locator(".receive-card [role=alert]")).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByRole("group", { name: "Receive in" })).toBeVisible();
+      await page.getByTestId("receive-select-dash").click();
+      await expect(page.getByTestId("receive-select-dash")).toHaveAttribute("aria-pressed", "true");
+      await expect(page.getByTestId("request-form")).toBeVisible();
+      if (pool !== "dash") await expect(page.getByTestId("receive-qr")).toBeVisible();
+    });
+
+  test(`Receive keeps keyboard focus across pools, loading and sync, ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("funded", theme));
+    await page.getByTestId("sidebar-receive").click();
+    await expect(page.getByTestId("receive-qr")).toBeVisible();
+    const platform = page.getByTestId("platform-receive-toggle");
+    const shielded = page.getByTestId("shielded-receive-open");
+    const group = await page.getByRole("group", { name: "Receive in" }).elementHandle();
+    const pending = await page.evaluateHandle(() => window.__dwFixture!.hold("platform_receive_address"));
+    await platform.focus();
+    await platform.press("Enter");
+    await expect(page.getByTestId("platform-receive-loading")).toBeVisible();
+    await expect(platform).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(shielded).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(platform).toBeFocused();
+    await pending.evaluate((release) => release());
+    await expect(page.getByTestId("platform-receive-qr")).toBeVisible();
+    await expect(platform).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(shielded).toBeFocused();
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.world.pending.shielded!.ready = false;
+      f.emit({ kind: "platform", network: "testnet", walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+    });
+    await shielded.press("Space");
+    await expect(page.getByTestId("shielded-receive-why")).toBeVisible();
+    await expect(shielded).toBeFocused();
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.world.pending.shielded!.ready = true;
+      f.emit({ kind: "platform", network: "testnet", walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+    });
+    await expect(page.getByTestId("shielded-receive-qr")).toBeVisible();
+    await expect(shielded).toBeFocused();
+    expect(await group!.evaluate((el) => el.isConnected)).toBe(true);
+    await page.keyboard.press("Tab");
+    await expect(page.getByTestId("shielded-receive-address").getByRole("button")).toBeFocused();
+    await page.getByTestId("receive-select-dash").focus();
+    await page.keyboard.press("Space");
+    await expect(page.getByTestId("receive-qr")).toBeVisible();
+    await expect(page.getByTestId("receive-select-dash")).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(platform).toBeFocused();
+  });
+
   test(`Receive selects one QR and requests opt in individually, ${theme}`, async ({ page }) => {
     await page.goto(fixtureUrl("dashpay-registered", theme));
     await page.getByTestId("sidebar-receive").click();

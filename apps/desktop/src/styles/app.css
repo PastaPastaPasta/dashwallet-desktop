@@ -5866,7 +5866,6 @@ button.bell-row-open:focus-visible {
 }
 
 .receive-selector { align-self: center; width: 100%; }
-.receive-body .receive-selector { flex-shrink: 0; }
 
 @media (max-width: 979px) {
   .shortcut-card {
