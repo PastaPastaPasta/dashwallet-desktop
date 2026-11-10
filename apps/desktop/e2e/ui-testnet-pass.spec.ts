@@ -61,6 +61,20 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.getByTestId("transfer-pause-mixing")).toHaveCount(0);
   });
 
+  test(`Receive retains selector focus while its address loads, ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("funded", theme));
+    await page.getByTestId("hero").waitFor();
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("current_receive_address"));
+    await page.getByTestId("sidebar-receive").click();
+    const selector = page.getByTestId("receive-select-dash");
+    await selector.focus();
+    const focused = await selector.elementHandle();
+    await release.evaluate((f) => f());
+    await expect(page.getByTestId("receive-address")).toBeVisible();
+    await expect(selector).toBeFocused();
+    expect(await focused!.evaluate((el) => el.isConnected && el === document.activeElement)).toBe(true);
+  });
+
   test(`Receive selects one QR and requests opt in individually, ${theme}`, async ({ page }) => {
     await page.goto(fixtureUrl("dashpay-registered", theme));
     await page.getByTestId("sidebar-receive").click();

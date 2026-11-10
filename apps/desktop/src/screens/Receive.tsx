@@ -117,7 +117,11 @@ function AddressCard({ walletId, network, selector, hidden }: { walletId: string
           <div className={paid.length > 0 ? "receive-qr is-used" : "receive-qr"}>
             <Qr text={uri.data} label={`QR code of ${shown.address}`} testId="receive-qr" />
           </div>
-          {selector}
+        </>
+      )}
+      {selector}
+      {shown && (!current.isError || fresh) && (
+        <>
           <p className="address-full" data-testid="receive-address">
             {shown.address}
           </p>
@@ -134,7 +138,6 @@ function AddressCard({ walletId, network, selector, hidden }: { walletId: string
           </div>
         </>
       )}
-      {!shown && selector}
       {problem && (
         <p className="form-problem" role="alert">
           {problem}
