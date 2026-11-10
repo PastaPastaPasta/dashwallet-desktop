@@ -9,14 +9,17 @@
 //! readers queue behind it, so a stream of new operations cannot starve the
 //! close, and each of them sees the closed flag when it is admitted.
 //!
-//! An in-app close first [`OpGate::pause`]s the gate: async operations
-//! asking for a guard wait, the ones admitted drain, and the close checks
-//! whether the session is busy before it commits. A refused close resumes
-//! the gate and the waiting operations are admitted as if nothing happened;
-//! a committed one seals it and they are refused. The pause is not a
-//! queued writer, so `try_enter` still admits meanwhile: the session's
-//! timers and loops (mixing ticks, the relock) give up on a refused
-//! `try_enter`, and none of them starts what the check looks for.
+//! An in-app close [`OpGate::hold`]s the gate until it is decided (a
+//! switch's close marks it [`OpGate::is_held`] meanwhile, as a refusal
+//! leaves the network open), and a
+//! network switch's close also pauses it: async operations asking for a
+//! guard wait, the ones admitted drain, and the close checks whether the
+//! session is busy before it commits. A refused close resumes the gate and
+//! the waiting operations are admitted as if nothing happened; a committed
+//! one seals it and they are refused. The pause is not a queued writer, so
+//! `try_enter` still admits meanwhile: the session's timers and loops
+//! (mixing ticks, the relock) give up on a refused `try_enter`, and none of
+//! them starts what the check looks for.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -28,6 +31,8 @@ pub(crate) struct OpGate {
     closed: AtomicBool,
     lock: RwLock<()>,
     paused: AtomicBool,
+    /// An in-app close holds the gate ([`OpGate::hold`]) and is not decided.
+    held: AtomicBool,
     /// Guards alive. Read with `paused` in the opposite order to `enter`
     /// (both `SeqCst`): an operation either sees the pause and backs off,
     /// or the pause sees it and waits for it.
@@ -37,6 +42,22 @@ pub(crate) struct OpGate {
     /// Tests: how many pauses reached their drain.
     #[cfg(test)]
     drains: AtomicUsize,
+    /// Tests: hold the next `enter` before it is admitted (its read lock
+    /// taken, the gate not closed), and between its last two loads.
+    #[cfg(test)]
+    pub(crate) hold_entering: std::sync::Mutex<Option<std::sync::Arc<crate::coins::TestPause>>>,
+    #[cfg(test)]
+    pub(crate) hold_between_loads:
+        std::sync::Mutex<Option<std::sync::Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next in-app close once it is checked, before it
+    /// takes the engine's sessions lock.
+    #[cfg(test)]
+    pub(crate) hold_before_sessions:
+        std::sync::Mutex<Option<std::sync::Arc<crate::coins::TestPause>>>,
+    /// Tests: runs when a hold ends, between the release of its load fence
+    /// and the end of its pause.
+    #[cfg(test)]
+    pub(crate) on_release: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Held by one admitted operation; dropping it lets a pending close proceed.
@@ -52,14 +73,30 @@ impl Drop for OpGuard<'_> {
     }
 }
 
-/// A paused gate ([`OpGate::pause`]). Dropping it resumes the gate;
-/// [`Paused::seal`] first refuses every operation still waiting, for a
-/// close that goes ahead.
-pub(crate) struct Paused<'a> {
+/// An in-app close not decided yet ([`OpGate::hold`]). Dropping it (a
+/// refusal) releases the close's load fence first and then resumes the
+/// gate: a shielded store's first open waiting for the decision
+/// (`shielded_pool::coordinator`) then finds the fence free.
+pub(crate) struct Hold<'a> {
     gate: &'a OpGate,
+    loads: Option<RwLockWriteGuard<'a, ()>>,
+    paused: bool,
+    waited: bool,
 }
 
-impl Paused<'_> {
+impl<'a> Hold<'a> {
+    /// Keeps the close's wallet-load fence until the hold ends or commits.
+    pub(crate) fn fence(&mut self, loads: RwLockWriteGuard<'a, ()>) {
+        self.loads = Some(loads);
+    }
+
+    /// Pauses admissions: async operations that ask wait until the hold
+    /// ends, or are refused once it commits.
+    pub(crate) fn pause(&mut self) {
+        self.gate.paused.store(true, Ordering::SeqCst);
+        self.paused = true;
+    }
+
     /// `busy` at once, then again once every admitted operation has
     /// finished, waiting up to `drain` for them. As no async operation is
     /// admitted meanwhile, none starts between the second check and the
@@ -69,6 +106,7 @@ impl Paused<'_> {
         drain: Duration,
         busy: impl Fn() -> Option<B>,
     ) -> Result<(), PauseRefused<B>> {
+        debug_assert!(self.paused, "a check drains a paused gate");
         if let Some(b) = busy() {
             return Err(PauseRefused::Busy(b));
         }
@@ -85,19 +123,35 @@ impl Paused<'_> {
         drained.map_err(|_| PauseRefused::Draining)
     }
 
-    pub(crate) fn seal(self) {
-        self.gate.closed.store(true, Ordering::SeqCst);
+    /// The close goes ahead: a paused gate is sealed, refusing what waits
+    /// and what asks from now on. Returns the load fence, which the close
+    /// keeps until it is done.
+    pub(crate) fn commit(mut self) -> Option<RwLockWriteGuard<'a, ()>> {
+        if self.paused {
+            self.gate.closed.store(true, Ordering::SeqCst);
+        }
+        self.loads.take()
     }
 }
 
-impl Drop for Paused<'_> {
+impl Drop for Hold<'_> {
     fn drop(&mut self) {
-        self.gate.paused.store(false, Ordering::SeqCst);
+        drop(self.loads.take());
+        #[cfg(test)]
+        if let Some(f) = (self.gate.on_release.lock().unwrap()).take() {
+            f();
+        }
+        if self.paused {
+            self.gate.paused.store(false, Ordering::SeqCst);
+        }
+        if self.waited {
+            self.gate.held.store(false, Ordering::SeqCst);
+        }
         self.gate.changed.notify_waiters();
     }
 }
 
-/// Why [`Paused::check`] refused.
+/// Why [`Hold::check`] refused.
 pub(crate) enum PauseRefused<B> {
     /// What the check found running.
     Busy(B),
@@ -164,15 +218,21 @@ impl OpGate {
             if self.closed.load(Ordering::Acquire) {
                 return None;
             }
+            #[cfg(test)]
+            crate::coins::pause_at(&self.hold_entering).await;
             let guard = self.admit(guard);
-            // Sealed meanwhile: the close already checked without this one.
+            // Paused after the wait: back off, the pause may be draining.
+            if self.paused.load(Ordering::SeqCst) {
+                continue;
+            }
+            #[cfg(test)]
+            crate::coins::pause_at(&self.hold_between_loads).await;
+            // Read last: a commit seals before its pause ends, so a pause
+            // seen ended by a commit is seen sealed.
             if self.closed.load(Ordering::SeqCst) {
                 return None;
             }
-            if !self.paused.load(Ordering::SeqCst) {
-                return Some(guard);
-            }
-            // Paused after the wait: back off, the pause may be draining.
+            return Some(guard);
         }
     }
 
@@ -210,17 +270,39 @@ impl OpGate {
         Some(self.admit(guard))
     }
 
-    /// Pauses admissions for a close that must not cut what runs (one at
-    /// a time): async operations that ask wait until the returned
-    /// [`Paused`] is dropped, or are refused once it is sealed.
-    pub(crate) fn pause(&self) -> Paused<'_> {
-        self.paused.store(true, Ordering::SeqCst);
-        Paused { gate: self }
+    /// Holds the gate for an in-app close (one at a time) until the
+    /// returned [`Hold`] commits or is dropped. `waited`: a shielded
+    /// store's first open waits for the decision rather than failing (a
+    /// network switch's close, which a refusal leaves open).
+    pub(crate) fn hold(&self, waited: bool) -> Hold<'_> {
+        if waited {
+            self.held.store(true, Ordering::SeqCst);
+        }
+        Hold {
+            gate: self,
+            loads: None,
+            paused: false,
+            waited,
+        }
     }
 
-    /// Paused, and its close not decided yet.
-    pub(crate) fn is_paused(&self) -> bool {
-        self.paused.load(Ordering::SeqCst) && !self.closed.load(Ordering::SeqCst)
+    /// Tests: a held and paused gate.
+    #[cfg(test)]
+    pub(crate) fn pause(&self) -> Hold<'_> {
+        let mut hold = self.hold(true);
+        hold.pause();
+        hold
+    }
+
+    /// Tests: no pause in force.
+    #[cfg(test)]
+    pub(crate) fn pause_ended(&self) -> bool {
+        !self.paused.load(Ordering::SeqCst)
+    }
+
+    /// A network switch's close holds the gate and is not decided yet.
+    pub(crate) fn is_held(&self) -> bool {
+        self.held.load(Ordering::SeqCst) && !self.closed.load(Ordering::SeqCst)
     }
 
     /// Tests: how many pauses reached their drain.
@@ -330,7 +412,7 @@ mod tests {
         };
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!late.is_finished());
-        paused.seal();
+        paused.commit();
         assert!(late.await.unwrap(), "refused once sealed");
         assert!(gate.is_closed());
         drop(gate.close().await);
@@ -343,7 +425,7 @@ mod tests {
         let paused = gate.pause();
         let refused = paused.check(Duration::from_millis(50), || None::<()>).await;
         assert!(matches!(refused, Err(PauseRefused::Draining)));
-        assert!(gate.is_paused());
+        assert!(gate.is_held());
         drop(paused);
         assert!(gate.enter().await.is_some(), "resumed after a refusal");
         // A sync caller is admitted while paused, and drained.

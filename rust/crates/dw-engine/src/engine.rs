@@ -48,7 +48,7 @@ const CLOSE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 pub(crate) const CLOSE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn close_load_wait(_session: &NetworkSession) -> Duration {
-    #[cfg(all(debug_assertions, feature = "test-support"))]
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     if let Some(wait) = *_session.close_load_wait.lock().unwrap() {
         return wait;
     }
@@ -259,22 +259,23 @@ impl Engine {
             let Some(session) = shared.sessions.lock().await.get(&network).cloned() else {
                 return Ok(false);
             };
-            // Declared before the load fence, so that a refusal releases the
-            // fence before the gate resumes: a shielded store's first open,
-            // which waits while the gate is paused (`shielded_pool::coordinator`),
-            // then finds it free.
-            let mut paused = None;
+            // Until a switch's close is decided, a shielded store's first
+            // open waits for it (`shielded_pool::coordinator`) rather than
+            // failing; a refusal releases the load fence before it resumes
+            // the gate.
+            let mut hold = session.gate.hold(pause.is_some());
             // From the check to the commit no wallet loads and no
             // signing shielded call starts (E1 r2 R2-3). A load in
             // flight is waited for, briefly, without the sessions lock,
             // so opens, lookups and quit go on meanwhile; a call running
             // refuses the close.
             let loads = session.platform.wallet_loads.write();
-            let Ok(_loads) = tokio::time::timeout(close_load_wait(&session), loads).await else {
+            let Ok(loads) = tokio::time::timeout(close_load_wait(&session), loads).await else {
                 return Err(CloseRefused::Engine(EngineError::Wallet(
                     "a wallet is still opening; close the network once it is open".into(),
                 )));
             };
+            hold.fence(loads);
             // After the load wait: a load takes `wallet_loads` before it
             // asks the gate, so none waits on the pause here.
             if let Some((drain, busy)) = &pause {
@@ -285,14 +286,16 @@ impl Engine {
                 if shielded() {
                     return Err(unresolved());
                 }
-                let gate = paused.insert(session.gate.pause());
-                match gate.check(*drain, || busy(&session)).await {
+                hold.pause();
+                match hold.check(*drain, || busy(&session)).await {
                     Ok(()) => {}
                     Err(PauseRefused::Busy(b)) => return Err(CloseRefused::Busy(b)),
                     Err(PauseRefused::Draining) if shielded() => return Err(unresolved()),
                     Err(PauseRefused::Draining) => return Err(CloseRefused::Draining),
                 }
             }
+            #[cfg(test)]
+            crate::coins::pause_at(&session.gate.hold_before_sessions).await;
             let mut sessions = shared.sessions.lock().await;
             // Closed (quit) or reopened while it waited: nothing of this
             // session is left to close.
@@ -308,9 +311,7 @@ impl Engine {
             if session.holds_shielded_spends().await {
                 return Err(CloseRefused::Engine(EngineError::ShieldedSpendUnresolved));
             }
-            if let Some(paused) = paused.take() {
-                paused.seal();
-            }
+            let _loads = hold.commit();
             sessions.remove(&network);
             if network == DashNetwork::Mainnet {
                 shared.rates.mainnet_closed();

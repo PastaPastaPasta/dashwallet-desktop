@@ -222,10 +222,19 @@ pub struct NetworkSession {
     pub(crate) hub: Arc<SessionHub>,
     /// Admission of operations vs close (review M1).
     pub(crate) gate: OpGate,
-    /// Other crates' tests: how long an in-app close waits for a wallet
+    /// Tests: how long an in-app close waits for a wallet
     /// load (`test_support::hold_close_fence`).
-    #[cfg(all(debug_assertions, feature = "test-support"))]
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     pub(crate) close_load_wait: std::sync::Mutex<Option<std::time::Duration>>,
+    /// Other crates' tests: holds the next Platform send before it starts
+    /// (`test_support::hold_platform_send`).
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub(crate) hold_platform_send: std::sync::Mutex<
+        Option<(
+            std::sync::mpsc::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
     /// Wallet registrations and removals, one at a time (DEC-210 (3b)).
     pub(crate) wallet_lifecycle: WalletLifecycle,
     live: RwLock<Option<Live>>,
@@ -535,8 +544,10 @@ impl NetworkSession {
             spv_peers,
             hub: Arc::clone(&hub),
             gate: OpGate::default(),
-            #[cfg(all(debug_assertions, feature = "test-support"))]
+            #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
             close_load_wait: Default::default(),
+            #[cfg(all(debug_assertions, feature = "test-support"))]
+            hold_platform_send: Default::default(),
             wallet_lifecycle: WalletLifecycle::default(),
             live: RwLock::new(Some(Live {
                 manager: Arc::clone(&manager),

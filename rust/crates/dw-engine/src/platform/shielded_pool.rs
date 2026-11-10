@@ -1597,7 +1597,7 @@ impl PwShielded {
             return Err(store_error("injected"));
         }
         let (manager, pw) = PwLib::open(session, wallet_id).await?;
-        let coordinator = coordinator(session, &manager).await?;
+        let coordinator = coordinator(session, &manager, None).await?;
         Ok(Self {
             pw,
             manager,
@@ -1643,10 +1643,12 @@ impl PwShielded {
 
 /// The manager's shielded coordinator, configured over the network
 /// directory's [`SHIELDED_DB_FILE`] the first time (the library opens it
-/// once per manager).
+/// once per manager). `cancel`: the Platform start's cancellation, for the
+/// supervisor's open.
 pub(crate) async fn coordinator(
     session: &NetworkSession,
     manager: &Manager,
+    mut cancel: Option<tokio::sync::watch::Receiver<bool>>,
 ) -> Result<Arc<NetworkShieldedCoordinator>, PlatformError> {
     if let Some(coordinator) = manager.shielded_coordinator().await {
         return Ok(coordinator);
@@ -1656,17 +1658,31 @@ pub(crate) async fn coordinator(
     // before its check, and none starts from its check to its commit,
     // where it would bring in a spend the check did not see. Not
     // `read().await`: the close holds the write side while the session's
-    // close awaits the supervisor, which may be here. A network switch's
-    // close holds it while the gate is paused too, and may still be
-    // refused: that is waited out.
+    // close awaits the supervisor, which may be here. A close not decided
+    // yet may still be refused: that is waited out, but not past the
+    // start's cancellation, which a quit sends while it holds what that
+    // close waits for (the engine's sessions).
     let _admitted = loop {
         if let Ok(admitted) = session.platform.wallet_loads.try_read() {
             break admitted;
         }
-        if !session.gate.is_paused() {
-            return Err(PlatformError::NetworkNotOpen);
+        if !session.gate.is_held() {
+            // A refusal frees the fence before it lets the gate go: read
+            // again, in case it came between the two reads.
+            break session
+                .platform
+                .wallet_loads
+                .try_read()
+                .map_err(|_| PlatformError::NetworkNotOpen)?;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let poll = tokio::time::sleep(Duration::from_millis(20));
+        match cancel.as_mut() {
+            Some(cancel) => tokio::select! {
+                () = poll => {}
+                _ = cancel.wait_for(|c| *c) => return Err(PlatformError::NetworkNotOpen),
+            },
+            None => poll.await,
+        }
     };
     // Not under a pass (R1-3, `PlatformRuntime::shielded_passes`).
     let _passes = session.platform.shielded_passes.write().await;
@@ -2508,11 +2524,16 @@ pub(crate) async fn guarded_pass(session: &NetworkSession, manager: &Manager, fo
 /// would skip [`admit_pass`]): the supervisor runs [`guarded_pass`] every
 /// interval while the loops are on, and the stop quiesces a pass in flight
 /// with the other loops.
-pub(crate) async fn start(session: &Arc<NetworkSession>, manager: &Manager, wallets: &[WalletId]) {
+pub(crate) async fn start(
+    session: &Arc<NetworkSession>,
+    manager: &Manager,
+    wallets: &[WalletId],
+    cancel: &tokio::sync::watch::Receiver<bool>,
+) {
     if manager.sdk_arc().protocol_version_number() < SHIELDED_ACTIVATION_VERSION {
         return;
     }
-    if let Err(e) = coordinator(session, manager).await {
+    if let Err(e) = coordinator(session, manager, Some(cancel.clone())).await {
         tracing::warn!(error = %e, "the shielded coordinator did not open");
         return;
     }

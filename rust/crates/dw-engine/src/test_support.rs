@@ -172,3 +172,18 @@ pub fn hold_close_fence(
 pub fn set_mixing(session: &NetworkSession, wallet: crate::WalletId, mixing: bool) {
     session.coinjoin.set_mixing_for_test(wallet, mixing);
 }
+
+/// Holds the next Platform send of `session` (`DashPay::platform_send`)
+/// before it starts, until the returned sender is dropped. The receiver
+/// hears once it is held.
+pub fn hold_platform_send(
+    session: &NetworkSession,
+) -> (
+    std::sync::mpsc::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let (reached_tx, reached) = std::sync::mpsc::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    *session.hold_platform_send.lock().unwrap() = Some((reached_tx, released));
+    (reached, release)
+}
