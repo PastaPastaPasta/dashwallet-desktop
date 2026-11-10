@@ -504,5 +504,51 @@
       "width": 800,
       "height": 620
     }
+  },
+  {
+    "file": "receive-address-loading-light.png",
+    "state": "receive-address-loading",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "governance-amount-pending-light.png",
+    "state": "governance-amount-pending",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "governance",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "crop": "create-sheet"
+  },
+  {
+    "file": "receive-address-loading-dark.png",
+    "state": "receive-address-loading",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "governance-amount-pending-dark.png",
+    "state": "governance-amount-pending",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "governance",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "crop": "create-sheet"
   }
 ]
