@@ -305,7 +305,8 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
   const [text, setText] = useState(query);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
-    focusContact(input.current);
+    const tabs = document.activeElement?.closest('[role="tablist"]');
+    if (!tabs || !input.current?.closest(".add-contact")?.contains(tabs)) focusContact(input.current);
   }, [query]);
   // Another intent's search text (Show more on another search).
   useEffect(() => setText(query), [query]);

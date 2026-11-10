@@ -192,6 +192,29 @@ for (const theme of ["light", "dark"] as const) {
     await expect(page.getByTestId("add-contact-name")).toBeInViewport();
   });
 
+  test(`Add contact tabs keep focus during keyboard navigation, ${theme}`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-registered", theme));
+    await page.getByTestId("sidebar-contacts").click();
+    const add = page.getByTestId("contacts-add");
+    await add.focus();
+    await add.press("Enter");
+    const input = page.getByRole("searchbox", { name: "Search username", exact: true });
+    await expect(input).toBeFocused();
+    const search = page.getByTestId("add-contact-tabs-search");
+    const scan = page.getByTestId("add-contact-tabs-scan");
+    await search.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(scan).toBeFocused();
+    await page.keyboard.press("ArrowLeft");
+    await expect(search).toBeFocused();
+    await page.keyboard.press("ArrowRight");
+    await expect(scan).toBeFocused();
+    await page.keyboard.press("Home");
+    await expect(search).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(input).toBeFocused();
+  });
+
   test(`Contacts columns and header stay stable, ${theme}`, async ({ page }) => {
     await page.setViewportSize({ width: 1000, height: 620 });
     await page.goto(fixtureUrl("dashpay-registered", theme));
