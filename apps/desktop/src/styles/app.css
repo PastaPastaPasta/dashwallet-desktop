@@ -1123,6 +1123,10 @@ button {
 
 /* Narrow windows stack the strip's cells (UX-SPEC §4.5; the sidebar takes 220 of the 980). */
 @media (max-width: 979px) {
+  .hero-band, .hero-band:has(.hero-fiat) {
+    height: auto;
+    padding-bottom: var(--dw-space-l);
+  }
   .hero-breakdown,
   .hero-breakdown:has(> :nth-child(5)),
   .hero-breakdown:has(> :nth-child(7)) {
@@ -5857,4 +5861,14 @@ button.bell-row-open:focus-visible {
 .copy-button[data-copied] {
   padding: 0 var(--dw-space-xs);
   border-radius: var(--dw-radius-small);
+}
+
+@media (max-width: 979px) {
+  .shortcut-card {
+    position: static;
+    width: 100%;
+    margin-top: var(--dw-space-l);
+    transform: none;
+  }
+  .page-overview > .page-column { padding-top: var(--dw-space-l); }
 }
