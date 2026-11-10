@@ -409,10 +409,12 @@ impl ReplayRecords {
             .copied();
         if let Some(height) = lift {
             record = match record {
-                Some(r) => Some(self.lift(records, wallet, r, height, true).await),
-                None => {
+                Some(r) if r.forked_from < height => {
+                    Some(self.lift(records, wallet, r, height, true).await)
+                }
+                stored => {
                     self.lift_stored(wallet, height);
-                    None
+                    stored
                 }
             };
         }
@@ -471,6 +473,9 @@ impl ReplayRecords {
         match written {
             Ok(()) => {
                 records.insert(wallet, record);
+                if let Some(r) = record {
+                    self.lift_stored(wallet, r.forked_from);
+                }
                 Ok(())
             }
             Err(e) => {
@@ -760,7 +765,7 @@ impl ReplayRecords {
     /// `record` with its `forked_from` lifted to `height`, the old chain's
     /// checkpoint a commit above the wallet's showed, when a fork left the
     /// record or `forked` (one of this session's forks). The lift stays
-    /// noted until it is stored.
+    /// noted until a record that keeps it is stored or read.
     async fn lift(
         &self,
         records: &mut HashMap<WalletId, Option<ReplayRecord>>,
@@ -769,11 +774,7 @@ impl ReplayRecords {
         height: u32,
         forked: bool,
     ) -> ReplayRecord {
-        if record.forked_from >= height {
-            self.lift_stored(wallet, height);
-            return record;
-        }
-        if !forked && record.forked_from == 0 {
+        if record.forked_from >= height || (!forked && record.forked_from == 0) {
             return record;
         }
         let lifted = ReplayRecord {
@@ -785,16 +786,14 @@ impl ReplayRecords {
             let entry = lifts.entry(wallet).or_default();
             *entry = (*entry).max(height);
         }
-        match self.write(records, wallet, Some(lifted)).await {
-            Ok(()) => self.lift_stored(wallet, height),
-            Err(e) => {
-                tracing::error!(error = %e, wallet = %wallet, "could not store the old chain's checkpoint of a fork: the next read stores it")
-            }
+        if let Err(e) = self.write(records, wallet, Some(lifted)).await {
+            tracing::error!(error = %e, wallet = %wallet, "could not store the old chain's checkpoint of a fork: the next read stores it")
         }
         lifted
     }
 
-    /// A record with `forked_from` at `height` or above is stored.
+    /// A record with `forked_from` at `height` or above is stored, or was
+    /// read from the store.
     fn lift_stored(&self, wallet: WalletId, height: u32) {
         let mut lifts = self.lifts.lock().unwrap_or_else(|p| p.into_inner());
         if lifts.get(&wallet).is_some_and(|h| *h <= height) {

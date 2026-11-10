@@ -526,8 +526,14 @@ pub(crate) struct SessionHub {
     /// the history of one being applied, not only its heights.
     truncating: Mutex<()>,
     /// The wallets unloaded or removed, and not added again: an event of
-    /// one is stale, from before.
+    /// one is stale, from before. Held through each event's application
+    /// and through a wallet's unload, removal and admission, so an event
+    /// is applied wholly before the wallet leaves or not at all; taken
+    /// before every other lock of the hub's.
     unloaded: Mutex<HashSet<WalletId>>,
+    /// Tests: holds the next event right after its wallet's check.
+    #[cfg(test)]
+    pub(crate) pause_event: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
 }
 
 impl SessionHub {
@@ -631,6 +637,8 @@ impl SessionHub {
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),
             unloaded: Mutex::new(HashSet::new()),
+            #[cfg(test)]
+            pause_event: Mutex::new(None),
         }
     }
 
@@ -892,7 +900,8 @@ impl SessionHub {
     /// Forgets the in-memory state of an unloaded wallet; its name stays
     /// (the "Open Wallet" menu lists it).
     pub(crate) fn unload_wallet(&self, id: &WalletId) {
-        (self.unloaded.lock().unwrap_or_else(|p| p.into_inner())).insert(*id);
+        let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        unloaded.insert(*id);
         self.wallets
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -923,14 +932,31 @@ impl SessionHub {
 
     /// An unloaded or removed wallet joins the manager again: its events
     /// are heard, and the transactions key-wallet holds are this load's.
-    pub(crate) fn admit(&self, id: WalletId) {
-        (self.unloaded.lock().unwrap_or_else(|p| p.into_inner())).remove(&id);
+    /// Returns whether it was unloaded or removed.
+    pub(crate) fn admit(&self, id: WalletId) -> bool {
+        let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        let was = unloaded.remove(&id);
         self.history.with_wallet(id, |h| h.held.clear());
+        was
+    }
+
+    /// Admits those of `ids`, wallets the manager holds, still unloaded or
+    /// removed ([`Self::admit`]): a load from the store registers every
+    /// wallet stored and not closed, a removed one whose deletion failed
+    /// too.
+    pub(crate) fn admit_loaded(&self, ids: impl IntoIterator<Item = WalletId>) {
+        let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        for id in ids {
+            if unloaded.remove(&id) {
+                self.history.with_wallet(id, |h| h.held.clear());
+            }
+        }
     }
 
     /// Forgets everything about a removed wallet.
     pub(crate) fn forget_wallet(&self, id: &WalletId) {
-        (self.unloaded.lock().unwrap_or_else(|p| p.into_inner())).insert(*id);
+        let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        unloaded.insert(*id);
         self.wallets
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -1163,8 +1189,14 @@ impl SessionHub {
 
     pub(crate) fn apply_wallet_event(&self, event: &WalletEvent) {
         let id = WalletId(event.wallet_id());
-        if (self.unloaded.lock().unwrap_or_else(|p| p.into_inner())).contains(&id) {
+        let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        if unloaded.contains(&id) {
             return;
+        }
+        #[cfg(test)]
+        if let Some((reached, release)) = self.pause_event.lock().unwrap().take() {
+            reached.wait();
+            release.wait();
         }
         let now = Some(unix_now());
         self.run_sweep_retry(id);
