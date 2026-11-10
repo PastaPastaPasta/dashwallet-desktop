@@ -779,6 +779,7 @@ fn stored_file(rig: &Rig) -> Stored {
 }
 
 /// `rates.json`, or `None` when there is none.
+#[cfg(unix)]
 fn stored_file_if_any(rig: &Rig) -> Option<Stored> {
     match std::fs::read_to_string(rig.root.join(RATES_FILE)) {
         Ok(text) => Some(Stored::from_json(&text)),
