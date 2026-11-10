@@ -252,6 +252,10 @@ export class QuoteLine<Q> extends Model {
     this.changed();
   }
 
+  quotedAt(amount: number | null, basis: unknown): boolean {
+    return this.state.kind === "quoted" && this.state.amount === amount && this.basis === basis;
+  }
+
   private pump() {
     if (this.inflight || !this.due || this.target === null) return;
     const amount = this.target;
@@ -275,6 +279,7 @@ export class QuoteLine<Q> extends Model {
    * meanwhile. `derive` returns `probe` itself when the first quote already took it. */
   async max(probe: number, derive: (first: Settled<Q>, probe: number) => number | null): Promise<number | null> {
     if (this.maxing) return null;
+    this.basis = probe;
     const gen = ++this.maxGen;
     this.timers.clear(this.timer);
     this.timer = null;
@@ -621,7 +626,7 @@ export class TransferModel extends Model {
    * typing only clears what Max left. */
   typed(route: Exclude<RouteId, "platformToCore">, amount: number | null, basis?: number | null) {
     const line = this.lineOf(route);
-    if (QUOTE_ON_CONTINUE.has(route) && line.state.kind === "quoted" && line.state.amount === amount) return;
+    if (QUOTE_ON_CONTINUE.has(route) && line.quotedAt(amount, basis)) return;
     line.set(QUOTE_ON_CONTINUE.has(route) ? null : amount, basis);
   }
 

@@ -36,14 +36,23 @@ for (const theme of ["light", "dark"] as const) {
   test(`mixing shows spendable funds and offers pause, ${theme}`, async ({ page }) => {
     await page.goto(fixtureUrl("coinjoin-mixing", theme));
     await page.getByTestId("hero").waitFor();
+    await openTransfer(page, "coreToPlatform");
+    const from = page.getByTestId("transfer-from");
+    const mixingLine = page.getByTestId("transfer-mixing");
+    await expect(mixingLine).toContainText("mixing");
+    const before = await from.textContent();
+    const mixingBefore = await mixingLine.textContent();
     await page.evaluate(() => {
       const f = window.__dwFixture!;
       const w = f.world.wallets[0];
       w.coins[0].reserved = true;
+      const denomination = w.coins.find((c) => c.coinjoinDenominated)!;
+      denomination.reserved = true;
+      denomination.coinjoinRounds = null;
       f.emit({ kind: "coinJoin", network: "testnet", walletId: w.summary.walletId });
     });
-    await openTransfer(page, "coreToPlatform");
-    await expect(page.getByTestId("transfer-mixing")).toContainText("mixing");
+    await expect(from).not.toHaveText(before!);
+    await expect(mixingLine).toHaveText(mixingBefore!);
     await expect(page.getByTestId("transfer-fee")).not.toHaveClass(/form-problem/);
     await expect(page.getByTestId("transfer-pause-mixing")).toBeVisible();
     await page.getByTestId("transfer-amount").fill("1000");
@@ -84,6 +93,22 @@ for (const theme of ["light", "dark"] as const) {
     const b = (await breakdown.boundingBox())!;
     const a = (await actions.boundingBox())!;
     expect(a.y).toBeGreaterThanOrEqual(b.y + b.height);
+  });
+
+  test(`Add contact focuses and reveals its narrow pane, ${theme}`, async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 620 });
+    await page.goto(fixtureUrl("dashpay-registered", theme));
+    await page.getByTestId("sidebar-contacts").click();
+    const add = page.getByTestId("contacts-add");
+    await add.focus();
+    await add.press("Enter");
+    const search = page.getByRole("searchbox", { name: "Search username", exact: true });
+    await expect(search).toBeFocused();
+    await expect(search).toBeInViewport();
+    await search.fill("mal");
+    await page.getByTestId("add-contact-hit").click();
+    await expect(page.getByTestId("add-contact-name")).toBeFocused();
+    await expect(page.getByTestId("add-contact-name")).toBeInViewport();
   });
 
   test(`Contacts columns and header stay stable, ${theme}`, async ({ page }) => {

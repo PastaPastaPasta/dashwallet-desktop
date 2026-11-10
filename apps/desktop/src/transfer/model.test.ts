@@ -252,6 +252,15 @@ describe("Max", () => {
     expect(t.lines.coreToPlatform.state.kind).toBe("idle");
   });
 
+  it("clears Platform Max's quote when spendable funds change", async () => {
+    const { t, quotes } = model();
+    quotes.platformFundQuote.mockResolvedValue({ credits: "999000", duffs: 1000 });
+    await t.max("coreToPlatform", 1000, () => undefined);
+    t.typed("coreToPlatform", 1000, 900);
+    expect(t.lines.coreToPlatform.state.kind).toBe("idle");
+    expect(quotes.platformFundQuote).toHaveBeenCalledTimes(1);
+  });
+
   it("shows the re-quote's refusal (too many coins) and fills nothing, with no third quote", async () => {
     const { timers } = manualTimers();
     const fetch = vi.fn(async (_wallet: string, d: number): Promise<never> => {

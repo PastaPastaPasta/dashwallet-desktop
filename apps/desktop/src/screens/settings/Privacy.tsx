@@ -118,7 +118,7 @@ function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
       </label>
       <Hint id={hint}>
         The Receive QR code and the payment requests of “{wallet.name}” show its DashPay username, once it has one, so whoever sees them knows the Dash
-        address is yours. Off by default. You can also include it for a single request in Receive.
+        address is yours. Off by default. You can also include it for a single request in Receive. Each request keeps its choice, so turning this off does not remove your username from requests already created.
       </Hint>
       <Problem text={problem} testId="settings-username-problem" />
     </>

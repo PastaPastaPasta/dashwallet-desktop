@@ -53,7 +53,7 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   const hold = usePlatformHold(walletId, transferFor(b, walletId).flows.move);
   const fmt = useAmount(network);
   const core = spendable.data ?? null;
-  const reserved = coins.data?.filter((c) => c.reserved).reduce((n, c) => n + c.amount, 0) ?? 0;
+  const reserved = coins.data?.filter((c) => c.reserved && c.coinjoinDenominated).reduce((n, c) => n + c.amount, 0) ?? 0;
   return {
     core,
     mixing: (mixing?.balances.coinjoinAccount ?? 0) + (mixing && mixing.state !== "idle" ? reserved : 0),
