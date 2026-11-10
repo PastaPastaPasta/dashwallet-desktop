@@ -842,10 +842,94 @@
     "bytes": 66845
   },
   {
+    "file": "contacts-search-tab-keyboard-light.png",
+    "state": "contacts-search-tab-keyboard",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    },
+    "path": "before/contacts-search-tab-keyboard-light.png",
+    "sha256": "a3dc85fe2ab6372a817cf3cf233396edca8148afb88e60fb5b057c5d88b4c16e",
+    "bytes": 83443
+  },
+  {
+    "file": "request-preference-loading-light.png",
+    "state": "request-preference-loading",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/request-preference-loading-light.png",
+    "sha256": "64bb5a7036e490dc2a0efe84421f84985cf2fc97bb7342e797fae07c511f07d0",
+    "bytes": 81385
+  },
+  {
+    "file": "contacts-search-tab-keyboard-dark.png",
+    "state": "contacts-search-tab-keyboard",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    },
+    "path": "before/contacts-search-tab-keyboard-dark.png",
+    "sha256": "844cd58361a3ac592e2c46a097a603348dff10c1ef0f29da9fd5f600389ea83e",
+    "bytes": 72961
+  },
+  {
+    "file": "request-preference-loading-dark.png",
+    "state": "request-preference-loading",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/request-preference-loading-dark.png",
+    "sha256": "2424218862b66e21a70d5ec8150b8a54e873acb0c14436f2f000fea8bd8647ec",
+    "bytes": 69461
+  },
+  {
+    "file": "contacts-search-tab-keyboard-light.png",
+    "state": "contacts-search-tab-keyboard",
+    "theme": "light",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    },
+    "path": "after/contacts-search-tab-keyboard-light.png",
+    "sha256": "fb9c71e3d367ed785cc2461ddfe453690f6176598a7af19e7288b7f7b98439db",
+    "bytes": 84794
+  },
+  {
+    "file": "request-preference-loading-light.png",
+    "state": "request-preference-loading",
+    "theme": "light",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/request-preference-loading-light.png",
+    "sha256": "e4922a18484cd3a014743c0056748bb5915a49459f2a5986d101410077ac2271",
+    "bytes": 80297
+  },
+  {
     "file": "receive-dash-refresh-error-light.png",
     "state": "receive-dash-refresh-error",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -859,7 +943,7 @@
     "file": "receive-platform-refresh-error-light.png",
     "state": "receive-platform-refresh-error",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -873,7 +957,7 @@
     "file": "receive-shielded-refresh-error-light.png",
     "state": "receive-shielded-refresh-error",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -887,7 +971,7 @@
     "file": "receive-platform-loading-light.png",
     "state": "receive-platform-loading",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -901,7 +985,7 @@
     "file": "receive-shielded-keyboard-light.png",
     "state": "receive-shielded-keyboard",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -915,7 +999,7 @@
     "file": "receive-address-loading-light.png",
     "state": "receive-address-loading",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -929,7 +1013,7 @@
     "file": "governance-amount-pending-light.png",
     "state": "governance-amount-pending",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "governance",
     "viewport": {
       "width": 1280,
@@ -944,7 +1028,7 @@
     "file": "contacts-compact-light.png",
     "state": "contacts-compact",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 800,
@@ -958,7 +1042,7 @@
     "file": "fund-reserved-light.png",
     "state": "fund-reserved",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -972,7 +1056,7 @@
     "file": "transfer-running-light.png",
     "state": "transfer-running",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -986,7 +1070,7 @@
     "file": "home-wide-light.png",
     "state": "home-wide",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1000,7 +1084,7 @@
     "file": "home-dust-light.png",
     "state": "home-dust",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "platform-partly-dust",
     "viewport": {
       "width": 1280,
@@ -1014,7 +1098,7 @@
     "file": "receive-syncing-light.png",
     "state": "receive-syncing",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "shielded-syncing",
     "viewport": {
       "width": 1280,
@@ -1028,7 +1112,7 @@
     "file": "home-compact-light.png",
     "state": "home-compact",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 900,
@@ -1042,7 +1126,7 @@
     "file": "withdrawal-form-light.png",
     "state": "withdrawal-form",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1056,7 +1140,7 @@
     "file": "withdrawal-confirm-light.png",
     "state": "withdrawal-confirm",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1070,7 +1154,7 @@
     "file": "mixing-empty-light.png",
     "state": "mixing-empty",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "coinjoin-mixing",
     "viewport": {
       "width": 1280,
@@ -1084,7 +1168,7 @@
     "file": "mixing-insufficient-light.png",
     "state": "mixing-insufficient",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "coinjoin-mixing",
     "viewport": {
       "width": 1280,
@@ -1098,7 +1182,7 @@
     "file": "max-pending-light.png",
     "state": "max-pending",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1112,7 +1196,7 @@
     "file": "max-complete-light.png",
     "state": "max-complete",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1126,7 +1210,7 @@
     "file": "receive-dash-light.png",
     "state": "receive-dash",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1140,7 +1224,7 @@
     "file": "receive-platform-light.png",
     "state": "receive-platform",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1154,7 +1238,7 @@
     "file": "receive-shielded-light.png",
     "state": "receive-shielded",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1168,7 +1252,7 @@
     "file": "request-opt-in-light.png",
     "state": "request-opt-in",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1182,7 +1266,7 @@
     "file": "request-confirm-light.png",
     "state": "request-confirm",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1196,7 +1280,7 @@
     "file": "contacts-open-light.png",
     "state": "contacts-open",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1210,7 +1294,7 @@
     "file": "contacts-search-light.png",
     "state": "contacts-search",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1224,7 +1308,7 @@
     "file": "contacts-selected-light.png",
     "state": "contacts-selected",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1238,7 +1322,7 @@
     "file": "settings-privacy-light.png",
     "state": "settings-privacy",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1252,7 +1336,7 @@
     "file": "settings-footer-light.png",
     "state": "settings-footer",
     "theme": "light",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1263,10 +1347,38 @@
     "bytes": 92041
   },
   {
+    "file": "contacts-search-tab-keyboard-dark.png",
+    "state": "contacts-search-tab-keyboard",
+    "theme": "dark",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    },
+    "path": "after/contacts-search-tab-keyboard-dark.png",
+    "sha256": "3c3a65c4cf6e90164f6341d252a3aba7f0b2522b74a515a875d96b57dcafd5ca",
+    "bytes": 73966
+  },
+  {
+    "file": "request-preference-loading-dark.png",
+    "state": "request-preference-loading",
+    "theme": "dark",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/request-preference-loading-dark.png",
+    "sha256": "8ccc90f881dc463fbbf75a174769402d9efde5a602bd47bce4708b8ca732b833",
+    "bytes": 71145
+  },
+  {
     "file": "receive-dash-refresh-error-dark.png",
     "state": "receive-dash-refresh-error",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1280,7 +1392,7 @@
     "file": "receive-platform-refresh-error-dark.png",
     "state": "receive-platform-refresh-error",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1294,7 +1406,7 @@
     "file": "receive-shielded-refresh-error-dark.png",
     "state": "receive-shielded-refresh-error",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1308,7 +1420,7 @@
     "file": "receive-platform-loading-dark.png",
     "state": "receive-platform-loading",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1322,7 +1434,7 @@
     "file": "receive-shielded-keyboard-dark.png",
     "state": "receive-shielded-keyboard",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1336,7 +1448,7 @@
     "file": "receive-address-loading-dark.png",
     "state": "receive-address-loading",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1350,7 +1462,7 @@
     "file": "governance-amount-pending-dark.png",
     "state": "governance-amount-pending",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "governance",
     "viewport": {
       "width": 1280,
@@ -1365,7 +1477,7 @@
     "file": "contacts-compact-dark.png",
     "state": "contacts-compact",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 800,
@@ -1379,7 +1491,7 @@
     "file": "fund-reserved-dark.png",
     "state": "fund-reserved",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1393,7 +1505,7 @@
     "file": "transfer-running-dark.png",
     "state": "transfer-running",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1407,7 +1519,7 @@
     "file": "home-wide-dark.png",
     "state": "home-wide",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1421,7 +1533,7 @@
     "file": "home-dust-dark.png",
     "state": "home-dust",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "platform-partly-dust",
     "viewport": {
       "width": 1280,
@@ -1435,7 +1547,7 @@
     "file": "receive-syncing-dark.png",
     "state": "receive-syncing",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "shielded-syncing",
     "viewport": {
       "width": 1280,
@@ -1449,7 +1561,7 @@
     "file": "home-compact-dark.png",
     "state": "home-compact",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 900,
@@ -1463,7 +1575,7 @@
     "file": "withdrawal-form-dark.png",
     "state": "withdrawal-form",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1477,7 +1589,7 @@
     "file": "withdrawal-confirm-dark.png",
     "state": "withdrawal-confirm",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1491,7 +1603,7 @@
     "file": "mixing-empty-dark.png",
     "state": "mixing-empty",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "coinjoin-mixing",
     "viewport": {
       "width": 1280,
@@ -1505,7 +1617,7 @@
     "file": "mixing-insufficient-dark.png",
     "state": "mixing-insufficient",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "coinjoin-mixing",
     "viewport": {
       "width": 1280,
@@ -1519,7 +1631,7 @@
     "file": "max-pending-dark.png",
     "state": "max-pending",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1533,7 +1645,7 @@
     "file": "max-complete-dark.png",
     "state": "max-complete",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1547,7 +1659,7 @@
     "file": "receive-dash-dark.png",
     "state": "receive-dash",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1561,7 +1673,7 @@
     "file": "receive-platform-dark.png",
     "state": "receive-platform",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1575,7 +1687,7 @@
     "file": "receive-shielded-dark.png",
     "state": "receive-shielded",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1589,7 +1701,7 @@
     "file": "request-opt-in-dark.png",
     "state": "request-opt-in",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1603,7 +1715,7 @@
     "file": "request-confirm-dark.png",
     "state": "request-confirm",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1617,7 +1729,7 @@
     "file": "contacts-open-dark.png",
     "state": "contacts-open",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1631,7 +1743,7 @@
     "file": "contacts-search-dark.png",
     "state": "contacts-search",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1645,7 +1757,7 @@
     "file": "contacts-selected-dark.png",
     "state": "contacts-selected",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1659,7 +1771,7 @@
     "file": "settings-privacy-dark.png",
     "state": "settings-privacy",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1673,7 +1785,7 @@
     "file": "settings-footer-dark.png",
     "state": "settings-footer",
     "theme": "dark",
-    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "revision": "81b38f87554d92e9702e9f38539cc0935b4ccee7",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,

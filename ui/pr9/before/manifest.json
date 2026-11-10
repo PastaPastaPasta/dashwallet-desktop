@@ -660,5 +660,49 @@
       "width": 1280,
       "height": 820
     }
+  },
+  {
+    "file": "contacts-search-tab-keyboard-light.png",
+    "state": "contacts-search-tab-keyboard",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    }
+  },
+  {
+    "file": "request-preference-loading-light.png",
+    "state": "request-preference-loading",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "contacts-search-tab-keyboard-dark.png",
+    "state": "contacts-search-tab-keyboard",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1000,
+      "height": 620
+    }
+  },
+  {
+    "file": "request-preference-loading-dark.png",
+    "state": "request-preference-loading",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "dashpay-registered",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
   }
 ]
