@@ -176,7 +176,7 @@ export function usePlatformHold(walletId: string, flow: PlatformMoveFlow) {
 }
 
 /** Home's Platform card: shown while the Platform addresses are known (`platform` is their balance in
- * duffs; `null`/`undefined`: not known, no card). Its title opens Transfer from Platform. It also
+ * duffs; `null`/`undefined`: not known, no card). It
  * carries a move's hold, the locks an add left unapplied, and the results not seen yet. */
 export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0" }: { walletId: string; network: NetworkInfo; platform: number | null | undefined; dustCredits?: string }) {
   const backend = useBackend();

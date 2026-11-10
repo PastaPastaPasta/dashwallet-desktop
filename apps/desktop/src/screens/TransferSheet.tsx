@@ -8,7 +8,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs } from "../api/pending";
-import { keys, shieldedDuffs, useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote, usePoolBalances, useShieldedStatus } from "../api/queries";
+import { keys, shieldedDuffs, useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote, usePoolBalances, useShieldedStatus, useUtxos } from "../api/queries";
 import { useUi } from "../app/ui";
 import { DashButton, Icon, VisuallyHidden } from "../components/basics";
 import { Sheet } from "../components/sheet";
@@ -45,7 +45,7 @@ import { GrantSheet } from "./tools/common";
 export function useTransferPools(walletId: string, network: NetworkInfo): Pools {
   const b = useBackend();
   const spendable = useQuery({ queryKey: [...keys.coinsAll(walletId), "transferSpendable"], queryFn: () => b.maxSpendable(walletId, { kind: "any" }, { kind: "perKb", duffsPerKb: 1000 }) });
-  const coins = useQuery({ queryKey: keys.utxos(walletId), queryFn: () => b.utxos(walletId, { includeLocked: true, fullyMixedOnly: false, minConfirmations: null }) });
+  const coins = useUtxos(walletId, true);
   const { status: mixing } = useCoinJoinView(walletId, network);
   const statusRead = useShieldedStatus(walletId);
   const status = statusRead.isError ? null : statusRead.data;
@@ -53,7 +53,7 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
   const hold = usePlatformHold(walletId, transferFor(b, walletId).flows.move);
   const fmt = useAmount(network);
   const core = spendable.data ?? null;
-  const reserved = coins.data?.filter((c) => c.reserved && !c.coinjoinDenominated).reduce((n, c) => n + c.amount, 0) ?? 0;
+  const reserved = coins.data?.filter((c) => c.reserved).reduce((n, c) => n + c.amount, 0) ?? 0;
   return {
     core,
     mixing: (mixing?.balances.coinjoinAccount ?? 0) + (mixing && mixing.state !== "idle" ? reserved : 0),
@@ -195,9 +195,9 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
         : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedSyncing(status));
   const fee = QUOTE_ON_CONTINUE.has(route) ? T.feeOnNextStep : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.
-  const refusedHere = line.state.kind === "refused" && line.state.amount === amount && !line.maxing;
-  const ready = !blocked && amount != null && amountProblem === null && !refusedHere && !line.maxing;
-  const continueWhy = why ?? amountProblem ?? (line.maxing ? T.why.max : refusal ?? (amount == null ? T.why.amount : null));
+  const refusedHere = line.state.kind === "refused" && line.state.amount === amount;
+  const ready = !blocked && amount != null && amountProblem === null && !refusedHere;
+  const continueWhy = why ?? amountProblem ?? refusal ?? (amount == null ? T.why.amount : null);
   return (
     <form
       className="topup-form"
@@ -230,7 +230,10 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
             aria-invalid={amountProblem !== null}
             aria-describedby={why ? `${id}-why ${id}-fee` : `${id}-fee`}
             onFocus={(e) => hidden && e.target.select()}
-            onChange={(e) => flow.setText(hidden ? e.target.value.split(mask).join("") : e.target.value)}
+            onChange={(e) => {
+              if (line.maxing) line.set(null);
+              flow.setText(hidden ? e.target.value.split(mask).join("") : e.target.value);
+            }}
           />
         </label>
         <DashButton
