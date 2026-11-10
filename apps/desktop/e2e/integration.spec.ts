@@ -77,7 +77,7 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
     expect(await platformMoveWhy(page)).toContain("cannot be moved to your Dash wallet right now");
   });
 
-  test("a remainder that cannot be moved is named beside the movable amount, and not counted", async ({ page }) => {
+  test("an unmovable remainder is not counted or prompted on Home", async ({ page }) => {
     await open(page, "platform-partly-dust");
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
     await expect(page.getByTestId("platform-card-amount")).toContainText("0.4");

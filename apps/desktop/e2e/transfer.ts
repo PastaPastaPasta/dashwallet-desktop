@@ -233,10 +233,9 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "funded",
     go: async (page) => {
       await typed(page, "coreToPlatform", "1000");
-      await expect(page.getByTestId("transfer-fee")).toHaveText(FEE_ON_NEXT_STEP);
-      await page.getByTestId("transfer-continue").click();
-      await expect(page.getByTestId("platform-fund-quote-error")).toHaveText(/^Not enough (?:Dash in your wallet|spendable Dash): /);
-      await expect(page.getByTestId("platform-fund-go")).toBeDisabled();
+      await expect(page.getByTestId("transfer-fee")).toHaveText(/^Not enough spendable Dash: /);
+      await expect(page.getByTestId("transfer-continue")).toBeDisabled();
+      expect(await callsOf(page, "platform_fund_quote")).toBe(0);
     },
   },
   { id: "coreToPlatform-max", scenario: "funded", go: async (page) => (await openTransfer(page, "coreToPlatform"), await maxFills(page, "platform_fund_quote", /^\d+\.\d+$/, FEE_ON_NEXT_STEP)) },
