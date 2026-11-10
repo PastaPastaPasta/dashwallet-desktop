@@ -32,8 +32,9 @@ pub(crate) const USERNAME_IN_REQUESTS_KEY: &str = "dashpay.username_in_requests"
 /// One lock per wallet between "Include my username in payment requests"
 /// and the URIs that carry the username (DP3-03b D20): a URI is made under
 /// the read side, from the setting's read through the name's to the URI;
-/// a change of the setting takes the write side. So no URI with the name
-/// is made once turning it off has returned.
+/// a change of the setting takes the write side. After turning it off, the
+/// Receive QR and requests with an unset override omit the name. A request
+/// saved with `Some(true)` keeps its explicit opt-in; `Some(false)` omits it.
 #[derive(Default)]
 pub(crate) struct UsernameGate {
     /// Never pruned: one empty lock per wallet seen, bounded by the wallets.
