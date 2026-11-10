@@ -217,6 +217,36 @@ test("while turning it on is under way, a re-read of the setting or a new reques
   expect(errors).toEqual([]);
 });
 
+for (const theme of THEMES)
+  for (const included of [false, true])
+    test(`a request waits for the ${included ? "on" : "off"} username preference, ${theme}`, async ({ page }) => {
+      const errors = await open(page, "dashpay-registered", theme);
+      await page.evaluate((on) => window.__dwFixture!.world.wallets[0].receive.usernameInRequests = on, included);
+      const release = await hold(page, "username_in_requests");
+      await page.getByTestId("sidebar-receive").click();
+      await expect(page.getByTestId("receive-address")).toBeVisible();
+      await page.getByTestId("request-label").fill("Rent");
+      await expect(page.getByTestId("request-include-username")).toBeDisabled();
+      await expect(page.getByTestId("request-create")).toBeDisabled();
+      await expect(page.getByTestId("request-create")).toHaveAccessibleDescription("Loading username preference.");
+      await page.getByTestId("request-form").evaluate((form) => (form as HTMLFormElement).requestSubmit());
+      expect(await page.evaluate(() => window.__dwFixture!.calls.includes("create_receive_request"))).toBe(false);
+      await release.evaluate((r) => r());
+      await expect(page.getByTestId("request-include-username")).toBeEnabled();
+      if (included) await expect(page.getByTestId("request-include-username")).toBeChecked();
+      else await expect(page.getByTestId("request-include-username")).not.toBeChecked();
+      await page.getByTestId("request-create").click();
+      await expect(page.getByTestId("request-uri")).toContainText("?label=Rent");
+      if (included) {
+        await expect(page.getByTestId("request-uri")).toContainText("user=alice");
+        await expect(page.getByTestId("request-username")).toContainText("@alice");
+      } else {
+        await expect(page.getByTestId("request-uri")).not.toContainText("user=");
+        await expect(page.getByTestId("request-username")).toHaveCount(0);
+      }
+      expect(errors).toEqual([]);
+    });
+
 test("the QR uses no name before the setting has answered (D22)", async ({ page }) => {
   const errors = await open(page, "dashpay-registered", "light");
   const release = await hold(page, "username_in_requests");

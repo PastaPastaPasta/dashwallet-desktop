@@ -236,7 +236,7 @@ function RequestForm({ walletId, network, onCreated, hidden }: { walletId: strin
   // Fiat that is not an amount, or too large, leaves the DASH text empty: never an "any amount"
   // request from a fiat field holding text.
   const fiatLeftEmpty = fiat.active && fiat.value.trim() !== "" && amt === "";
-  const ready = !busy && !fiat.error && !fiatLeftEmpty && checked === amt && (amt === "" || (typeof parsed.data === "number" && parsed.data > 0));
+  const ready = allowed !== undefined && !busy && !fiat.error && !fiatLeftEmpty && checked === amt && (amt === "" || (typeof parsed.data === "number" && parsed.data > 0));
 
   const clear = () => {
     setLabel("");
@@ -308,7 +308,7 @@ function RequestForm({ walletId, network, onCreated, hidden }: { walletId: strin
         <input id={`${id}-message`} data-testid="request-message" value={message} autoComplete="off" onChange={(e) => setMessage(e.target.value)} />
       </div>
       <label className="checkbox-row">
-        <input type="checkbox" data-testid="request-include-username" checked={includeUsername ?? allowed === true} onChange={(e) => setIncludeUsername(e.target.checked)} />
+        <input type="checkbox" data-testid="request-include-username" disabled={allowed === undefined} checked={includeUsername ?? allowed === true} onChange={(e) => setIncludeUsername(e.target.checked)} />
         Include my username in this request
       </label>
       {problem && (
@@ -320,7 +320,7 @@ function RequestForm({ walletId, network, onCreated, hidden }: { walletId: strin
         <DashButton variant="tintedGray" onClick={clear}>
           Clear
         </DashButton>
-        <DashButton type="submit" variant="filledBlue" data-testid="request-create" disabled={!ready} why="Enter an amount first.">
+        <DashButton type="submit" variant="filledBlue" data-testid="request-create" disabled={!ready} why={allowed === undefined ? "Loading username preference." : "Enter an amount first."}>
           Create request
         </DashButton>
       </div>
