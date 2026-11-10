@@ -3,7 +3,7 @@
 /**
  * A stored payment request (QT-081/083, IOS-055).
  */
-export type ReceiveRequest = { id: number,
+export type ReceiveRequest = { includeUsername: boolean | null, id: number,
 /**
  * UNIX seconds.
  */

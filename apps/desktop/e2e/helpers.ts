@@ -101,11 +101,19 @@ export type TransferRoute = "coreToShielded" | "coreToPlatform" | "shieldedToCor
  * routes (picking Platform when it is not the default), a card's balance for its pool's. */
 export async function openTransfer(page: Page, route: TransferRoute) {
   const body = page.getByTestId("transfer-body");
-  if (route === "shieldedToCore" || route === "platformToCore") await page.getByTestId(route === "shieldedToCore" ? "shielded-card-transfer" : "platform-card-transfer").click();
+  if (route === "shieldedToCore") await page.getByTestId("shielded-card-transfer").click();
   else {
     await page.getByTestId("shortcut-transfer").click();
     await body.waitFor();
-    if ((await body.getAttribute("data-route")) !== route) {
+    if ((await body.getAttribute("data-view")) === "steps" && (await body.getAttribute("data-route")) !== route) await page.getByTestId("transfer-choose-route").click();
+    if (route === "platformToCore") {
+      if (!(await page.getByTestId("transfer-picker-platform").isVisible())) await page.getByTestId("transfer-from").click();
+      await page.getByTestId("transfer-picker-platform").click();
+      if ((await body.getAttribute("data-route")) !== route) {
+        await page.getByTestId("transfer-to").click();
+        await page.getByTestId("transfer-picker-core").click();
+      }
+    } else if ((await body.getAttribute("data-route")) !== route) {
       await page.getByTestId("transfer-to").click();
       await page.getByTestId(route === "coreToShielded" ? "transfer-picker-shielded" : "transfer-picker-platform").click();
     }

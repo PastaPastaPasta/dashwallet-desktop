@@ -516,22 +516,22 @@ fn username_in_requests_survives_a_restart() {
     let on = |engine: &Engine, s: &Arc<NetworkSession>, w| {
         engine.block_on(s.username_in_requests(w)).unwrap()
     };
-    assert!(on(&engine, &s, a) && on(&engine, &s, b), "on by default");
+    assert!(!on(&engine, &s, a) && !on(&engine, &s, b), "off by default");
     engine
-        .block_on(s.set_username_in_requests(a, false))
+        .block_on(s.set_username_in_requests(a, true))
         .unwrap();
-    assert!(!on(&engine, &s, a));
-    assert!(on(&engine, &s, b), "one wallet's setting is its own");
+    assert!(on(&engine, &s, a));
+    assert!(!on(&engine, &s, b), "one wallet's setting is its own");
     engine.block_on(engine.shutdown()).unwrap();
     drop(s);
     drop(engine);
 
     let engine = new_engine_with(&root, Arc::new(Recorder::default()), Arc::clone(&store));
     let s = open(&engine);
-    assert!(!on(&engine, &s, a), "off after a restart");
-    assert!(on(&engine, &s, b));
+    assert!(on(&engine, &s, a), "on after a restart");
+    assert!(!on(&engine, &s, b));
 
-    // A removed wallet's setting goes with it: imported again, it is on.
+    // A removed wallet's setting goes with it: imported again, it is off.
     let wipe = engine
         .block_on(
             s.vault_op(move |v| v.authorize(GrantPurpose::Wipe, Some(&a.0), Credential::None)),
@@ -539,7 +539,7 @@ fn username_in_requests_survives_a_restart() {
         .unwrap();
     engine.block_on(s.remove_wallet(a, wipe.id)).unwrap();
     assert_eq!(import(&engine, &s, ABANDON_12, genesis()).unwrap(), a);
-    assert!(on(&engine, &s, a));
+    assert!(!on(&engine, &s, a));
     engine.block_on(engine.shutdown()).unwrap();
 }
 

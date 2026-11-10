@@ -34,7 +34,7 @@ test.describe("item 2: Move waits for Activity's check", () => {
     await expect(page.getByTestId("platform-card")).toBeVisible();
     // Read now, not retried: the card says why, and Transfer from Platform waits with the same reason.
     expect(await page.getByTestId("platform-move-why").textContent()).toContain("Checking for an unfinished move");
-    await page.getByTestId("platform-card-transfer").click();
+    await openTransfer(page, "platformToCore");
     expect(await page.getByTestId("transfer-continue").isDisabled()).toBe(true);
     expect(await page.getByTestId("transfer-unavailable").textContent()).toContain("Checking for an unfinished move");
     await page.getByTestId("transfer-cancel").click();
@@ -47,7 +47,10 @@ test.describe("item 2: Move waits for Activity's check", () => {
     await open(page, "funded", "&fail=platform_activity:none");
     await expect(page.getByTestId("platform-move-why")).toContainText("Could not check for an unfinished move.");
     await expect(page.getByTestId("platform-move-check-again")).toBeVisible();
-    expect(await platformMoveWhy(page)).toContain("Could not check for an unfinished move.");
+    await openTransfer(page, "platformToCore");
+    // The form's new Activity observer can start another read after the first one failed.
+    await expect(page.getByTestId("transfer-unavailable")).toContainText("Could not check for an unfinished move.");
+    await expect(page.getByTestId("transfer-continue")).toBeDisabled();
   });
 
   test("a pending move that turns up while the confirmation is open replaces Confirm with View in Activity", async ({ page }) => {
@@ -72,16 +75,16 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
   test("Platform addresses holding only dust: Home counts nothing, and no Move is offered", async ({ page }) => {
     await open(page, "platform-dust");
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
-    await expect(page.getByTestId("platform-card")).toContainText("cannot be moved to your Dash wallet right now");
+    await expect(page.getByTestId("platform-card")).not.toContainText("cannot be moved to your Dash wallet right now");
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
     expect(await platformMoveWhy(page)).toContain("cannot be moved to your Dash wallet right now");
   });
 
-  test("a remainder that cannot be moved is named beside the movable amount, and not counted", async ({ page }) => {
+  test("an unmovable remainder is not counted or prompted on Home", async ({ page }) => {
     await open(page, "platform-partly-dust");
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
     await expect(page.getByTestId("platform-card-amount")).toContainText("0.4");
-    await expect(page.getByTestId("platform-card-dust")).toContainText("0.000015 tDASH");
+    await expect(page.getByTestId("platform-card-dust")).toHaveCount(0);
     await moveFromPlatform(page);
     await expect(page.getByTestId("platform-move-go")).toBeEnabled();
   });

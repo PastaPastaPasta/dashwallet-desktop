@@ -1,4 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
+import { qrPath } from "../src/components/qr";
+import { qrMatrix } from "../src/fixture/send";
 import { seriousAxeViolations } from "./axe";
 import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 import { PAYEE, WALLET_VIEWS, showWalletView } from "./wallet";
@@ -826,21 +828,48 @@ test.describe("DashPay attribution and username", () => {
     await expect(page.getByText("Bob Builder")).toHaveCount(0);
   });
 
-  test("Receive's link and requests carry the main name as user= (DP3-03)", async ({ page }) => {
+  test("Receive defaults to a plain link, then names the QR and an opted-in request (DP3-03)", async ({ page }) => {
     await page.addInitScript(() => {
       Object.defineProperty(navigator, "clipboard", {
         value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) },
       });
     });
+    const copied = () => page.evaluate(() => (window as unknown as { __copied: string }).__copied);
     const errors = await open(page, "dashpay-registered");
     await page.getByTestId("sidebar-receive").click();
-    const address = (await page.getByTestId("receive-address").textContent())!;
-    await expect(page.getByTestId("receive-copy-uri")).toBeEnabled();
+    const address = page.getByTestId("receive-address");
+    await expect(address).toBeVisible();
+    const plainAddress = await address.textContent();
     await page.getByTestId("receive-copy-uri").click();
-    expect(await page.evaluate(() => (window as unknown as { __copied: string }).__copied)).toBe(`dash:${address}?user=alice`);
+    expect(await copied()).toBe(`dash:${plainAddress}`);
+    await expect(page.getByTestId("receive-qr")).toBeVisible();
+    await expect(page.getByTestId("receive-qr").locator("path")).toHaveAttribute("d", qrPath(qrMatrix(`dash:${plainAddress}`)));
+    await expect(page.getByTestId("request-include-username")).not.toBeChecked();
     await page.getByTestId("request-label").fill("Rent");
     await page.getByTestId("request-create").click();
-    await expect(page.getByTestId("request-uri")).toContainText("?label=Rent&user=alice");
+    await expect(page.getByTestId("request-uri")).toContainText("?label=Rent");
+    await expect(page.getByTestId("request-uri")).not.toContainText("user=");
+    await expect(page.getByTestId("request-username")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    await page.getByTestId("sidebar-settings").click();
+    await page.getByTestId("settings-tabs-general").click();
+    const setting = page.getByTestId("settings-username-in-requests");
+    await expect(setting).not.toBeChecked();
+    await setting.check();
+    await expect(setting).toBeEnabled();
+    await page.getByTestId("sidebar-receive").click();
+    await expect(address).toBeVisible();
+    const namedAddress = await address.textContent();
+    await page.getByTestId("receive-copy-uri").click();
+    expect(await copied()).toBe(`dash:${namedAddress}?user=alice`);
+    await expect(page.getByTestId("receive-qr").locator("path")).toHaveAttribute("d", qrPath(qrMatrix(`dash:${namedAddress}?user=alice`)));
+    const optIn = page.getByTestId("request-include-username");
+    await optIn.uncheck();
+    await optIn.check();
+    await page.getByTestId("request-label").fill("Named rent");
+    await page.getByTestId("request-create").click();
+    await expect(page.getByTestId("request-uri")).toContainText("?label=Named%20rent&user=alice");
     await expect(page.getByTestId("request-username")).toHaveText(/@alice/);
     expect(errors).toEqual([]);
   });

@@ -522,6 +522,9 @@ fn my_user_link_uses_the_main_name() {
 #[test]
 fn receive_carries_the_main_name() {
     let f = Fixture::new();
+    f.engine
+        .block_on(f.s.set_username_in_requests(f.wallet, true))
+        .unwrap();
     let s = &f.s;
     let request = (f.engine)
         .block_on(s.create_receive_request(f.wallet, Some(150_000_000), Some("Rent".into()), None))
@@ -585,6 +588,8 @@ fn the_username_opt_out_gives_plain_core_uris() {
             amount: r.amount.map_or(0, |a| a as i64),
         })
     };
+    assert!(!on(), "off by default");
+    set(true);
     assert!(on());
     let stored = (f.engine)
         .block_on(s.create_receive_request(
@@ -665,6 +670,9 @@ fn turning_the_username_off_waits_for_a_request_read_under_way() {
 
     let f = Fixture::new();
     let (s, w) = (Arc::clone(&f.s), f.wallet);
+    f.engine
+        .block_on(s.set_username_in_requests(w, true))
+        .unwrap();
     let stored = (f.engine)
         .block_on(s.create_receive_request(w, None, Some("Rent".into()), None))
         .unwrap();
@@ -748,8 +756,8 @@ fn a_held_turn_off_never_reaches_a_reimported_wallet() {
         reimport();
     }
     assert!(
-        f.engine.block_on(s.username_in_requests(w)).unwrap(),
-        "the re-imported wallet starts on"
+        !f.engine.block_on(s.username_in_requests(w)).unwrap(),
+        "the re-imported wallet starts off"
     );
     assert!(!passed, "the removal waited for the held write");
 }
@@ -1420,4 +1428,34 @@ fn an_unverified_scan_waits_for_masternode_sync() {
     assert_eq!(waits(Some(&unverified), &enforcing), None);
     // The session's own mode until H-09: nothing waits yet.
     assert!(!f.s.trust.writes_wait());
+}
+
+#[test]
+fn request_username_opt_in_is_per_request() {
+    let f = Fixture::new();
+    let s = &f.s;
+    assert!(!f.engine.block_on(s.username_in_requests(f.wallet)).unwrap());
+    let plain = f
+        .engine
+        .block_on(s.create_receive_request_with_username(f.wallet, None, None, None, Some(false)))
+        .unwrap();
+    let named = f
+        .engine
+        .block_on(s.create_receive_request_with_username(f.wallet, None, None, None, Some(true)))
+        .unwrap();
+    assert_eq!(plain.username, None);
+    assert_eq!(named.username.as_deref(), Some("me1"));
+    assert!(named.uri.ends_with("?user=me1"));
+    assert!(!f.engine.block_on(s.username_in_requests(f.wallet)).unwrap());
+    assert_eq!(
+        f.engine.block_on(s.receive_requests(f.wallet)).unwrap(),
+        vec![named.clone(), plain.clone()]
+    );
+    f.engine
+        .block_on(s.set_username_in_requests(f.wallet, true))
+        .unwrap();
+    assert_eq!(
+        f.engine.block_on(s.receive_requests(f.wallet)).unwrap(),
+        vec![named, plain]
+    );
 }

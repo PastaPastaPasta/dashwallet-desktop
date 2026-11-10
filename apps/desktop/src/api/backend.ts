@@ -290,7 +290,7 @@ export interface Backend {
   // Receive (U-03 D11).
   currentReceiveAddress(walletId: string): Promise<AddressInfo>;
   nextReceiveAddress(walletId: string, label: string | null): Promise<AddressInfo>;
-  createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null): Promise<ReceiveRequest>;
+  createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null, includeUsername: boolean | null): Promise<ReceiveRequest>;
   receiveRequests(walletId: string): Promise<ReceiveRequest[]>;
   deleteReceiveRequest(walletId: string, requestId: number): Promise<null>;
   /** The wallet's DashPay username for the Receive QR (DP3-03); `null` without one. */

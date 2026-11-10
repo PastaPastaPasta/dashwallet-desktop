@@ -25,15 +25,16 @@ use crate::{EngineError, NetworkSession, WalletId};
 const MAX_MONEY: u64 = 21_000_000 * 100_000_000;
 
 /// dw-appdb setting (wallet scope) of "Include my username in payment
-/// requests" (DP3-03b): `"0"` is off, absent (the default) is on; anything
+/// requests" (DP3-03b): `"0"` is off, absent (the default) is off; `"1"` is on; anything
 /// else is corrupt, which the URIs read as off.
 pub(crate) const USERNAME_IN_REQUESTS_KEY: &str = "dashpay.username_in_requests";
 
 /// One lock per wallet between "Include my username in payment requests"
 /// and the URIs that carry the username (DP3-03b D20): a URI is made under
 /// the read side, from the setting's read through the name's to the URI;
-/// a change of the setting takes the write side. So no URI with the name
-/// is made once turning it off has returned.
+/// a change of the setting takes the write side. After turning it off, the
+/// Receive QR and requests with an unset override omit the name. A request
+/// saved with `Some(true)` keeps its explicit opt-in; `Some(false)` omits it.
 #[derive(Default)]
 pub(crate) struct UsernameGate {
     /// Never pruned: one empty lock per wallet seen, bounded by the wallets.
@@ -82,6 +83,7 @@ pub struct AddressFilter {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiveRequest {
+    pub include_username: Option<bool>,
     pub id: u64,
     pub created_at: u64,
     pub address: String,
@@ -377,6 +379,19 @@ impl NetworkSession {
         label: Option<String>,
         message: Option<String>,
     ) -> Result<ReceiveRequest, EngineError> {
+        self.create_receive_request_with_username(wallet, amount, label, message, None)
+            .await
+    }
+
+    /// Stores a per-request choice; `None` follows the wallet setting.
+    pub async fn create_receive_request_with_username(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        amount: Option<u64>,
+        label: Option<String>,
+        message: Option<String>,
+        include_username: Option<bool>,
+    ) -> Result<ReceiveRequest, EngineError> {
         let amount = amount.filter(|a| *a > 0);
         if amount.is_some_and(|a| a > MAX_MONEY) {
             return Err(EngineError::InvalidArgument(
@@ -393,19 +408,22 @@ impl NetworkSession {
             let created_at = unix_now();
             let (address, l, m) = (issued.address.clone(), label.clone(), message.clone());
             let id = tokio::task::spawn_blocking(move || {
-                appdb.add_receive_request(
+                appdb.add_receive_request_with_username(
                     &wallet.to_string(),
                     created_at,
                     &address,
                     amount,
                     l.as_deref(),
                     m.as_deref(),
+                    include_username,
                 )
             })
             .await?
             .map_err(|e| EngineError::Storage(e.to_string()))?;
-            let (_gate, username) = this.read_username(wallet).await;
+            let _gate = this.username_gate.read(wallet).await;
+            let username = this.request_username(wallet, include_username).await;
             Ok(ReceiveRequest {
+                include_username,
                 id: u64::try_from(id)
                     .map_err(|_| EngineError::Internal(format!("request id {id}")))?,
                 created_at,
@@ -440,11 +458,23 @@ impl NetworkSession {
                 tokio::task::spawn_blocking(move || appdb.receive_requests(&wallet.to_string()))
                     .await?
                     .map_err(|e| EngineError::Storage(e.to_string()))?;
-            let (_gate, username) = this.read_username(wallet).await;
+            let _gate = this.username_gate.read(wallet).await;
+            let default_username = this.username_of(wallet).await;
+            let explicit_username = if rows.iter().any(|r| r.include_username == Some(true)) {
+                this.request_username(wallet, Some(true)).await
+            } else {
+                None
+            };
             Ok(rows
                 .into_iter()
                 .filter_map(|r| {
+                    let username = match r.include_username {
+                        Some(true) => explicit_username.clone(),
+                        Some(false) => None,
+                        None => default_username.clone(),
+                    };
                     Some(ReceiveRequest {
+                        include_username: r.include_username,
                         id: u64::try_from(r.id).ok()?,
                         created_at: r.created_at,
                         uri: request_uri(
@@ -458,7 +488,7 @@ impl NetworkSession {
                         amount: r.amount,
                         label: r.label,
                         message: r.message,
-                        username: username.clone(),
+                        username,
                     })
                 })
                 .collect())
@@ -508,11 +538,27 @@ impl NetworkSession {
         (tokio::task::spawn_blocking(move || this.main_username(wallet)).await).ok()?
     }
 
+    async fn request_username(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        included: Option<bool>,
+    ) -> Option<String> {
+        match included {
+            None => self.username_of(wallet).await,
+            Some(false) => None,
+            Some(true) => {
+                let this = Arc::clone(self);
+                tokio::task::spawn_blocking(move || this.main_username(wallet))
+                    .await
+                    .ok()?
+            }
+        }
+    }
+
     /// "Include my username in payment requests" (DP3-03b, DP3-02 D21):
-    /// while on (the default), [`Self::receive_username`] and the requests'
-    /// `username` and `uri` carry the main name; off, they are plain Core
-    /// ones. Stored in this network's app.sqlite under the wallet, so a
-    /// stored request follows it when it is read.
+    /// The default for [`Self::receive_username`] and requests without an explicit
+    /// choice. Stored per wallet in this network's app.sqlite; per-request
+    /// choices override it when a stored request is read.
     pub async fn username_in_requests(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -527,7 +573,7 @@ impl NetworkSession {
     }
 
     /// Turns [`Self::username_in_requests`] on or off for one wallet. Waits
-    /// for the URIs being made for it (D20): once it returns, every URI follows.
+    /// for URIs being made with the wallet default (D20).
     pub async fn set_username_in_requests(
         self: &Arc<Self>,
         wallet: WalletId,
@@ -537,13 +583,17 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             // A removal waits for the write, so it never lands on the wallet
-            // a re-import brings back, which starts on (D21).
+            // a re-import brings back, which starts off (D21).
             let _lifecycle = this.wallet_lifecycle.hold().await;
             this.require_wallet(&wallet)?;
             let _gate = this.username_gate.write(wallet).await;
             let scope = wallet.to_string();
             this.appdb_op(move |db| {
-                db.set_setting(&scope, USERNAME_IN_REQUESTS_KEY, (!on).then_some("0"))
+                db.set_setting(
+                    &scope,
+                    USERNAME_IN_REQUESTS_KEY,
+                    Some(if on { "1" } else { "0" }),
+                )
             })
             .await
         })
@@ -554,8 +604,9 @@ impl NetworkSession {
         let scope = wallet.to_string();
         self.appdb_op(
             move |db| match db.setting(&scope, USERNAME_IN_REQUESTS_KEY)? {
-                None => Ok(true),
+                None => Ok(false),
                 Some(v) if v == "0" => Ok(false),
+                Some(v) if v == "1" => Ok(true),
                 Some(v) => Err(AppDbError::Corrupt(format!(
                     "{USERNAME_IN_REQUESTS_KEY} {v:?}"
                 ))),

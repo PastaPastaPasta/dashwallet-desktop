@@ -348,7 +348,7 @@ export function useReceiveUsername(walletId: string) {
   return useQuery({ queryKey: keys.receiveUsername(walletId), queryFn: () => b.receiveUsername(walletId) });
 }
 
-/** "Include my username in payment requests" for the wallet (DP3-03b); on by default. Off while a change of it is under way (D22). */
+/** The wallet's username default (DP3-03b): absent/"0" is off, "1" is on. Explicit per-request choices override it. Off while a change is under way (D22). */
 export function useUsernameInRequests(walletId: string) {
   const b = useBackend();
   return useQuery({
@@ -358,7 +358,7 @@ export function useUsernameInRequests(walletId: string) {
 }
 
 /**
- * Whether the wallet's request URIs may show its username now (DP3-03b D22): only once the
+ * Whether the Receive QR and requests without an override may show the username now (DP3-03b D22): only once the
  * setting has read on. A failed read is off; `undefined` until it first answers.
  */
 export function useUsernameAllowed(walletId: string): boolean | undefined {

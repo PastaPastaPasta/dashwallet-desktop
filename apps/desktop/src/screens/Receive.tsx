@@ -8,7 +8,7 @@ import { errorMessage, hasCode } from "../api/backend";
 import type { AddressInfo } from "../api/generated/AddressInfo";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ReceiveRequest } from "../api/generated/ReceiveRequest";
-import { keys, useBackend, usePlatformAddresses, usePlatformReceiveAddress, useQrMatrix, useReceiveAddress, useReceiveRequests, useReceiveUsername, useUsernameAllowed } from "../api/queries";
+import { keys, useBackend, usePlatformAddresses, usePlatformReceiveAddress, useQrMatrix, useShieldedStatus, useReceiveAddress, useReceiveRequests, useReceiveUsername, useUsernameAllowed } from "../api/queries";
 import { withoutUsername } from "../api/username";
 import { useDebounced } from "../app/useDebounced";
 import { AmountText, DashButton } from "../components/basics";
@@ -25,8 +25,9 @@ import { useHeldAddress } from "../payments/hold";
 import { useLookupPending, useReceived } from "../payments/received";
 import { receivedText } from "./notifications/Received";
 import { shortAddress } from "../format/tx";
+import { shieldedSyncing, SHIELDED_SYNCING_TEXT } from "../shielded/syncing";
 import { Page } from "./Routes";
-import { ShieldedReceiveCard } from "./ShieldedSheet";
+import { useShieldedReceiveContent } from "./ShieldedSheet";
 
 const QR_SIDE = 200;
 
@@ -54,7 +55,7 @@ function qrUsername(included: boolean | undefined, username: UseQueryResult<stri
   return username.data ?? last;
 }
 
-function AddressCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+function useDashReceiveContent(walletId: string, network: NetworkInfo) {
   const b = useBackend();
   const current = useReceiveAddress(walletId);
   // "New address" issues one (dash-qt getNewDestination); it is shown until the page closes.
@@ -95,8 +96,8 @@ function AddressCard({ walletId, network }: { walletId: string; network: Network
       setProblem(hasCode(e, "gap_limit") ? "Every address inside the gap limit is in use already. Wait for a payment to one of them." : errorMessage(e));
     }
   };
-  return (
-    <section className="receive-card card-l1" aria-labelledby="receive-address-title" data-testid="receive-card">
+  return {
+    before: <>
       <h2 id="receive-address-title" className="card-title">
         Your Dash address
       </h2>
@@ -116,6 +117,12 @@ function AddressCard({ walletId, network }: { walletId: string; network: Network
           <div className={paid.length > 0 ? "receive-qr is-used" : "receive-qr"}>
             <Qr text={uri.data} label={`QR code of ${shown.address}`} testId="receive-qr" />
           </div>
+        </>
+      )}
+    </>,
+    after: <>
+      {shown && (!current.isError || fresh) && (
+        <>
           <p className="address-full" data-testid="receive-address">
             {shown.address}
           </p>
@@ -137,8 +144,8 @@ function AddressCard({ walletId, network }: { walletId: string; network: Network
           {problem}
         </p>
       )}
-    </section>
-  );
+    </>,
+  };
 }
 
 export const PLATFORM_RECEIVE_COPY = {
@@ -150,18 +157,13 @@ export const PLATFORM_RECEIVE_COPY = {
   failed: "Could not load the Platform address:",
 } as const;
 
-/** Receive on Platform (0.2 X1b): collapsed, so a Core payer is not shown a second address. Open, it
- * shows the payment account's lowest unused address as a bare QR (no `dash:` URI carries one) and
- * reads the Platform addresses once, so a payment the user waits for shows soon. Hidden while the
- * build has no Platform addresses. */
-function PlatformReceiveCard({ walletId }: { walletId: string }) {
+/** The selected Platform address uses a bare QR; Dash payment URIs cannot carry it. */
+function usePlatformReceiveContent(walletId: string, enabled: boolean) {
   const b = useBackend();
   const client = useQueryClient();
-  const [open, setOpen] = useState(false);
-  const balance = usePlatformAddresses(walletId);
-  const address = usePlatformReceiveAddress(walletId, open);
+  const address = usePlatformReceiveAddress(walletId, enabled);
   useEffect(() => {
-    if (!open) return;
+    if (!enabled) return;
     let live = true;
     b.platformAddressesSync(walletId)
       .then(() => live && void client.invalidateQueries({ queryKey: ["dashpay"] }))
@@ -169,50 +171,52 @@ function PlatformReceiveCard({ walletId }: { walletId: string }) {
     return () => {
       live = false;
     };
-  }, [b, client, open, walletId]);
-  if (balance.data === null) return null;
+  }, [b, client, walletId, enabled]);
   const C = PLATFORM_RECEIVE_COPY;
-  return (
-    <details className="disclosure card-l1 platform-receive" data-testid="platform-receive" onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary data-testid="platform-receive-toggle">{C.title}</summary>
-      <div className="platform-receive-body">
-        <p className="sheet-text">{C.text}</p>
-        <p className="field-hint" data-testid="platform-receive-warning">
-          {C.warning}
+  return {
+    before: <>
+      <h2 id="receive-address-title" className="card-title">Your Platform address</h2>
+      {address.isError ? (
+        <p className="form-problem" role="alert" data-testid="platform-receive-error">
+          {C.failed} {errorMessage(address.error)}
         </p>
-        {address.isError ? (
-          <p className="form-problem" role="alert" data-testid="platform-receive-error">
-            {C.failed} {errorMessage(address.error)}
+      ) : !address.data ? (
+        <LoadingState testId="platform-receive-loading" text={C.loading} />
+      ) : (
+        <>
+          <div className="receive-qr">
+            <Qr text={address.data.address} label={`QR code of ${address.data.address}`} testId="platform-receive-qr" />
+          </div>
+        </>
+      )}
+    </>,
+    after: <>
+      {!address.isError && address.data && (
+        <>
+          <p className="address-full" data-testid="platform-receive-address">
+            {address.data.address}
           </p>
-        ) : !address.data ? (
-          open && <LoadingState testId="platform-receive-loading" text={C.loading} />
-        ) : (
-          <>
-            <div className="receive-qr">
-              <Qr text={address.data.address} label={`QR code of ${address.data.address}`} testId="platform-receive-qr" />
-            </div>
-            <p className="address-full" data-testid="platform-receive-address">
-              {address.data.address}
-            </p>
-            <div className="card-actions">
-              <CopyDashButton variant="tintedBlue" data-testid="platform-receive-copy" text={address.data.address}>
-                {C.copy}
-              </CopyDashButton>
-            </div>
-          </>
-        )}
-      </div>
-    </details>
-  );
+          <div className="card-actions">
+            <CopyDashButton variant="tintedBlue" data-testid="platform-receive-copy" text={address.data.address}>
+              {C.copy}
+            </CopyDashButton>
+          </div>
+        </>
+      )}
+      <p className="field-hint" data-testid="platform-receive-warning">{C.warning}</p>
+    </>,
+  };
 }
 
-function RequestForm({ walletId, network, onCreated }: { walletId: string; network: NetworkInfo; onCreated: (r: ReceiveRequest) => void }) {
+function RequestForm({ walletId, network, onCreated, hidden }: { walletId: string; network: NetworkInfo; onCreated: (r: ReceiveRequest) => void; hidden: boolean }) {
   const b = useBackend();
   const client = useQueryClient();
   const id = useId();
   const [label, setLabel] = useState("");
   const [amountText, setAmountText] = useState("");
   const [message, setMessage] = useState("");
+  const allowed = useUsernameAllowed(walletId);
+  const [includeUsername, setIncludeUsername] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const amt = amountText.trim();
@@ -232,12 +236,13 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
   // Fiat that is not an amount, or too large, leaves the DASH text empty: never an "any amount"
   // request from a fiat field holding text.
   const fiatLeftEmpty = fiat.active && fiat.value.trim() !== "" && amt === "";
-  const ready = !busy && !fiat.error && !fiatLeftEmpty && checked === amt && (amt === "" || (typeof parsed.data === "number" && parsed.data > 0));
+  const ready = allowed !== undefined && !busy && !fiat.error && !fiatLeftEmpty && checked === amt && (amt === "" || (typeof parsed.data === "number" && parsed.data > 0));
 
   const clear = () => {
     setLabel("");
     setAmountText("");
     setMessage("");
+    setIncludeUsername(null);
     setProblem(null);
   };
   const create = async () => {
@@ -246,7 +251,7 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
     setProblem(null);
     try {
       const amount = amt === "" ? null : parsed.data || null;
-      const r = await b.createReceiveRequest(walletId, amount, label.trim() || null, message.trim() || null);
+      const r = await b.createReceiveRequest(walletId, amount, label.trim() || null, message.trim() || null, includeUsername ?? allowed === true);
       void client.invalidateQueries({ queryKey: keys.receiveAll(walletId) });
       clear();
       onCreated(r);
@@ -258,6 +263,7 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
   };
   return (
     <form
+      hidden={hidden}
       className="receive-card card-l1 request-form"
       aria-labelledby={`${id}-title`}
       data-testid="request-form"
@@ -301,6 +307,10 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
         <label htmlFor={`${id}-message`}>Message</label>
         <input id={`${id}-message`} data-testid="request-message" value={message} autoComplete="off" onChange={(e) => setMessage(e.target.value)} />
       </div>
+      <label className="checkbox-row">
+        <input type="checkbox" data-testid="request-include-username" disabled={allowed === undefined} checked={includeUsername ?? allowed === true} onChange={(e) => setIncludeUsername(e.target.checked)} />
+        Include my username in this request
+      </label>
       {problem && (
         <p className="form-problem" role="alert">
           {problem}
@@ -310,7 +320,7 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
         <DashButton variant="tintedGray" onClick={clear}>
           Clear
         </DashButton>
-        <DashButton type="submit" variant="filledBlue" data-testid="request-create" disabled={!ready} why="Enter an amount first.">
+        <DashButton type="submit" variant="filledBlue" data-testid="request-create" disabled={!ready} why={allowed === undefined ? "Loading username preference." : "Enter an amount first."}>
           Create request
         </DashButton>
       </div>
@@ -320,9 +330,9 @@ function RequestForm({ walletId, network, onCreated }: { walletId: string; netwo
 
 function RequestSheet({ walletId, request: read, network, onClose }: { walletId: string; request: ReceiveRequest; network: NetworkInfo; onClose: () => void }) {
   const shown = useDisplay(network);
-  // A stored or new request shows and copies its name only while the setting reads on: a change
-  // under way, a failed read or a request read before the change all show none (DP3-03b D22).
-  const request = useUsernameAllowed(walletId) === true ? read : withoutUsername(read);
+  // A request's explicit choice overrides the wallet default; legacy requests follow it.
+  const allowed = useUsernameAllowed(walletId);
+  const request = (read.includeUsername ?? allowed) === true ? read : withoutUsername(read);
   const title = `Request payment to ${request.label || shortAddress(request.address)}`;
   return (
     <Sheet title={title} width="medium" testId="request-sheet" onClose={onClose}>
@@ -439,14 +449,47 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
 
 export function ReceivePage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const [shown, setShown] = useState<ReceiveRequest | null>(null);
+  const [pool, setPool] = useState<"dash" | "platform" | "shielded">("dash");
+  const platform = usePlatformAddresses(walletId);
+  const shielded = useShieldedStatus(walletId);
+  const selector = (
+    <div className="segmented receive-selector" role="group" aria-label="Receive in">
+      {(["dash", "platform", "shielded"] as const).map((p) => (
+        <button
+          type="button"
+          key={p}
+          className="segment"
+          aria-pressed={pool === p}
+          data-testid={p === "dash" ? "receive-select-dash" : p === "platform" ? "platform-receive-toggle" : "shielded-receive-open"}
+          disabled={p === "platform" ? !platform.data : p === "shielded" ? !shielded.data?.active : false}
+          onClick={() => setPool(p)}
+        >
+          {p === "dash" ? "Dash" : p === "platform" ? "Platform" : "Shielded"}
+        </button>
+      ))}
+    </div>
+  );
+  const dashContent = useDashReceiveContent(walletId, network);
+  const platformContent = usePlatformReceiveContent(walletId, pool === "platform");
+  const syncing = shieldedSyncing(shielded.data);
+  const shieldedContent = useShieldedReceiveContent(walletId, network, pool === "shielded" && !syncing);
+  const content = pool === "dash" ? dashContent : pool === "platform" ? platformContent : {
+    before: <>
+      <h2 id="receive-address-title" className="card-title">Your Shielded address</h2>
+      {syncing ? <p className="field-hint" data-testid="shielded-receive-why">{SHIELDED_SYNCING_TEXT}</p> : <>{shieldedContent.text}{shieldedContent.before}</>}
+    </>,
+    after: syncing ? null : shieldedContent.after,
+  };
   return (
     <Page route="receive">
       <div className="receive-columns">
-        <AddressCard walletId={walletId} network={network} />
-        <RequestForm walletId={walletId} network={network} onCreated={setShown} />
+        <section className="receive-card card-l1" aria-labelledby="receive-address-title" data-testid={pool === "dash" ? "receive-card" : pool === "platform" ? "platform-receive" : "shielded-receive-section"}>
+          {content.before}
+          {selector}
+          {content.after}
+        </section>
+        <RequestForm walletId={walletId} network={network} onCreated={setShown} hidden={pool !== "dash"} />
       </div>
-      <PlatformReceiveCard walletId={walletId} />
-      <ShieldedReceiveCard walletId={walletId} network={network} />
       <RequestList walletId={walletId} network={network} onShow={setShown} />
       {shown && <RequestSheet walletId={walletId} request={shown} network={network} onClose={() => setShown(null)} />}
     </Page>
