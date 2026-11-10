@@ -169,7 +169,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
 
   // A new candidate takes focus (D15).
   const heading = useRef<HTMLHeadingElement>(null);
-  useEffect(() => heading.current?.focus(), [c]);
+  useEffect(() => heading.current?.focus({ preventScroll: true }), [c]);
   // Send leaves once the re-read says the request went: focus goes to the line that says so (D5).
   const status = useRef<HTMLDivElement>(null);
   const toast = useActionToast(ctx.walletId);
