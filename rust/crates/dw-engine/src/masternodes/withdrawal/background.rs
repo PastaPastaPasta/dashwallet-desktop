@@ -84,10 +84,13 @@ impl Background {
             Token(Arc::clone(self))
         };
         // Spawned outside the lock: a runtime shutting down drops the
-        // future, and with it the token, at once.
+        // future, and with it the token, at once. The token is the pair's
+        // last field and the last local, so the task's state drops before
+        // it whether the task ran, waits, panicked or never ran.
+        let tracked = (task, token);
         let handle = rt
             .spawn(async move {
-                let _token = token;
+                let (task, _token) = tracked;
                 task.await
             })
             .abort_handle();
@@ -195,6 +198,77 @@ mod tests {
             .await
             .expect("close returns after a panicked task");
         assert!(weak.upgrade().is_none());
+    }
+
+    /// Records, as it drops, how many tokens are still live.
+    struct LiveAtDrop(Arc<Background>, Arc<Mutex<Option<usize>>>);
+
+    impl Drop for LiveAtDrop {
+        fn drop(&mut self) {
+            let live = self.0.state().live;
+            *self.1.lock().unwrap() = Some(live);
+        }
+    }
+
+    fn live_at_drop(bg: &Arc<Background>) -> (LiveAtDrop, Arc<Mutex<Option<usize>>>) {
+        let seen = Arc::new(Mutex::new(None));
+        (LiveAtDrop(Arc::clone(bg), Arc::clone(&seen)), seen)
+    }
+
+    /// A task close aborts before its first poll drops its state before its
+    /// token, so close never returns while that state is alive (on another
+    /// worker, under load, the token went first).
+    #[tokio::test]
+    async fn an_unpolled_task_drops_its_state_before_its_token() {
+        let bg = Arc::new(Background::default());
+        let (probe, seen) = live_at_drop(&bg);
+        assert!(bg.spawn(&Handle::current(), Job::Recheck, async move {
+            let _probe = probe;
+            std::future::pending::<()>().await;
+        }));
+        bg.close().await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(1),
+            "the token outlives the state"
+        );
+    }
+
+    /// The same for a task close aborts while it waits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_started_task_drops_its_state_before_its_token() {
+        let bg = Arc::new(Background::default());
+        let (probe, seen) = live_at_drop(&bg);
+        let (started_tx, started) = tokio::sync::oneshot::channel();
+        assert!(bg.spawn(&Handle::current(), Job::Recheck, async move {
+            let _probe = probe;
+            let _ = started_tx.send(());
+            std::future::pending::<()>().await;
+        }));
+        started.await.unwrap();
+        bg.close().await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(1),
+            "the token outlives the state"
+        );
+    }
+
+    /// And for one that panics.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_panicking_task_drops_its_state_before_its_token() {
+        let bg = Arc::new(Background::default());
+        let (probe, seen) = live_at_drop(&bg);
+        assert!(bg.spawn(&Handle::current(), Job::Recheck, async move {
+            let _probe = probe;
+            panic!("a tracked task panics");
+        }));
+        bg.close().await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            Some(1),
+            "the token outlives the state"
+        );
     }
 
     #[tokio::test]
