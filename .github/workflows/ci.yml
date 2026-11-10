@@ -134,7 +134,7 @@ jobs:
         with:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace --no-run --locked
       - run: cargo test --workspace --locked --no-fail-fast
       # Without the feature, dw-app's tests prove the self-test's options, commands and grant
@@ -468,7 +468,7 @@ jobs:
         with:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cargo test --workspace
         working-directory: rust
         run: cargo test --workspace --locked --no-fail-fast
@@ -549,7 +549,7 @@ jobs:
         with:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cargo build --workspace
         working-directory: rust
         run: cargo build --workspace --locked
