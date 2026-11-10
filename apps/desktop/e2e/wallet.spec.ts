@@ -826,24 +826,40 @@ test.describe("DashPay attribution and username", () => {
     await expect(page.getByText("Bob Builder")).toHaveCount(0);
   });
 
-  test("Receive's link and requests carry the main name as user= (DP3-03)", async ({ page }) => {
-    await page.addInitScript(() => {
-      Object.defineProperty(navigator, "clipboard", {
-        value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) },
+  for (const included of [false, true])
+    test(`Receive links and requests ${included ? "include" : "omit"} the username with the wallet default (DP3-03)`, async ({ page }) => {
+      await page.addInitScript(() => {
+        Object.defineProperty(navigator, "clipboard", {
+          value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) },
+        });
       });
+      const errors = await open(page, "dashpay-registered");
+      await page.getByTestId("sidebar-settings").click();
+      await page.getByTestId("settings-tabs-general").click();
+      const setting = page.getByTestId("settings-username-in-requests");
+      await expect(setting).not.toBeChecked();
+      if (included) {
+        await setting.check();
+        await expect(setting).toBeEnabled();
+      }
+      await page.getByTestId("sidebar-receive").click();
+      const address = (await page.getByTestId("receive-address").textContent())!;
+      await expect(page.getByTestId("receive-copy-uri")).toBeEnabled();
+      await page.getByTestId("receive-copy-uri").click();
+      expect(await page.evaluate(() => (window as unknown as { __copied: string }).__copied)).toBe(`dash:${address}${included ? "?user=alice" : ""}`);
+      await page.getByTestId("request-label").fill("Rent");
+      await page.getByTestId("request-create").click();
+      const uri = page.getByTestId("request-uri");
+      await expect(uri).toContainText("?label=Rent");
+      if (included) {
+        await expect(uri).toContainText("&user=alice");
+        await expect(page.getByTestId("request-username")).toHaveText(/@alice/);
+      } else {
+        await expect(uri).not.toContainText("user=");
+        await expect(page.getByTestId("request-username")).toHaveCount(0);
+      }
+      expect(errors).toEqual([]);
     });
-    const errors = await open(page, "dashpay-registered");
-    await page.getByTestId("sidebar-receive").click();
-    const address = (await page.getByTestId("receive-address").textContent())!;
-    await expect(page.getByTestId("receive-copy-uri")).toBeEnabled();
-    await page.getByTestId("receive-copy-uri").click();
-    expect(await page.evaluate(() => (window as unknown as { __copied: string }).__copied)).toBe(`dash:${address}?user=alice`);
-    await page.getByTestId("request-label").fill("Rent");
-    await page.getByTestId("request-create").click();
-    await expect(page.getByTestId("request-uri")).toContainText("?label=Rent&user=alice");
-    await expect(page.getByTestId("request-username")).toHaveText(/@alice/);
-    expect(errors).toEqual([]);
-  });
 });
 
 test.describe("axe", () => {
