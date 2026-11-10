@@ -2065,7 +2065,12 @@ fn a_take_for_the_network_a_switch_left_leaves_the_links_queued() {
     let demo = launched_on_mainnet();
     demo.ok("open_network", json!({}));
     demo.ok("switch_network", json!({ "network": "testnet" }));
-    assert!(demo.state().shell.inbox.deliver("dashwallet://scanqr".into()));
+    assert!(
+        demo.state()
+            .shell
+            .inbox
+            .deliver("dashwallet://scanqr".into())
+    );
     assert_eq!(
         demo.ok("take_links", json!({ "network": "mainnet" })),
         json!([])

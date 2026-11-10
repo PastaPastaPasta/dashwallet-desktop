@@ -160,7 +160,10 @@ impl Inbox {
         session: Option<Arc<NetworkSession>>,
         network: &str,
     ) -> Result<Vec<LinkRoute>, AppError> {
-        if session.as_ref().is_some_and(|s| s.network().dir_name() != network) {
+        if session
+            .as_ref()
+            .is_some_and(|s| s.network().dir_name() != network)
+        {
             crate::dto::parse_network(network)?;
             return Ok(Vec::new());
         }
