@@ -296,6 +296,10 @@ function useOptionalModel<M extends ContactActions>(model: M | null): M | null {
 /** Search (D3): every hit of the prefix, with how it relates to the identity. */
 function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity: string; query: string; onPick: (hit: HitFields) => void }) {
   const [text, setText] = useState(query);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (query !== "") input.current?.focus({ preventScroll: true });
+  }, [query]);
   // Another intent's search text (Show more on another search).
   useEffect(() => setText(query), [query]);
   const typed = networkPrefix(text);
@@ -361,7 +365,7 @@ function SearchTab({ ctx, identity, query, onPick }: { ctx: AddContext; identity
     <div className="add-contact-search">
       <label className="search-field" data-testid="add-contact-search">
         <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
-        <input type="search" value={text} placeholder="Search username" aria-label="Search username" onChange={(e) => setText(e.target.value)} autoFocus={query !== ""} />
+        <input ref={input} type="search" value={text} placeholder="Search username" aria-label="Search username" onChange={(e) => setText(e.target.value)} />
       </label>
       {results()}
     </div>
