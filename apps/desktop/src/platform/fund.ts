@@ -151,7 +151,7 @@ export function fundErrorText(e: unknown, credits: (c: string) => string, duffs:
         ? `Not enough Dash in your wallet: ${duffs(d.needed)} needed with the fee, ${duffs(d.available)} available.`
         : "Not enough Dash in your wallet.";
     case "credits.coins_locked":
-      return "Your Dash is reserved right now (for example by CoinJoin). Try again shortly.";
+      return "Your Dash is reserved right now. Pause mixing or wait for pending payments to finish, then try again.";
     case "credits.too_many_inputs":
       return "That takes too many separate coins at once. Consolidate your coins first, then try again.";
     case "credits.fund_pending":

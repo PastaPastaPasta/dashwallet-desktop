@@ -146,7 +146,7 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "funded",
     go: async (page) => {
       await typed(page, "coreToShielded", "1000");
-      await expect(page.getByTestId("transfer-fee")).toHaveText(/^Not enough Dash in your wallet: /);
+      await expect(page.getByTestId("transfer-fee")).toHaveText(/^Not enough (?:Dash in your wallet|spendable Dash): /);
       await expect(page.getByTestId("transfer-continue")).toBeDisabled();
     },
   },
@@ -235,7 +235,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await typed(page, "coreToPlatform", "1000");
       await expect(page.getByTestId("transfer-fee")).toHaveText(FEE_ON_NEXT_STEP);
       await page.getByTestId("transfer-continue").click();
-      await expect(page.getByTestId("platform-fund-quote-error")).toHaveText(/^Not enough Dash in your wallet: /);
+      await expect(page.getByTestId("platform-fund-quote-error")).toHaveText(/^Not enough (?:Dash in your wallet|spendable Dash): /);
       await expect(page.getByTestId("platform-fund-go")).toBeDisabled();
     },
   },
@@ -376,7 +376,7 @@ export const TRANSFER_STATES: TransferState[] = [
       // No address shows here: Confirm names it.
       await expect(page.getByTestId("transfer-body")).toContainText("Dash Platform pays it to an address in your Dash wallet.");
       await expect(page.getByTestId("transfer-body")).not.toContainText("address below");
-      await expect(page.getByTestId("transfer-whole")).toHaveText("Platform moves its whole balance.");
+      await expect(page.getByTestId("transfer-whole")).toHaveText("This moves the spendable balance on your Platform addresses.");
       await expect(page.getByTestId("transfer-amount")).toHaveAttribute("readonly", "");
       await expect(page.getByTestId("transfer-max")).toHaveAttribute("aria-pressed", "true");
       await expect(page.getByTestId("transfer-max")).toBeDisabled();
@@ -410,7 +410,7 @@ export const TRANSFER_STATES: TransferState[] = [
     go: async (page) => {
       await openTransfer(page, "platformToCore");
       // Max is the whole balance, fixed on; the amount is the quote's.
-      await expect(page.getByTestId("transfer-amount")).toHaveValue(/^0\.4/);
+      await expect(page.getByTestId("transfer-amount")).toHaveValue("0.39998000");
       await expect(page.getByTestId("transfer-max")).toHaveAttribute("aria-pressed", "true");
     },
   },
@@ -536,7 +536,8 @@ export const TRANSFER_STATES: TransferState[] = [
     id: "entry-platform-card",
     scenario: "funded",
     go: async (page) => {
-      await cardHead(page, "platform-card", "Platform addresses");
+      await expect(page.getByTestId("platform-card-transfer")).toHaveCount(0);
+      await expect(page.getByTestId("platform-card").getByRole("heading")).toHaveText("Platform addresses");
     },
   },
   {
@@ -545,9 +546,9 @@ export const TRANSFER_STATES: TransferState[] = [
     go: async (page) => {
       await page.getByTestId("sidebar-receive").click();
       const open = page.getByTestId("shielded-receive-open");
-      await expect(open).toHaveAttribute("aria-expanded", "false");
+      await expect(open).toHaveAttribute("aria-pressed", "false");
       await open.click();
-      await expect(open).toHaveAttribute("aria-expanded", "true");
+      await expect(open).toHaveAttribute("aria-pressed", "true");
       await expect(page.getByTestId("shielded-receive-address")).toContainText("tdash1zq0k8y");
     },
   },

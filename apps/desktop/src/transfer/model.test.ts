@@ -226,6 +226,32 @@ describe("Max", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps the previous quote visible while Max is outstanding", async () => {
+    const next = deferred<{ duffs: number }>();
+    const { timers, tick } = manualTimers();
+    const fetch = vi.fn().mockResolvedValueOnce({ duffs: 5 }).mockReturnValueOnce(next.promise);
+    const line = new QuoteLine(fetch, timers);
+    line.set(5);
+    tick(400);
+    await flush();
+    const previous = line.state;
+    const max = line.max(100, () => 100);
+    expect(line.maxing).toBe(true);
+    expect(line.state).toEqual(previous);
+    next.resolve({ duffs: 100 });
+    expect(await max).toBe(100);
+  });
+
+  it("keeps Platform Max's quote when the filled amount is parsed", async () => {
+    const { t, quotes } = model();
+    quotes.platformFundQuote.mockResolvedValue({ credits: "999000", duffs: 1000 });
+    await t.max("coreToPlatform", 1000, () => undefined);
+    t.typed("coreToPlatform", 1000, 1000);
+    expect(t.lines.coreToPlatform.state.kind).toBe("quoted");
+    t.typed("coreToPlatform", 900, 1000);
+    expect(t.lines.coreToPlatform.state.kind).toBe("idle");
+  });
+
   it("shows the re-quote's refusal (too many coins) and fills nothing, with no third quote", async () => {
     const { timers } = manualTimers();
     const fetch = vi.fn(async (_wallet: string, d: number): Promise<never> => {

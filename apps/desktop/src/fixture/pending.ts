@@ -366,7 +366,7 @@ function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): Pla
   const blocking = p.funds.find((f) => !NOT_BLOCKING.includes(f.state));
   if (blocking) throw fail("credits.fund_pending", "an earlier add is pending", { kind: "txid", txid: blocking.txid });
   const totalDuffs = duffs + FUND_LOCK_FEE_DUFFS;
-  const available = w.summary.balances?.confirmed ?? 0;
+  const available = w.coins.filter((c) => c.spendable && !c.reserved && !c.userLocked && !c.coinjoinDenominated && c.coinjoinRounds === null).reduce((n, c) => n + c.amount, 0);
   if (totalDuffs > available) throw fail("credits.funding_insufficient", "insufficient funds", { kind: "duffs", needed: totalDuffs, available });
   const inputs = lockInputs(w, totalDuffs);
   if (inputs > SHIELD_LOCK_INPUTS) throw fail("credits.too_many_inputs", "too many inputs", { kind: "number", value: inputs });

@@ -8,14 +8,14 @@ import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs } from "../api/pending";
-import { shieldedDuffs, useBackend, useBalance, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote, usePoolBalances, useShieldedStatus } from "../api/queries";
+import { keys, shieldedDuffs, useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote, usePoolBalances, useShieldedStatus } from "../api/queries";
 import { useUi } from "../app/ui";
 import { DashButton, Icon, VisuallyHidden } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { useModel } from "../onboarding/model";
 import { FUND_COPY, fundErrorText } from "../platform/fund";
-import { MOVE_COPY, moveErrorText, type MoveBlock } from "../platform/move";
+import { MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
 import { SHIELDED_COPY, shieldedErrorText } from "../shielded/flow";
 import { shieldedSyncing } from "../shielded/syncing";
 import {
@@ -35,6 +35,7 @@ import {
   type RouteId,
   type TransferModel,
 } from "../transfer/model";
+import { useCoinJoinView, useMixingAction } from "../coinjoin/queries";
 import { FundBody } from "./PlatformFundSheet";
 import { MoveBody, usePlatformHold } from "./PlatformMoveSheet";
 import { ShieldedBody } from "./ShieldedSheet";
@@ -43,15 +44,19 @@ import { GrantSheet } from "./tools/common";
 /** The balances the sheet shows and checks, from the reads Home's cards use. */
 export function useTransferPools(walletId: string, network: NetworkInfo): Pools {
   const b = useBackend();
-  const balance = useBalance(walletId);
+  const spendable = useQuery({ queryKey: [...keys.coinsAll(walletId), "transferSpendable"], queryFn: () => b.maxSpendable(walletId, { kind: "any" }, { kind: "perKb", duffsPerKb: 1000 }) });
+  const coins = useQuery({ queryKey: keys.utxos(walletId), queryFn: () => b.utxos(walletId, { includeLocked: true, fullyMixedOnly: false, minConfirmations: null }) });
+  const { status: mixing } = useCoinJoinView(walletId, network);
   const statusRead = useShieldedStatus(walletId);
   const status = statusRead.isError ? null : statusRead.data;
   const pools = usePoolBalances(walletId);
   const hold = usePlatformHold(walletId, transferFor(b, walletId).flows.move);
   const fmt = useAmount(network);
-  const core = balance.data ? balance.data.confirmed + balance.data.unconfirmed : null;
+  const core = spendable.data ?? null;
+  const reserved = coins.data?.filter((c) => c.reserved && !c.coinjoinDenominated).reduce((n, c) => n + c.amount, 0) ?? 0;
   return {
     core,
+    mixing: (mixing?.balances.coinjoinAccount ?? 0) + (mixing && mixing.state !== "idle" ? reserved : 0),
     shielded: status ? { active: status.active, syncing: shieldedSyncing(status), duffs: shieldedDuffs(status) } : status,
     platform:
       pools.platform == null
@@ -97,7 +102,7 @@ function RunningLines({ t, here }: { t: TransferModel; here: RouteId | null }) {
 }
 
 /** One end: the pool's icon-less name and balance, a button that opens the picker. */
-function End({ t, end, pools, fmt, pickerId }: { t: TransferModel; end: "from" | "to"; pools: Pools; fmt: (d: number) => string; pickerId: string }) {
+function End({ t, end, pools, fmt, pickerId, receive }: { t: TransferModel; end: "from" | "to"; pools: Pools; fmt: (d: number) => string; pickerId: string; receive?: number | null }) {
   const pool = t[end];
   const balance = balanceOf(pool, pools);
   return (
@@ -108,12 +113,13 @@ function End({ t, end, pools, fmt, pickerId }: { t: TransferModel; end: "from" |
       data-pool={pool}
       aria-expanded={t.picking === end}
       aria-controls={t.picking === end ? pickerId : undefined}
-      aria-label={`${T[end]}: ${T.pools[pool]}, ${balance === null ? "balance not known" : fmt(balance)}. ${T.pick[end]}`}
+      aria-label={`${T[end]}: ${T.pools[pool]}, ${end === "to" ? `+${fmt(receive ?? 0)}` : balance === null ? "balance not known" : fmt(balance)}. ${T.pick[end]}`}
       onClick={() => t.togglePicker(end)}
     >
       <span className="transfer-end-label">{T[end]}</span>
       <span className="transfer-end-pool">{T.pools[pool]}</span>
-      <span className="transfer-end-balance">{balance === null ? T.unknownBalance : fmt(balance)}</span>
+      <span className="transfer-end-balance">{end === "to" ? `+${fmt(receive ?? 0)}` : balance === null ? T.unknownBalance : fmt(balance)}</span>
+      {end === "from" && pool === "core" && !!pools.mixing && <span className="field-hint" data-testid="transfer-mixing">{fmt(pools.mixing)} mixing</span>}
     </button>
   );
 }
@@ -178,14 +184,16 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
     if (amount !== undefined) t.typed(route, blocked ? null : amount, probe);
   }, [t, route, amount, blocked, probe]);
   useEffect(() => () => line.set(null), [line]);
-  const amountProblem = text.trim() !== "" && amount === null ? T.invalidAmount : null;
+  const amountProblem = text.trim() !== "" && amount === null ? T.invalidAmount : route === "coreToPlatform" && amount != null && probe !== null && amount > probe ? `Not enough spendable Dash: ${fmt(probe)} available.` : null;
+  const { status: mixing } = useCoinJoinView(walletId, network);
+  const pause = useMixingAction(walletId, network);
   const refusal =
     line.state.kind !== "refused"
       ? null
       : route === "coreToPlatform"
         ? fundErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, { request: null, pending })
         : shieldedErrorText(line.state.error, (c) => fmt(creditsToDuffs(c)), fmt, route === "coreToShielded" ? "add" : "out", shieldedSyncing(status));
-  const fee = QUOTE_ON_CONTINUE.has(route) && !line.maxing ? T.feeOnNextStep : feeText(route, line.state, fmt);
+  const fee = QUOTE_ON_CONTINUE.has(route) ? T.feeOnNextStep : feeText(route, line.state, fmt);
   // A refusal of this very amount: Continue would only meet it again.
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount && !line.maxing;
   const ready = !blocked && amount != null && amountProblem === null && !refusedHere && !line.maxing;
@@ -229,17 +237,20 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           variant="tintedBlue"
           size="medium"
           data-testid="transfer-max"
+          aria-busy={line.maxing}
           disabled={blocked || !own || !probe || line.maxing}
           why={why ?? (probe === null ? T.loading : !probe ? T.noCoreBalance : line.maxing ? T.why.max : null)}
           whyId={why ? `${id}-why` : undefined}
           onClick={() => probe && void t.max(route, probe, (duffs) => flow.setText(shown.full(duffs)), shown.full)}
         >
-          {T.max}
+          {T.max}{line.maxing && <span className="spinner" aria-hidden="true" />}
         </DashButton>
       </div>
       <p className={refusal || amountProblem ? "form-problem" : "field-hint"} id={`${id}-fee`} role="status" data-testid="transfer-fee">
         {amountProblem ?? refusal ?? fee ?? ""}
       </p>
+      {route === "coreToPlatform" && mixing && mixing.state !== "idle" && <div className="card-actions"><DashButton variant="plainBlue" data-testid="transfer-pause-mixing" disabled={pause.busy} onClick={() => void pause.run("stop")}>Pause mixing</DashButton></div>}
+      {pause.problem && <p className="form-problem" role="alert">{pause.problem}</p>}
       <div className="sheet-actions">
         <DashButton variant="tintedGray" size="large" type="button" data-testid="transfer-cancel" onClick={() => t.close()}>
           {T.cancel}
@@ -285,7 +296,7 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
       <div className="transfer-amount-row">
         <label className="form-field">
           {T.amount} ({shown.name})
-          <input data-testid="transfer-amount" readOnly aria-readonly="true" aria-describedby={`${id}-whole`} value={discreet ? shown.masked() : q ? shown.full(creditsToDuffs(q.credits)) : movable !== null ? shown.full(movable) : ""} />
+          <input data-testid="transfer-amount" readOnly aria-readonly="true" aria-describedby={`${id}-whole`} value={discreet ? shown.masked() : q ? shown.full(creditsToDuffs(plannedWithdrawalCredits(q))) : movable !== null ? shown.full(movable) : ""} />
         </label>
         <DashButton variant="tintedBlue" size="medium" data-testid="transfer-max" aria-pressed="true" disabled why={T.wholeBalance} whyId={`${id}-whole`}>
           {T.max}
@@ -309,9 +320,27 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
   );
 }
 
+function useTransferReceive(t: TransferModel, route: RouteId | "unsupported" | null, walletId: string, network: NetworkInfo): number | null {
+  // Subscribe to every route so selecting another pool keeps hook order stable.
+  const add = useModel(t.lines.coreToShielded);
+  const fund = useModel(t.lines.coreToPlatform);
+  const out = useModel(t.lines.shieldedToCore);
+  const move = usePlatformMoveQuote(walletId, false);
+  useModel(t.flows.shielded);
+  useModel(t.flows.fund);
+  const parsed = useParsed(route === "coreToPlatform" ? t.flows.fund.text : t.flows.shielded.text, network);
+  if (route === "platformToCore") return move.data?.expectedDuffs ?? null;
+  const line = route === "coreToShielded" ? add : route === "coreToPlatform" ? fund : out;
+  if (line.state.kind !== "quoted") return parsed ?? null;
+  const q = line.state.quote;
+  return "expectedDuffs" in q ? q.expectedDuffs ?? creditsToDuffs(q.credits) : creditsToDuffs(q.credits);
+}
+
 function TransferForm({ t, pools, network, walletId, status }: { t: TransferModel; pools: Pools; network: NetworkInfo; walletId: string; status: ShieldedStatus | null }) {
   const fmt = useAmount(network);
   const pickerId = useId();
+  const routeNow = t.route;
+  const receive = useTransferReceive(t, routeNow, walletId, network);
   if (t.awaitingDefault)
     return (
       <>
@@ -347,7 +376,7 @@ function TransferForm({ t, pools, network, walletId, status }: { t: TransferMode
         <button type="button" className="transfer-swap" data-testid="transfer-swap" aria-label={T.swap} title={T.swap} disabled={!canSwap(t.from, t.to)} onClick={() => t.swap()}>
           <Icon id="transfer" size={20} />
         </button>
-        <End t={t} end="to" pools={pools} fmt={fmt} pickerId={pickerId} />
+        <End t={t} end="to" pools={pools} fmt={fmt} pickerId={pickerId} receive={receive} />
       </div>
       {t.picking && <Picker t={t} end={t.picking} pools={pools} fmt={fmt} id={pickerId} />}
       {route === "unsupported" ? (

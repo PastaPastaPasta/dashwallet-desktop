@@ -274,3 +274,6 @@ export function moveFor(api: PlatformMoveApi, walletId: string): PlatformMoveFlo
 export function resetPlatformMoves() {
   flows.clear();
 }
+
+/** The withdrawal excludes the fee reserve included in the grant cap. */
+export const plannedWithdrawalCredits = (q: { credits: string; feeCredits: string }): string => String(BigInt(q.credits) - BigInt(q.feeCredits));

@@ -47,9 +47,9 @@ export const TRANSFER_COPY = {
   unknownBalance: "—",
   amount: "Amount",
   max: "Max",
-  wholeBalance: "Platform moves its whole balance.",
+  wholeBalance: "This moves the spendable balance on your Platform addresses.",
   /** Platform → Dash wallet's form; its confirmation names the address (MOVE_COPY.message). */
-  platformToCoreIntro: "Everything on your Platform addresses moves to your Dash wallet. Dash Platform pays it to an address in your Dash wallet.",
+  platformToCoreIntro: "The spendable balance on your Platform addresses moves to your Dash wallet. Dash Platform pays it to an address in your Dash wallet.",
   fee: (fee: string, receive: string) => `Fee about ${fee} · You receive about ${receive}`,
   quoting: "Working out the fee…",
   feeOnNextStep: "Fee shown on the next step",
@@ -80,6 +80,7 @@ export const TRANSFER_COPY = {
 export interface Pools {
   /** The Dash wallet's balance in duffs; `null` while it is not read. */
   core: number | null;
+  mixing?: number;
   /** `null`: this dw-app has no Shielded commands; `undefined`: still being read. `duffs` is `null`
    * while it is no reading. */
   shielded: { active: boolean; syncing: boolean; duffs: number | null } | null | undefined;
@@ -280,7 +281,6 @@ export class QuoteLine<Q> extends Model {
     this.due = false;
     this.target = null;
     this.maxing = true;
-    this.state = { kind: "quoting" };
     this.changed();
     const live = () => gen === this.maxGen;
     try {
@@ -613,7 +613,9 @@ export class TransferModel extends Model {
    * balance (`basis`): the fee line quotes it, except on a route quoted only on Continue, where
    * typing only clears what Max left. */
   typed(route: Exclude<RouteId, "platformToCore">, amount: number | null, basis?: number | null) {
-    this.lineOf(route).set(QUOTE_ON_CONTINUE.has(route) ? null : amount, basis);
+    const line = this.lineOf(route);
+    if (QUOTE_ON_CONTINUE.has(route) && line.state.kind === "quoted" && line.state.amount === amount) return;
+    line.set(QUOTE_ON_CONTINUE.has(route) ? null : amount, basis);
   }
 
   /** Max on `route`: `probe` is the pool's whole balance in duffs. The field is filled (`fill`, the

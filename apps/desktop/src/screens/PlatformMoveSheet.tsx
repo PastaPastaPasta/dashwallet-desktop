@@ -10,7 +10,7 @@ import { DashButton } from "../components/basics";
 import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
-import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
+import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, plannedWithdrawalCredits, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
 import { transferFor } from "../transfer/model";
 import { CardHead } from "./CardHead";
@@ -19,7 +19,7 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
   const quote = usePlatformMoveQuote(walletId, true);
   const activity = usePlatformActivity(walletId);
   const q = quote.data;
-  const warning = q ? feeWarning(BigInt(q.feeCredits), BigInt(q.credits)) : null;
+  const warning = q ? feeWarning(BigInt(q.feeCredits), BigInt(plannedWithdrawalCredits(q))) : null;
   return (
     <>
       {block === "pending" ? (
@@ -43,7 +43,7 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
           <div className="detail-row">
             <dt className="detail-label">{C.rows.taken}</dt>
             <dd className="detail-value" data-testid="platform-move-quote-credits">
-              {credits(q.credits)}
+              {credits(plannedWithdrawalCredits(q))}
             </dd>
           </div>
           <div className="detail-row">
@@ -194,28 +194,22 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
   useEffect(() => flow.settle(activity.data), [flow, activity.data, flow.pending, flow.open]);
   const funded = platform != null && platform > 0;
   const dust = BigInt(dustCredits) > 0n;
-  const dustText = C.card.dust(discreet ? shown.masked() : `${shown.compact(creditsToDuffs(dustCredits))} ${shown.name}`);
   const holdReason = flow.running ? C.running.text : block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : null;
   if (platform == null && !flow.open && !flow.running && !flow.unseen && !waiting && !dust && !fund.open && !fund.running && !fund.unseen && unfinished.length === 0) return null;
   const amountText = (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
   const line = (
     <>
       {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
-      {waiting ? (sendHeld ? C.waiting.sendHeld : C.waiting.text) : funded ? C.card.text : dust ? dustText : F.card.empty}
+      {waiting ? (sendHeld ? C.waiting.sendHeld : C.waiting.text) : !funded ? F.card.empty : null}
     </>
   );
   return (
     <section className="platform-card card-l1" data-testid="platform-card" aria-label={C.card.title}>
       <div className="platform-card-body">
-        <CardHead title={C.card.title} text={line} buttonTestId="platform-card-transfer" onTransfer={platform != null ? () => transfer.start("platformToCore") : null} />
+        <CardHead title={C.card.title} text={line} buttonTestId="platform-card-transfer" onTransfer={null} />
         {sendHeld && !waiting && (
           <p className="platform-card-text" data-testid="platform-card-send-held">
             {C.waiting.sendHeld}
-          </p>
-        )}
-        {funded && dust && !waiting && (
-          <p className="platform-card-text" data-testid="platform-card-dust">
-            {dustText}
           </p>
         )}
         {unfinished.map((p) => {
