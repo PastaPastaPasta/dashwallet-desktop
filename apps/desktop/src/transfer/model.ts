@@ -528,6 +528,13 @@ export class TransferModel extends Model {
     this.changed();
   }
 
+  chooseRoute() {
+    this.close();
+    this.open = true;
+    this.picking = "from";
+    this.changed();
+  }
+
   private select(from: Pool, to: Pool) {
     this.awaitingDefault = false;
     const before = this.begun;

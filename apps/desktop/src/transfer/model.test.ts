@@ -517,6 +517,18 @@ describe("the sheet over the routes' flows", () => {
     expect([t.route, shielded.open, t.begunRoute]).toEqual(["shieldedToCore", true, "shieldedToCore"]);
   });
 
+  it("offers another route without interrupting a running transfer", () => {
+    const { t, shielded, move } = model();
+    t.start("coreToShielded");
+    shielded.running = true;
+    shielded.step = "running";
+    t.chooseRoute();
+    expect([t.shown, t.picking, t.stepFlow(), shielded.running, shielded.open]).toEqual([true, "from", null, true, false]);
+    t.pick("from", "platform", POOLS);
+    t.pick("to", "core", POOLS);
+    expect([t.route, move.open, shielded.running]).toEqual(["platformToCore", true, true]);
+  });
+
   it("shows Platform → Dash wallet's own confirmation only after Continue", () => {
     const { t, move } = model();
     t.start("platformToCore");

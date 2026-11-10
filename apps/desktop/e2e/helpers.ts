@@ -105,8 +105,9 @@ export async function openTransfer(page: Page, route: TransferRoute) {
   else {
     await page.getByTestId("shortcut-transfer").click();
     await body.waitFor();
+    if ((await body.getAttribute("data-view")) === "steps" && (await body.getAttribute("data-route")) !== route) await page.getByTestId("transfer-choose-route").click();
     if (route === "platformToCore") {
-      await page.getByTestId("transfer-from").click();
+      if (!(await page.getByTestId("transfer-picker-platform").isVisible())) await page.getByTestId("transfer-from").click();
       await page.getByTestId("transfer-picker-platform").click();
       if ((await body.getAttribute("data-route")) !== route) {
         await page.getByTestId("transfer-to").click();

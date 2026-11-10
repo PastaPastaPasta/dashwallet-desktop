@@ -461,6 +461,7 @@ export function TransferSheet({ walletId, network }: { walletId: string; network
             <>
               <RouteHeader route={steps} />
               <Steps t={t} route={steps} walletId={walletId} network={network} status={status} block={block} />
+              {(t.flowOf(steps).running || t.flowOf(steps).unseen) && <DashButton variant="plainBlue" data-testid="transfer-choose-route" onClick={() => t.chooseRoute()}>Another transfer</DashButton>}
             </>
           ) : (
             <TransferForm t={t} pools={pools} network={network} walletId={walletId} status={status} />
