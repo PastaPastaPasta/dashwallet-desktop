@@ -335,6 +335,8 @@ jobs:
         working-directory: rust
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        env:
+          CFLAGS_x86_64_pc_windows_msvc: ${{ runner.os == 'Windows' && env.CFLAGS_x86_64_pc_windows_msvc || '' }}
         with:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
