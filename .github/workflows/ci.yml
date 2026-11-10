@@ -421,13 +421,6 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: false
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            .build/repositories
-            ~/.cache/org.swift.swiftpm
-          key: swiftpm-linux-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-linux-
       - name: Rust core bundle (and check the committed bindings)
         run: scripts/build-core.sh --check-bindings
       # By product: a plain `swift build --build-tests` also compiles swift-winui's
@@ -476,13 +469,6 @@ jobs:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'pull_request' }}
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            .build/repositories
-            ~/Library/Caches/org.swift.swiftpm
-          key: swiftpm-macos-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-macos-
       - name: cargo test --workspace
         working-directory: rust
         run: cargo test --workspace --locked --no-fail-fast
