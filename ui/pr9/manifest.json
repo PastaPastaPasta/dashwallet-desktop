@@ -702,10 +702,220 @@
     "bytes": 55816
   },
   {
+    "file": "receive-dash-refresh-error-light.png",
+    "state": "receive-dash-refresh-error",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/receive-dash-refresh-error-light.png",
+    "sha256": "36ee665409e489d4b656d13200bb936b7825f0d02af30ce736713b7e2db8dcbe",
+    "bytes": 70358
+  },
+  {
+    "file": "receive-platform-refresh-error-light.png",
+    "state": "receive-platform-refresh-error",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/receive-platform-refresh-error-light.png",
+    "sha256": "17f53d6d5f88b56cd72897d229e4b96f6b299272088a6b52f002ced6cf027828",
+    "bytes": 88057
+  },
+  {
+    "file": "receive-shielded-refresh-error-light.png",
+    "state": "receive-shielded-refresh-error",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/receive-shielded-refresh-error-light.png",
+    "sha256": "8c5ec6280c5f0f947b3da3d426188869741d9569ff30537733ea3f19038477d6",
+    "bytes": 82627
+  },
+  {
+    "file": "receive-platform-loading-light.png",
+    "state": "receive-platform-loading",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/receive-platform-loading-light.png",
+    "sha256": "658b51a718d9e04ad0bcc7c677b9b136d4276f2da921c3fc1762708eb883dd80",
+    "bytes": 85254
+  },
+  {
+    "file": "receive-dash-refresh-error-dark.png",
+    "state": "receive-dash-refresh-error",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/receive-dash-refresh-error-dark.png",
+    "sha256": "b98b9c7e9edf088eaf313ef15ef063587d8a94d47a8b8d38703de547f7688440",
+    "bytes": 58856
+  },
+  {
+    "file": "receive-platform-refresh-error-dark.png",
+    "state": "receive-platform-refresh-error",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/receive-platform-refresh-error-dark.png",
+    "sha256": "bfb08922787a350afd02412fafe36620358938bc3cfae028e92dc9d647f0f229",
+    "bytes": 75774
+  },
+  {
+    "file": "receive-shielded-refresh-error-dark.png",
+    "state": "receive-shielded-refresh-error",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/receive-shielded-refresh-error-dark.png",
+    "sha256": "f223292841262b457798764ade6dc6e18a19eafbc886ef0a87e21a0d75d10e51",
+    "bytes": 69876
+  },
+  {
+    "file": "receive-platform-loading-dark.png",
+    "state": "receive-platform-loading",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/receive-platform-loading-dark.png",
+    "sha256": "bba17c1800fce5fd4018c8f365919e5d33eeb877cc06388fa7f0a3e1f4732162",
+    "bytes": 72862
+  },
+  {
+    "file": "receive-shielded-keyboard-light.png",
+    "state": "receive-shielded-keyboard",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/receive-shielded-keyboard-light.png",
+    "sha256": "9c90332b9b210f8d421b80595fb0bba610ff605c57a52da655d7dd3e01c32cc0",
+    "bytes": 76744
+  },
+  {
+    "file": "receive-shielded-keyboard-dark.png",
+    "state": "receive-shielded-keyboard",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "before/receive-shielded-keyboard-dark.png",
+    "sha256": "d50bdd6ab03f317bbf0dd177c68967b04b6699333c1945c8ce219be2e062d45c",
+    "bytes": 66845
+  },
+  {
+    "file": "receive-dash-refresh-error-light.png",
+    "state": "receive-dash-refresh-error",
+    "theme": "light",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/receive-dash-refresh-error-light.png",
+    "sha256": "51e3dfbfa09537d702bf168ac8772140c60e5dc01fb650aae7346fa44bb4ceba",
+    "bytes": 67098
+  },
+  {
+    "file": "receive-platform-refresh-error-light.png",
+    "state": "receive-platform-refresh-error",
+    "theme": "light",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/receive-platform-refresh-error-light.png",
+    "sha256": "a7eba5ac2c0fd1c5a532e71df0f07d0b3737230d1cc900fca57b1dd714d7930e",
+    "bytes": 50219
+  },
+  {
+    "file": "receive-shielded-refresh-error-light.png",
+    "state": "receive-shielded-refresh-error",
+    "theme": "light",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/receive-shielded-refresh-error-light.png",
+    "sha256": "32442d4a40e3e85babdf9a26d6d38e2660adfcaa8b58a4d377d6cb2f590076ce",
+    "bytes": 48698
+  },
+  {
+    "file": "receive-platform-loading-light.png",
+    "state": "receive-platform-loading",
+    "theme": "light",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/receive-platform-loading-light.png",
+    "sha256": "d1b232b777e5bbc6f8ae56d963c24137dce9edaffb020af29ac9b54c3c5a0c36",
+    "bytes": 49813
+  },
+  {
+    "file": "receive-shielded-keyboard-light.png",
+    "state": "receive-shielded-keyboard",
+    "theme": "light",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/receive-shielded-keyboard-light.png",
+    "sha256": "ff82340cb21a83fe777ab1a62e25cc64be3a33ea34a79dac69e968fd31938028",
+    "bytes": 57316
+  },
+  {
     "file": "receive-address-loading-light.png",
     "state": "receive-address-loading",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -719,7 +929,7 @@
     "file": "governance-amount-pending-light.png",
     "state": "governance-amount-pending",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "governance",
     "viewport": {
       "width": 1280,
@@ -734,7 +944,7 @@
     "file": "contacts-compact-light.png",
     "state": "contacts-compact",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 800,
@@ -748,7 +958,7 @@
     "file": "fund-reserved-light.png",
     "state": "fund-reserved",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -762,7 +972,7 @@
     "file": "transfer-running-light.png",
     "state": "transfer-running",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -776,7 +986,7 @@
     "file": "home-wide-light.png",
     "state": "home-wide",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -790,7 +1000,7 @@
     "file": "home-dust-light.png",
     "state": "home-dust",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "platform-partly-dust",
     "viewport": {
       "width": 1280,
@@ -804,7 +1014,7 @@
     "file": "receive-syncing-light.png",
     "state": "receive-syncing",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "shielded-syncing",
     "viewport": {
       "width": 1280,
@@ -818,7 +1028,7 @@
     "file": "home-compact-light.png",
     "state": "home-compact",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 900,
@@ -832,7 +1042,7 @@
     "file": "withdrawal-form-light.png",
     "state": "withdrawal-form",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -846,7 +1056,7 @@
     "file": "withdrawal-confirm-light.png",
     "state": "withdrawal-confirm",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -860,7 +1070,7 @@
     "file": "mixing-empty-light.png",
     "state": "mixing-empty",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "coinjoin-mixing",
     "viewport": {
       "width": 1280,
@@ -874,7 +1084,7 @@
     "file": "mixing-insufficient-light.png",
     "state": "mixing-insufficient",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "coinjoin-mixing",
     "viewport": {
       "width": 1280,
@@ -888,7 +1098,7 @@
     "file": "max-pending-light.png",
     "state": "max-pending",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -902,7 +1112,7 @@
     "file": "max-complete-light.png",
     "state": "max-complete",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -916,7 +1126,7 @@
     "file": "receive-dash-light.png",
     "state": "receive-dash",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -930,7 +1140,7 @@
     "file": "receive-platform-light.png",
     "state": "receive-platform",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -944,21 +1154,21 @@
     "file": "receive-shielded-light.png",
     "state": "receive-shielded",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
       "height": 820
     },
     "path": "after/receive-shielded-light.png",
-    "sha256": "ba95f651a07874d3e8826a52723516fbbdfe4b36b25c05e131f339115684f47a",
-    "bytes": 57646
+    "sha256": "5b98b427ac196cc0dc8fb4b347b7276ae8ec3cd62a0cdd066ee7e03fe599646b",
+    "bytes": 57630
   },
   {
     "file": "request-opt-in-light.png",
     "state": "request-opt-in",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -972,7 +1182,7 @@
     "file": "request-confirm-light.png",
     "state": "request-confirm",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -986,7 +1196,7 @@
     "file": "contacts-open-light.png",
     "state": "contacts-open",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1000,7 +1210,7 @@
     "file": "contacts-search-light.png",
     "state": "contacts-search",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1014,7 +1224,7 @@
     "file": "contacts-selected-light.png",
     "state": "contacts-selected",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1028,7 +1238,7 @@
     "file": "settings-privacy-light.png",
     "state": "settings-privacy",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1042,7 +1252,7 @@
     "file": "settings-footer-light.png",
     "state": "settings-footer",
     "theme": "light",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1053,10 +1263,80 @@
     "bytes": 92041
   },
   {
+    "file": "receive-dash-refresh-error-dark.png",
+    "state": "receive-dash-refresh-error",
+    "theme": "dark",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/receive-dash-refresh-error-dark.png",
+    "sha256": "a11c98040d14366dafca59731d2a75fbcf23080e705039b4cc1c97e01e9be195",
+    "bytes": 58856
+  },
+  {
+    "file": "receive-platform-refresh-error-dark.png",
+    "state": "receive-platform-refresh-error",
+    "theme": "dark",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/receive-platform-refresh-error-dark.png",
+    "sha256": "4b59b27bb99eaf268594e80a30e720b16474575cb7ea29d3de1acc5d3e26eb8c",
+    "bytes": 44002
+  },
+  {
+    "file": "receive-shielded-refresh-error-dark.png",
+    "state": "receive-shielded-refresh-error",
+    "theme": "dark",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/receive-shielded-refresh-error-dark.png",
+    "sha256": "0a9d91fcc6064093e7ea3f77d01daad081796c36632c89bf2b5cfbdd5aca3184",
+    "bytes": 42573
+  },
+  {
+    "file": "receive-platform-loading-dark.png",
+    "state": "receive-platform-loading",
+    "theme": "dark",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/receive-platform-loading-dark.png",
+    "sha256": "b7c3f5a278177242b9f781252b94e551d64a5518050f21e6c0c4f8b4940b453d",
+    "bytes": 43637
+  },
+  {
+    "file": "receive-shielded-keyboard-dark.png",
+    "state": "receive-shielded-keyboard",
+    "theme": "dark",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    },
+    "path": "after/receive-shielded-keyboard-dark.png",
+    "sha256": "f122fcf6ee3066de4cad9d9f8f68fdbb65b29a3bff50912299650b44a906db1f",
+    "bytes": 50872
+  },
+  {
     "file": "receive-address-loading-dark.png",
     "state": "receive-address-loading",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1070,7 +1350,7 @@
     "file": "governance-amount-pending-dark.png",
     "state": "governance-amount-pending",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "governance",
     "viewport": {
       "width": 1280,
@@ -1085,7 +1365,7 @@
     "file": "contacts-compact-dark.png",
     "state": "contacts-compact",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 800,
@@ -1099,7 +1379,7 @@
     "file": "fund-reserved-dark.png",
     "state": "fund-reserved",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1113,7 +1393,7 @@
     "file": "transfer-running-dark.png",
     "state": "transfer-running",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1127,7 +1407,7 @@
     "file": "home-wide-dark.png",
     "state": "home-wide",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1141,7 +1421,7 @@
     "file": "home-dust-dark.png",
     "state": "home-dust",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "platform-partly-dust",
     "viewport": {
       "width": 1280,
@@ -1155,7 +1435,7 @@
     "file": "receive-syncing-dark.png",
     "state": "receive-syncing",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "shielded-syncing",
     "viewport": {
       "width": 1280,
@@ -1169,7 +1449,7 @@
     "file": "home-compact-dark.png",
     "state": "home-compact",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 900,
@@ -1183,7 +1463,7 @@
     "file": "withdrawal-form-dark.png",
     "state": "withdrawal-form",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1197,7 +1477,7 @@
     "file": "withdrawal-confirm-dark.png",
     "state": "withdrawal-confirm",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1211,7 +1491,7 @@
     "file": "mixing-empty-dark.png",
     "state": "mixing-empty",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "coinjoin-mixing",
     "viewport": {
       "width": 1280,
@@ -1225,7 +1505,7 @@
     "file": "mixing-insufficient-dark.png",
     "state": "mixing-insufficient",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "coinjoin-mixing",
     "viewport": {
       "width": 1280,
@@ -1239,7 +1519,7 @@
     "file": "max-pending-dark.png",
     "state": "max-pending",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1253,7 +1533,7 @@
     "file": "max-complete-dark.png",
     "state": "max-complete",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "funded",
     "viewport": {
       "width": 1280,
@@ -1267,7 +1547,7 @@
     "file": "receive-dash-dark.png",
     "state": "receive-dash",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1281,7 +1561,7 @@
     "file": "receive-platform-dark.png",
     "state": "receive-platform",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1295,21 +1575,21 @@
     "file": "receive-shielded-dark.png",
     "state": "receive-shielded",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
       "height": 820
     },
     "path": "after/receive-shielded-dark.png",
-    "sha256": "39a522ed01105e5f43eabfbfccb588827ac89e8c8742ab1f0dbf2247c7867726",
-    "bytes": 50864
+    "sha256": "55c3922fab4d25846c4ba03e8d6a476023b9da1c3e4bd3affa094cd1453ecfc1",
+    "bytes": 50880
   },
   {
     "file": "request-opt-in-dark.png",
     "state": "request-opt-in",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1323,7 +1603,7 @@
     "file": "request-confirm-dark.png",
     "state": "request-confirm",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1337,7 +1617,7 @@
     "file": "contacts-open-dark.png",
     "state": "contacts-open",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1351,7 +1631,7 @@
     "file": "contacts-search-dark.png",
     "state": "contacts-search",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1365,7 +1645,7 @@
     "file": "contacts-selected-dark.png",
     "state": "contacts-selected",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1000,
@@ -1379,7 +1659,7 @@
     "file": "settings-privacy-dark.png",
     "state": "settings-privacy",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1393,7 +1673,7 @@
     "file": "settings-footer-dark.png",
     "state": "settings-footer",
     "theme": "dark",
-    "revision": "90b5d45c7bdd31eb18245a24b1f0683dd4030d03",
+    "revision": "54b9be6ab51836025d4a485ffd0bc74cc26ffc75",
     "scenario": "dashpay-registered",
     "viewport": {
       "width": 1280,
@@ -1402,213 +1682,5 @@
     "path": "after/settings-footer-dark.png",
     "sha256": "6e82eb7297a70eb0f4f8e319b623408e873d464574e9cea6a433fc0537bf9ed8",
     "bytes": 74366
-  },
-  {
-    "path": "visual-baselines/dark-add-contact-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "dark-add-contact-chromium-linux",
-    "theme": "dark",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "f3f4221a6cb238f9a7b2c1a3a6229b90849931e2a3c6db5c411229c9ec6b30f9",
-    "bytes": 109055
-  },
-  {
-    "path": "visual-baselines/dark-contacts-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "dark-contacts-chromium-linux",
-    "theme": "dark",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "dcef109fcb272c9b2ba9f97b44ef84084385b298860212a5ad0c2396bf555a73",
-    "bytes": 103926
-  },
-  {
-    "path": "visual-baselines/dark-home-contacts-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "dark-home-contacts-chromium-linux",
-    "theme": "dark",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "3f8402b80a45cc5128d3a07bdf516ac957f2cb110adff4dbec5fa53c857351d3",
-    "bytes": 68942
-  },
-  {
-    "path": "visual-baselines/dark-overview-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "dark-overview-chromium-linux",
-    "theme": "dark",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "9d205b9ab24ffc999795dd90265750eacdaa3dc73f50159482db72b47e94124b",
-    "bytes": 73254
-  },
-  {
-    "path": "visual-baselines/dark-platform-receive-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "dark-platform-receive-chromium-linux",
-    "theme": "dark",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "92f24e3c857a34d2f3bee5e0b2c20c35d51fc3be8bd63e89c194f9d449865eb7",
-    "bytes": 47977
-  },
-  {
-    "path": "visual-baselines/dark-receive-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "dark-receive-chromium-linux",
-    "theme": "dark",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "0a5adaae6714cd0c379bfa60a87fe7273421f4a2c3f9dd9ee76e2397b8b156f1",
-    "bytes": 63716
-  },
-  {
-    "path": "visual-baselines/dark-receive-fiat-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "dark-receive-fiat-chromium-linux",
-    "theme": "dark",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "6d6570b0a9c6f8e2208221977bedb02f99a57b18fc04170584a102d656a8cb22",
-    "bytes": 69028
-  },
-  {
-    "path": "visual-baselines/dark-receive-requests-fiat-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "dark-receive-requests-fiat-chromium-linux",
-    "theme": "dark",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "db7cb09fac179ab860bdaef0b9e7edd5dc4dba5a8dae78d5f6e632b09484b680",
-    "bytes": 73432
-  },
-  {
-    "path": "visual-baselines/light-add-contact-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "light-add-contact-chromium-linux",
-    "theme": "light",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "1525aec88d3842758c5934b3e2def4d6464c9d6e69206834e7d5cf649ad4d230",
-    "bytes": 123203
-  },
-  {
-    "path": "visual-baselines/light-contacts-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "light-contacts-chromium-linux",
-    "theme": "light",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "df340daa18b7cf973000ec352d8e495f8b91630580a72f5a062ad4138658a7a5",
-    "bytes": 117789
-  },
-  {
-    "path": "visual-baselines/light-home-contacts-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "light-home-contacts-chromium-linux",
-    "theme": "light",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "1edb66800de621980c5c8d3332f42aced26d0ca432935d5d98a1d8feb6f5aeab",
-    "bytes": 82835
-  },
-  {
-    "path": "visual-baselines/light-overview-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "light-overview-chromium-linux",
-    "theme": "light",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "c7af49f086553ce5b9f88e401cce7dc9e17299f680514414fff282126a827b25",
-    "bytes": 87733
-  },
-  {
-    "path": "visual-baselines/light-platform-receive-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "light-platform-receive-chromium-linux",
-    "theme": "light",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "642ce4ab97bcb642ebe7636aa3e89455108aa69b013158099022bbe065f1043e",
-    "bytes": 54916
-  },
-  {
-    "path": "visual-baselines/light-receive-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "light-receive-chromium-linux",
-    "theme": "light",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "79037881a7eef25a76617b6ac8f08db26437f3f68b4f25d5077373b5dfeb278b",
-    "bytes": 72428
-  },
-  {
-    "path": "visual-baselines/light-receive-fiat-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "light-receive-fiat-chromium-linux",
-    "theme": "light",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "898d3df775403269422f14980c105e5405a0e434625ef2665a42c8bb171f7ae5",
-    "bytes": 76552
-  },
-  {
-    "path": "visual-baselines/light-receive-requests-fiat-chromium-linux.png",
-    "revision": "7a36f7038ac426ee896491cfc8ace848c5788b40",
-    "state": "light-receive-requests-fiat-chromium-linux",
-    "theme": "light",
-    "viewport": {
-      "width": 1280,
-      "height": 820
-    },
-    "method": "Pinned Playwright 1.64.0 noble container; existing visual.spec.ts",
-    "sha256": "0c07bb6dfe30c88fb1344068ce42c69e2769026e6f48512d0cbb36769006bd85",
-    "bytes": 85366
   }
 ]

@@ -550,5 +550,115 @@
       "height": 820
     },
     "crop": "create-sheet"
+  },
+  {
+    "file": "receive-dash-refresh-error-light.png",
+    "state": "receive-dash-refresh-error",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-platform-refresh-error-light.png",
+    "state": "receive-platform-refresh-error",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-shielded-refresh-error-light.png",
+    "state": "receive-shielded-refresh-error",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-platform-loading-light.png",
+    "state": "receive-platform-loading",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-dash-refresh-error-dark.png",
+    "state": "receive-dash-refresh-error",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-platform-refresh-error-dark.png",
+    "state": "receive-platform-refresh-error",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-shielded-refresh-error-dark.png",
+    "state": "receive-shielded-refresh-error",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-platform-loading-dark.png",
+    "state": "receive-platform-loading",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-shielded-keyboard-light.png",
+    "state": "receive-shielded-keyboard",
+    "theme": "light",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
+  },
+  {
+    "file": "receive-shielded-keyboard-dark.png",
+    "state": "receive-shielded-keyboard",
+    "theme": "dark",
+    "revision": "a51d04c9ab2e4e3fa08289e80832679249eae2ca",
+    "scenario": "funded",
+    "viewport": {
+      "width": 1280,
+      "height": 820
+    }
   }
 ]
