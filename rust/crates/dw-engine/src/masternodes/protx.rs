@@ -769,9 +769,11 @@ impl Masternodes {
         .await
     }
 
-    /// Unlocks the collateral coin of one of the wallet's masternodes, and
-    /// remembers the release so the follower leaves it unlocked (D9,
-    /// MG-00 D38). Sends nothing.
+    /// Unlocks the collateral coin of one of the wallet's masternodes, or of
+    /// a ProRegTx the history keeps out of sight (a DashPay contact's
+    /// record) by its hash, and remembers the release so the follower
+    /// leaves it unlocked (D9, MG-00 D38). Sends nothing. A hash that is
+    /// neither is `NotFound`.
     pub async fn release_collateral(
         &self,
         wallet: WalletId,
