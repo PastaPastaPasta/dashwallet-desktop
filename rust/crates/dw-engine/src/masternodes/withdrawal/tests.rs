@@ -1706,6 +1706,8 @@ async fn a_newer_look_raises_a_new_records_floor_over_its_nonce_read() {
     let f = fx();
     f.plat.with(|w| w.height = 30);
     f.plat.claim(Read::Nonce, ALWAYS, 20);
+    // Its read-back reads nothing that would raise it.
+    f.plat.deviate(Read::Document, Dev::Fail, ALWAYS);
     let row = f.withdraw(Payout, AMOUNT).await.unwrap();
     assert_eq!(row.floor_height, 30);
 }
