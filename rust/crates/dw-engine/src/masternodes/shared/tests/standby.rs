@@ -481,6 +481,8 @@ fn test_QT_127_a_zero_penalty_standby_is_one_copy() {
     let short = create(&f, 0, txid, 999).unwrap_err();
     assert_eq!(send_code(&short), "send.grant_exceeded");
     let made = create(&f, 0, txid, 1_000).unwrap();
+    assert_eq!(made[0].penalty, Some(0));
+    assert_eq!(standbys(&f, 0, txid)[0].penalty, Some(0));
     assert_eq!((made[0].full, made[0].immediate), (true, false));
     let file = export(&f, 0, txid, 0).unwrap();
     let (full, immediate) = hex_lines(&file);
@@ -511,6 +513,7 @@ fn test_QT_127_an_imported_standby_is_checked_stored_and_sent() {
     // B imports A's file line by line.
     let (d, stored) = imported_standby(&f, 1, &format!("  {full}\n"));
     assert!(stored);
+    assert_eq!(d.standby.penalty, Some(COIN));
     assert_eq!(
         (d.variant, d.penalty, d.returns_principal),
         (StandbyVariant::Full, 0, true)
@@ -539,6 +542,7 @@ fn test_QT_127_an_imported_standby_is_checked_stored_and_sent() {
     assert!(!imported_standby(&f, 1, &full).1, "held already");
     let (d, stored) = imported_standby(&f, 1, &immediate);
     assert!(stored);
+    assert_eq!(d.standby.penalty, Some(COIN));
     assert_eq!(
         (d.variant, d.penalty, d.returns_principal),
         (StandbyVariant::Immediate, COIN, false)

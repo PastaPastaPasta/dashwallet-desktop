@@ -136,13 +136,25 @@ fn ep_t5_injected_history_shares_report_sessionless_eligibility() {
     confirm(&restored, 0, registration, 50);
     restored.tip(0);
     assert_eq!(shares(&restored, txid), expected);
-    let unrelated = fx(3, true);
+    let unrelated = fx(0, true);
+    let unrelated_wallet = unrelated
+        .run(unrelated.session.import_wallet(
+            Zeroizing::new(PHRASES[0].as_bytes().to_vec()),
+            Zeroizing::new(vec![b'X'; 8]),
+            ImportOptions {
+                birth_height: Some(0),
+                core_compat: false,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    assert!(!f.wallets.contains(&unrelated_wallet));
     assert_eq!(
         unrelated
             .run(
                 unrelated
                     .mn()
-                    .shared_shares(unrelated.wallets[1], txid.to_string())
+                    .shared_shares(unrelated_wallet, txid.to_string())
             )
             .unwrap_err()
             .code(),
@@ -293,16 +305,17 @@ fn ep_t7_reward_destination_keeps_confirmed_and_attempt_separate() {
     assert_eq!(shares(&f, txid).shares[0].reward, reward);
 }
 
+/// A one-transaction block enters the production wallet-manager block path.
+/// Its emitted events feed the engine handler; the manager's existing
+/// persistence adapter builds and commits the records and scan checkpoint.
 #[test]
 fn ep_r2_scanned_shared_registration_survives_reopening() {
     use dash_spv::EventHandler;
-    use key_wallet::transaction_checking::{
-        BlockInfo, TransactionContext, WalletTransactionChecker,
-    };
     use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-    use platform_wallet::changeset::{
-        CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
-    };
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    use platform_wallet::key_wallet_manager::{WalletEvent, WalletInterface};
+    use std::collections::BTreeSet;
+    use std::time::Duration;
     let f = fx(3, true);
     let (id, txid) = listed_with_reward(&f, COIN, RewardChoice::NewAddress);
     let mut expected = shares(&f, txid);
@@ -337,85 +350,63 @@ fn ep_r2_scanned_shared_registration_survives_reopening() {
             .unwrap()
             .is_empty()
     );
-    let (records, balance) = restored.run(async {
+    let mut block = dashcore::Block {
+        header: dashcore::blockdata::block::Header {
+            version: dashcore::blockdata::block::Version::from_consensus(1),
+            prev_blockhash: dashcore::BlockHash::all_zeros(),
+            merkle_root: dashcore::TxMerkleNode::all_zeros(),
+            time: 1_793_598_712,
+            bits: dashcore::CompactTarget::from_consensus(0x207f_ffff),
+            nonce: 0,
+        },
+        txdata: vec![registration],
+    };
+    block.header.merkle_root = block.compute_merkle_root().unwrap();
+    let events = restored.run(async {
         let wm = restored.session.manager().unwrap().wallet_manager_arc();
         let mut wm = wm.write().await;
-        let (wallet, info) = wm.get_wallet_and_info_mut(&wallet_id.0).unwrap();
-        let mut wallet = wallet.clone();
-        let info = &mut info.core_wallet;
-        info.check_core_transaction(
-            &registration,
-            TransactionContext::InBlock(BlockInfo::new(
+        let mut events = wm.subscribe_events();
+        let result = wm
+            .process_block_for_wallets(
+                &block,
+                block.block_hash(),
                 50,
-                dashcore::BlockHash::from_byte_array([42; 32]),
-                1_793_598_712,
-            )),
-            &mut wallet,
-            true,
-            true,
-        )
-        .await;
-        info.update_balance();
-        let records: Vec<_> = info
-            .transaction_history()
-            .into_iter()
-            .filter(|r| r.txid == txid)
-            .cloned()
-            .collect();
-        assert!(
-            !records.is_empty(),
-            "the wallet scanner must recognize the registration"
-        );
-        (records, info.balance)
+                &BTreeSet::from([wallet_id.0]),
+            )
+            .await;
+        assert!(result.new_txids.contains(&txid));
+        wm.update_wallet_synced_height(&wallet_id.0, 100);
+        let mut emitted = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            emitted.push(event);
+        }
+        assert!(emitted.iter().any(|event| matches!(
+            event,
+            WalletEvent::BlockProcessed { wallet_id: id, inserted, .. }
+                if *id == wallet_id.0 && inserted.iter().any(|r| r.txid == txid)
+        )));
+        emitted
     });
-    assert!(
-        restored
-            .session
-            .hub
-            .history
-            .get(&wallet_id, &txid)
-            .is_none(),
-        "scanning alone does not bypass ingestion"
-    );
-    restored
-        .session
-        .live()
-        .unwrap()
-        .store
-        .store(
-            wallet_id.0,
-            PlatformWalletChangeSet {
-                core: Some(CoreChangeSet {
-                    records: records.clone(),
-                    synced_height: Some(100),
-                    last_processed_height: Some(100),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-    restored
-        .session
-        .live()
-        .unwrap()
-        .store
-        .flush(wallet_id.0)
-        .unwrap();
-    restored
-        .session
-        .hub
-        .on_wallet_event(&platform_wallet::events::WalletEvent::BlockProcessed {
-            wallet_id: wallet_id.0,
-            height: 50,
-            chain_lock: None,
-            inserted: records,
-            updated: Vec::new(),
-            matured: Vec::new(),
-            balance,
-            account_balances: Default::default(),
-            addresses_derived: Vec::new(),
-        });
+    for event in events {
+        restored.session.hub.on_wallet_event(&event);
+    }
+    restored.run(async {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let persisted = restored.session.live().unwrap().store.load().unwrap();
+                if persisted
+                    .wallets
+                    .get(&wallet_id.0)
+                    .is_some_and(|wallet| wallet.wallet_info.synced_height() == 100)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the production event adapter must persist the scanned checkpoint");
+    });
     assert_eq!(shares(&restored, txid), expected);
     assert!(
         restored

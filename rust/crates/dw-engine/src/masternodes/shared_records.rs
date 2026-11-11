@@ -490,6 +490,8 @@ pub struct Standby {
     pub pro_tx_hash: String,
     pub share_index: u16,
     pub fee: u64,
+    /// The immediate penalty from registration bytes; None when those bytes
+    /// are unavailable or undecodable. Some(0) means no penalty.
     pub penalty: Option<u64>,
     /// The first height the full-principal variant is valid at: the
     /// registration's height plus the early period.
