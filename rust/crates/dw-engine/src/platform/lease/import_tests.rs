@@ -97,13 +97,16 @@ impl Fixture {
     }
 }
 
+/// A 0.1 marker: `(wallet, activity, anchor, nullifiers)`.
+type Marker<'a> = ([u8; 32], [u8; 32], [u8; 32], &'a [[u8; 32]]);
+
 /// The closed session's journal as a schema 10 build leaves it, holding
 /// the redrive rows `redrives` `(wallet, activity, transition)` and the
 /// markers `markers` `(wallet, activity, anchor, nullifiers)`.
 fn as_schema_10(
     data_dir: &Path,
     redrives: &[([u8; 32], [u8; 32], [u8; 32])],
-    markers: &[([u8; 32], [u8; 32], [u8; 32], &[[u8; 32]])],
+    markers: &[Marker<'_>],
 ) {
     let conn = Connection::open(data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE)).unwrap();
     conn.execute_batch(
