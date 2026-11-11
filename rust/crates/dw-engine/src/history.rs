@@ -1648,8 +1648,7 @@ mod tests {
     }
 
     /// A ProRegTx with both a contact's record and the wallet's own names
-    /// its collateral once, from the own entry: abandoned, nothing locks
-    /// it again through the copy kept out of sight.
+    /// its collateral once, from the own entry.
     #[test]
     fn an_own_entry_outranks_a_contacts_copy_of_its_registration() {
         let store = HistoryStore::default();
@@ -1664,10 +1663,22 @@ mod tests {
         });
         assert_eq!(store.registration_collaterals(&wallet), vec![collateral]);
         assert!(store.hidden_registration_collaterals(&wallet).is_empty());
+    }
+
+    /// An abandoned own ProRegTx is not locked again through a contact's
+    /// copy of it.
+    #[test]
+    fn an_abandoned_registration_is_not_locked_through_a_contacts_copy() {
+        let store = HistoryStore::default();
+        let wallet = WalletId([1; 32]);
+        let (t, _) = own_registration(1);
         store.with_wallet(wallet, |h| {
+            h.upsert(&registration_record(&t, contact()), None);
+            h.upsert(&registration_record(&t, bip44()), None);
             h.txs.get_mut(&t.txid()).unwrap().abandoned = true;
         });
         assert!(store.registration_collaterals(&wallet).is_empty());
+        assert!(store.hidden_registration_collaterals(&wallet).is_empty());
     }
 
     /// A ProRegTx kept out of sight goes with its transaction: upstream's
