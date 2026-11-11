@@ -343,13 +343,15 @@ fn an_entrant_admitted_across_the_commit_is_refused() {
     let (entering, starting) = held_mixing_start(&f);
     let between = gate_pause(&f.session.gate.hold_between_loads);
     let checked = gate_pause(&f.session.gate.hold_before_sessions);
-    let _release = ReleaseOnDrop(vec![
-        Arc::clone(&entering),
-        Arc::clone(&between),
-        Arc::clone(&checked),
-    ]);
     let broadcasts = Arc::new(AtomicUsize::new(0));
     std::thread::scope(|scope| {
+        // In the scope: a failed assert frees the close before the scope
+        // joins it.
+        let _release = ReleaseOnDrop(vec![
+            Arc::clone(&entering),
+            Arc::clone(&between),
+            Arc::clone(&checked),
+        ]);
         let closing = scope.spawn(|| close(&f, &broadcasts));
         reached(&checked);
         assert_eq!(f.session.gate.drains(), 1, "both checks passed");
