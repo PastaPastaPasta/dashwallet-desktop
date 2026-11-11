@@ -952,7 +952,7 @@ impl SessionHub {
     pub(crate) fn admit(&self, id: WalletId) -> bool {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         let was = unloaded.remove(&id);
-        self.history.with_wallet(id, |h| h.held.clear());
+        self.history.with_wallet(id, |h| h.session_held.clear());
         was
     }
 
@@ -964,7 +964,7 @@ impl SessionHub {
         let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
         for id in ids {
             if unloaded.remove(&id) {
-                self.history.with_wallet(id, |h| h.held.clear());
+                self.history.with_wallet(id, |h| h.session_held.clear());
             }
         }
     }
@@ -1136,8 +1136,9 @@ impl SessionHub {
     /// record only read from storage stays: key-wallet never held it, and
     /// nothing tells it apart from one mined below the fork. A ProRegTx the
     /// history keeps out of sight (a contact's record) has no height: it
-    /// goes when key-wallet held it this session and holds it no more. Key-wallet's
-    /// ChainLock bounds nothing here: it can be the new chain's.
+    /// goes when key-wallet held it this session and now neither holds nor
+    /// finalized it. Key-wallet's ChainLock bounds nothing here: it can be
+    /// the new chain's.
     pub(crate) fn detect_truncation(
         &self,
         id: WalletId,
@@ -1153,13 +1154,13 @@ impl SessionHub {
             return None;
         }
         let accounts = core.accounts.all_accounts();
-        let held: HashMap<Txid, bool> = (accounts.iter())
+        let records: HashMap<Txid, bool> = (accounts.iter())
             .flat_map(|a| a.transactions().iter())
             .filter(|(_, r)| crate::history::is_wallets(r))
             .map(|(t, r)| (*t, r.context.block_info().is_some()))
             .collect();
         let finalized = |t: &Txid| accounts.iter().any(|a| a.transaction_is_finalized(t));
-        let kept = |t: &Txid| accounts.iter().any(|a| a.transactions().contains_key(t));
+        let still_recorded = |t: &Txid| accounts.iter().any(|a| a.transactions().contains_key(t));
         let (mut removed, mut unconfirmed) = (Vec::new(), Vec::new());
         self.history.read_wallet(&id, |h| {
             for (txid, entry) in &h.txs {
@@ -1168,22 +1169,22 @@ impl SessionHub {
                 };
                 let is_final = matches!(entry.context, TransactionContext::InChainLockedBlock(_))
                     || finalized(txid);
-                if mined <= height && (!h.held.contains(txid) || is_final) {
+                if mined <= height && (!h.session_held.contains(txid) || is_final) {
                     continue;
                 }
-                match held.get(txid) {
+                match records.get(txid) {
                     None => removed.push(*txid),
                     Some(false) => unconfirmed.push(*txid),
                     Some(true) => {}
                 }
             }
             // A ProRegTx kept out of sight has no height: one key-wallet
-            // held this session and holds in no account now went with the
-            // fork.
+            // held this session, and now neither holds in an account nor
+            // has finalized, went with the fork.
             removed.extend(
                 (h.hidden())
                     .map(|(t, _)| *t)
-                    .filter(|t| h.held.contains(t) && !kept(t)),
+                    .filter(|t| h.session_held.contains(t) && !still_recorded(t) && !finalized(t)),
             );
         });
         self.apply_truncation(
@@ -1229,7 +1230,8 @@ impl SessionHub {
         self.run_sweep_retry(id);
         let carried = carried_txids(event);
         if !carried.is_empty() {
-            self.history.with_wallet(id, |h| h.held.extend(carried));
+            self.history
+                .with_wallet(id, |h| h.session_held.extend(carried));
         }
         match event {
             WalletEvent::TransactionDetected {
@@ -1238,10 +1240,12 @@ impl SessionHub {
                 account_balances,
                 ..
             } => {
+                // A contact's record shows nowhere; a ProRegTx among them is
+                // kept out of sight for its collateral, as at a load.
+                if self.history.with_wallet(id, |h| h.upsert(record, now)) {
+                    self.pump.mark_new_txs(id, &[record.txid]);
+                }
                 if crate::history::is_wallets(record) {
-                    if self.history.with_wallet(id, |h| h.upsert(record, now)) {
-                        self.pump.mark_new_txs(id, &[record.txid]);
-                    }
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
                 if self.update_balance(id, balance, account_balances) {
@@ -1341,12 +1345,11 @@ impl SessionHub {
                         .iter()
                         .chain(updated)
                         .chain(matured)
-                        .filter(|r| crate::history::is_wallets(r))
-                        .map(|r| {
+                        .filter_map(|r| {
                             if h.upsert(r, now) {
                                 new.push(r.txid);
                             }
-                            r.txid
+                            crate::history::is_wallets(r).then_some(r.txid)
                         })
                         .collect()
                 });

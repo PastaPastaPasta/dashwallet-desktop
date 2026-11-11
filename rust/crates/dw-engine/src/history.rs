@@ -353,7 +353,7 @@ pub(crate) struct WalletHistory {
     /// history was filled at open and each one its events named since.
     /// Records only read from storage are not among them (platform-wallet
     /// rebuilds no records at load).
-    pub held: HashSet<Txid>,
+    pub session_held: HashSet<Txid>,
     /// A ProRegTx, or an output one names as its collateral, was merged
     /// since the masternode follower last locked this wallet's collaterals
     /// (MG-00 D9).

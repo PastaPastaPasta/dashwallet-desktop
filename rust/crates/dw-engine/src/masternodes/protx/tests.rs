@@ -3749,3 +3749,210 @@ fn r71_d_an_abandoned_registration_seen_again_locks_its_collateral() {
         }
     }
 }
+
+impl Fx {
+    /// key-wallet's DashPay contact account (added on first use) holds `tx`
+    /// mined at `height`.
+    fn contact_holds(&self, tx: Transaction, height: u32) {
+        use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+        use key_wallet::transaction_checking::BlockInfo;
+        let w = self
+            .engine
+            .block_on(self.session.wallet(&self.wallet))
+            .unwrap();
+        let id = self.wallet;
+        self.engine.block_on(async {
+            let mut state = w.state_mut().await;
+            let core = &mut state.core_wallet;
+            if core.accounts.dashpay_external_accounts.is_empty() {
+                crate::coins::insert_contact_account(core, id.0);
+            }
+            let account = (core.accounts.dashpay_external_accounts.values_mut())
+                .next()
+                .unwrap();
+            let context = TransactionContext::InBlock(BlockInfo::new(
+                height,
+                dashcore::BlockHash::all_zeros(),
+                0,
+            ));
+            let record = tx_record_on(
+                tx,
+                account.managed_account_type().to_account_type(),
+                context,
+            );
+            account.transactions_mut().insert(record.txid, record);
+        });
+    }
+
+    /// [`Self::contact_holds`], then the engine's history loaded from
+    /// key-wallet, as at session open: the ProRegTx is kept out of sight
+    /// and held this session.
+    fn load_contact_with(&self, tx: Transaction, height: u32) {
+        self.contact_holds(tx, height);
+        let (session, id) = (Arc::clone(&self.session), self.wallet);
+        let inner = Arc::clone(&session);
+        self.engine
+            .block_on(session.on_runtime(async move { inner.load_history_for(vec![id]).await }))
+            .unwrap();
+    }
+
+    /// The txids of the ProRegTxs whose collateral the history names.
+    fn named_registrations(&self) -> HashSet<Txid> {
+        (self
+            .session
+            .hub
+            .history
+            .registration_collaterals(&self.wallet))
+        .into_iter()
+        .map(|(o, _)| o.txid)
+        .collect()
+    }
+
+    /// Both heights at 1000, then key-wallet truncated to 900 with no
+    /// event, found by the replay guard. Returns its height.
+    fn found_fork_to_900(&self) -> u32 {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let w = self
+            .engine
+            .block_on(self.session.wallet(&self.wallet))
+            .unwrap();
+        self.engine.block_on(async {
+            crate::events::set_checkpoint(&mut w.state_mut().await.core_wallet, 1_000)
+        });
+        (self.session.hub).apply_wallet_event(
+            &platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+                wallet_id: self.wallet.0,
+                height: 1_000,
+            },
+        );
+        let manager = self.session.manager().unwrap();
+        self.engine.block_on(async {
+            let wm = manager.wallet_manager_arc();
+            wm.write().await.truncate_above(900).unwrap();
+        });
+        self.engine
+            .block_on(self.session.replay_guard(self.wallet, 0))
+            .unwrap()
+    }
+}
+
+/// Rows 59 and 65: a contact's ProRegTx (kept out of sight) key-wallet held
+/// this session and then finalized under its ChainLock, which drops the
+/// record and keeps the txid, stays across a fork found above it, while
+/// one the fork replaced goes. With no follower pass, a coin read locks
+/// the finalized one's collateral, and the user's release finds it by its
+/// hash.
+#[test]
+fn a_found_fork_keeps_a_finalized_registration_kept_out_of_sight() {
+    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let f = fx(Library::Accept);
+    let (finalized, collateral) = f.foreign_registration(true, 2);
+    let (replaced, replaced_collateral) = f.foreign_registration(true, 3);
+    f.contact_holds(replaced.clone(), 950);
+    f.load_contact_with(finalized.clone(), 700);
+    let manager = f.session.manager().unwrap();
+    let finalized_txid = finalized.txid();
+    let (recorded, is_final) = f.engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        wm.apply_chain_lock(dashcore::ChainLock {
+            block_height: 750,
+            block_hash: dashcore::BlockHash::all_zeros(),
+            signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+        });
+        let (_, info) = wm.get_wallet_and_info_mut(&f.wallet.0).unwrap();
+        let account = (info.core_wallet.accounts.dashpay_external_accounts.values())
+            .next()
+            .unwrap();
+        (
+            account.transactions().contains_key(&finalized_txid),
+            account.transaction_is_finalized(&finalized_txid),
+        )
+    });
+    assert!(!recorded && is_final, "key-wallet keeps only the txid");
+    let before = f.named_registrations();
+    let guard = f.found_fork_to_900();
+    let after = f.named_registrations();
+    let fence = f.fence();
+    let read = f.fenced(&fence);
+    drop(fence);
+    eprintln!(
+        "ROW5965 contact ProRegTxs finalized at 700 and replaced at 950, fork to 900 found: guard {guard}, named before {before:?}, after {after:?}, coin read {read:?}"
+    );
+    assert_eq!(before, HashSet::from([finalized.txid(), replaced.txid()]));
+    assert_eq!(guard, 900);
+    assert_eq!(after, HashSet::from([finalized.txid()]));
+    assert!(
+        read.contains(&(collateral, true)),
+        "the coin read locks the finalized one's collateral: {read:?}"
+    );
+    assert!(!f.locked().contains(&replaced_collateral));
+    f.engine
+        .block_on(
+            f.mn()
+                .release_collateral(f.wallet, finalized.txid().to_string()),
+        )
+        .unwrap();
+    assert!(f.locked().is_empty(), "released by its hash");
+}
+
+/// Rows 59 and 65: a contact's ProRegTx a found fork replaced, which the
+/// new chain mines again, is kept out of sight again from the block or
+/// transaction event that carries it, and the next follower pass locks
+/// its collateral again.
+#[test]
+fn a_registration_the_fork_replaced_is_kept_out_of_sight_again_when_mined_again() {
+    use key_wallet::transaction_checking::BlockInfo;
+    use platform_wallet::events::WalletEvent;
+    let f = fx(Library::Accept);
+    let (mined, a) = f.foreign_registration(true, 2);
+    let (seen, b) = f.foreign_registration(true, 3);
+    f.contact_holds(mined.clone(), 950);
+    f.load_contact_with(seen.clone(), 960);
+    let guard = f.found_fork_to_900();
+    let gone = f.named_registrations();
+    f.contact_holds(mined.clone(), 902);
+    let w = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+    f.engine
+        .block_on(async { crate::events::process_to(&mut w.state_mut().await.core_wallet, 902) });
+    let account = contact_account();
+    let in_block =
+        TransactionContext::InBlock(BlockInfo::new(902, dashcore::BlockHash::all_zeros(), 0));
+    (f.session.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
+        wallet_id: f.wallet.0,
+        height: 902,
+        chain_lock: None,
+        inserted: vec![tx_record_on(mined.clone(), account, in_block)],
+        updated: Vec::new(),
+        matured: Vec::new(),
+        balance: Default::default(),
+        account_balances: std::collections::BTreeMap::new(),
+        addresses_derived: Vec::new(),
+    });
+    (f.session.hub).apply_wallet_event(&WalletEvent::TransactionDetected {
+        wallet_id: f.wallet.0,
+        record: Box::new(tx_record_on(
+            seen.clone(),
+            account,
+            TransactionContext::Mempool,
+        )),
+        balance: Default::default(),
+        account_balances: std::collections::BTreeMap::new(),
+        addresses_derived: Vec::new(),
+    });
+    let again = f.named_registrations();
+    let shown = (f.session.hub.history).read(&f.wallet, |txs| {
+        txs.contains_key(&mined.txid()) || txs.contains_key(&seen.txid())
+    });
+    f.collateral_pass();
+    let locked = f.locked();
+    eprintln!(
+        "ROW5965 contact ProRegTxs at 950 and 960, fork to 900 found (guard {guard}): named after it {gone:?}; mined again at 902 and seen in the mempool: named {again:?}, shown {shown}, locked {locked:?}"
+    );
+    assert_eq!(guard, 900);
+    assert!(gone.is_empty(), "{gone:?}");
+    assert_eq!(again, HashSet::from([mined.txid(), seen.txid()]));
+    assert!(!shown, "kept out of the history's view");
+    assert_eq!(locked, HashSet::from([a, b]));
+}

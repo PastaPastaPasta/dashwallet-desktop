@@ -5553,7 +5553,7 @@ fn a_fork_found_past_its_height_keeps_a_finalized_transaction() {
     let finalized = f.spend_of(7, &[coin]);
     f.funded_at(finalized.txid(), 902);
     f.session.hub.history.with_wallet(f.wallet, |h| {
-        h.held.insert(finalized.txid());
+        h.session_held.insert(finalized.txid());
     });
     f.fork_and_progress(
         &[(&finalized, TransactionContext::InChainLockedBlock(info))],
@@ -5629,7 +5629,10 @@ fn the_transactions_key_wallet_held_are_forgotten_at_unload() {
     let stale = f.seen_event(&late, mined(903));
     let held = || {
         (f.session.hub.history).read_wallet(&f.wallet, |h| {
-            (h.held.contains(&tx.txid()), h.held.contains(&late.txid()))
+            (
+                h.session_held.contains(&tx.txid()),
+                h.session_held.contains(&late.txid()),
+            )
         })
     };
     let before = held();
@@ -5640,7 +5643,7 @@ fn the_transactions_key_wallet_held_are_forgotten_at_unload() {
     f.session.hub.apply_wallet_event(&stale);
     let (after_stale, entry) = (held(), f.entry_of(late.txid()));
     f.session.hub.history.with_wallet(f.wallet, |h| {
-        h.held.insert(late.txid());
+        h.session_held.insert(late.txid());
     });
     f.engine.block_on(f.session.load_wallet(f.wallet)).unwrap();
     let loaded = held();
@@ -5975,7 +5978,7 @@ fn a_fork_found_past_its_height_keeps_a_chain_locked_entry() {
         )),
     );
     f.session.hub.history.with_wallet(f.wallet, |h| {
-        h.held.insert(locked);
+        h.session_held.insert(locked);
     });
     f.fork_and_progress(&[], 900, &[], 905);
     let guard = f.guard();
@@ -6003,7 +6006,8 @@ fn a_stale_event_from_before_an_unload_leaves_the_reloaded_history() {
     f.session.hub.apply_wallet_event(&stale);
     f.engine.block_on(f.session.load_wallet(f.wallet)).unwrap();
     f.funded_at(tx.txid(), 800);
-    let held = (f.session.hub.history).read_wallet(&f.wallet, |h| h.held.contains(&tx.txid()));
+    let held =
+        (f.session.hub.history).read_wallet(&f.wallet, |h| h.session_held.contains(&tx.txid()));
     f.fork_and_progress(&[], 900, &[], 905);
     let guard = f.guard();
     let entry = f.entry_of(tx.txid());
@@ -6437,7 +6441,8 @@ fn an_event_past_its_check_leaves_nothing_of_a_wallet_unloaded_meanwhile() {
             during_pause
         });
         heard.join().unwrap();
-        let held = (f.session.hub.history).read_wallet(&f.wallet, |h| h.held.contains(&tx.txid()));
+        let held =
+            (f.session.hub.history).read_wallet(&f.wallet, |h| h.session_held.contains(&tx.txid()));
         let (entry, state) = (
             f.entry_of(tx.txid()),
             f.session.hub.wallet_state(&f.wallet).is_some(),
