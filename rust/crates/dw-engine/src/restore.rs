@@ -466,9 +466,11 @@ impl NetworkSession {
         let wm = manager.wallet_manager_arc();
         {
             let wm = wm.read().await;
-            // Only now: events apply under the write lock, so one applied
-            // while this waited is covered by this run, and one applied
-            // after it starts the next.
+            // Only now: key-wallet changes a wallet under the write lock, so
+            // a change made while this waited is covered by this run. The
+            // hub hears of a change from dash-spv's event task, which runs
+            // apart from the lock and may be later: that event starts the
+            // next run.
             self.hub.reconcile_running(id);
             let Some(info) = wm.get_wallet_info(&id.0) else {
                 return;

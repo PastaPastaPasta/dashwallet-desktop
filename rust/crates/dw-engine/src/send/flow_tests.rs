@@ -6137,6 +6137,7 @@ fn an_event_past_its_check_leaves_nothing_of_a_wallet_unloaded_meanwhile() {
             "ROW5965 an event paused past its check, the wallet {} meanwhile: done during the pause {during_pause}; held {held}, entry {entry:?}, wallet state {state}",
             if remove { "removed" } else { "unloaded" }
         );
+        assert!(!during_pause, "remove={remove}: done before the event");
         assert_eq!(
             (held, entry, state),
             (false, None, false),
@@ -6287,4 +6288,29 @@ fn a_transaction_only_a_block_event_carried_is_this_sessions() {
     assert_eq!(seen, Some((Some(902), false)));
     assert_eq!(guard.unwrap(), 905);
     assert_eq!(entry, None);
+}
+
+/// A removed wallet whose import again registers it and then fails: the
+/// manager holds it, so it stays admitted, and its events are heard.
+#[test]
+fn a_removed_wallet_whose_import_fails_after_registering_is_heard() {
+    let f = fixture(false);
+    let probe = f.probe();
+    (f.engine)
+        .block_on(f.session.remove_wallet(f.wallet, f.wipe_grant(f.wallet)))
+        .unwrap();
+    (crate::keys::FAIL_AFTER_REGISTRATION_IN.lock().unwrap())
+        .push(f.session.data_dir().to_path_buf());
+    let again = f.import_again();
+    let manager = Arc::clone(&f.session.live().unwrap().manager);
+    let registered = (f.engine)
+        .block_on(manager.get_wallet(&f.wallet.0))
+        .is_some();
+    let heard = f.hears(f.wallet, &probe);
+    eprintln!(
+        "ROW5965 a removed wallet whose import again failed after registering: {again:?}; in the manager {registered}; an event of it heard {heard}"
+    );
+    assert!(again.is_err());
+    assert!(registered);
+    assert!(heard);
 }
