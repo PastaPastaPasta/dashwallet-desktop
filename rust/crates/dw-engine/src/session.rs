@@ -467,6 +467,9 @@ impl NetworkSession {
         let replay = crate::replay_record::ReplayRecords::new(Arc::clone(&appdb));
         store.install_replay(&replay);
         hub.attach_replay(&replay);
+        let listed: Vec<[u8; 32]> = (names.iter())
+            .filter_map(|(id, _, _)| id.parse::<WalletId>().ok().map(|id| id.0))
+            .collect();
         for (order, (id, name, created_at)) in (0u64..).zip(names) {
             match id.parse::<WalletId>() {
                 Ok(id) => hub.set_name(
@@ -509,7 +512,14 @@ impl NetworkSession {
         );
         // A change of the wallet set re-reads the masternodes (MG-03 D28).
         let sink = masternodes.watch_wallets(sink);
-        let journal = crate::platform::lease::session::open_journal(&data_dir).await;
+        // The wallets the session knows: loaded, unloaded, or listed in the
+        // app database. A shielded spend imported from the 0.1 journal of
+        // any other wallet is archived for good.
+        let known: std::collections::HashSet<[u8; 32]> = (manager.wallet_ids().await.into_iter())
+            .chain(store.unloaded())
+            .chain(listed)
+            .collect();
+        let journal = crate::platform::lease::session::open_journal(&data_dir, known).await;
         let leases = crate::platform::lease::LeaseTable::new(
             network.clone(),
             Arc::clone(&sink),

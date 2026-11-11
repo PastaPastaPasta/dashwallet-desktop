@@ -3,6 +3,7 @@
 //! revocations, the background lease (§4.5) and the journal's open and
 //! load (§6.5).
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -562,10 +563,15 @@ pub(crate) type LoadedJournal = (
 );
 
 /// Opens and loads `dispatch.sqlite` (§6.2, §6.5), Mode B's standing rows
-/// included. `None`: the journal is unavailable (unopenable, or a newer
+/// included, after reading its imported shielded spends against `known`,
+/// the wallets the session knows: one whose wallet is not among them is
+/// archived. `None`: the journal is unavailable (unopenable, or a newer
 /// schema); the fence then refuses leased Firsts, registrations and call
 /// steps.
-pub(crate) async fn open_journal(data_dir: &Path) -> Option<LoadedJournal> {
+pub(crate) async fn open_journal(
+    data_dir: &Path,
+    known: HashSet<[u8; 32]>,
+) -> Option<LoadedJournal> {
     if let Err(e) = crate::fsutil::create_owned_file(data_dir, Path::new(DISPATCH_DB_FILE)) {
         tracing::warn!(error = %e, "could not create the dispatch journal");
         return None;
@@ -579,6 +585,18 @@ pub(crate) async fn open_journal(data_dir: &Path) -> Option<LoadedJournal> {
                 return Ok(None);
             }
         };
+        // Unread, they stay unclassified, and the next open reads them.
+        match journal.classify_shielded_imports(|w| known.contains(w)) {
+            Ok(c) if c != Default::default() => tracing::info!(
+                unresolved = c.unresolved,
+                archived = c.archived,
+                "imported shielded spends read"
+            ),
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "the imported shielded spends could not be read");
+            }
+        }
         let (rows, steps) = journal.load()?;
         let calls = journal.load_calls()?;
         Ok::<_, dw_appdb::AppDbError>(Some((journal, rows, steps, calls)))
