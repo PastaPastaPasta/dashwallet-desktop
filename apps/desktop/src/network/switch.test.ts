@@ -6,6 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IpcBackend, liveListenerCount } from "../api/tauri";
 import { bootAgain, switchOutcome, takeSwitchNote } from "./switch";
 
+// The link takes asked for so far: a test sets one still in flight.
+const takes = vi.hoisted(() => ({ pending: Promise.resolve() }));
+vi.mock("../app/shellBridge", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../app/shellBridge")>()),
+  linksTaken: () => takes.pending,
+}));
+
 let stored: Map<string, string>;
 beforeEach(() => {
   vi.stubGlobal("window", globalThis);
@@ -15,6 +22,7 @@ beforeEach(() => {
 afterEach(() => {
   clearMocks();
   vi.unstubAllGlobals();
+  takes.pending = Promise.resolve();
 });
 
 describe("a switch's reboot", () => {
@@ -42,6 +50,18 @@ describe("a switch's reboot", () => {
     }
     expect(reloads).toHaveBeenCalledTimes(5);
     expect(next).toBe(10);
+  });
+
+  it("waits for a link take still in flight, so its batch is kept, not lost with the page", async () => {
+    let answer = () => {};
+    takes.pending = new Promise<void>((resolve) => (answer = resolve));
+    const reload = vi.fn();
+    const booting = bootAgain(null, reload);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reload).not.toHaveBeenCalled();
+    answer();
+    await booting;
+    expect(reload).toHaveBeenCalledOnce();
   });
 
   it("leaves the note for the next page, once", async () => {
