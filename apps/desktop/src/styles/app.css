@@ -543,7 +543,7 @@ button {
 
 .contacts-split {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
   gap: var(--dw-space-l);
 }
@@ -1121,8 +1121,17 @@ button {
   background: color-mix(in srgb, var(--dw-role-hero-card) calc(var(--dw-opacity-hero-divider) * 100%), transparent);
 }
 
+@media (max-width: 900px) {
+  .contacts-split { grid-template-columns: minmax(0, 1fr); }
+  .contacts-pane { position: static; }
+}
+
 /* Narrow windows stack the strip's cells (UX-SPEC §4.5; the sidebar takes 220 of the 980). */
 @media (max-width: 979px) {
+  .hero-band, .hero-band:has(.hero-fiat) {
+    height: auto;
+    padding-bottom: var(--dw-space-l);
+  }
   .hero-breakdown,
   .hero-breakdown:has(> :nth-child(5)),
   .hero-breakdown:has(> :nth-child(7)) {
@@ -2169,6 +2178,8 @@ button {
   padding: var(--dw-layout-card-padding);
   border-radius: var(--dw-radius-card);
 }
+
+.receive-card[hidden] { display: none; }
 
 .receive-card .qr,
 .receive-card .qr-placeholder,
@@ -5863,4 +5874,16 @@ button.bell-row-open:focus-visible {
 .copy-button[data-copied] {
   padding: 0 var(--dw-space-xs);
   border-radius: var(--dw-radius-small);
+}
+
+.receive-selector { align-self: center; width: 100%; }
+
+@media (max-width: 979px) {
+  .shortcut-card {
+    position: static;
+    width: 100%;
+    margin-top: var(--dw-space-l);
+    transform: none;
+  }
+  .page-overview > .page-column { padding-top: var(--dw-space-l); }
 }

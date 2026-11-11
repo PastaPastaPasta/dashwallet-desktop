@@ -95,7 +95,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
           return [keys.dashpayAll];
       }
     case "coinJoin":
-      return [keys.coinjoinStatus(event.walletId)];
+      return [keys.coinjoinStatus(event.walletId), keys.coinsAll(event.walletId)];
     // The store, the sync state or the list's voting keys changed (≤ 1 Hz, mg-engine §5). A new
     // block sends none, so the tip-derived clock and statuses go stale until the next (MG-02 D96).
     case "governance":

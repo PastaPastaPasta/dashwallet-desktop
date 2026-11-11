@@ -928,8 +928,8 @@ test.describe("Shielded", () => {
     await expect(page.getByRole("button", { name: "Copy Shielded address" })).toBeVisible();
     await shot(page, "light-shielded-receive");
     expect(await seriousAxeViolations(page)).toEqual([]);
-    await page.getByTestId("shielded-receive-open").click();
-    await expect(page.getByTestId("shielded-receive-body")).toHaveCount(0);
+    await page.getByTestId("receive-select-dash").click();
+    await expect(page.getByTestId("shielded-receive-qr")).toHaveCount(0);
   });
 
   test("Add to Shielded quotes the lock, asks for approval and grows the balance", async ({ page }) => {
@@ -1075,7 +1075,8 @@ test.describe("Shielded", () => {
         await page.getByTestId("transfer-cancel").click();
       }
       await page.getByTestId("sidebar-receive").click();
-      await waits(["shielded-receive-open"]);
+      await page.getByTestId("shielded-receive-open").click();
+      await expect(page.getByTestId("shielded-receive-why")).toHaveText("Shielded is still syncing; try again when it finishes.");
       await page.getByTestId("sidebar-pay").click();
       await waits(["shielded-send"]);
       expect(errors).toEqual([]);

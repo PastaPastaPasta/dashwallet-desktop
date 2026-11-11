@@ -3,6 +3,7 @@ import type { ReceiveRequest } from "./generated/ReceiveRequest";
 import { changingUsernameInRequests, isChangingUsernameInRequests, withoutUsername } from "./username";
 
 const request = (uri: string, username: string | null): ReceiveRequest => ({
+  includeUsername: null,
   id: 1,
   createdAt: 0,
   uri,

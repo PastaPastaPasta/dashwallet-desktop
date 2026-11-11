@@ -343,7 +343,8 @@ test.describe("disabled reasons are visible and described", () => {
       await page.getByTestId("transfer-cancel").click();
     }
     await page.getByTestId("sidebar-receive").click();
-    expect(await reasonOf(page, "shielded-receive-open")).toContain(syncing);
+    await page.getByTestId("shielded-receive-open").click();
+    await expect(page.getByTestId("shielded-receive-why")).toHaveText(syncing);
     await page.getByTestId("sidebar-pay").click();
     expect(await reasonOf(page, "shielded-send")).toContain(syncing);
   });

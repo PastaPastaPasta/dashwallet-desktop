@@ -211,6 +211,22 @@ fn usd(price: &'static str, at: u64) -> Answer {
     Ok(vec![("USD", price, at), ("EUR", "44", at)])
 }
 
+/// Polls `ready` until it returns `Ok`; panics after 10 s with `what` and
+/// the last thing `ready` saw.
+fn eventually(what: &str, mut ready: impl FnMut() -> Result<(), String>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match ready() {
+            Ok(()) => return,
+            Err(seen) => assert!(
+                std::time::Instant::now() < deadline,
+                "{what}; last seen: {seen}"
+            ),
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -499,14 +515,13 @@ fn off_undisclosed_or_not_mainnet_makes_no_request() {
     assert_eq!(rates.currencies(), Vec::new());
     // Mainnet opens: the task asks at once.
     rig.hub.mainnet_opened();
-    for _ in 0..100 {
-        if rig.requests() > 0 {
-            break;
+    eventually("the first answer never showed", || {
+        match rates.status().state {
+            RateState::Fresh => Ok(()),
+            state => Err(format!("{state:?} after {} request(s)", rig.requests())),
         }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    });
     assert_eq!(rig.requests(), 1);
-    assert_eq!(rates.status().state, RateState::Fresh);
     // Off again: nothing more.
     rates
         .set_settings(settings(false, Some("USD"), true))
@@ -761,6 +776,16 @@ impl EventSink for NoSink {
 
 fn stored_file(rig: &Rig) -> Stored {
     Stored::from_json(&std::fs::read_to_string(rig.root.join(RATES_FILE)).unwrap())
+}
+
+/// `rates.json`, or `None` when there is none.
+#[cfg(unix)]
+fn stored_file_if_any(rig: &Rig) -> Option<Stored> {
+    match std::fs::read_to_string(rig.root.join(RATES_FILE)) {
+        Ok(text) => Some(Stored::from_json(&text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => panic!("{RATES_FILE}: {e}"),
+    }
 }
 
 /// Amendment 4 (i): Off while a fetch is out stops it, and nothing it
@@ -1035,21 +1060,29 @@ fn an_off_that_can_be_neither_saved_nor_removed_is_saved_on_a_later_tick() {
         "not saved while read-only"
     );
     mode(0o700);
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        let file = stored_file(&rig);
-        if !file.settings.enabled {
-            assert!(file.rates.is_empty(), "no cached price");
-            assert_eq!(file.settings, settings(false, Some("USD"), true));
-            break;
+    // Saved either way: written with prices off, or the file removed.
+    eventually("the Off was never saved", || {
+        match stored_file_if_any(&rig) {
+            Some(file) if file.settings.enabled => {
+                Err(format!("{RATES_FILE} holds {:?}", file.settings))
+            }
+            _ => Ok(()),
         }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the Off was never saved"
-        );
-        std::thread::sleep(Duration::from_millis(10));
+    });
+    if let Some(file) = stored_file_if_any(&rig) {
+        assert!(file.rates.is_empty(), "no cached price");
+        assert_eq!(file.settings, settings(false, Some("USD"), true));
     }
     assert_eq!(rig.requests(), 1, "no request since the Off");
+    let again = RatesHub::new(
+        &rig.root,
+        RatesConfig::production(),
+        Arc::new(Events::default()),
+    );
+    again.mainnet_opened();
+    let v = again.view();
+    assert!(matches!(v.state, RateState::Off(_)), "{v:?}");
+    assert_eq!(v.rate, None);
 }
 
 /// Review nit 5: after the fallback answered, a CTX row with an earlier

@@ -185,6 +185,7 @@ impl From<AddressFilter> for dw_engine::AddressFilter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ReceiveRequest {
+    pub include_username: Option<bool>,
     pub id: u64,
     /// UNIX seconds.
     pub created_at: u64,
@@ -202,6 +203,7 @@ pub struct ReceiveRequest {
 impl From<dw_engine::ReceiveRequest> for ReceiveRequest {
     fn from(r: dw_engine::ReceiveRequest) -> Self {
         let dw_engine::ReceiveRequest {
+            include_username,
             id,
             created_at,
             address,
@@ -212,6 +214,7 @@ impl From<dw_engine::ReceiveRequest> for ReceiveRequest {
             uri,
         } = r;
         ReceiveRequest {
+            include_username,
             id,
             created_at,
             address,
@@ -573,19 +576,20 @@ commands! {
 
     /// Stores a payment request on a freshly issued address. An amount of 0
     /// means any amount.
-    #[facade("NetworkSession::create_receive_request")]
+    #[facade("NetworkSession::create_receive_request", "NetworkSession::create_receive_request_with_username")]
     fn create_receive_request(
         state,
         wallet_id: String,
         amount: Option<u64>,
         label: Option<String>,
-        message: Option<String>
+        message: Option<String>,
+        include_username: Option<bool>
     ) -> ReceiveRequest {
         let id = parse_wallet_id(&wallet_id)?;
         Ok(state
             .session()
             .await?
-            .create_receive_request(id, amount, label, message)
+            .create_receive_request_with_username(id, amount, label, message, include_username)
             .await?
             .into())
     }
@@ -607,8 +611,7 @@ commands! {
     }
 
     /// "Include my username in payment requests" for the wallet (DP3-03b);
-    /// on by default. Off, `receiveUsername` is `null` and requests carry
-    /// no username.
+    /// off by default. Requests can override this default individually.
     #[facade("NetworkSession::username_in_requests")]
     fn username_in_requests(state, wallet_id: String) -> bool {
         let id = parse_wallet_id(&wallet_id)?;
