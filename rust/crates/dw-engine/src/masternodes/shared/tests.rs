@@ -2935,3 +2935,104 @@ fn test_QT_126_a_replay_holds_a_starts_coins() {
     f.checkpoint(1, 1_000);
     join().unwrap();
 }
+
+#[test]
+fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
+    use super::super::protx::ops::{conflict_height, conflict_of};
+    use super::store::{Loaded, derive_stage, releasable, session_hash};
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    for w in [0, 1] {
+        if w == 0 {
+            f.send(0, &id, 401 * COIN).unwrap();
+        }
+        let row = f.row(w, &id);
+        let loaded = Loaded::of(row.clone(), dashcore::Network::Regtest).unwrap();
+        let mut chain = f.run(f.session.shared_chain(f.wallets[w])).unwrap();
+        let inputs = loaded.own_inputs();
+        let own = session_hash(&loaded, &chain)
+            .or_else(|| row.txid.as_ref().and_then(|id| id.parse().ok()));
+        assert!(!inputs.is_empty());
+        for (seed, height) in [(71, 60), (72, 59), (73, 60)] {
+            let tx = Transaction {
+                version: 2,
+                lock_time: seed,
+                input: vec![dashcore::TxIn {
+                    previous_output: inputs[0],
+                    script_sig: Default::default(),
+                    sequence: u32::MAX,
+                    witness: Default::default(),
+                }],
+                output: vec![TxOut {
+                    value: 1_000,
+                    script_pubkey: Default::default(),
+                }],
+                special_transaction_payload: None,
+            };
+            chain.history.insert(
+                tx.txid(),
+                crate::history::TxEntry {
+                    tx,
+                    context: key_wallet::transaction_checking::TransactionContext::InBlock(
+                        key_wallet::transaction_checking::BlockInfo::new(
+                            height,
+                            dashcore::BlockHash::all_zeros(),
+                            0,
+                        ),
+                    ),
+                    instant_locked: false,
+                    first_seen: None,
+                    own_inputs: Default::default(),
+                    abandoned: false,
+                },
+            );
+        }
+        let original = chain
+            .history
+            .iter()
+            .filter(|(id, e)| {
+                Some(**id) != own
+                    && e.tx
+                        .input
+                        .iter()
+                        .any(|input| inputs.contains(&input.previous_output))
+            })
+            .filter_map(|(_, e)| e.context.block_info().map(|b| b.height()))
+            .min();
+        assert_eq!(
+            conflict_height(&chain.history, &inputs, own.as_ref()),
+            original
+        );
+        assert_eq!(
+            conflict_of(&chain.history, &inputs, own.as_ref(), &[]).map(|(_, h)| h),
+            original
+        );
+        assert_eq!(derive_stage(&loaded, &chain), SharedStage::Conflicted);
+        for tip in [59u32, 63, 64, 65] {
+            let buried = |height: u32| tip.saturating_sub(height) + 1 >= 6;
+            assert_eq!(
+                releasable(&row, dashcore::Network::Regtest, &chain, buried),
+                original.is_some_and(buried)
+            );
+        }
+        if let Some(own) = own {
+            let mut own_tx = chain.history.values().next().unwrap().clone();
+            own_tx.context = key_wallet::transaction_checking::TransactionContext::InBlock(
+                key_wallet::transaction_checking::BlockInfo::new(
+                    58,
+                    dashcore::BlockHash::all_zeros(),
+                    0,
+                ),
+            );
+            chain.history.insert(own, own_tx);
+            assert_eq!(
+                derive_stage(&loaded, &chain),
+                SharedStage::Confirmed { height: 58 }
+            );
+            assert!(releasable(&row, dashcore::Network::Regtest, &chain, |_| {
+                false
+            }));
+        }
+    }
+}

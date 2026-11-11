@@ -827,3 +827,27 @@ fn test_QT_127_a_replay_holds_a_key_changes_fee_inputs() {
     f.checkpoint(0, 1_000);
     start(&f, 0, rotate(txid), 0).unwrap();
 }
+
+#[test]
+fn ep_conflict_height_preserves_key_change_follower_release() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, request) = complete(&f, txid);
+    send(&f, 0, &id, request.session.fee.unwrap()).unwrap();
+    let row = f.row(0, &id);
+    let tx: Transaction =
+        dashcore::consensus::deserialize(row.signed_tx.as_ref().unwrap()).unwrap();
+    let reserved = f.locked(0);
+    assert!(!reserved.is_empty());
+    let mut conflict = tx.clone();
+    conflict.lock_time += 1;
+    conflict.special_transaction_payload = None;
+    f.mine(conflict, 60);
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Conflicted);
+    f.tip(64);
+    f.follow();
+    assert_eq!(f.locked(0), reserved);
+    f.tip(65);
+    f.follow();
+    assert!(f.locked(0).is_empty());
+}

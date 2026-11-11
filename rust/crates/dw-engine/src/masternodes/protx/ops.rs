@@ -177,17 +177,27 @@ pub(crate) fn conflict_height(
     inputs: &[OutPoint],
     except: Option<&Txid>,
 ) -> Option<u32> {
+    conflict_of(history, inputs, except, &[]).map(|(_, height)| height)
+}
+
+pub(crate) fn conflict_of(
+    history: &HashMap<Txid, TxEntry>,
+    inputs: &[OutPoint],
+    except: Option<&Txid>,
+    preferred: &[Txid],
+) -> Option<(Txid, u32)> {
     history
         .iter()
-        .filter(|(id, e)| {
+        .filter(|(id, entry)| {
             Some(*id) != except
-                && e.tx
+                && entry
+                    .tx
                     .input
                     .iter()
-                    .any(|i| inputs.contains(&i.previous_output))
+                    .any(|input| inputs.contains(&input.previous_output))
         })
-        .filter_map(|(_, e)| Some(e.context.block_info()?.height()))
-        .min()
+        .filter_map(|(id, entry)| Some((*id, entry.context.block_info()?.height())))
+        .min_by_key(|(id, height)| (*height, !preferred.contains(id), *id))
 }
 
 /// [`conflict_height`] of `tx`'s inputs.
@@ -838,5 +848,106 @@ mod tests {
             "reorg time is authoritative"
         );
         assert!(check(10_800, true, Some(u32::MAX), Some(u32::MAX)));
+    }
+
+    #[test]
+    fn ep_conflict_of_preserves_height_state_and_exceptions() {
+        use dashcore::hashes::Hash;
+        use dashcore::{ScriptBuf, TxIn, TxOut};
+        use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+        let input = OutPoint::new(Txid::from_byte_array([7; 32]), 0);
+        let tx = |value| Transaction {
+            version: 3,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: input,
+                script_sig: ScriptBuf::new(),
+                sequence: u32::MAX,
+                witness: Default::default(),
+            }],
+            output: vec![TxOut {
+                value,
+                script_pubkey: ScriptBuf::new(),
+            }],
+            special_transaction_payload: None,
+        };
+        let own = tx(1);
+        let candidates = [tx(2), tx(3), tx(4)];
+        let entry = |tx: Transaction, height: Option<u32>| TxEntry {
+            tx,
+            context: height.map_or(TransactionContext::Mempool, |h| {
+                TransactionContext::InBlock(BlockInfo::new(h, dashcore::BlockHash::all_zeros(), 0))
+            }),
+            instant_locked: false,
+            first_seen: None,
+            own_inputs: Default::default(),
+            abandoned: false,
+        };
+        let original = |history: &HashMap<Txid, TxEntry>, except: Option<&Txid>| {
+            history
+                .iter()
+                .filter(|(id, e)| {
+                    Some(*id) != except && e.tx.input.iter().any(|i| i.previous_output == input)
+                })
+                .filter_map(|(_, e)| e.context.block_info().map(|b| b.height()))
+                .min()
+        };
+        for order in [[0, 1, 2], [2, 1, 0], [1, 0, 2]] {
+            let mut history = HashMap::new();
+            for i in order {
+                history.insert(
+                    candidates[i].txid(),
+                    entry(candidates[i].clone(), Some(if i == 2 { 8 } else { 7 })),
+                );
+            }
+            history.insert(own.txid(), entry(own.clone(), None));
+            for except in [
+                None,
+                Some(own.txid()),
+                Some(candidates[0].txid()),
+                Some(candidates[2].txid()),
+            ] {
+                assert_eq!(
+                    conflict_height(&history, &[input], except.as_ref()),
+                    original(&history, except.as_ref())
+                );
+            }
+            let preferred = candidates[1].txid();
+            assert_eq!(
+                conflict_of(&history, &[input], Some(&own.txid()), &[preferred]),
+                Some((preferred, 7))
+            );
+            assert_eq!(
+                conflict_of(
+                    &history,
+                    &[input],
+                    Some(&own.txid()),
+                    &[candidates[2].txid()]
+                )
+                .unwrap()
+                .1,
+                7
+            );
+            assert_eq!(
+                conflict_of(&history, &[input], Some(&own.txid()), &[])
+                    .unwrap()
+                    .0,
+                candidates[0].txid().min(candidates[1].txid())
+            );
+            let r = MasternodeOpRow {
+                signed_tx: Some(dashcore::consensus::serialize(&own)),
+                sent_at: Some(1),
+                ..row()
+            };
+            assert_eq!(
+                state_of(&r, &history, &HashSet::new()),
+                ProTxOperationState::Conflicted
+            );
+            history.insert(own.txid(), entry(own.clone(), Some(9)));
+            assert_eq!(
+                state_of(&r, &history, &HashSet::new()),
+                ProTxOperationState::Confirmed { height: 9 }
+            );
+        }
     }
 }
