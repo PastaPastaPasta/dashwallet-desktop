@@ -1609,6 +1609,93 @@ mod tests {
         )
     }
 
+    /// A ProRegTx with its own collateral (output 0), `seed` setting its
+    /// txid, and the collateral that names.
+    fn own_registration(seed: u16) -> (Transaction, (OutPoint, u64)) {
+        use crate::masternodes::provider_fixtures::{coins, null, registration};
+        let amount = dw_protx::params::collateral_amount(false);
+        let t = registration(null(0), false, seed, coins(&[amount]));
+        let collateral = OutPoint::new(t.txid(), 0);
+        (t, (collateral, amount))
+    }
+
+    fn registration_record(t: &Transaction, account: AccountType) -> TransactionRecord {
+        TransactionRecord::new(
+            t.clone(),
+            account,
+            TransactionContext::Mempool,
+            TransactionType::Standard,
+            TransactionDirection::Internal,
+            Vec::new(),
+            Vec::new(),
+            0,
+        )
+    }
+
+    fn contact() -> AccountType {
+        AccountType::DashpayExternalAccount {
+            index: 0,
+            user_identity_id: [0xaa; 32],
+            friend_identity_id: [0xbb; 32],
+        }
+    }
+
+    fn bip44() -> AccountType {
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        }
+    }
+
+    /// A ProRegTx with both a contact's record and the wallet's own names
+    /// its collateral once, from the own entry: abandoned, nothing locks
+    /// it again through the copy kept out of sight.
+    #[test]
+    fn an_own_entry_outranks_a_contacts_copy_of_its_registration() {
+        let store = HistoryStore::default();
+        let wallet = WalletId([1; 32]);
+        let (t, collateral) = own_registration(1);
+        store.with_wallet(wallet, |h| {
+            h.upsert(&registration_record(&t, contact()), None)
+        });
+        assert_eq!(store.registration_collaterals(&wallet), vec![collateral]);
+        store.with_wallet(wallet, |h| {
+            h.upsert(&registration_record(&t, bip44()), None)
+        });
+        assert_eq!(store.registration_collaterals(&wallet), vec![collateral]);
+        assert!(store.hidden_registration_collaterals(&wallet).is_empty());
+        store.with_wallet(wallet, |h| {
+            h.txs.get_mut(&t.txid()).unwrap().abandoned = true;
+        });
+        assert!(store.registration_collaterals(&wallet).is_empty());
+    }
+
+    /// A ProRegTx kept out of sight goes with its transaction: upstream's
+    /// deletion forgets it, a fork's removal drops it, and a fork leaves an
+    /// unconfirmed one in place.
+    #[test]
+    fn a_hidden_registration_is_forgotten_and_truncated_with_its_transaction() {
+        let store = HistoryStore::default();
+        let wallet = WalletId([1; 32]);
+        let (forgotten, _) = own_registration(1);
+        let (removed, _) = own_registration(2);
+        let (kept, kept_collateral) = own_registration(3);
+        for t in [&forgotten, &removed, &kept] {
+            store.with_wallet(wallet, |h| {
+                h.upsert(&registration_record(t, contact()), None)
+            });
+        }
+        assert_eq!(store.registration_collaterals(&wallet).len(), 3);
+        store.with_wallet(wallet, |h| h.forget(&forgotten.txid()));
+        assert_eq!(store.registration_collaterals(&wallet).len(), 2, "forget");
+        store.with_wallet(wallet, |h| h.truncate(&[removed.txid()], &[kept.txid()]));
+        assert_eq!(
+            store.registration_collaterals(&wallet),
+            vec![kept_collateral],
+            "truncate"
+        );
+    }
+
     /// TB-RESMOKE r-4-18/19: a contact spends the output we paid them, which
     /// their account (watched, never ours) records with the spent coin as
     /// its input. That is not the wallet's activity. Our payment to them

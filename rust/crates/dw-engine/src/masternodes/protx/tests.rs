@@ -3003,6 +3003,91 @@ fn r71_a_contacts_registration_collateral_is_locked_and_released_by_its_hash() {
     }
 }
 
+/// A ProRegTx the history keeps out of sight (a DashPay contact's record),
+/// internal or external, locks its collateral in a coin read alone: the
+/// read holds the wallet's fence from before the record arrives, so no
+/// follower pass can lock it first. After the user's release, a read
+/// leaves it unlocked.
+#[test]
+fn r71_a_coin_read_alone_locks_a_contacts_registration_collateral() {
+    for internal in [true, false] {
+        let f = fx(Library::Accept);
+        let (tx, collateral) = f.foreign_registration(internal, 2);
+        let fence = f.fence();
+        let record = tx_record_on(tx.clone(), contact_account(), chain_locked(7));
+        (f.session.hub.history).with_wallet(f.wallet, |h| h.upsert(&record, None));
+        f.collateral_pass();
+        assert!(
+            f.locked().is_empty(),
+            "internal: {internal}: the follower waits"
+        );
+        assert_eq!(
+            f.fenced(&fence),
+            vec![(collateral, true)],
+            "internal: {internal}: the coin read locks it"
+        );
+        assert_eq!(
+            f.locked(),
+            HashSet::from([collateral]),
+            "internal: {internal}"
+        );
+        drop(fence);
+        f.engine
+            .block_on(f.mn().release_collateral(f.wallet, tx.txid().to_string()))
+            .unwrap();
+        let fence = f.fence();
+        assert_eq!(
+            f.fenced(&fence),
+            vec![(collateral, false)],
+            "internal: {internal}: released"
+        );
+        drop(fence);
+        assert!(f.locked().is_empty(), "internal: {internal}: released");
+    }
+}
+
+/// A ProRegTx kept out of sight goes with a sweep that upstream deleted it
+/// in: nothing names its collateral after the event.
+#[test]
+fn r71_a_swept_registration_kept_out_of_sight_is_forgotten() {
+    use key_wallet::wallet::balance::WalletCoreBalance;
+    use platform_wallet::events::WalletEvent;
+    let f = fx(Library::Accept);
+    let (tx, collateral) = f.foreign_registration(true, 2);
+    let record = tx_record_on(tx.clone(), contact_account(), chain_locked(7));
+    (f.session.hub.history).with_wallet(f.wallet, |h| h.upsert(&record, None));
+    let named = || {
+        (f.session
+            .hub
+            .history
+            .registration_collaterals(&f.wallet)
+            .into_iter())
+        .map(|(o, _)| o)
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(named(), vec![collateral]);
+    f.session
+        .hub
+        .apply_wallet_event(&WalletEvent::TransactionsSwept {
+            wallet_id: f.wallet.0,
+            txids: vec![tx.txid()],
+            superseded_by: Txid::all_zeros(),
+            winner_block: None,
+            released_outpoints: Vec::new(),
+            balance: WalletCoreBalance::default(),
+            account_balances: std::collections::BTreeMap::new(),
+        });
+    assert!(named().is_empty());
+}
+
+fn contact_account() -> key_wallet::account::AccountType {
+    key_wallet::account::AccountType::DashpayExternalAccount {
+        index: 0,
+        user_identity_id: [0xaa; 32],
+        friend_identity_id: [0xbb; 32],
+    }
+}
+
 /// Row 71 item 4: the user's release holds against every new lock path.
 #[test]
 fn r71_a_release_holds_on_every_new_path() {
