@@ -42,7 +42,7 @@ pub(crate) struct OpGate {
     /// Tests: how many pauses reached their drain.
     #[cfg(test)]
     drains: AtomicUsize,
-    /// Tests: how many wait on a pause ([`OpGate::unpaused`]).
+    /// Tests: how many wait on a pause now ([`OpGate::unpaused`]).
     #[cfg(test)]
     waiting_on_pause: AtomicUsize,
     /// Tests: how many entrants, admitted, saw the pause and backed off.
@@ -260,11 +260,9 @@ impl OpGate {
     /// has started then, and asking again goes ahead.
     pub(crate) async fn unpaused(&self) -> bool {
         #[cfg(test)]
-        self.waiting_on_pause.fetch_add(1, Ordering::SeqCst);
+        let _waiting = (self.paused.load(Ordering::SeqCst)).then(|| Waiting::on(self));
         self.until(|g| !g.paused.load(Ordering::SeqCst) || g.closed.load(Ordering::SeqCst))
             .await;
-        #[cfg(test)]
-        self.waiting_on_pause.fetch_sub(1, Ordering::SeqCst);
         !self.closed.load(Ordering::SeqCst)
     }
 
@@ -343,7 +341,7 @@ impl OpGate {
         self.drains.load(Ordering::SeqCst)
     }
 
-    /// Tests: how many wait on a pause.
+    /// Tests: how many wait on a pause now.
     #[cfg(test)]
     pub(crate) fn waiting_on_pause(&self) -> usize {
         self.waiting_on_pause.load(Ordering::SeqCst)
@@ -362,9 +360,9 @@ impl OpGate {
     }
 
     /// Closes the gate and waits for every admitted operation to finish.
-    /// The returned guard keeps new operations out while the caller tears
-    /// the session down; they are refused anyway once it is dropped.
-    /// Entrants waiting on a pause are refused at once.
+    /// New operations are refused at once, and so are those waiting on a
+    /// pause; one already past that wait meets the returned guard, which
+    /// is held while the caller tears the session down.
     pub(crate) async fn close(&self) -> RwLockWriteGuard<'_, ()> {
         self.closed.store(true, Ordering::SeqCst);
         self.changed.notify_waiters();
@@ -373,6 +371,25 @@ impl OpGate {
 
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+}
+
+/// Tests: one wait on a pause, counted while it lasts.
+#[cfg(test)]
+struct Waiting<'a>(&'a AtomicUsize);
+
+#[cfg(test)]
+impl<'a> Waiting<'a> {
+    fn on(gate: &'a OpGate) -> Self {
+        gate.waiting_on_pause.fetch_add(1, Ordering::SeqCst);
+        Self(&gate.waiting_on_pause)
+    }
+}
+
+#[cfg(test)]
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -545,9 +562,7 @@ mod tests {
             let gate = Arc::clone(&gate);
             tokio::spawn(async move { gate.enter().await.is_none() })
         };
-        while gate.waiting_on_pause() == 0 {
-            tokio::task::yield_now().await;
-        }
+        until(|| gate.waiting_on_pause() == 1).await;
         let closing = {
             let gate = Arc::clone(&gate);
             tokio::spawn(async move {

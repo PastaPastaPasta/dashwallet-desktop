@@ -1466,14 +1466,21 @@ fn a_signing_call_after_the_drain_lets_the_switch_commit() {
     assert!(matches!(switched, Ok(true)), "{switched:?}");
     assert!(!ran.load(Ordering::SeqCst), "no spend started");
     assert!(
-        called.is_err(),
+        matches!(
+            called,
+            Err(super::errors::ShieldedError::Platform(
+                super::errors::PlatformError::NetworkNotOpen
+            ))
+        ),
         "the call found the session closed: {called:?}"
     );
 }
 
 /// Row 74 r3 (Opus N2): a shielded store's first open that found the load
 /// fence taken, with the switch then refused in full (fence freed, gate let
-/// go) before it looks at the hold, reads the fence again and opens.
+/// go) before it looks at the hold, reads the fence again and opens. The
+/// switch is refused as busy once the open has found the fence taken and
+/// the operation it drains has ended.
 #[test]
 fn a_store_open_between_its_fence_reads_opens_after_the_refusal() {
     use crate::coins::TestPause;
@@ -1487,7 +1494,14 @@ fn a_store_open_between_its_fence_reads_opens_after_the_refusal() {
     *session.platform.hold_between_fence_reads.lock().unwrap() = Some(Arc::clone(&between));
     let (opened_tx, opened) = std::sync::mpsc::channel();
     let closed = std::thread::scope(|scope| {
-        let closing = scope.spawn(|| switch_close(&engine, Duration::from_millis(500)));
+        let reached = Arc::clone(&between);
+        let closing = scope.spawn(|| {
+            engine.block_on(engine.close_network_unless_busy(
+                DashNetwork::Regtest,
+                Duration::from_secs(60),
+                move |_| reached.reached.load(Ordering::SeqCst).then_some(()),
+            ))
+        });
         wait_until(|| session.gate.drains() == 1, "the close never drained");
         let (s, m) = (Arc::clone(&session), Arc::clone(&manager));
         session.rt.spawn(async move {
@@ -1497,10 +1511,11 @@ fn a_store_open_between_its_fence_reads_opens_after_the_refusal() {
             || between.reached.load(Ordering::SeqCst),
             "the open never found the fence taken",
         );
+        drop(op);
         closing.join().unwrap()
     });
     assert!(
-        matches!(closed, Err(crate::CloseRefused::Draining)),
+        matches!(closed, Err(crate::CloseRefused::Busy(()))),
         "{closed:?}"
     );
     assert!(!session.gate.is_held());
@@ -1508,7 +1523,6 @@ fn a_store_open_between_its_fence_reads_opens_after_the_refusal() {
     let open = opened.recv_timeout(Duration::from_secs(30)).unwrap();
     assert!(open.is_ok(), "{open:?}");
     assert!(engine.block_on(manager.shielded_coordinator()).is_some());
-    drop(op);
     assert!(session.is_open());
 }
 
