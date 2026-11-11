@@ -490,6 +490,7 @@ pub struct Standby {
     pub pro_tx_hash: String,
     pub share_index: u16,
     pub fee: u64,
+    pub penalty: u64,
     /// The first height the full-principal variant is valid at: the
     /// registration's height plus the early period.
     pub full_valid_from: u32,

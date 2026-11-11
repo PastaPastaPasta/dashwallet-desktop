@@ -141,11 +141,12 @@ fn variant_of(v: Variant) -> StandbyVariant {
 /// A stored row's description: no bytes (m-22). `full_valid_from` is the
 /// registration's current block plus the period when the history holds
 /// it, not the height stored, which a reorg may have moved (review r1 n-1).
-fn standby_of(row: &StandbyRow, full_valid_from: Option<u32>) -> Standby {
+fn standby_of(row: &StandbyRow, full_valid_from: Option<u32>, penalty: u64) -> Standby {
     Standby {
         pro_tx_hash: row.pro_tx_hash.clone(),
         share_index: row.share_index,
         fee: row.fee,
+        penalty,
         full_valid_from: full_valid_from.unwrap_or(row.full_valid_from),
         full: row.full_tx.is_some(),
         immediate: row.immediate_tx.is_some(),
@@ -371,13 +372,28 @@ impl NetworkSession {
         hash: [u8; 32],
     ) -> Result<Vec<Standby>, MasternodesError> {
         let rows = self.standby_rows(wallet, Some(hash)).await?;
-        let valid_from = match self.shared_chain(wallet).await {
-            Ok(chain) => in_history(&chain, hash)
-                .ok()
-                .map(|(height, p)| height.saturating_add(p.early_period_blocks)),
+        let history = match self.shared_chain(wallet).await {
+            Ok(chain) => in_history(&chain, hash).ok(),
             Err(_) => None,
         };
-        Ok(rows.iter().map(|r| standby_of(r, valid_from)).collect())
+        let valid_from = history
+            .as_ref()
+            .map(|(height, p)| height.saturating_add(p.early_period_blocks));
+        let penalty = history.as_ref().map_or(0, |(height, p)| {
+            standby::early_penalty(&SharedMn {
+                pro_tx_hash: Txid::from_byte_array(hash),
+                collateral: OutPoint::new(Txid::from_byte_array(hash), p.collateral.vout),
+                shares: &p.shares,
+                registered_height: *height,
+                early_period_blocks: p.early_period_blocks,
+                early_penalty: p.early_penalty,
+                voting_key_id: p.voting_key_id,
+            })
+        });
+        Ok(rows
+            .iter()
+            .map(|r| standby_of(r, valid_from, penalty))
+            .collect())
     }
 
     /// Both variants for each of this wallet's shares of `hash`, paying
@@ -576,7 +592,11 @@ impl NetworkSession {
             .collect();
         Ok(SharedImport::Standby {
             description: StandbyDescription {
-                standby: standby_of(&kept, Some(penalty_free_from(&mn))),
+                standby: standby_of(
+                    &kept,
+                    Some(penalty_free_from(&mn)),
+                    standby::early_penalty(&mn),
+                ),
                 variant: variant_of(checked.variant),
                 txid: tx.txid().to_string(),
                 penalty: standby::variant_penalty(&mn, checked.variant),

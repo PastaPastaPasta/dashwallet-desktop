@@ -165,6 +165,7 @@ fn test_QT_127_create_standby_signs_cores_pair_and_stores_it() {
         pro_tx_hash: txid.to_string(),
         share_index: 0,
         fee: 1_000,
+        penalty: COIN,
         full_valid_from: 1_050,
         full: true,
         immediate: true,
@@ -848,4 +849,51 @@ fn test_QT_127_a_confirmed_session_prompts_create_standby() {
     assert_eq!(f.session_of(0, &id).next, SharedNext::Nothing);
     let all = f.run(f.mn().shared_sessions(f.wallets[0])).unwrap();
     assert_eq!(all[0].next, SharedNext::Nothing);
+}
+
+#[test]
+fn ep_t3_standby_penalty_matches_created_and_imported_charges() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let made = create(&f, 0, txid, COIN + 1_000).unwrap();
+    let penalty = |s: &Standby| {
+        serde_json::to_value(s).unwrap()["penalty"]
+            .as_u64()
+            .unwrap()
+    };
+    assert_eq!(penalty(&made[0]), COIN);
+    let (full, immediate) = hex_lines(&export(&f, 0, txid, 0).unwrap());
+    assert_eq!(
+        send_code(&send(&f, 0, txid, 0, StandbyVariant::Immediate, COIN + 999).unwrap_err()),
+        "send.grant_exceeded"
+    );
+    send(&f, 0, txid, 0, StandbyVariant::Immediate, COIN + 1_000).unwrap();
+    for full_only in [false, true] {
+        let restored = fx(3, true);
+        *restored.seam.list.lock().unwrap() = f.seam.list.lock().unwrap().clone();
+        *restored.seam.shared_mined.lock().unwrap() = f.seam.shared_mined.lock().unwrap().clone();
+        let text = if full_only {
+            full.as_ref().unwrap()
+        } else {
+            immediate.as_ref().unwrap()
+        };
+        let (description, stored) = imported_standby(&restored, 0, text);
+        assert!(stored);
+        assert_eq!(description.standby.source, StandbySource::Imported);
+        assert_eq!(penalty(&description.standby), COIN);
+        let (variant, debit) = if full_only {
+            list_at(&restored, 1_050);
+            (StandbyVariant::Full, 1_000)
+        } else {
+            (StandbyVariant::Immediate, COIN + 1_000)
+        };
+        assert_eq!(
+            send_code(&send(&restored, 0, txid, 0, variant, debit - 1).unwrap_err()),
+            "send.grant_exceeded"
+        );
+        send(&restored, 0, txid, 0, variant, debit).unwrap();
+    }
+    let zero = fx(3, true);
+    let (_, hash) = listed_with(&zero, 0);
+    assert_eq!(penalty(&create(&zero, 0, hash, 1_000).unwrap()[0]), 0);
 }
