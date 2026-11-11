@@ -1966,8 +1966,8 @@ async fn a_faulted_finalize_of_a_marked_group_keeps_every_late_proof_link() {
 }
 
 /// Sets the status of the first document Drive wrote.
-fn set_status(f: &Fx, status: u8) {
-    f.plat.with(|w| {
+fn set_status(plat: &Platform, status: u8) {
+    plat.with(|w| {
         let Document::V0(d) = &mut w.documents[0];
         d.properties
             .insert(withdrawal::properties::STATUS.into(), Value::U8(status));
@@ -1977,9 +1977,12 @@ fn set_status(f: &Fx, status: u8) {
 /// R3-1 (r2 Sol m1, P5): a `done` record's SPV-verified status read raises
 /// its group's floor, durably and before the status is stored. After a
 /// restart, a read below that floor refreshes nothing, and neither does an
-/// at-height read that fails rule 5 (Enforce).
+/// at-height read that fails rule 5 (Enforce). The raise commits before
+/// the store: with the raise faulted, neither the status nor any floor
+/// changes.
 #[tokio::test]
 async fn a_done_records_verified_status_read_raises_the_groups_floor() {
+    use dw_appdb::fault::{MN_WITHDRAW_FLOOR, Stage, arm, disarm, hit};
     let mut f = fx();
     f.plat.answer(Answer::Refused("10001 merits".into()), false);
     let refused = f.withdraw(Payout, AMOUNT).await.unwrap();
@@ -1994,13 +1997,25 @@ async fn a_done_records_verified_status_read_raises_the_groups_floor() {
     };
     assert_eq!(f.row(&ids[1]).state, WithdrawalState::Done);
     assert!(floors(&f).iter().all(|&h| h < 20), "{:?}", floors(&f));
-    set_status(&f, 4);
+    let (status, before) = (f.row(&ids[1]).document_status, floors(&f));
+    assert_ne!(status, Some(4));
+    set_status(&f.plat, 4);
     f.plat.with(|w| w.height = 30);
+    let path = f.scene.path.clone();
+    arm(&path, MN_WITHDRAW_FLOOR, Stage::Before);
+    let e = recheck_record(&f.scene, &*f.plat, &ids[1])
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("fault"), "{e}");
+    assert!(hit(&path, MN_WITHDRAW_FLOOR, Stage::Before).is_ok());
+    disarm(&path);
+    assert_eq!(f.row(&ids[1]).document_status, status, "a faulted raise");
+    assert_eq!(floors(&f), before);
     let done = recheck_record(&f.scene, &*f.plat, &ids[1]).await.unwrap();
     assert_eq!(done.document_status, Some(4));
     assert_eq!(floors(&f), [30, 30]);
     f.restart();
-    set_status(&f, 5);
+    set_status(&f.plat, 5);
     f.plat.claim(Read::Document, ALWAYS, 20);
     recheck_record(&f.scene, &*f.plat, &ids[1]).await.unwrap();
     assert_eq!(f.row(&ids[1]).document_status, Some(4), "an older read");
@@ -2035,6 +2050,98 @@ async fn a_not_executed_records_verified_re_read_raises_the_groups_floor() {
     assert!(f.scene.alarms().is_empty());
 }
 
+/// Round 3 T3 (r3 Opus n2, P5): an owner-key `not_executed` record's
+/// re-read raises the floor on its verified identity read, though its
+/// document read fails.
+#[tokio::test]
+async fn a_not_executed_owner_records_verified_identity_re_read_raises_the_floor() {
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    let lost = f.withdraw(Owner, AMOUNT).await.unwrap();
+    f.plat.rival(3, None);
+    assert_eq!(f.recheck(3).await, Outcome::NotExecuted);
+    assert!(f.row(&lost.signed.id).floor_height < 30);
+    f.plat.with(|w| w.height = 30);
+    f.plat.deviate(Read::Document, Dev::Fail, ALWAYS);
+    let reads = f.plat.reads(Read::Identity);
+    let kept = recheck_record(&f.scene, &*f.plat, &lost.signed.id)
+        .await
+        .unwrap();
+    assert!(f.plat.reads(Read::Identity) > reads, "the identity is read");
+    assert_eq!(kept.state, WithdrawalState::NotExecuted);
+    assert_eq!(kept.floor_height, 30);
+    assert!(f.scene.alarms().is_empty());
+}
+
+/// Round 3 T2 (r3 Opus n1 (a)): a `done` record's refresh holds the
+/// identity lock from its floor to its store. A second refresh starts while
+/// the first's document read, at 30, is in flight, and reads at 20 once the
+/// first returns. With the lock, the second reads the raised floor and
+/// refreshes nothing: the status read at 30 stays. Without it, the second
+/// reads the floor before the raise and stores the older status after the
+/// newer one (the arrangement's own check).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_done_refresh_holds_the_identity_lock_against_an_older_concurrent_read() {
+    for unlocked in [false, true] {
+        let f = Arc::new(Fx::new(pro_tx(0xa0 + unlocked as u8)));
+        if unlocked {
+            UNLOCKED.lock().unwrap().push(f.id);
+        }
+        f.plat.answer(Answer::Refused("10001 merits".into()), false);
+        let refused = f.withdraw(Payout, AMOUNT).await.unwrap();
+        let sibling = f.retry(&refused.signed.id, Owner, AMOUNT).await.unwrap();
+        f.plat.block();
+        f.recheck(3).await;
+        let ids = [refused.signed.id.clone(), sibling.signed.id.clone()];
+        assert_eq!(f.row(&ids[1]).state, WithdrawalState::Done);
+        assert!(f.row(&ids[1]).floor_height < 20);
+        set_status(&f.plat, 4);
+        f.plat.with(|w| w.height = 30);
+        let (at_read_tx, at_read) = std::sync::mpsc::channel::<()>();
+        let (first_done_tx, first_done) = std::sync::mpsc::channel::<()>();
+        let plat = Arc::clone(&f.plat);
+        let second_read: Hook = Box::new(move || {
+            let _ = at_read_tx.send(());
+            first_done.recv().unwrap();
+            set_status(&plat, 5);
+            plat.claim(Read::Document, ALWAYS, 20);
+        });
+        let second = {
+            let (f, id) = (Arc::clone(&f), ids[1].clone());
+            async move { recheck_record(&f.scene, &*f.plat, &id).await.map(|_| ()) }
+        };
+        let handle = Arc::new(Mutex::new(None));
+        let (plat, slot) = (Arc::clone(&f.plat), Arc::clone(&handle));
+        let first_read: Hook = Box::new(move || {
+            *plat.hook.lock().unwrap() = Some((Read::Document, second_read));
+            *slot.lock().unwrap() = Some(tokio::spawn(second));
+            // Unlocked, the second reaches its read at once; locked, it
+            // waits for the first to return.
+            if unlocked {
+                at_read.recv().unwrap();
+            } else {
+                let _ = at_read.recv_timeout(Duration::from_secs(3));
+            }
+        });
+        *f.plat.hook.lock().unwrap() = Some((Read::Document, first_read));
+        let first = recheck_record(&f.scene, &*f.plat, &ids[1]).await.unwrap();
+        assert_eq!(first.document_status, Some(4), "unlocked {unlocked}");
+        first_done_tx.send(()).unwrap();
+        let second = handle.lock().unwrap().take().expect("the second started");
+        second.await.unwrap().unwrap();
+        UNLOCKED.lock().unwrap().retain(|id| *id != f.id);
+        let status = f.row(&ids[1]).document_status;
+        assert_eq!(
+            status,
+            Some(if unlocked { 5 } else { 4 }),
+            "unlocked {unlocked}"
+        );
+        for id in &ids {
+            assert_eq!(f.row(id).floor_height, 30, "unlocked {unlocked}");
+        }
+    }
+}
+
 /// R3-2 (r2 Opus m1, P5): step 2's verified reads raise the floor though
 /// the round doesn't decide. The nonce is read at H = 30, step 2's identity
 /// at 45, then its documents fail rule 5: the stored floor is 45.
@@ -2064,13 +2171,13 @@ async fn a_done_records_recheck_refreshes_its_status_and_a_not_executed_match_al
     let row = f.withdraw(Payout, AMOUNT).await.unwrap();
     f.plat.block();
     f.recheck(3).await;
-    set_status(&f, 4);
+    set_status(&f.plat, 4);
     let done = recheck_record(&f.scene, &*f.plat, &row.signed.id)
         .await
         .unwrap();
     assert_eq!(done.document_status, Some(4));
     // A read below the record's floor refreshes nothing (P5).
-    set_status(&f, 5);
+    set_status(&f.plat, 5);
     let floor = f.row(&row.signed.id).floor_height;
     f.plat.claim(Read::Document, ALWAYS, floor - 1);
     let kept = recheck_record(&f.scene, &*f.plat, &row.signed.id)
