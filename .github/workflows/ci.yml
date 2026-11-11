@@ -110,7 +110,9 @@ jobs:
   rust-linux:
     name: Rust tests (Linux)
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    # Warm runs take about 80 min. This job alone saves the Linux cache (on main), so it needs
+    # room to finish cold, or an evicted cache never comes back.
+    timeout-minutes: 150
     defaults:
       run:
         shell: bash
