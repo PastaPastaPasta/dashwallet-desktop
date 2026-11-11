@@ -505,6 +505,7 @@ commands! {
         grant: String,
     ) -> PlatformSendOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
+        let _in_flight = state.broadcasting();
         Ok(dashpay.platform_send(operation, grant).await?.into())
     }
 

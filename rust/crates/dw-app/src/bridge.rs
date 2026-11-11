@@ -483,7 +483,7 @@ pub struct EventMemory {
 }
 
 impl EventMemory {
-    fn record(&self, event: &AppEvent) {
+    pub(crate) fn record(&self, event: &AppEvent) {
         match event {
             AppEvent::Notice {
                 network,

@@ -353,8 +353,17 @@ impl NetworkSession {
     pub(crate) async fn settle_invitation_holds(self: &Arc<Self>) {
         let settled = match self.open_claim_links().await {
             Ok(open) => {
-                self.stash_call(move |v| v.retain_stashed_link_holds(&open))
-                    .await
+                #[cfg(test)]
+                let held = (self.platform.hold_settle_retain.lock().unwrap()).take();
+                self.stash_call(move |v| {
+                    #[cfg(test)]
+                    if let Some((reached, release)) = held {
+                        let _ = reached.send(());
+                        let _ = release.recv();
+                    }
+                    v.retain_stashed_link_holds(&open)
+                })
+                .await
             }
             Err(e) => Err(e),
         };

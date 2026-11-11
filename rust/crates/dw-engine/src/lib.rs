@@ -82,7 +82,7 @@ pub use compat::{
     ImportReport, KeyMaterial, WalletFileKind, inspect_wallet_file,
 };
 pub use dw_appdb::BookPurpose;
-pub use engine::{Engine, EngineConfig};
+pub use engine::{CloseRefused, Engine, EngineConfig};
 pub use error::{EngineError, TASK_PANICKED, engine_poisoned};
 pub use events::{EngineEvent, EventSink, NoticeCode, PlatformChange};
 pub use fees::{

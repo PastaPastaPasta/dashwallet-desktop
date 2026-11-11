@@ -194,6 +194,7 @@ commands! {
     fn draft_broadcast(state, draft: u64, prepared: u64) -> BroadcastOutcome {
         let d = draft_of(&state, draft)?;
         let tx = prepared_of(&state, draft, prepared)?;
+        let _in_flight = state.broadcasting();
         let first = state.sends.start_broadcast(prepared);
         let result = d.broadcast(tx).await;
         if result.is_ok() || (first && result.as_ref().is_err_and(released)) {
@@ -255,7 +256,9 @@ commands! {
     #[facade("NetworkSession::broadcast_psbt")]
     fn broadcast_psbt(state, psbt: String) -> String {
         let psbt = parse_psbt(&psbt)?;
-        Ok(state.session().await?.broadcast_psbt(psbt).await?.to_string())
+        let session = state.session().await?;
+        let _in_flight = state.broadcasting();
+        Ok(session.broadcast_psbt(psbt).await?.to_string())
     }
 
     /// The coin control list of a wallet, largest first.

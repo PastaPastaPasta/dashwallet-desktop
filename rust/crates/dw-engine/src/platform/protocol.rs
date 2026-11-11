@@ -35,6 +35,8 @@ impl NetworkSession {
         let this = Arc::clone(self);
         Ok(self
             .on_runtime(async move {
+                #[cfg(test)]
+                crate::coins::pause_at(&this.platform.hold_refresh).await;
                 let _op = this.enter().await?;
                 let sdk = this.manager()?.sdk_arc();
                 Ok(refreshed(&sdk).await)

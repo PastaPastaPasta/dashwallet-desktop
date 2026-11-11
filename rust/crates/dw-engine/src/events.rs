@@ -460,6 +460,16 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next wallet open before its replay is resumed.
     #[cfg(test)]
     pub(crate) pause_load: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next history load once it has read the stored
+    /// records, before it reads the wallet.
+    #[cfg(test)]
+    pub(crate) pause_history: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next history load fails to list the stored records.
+    #[cfg(test)]
+    pub(crate) fail_history_read: std::sync::atomic::AtomicBool,
+    /// Tests: the next history load's first stored record read goes wrong.
+    #[cfg(test)]
+    pub(crate) record_read_fault: Mutex<Option<crate::history_ops::RecordFault>>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
@@ -554,6 +564,12 @@ impl SessionHub {
             pause_seen: Mutex::new(None),
             #[cfg(test)]
             pause_load: Mutex::new(None),
+            #[cfg(test)]
+            pause_history: Mutex::new(None),
+            #[cfg(test)]
+            fail_history_read: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            record_read_fault: Mutex::new(None),
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
         }
@@ -982,7 +998,7 @@ impl SessionHub {
                 // the history drops them too.
                 self.history.with_wallet(id, |h| {
                     for t in txids {
-                        h.txs.remove(t);
+                        h.forget(t);
                     }
                 });
                 self.pump.mark_history(id, Some(txids));

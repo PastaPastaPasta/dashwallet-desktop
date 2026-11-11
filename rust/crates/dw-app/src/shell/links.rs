@@ -152,13 +152,21 @@ impl Inbox {
     /// [`Inbox::drain`] and [`intake`] do: `session` is the window's. An
     /// invitation that arrives with no session of `network` to keep it in
     /// stays queued, in order, for the next take; a link that fails to
-    /// route is rejected alone, and the batch goes on (review r1 #8).
+    /// route is rejected alone, and the batch goes on (review r1 #8). A
+    /// window already on another network (a switch went first) takes
+    /// none: the page it boots again takes them for its own.
     pub async fn take(
         &self,
         session: Option<Arc<NetworkSession>>,
         network: &str,
     ) -> Result<Vec<LinkRoute>, AppError> {
-        let session = session.filter(|s| s.network().dir_name() == network);
+        if session
+            .as_ref()
+            .is_some_and(|s| s.network().dir_name() != network)
+        {
+            crate::dto::parse_network(network)?;
+            return Ok(Vec::new());
+        }
         let mut routes = Vec::new();
         let mut waiting = Vec::new();
         for link in self.drain(network)? {

@@ -234,11 +234,9 @@ commands! {
     #[facade("Governance::submit_proposal")]
     fn governance_submit_proposal(state, wallet_id: String, hash: String) -> MyProposal {
         let wallet = parse_wallet_id(&wallet_id)?;
-        let submitted = state
-            .governance()
-            .await?
-            .submit_proposal(wallet, hash)
-            .await?;
+        let governance = state.governance().await?;
+        let _in_flight = state.broadcasting();
+        let submitted = governance.submit_proposal(wallet, hash).await?;
         Ok(submitted.into())
     }
 }

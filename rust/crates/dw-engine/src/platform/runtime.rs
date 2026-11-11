@@ -149,6 +149,20 @@ pub(crate) struct PlatformRuntime {
     /// that wallet (`NetworkSession::holds_shielded_spends`).
     #[cfg(test)]
     pub(crate) close_check_pause: Mutex<Option<super::shielded_pool::CheckPause>>,
+    /// Tests: holds the next `NetworkSession::refresh_protocol_version`
+    /// before it asks the gate (row 74 r3 M1).
+    #[cfg(test)]
+    pub(crate) hold_refresh: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next shielded store's first open between its two
+    /// reads of the load fence.
+    #[cfg(test)]
+    pub(crate) hold_between_fence_reads: std::sync::Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next invitation-hold settle reports here inside its
+    /// admitted vault work, and waits for the receiver (or its sender's
+    /// drop) before it retains.
+    #[cfg(test)]
+    pub(crate) hold_settle_retain:
+        std::sync::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     /// Each wallet's shielded call lock (`shielded_pool::wallet_lock`).
     pub(crate) shielded_calls: std::sync::Mutex<
         std::collections::HashMap<WalletId, std::sync::Weak<tokio::sync::Mutex<()>>>,
@@ -432,6 +446,12 @@ impl PlatformRuntime {
             wallet_loads: tokio::sync::RwLock::new(()),
             #[cfg(test)]
             close_check_pause: Mutex::new(None),
+            #[cfg(test)]
+            hold_refresh: std::sync::Mutex::default(),
+            #[cfg(test)]
+            hold_between_fence_reads: std::sync::Mutex::default(),
+            #[cfg(test)]
+            hold_settle_retain: std::sync::Mutex::default(),
             shielded_calls: std::sync::Mutex::default(),
             fund_holds: Arc::default(),
             shield_unknown: std::sync::Mutex::default(),

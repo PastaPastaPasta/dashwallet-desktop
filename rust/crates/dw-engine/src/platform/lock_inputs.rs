@@ -115,6 +115,10 @@ impl<S> Capped<S> {
         self.refused.load(Ordering::SeqCst)
     }
 
+    pub(crate) fn inner(&self) -> &S {
+        &self.inner
+    }
+
     /// The refusal: the inputs of the build it refused before signing,
     /// when it did.
     pub(crate) fn refusal(&self) -> PlatformError {

@@ -12,6 +12,8 @@ let fixture: FixtureHandle;
 let backend: IpcBackend;
 beforeEach(() => {
   vi.stubGlobal("window", globalThis);
+  const stored = new Map<string, string>();
+  vi.stubGlobal("sessionStorage", { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => stored.set(k, v), removeItem: (k: string) => stored.delete(k) });
   fixture = installFixture({ scenario: "funded" });
   backend = new IpcBackend("fixture");
 });
@@ -21,19 +23,45 @@ afterEach(() => {
 });
 
 describe("fixture pending commands", () => {
-  it("reads and saves the network choice", async () => {
-    const first = await backend.networkChoice();
-    expect(first).toMatchObject({ chosen: "testnet", saved: true, forcedByFlag: false, restartNeeded: false });
-    expect(await backend.setNetworkChoice("mainnet")).toMatchObject({ chosen: "mainnet", restartNeeded: true });
-    expect(await backend.networkChoice()).toMatchObject({ chosen: "mainnet", restartNeeded: true });
-    expect(await backend.setNetworkChoice("testnet")).toMatchObject({ restartNeeded: false });
-    expect(fixture.calls).toContain("set_network_choice");
+  it("switches the window's network, keeping each network's world", async () => {
+    expect(await backend.networkChoice()).toMatchObject({ chosen: "testnet", saved: true, active: { kind: "testnet" }, forcedByFlag: false });
+    const moved = await backend.switchNetwork("mainnet");
+    expect(moved.opened?.network.kind).toBe("mainnet");
+    expect(moved.choice).toMatchObject({ chosen: "mainnet", active: { kind: "mainnet" } });
+    expect(fixture.world.wallets).toEqual([]);
+    expect(fixture.calls).toContain("switch_network");
+    const back = await backend.switchNetwork("testnet");
+    expect(back.opened?.network.kind).toBe("testnet");
+    expect(fixture.world.wallets.map((w) => w.summary.walletId)).toContain(W);
+    // The testnet world it went back to was closed: locked, no grants.
+    expect(fixture.world.lock.state).toBe("locked");
+    expect(fixture.world.grants).toEqual([]);
   });
 
-  it("answers null for the choice, and refuses to save it, while the command is absent", async () => {
+  it("refuses a busy switch and a refused close, and fails after the close as dw-app does", async () => {
+    fixture.world.networkSwitch = { busy: { flows: ["registration"], mixing: true, broadcast: false } };
+    await expect(backend.switchNetwork("mainnet")).rejects.toMatchObject({ code: "app.network_busy", data: { kind: "networkBusy", mixing: true } });
+    fixture.world.networkSwitch = { closeRefused: "wallet" };
+    await expect(backend.switchNetwork("mainnet")).rejects.toMatchObject({ code: "wallet" });
+    expect(fixture.world.launch.network.kind).toBe("testnet");
+    fixture.world.networkSwitch = { fail: { rolledBack: false } };
+    await expect(backend.switchNetwork("mainnet")).rejects.toMatchObject({ code: "app.network_switch_failed", data: { rolledBack: false } });
+    expect(fixture.world.launch.network.kind).toBe("testnet");
+    await expect(backend.openNetwork()).rejects.toMatchObject({ code: "storage_in_use" });
+    expect((await backend.openNetwork()).network.kind).toBe("testnet");
+  });
+
+  it("only saves the choice in a window pinned to a network", async () => {
+    fixture.world.launch.network = { kind: "regtest", dirName: "regtest", unitName: "DASH" };
+    const saved = await backend.switchNetwork("mainnet");
+    expect(saved.opened).toBeNull();
+    expect(saved.choice).toMatchObject({ chosen: "mainnet", active: { kind: "regtest" }, forcedByFlag: true });
+  });
+
+  it("answers null for the choice, and refuses to switch, while the command is absent", async () => {
     fixture.world.pending.networkChoice = null;
     expect(await backend.networkChoice()).toBeNull();
-    await expect(backend.setNetworkChoice("mainnet")).rejects.toThrow("not available");
+    await expect(backend.switchNetwork("mainnet")).rejects.toThrow("not available");
   });
 
   it("reads the shielded and Platform balances, null while their commands are absent", async () => {

@@ -275,6 +275,7 @@ impl Fx {
                 .expect("BIP44 account 0")
                 .utxos
                 .insert(outpoint, utxo);
+            inner.hub.history.hold_funding(id, outpoint.txid);
             Ok(outpoint)
         }))
         .unwrap()

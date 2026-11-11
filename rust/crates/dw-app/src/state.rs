@@ -3,13 +3,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use dw_engine::governance::Governance;
 use dw_engine::platform::DashPay;
-use dw_engine::{Engine, EngineConfig, NetworkSession, PreparedTx, TxDraft, WalletId};
+use dw_engine::{DashNetwork, Engine, EngineConfig, NetworkSession, PreparedTx, TxDraft, WalletId};
 use dw_vault::VaultConfig;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::Mutex;
@@ -31,6 +31,24 @@ pub struct AppState {
     pub data_root: PathBuf,
     /// Gives the main window an appearance (`None`: the system's).
     pub apply_theme: Box<dyn Fn(Option<ThemeName>) + Send + Sync>,
+    /// Titles the main window.
+    set_title: Box<dyn Fn(&str) + Send + Sync>,
+    /// The network the window shows: the launch network until
+    /// `switch_network` opens another. `open_network(null)` opens it, and
+    /// `launch_info` reports it to a renderer that boots again.
+    window_network: StdMutex<DashNetwork>,
+    /// Broadcasts handed to the engine that have not returned
+    /// ([`AppState::broadcasting`]): a network switch refuses meanwhile.
+    /// Taken, once the session is found, by `draft_broadcast`,
+    /// `broadcast_psbt`, `move_mixed_coins`, `consolidate_mixed_coins`,
+    /// `resend_mixed_coins`, `resend_transaction`,
+    /// `governance_submit_proposal` and `platform_send`. `shielded_send`
+    /// takes none: a shielded spend in flight already refuses the close
+    /// (`shielded_spend_unresolved`).
+    broadcasts: Arc<AtomicUsize>,
+    /// Tests: every broadcast guard taken.
+    #[cfg(test)]
+    pub(crate) broadcasts_taken: AtomicUsize,
     /// The network the window shows (D-row "one active session"). Session
     /// commands act on it; `open_network` and `close_network` change it.
     session: Mutex<Option<Arc<NetworkSession>>>,
@@ -70,6 +88,18 @@ pub struct AppState {
     pub(crate) send_bind_seam: StdMutex<Option<Arc<Seam>>>,
     #[cfg(test)]
     pub(crate) send_grant_issued: StdMutex<Option<String>>,
+    /// Test seam: the endpoints `switch_network` and `open_network(null)`
+    /// open the window network with, instead of the launch's (tests reach
+    /// no public DAPI or quorum service).
+    #[cfg(test)]
+    pub(crate) test_endpoints: StdMutex<Option<crate::api::network::SessionSettings>>,
+    /// Test seam: `switch_network` runs it after a failed open, before it
+    /// reopens the network it left.
+    #[cfg(test)]
+    pub(crate) before_rollback: StdMutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Test seam: the networks the window started SPV on, in order.
+    #[cfg(test)]
+    pub(crate) spv_started: StdMutex<Vec<dw_engine::DashNetwork>>,
 }
 
 /// The single source of "require authentication for every payment" for
@@ -219,6 +249,8 @@ impl AppState {
         )?;
         let handle = app.clone();
         let window = app.clone();
+        let titled = app.clone();
+        let window_network = StdMutex::new(launch.network.clone());
         let shell = crate::shell::shell(app)
             .unwrap_or_else(|| Arc::new(Shell::new(launch.selftest_link_trace.clone())));
         Ok(AppState {
@@ -231,6 +263,15 @@ impl AppState {
                     let _ = w.set_theme(theme.map(Into::into));
                 }
             }),
+            set_title: Box::new(move |title| {
+                if let Some(w) = titled.get_webview_window("main") {
+                    let _ = w.set_title(title);
+                }
+            }),
+            window_network,
+            broadcasts: Arc::default(),
+            #[cfg(test)]
+            broadcasts_taken: AtomicUsize::new(0),
             session: Mutex::new(None),
             exit: Box::new(move |code| handle.exit(code)),
             sends: SendHandles::default(),
@@ -248,6 +289,12 @@ impl AppState {
             send_bind_seam: StdMutex::default(),
             #[cfg(test)]
             send_grant_issued: StdMutex::default(),
+            #[cfg(test)]
+            test_endpoints: StdMutex::default(),
+            #[cfg(test)]
+            before_rollback: StdMutex::default(),
+            #[cfg(test)]
+            spv_started: StdMutex::default(),
         })
     }
 
@@ -324,9 +371,49 @@ impl AppState {
         (self.exit)(code)
     }
 
+    /// The network the window shows ([`AppState::window_network`]).
+    pub fn window_network(&self) -> DashNetwork {
+        self.window_network
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Makes `network` the window's, and titles the window for it.
+    pub(crate) fn set_window_network(&self, network: DashNetwork) {
+        (self.set_title)(&crate::window_title(&network));
+        *self
+            .window_network
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = network;
+    }
+
+    /// Counts a broadcast in flight until the guard drops.
+    pub(crate) fn broadcasting(&self) -> BroadcastGuard<'_> {
+        #[cfg(test)]
+        self.broadcasts_taken.fetch_add(1, Ordering::SeqCst);
+        self.broadcasts.fetch_add(1, Ordering::SeqCst);
+        BroadcastGuard(&self.broadcasts)
+    }
+
+    /// How many broadcasts were handed to the engine and have not
+    /// returned; read by a network switch's close.
+    pub(crate) fn broadcasts(&self) -> Arc<AtomicUsize> {
+        Arc::clone(&self.broadcasts)
+    }
+
     /// Drops every handle: they belong to the session that is closing.
     pub(crate) fn clear_handles(&self) {
         self.sends.clear();
+    }
+}
+
+/// A broadcast in flight ([`AppState::broadcasting`]).
+pub(crate) struct BroadcastGuard<'a>(&'a AtomicUsize);
+
+impl Drop for BroadcastGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 

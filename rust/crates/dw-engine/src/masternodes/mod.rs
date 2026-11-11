@@ -23,6 +23,9 @@ mod tracking;
 
 use std::sync::Arc;
 
+#[cfg(test)]
+pub(crate) use aggregate::fixtures as provider_fixtures;
+pub(crate) use aggregate::registration_collaterals;
 pub use errors::MasternodesError;
 pub use protx_records::{
     CollateralChoice, CollateralKind, EvonodeTerms, KeepOr, KeyPick, OperatorChoice,

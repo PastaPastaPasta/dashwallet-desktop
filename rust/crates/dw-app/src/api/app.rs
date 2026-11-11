@@ -10,18 +10,24 @@ use crate::settings::{self, UiSettings};
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 
 commands! {
-    /// How the app was launched: the self-test, the forced theme and the
-    /// network `openNetwork` opens by default.
+    /// How the app was launched: the self-test, the forced theme, and the
+    /// network `openNetwork` opens by default: the window's, which
+    /// `switchNetwork` changes.
     #[facade()]
     fn launch_info(state) -> LaunchInfo {
-        Ok(LaunchInfo::new(&state.launch))
+        Ok(LaunchInfo::new(&state.launch, &state.window_network()))
     }
 
-    /// The last 64 engine notices, oldest first, kept apart from the event
-    /// queue: after `eventsOverflowed`, the notices it may have dropped.
+    /// Of the last 64 engine notices, oldest first, those of the window's
+    /// network and those of none, kept apart from the event queue: after
+    /// `eventsOverflowed`, the notices it may have dropped. A network the
+    /// window left (`switchNetwork`) keeps its notices out, as its events.
     #[facade()]
     fn recent_notices(state) -> Vec<RecentNotice> {
-        Ok(state.memory.recent_notices())
+        let window = state.window_network().dir_name();
+        let mut notices = state.memory.recent_notices();
+        notices.retain(|n| n.network.as_deref().is_none_or(|network| network == window));
+        Ok(notices)
     }
 
     /// A start-up milestone of the renderer (`shell`: the window's first

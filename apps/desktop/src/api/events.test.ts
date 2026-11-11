@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InfiniteData } from "@tanstack/react-query";
-import { bridgeEvents, invalidationsFor, RECONCILE_COALESCE_MS, RECONCILE_MAX_WAIT_MS } from "./events";
+import { bridgeEvents, invalidationsFor, ofOtherNetwork, RECONCILE_COALESCE_MS, RECONCILE_MAX_WAIT_MS } from "./events";
 import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
 import type { HistoryRows } from "./generated/HistoryRows";
@@ -85,7 +85,7 @@ describe("event bridge", () => {
       client.setQueryData([...keys.lockReconcile, previous], { settled: false });
       let emit: (e: AppEvent) => void = () => undefined;
       const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-      await bridgeEvents(fake, client);
+      await bridgeEvents(fake, client, "testnet");
       emit({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } });
       expect(client.getQueryData(keys.lockDrain)).toMatchObject({ inFlight: 1 });
       emit({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report: REPORT } });
@@ -107,7 +107,7 @@ describe("event bridge", () => {
     const fixture = installFixture({ scenario: "lock-report-resolved" });
     const backend = new IpcBackend("fixture");
     const client = new QueryClient();
-    await bridgeEvents(backend, client);
+    await bridgeEvents(backend, client, "testnet");
     const previous = await backend.lock();
     await vi.waitFor(() => expect(client.getQueryData(keys.lastLockReport)).toEqual(previous));
 
@@ -133,7 +133,7 @@ describe("event bridge", () => {
       client.setQueryData(key, { settled: false });
       let emit: (e: AppEvent) => void = () => undefined;
       const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-      const unsubscribe = await bridgeEvents(fake, client);
+      const unsubscribe = await bridgeEvents(fake, client, "testnet");
       const lease = () => emit({ kind: "leaseChanged", network: "testnet", lease: {} as never });
       for (let t = 0; t < RECONCILE_MAX_WAIT_MS; t += RECONCILE_COALESCE_MS / 2) {
         lease();
@@ -157,7 +157,7 @@ describe("event bridge", () => {
     const client = new QueryClient();
     client.setQueryData(keys.lockStatus, await backend.lockStatus());
     client.setQueryData(keys.balance(FIXTURE_WALLET_ID), await backend.balance(FIXTURE_WALLET_ID));
-    await bridgeEvents(backend, client);
+    await bridgeEvents(backend, client, "testnet");
     await backend.lock();
     expect(client.getQueryState(keys.lockStatus)?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.balance(FIXTURE_WALLET_ID))?.isInvalidated).toBe(false);
@@ -170,7 +170,7 @@ describe("event bridge", () => {
     client.setQueryData<InfiniteData<HistoryRows, string | null>>(key, { pages: [page, page], pageParams: [null, "2"] });
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-    await bridgeEvents(fake, client);
+    await bridgeEvents(fake, client, "testnet");
     emit({ kind: "historyChanged", network: "testnet", walletId: FIXTURE_WALLET_ID, txids: [] });
     expect(client.getQueryData<InfiniteData<HistoryRows, string | null>>(key)?.pages).toHaveLength(1);
     expect(client.getQueryState(key)?.isInvalidated).toBe(true);
@@ -182,7 +182,7 @@ describe("event bridge", () => {
     client.setQueryData(keys.dashpayStatus("b"), { kind: "noIdentity", reason: "watchOnly" });
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-    await bridgeEvents(fake, client);
+    await bridgeEvents(fake, client, "testnet");
     emit({ kind: "walletCreated", network: "testnet", walletId: "a" });
     expect(client.getQueryState(keys.dashpayStatus("a"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
@@ -196,7 +196,7 @@ describe("event bridge", () => {
     }
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-    await bridgeEvents(fake, client);
+    await bridgeEvents(fake, client, "testnet");
     emit({ kind: "walletCreated", network: "testnet", walletId: "a" });
     expect(client.getQueryData(keys.usernameInRequests("a"))).toBeUndefined();
     expect(client.getQueryData(keys.receiveUsername("a"))).toBeUndefined();
@@ -213,11 +213,51 @@ describe("event bridge", () => {
     client.setQueryData(keys.identities("a"), []);
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-    await bridgeEvents(fake, client);
+    await bridgeEvents(fake, client, "testnet");
     emit({ kind: "spvStateChanged", network: "testnet", running: true });
     expect(client.getQueryState(keys.dashpayStatus("a"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
     expect(client.getQueryState(keys.dashpayStatus("c"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.identities("a"))?.isInvalidated).toBe(false);
+  });
+
+  // Row 74: after a network switch the page is the new network's; what a command still running
+  // on the session it left reports is dropped.
+  it("knows the events of another network", () => {
+    expect(ofOtherNetwork({ kind: "sessionClosed", network: "testnet" }, "mainnet")).toBe(true);
+    expect(ofOtherNetwork({ kind: "sessionClosed", network: "mainnet" }, "mainnet")).toBe(false);
+    expect(ofOtherNetwork({ kind: "notice", network: "testnet", code: "uncleanShutdown", detail: "" } as AppEvent, "mainnet")).toBe(true);
+    expect(ofOtherNetwork({ kind: "notice", network: null, code: "uncleanShutdown", detail: "" } as AppEvent, "mainnet")).toBe(false);
+    expect(ofOtherNetwork({ kind: "eventsOverflowed" } as AppEvent, "mainnet")).toBe(false);
+    expect(ofOtherNetwork({ kind: "rates" } as AppEvent, "mainnet")).toBe(false);
+  });
+
+  it("drops the events of another network: no report, no invalidation, no announcement", async () => {
+    const client = new QueryClient();
+    const mine = { ...REPORT, flowsOmitted: 2 };
+    client.setQueryData(keys.lastLockReport, mine);
+    client.setQueryData(keys.balance("w"), null);
+    client.setQueryData(keys.wallets, []);
+    let emit: (e: AppEvent) => void = () => undefined;
+    const calls: string[] = [];
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      txNotices: async () => (calls.push("txNotices"), []),
+    } as unknown as Backend;
+    await bridgeEvents(fake, client, "mainnet");
+    emit({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report: REPORT } });
+    emit({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } });
+    emit({ kind: "balances", network: "testnet", walletId: "w", balances: null });
+    emit({ kind: "sessionClosed", network: "testnet" });
+    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["t"], catchUp: false } as AppEvent);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(client.getQueryData(keys.lastLockReport)).toEqual(mine);
+    expect(client.getQueryData(keys.lockDrain)).toBeUndefined();
+    expect(client.getQueryState(keys.balance("w"))?.isInvalidated).toBe(false);
+    expect(client.getQueryState(keys.wallets)?.isInvalidated).toBe(false);
+    expect(calls).toEqual([]);
+    // The window's own network still goes through.
+    emit({ kind: "balances", network: "mainnet", walletId: "w", balances: null });
+    expect(client.getQueryState(keys.balance("w"))?.isInvalidated).toBe(true);
   });
 });
