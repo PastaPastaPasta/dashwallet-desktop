@@ -59,6 +59,7 @@ struct WalletView {
     unspent: HashSet<OutPoint>,
     /// User- and dust-locked outpoints (`lock_key` form).
     locked: HashSet<(String, u32)>,
+    released: HashSet<String>,
     /// Coinbase outputs to the wallet that count, newest first.
     generated: Vec<TxRecord>,
     notes: Notes,
@@ -123,14 +124,20 @@ impl WalletView {
         };
         let unspent = coins.coins.iter().map(|c| c.utxo.outpoint).collect();
         let id = wallet.to_string();
-        let locked = session
+        let (locked, released) = session
             .appdb_op(move |db| {
-                Ok(db
+                let locked = db
                     .locks(&id)?
                     .into_iter()
                     .filter(|row| row.is_locked())
                     .map(|row| (row.txid, row.vout))
-                    .collect())
+                    .collect();
+                let released = db
+                    .settings_with_prefix(&id, super::protx::ops::RELEASED)?
+                    .into_iter()
+                    .map(|(key, _)| key)
+                    .collect();
+                Ok((locked, released))
             })
             .await?;
         let own_scripts = session
@@ -165,6 +172,7 @@ impl WalletView {
             coins,
             unspent,
             locked,
+            released,
             generated,
             notes,
             held,
@@ -411,6 +419,13 @@ impl WalletView {
             shares: self.held.get(hash).copied(),
             roles,
             collateral: collateral_state(owned),
+            collateral_released: owned.and_then(|o| o.collateral).is_some_and(|c| {
+                self.released.contains(&format!(
+                    "{}{}",
+                    super::protx::ops::RELEASED,
+                    outpoint_string(&c)
+                ))
+            }),
             payout_address: self.payout_address(hash),
             payouts_30d: windowed()
                 .filter(|p| !p.unattributed)
@@ -1008,6 +1023,7 @@ mod tests {
             },
             unspent: HashSet::new(),
             locked: HashSet::new(),
+            released: HashSet::new(),
             generated,
             notes: Notes::default(),
             held: HashMap::new(),

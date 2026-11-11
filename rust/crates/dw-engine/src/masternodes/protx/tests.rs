@@ -2753,3 +2753,49 @@ fn mg04_a_replay_holds_protx_fee_inputs() {
     f.update(keep(&hash), f.grant(preview.fee)).unwrap();
     prepare().unwrap();
 }
+
+#[test]
+fn ep_t1_collateral_release_is_explicit_and_survives_restart() {
+    let mut f = fx(Library::Accept);
+    let (tx, op) = f.registered();
+    let hash = op.pro_tx_hash.unwrap();
+    let vout = payload(&tx).collateral_outpoint.vout;
+    let collateral = OutPoint::new(tx.txid(), vout);
+    let row = |f: &Fx| {
+        let detail = f
+            .engine
+            .block_on(f.mn().masternode(f.wallet, hash.clone()))
+            .unwrap();
+        serde_json::to_value(detail.row).unwrap()["collateral_released"].clone()
+    };
+    assert_eq!(row(&f), false);
+    f.db()
+        .lock_manual(&f.wallet.to_string(), &collateral.txid.to_string(), vout, 1)
+        .unwrap();
+    assert_eq!(row(&f), false, "coin control alone is not a release");
+    f.engine
+        .block_on(f.mn().release_collateral(f.wallet, hash.clone()))
+        .unwrap();
+    assert_eq!(row(&f), true);
+    f.engine
+        .block_on(f.mn().lock_collateral(f.wallet, hash.clone()))
+        .unwrap();
+    assert_eq!(row(&f), false);
+    f.engine
+        .block_on(f.mn().release_collateral(f.wallet, hash.clone()))
+        .unwrap();
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    f.engine = Engine::new(
+        config(&f.dir, Arc::new(MemoryOsStore::new())),
+        Arc::new(NoEvents),
+    )
+    .unwrap();
+    f.session = open(&f.engine);
+    f.seam = seam_for(&f.session, &f.lib);
+    f.watch_rows();
+    f.confirm(tx.clone(), 7);
+    f.hold(collateral, tx.output[vout as usize].clone());
+    assert_eq!(row(&f), true);
+}

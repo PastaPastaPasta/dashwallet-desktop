@@ -238,6 +238,7 @@ pub struct MasternodeRow {
     pub shares: Option<HeldShares>,
     pub roles: MasternodeRoles,
     pub collateral: CollateralState,
+    pub collateral_released: bool,
     pub payout_address: Option<String>,
     /// Payouts to this wallet in the last 30 days (duffs), without the
     /// `unattributed` ones.
