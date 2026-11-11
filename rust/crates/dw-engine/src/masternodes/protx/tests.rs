@@ -3595,12 +3595,19 @@ impl Fx {
 
     /// `inserted` in a block, through the engine's handling of a
     /// `BlockProcessed` event built here (key-wallet's own block processing
-    /// doesn't run).
+    /// doesn't run; its processed height is moved to the block's first, as
+    /// that processing does before its event).
     fn block_event(
         &self,
         inserted: Vec<key_wallet::managed_account::transaction_record::TransactionRecord>,
     ) {
         use platform_wallet::events::WalletEvent;
+        let w = self
+            .engine
+            .block_on(self.session.wallet(&self.wallet))
+            .unwrap();
+        (self.engine)
+            .block_on(async { crate::events::process_to(&mut w.state_mut().await.core_wallet, 8) });
         (self.session.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
             wallet_id: self.wallet.0,
             height: 8,
