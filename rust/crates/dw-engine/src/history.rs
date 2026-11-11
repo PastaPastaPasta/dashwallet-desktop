@@ -417,7 +417,7 @@ impl WalletHistory {
 
     /// The ProRegTxs kept out of sight that the history has no own entry
     /// for.
-    fn hidden(&self) -> impl Iterator<Item = (&Txid, &Transaction)> {
+    pub(crate) fn hidden(&self) -> impl Iterator<Item = (&Txid, &Transaction)> {
         (self.hidden_registrations.iter()).filter(|(t, _)| !self.txs.contains_key(*t))
     }
 }

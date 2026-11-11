@@ -1134,7 +1134,9 @@ impl SessionHub {
     /// session and neither holds in a block nor finalized, unless the
     /// history has them in a ChainLocked block (no fork replaces one). A
     /// record only read from storage stays: key-wallet never held it, and
-    /// nothing tells it apart from one mined below the fork. Key-wallet's
+    /// nothing tells it apart from one mined below the fork. A ProRegTx the
+    /// history keeps out of sight (a contact's record) has no height: it
+    /// goes when key-wallet held it this session and holds it no more. Key-wallet's
     /// ChainLock bounds nothing here: it can be the new chain's.
     pub(crate) fn detect_truncation(
         &self,
@@ -1157,6 +1159,7 @@ impl SessionHub {
             .map(|(t, r)| (*t, r.context.block_info().is_some()))
             .collect();
         let finalized = |t: &Txid| accounts.iter().any(|a| a.transaction_is_finalized(t));
+        let kept = |t: &Txid| accounts.iter().any(|a| a.transactions().contains_key(t));
         let (mut removed, mut unconfirmed) = (Vec::new(), Vec::new());
         self.history.read_wallet(&id, |h| {
             for (txid, entry) in &h.txs {
@@ -1174,6 +1177,14 @@ impl SessionHub {
                     Some(true) => {}
                 }
             }
+            // A ProRegTx kept out of sight has no height: one key-wallet
+            // held this session and holds in no account now went with the
+            // fork.
+            removed.extend(
+                (h.hidden())
+                    .map(|(t, _)| *t)
+                    .filter(|t| h.held.contains(t) && !kept(t)),
+            );
         });
         self.apply_truncation(
             &truncating,

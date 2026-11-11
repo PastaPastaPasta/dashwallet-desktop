@@ -6623,3 +6623,102 @@ fn a_removed_wallet_whose_import_fails_after_registering_is_heard() {
     assert!(registered);
     assert!(heard);
 }
+
+/// Row 71's ProRegTxs the history keeps out of sight (a DashPay contact's
+/// records), loaded from key-wallet or only from storage, and a fork to
+/// 900 no event announced, found at 905: the one key-wallet held this
+/// session and the fork replaced goes, its collateral with it; the one
+/// key-wallet still holds, and the one only read from storage, stay.
+#[test]
+fn a_found_fork_drops_a_hidden_registration_key_wallet_no_longer_holds() {
+    use crate::masternodes::provider_fixtures::{coins, null, registration};
+    use key_wallet::account::AccountType;
+    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::TransactionType;
+    use std::collections::HashSet;
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.quietly_at(1_000);
+    let amount = dw_protx::params::collateral_amount(false);
+    let [gone, kept, stored] = [1, 2, 3].map(|n| registration(null(0), false, n, coins(&[amount])));
+    let contact = AccountType::DashpayExternalAccount {
+        index: 0,
+        user_identity_id: [0xaa; 32],
+        friend_identity_id: [0xbb; 32],
+    };
+    let record = |t: &dashcore::Transaction, height: u32| {
+        TransactionRecord::new(
+            t.clone(),
+            contact,
+            mined_at(height),
+            TransactionType::Standard,
+            TransactionDirection::Internal,
+            Vec::new(),
+            Vec::new(),
+            0,
+        )
+    };
+    let (manager, id) = (Arc::clone(&f.session.live().unwrap().manager), f.wallet);
+    let held = [
+        (gone.clone(), record(&gone, 950)),
+        (kept.clone(), record(&kept, 800)),
+    ];
+    f.engine.block_on(async move {
+        use key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+        let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[7; 32]).unwrap();
+        let mut account = key_wallet::managed_account::ManagedCoreFundsAccount::from_account(
+            &key_wallet::Account {
+                parent_wallet_id: Some(id.0),
+                account_type: contact,
+                network: dashcore::Network::Regtest,
+                account_xpub: ExtendedPubKey::from_priv(&master),
+                is_watch_only: true,
+            },
+        );
+        for (t, r) in held {
+            account.transactions_mut().insert(t.txid(), r);
+        }
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let (_, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+        (info.core_wallet.accounts)
+            .insert_funds_bearing_account(account)
+            .unwrap();
+    });
+    let s = Arc::clone(&f.session);
+    f.engine
+        .block_on(
+            f.session
+                .on_runtime(async move { s.load_history_for(vec![id]).await }),
+        )
+        .unwrap();
+    (f.session.hub.history).with_wallet(f.wallet, |h| h.upsert(&record(&stored, 950), None));
+    let collaterals = || -> HashSet<Txid> {
+        (f.session
+            .hub
+            .history
+            .registration_collaterals(&f.wallet)
+            .into_iter())
+        .map(|(o, _)| o.txid)
+        .collect()
+    };
+    let before = collaterals();
+    f.fork_and_progress(&[], 900, &[], 905);
+    let guard = f.guard();
+    let after = collaterals();
+    eprintln!(
+        "ROW5965 hidden registrations, fork to 900 found at 905: before {before:?}, guard {guard:?}, after {after:?} (gone {}, kept {}, stored {})",
+        gone.txid(),
+        kept.txid(),
+        stored.txid()
+    );
+    assert_eq!(
+        before,
+        HashSet::from([gone.txid(), kept.txid(), stored.txid()])
+    );
+    assert_eq!(guard.unwrap(), 905);
+    assert_eq!(after, HashSet::from([kept.txid(), stored.txid()]));
+}
