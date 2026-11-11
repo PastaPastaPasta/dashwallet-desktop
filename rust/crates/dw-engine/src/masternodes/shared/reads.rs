@@ -1,16 +1,87 @@
 use dashcore::Txid;
 use dashcore::hashes::Hash;
+use dw_appdb::MasternodeOpRow;
 use dw_protx::shared::{dissolve::penalty_free_from, standby};
 
 use super::dissolve::address_of;
 use super::flow::loaded_all;
 use super::standby::registration_of;
-use super::store::{derive_stage, session_hash};
-use crate::masternodes::MasternodesError;
+use super::store::{ChainView, derive_stage, session_hash};
+use crate::masternodes::protx::ops;
+use crate::masternodes::protx_records::{ProTxOperationState, ProTxTerms};
 use crate::masternodes::shared_records::{
-    RewardDestination, ShareFact, SharedEligibility, SharedShares, SharedStage,
+    RewardAttempt, RewardAttemptState, RewardDestination, RewardUpdate, ShareFact,
+    SharedEligibility, SharedShares, SharedStage, UpdateShareRequest,
 };
-use crate::{NetworkSession, WalletId};
+use crate::masternodes::{MasternodesError, display_hex};
+use crate::{EngineError, NetworkSession, WalletId};
+
+fn reward_destination(
+    rows: &[MasternodeOpRow],
+    chain: &ChainView,
+    hash: &str,
+    index: u16,
+    at_registration: String,
+) -> Result<RewardDestination, MasternodesError> {
+    let mut updates = Vec::new();
+    for row in rows
+        .iter()
+        .filter(|r| r.kind == "update_share" && r.pro_tx_hash.as_deref() == Some(hash))
+    {
+        let request: UpdateShareRequest = serde_json::from_str(&row.request)
+            .map_err(|e| EngineError::Internal(format!("stored share update: {e}")))?;
+        if request.share_index != index {
+            continue;
+        }
+        let terms: ProTxTerms = serde_json::from_str(&row.terms)
+            .map_err(|e| EngineError::Internal(format!("stored ProTx terms: {e}")))?;
+        let state = ops::state_of(row, &chain.history, &chain.unspent);
+        updates.push((row, terms.payout_address, state));
+    }
+    let confirmed = updates
+        .iter()
+        .filter_map(|(row, address, state)| {
+            if let ProTxOperationState::Confirmed { height } = state {
+                Some((*height, row.created_at, &row.id, address))
+            } else {
+                None
+            }
+        })
+        .max_by_key(|(height, at, id, _)| (*height, *at, *id));
+    let latest_confirmed_local = confirmed.map(|(height, _, id, address)| RewardUpdate {
+        operation: id.clone(),
+        address: address.clone(),
+        confirmed_height: height,
+    });
+    let latest_attempt = updates
+        .iter()
+        .filter(|(row, _, state)| {
+            !matches!(state, ProTxOperationState::Confirmed { .. })
+                && confirmed.is_none_or(|(_, at, _, _)| row.created_at > at)
+        })
+        .filter_map(|(row, address, state)| {
+            let state = match state {
+                ProTxOperationState::Signed => RewardAttemptState::Signed,
+                ProTxOperationState::NotSent => RewardAttemptState::NotSent,
+                ProTxOperationState::Sent => RewardAttemptState::Sent,
+                ProTxOperationState::Conflicted => RewardAttemptState::Conflicted,
+                _ => return None,
+            };
+            Some((row, address, state))
+        })
+        .max_by_key(|(row, _, _)| (row.created_at, &row.id))
+        .map(|(row, address, state)| RewardAttempt {
+            operation: row.id.clone(),
+            address: address.clone(),
+            state,
+            sent_at: row.sent_at,
+        });
+    Ok(RewardDestination {
+        at_registration,
+        latest_confirmed_local,
+        latest_attempt,
+    })
+}
 
 impl NetworkSession {
     pub(super) async fn shared_share_facts(
@@ -57,6 +128,9 @@ impl NetworkSession {
         let session = registration_session
             .as_ref()
             .map(|loaded| loaded.row.id.clone());
+        let w = wallet.to_string();
+        let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
+        let shown = display_hex(&hash);
         let shares = reg
             .shares
             .iter()
@@ -68,8 +142,12 @@ impl NetworkSession {
                     refund_address: address_of(&share.refund_script, self.network.core_network())
                         .unwrap_or_default(),
                     mine: mine.iter().any(|(i, _)| usize::from(*i) == index),
-                    reward: RewardDestination {
-                        at_registration: registration_session
+                    reward: reward_destination(
+                        &rows,
+                        &chain,
+                        &shown,
+                        index as u16,
+                        registration_session
                             .as_ref()
                             .and_then(|loaded| loaded.session.shares.get(index))
                             .map(|share| {
@@ -86,9 +164,7 @@ impl NetworkSession {
                                 )
                                 .unwrap_or_default()
                             }),
-                        latest_confirmed_local: None,
-                        latest_attempt: None,
-                    },
+                    )?,
                 })
             })
             .collect::<Result<Vec<_>, MasternodesError>>()?;
