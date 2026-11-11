@@ -579,7 +579,12 @@ where
     let rt = session.rt.clone();
     rt.spawn(async move {
         let _admitted = match signing {
-            true => Some(session.platform.close_preflight.read().await),
+            true => Some(
+                session
+                    .signing_preflight()
+                    .await
+                    .map_err(PlatformError::from)?,
+            ),
             false => None,
         };
         let _op = session.enter().await.map_err(PlatformError::from)?;

@@ -374,7 +374,12 @@ impl DashPay {
             .spawn(async move {
                 // Before the session's gate, as `run_on_pool` takes it.
                 let _admitted = match signing {
-                    true => Some(session.platform.close_preflight.read().await),
+                    true => Some(
+                        session
+                            .signing_preflight()
+                            .await
+                            .map_err(PlatformError::from)?,
+                    ),
                     false => None,
                 };
                 let _op = session.enter().await.map_err(PlatformError::from)?;

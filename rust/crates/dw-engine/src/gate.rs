@@ -42,6 +42,12 @@ pub(crate) struct OpGate {
     /// Tests: how many pauses reached their drain.
     #[cfg(test)]
     drains: AtomicUsize,
+    /// Tests: how many wait on a pause ([`OpGate::unpaused`]).
+    #[cfg(test)]
+    waiting_on_pause: AtomicUsize,
+    /// Tests: how many entrants, admitted, saw the pause and backed off.
+    #[cfg(test)]
+    backed_off: AtomicUsize,
     /// Tests: hold the next `enter` before it is admitted (its read lock
     /// taken, the gate not closed), and between its last two loads.
     #[cfg(test)]
@@ -210,10 +216,16 @@ impl WalletLifecycle {
 impl OpGate {
     /// Admits an async operation, waiting while a close is in progress or
     /// the gate is paused. `None` once the gate is closed.
+    ///
+    /// The closed check after the pause comes before the read lock: an
+    /// entrant a pause held must not queue behind a close's writer. Nested
+    /// in an admitted operation, it would wait for the writer, which waits
+    /// for the outer guard (a quit during a switch's drain).
     pub(crate) async fn enter(&self) -> Option<OpGuard<'_>> {
         loop {
-            self.until(|g| !g.paused.load(Ordering::SeqCst) || g.closed.load(Ordering::SeqCst))
-                .await;
+            if !self.unpaused().await {
+                return None;
+            }
             let guard = self.lock.read().await;
             if self.closed.load(Ordering::Acquire) {
                 return None;
@@ -223,6 +235,8 @@ impl OpGate {
             let guard = self.admit(guard);
             // Paused after the wait: back off, the pause may be draining.
             if self.paused.load(Ordering::SeqCst) {
+                #[cfg(test)]
+                self.backed_off.fetch_add(1, Ordering::SeqCst);
                 continue;
             }
             #[cfg(test)]
@@ -234,6 +248,24 @@ impl OpGate {
             }
             return Some(guard);
         }
+    }
+
+    /// Waits while a switch's close pauses the gate. `false` once the gate
+    /// is closed, which wakes the wait.
+    ///
+    /// A call that signs asks it before it takes the session's close
+    /// preflight, so it never holds that preflight while the pause holds it:
+    /// the switch would read it as a spend running and refuse. A pause that
+    /// starts between this wait and the preflight read still does; no spend
+    /// has started then, and asking again goes ahead.
+    pub(crate) async fn unpaused(&self) -> bool {
+        #[cfg(test)]
+        self.waiting_on_pause.fetch_add(1, Ordering::SeqCst);
+        self.until(|g| !g.paused.load(Ordering::SeqCst) || g.closed.load(Ordering::SeqCst))
+            .await;
+        #[cfg(test)]
+        self.waiting_on_pause.fetch_sub(1, Ordering::SeqCst);
+        !self.closed.load(Ordering::SeqCst)
     }
 
     /// Waits until `done`, rechecked whenever a guard drops or a pause ends.
@@ -311,11 +343,31 @@ impl OpGate {
         self.drains.load(Ordering::SeqCst)
     }
 
+    /// Tests: how many wait on a pause.
+    #[cfg(test)]
+    pub(crate) fn waiting_on_pause(&self) -> usize {
+        self.waiting_on_pause.load(Ordering::SeqCst)
+    }
+
+    /// Tests: how many admitted entrants backed off on a pause.
+    #[cfg(test)]
+    pub(crate) fn backed_off(&self) -> usize {
+        self.backed_off.load(Ordering::SeqCst)
+    }
+
+    /// Tests: guards alive.
+    #[cfg(test)]
+    pub(crate) fn admitted(&self) -> usize {
+        self.admitted.load(Ordering::SeqCst)
+    }
+
     /// Closes the gate and waits for every admitted operation to finish.
     /// The returned guard keeps new operations out while the caller tears
     /// the session down; they are refused anyway once it is dropped.
+    /// Entrants waiting on a pause are refused at once.
     pub(crate) async fn close(&self) -> RwLockWriteGuard<'_, ()> {
-        self.closed.store(true, Ordering::Release);
+        self.closed.store(true, Ordering::SeqCst);
+        self.changed.notify_waiters();
         self.lock.write().await
     }
 
@@ -479,5 +531,51 @@ mod tests {
             late.await.unwrap(),
             "an operation admitted after close must be refused"
         );
+    }
+
+    /// Row 74 r3 M1: an entrant a pause holds, nested in an admitted
+    /// operation, is refused once a close starts, without queueing behind
+    /// the close's writer (which waits for the outer guard).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_close_refuses_an_entrant_the_pause_holds_without_queueing_it() {
+        let gate = Arc::new(OpGate::default());
+        let outer = gate.enter().await.unwrap();
+        let hold = gate.pause();
+        let nested = {
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move { gate.enter().await.is_none() })
+        };
+        while gate.waiting_on_pause() == 0 {
+            tokio::task::yield_now().await;
+        }
+        let closing = {
+            let gate = Arc::clone(&gate);
+            tokio::spawn(async move {
+                let _w = gate.close().await;
+            })
+        };
+        let refused = tokio::time::timeout(Duration::from_secs(10), nested)
+            .await
+            .expect("the nested entrant waits behind the close's writer")
+            .unwrap();
+        assert!(refused, "a nested entrant is refused once the gate closes");
+        assert!(
+            !closing.is_finished(),
+            "the close waits for the outer guard"
+        );
+        drop(outer);
+        closing.await.unwrap();
+        drop(hold);
+    }
+
+    /// Row 74 r3 (Opus N2): a closed gate is not held, so a shielded store's
+    /// first open stops waiting for a switch once a quit closes the gate.
+    #[tokio::test]
+    async fn a_closed_gate_is_not_held() {
+        let gate = OpGate::default();
+        let _hold = gate.hold(true);
+        assert!(gate.is_held());
+        let _w = gate.close().await;
+        assert!(!gate.is_held());
     }
 }

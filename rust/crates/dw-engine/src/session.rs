@@ -773,6 +773,19 @@ impl NetworkSession {
         self.gate.enter().await.ok_or_else(|| self.not_open())
     }
 
+    /// The close preflight's read for a call that signs, taken once no
+    /// switch pauses the gate ([`crate::gate::OpGate::unpaused`]): held
+    /// while the call is admitted and runs, so an in-app close refuses
+    /// meanwhile. `network_not_open` if the gate closed while it waited.
+    pub(crate) async fn signing_preflight(
+        &self,
+    ) -> Result<tokio::sync::RwLockReadGuard<'_, ()>, EngineError> {
+        if !self.gate.unpaused().await {
+            return Err(self.not_open());
+        }
+        Ok(self.platform.close_preflight.read().await)
+    }
+
     /// Admits a synchronous operation without waiting.
     pub(crate) fn try_enter(&self) -> Result<OpGuard<'_>, EngineError> {
         self.gate.try_enter().ok_or_else(|| self.not_open())

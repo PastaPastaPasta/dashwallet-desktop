@@ -1666,6 +1666,8 @@ pub(crate) async fn coordinator(
         if let Ok(admitted) = session.platform.wallet_loads.try_read() {
             break admitted;
         }
+        #[cfg(test)]
+        crate::coins::pause_at(&session.platform.hold_between_fence_reads).await;
         if !session.gate.is_held() {
             // A refusal frees the fence before it lets the gate go: read
             // again, in case it came between the two reads.
@@ -1744,7 +1746,12 @@ where
         // Before the session's gate: a close holding it to write waits for
         // the calls that entered, never for this one.
         let _admitted = match signing {
-            true => Some(session.platform.close_preflight.read().await),
+            true => Some(
+                session
+                    .signing_preflight()
+                    .await
+                    .map_err(PlatformError::from)?,
+            ),
             false => None,
         };
         let _op = session.enter().await.map_err(PlatformError::from)?;

@@ -355,13 +355,27 @@ fn an_entrant_admitted_across_the_commit_is_refused() {
         assert_eq!(f.session.gate.drains(), 1, "both checks passed");
         // Admitted now. Reading the seal first, it would wait between its
         // loads; it reads the pause, which is still there, and backs off.
+        let before = f.session.gate.backed_off();
         entering.release.notify_one();
-        for _ in 0..600 {
-            if between.reached.load(Ordering::SeqCst) {
-                break;
+        // Whichever it does first; the bound only ends a test that hangs.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let backed_off = loop {
+            if f.session.gate.backed_off() > before {
+                break true;
             }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+            if between.reached.load(Ordering::SeqCst) {
+                break false;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the entrant neither backed off nor reached its last load"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert!(
+            backed_off,
+            "the entrant read the seal before the pause, and waits between its loads"
+        );
         checked.release.notify_one();
         sealed(&f);
         between.release.notify_one();
