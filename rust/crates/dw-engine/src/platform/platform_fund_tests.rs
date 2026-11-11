@@ -33,7 +33,7 @@ use super::platform_addresses::{PlatformFundOutcome, PlatformFundQuote, Platform
 use super::platform_fund::{self as fund, FundLib};
 use super::platform_moves::{self, tests::World};
 use super::registration::RegistrationWait;
-use super::registration_flow::{FundError, Spendable};
+use super::registration_flow::{FundError, Spendable, fund_error};
 use super::requests::tests::Fixture;
 use super::shielded_pool::MAX_LOCK_INPUTS;
 use super::unfinished;
@@ -77,6 +77,11 @@ enum Script {
     LostUntracked,
     /// The input cap refused the build.
     TooMany,
+    /// platform-wallet's `WalletRemovedBeforeSend` before anything was
+    /// signed or tracked, mapped by the engine's `fund_error`.
+    RemovedBeforeSend,
+    /// platform-wallet's `AssetLockTooManyInputs`, likewise.
+    OverInputCap,
 }
 
 /// How the next apply ends, as platform-wallet would answer it.
@@ -285,6 +290,17 @@ impl FundLib for FakeFund {
                 return Err(FundError::TooManyInputs {
                     max: MAX_LOCK_INPUTS as u64,
                 });
+            }
+            Script::RemovedBeforeSend => {
+                return Err(fund_error(PlatformWalletError::WalletRemovedBeforeSend(
+                    "w".into(),
+                )));
+            }
+            Script::OverInputCap => {
+                return Err(fund_error(PlatformWalletError::AssetLockTooManyInputs {
+                    count: 101,
+                    max: 100,
+                }));
             }
             Script::Proved => (AssetLockStatus::InstantSendLocked, true),
             Script::Unproved => (AssetLockStatus::Broadcast, false),
@@ -650,6 +666,36 @@ fn a_fund_of_more_than_50_coins_leaves_its_step_free() {
         }
     );
     assert!(fund::next_step(&fx.s, fx.wallet).is_ok());
+}
+
+/// A fund whose wallet was removed or re-created before the library sent
+/// its lock sent nothing: the call reads the library's error, not an
+/// unknown outcome, and the step stays free for the next fund.
+#[test]
+fn a_fund_whose_wallet_left_before_the_send_leaves_its_step_free() {
+    refused_before_the_send(Script::RemovedBeforeSend);
+}
+
+/// A fund the library refuses for more inputs than an asset lock may
+/// carry sent nothing: the call reads the library's error, not an
+/// unknown outcome, and the step stays free for the next fund.
+#[test]
+fn a_fund_over_the_asset_lock_input_cap_leaves_its_step_free() {
+    refused_before_the_send(Script::OverInputCap);
+}
+
+fn refused_before_the_send(script: Script) {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    *lib.funding.lock().unwrap() = script;
+    assert_eq!(code(fund_of(&fx, &lib)), "internal");
+    assert!(matches!(
+        fx.s.leases.funding_status(fx.wallet, "paddr/0/funding"),
+        None | Some(super::flows::DispatchState::NotSent)
+    ));
+    assert!(fund::next_step(&fx.s, fx.wallet).is_ok());
+    assert!(pending_of(&fx, &lib).is_empty());
+    assert!(settled(&fx).is_empty());
 }
 
 /// A lock out without its proof waits ("Pending — finish"): it is listed,

@@ -3208,7 +3208,11 @@ pub(super) fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
         | E::AssetLockTransaction(_)
         | E::AssetLockInsufficientFunds { .. }
         | E::InputMidBroadcast { .. }
-        | E::TransactionBuild(_)) => FundError::NotSent(e.into()),
+        | E::TransactionBuild(_)
+        | E::WalletRemovedBeforeSend(_)) => FundError::NotSent(e.into()),
+        // Over the asset lock's input cap: refused before tracking, or a
+        // tracked row's resume refused instead of re-sent.
+        e @ E::AssetLockTooManyInputs { .. } => FundError::Refused(e.into()),
         e => FundError::Failed(e.into()),
     }
 }

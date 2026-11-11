@@ -422,6 +422,11 @@ enum FundScript {
     /// Failed with an unknown outcome and no tracked row (the wallet
     /// closing under the call).
     LostUntracked,
+    /// platform-wallet's `WalletRemovedBeforeSend` before anything was
+    /// signed or tracked, mapped by the engine's `fund_error`.
+    RemovedBeforeSend,
+    /// platform-wallet's `AssetLockTooManyInputs`, likewise.
+    OverInputCap,
 }
 
 #[derive(Default)]
@@ -721,6 +726,19 @@ impl RegistrationLib for Fake {
                 permit.note_signed([0xfe; 32]);
                 return Err(FundError::Failed(PlatformError::Unavailable));
             }
+            FundScript::RemovedBeforeSend => {
+                return Err(super::registration_flow::fund_error(
+                    platform_wallet::PlatformWalletError::WalletRemovedBeforeSend("w".into()),
+                ));
+            }
+            FundScript::OverInputCap => {
+                return Err(super::registration_flow::fund_error(
+                    platform_wallet::PlatformWalletError::AssetLockTooManyInputs {
+                        count: 101,
+                        max: 100,
+                    },
+                ));
+            }
             _ => {}
         }
         // Signed by the permit's funding signer, then tracked as Built and
@@ -784,7 +802,10 @@ impl RegistrationLib for Fake {
                 self.w().locks.retain(|l| l.outpoint != outpoint);
                 Err(FundError::Failed(PlatformError::Unavailable))
             }
-            FundScript::FailUntracked | FundScript::LostUntracked => unreachable!(),
+            FundScript::FailUntracked
+            | FundScript::LostUntracked
+            | FundScript::RemovedBeforeSend
+            | FundScript::OverInputCap => unreachable!(),
         };
         self.maybe_hang(Call::Fund, When::After).await;
         result
@@ -1881,6 +1902,64 @@ fn funding_failures_follow_the_tracked_row() {
             _ => unreachable!(),
         }
     }
+}
+
+/// A funding whose wallet was removed or re-created before the library
+/// sent its lock never reached the wire: the row is back at
+/// `KeysPrepared`, retryable, with no outpoint, nothing committed and its
+/// step not possibly sent.
+#[test]
+fn a_funding_whose_wallet_left_before_the_send_is_not_sent() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::RemovedBeforeSend);
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(phase(&row), Phase::KeysPrepared);
+    assert_eq!(row.asset_lock_outpoint, None);
+    assert!(row.retryable && row.error.is_some());
+    assert!(!f.status(&lib, draft).funds_committed);
+    assert!(matches!(
+        funding_state(&f, draft),
+        None | Some(crate::platform::DispatchState::NotSent)
+    ));
+    f.discard(&lib, draft).unwrap();
+}
+
+/// A funding the library refuses for more inputs than an asset lock may
+/// carry fails retryable, nothing committed and its step not possibly
+/// sent.
+#[test]
+fn a_funding_over_the_asset_lock_input_cap_is_refused() {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(FundScript::OverInputCap);
+    let draft = f.insert(core_row(PLAIN));
+    f.drive(&lib, draft, Some(f.lease()), false);
+    let row = f.row(draft);
+    assert_eq!(row.asset_lock_outpoint, None);
+    assert!(row.retryable);
+    assert_eq!(row.error.as_deref(), Some("internal"));
+    assert!(!f.status(&lib, draft).funds_committed);
+    assert!(matches!(
+        funding_state(&f, draft),
+        None | Some(crate::platform::DispatchState::NotSent)
+    ));
+    f.discard(&lib, draft).unwrap();
+}
+
+/// The dispatch state of `draft`'s funding step, if it has one.
+fn funding_state(f: &Fixture, draft: i64) -> Option<crate::platform::DispatchState> {
+    let steps = f
+        .session
+        .leases
+        .registration_funding_steps(f.wallet)
+        .unwrap();
+    steps
+        .iter()
+        .find(|s| s.draft == draft)
+        .and_then(|s| s.status)
 }
 
 /// A funding call that signed and failed before the library stored its
