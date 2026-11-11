@@ -1706,3 +1706,525 @@ fn a_refused_close_keeps_the_active_session() {
     assert!(closed.is_err());
     assert!(slot.is_none());
 }
+
+/// A launch on mainnet with no network flag (so not pinned) and no SPV. The
+/// windows' sessions open with unreachable local endpoints (a test seam): a
+/// test reaches no public DAPI or quorum service.
+fn launched_on_mainnet() -> Demo {
+    launched_on_mainnet_with_sync(Some(false))
+}
+
+fn launched_on_mainnet_with_sync(sync: Option<bool>) -> Demo {
+    let demo = Demo::launched(|launch, _| {
+        launch.network = DashNetwork::Mainnet;
+        launch.network_given = false;
+        launch.sync = sync;
+    });
+    *demo.state().test_endpoints.lock().unwrap() = Some(crate::api::network::SessionSettings {
+        dapi_addresses: vec!["https://127.0.0.1:1".into()],
+        quorum_url: Some("https://127.0.0.1:1".into()),
+        spv_peers: vec!["127.0.0.1:1".into()],
+        no_platform: true,
+        ..Default::default()
+    });
+    demo
+}
+
+impl Demo {
+    fn state(&self) -> tauri::State<'_, crate::state::AppState> {
+        use tauri::Manager;
+        self.app.state::<crate::state::AppState>()
+    }
+
+    fn data_root(&self) -> std::path::PathBuf {
+        self.state().data_root.clone()
+    }
+
+    fn active(&self) -> Value {
+        self.ok("active_network", json!({}))["dirName"].clone()
+    }
+}
+
+/// Row 74: choosing the other network switches the running window, with no
+/// restart; the renderer's next boot (`launch_info`) and `open_network(null)`
+/// follow it, and the choice is saved for the next start.
+#[test]
+fn a_network_choice_switches_the_running_window() {
+    let demo = launched_on_mainnet();
+    assert_eq!(
+        demo.ok("open_network", json!({}))["network"]["dirName"],
+        "mainnet"
+    );
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let draft = demo.ok("new_tx_draft", json!({ "walletId": wallet }));
+    let switched = demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(
+        switched["opened"]["network"]["dirName"], "testnet",
+        "{switched}"
+    );
+    assert_eq!(switched["choice"]["chosen"], "testnet");
+    assert_eq!(switched["choice"]["saved"], true);
+    assert_eq!(switched["choice"]["active"]["dirName"], "testnet");
+    assert_eq!(switched["choice"]["forcedByFlag"], false);
+    assert_eq!(demo.active(), "testnet");
+    // Nothing of mainnet is reachable from the testnet window.
+    demo.err(
+        "draft_wallet_id",
+        json!({ "draft": draft }),
+        "app.unknown_handle",
+    );
+    assert_eq!(
+        demo.ok("list_wallets", json!({})).as_array().unwrap().len(),
+        0
+    );
+    assert_eq!(
+        demo.ok("launch_info", json!({}))["network"]["dirName"],
+        "testnet"
+    );
+    assert_eq!(
+        demo.ok("open_network", json!({}))["network"]["dirName"],
+        "testnet"
+    );
+    assert_eq!(
+        demo.ok("get_network_choice", json!({}))["chosen"],
+        "testnet"
+    );
+    // Already the window's: kept as it is.
+    let again = demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(again["opened"]["network"]["dirName"], "testnet");
+    // And back, in the same process: its wallet is there.
+    demo.ok("switch_network", json!({ "network": "mainnet" }));
+    assert_eq!(demo.active(), "mainnet");
+    assert_eq!(
+        demo.ok("list_wallets", json!({})).as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        demo.ok("get_network_choice", json!({}))["chosen"],
+        "mainnet"
+    );
+}
+
+/// Row 74: the launch's trust flags (`--spv-peer`, `--dapi`, `--quorum-url`,
+/// `--ca-cert`, …) belong to the network they were given for, so without
+/// `--network` they pin the launch network: a choice is only saved.
+#[test]
+fn trust_flags_pin_the_launch_network() {
+    let demo = Demo::launched(|launch, _| {
+        launch.network = DashNetwork::Testnet;
+        launch.network_given = false;
+        launch.sync = Some(false);
+        launch.no_platform = true;
+        launch.spv_peers = vec!["127.0.0.1:1".into()];
+        launch.dapi_addresses = vec!["https://127.0.0.1:1".into()];
+        launch.quorum_url = Some("https://127.0.0.1:1".into());
+    });
+    assert_eq!(
+        demo.ok("get_network_choice", json!({}))["forcedByFlag"],
+        true
+    );
+    demo.ok("open_network", json!({}));
+    let saved = demo.ok("switch_network", json!({ "network": "mainnet" }));
+    assert_eq!(saved["opened"], Value::Null, "{saved}");
+    assert_eq!(saved["choice"]["chosen"], "mainnet");
+    assert_eq!(saved["choice"]["active"]["dirName"], "testnet");
+    assert_eq!(demo.active(), "testnet");
+}
+
+/// Row 74: a network that does not open leaves the window on the one it
+/// left, and the choice unsaved.
+#[test]
+fn a_failed_switch_rolls_back_and_saves_nothing() {
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    // A file where the network's directory goes: its open fails.
+    std::fs::write(demo.data_root().join("testnet"), b"").unwrap();
+    let e = demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "app.network_switch_failed",
+    );
+    assert_eq!(e["data"]["kind"], "networkSwitch", "{e}");
+    assert_eq!(e["data"]["network"]["dirName"], "testnet");
+    assert_eq!(e["data"]["rolledBack"], true);
+    assert_eq!(demo.active(), "mainnet");
+    assert_eq!(
+        demo.ok("launch_info", json!({}))["network"]["dirName"],
+        "mainnet"
+    );
+    let choice = demo.ok("get_network_choice", json!({}));
+    assert_eq!(choice["chosen"], "mainnet", "{choice}");
+    assert_eq!(choice["saved"], false);
+}
+
+/// Row 74: when the network left does not reopen either, the window has
+/// none; it stays the window's, so the splash's Retry (`open_network(null)`)
+/// opens it once it can.
+#[test]
+fn a_failed_rollback_leaves_the_old_network_to_retry() {
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    let root = demo.data_root();
+    std::fs::write(root.join("testnet"), b"").unwrap();
+    let away = root.join("mainnet.away");
+    {
+        let (root, away) = (root.clone(), away.clone());
+        *demo.state().before_rollback.lock().unwrap() = Some(Box::new(move || {
+            std::fs::rename(root.join("mainnet"), &away).unwrap();
+            std::fs::write(root.join("mainnet"), b"").unwrap();
+        }));
+    }
+    let e = demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "app.network_switch_failed",
+    );
+    assert_eq!(e["data"]["rolledBack"], false, "{e}");
+    assert_eq!(demo.ok("active_network", json!({})), Value::Null);
+    assert_eq!(
+        demo.ok("launch_info", json!({}))["network"]["dirName"],
+        "mainnet"
+    );
+    assert_eq!(demo.ok("get_network_choice", json!({}))["saved"], false);
+    // Retry, once the old network can open again.
+    *demo.state().before_rollback.lock().unwrap() = None;
+    std::fs::remove_file(root.join("mainnet")).unwrap();
+    std::fs::rename(&away, root.join("mainnet")).unwrap();
+    assert_eq!(
+        demo.ok("open_network", json!({}))["network"]["dirName"],
+        "mainnet"
+    );
+}
+
+/// Row 74: closing the network would cut what runs on it, so the switch
+/// refuses and changes nothing (here a broadcast that has not returned).
+#[test]
+fn a_switch_refuses_while_a_broadcast_has_not_returned() {
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    let state = demo.state();
+    let in_flight = state.broadcasting();
+    let e = demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "app.network_busy",
+    );
+    assert_eq!(e["data"]["kind"], "networkBusy", "{e}");
+    assert_eq!(e["data"]["broadcast"], true);
+    assert_eq!(e["data"]["mixing"], false);
+    assert_eq!(e["data"]["flows"], json!([]));
+    assert_eq!(demo.active(), "mainnet");
+    assert_eq!(demo.ok("get_network_choice", json!({}))["saved"], false);
+    drop(in_flight);
+    demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(demo.active(), "testnet");
+}
+
+/// A mainnet window with an unencrypted vault, one wallet and a draft.
+fn mainnet_wallet_and_draft(demo: &Demo) -> (Value, Value) {
+    demo.ok("open_network", json!({}));
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let draft = demo.ok("new_tx_draft", json!({ "walletId": wallet }));
+    (wallet, draft)
+}
+
+fn platform_grant(demo: &Demo, wallet: &Value) -> Value {
+    let purpose = json!({ "kind": "platformOp", "maxDuffs": 1000, "maxCredits": "1000" });
+    let credential = json!({ "kind": "unencrypted" });
+    demo.ok(
+        "authorize",
+        json!({ "purpose": purpose, "walletId": wallet, "credential": credential }),
+    )["id"]
+        .clone()
+}
+
+/// After a refused switch: the window, its session, its drafts and the
+/// choice are as they were, and the vault was not locked (a grant issued
+/// before still opens a flow).
+fn nothing_changed(demo: &Demo, wallet: &Value, draft: &Value, grant: &Value) {
+    assert_eq!(demo.active(), "mainnet");
+    assert_eq!(
+        demo.ok("launch_info", json!({}))["network"]["dirName"],
+        "mainnet"
+    );
+    let choice = demo.ok("get_network_choice", json!({}));
+    assert_eq!(
+        (&choice["chosen"], &choice["saved"]),
+        (&json!("mainnet"), &json!(false))
+    );
+    assert_eq!(
+        &demo.ok("draft_wallet_id", json!({ "draft": draft })),
+        wallet
+    );
+    assert_eq!(
+        demo.ok("list_wallets", json!({})).as_array().unwrap().len(),
+        1
+    );
+    let lease = demo.ok(
+        "begin_flow",
+        json!({ "walletId": wallet, "flow": "contactRequest", "grants": [grant] }),
+    );
+    demo.ok("end_flow", json!({ "lease": lease }));
+}
+
+/// Row 74 r1: the engine's own refusals of the close (a wallet still
+/// opening, a shielded spend not resolved) refuse the switch, named, and
+/// change nothing.
+#[test]
+fn a_close_that_refuses_itself_refuses_the_switch_and_changes_nothing() {
+    use dw_engine::test_support::{CloseFence, hold_close_fence};
+    let demo = launched_on_mainnet();
+    let (wallet, draft) = mainnet_wallet_and_draft(&demo);
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    for (fence, code, reason) in [
+        (CloseFence::WalletLoad, "wallet", "walletOpening"),
+        (
+            CloseFence::ShieldedSpend,
+            "shielded_spend_unresolved",
+            "shieldedSpendUnresolved",
+        ),
+    ] {
+        let grant = platform_grant(&demo, &wallet);
+        let held = hold_close_fence(&session, fence, std::time::Duration::from_millis(100));
+        let e = demo.err("switch_network", json!({ "network": "testnet" }), code);
+        assert_eq!(e["data"]["kind"], "networkCloseRefused", "{e}");
+        assert_eq!(e["data"]["reason"], reason);
+        drop(held);
+        nothing_changed(&demo, &wallet, &draft, &grant);
+    }
+    drop(session);
+    demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(demo.active(), "testnet");
+}
+
+/// Row 74 r1: an operation still running once the switch's drain ends
+/// refuses it as `draining`, and nothing changes.
+#[test]
+fn a_switch_refuses_while_an_operation_does_not_finish() {
+    use dw_engine::test_support::{CloseFence, hold_close_fence};
+    let demo = launched_on_mainnet();
+    let (wallet, draft) = mainnet_wallet_and_draft(&demo);
+    let grant = platform_grant(&demo, &wallet);
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let held = hold_close_fence(
+        &session,
+        CloseFence::Operation,
+        std::time::Duration::from_secs(30),
+    );
+    let e = demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "app.network_busy",
+    );
+    assert_eq!(e["data"]["draining"], true, "{e}");
+    assert_eq!(e["data"]["flows"], json!([]));
+    assert_eq!(e["data"]["mixing"], false);
+    assert_eq!(e["data"]["broadcast"], false);
+    drop(held);
+    nothing_changed(&demo, &wallet, &draft, &grant);
+}
+
+/// Row 74 r2 (test gap): a Platform send counts as a broadcast for as long
+/// as its engine call runs. Held before the engine admits it, it refuses a
+/// switch asked meanwhile.
+#[test]
+fn a_switch_refuses_while_a_platform_send_runs() {
+    let demo = launched_on_mainnet();
+    let (wallet, draft) = mainnet_wallet_and_draft(&demo);
+    let grant = platform_grant(&demo, &wallet);
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let (held, release) = dw_engine::test_support::hold_platform_send(&session);
+    drop(session);
+    let key = demo.app.invoke_key().to_string();
+    let args = json!({ "walletId": wallet, "operation": "op", "grant": "g" });
+    let (webview, key) = (&demo.webview, &key);
+    let e = std::thread::scope(|s| {
+        let sending = s.spawn(move || invoke(webview, key, "platform_send", args));
+        held.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the send reached the engine");
+        let e = demo.err(
+            "switch_network",
+            json!({ "network": "testnet" }),
+            "app.network_busy",
+        );
+        drop(release);
+        let _ = sending.join().unwrap();
+        e
+    });
+    assert_eq!(e["data"]["broadcast"], true, "{e}");
+    assert_eq!(e["data"]["draining"], false);
+    nothing_changed(&demo, &wallet, &draft, &grant);
+}
+
+/// Row 74 r2: a take of the links for the network the window left, which a
+/// switch went ahead of, takes none; the new network's take gets them.
+#[test]
+fn a_take_for_the_network_a_switch_left_leaves_the_links_queued() {
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert!(
+        demo.state()
+            .shell
+            .inbox
+            .deliver("dashwallet://scanqr".into())
+    );
+    assert_eq!(
+        demo.ok("take_links", json!({ "network": "mainnet" })),
+        json!([])
+    );
+    assert_eq!(
+        demo.ok("take_links", json!({ "network": "testnet" })),
+        json!([{ "kind": "scanQr" }])
+    );
+}
+
+/// Row 74 r1: a Platform flow holding a lease refuses the switch; locking
+/// the wallet ends its lease, and the switch goes through.
+#[test]
+fn a_switch_refuses_while_a_flow_holds_a_lease() {
+    let demo = launched_on_mainnet();
+    let (wallet, draft) = mainnet_wallet_and_draft(&demo);
+    let grant = platform_grant(&demo, &wallet);
+    demo.ok(
+        "begin_flow",
+        json!({ "walletId": wallet, "flow": "contactRequest", "grants": [grant] }),
+    );
+    let e = demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "app.network_busy",
+    );
+    assert_eq!(e["data"]["flows"], json!(["contactRequest"]), "{e}");
+    assert_eq!(e["data"]["stalled"], false);
+    assert_eq!(e["data"]["mixing"], false);
+    assert_eq!(e["data"]["broadcast"], false);
+    assert_eq!(e["data"]["draining"], false);
+    nothing_changed(&demo, &wallet, &draft, &platform_grant(&demo, &wallet));
+    demo.ok("lock", json!({}));
+    demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(demo.active(), "testnet");
+}
+
+/// Row 74 r1: a wallet mixing refuses the switch.
+#[test]
+fn a_switch_refuses_while_a_wallet_mixes() {
+    let demo = launched_on_mainnet();
+    let (wallet, draft) = mainnet_wallet_and_draft(&demo);
+    let session = tauri::async_runtime::block_on(demo.state().session()).unwrap();
+    let id = crate::state::parse_wallet_id(wallet.as_str().unwrap()).unwrap();
+    dw_engine::test_support::set_mixing(&session, id, true);
+    let e = demo.err(
+        "switch_network",
+        json!({ "network": "testnet" }),
+        "app.network_busy",
+    );
+    assert_eq!(e["data"]["mixing"], true, "{e}");
+    assert_eq!(e["data"]["flows"], json!([]));
+    nothing_changed(&demo, &wallet, &draft, &platform_grant(&demo, &wallet));
+    dw_engine::test_support::set_mixing(&session, id, false);
+    drop(session);
+    demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(demo.active(), "testnet");
+}
+
+/// Row 74 r1: with sync on, the switch starts SPV on the network it opens,
+/// not only on the launch network.
+#[test]
+fn a_switch_starts_spv_on_the_network_it_opens() {
+    let demo = launched_on_mainnet_with_sync(Some(true));
+    let started = || demo.state().spv_started.lock().unwrap().clone();
+    demo.ok("open_network", json!({}));
+    assert_eq!(started(), [DashNetwork::Mainnet]);
+    demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(started(), [DashNetwork::Mainnet, DashNetwork::Testnet]);
+}
+
+/// Row 74 r1: `recentNotices` reads the window network's notices and
+/// those of none; a network the window left keeps its notices out.
+#[test]
+fn recent_notices_are_the_window_networks() {
+    use dw_engine::{EngineEvent, NoticeCode};
+    let demo = launched_on_mainnet();
+    demo.ok("open_network", json!({}));
+    let state = demo.state();
+    for (network, detail) in [
+        (Some(DashNetwork::Mainnet), "main"),
+        (Some(DashNetwork::Testnet), "test"),
+        (None, "none"),
+    ] {
+        let notice = EngineEvent::Notice {
+            network,
+            code: NoticeCode::SpvError,
+            detail: detail.into(),
+        };
+        state.memory.record(&crate::bridge::AppEvent::from(notice));
+    }
+    let details = |demo: &Demo| -> Vec<Value> {
+        let notices = demo.ok("recent_notices", json!({}));
+        notices
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["detail"].clone())
+            .collect()
+    };
+    assert_eq!(details(&demo), [json!("main"), json!("none")]);
+    demo.ok("switch_network", json!({ "network": "testnet" }));
+    assert_eq!(details(&demo), [json!("test"), json!("none")]);
+}
+
+/// Row 74 r1: every command that hands a transaction or a Platform
+/// transition to the network counts as a broadcast in flight while it runs
+/// (here each fails in the engine, after its count). `draft_broadcast`
+/// counts once its prepared transaction is found, which needs funds.
+#[test]
+fn every_broadcast_command_counts_while_it_runs() {
+    let demo = launched_on_mainnet();
+    let (wallet, _) = mainnet_wallet_and_draft(&demo);
+    let txid = "11".repeat(32);
+    let commands = [
+        (
+            "broadcast_psbt",
+            json!({ "psbt": "cHNidP8BAAoCAAAAAAAAAAAAAAAA" }),
+        ),
+        (
+            "move_mixed_coins",
+            json!({ "walletId": wallet, "destination": "wallet", "quoteId": "q", "grantId": "g" }),
+        ),
+        (
+            "consolidate_mixed_coins",
+            json!({ "walletId": wallet, "quoteId": "q", "grantId": "g" }),
+        ),
+        (
+            "resend_mixed_coins",
+            json!({ "walletId": wallet, "txid": txid }),
+        ),
+        (
+            "resend_transaction",
+            json!({ "walletId": wallet, "txid": txid }),
+        ),
+        (
+            "governance_submit_proposal",
+            json!({ "walletId": wallet, "hash": txid }),
+        ),
+        (
+            "platform_send",
+            json!({ "walletId": wallet, "operation": "op", "grant": "g" }),
+        ),
+    ];
+    let taken = || (demo.state().broadcasts_taken).load(std::sync::atomic::Ordering::SeqCst);
+    for (cmd, args) in commands {
+        let before = taken();
+        let _ = demo.call(cmd, args);
+        assert_eq!(taken(), before + 1, "{cmd} took no broadcast guard");
+        assert_eq!(
+            demo.state()
+                .broadcasts()
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+    }
+}

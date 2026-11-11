@@ -45,7 +45,7 @@ async function boot() {
     // Engine data changes only when a signal says so: no polling, no refetch on focus.
     defaultOptions: { queries: { staleTime: Infinity, refetchOnWindowFocus: false, retry: false } },
   });
-  await bridgeEvents(backend, client);
+  await bridgeEvents(backend, client, launch.network.dirName);
   if (fixturePassphrase !== null) exposeSelftest(backend, client, fixturePassphrase);
 
   installDropGuard();

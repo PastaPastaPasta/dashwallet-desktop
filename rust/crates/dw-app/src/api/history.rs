@@ -170,7 +170,9 @@ commands! {
     fn resend_transaction(state, wallet_id: String, txid: String) -> () {
         let id = parse_wallet_id(&wallet_id)?;
         let txid = parse_txid(&txid)?;
-        Ok(state.session().await?.resend_transaction(id, txid).await?)
+        let session = state.session().await?;
+        let _in_flight = state.broadcasting();
+        Ok(session.resend_transaction(id, txid).await?)
     }
 
     /// "Remove unconfirmed": abandons every unconfirmed, not

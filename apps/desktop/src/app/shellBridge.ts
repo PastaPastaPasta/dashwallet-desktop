@@ -11,6 +11,7 @@ import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { UriRejected } from "../api/generated/UriRejected";
 import { inTauri, tauriTools } from "../api/tauri";
 import { showToast } from "../components/toast";
+import { NetworkText } from "../network/choice";
 import { noteLiveLink, SavedLinksText } from "./savedLinks";
 import { navigate, openPayForm, ui } from "./ui";
 
@@ -150,6 +151,8 @@ export function applyLink(route: LinkRoute) {
 /** Carries out a menu or tray command. A route command closes an open dialog first, as a link
  * does, so the page it opens takes the focus. */
 export function runCommand(command: ShellCommand, lock: () => void) {
+  // A network switch runs: the page it would act on is about to go (row 74).
+  if (ui.get().switching) return;
   // The wipe sheet is open: only lock and discreet mode leave it in place (D38).
   if (ui.get().wiping && command.kind !== "lock" && command.kind !== "toggleDiscreet") return;
   switch (command.kind) {
@@ -211,6 +214,43 @@ export function shortcutFor(e: Pick<KeyboardEvent, "ctrlKey" | "metaKey" | "shif
  * order they were drained, and a slow reply cannot land after a later one. */
 let drains = Promise.resolve();
 
+/** Once the link takes asked for so far have answered: a page that boots again after a switch
+ * waits for them, so a batch taken just before it is kept (below), not lost with the page. */
+export function linksTaken(): Promise<void> {
+  return drains;
+}
+
+/** Links taken just before a network switch, whose reply came while it ran (row 74): kept until
+ * the switch is decided. Kept in the tab's session storage, as the page boots again after a
+ * switch, and here when there is none. */
+const HELD_LINKS = "dw-links-held-by-switch";
+type HeldLinks = { network: string; routes: LinkRoute[] };
+let heldHere: HeldLinks | null = null;
+
+function holdLinks(network: string, routes: LinkRoute[]) {
+  const held = takeHeldLinks();
+  if (held && held.network !== network && held.routes.length > 0) showToast(NetworkText.linksDropped(held.network));
+  heldHere = { network, routes: [...(held?.network === network ? held.routes : []), ...routes] };
+  try {
+    sessionStorage.setItem(HELD_LINKS, JSON.stringify(heldHere));
+  } catch {
+    // No storage: they wait in this page only.
+  }
+}
+
+function takeHeldLinks(): HeldLinks | null {
+  let held = heldHere;
+  heldHere = null;
+  try {
+    const saved = sessionStorage.getItem(HELD_LINKS);
+    sessionStorage.removeItem(HELD_LINKS);
+    if (saved !== null) held = JSON.parse(saved) as HeldLinks;
+  } catch {
+    // No storage, or not ours: the page's own, if any.
+  }
+  return held;
+}
+
 /** Takes the queued links now and whenever the shell says more wait, one take at a time, and
  * runs the menus' commands. With `--selftest-link-trace` each route is reported, and `ready` once the first
  * take has run. */
@@ -220,14 +260,30 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
     const report = (line: string) => {
       if (trace) tauriTools.selftestLinkRouted(line).catch(() => {});
     };
+    const apply = (routes: LinkRoute[]) => {
+      for (const route of routes) {
+        applyLink(route);
+        report(traceName(route));
+      }
+    };
     const drain = async () => {
+      // Left queued while a network switch runs: the page that boots next takes them, or this
+      // one once the switch is refused (below).
+      if (ui.get().switching) return;
       try {
+        // Taken before a switch that was refused: this network's, opened now. After a switch,
+        // they were routed for the network the window left, so they are not opened on this one.
+        const held = takeHeldLinks();
+        if (held?.network === network) apply(held.routes);
+        else if (held && held.routes.length > 0) showToast(NetworkText.linksDropped(held.network));
         // Applied even after an unmount: the queue is drained, so these routes exist only here.
         const routes = await backend.takeLinks(network);
-        for (const route of routes) {
-          applyLink(route);
-          report(traceName(route));
+        // A switch began while they were taken: kept until it is decided.
+        if (ui.get().switching) {
+          holdLinks(network, routes);
+          return;
         }
+        apply(routes);
       } catch (e) {
         showToast(`Could not open the link: ${errorMessage(e)}`);
       }
@@ -248,9 +304,16 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
       runCommand(command, lockNow);
     };
     if (!inTauri()) window.addEventListener("keydown", onKey);
+    let switching = ui.get().switching;
+    const stopWatching = ui.subscribe(() => {
+      const now = ui.get().switching;
+      if (switching && !now) void take();
+      switching = now;
+    });
     return () => {
       void unlisten.then((f) => f());
       window.removeEventListener("keydown", onKey);
+      stopWatching();
     };
   }, [backend, network, trace]);
 }

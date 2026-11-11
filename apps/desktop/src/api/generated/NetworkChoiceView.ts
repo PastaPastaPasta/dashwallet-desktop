@@ -15,16 +15,12 @@ chosen: ChosenNetwork,
  */
 saved: boolean,
 /**
- * The network this run opens by default (`launchInfo.network`).
+ * The network the window shows (`launchInfo.network`).
  */
-launched: NetworkInfo,
+active: NetworkInfo,
 /**
- * `--network` named the launch network: the saved choice applies only
- * to a launch without it.
+ * The window stays on its launch network (`--network`, or a flag of
+ * one network: [`LaunchOptions::pinned`]): a choice is saved for a
+ * later start without those flags, and the window does not switch.
  */
-forcedByFlag: boolean,
-/**
- * The choice takes effect at the next start (the app restarts to
- * switch).
- */
-restartNeeded: boolean, };
+forcedByFlag: boolean, };

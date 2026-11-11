@@ -85,6 +85,11 @@ button {
   height: 100%;
 }
 
+/* What a network switch's card covers (App): no box of its own, only its inertness. */
+.app-under-switch {
+  display: contents;
+}
+
 .app-chrome {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -2899,6 +2904,12 @@ button {
 .settings-card > .dash-button-plainRed {
   padding-left: 0;
   padding-right: 0;
+}
+
+/* The card's width, not its longest line: a refusal under the picker wraps there and leaves the
+ * switch where it was (row 74). */
+.settings-card > .network-picker {
+  align-self: stretch;
 }
 
 .settings-row {

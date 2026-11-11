@@ -153,7 +153,25 @@ codes! {
         ScreenCaptureUnavailable = "app.screen_capture_unavailable",
         /// The screen capture failed.
         ScreenCapture = "app.screen_capture",
+        /// `switch_network` refused: closing the network would cut what
+        /// runs on it ([`ErrorData::NetworkBusy`] names it). Nothing changed.
+        NetworkBusy = "app.network_busy",
+        /// `switch_network` could not open the chosen network
+        /// ([`ErrorData::NetworkSwitch`]): the window is back on the
+        /// network it left, or, when that reopen failed too, on none (the
+        /// splash's Retry opens it). The choice was not saved.
+        NetworkSwitchFailed = "app.network_switch_failed",
     }
+}
+
+/// Why a network's close refused itself ([`ErrorData::NetworkCloseRefused`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum CloseRefusalReason {
+    /// A wallet is still opening.
+    WalletOpening,
+    /// A shielded spend's result is not known yet.
+    ShieldedSpendUnresolved,
 }
 
 /// Fields some codes carry. Credit amounts are decimal strings (see
@@ -167,6 +185,30 @@ codes! {
 pub enum ErrorData {
     /// `vault.throttled`: when to allow the next try.
     RetryAfter { secs: u64 },
+    /// `app.network_busy`: what runs on the network the window would leave.
+    NetworkBusy {
+        /// The Platform flows holding a lease.
+        flows: Vec<crate::dto::platform::FlowKindName>,
+        /// Every one of `flows` waits for a proof or a grant; locking the
+        /// wallet ends their leases.
+        stalled: bool,
+        /// A wallet mixes.
+        mixing: bool,
+        /// A broadcast has not returned.
+        broadcast: bool,
+        /// The network's operations already running did not finish in
+        /// time; nothing else is named.
+        draining: bool,
+    },
+    /// `wallet` or `shielded_spend_unresolved` from `switch_network`: the
+    /// network's close refused itself. Nothing changed.
+    NetworkCloseRefused { reason: CloseRefusalReason },
+    /// `app.network_switch_failed`: the network that did not open, and
+    /// whether the window is back on the one it left.
+    NetworkSwitch {
+        network: crate::dto::NetworkInfo,
+        rolled_back: bool,
+    },
     /// `vault.wrong_passphrase`: failed attempts so far, and the wait before
     /// the next try once the vault throttles.
     WrongPassphrase {

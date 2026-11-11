@@ -338,7 +338,7 @@ fn app_builder<R: Runtime>(
                     .map_err(|e| AppError::app(AppCode::DataDir, e.to_string()))
             })?;
             // After the state: it resolves the saved network choice.
-            let title = window_title(&state.launch.network);
+            let title = window_title(&state.window_network());
             app.manage(state);
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title(&title)?;

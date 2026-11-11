@@ -554,13 +554,20 @@ impl CoinJoinRuntime {
     }
 
     /// Tests: marks `id` mixing (or not) without starting its loop.
-    #[cfg(test)]
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
     pub(crate) fn set_mixing_for_test(&self, id: WalletId, mixing: bool) {
         self.mixers().entry(id).or_default().mixing = mixing;
     }
 
     fn any_mixing(&self) -> bool {
         self.mixers().values().any(|m| m.mixing)
+    }
+
+    /// A wallet mixes, or a mixing session of one is still open.
+    fn any_busy(&self) -> bool {
+        self.mixers()
+            .values()
+            .any(|m| m.mixing || !m.sessions.is_empty())
     }
 
     /// Stops every task (session close).
@@ -1160,6 +1167,12 @@ impl NetworkSession {
     }
 
     // ---- status ----------------------------------------------------------
+
+    /// A wallet of this session mixes, or a mixing session of one is still
+    /// open: closing the network would cut it (a network switch refuses).
+    pub fn mixing_busy(&self) -> bool {
+        self.coinjoin.any_busy()
+    }
 
     /// The wallet's mixing status. In-memory read of the status the
     /// refresher keeps (once a second); the first call for a wallet computes
@@ -3610,12 +3623,14 @@ pub(crate) mod sweep_test_hooks {
         pub(crate) before_broadcast: Option<(usize, Arc<crate::coins::TestPause>)>,
         /// `start_mixing` waits here once it read the mix view.
         pub(crate) start_after_read: Option<Arc<crate::coins::TestPause>>,
+        /// `begin_flow` waits here once admitted.
+        pub(crate) flow_admitted: Option<Arc<crate::coins::TestPause>>,
     }
 }
 
 /// Tests: marks `pause` reached and waits for its release.
 #[cfg(test)]
-async fn test_pause(pause: Option<Arc<crate::coins::TestPause>>) {
+pub(crate) async fn test_pause(pause: Option<Arc<crate::coins::TestPause>>) {
     if let Some(p) = pause {
         p.reached.store(true, std::sync::atomic::Ordering::SeqCst);
         p.release.notified().await;
@@ -3623,7 +3638,7 @@ async fn test_pause(pause: Option<Arc<crate::coins::TestPause>>) {
 }
 
 #[cfg(test)]
-fn sweep_hooks(session: &NetworkSession) -> sweep_test_hooks::Hooks {
+pub(crate) fn sweep_hooks(session: &NetworkSession) -> sweep_test_hooks::Hooks {
     (session.coinjoin.sweep_hooks.lock())
         .unwrap_or_else(|p| p.into_inner())
         .clone()
@@ -4006,6 +4021,10 @@ pub(crate) fn fully_mixed_candidates(view: &MixView) -> Vec<Utxo> {
 #[cfg(test)]
 #[path = "coinjoin_sweep_tests.rs"]
 mod sweep_tests;
+
+#[cfg(test)]
+#[path = "close_pause_tests.rs"]
+mod close_pause_tests;
 
 #[cfg(test)]
 mod tests {

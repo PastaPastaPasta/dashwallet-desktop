@@ -169,7 +169,7 @@ impl Fixture {
             .id
     }
 
-    fn platform_op(&self, max_duffs: u64, max_credits: u64) -> String {
+    pub(crate) fn platform_op(&self, max_duffs: u64, max_credits: u64) -> String {
         self.grant(
             GrantPurpose::PlatformOp {
                 max_duffs,
