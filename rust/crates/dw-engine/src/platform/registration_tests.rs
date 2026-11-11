@@ -4468,6 +4468,191 @@ fn a_lock_of_51_needed_coins_is_refused_before_its_first_signature() {
     assert_eq!(inputs, vec![coin]);
 }
 
+/// Credits `value` to the wallet's next BIP44 receive address: put
+/// straight in the account, or through key-wallet's own processing of a
+/// ChainLocked block (which keeps only the txid of its record). No event
+/// reaches the history.
+async fn credit_unseen(
+    f: &Fixture,
+    wallet: &platform_wallet::PlatformWallet,
+    value: u64,
+    chain_locked: bool,
+) -> OutPoint {
+    use key_wallet::transaction_checking::{
+        BlockInfo, TransactionContext, WalletTransactionChecker,
+    };
+    let address = wallet
+        .core()
+        .next_receive_address_for_account(0)
+        .await
+        .unwrap();
+    let output = dashcore::TxOut {
+        value,
+        script_pubkey: address.script_pubkey(),
+    };
+    if !chain_locked {
+        let outpoint = OutPoint::new(Txid::from_byte_array([0xea; 32]), 0);
+        let mut utxo = key_wallet::Utxo::new(outpoint, output, address, 1, false);
+        utxo.is_confirmed = true;
+        let mut state = wallet.state_mut().await;
+        (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap()
+            .utxos
+            .insert(outpoint, utxo);
+        return outpoint;
+    }
+    let tx = dashcore::Transaction {
+        version: 1,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([0xe9; 32]), 0),
+            ..Default::default()
+        }],
+        output: vec![output],
+        special_transaction_payload: None,
+    };
+    let manager = f.session.manager().unwrap();
+    let wm = manager.wallet_manager_arc();
+    let mut wm = wm.write().await;
+    let (w, info) = wm.get_wallet_and_info_mut(&f.wallet.0).unwrap();
+    let mut w = w.clone();
+    let block = BlockInfo::new(
+        1,
+        dashcore::BlockHash::from_byte_array([1; 32]),
+        1_793_598_712,
+    );
+    info.core_wallet
+        .check_core_transaction(
+            &tx,
+            TransactionContext::InChainLockedBlock(block),
+            &mut w,
+            true,
+            true,
+        )
+        .await;
+    OutPoint::new(tx.txid(), 0)
+}
+
+/// A coin of a masternode collateral amount (1000 and 4000 DASH, placed or
+/// ChainLocked) credited after the funding's coin check and before the
+/// library's selection, the wallet's only coin: the builder takes it, and
+/// the funding signer refuses it before any signature, as no coin the check
+/// read free. The funding reads `CoinsLocked` with nothing signed, so none
+/// sent, and no lock tracked; the call ends `Cancelled` with its Funding
+/// charge refunded and the step `NotSent`, nothing for Repair. The next
+/// attempt's check reads the coin and refuses before the library; once
+/// the coin's transaction reaches the history, the same draft funds from
+/// it.
+#[test]
+fn a_collateral_sized_coin_credited_after_the_coin_check_funds_no_lock() {
+    use super::flows::DispatchState;
+    use super::lease::FlowOutcome;
+    for (value, chain_locked) in [
+        (dw_protx::params::collateral_amount(false), false),
+        (dw_protx::params::collateral_amount(true), false),
+        (dw_protx::params::collateral_amount(false), true),
+        (dw_protx::params::collateral_amount(true), true),
+    ] {
+        let case = format!("{value} duffs, chain_locked {chain_locked}");
+        let f = fixture(false);
+        let wallet = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
+        let lib = f.pw_lib(&wallet);
+        let lease = f.lease();
+        let draft = prepared(&f, 1);
+        let before = lease.available(BudgetPurpose::Funding).unwrap();
+        let (coin, funded, released, outcome) = f.engine.block_on(async {
+            let call = permit(&lib, &lease, draft, 1).await.unwrap();
+            let coin = credit_unseen(&f, &wallet, value, chain_locked).await;
+            let funded = lib
+                .fund_lock(
+                    platform_wallet::AssetLockFundingType::IdentityRegistration,
+                    flow::LOCK_DUFFS,
+                    1,
+                    &call,
+                )
+                .await;
+            let released = call.signatures().released();
+            (coin, funded, released, call.finish(false))
+        });
+        let snapshot = f.engine.block_on(async {
+            let fence = f.session.coin_fence(f.wallet).await.unwrap();
+            f.session.fenced_coins(&fence).await.unwrap()
+        });
+        let read = (snapshot.coins.iter()).find(|c| c.utxo.outpoint == coin);
+        assert_eq!(
+            read.map(|c| (c.chain_locked, c.awaiting_history)),
+            Some((chain_locked, true)),
+            "{case}"
+        );
+        assert_eq!(funded, Err(FundError::CoinsLocked), "{case}");
+        assert_eq!(released, 0, "{case}: refused before any signature");
+        assert_eq!(outcome, FlowOutcome::Cancelled, "{case}");
+        assert!(!f.session.leases.funding_signatures_out(f.wallet), "{case}");
+        assert!(
+            f.engine
+                .block_on(wallet.asset_locks().list_tracked_locks())
+                .is_empty(),
+            "{case}: no lock tracked, so none sent"
+        );
+        assert_eq!(
+            lease.available(BudgetPurpose::Funding).unwrap(),
+            before,
+            "{case}: its Funding charge refunded"
+        );
+        assert!(
+            f.engine
+                .block_on(f.session.leases.refresh_funding(f.wallet))
+        );
+        assert_eq!(
+            (f.session.leases).funding_status(f.wallet, &flow::funding_step(draft)),
+            Some(DispatchState::NotSent),
+            "{case}"
+        );
+        let views = f.session.leases.registration_funding_steps(f.wallet);
+        assert!(
+            (views.unwrap().iter())
+                .filter(|v| v.draft == draft)
+                .all(|v| v.released_at.is_none() && v.signed.is_empty()),
+            "{case}: nothing for Repair"
+        );
+        assert_eq!(
+            f.engine.block_on(lib.fence()).map(drop),
+            Err(FundError::CoinsLocked),
+            "{case}"
+        );
+        // Its transaction's event: a plain payment.
+        (f.session.hub.history).hold_funding(f.wallet, coin.txid);
+        let inputs = f.engine.block_on(async {
+            let call = permit(&lib, &lease, draft, 1).await.unwrap();
+            let (_, inputs) = build_and_track(&f, &wallet, 1, &call).await;
+            call.finish(true);
+            inputs
+        });
+        assert_eq!(inputs, vec![coin], "{case}");
+    }
+}
+
+/// The positive control of the coin check's set: a coin present at the
+/// check funds the lock, signed through the same checked signer.
+#[test]
+fn a_coin_present_at_the_coin_check_funds_its_lock() {
+    let f = fixture(false);
+    let (wallet, coin) = f.coin();
+    let lib = f.pw_lib(&wallet);
+    let lease = f.lease();
+    let draft = prepared(&f, 1);
+    let (inputs, released) = f.engine.block_on(async {
+        let call = permit(&lib, &lease, draft, 1).await.unwrap();
+        let (_, inputs) = build_and_track(&f, &wallet, 1, &call).await;
+        let released = call.signatures().released();
+        call.finish(true);
+        (inputs, released)
+    });
+    assert_eq!(inputs, vec![coin]);
+    assert!(released > 0);
+}
+
 /// 0.2 MIX-SHIELD: a "Move mixed coins" drain's lease funds no
 /// registration: refused `grant_invalid` before a row exists, its budget
 /// untouched.

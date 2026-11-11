@@ -743,6 +743,7 @@ fn the_drain_reads_the_coinjoin_accounts_coins_and_what_holds_them() {
                 reserved: false,
                 lock_input: false,
                 unresolved_lock: false,
+                awaiting_history: false,
             },
             path: Some(path.parse().unwrap()),
             rounds: 4,

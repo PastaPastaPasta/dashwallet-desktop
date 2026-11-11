@@ -749,11 +749,14 @@ impl Governance {
             if depth.is_none() {
                 // Each coin is unspent, held by no asset lock, whose holds
                 // outlive a restart (`coins.rs`; validator r1 Major-1,
-                // Minor-1), and not locked by the user since, as a
-                // masternode's collateral is (MG-04 D47).
+                // Minor-1), not locked by the user since, as a
+                // masternode's collateral is (MG-04 D47), and not waiting
+                // for its transaction to reach the history (it may be a
+                // ProRegTx's collateral).
                 let snapshot = self.session.coin_snapshot(&fence, &handle).await?;
                 let free: HashSet<OutPoint> = (snapshot.coins.iter())
                     .filter(|c| !c.lock_input && !c.unresolved_lock && !c.user_locked)
+                    .filter(|c| !c.awaiting_history)
                     .map(|c| c.utxo.outpoint)
                     .collect();
                 if let Some(&o) = inputs.iter().find(|o| !free.contains(o)) {

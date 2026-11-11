@@ -22,6 +22,7 @@ use crate::platform::PlatformError;
 use crate::platform::flows::{
     BudgetPurpose, DispatchResolution, DispatchState, FlowKind, LeaseStateView, RevokeCause,
 };
+use crate::send::test_support::{FOREIGN, send_failure};
 use crate::send::{ChangePolicy, CoinSource, Recipient, SendFailure};
 use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, ImportOptions, NetworkSession, WalletId,
@@ -29,7 +30,6 @@ use crate::{
 
 pub(crate) const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-const FOREIGN: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
 const COIN: u64 = 100_000_000;
 const PASS: &[u8] = b"pass phrase";
 
@@ -647,13 +647,6 @@ fn spent(lease: &Lease, purpose: BudgetPurpose) -> Option<u64> {
         .iter()
         .find(|b| b.purpose == purpose)
         .map(|b| b.spent)
-}
-
-fn send_failure<T: std::fmt::Debug>(r: Result<T, EngineError>) -> SendFailure {
-    match r {
-        Err(EngineError::Send(f)) => f,
-        other => panic!("expected a send failure, got {other:?}"),
-    }
 }
 
 #[test]

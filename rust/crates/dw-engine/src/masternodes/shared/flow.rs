@@ -650,6 +650,11 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
     ) -> Result<(), MasternodesError> {
+        #[cfg(test)]
+        super::super::protx::ops::crash_at(
+            self,
+            super::super::protx::ops::CrashPoint::SharedFollow,
+        )?;
         let mut released = self.key_change_follow_pass(wallet).await?;
         let rows = self.shared_rows(wallet).await?;
         if rows.iter().any(|r| !reserved_of(r).is_empty()) {

@@ -1,7 +1,7 @@
 //! Session operations over the history read model: loading persisted
 //! history at open, `history_page` and `tx_detail`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -83,27 +83,84 @@ pub(crate) fn owned_scripts(info: &PlatformWalletInfo) -> HashMap<ScriptBuf, Own
     map
 }
 
-/// Txids of persisted transaction records per wallet, read from
-/// `wallet.sqlite` over a read-only connection (SqlitePersister has no
-/// enumeration API; `get_core_tx_record` then reads each record).
-fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Vec<Txid>>, rusqlite::Error> {
+/// Tests: how the next history load's first stored record read goes wrong
+/// (`SessionHub::record_read_fault`).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum RecordFault {
+    /// The read fails.
+    Error,
+    /// The listed record reads as absent.
+    Missing,
+    /// The record read names another txid.
+    Mismatched,
+    /// The record read holds another transaction.
+    OtherTransaction,
+}
+
+#[cfg(test)]
+impl RecordFault {
+    fn apply(
+        self,
+        read: Result<Option<TransactionRecord>, platform_wallet::changeset::PersistenceError>,
+    ) -> Result<Option<TransactionRecord>, platform_wallet::changeset::PersistenceError> {
+        match self {
+            Self::Error => Err(platform_wallet::changeset::PersistenceError::LockPoisoned),
+            Self::Missing => Ok(None),
+            Self::Mismatched => read.map(|r| {
+                r.map(|mut r| {
+                    r.txid = Txid::all_zeros();
+                    r
+                })
+            }),
+            Self::OtherTransaction => read.map(|r| {
+                r.map(|mut r| {
+                    r.transaction.lock_time = r.transaction.lock_time.wrapping_add(1);
+                    r
+                })
+            }),
+        }
+    }
+}
+
+/// One wallet's stored transactions: those whose record is stored, and the
+/// recordless ones (height-only rows, kept for their coins).
+#[derive(Default, Clone)]
+struct Persisted {
+    records: Vec<Txid>,
+    recordless: HashSet<Txid>,
+}
+
+/// Txids of the stored transactions per wallet, read from `wallet.sqlite`
+/// over a read-only connection (SqlitePersister has no enumeration API;
+/// `get_core_tx_record` then reads each record).
+fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Persisted>, rusqlite::Error> {
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    let mut stmt = conn
-        .prepare("SELECT wallet_id, txid FROM core_transactions WHERE record_blob IS NOT NULL")?;
+    let mut stmt =
+        conn.prepare("SELECT wallet_id, txid, record_blob IS NULL FROM core_transactions")?;
     let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+        Ok((
+            r.get::<_, Vec<u8>>(0)?,
+            r.get::<_, Vec<u8>>(1)?,
+            r.get::<_, bool>(2)?,
+        ))
     })?;
-    let mut out: HashMap<[u8; 32], Vec<Txid>> = HashMap::new();
+    let mut out: HashMap<[u8; 32], Persisted> = HashMap::new();
     for row in rows {
-        let (wallet, txid) = row?;
+        let (wallet, txid, recordless) = row?;
         let (Ok(wallet), Ok(txid)) = (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid)) else {
             continue;
         };
-        out.entry(wallet).or_default().push(txid);
+        let persisted = out.entry(wallet).or_default();
+        if recordless {
+            persisted.recordless.insert(txid);
+        } else {
+            persisted.records.push(txid);
+        }
     }
     Ok(out)
 }
@@ -140,6 +197,9 @@ struct LoadedHistory {
     records: Vec<TransactionRecord>,
     seen: Vec<(String, u64)>,
     abandoned: Vec<(Txid, dashcore::Transaction)>,
+    /// Every stored transaction of the wallet, with a record or not, when
+    /// every stored record was listed and read; else none.
+    stored: HashSet<Txid>,
 }
 
 impl NetworkSession {
@@ -158,27 +218,57 @@ impl NetworkSession {
 
     /// [`Self::load_history`] for some wallets (a wallet just loaded).
     pub(crate) async fn load_history_for(&self, ids: Vec<WalletId>) -> Result<(), EngineError> {
+        #[cfg(test)]
+        let fail = (self.hub.fail_history_read).swap(false, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let fail = false;
+        #[cfg(test)]
+        let fault = self.hub.record_read_fault.lock().unwrap().take();
         let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
         let wallet_ids = ids.clone();
         let loaded = tokio::task::spawn_blocking(move || {
-            let txids = persisted_txids(&db_path).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "could not list persisted transactions; history starts empty");
-                HashMap::new()
-            });
+            #[cfg(test)]
+            let mut fault = fault;
+            let listing = if fail {
+                Err(rusqlite::Error::InvalidQuery)
+            } else {
+                persisted_txids(&db_path)
+            };
+            let (txids, listed) = match listing {
+                Ok(txids) => (txids, true),
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not list persisted transactions; history starts empty");
+                    (HashMap::new(), false)
+                }
+            };
             wallet_ids
                 .into_iter()
                 .map(|wallet| {
-                    let records = txids
-                        .get(&wallet.0)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|t| match persister.get_core_tx_record(wallet.0, t) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                tracing::warn!(%wallet, txid = %t, error = %e, "unreadable transaction record");
-                                None
+                    let mut clean = listed;
+                    let persisted = txids.get(&wallet.0).cloned().unwrap_or_default();
+                    let records = (persisted.records.iter())
+                        .filter_map(|t| {
+                            let read = persister.get_core_tx_record(wallet.0, t);
+                            #[cfg(test)]
+                            let read = match fault.take() {
+                                Some(f) => f.apply(read),
+                                None => read,
+                            };
+                            match read {
+                                // The listed key's record, of the transaction it names.
+                                Ok(Some(r)) if r.txid == *t && r.transaction.txid() == *t => Some(r),
+                                Ok(found) => {
+                                    tracing::warn!(%wallet, txid = %t, found = ?found.map(|r| r.txid), "a listed transaction record is missing or another's");
+                                    clean = false;
+                                    None
+                                }
+                                Err(e) => {
+                                    tracing::warn!(%wallet, txid = %t, error = %e, "unreadable transaction record");
+                                    clean = false;
+                                    None
+                                }
                             }
                         })
                         .collect();
@@ -192,12 +282,28 @@ impl NetworkSession {
                         records,
                         seen,
                         abandoned,
+                        stored: if clean {
+                            (persisted.records.into_iter())
+                                .chain(persisted.recordless)
+                                .collect()
+                        } else {
+                            HashSet::new()
+                        },
                     }
                 })
                 .collect::<Vec<_>>()
         })
         .await?;
 
+        #[cfg(test)]
+        let pause = self.hub.pause_history.lock().unwrap().take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause
+                .reached
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            pause.release.notified().await;
+        }
         let wm = live.manager.wallet_manager_arc();
         let wm = wm.read().await;
         for LoadedHistory {
@@ -205,10 +311,11 @@ impl NetworkSession {
             records,
             seen,
             abandoned,
+            stored,
         } in loaded
         {
-            let in_memory: Vec<TransactionRecord> = wm
-                .get_wallet_info(&wallet.0)
+            let info = wm.get_wallet_info(&wallet.0);
+            let in_memory: Vec<TransactionRecord> = info
                 .map(|info| {
                     info.core_wallet
                         .transaction_history()
@@ -217,8 +324,26 @@ impl NetworkSession {
                         .collect()
                 })
                 .unwrap_or_default();
+            // The wallet's coins whose transaction is stored (with its
+            // record, or a height-only row), read under the same guard as
+            // the records: a coin credited after them, or not stored yet,
+            // waits for its own event ([`NetworkSession::coin_snapshot`]).
+            // A load that failed to read a record, or read one missing or
+            // another's, keeps every coin waiting. A contact's record comes
+            // only from a store written before platform-wallet stopped
+            // persisting those; a contact's ProRegTx is never left to this
+            // hold alone: `upsert` keeps it out of sight for its collateral,
+            // locked as an own one's.
+            let loaded_coins: HashSet<Txid> = match info {
+                Some(info) => (crate::coins::read_coins(&info.core_wallet).coins.iter())
+                    .map(|c| c.utxo.outpoint.txid)
+                    .filter(|t| stored.contains(t))
+                    .collect(),
+                None => HashSet::new(),
+            };
             let seen: HashMap<String, u64> = seen.into_iter().collect();
             self.hub.history.with_wallet(wallet, |h| {
+                h.set_loaded_coins(loaded_coins);
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
                 }

@@ -4152,6 +4152,7 @@ mod tests {
                 reserved: false,
                 lock_input: false,
                 unresolved_lock: false,
+                awaiting_history: false,
             },
             path: Some(path.parse().unwrap()),
             rounds,
