@@ -193,7 +193,7 @@ fn variant_of(v: Variant) -> StandbyVariant {
 /// A stored row's description: no bytes (m-22). `full_valid_from` is the
 /// registration's current block plus the period when the history holds
 /// it, not the height stored, which a reorg may have moved (review r1 n-1).
-fn standby_of(row: &StandbyRow, full_valid_from: Option<u32>, penalty: u64) -> Standby {
+fn standby_of(row: &StandbyRow, full_valid_from: Option<u32>, penalty: Option<u64>) -> Standby {
     Standby {
         pro_tx_hash: row.pro_tx_hash.clone(),
         share_index: row.share_index,
@@ -491,14 +491,18 @@ impl NetworkSession {
         hash: [u8; 32],
     ) -> Result<Vec<Standby>, MasternodesError> {
         let rows = self.standby_rows(wallet, Some(hash)).await?;
-        let history = match self.shared_chain(wallet).await {
-            Ok(chain) => registration_of(&chain, hash).ok(),
-            Err(_) => None,
-        };
-        let valid_from = history.as_ref().map(|reg| penalty_free_from(&reg.mn()));
-        let penalty = history
+        let chain = self.shared_chain(wallet).await.ok();
+        let history = chain
             .as_ref()
-            .map_or(0, |reg| standby::early_penalty(&reg.mn()));
+            .and_then(|chain| registration_of(chain, hash).ok());
+        let valid_from = history.as_ref().map(|reg| penalty_free_from(&reg.mn()));
+        let penalty = chain
+            .as_ref()
+            .and_then(|chain| chain.history.get(&Txid::from_byte_array(hash)))
+            .and_then(|entry| {
+                decode_shared_protx(&hex::encode(dashcore::consensus::serialize(&entry.tx)))
+            })
+            .map(|(_, registration)| registration.early_penalty.max(0) as u64);
         Ok(rows
             .iter()
             .map(|r| standby_of(r, valid_from, penalty))
@@ -704,7 +708,7 @@ impl NetworkSession {
                 standby: standby_of(
                     &kept,
                     Some(penalty_free_from(&mn)),
-                    standby::early_penalty(&mn),
+                    Some(standby::early_penalty(&mn)),
                 ),
                 variant: variant_of(checked.variant),
                 txid: tx.txid().to_string(),

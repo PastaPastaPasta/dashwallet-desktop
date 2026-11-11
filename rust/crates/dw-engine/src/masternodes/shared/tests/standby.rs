@@ -165,7 +165,7 @@ fn test_QT_127_create_standby_signs_cores_pair_and_stores_it() {
         pro_tx_hash: txid.to_string(),
         share_index: 0,
         fee: 1_000,
-        penalty: COIN,
+        penalty: Some(COIN),
         full_valid_from: 1_050,
         full: true,
         immediate: true,
@@ -1052,5 +1052,68 @@ fn ep_registered_standby_call_sites_preserve_refusal_order() {
                 "standby call {call}, guard {guard}"
             );
         }
+    }
+}
+
+#[test]
+fn ep_r1_standby_penalty_distinguishes_missing_history_from_zero() {
+    use super::dissolve::confirm;
+    for full_only in [false, true] {
+        let f = fx(3, true);
+        let (_, txid) = listed(&f);
+        create(&f, 0, txid, COIN + 1_000).unwrap();
+        let registration = f.seam.shared_mined.lock().unwrap()[0].1.clone();
+        let (full, _) = hex_lines(&export(&f, 0, txid, 0).unwrap());
+        let restored = fx(3, true);
+        *restored.seam.list.lock().unwrap() = f.seam.list.lock().unwrap().clone();
+        confirm(&restored, 0, registration, 50);
+        if full_only {
+            imported_standby(&restored, 0, full.as_ref().unwrap());
+        } else {
+            create(&restored, 0, txid, COIN + 1_000).unwrap();
+            assert_eq!(
+                send_code(
+                    &send(&restored, 0, txid, 0, StandbyVariant::Immediate, COIN + 999)
+                        .unwrap_err()
+                ),
+                "send.grant_exceeded"
+            );
+            send(
+                &restored,
+                0,
+                txid,
+                0,
+                StandbyVariant::Immediate,
+                COIN + 1_000,
+            )
+            .unwrap();
+        }
+        let penalty =
+            || serde_json::to_value(&standbys(&restored, 0, txid)[0]).unwrap()["penalty"].clone();
+        assert_eq!(penalty(), serde_json::json!(COIN));
+        restored
+            .session
+            .hub
+            .history
+            .with_wallet(restored.wallets[0], |h| {
+                h.truncate(&[], &[txid]);
+            });
+        assert_eq!(
+            penalty(),
+            serde_json::json!(COIN),
+            "mempool registration, full_only={full_only}"
+        );
+        restored
+            .session
+            .hub
+            .history
+            .with_wallet(restored.wallets[0], |h| {
+                h.truncate(&[txid], &[]);
+            });
+        assert!(
+            penalty().is_null(),
+            "unknown penalty, full_only={full_only}"
+        );
+        assert_eq!(standbys(&restored, 0, txid).len(), 1);
     }
 }
