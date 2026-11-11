@@ -13,6 +13,8 @@ use tauri::ipc::Invoke;
 
 use crate::ipc::CommandSpec;
 
+pub mod masternodes;
+
 macro_rules! domains {
     ($($domain:ident),+ $(,)?) => {
         $(pub mod $domain;)+
@@ -43,6 +45,7 @@ macro_rules! domains {
         pub(crate) fn excluded() -> Vec<(&'static str, &'static str, &'static str)> {
             let mut all = Vec::new();
             $(all.extend($domain::EXCLUDED.iter().map(|(m, why)| (stringify!($domain), *m, *why)));)+
+            all.extend(masternodes::EXCLUDED.iter().map(|(m, why)| ("masternodes", *m, *why)));
             all
         }
     };
