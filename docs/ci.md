@@ -97,10 +97,11 @@ it exits early. They run only on CI runners and in containers, never on a develo
 **Caching.** `Swatinem/rust-cache` caches `~/.cargo` and the dependency part of `rust/target` per job,
 keyed on `Cargo.lock` and the toolchain. `actions/cache` caches SwiftPM's repository cache, keyed on
 `Package.resolved`. A cold run builds the whole platform graph: it takes about 25–90 minutes per job,
-depending on the job and the runner (65–90 for `Rust tests (Linux)`), and a warm one much less.
-Only `main` saves the Rust caches, and only when the job succeeds. The repository's 10 GB cache
-limit evicts the oldest entries first, so a branch whose workflows still save their own caches can
-push `main`'s out.
+depending on the job and the runner (65–95 for `Rust tests (Linux)`), and a warm one much less.
+In `ci.yml` and `release.yml` only `main` saves the Rust caches; `gate.yml`, `nightly.yml` and
+`tauri-selftest.yml` save from whatever branch they run on. A cache is saved only when its job
+succeeds. Past the repository's cache limit (10 GB by default), GitHub evicts the least recently
+used caches, so a branch whose workflows still save their own caches can push `main`'s out.
 
 **Disk.** The hosted runners have less free disk than agentbox, so the workflows set
 `DWD_MIN_FREE_GB=5` for `scripts/disk-guard.sh`. The Linux test, nightly and gate jobs delete the

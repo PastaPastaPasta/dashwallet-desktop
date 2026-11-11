@@ -110,7 +110,7 @@ jobs:
   rust-linux:
     name: Rust tests (Linux)
     runs-on: ubuntu-24.04
-    # Cold runs (no cache restored) take 65-90 min. This job alone saves the ci-Linux cache, only
+    # Cold runs (no cache restored) take 65-95 min. This job alone saves the ci-Linux cache, only
     # on main and only when it succeeds, so it must be able to finish cold.
     timeout-minutes: 150
     defaults:
