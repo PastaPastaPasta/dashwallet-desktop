@@ -6040,16 +6040,54 @@ impl Fixture {
             .block_on((self.session).import_watch_only(xpub.to_owned(), Default::default()))
     }
 
-    /// The hub hears `wallet`'s checkpoint at `height`. Returns the
-    /// wallet's synced height in the hub.
-    fn hear_height(&self, wallet: WalletId, height: u32) -> Option<u32> {
+    /// A record of the wallet's spend in the mempool that key-wallet does
+    /// not keep: only an event of it puts it in the hub history.
+    fn probe(&self) -> key_wallet::managed_account::transaction_record::TransactionRecord {
+        use key_wallet::transaction_checking::WalletTransactionChecker;
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let coin = self.credit(1, COIN);
+        let (manager, id, tx) = (
+            Arc::clone(&self.session.live().unwrap().manager),
+            self.wallet,
+            self.spend_of(7, &[coin]),
+        );
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+            let (mut wallet, mut core) = (wallet.clone(), info.core_wallet.clone());
+            core.check_core_transaction(
+                &tx,
+                key_wallet::transaction_checking::TransactionContext::Mempool,
+                &mut wallet,
+                true,
+                true,
+            )
+            .await;
+            (core.transaction_history().into_iter())
+                .find(|r| r.txid == tx.txid())
+                .cloned()
+                .expect("key-wallet records the transaction")
+        })
+    }
+
+    /// The hub hears an event of `record` for `wallet`. Returns whether
+    /// the hub history has it.
+    fn hears(
+        &self,
+        wallet: WalletId,
+        record: &key_wallet::managed_account::transaction_record::TransactionRecord,
+    ) -> bool {
         (self.session.hub).apply_wallet_event(
-            &platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+            &platform_wallet::events::WalletEvent::TransactionDetected {
                 wallet_id: wallet.0,
-                height,
+                record: Box::new(record.clone()),
+                balance: Default::default(),
+                account_balances: Default::default(),
+                addresses_derived: Vec::new(),
             },
         );
-        (self.session.hub.wallet_state(&wallet)).map(|s| s.synced_height)
+        (self.session.hub.history.get(&wallet, &record.txid)).is_some()
     }
 }
 
@@ -6115,7 +6153,7 @@ fn an_event_past_its_check_leaves_nothing_of_a_wallet_unloaded_meanwhile() {
 fn a_wallet_a_failed_removal_left_stored_is_heard_once_loaded_again() {
     for open in [true, false] {
         let f = fixture(false);
-        let xpub = f.first_xpub();
+        let (xpub, probe) = (f.first_xpub(), f.probe());
         let other = open.then(|| {
             let other = f.import_watch_only(&xpub).unwrap();
             (f.engine).block_on(f.session.unload_wallet(other)).unwrap();
@@ -6134,9 +6172,9 @@ fn a_wallet_a_failed_removal_left_stored_is_heard_once_loaded_again() {
         let back = (f.engine)
             .block_on(manager.get_wallet(&f.wallet.0))
             .is_some();
-        let heard = f.hear_height(f.wallet, 777);
+        let heard = f.hears(f.wallet, &probe);
         eprintln!(
-            "ROW5965 a removal whose store deletion failed: {removed:?}; back in the manager after {} {back}; its checkpoint at 777 heard {heard:?}",
+            "ROW5965 a removal whose store deletion failed: {removed:?}; back in the manager after {} {back}; an event of it heard {heard}",
             if open {
                 "another wallet's open"
             } else {
@@ -6145,7 +6183,7 @@ fn a_wallet_a_failed_removal_left_stored_is_heard_once_loaded_again() {
         );
         assert!(removed.is_err());
         assert!(back, "open={open}");
-        assert_eq!(heard, Some(777), "open={open}");
+        assert!(heard, "open={open}");
     }
 }
 
@@ -6155,7 +6193,7 @@ fn a_wallet_a_failed_removal_left_stored_is_heard_once_loaded_again() {
 fn a_removed_wallet_imported_again_is_heard() {
     for watch_only in [false, true] {
         let f = fixture(false);
-        let xpub = f.first_xpub();
+        let (xpub, probe) = (f.first_xpub(), f.probe());
         let id = if watch_only {
             f.import_watch_only(&xpub).unwrap()
         } else {
@@ -6169,12 +6207,12 @@ fn a_removed_wallet_imported_again_is_heard() {
         } else {
             f.import_again()
         };
-        let heard = f.hear_height(id, 777);
+        let heard = f.hears(id, &probe);
         eprintln!(
-            "ROW5965 a removed wallet imported again (watch-only {watch_only}): {again:?}; its checkpoint at 777 heard {heard:?}"
+            "ROW5965 a removed wallet imported again (watch-only {watch_only}): {again:?}; an event of it heard {heard}"
         );
         assert_eq!(again.unwrap(), id);
-        assert_eq!(heard, Some(777), "watch_only={watch_only}");
+        assert!(heard, "watch_only={watch_only}");
     }
 }
 
@@ -6185,7 +6223,7 @@ fn a_removed_wallet_imported_again_is_heard() {
 fn a_removed_wallet_whose_import_again_fails_is_not_heard() {
     for watch_only in [false, true] {
         let f = fixture(false);
-        let xpub = f.first_xpub();
+        let (xpub, probe) = (f.first_xpub(), f.probe());
         let id = if watch_only {
             f.import_watch_only(&xpub).unwrap()
         } else {
@@ -6201,12 +6239,12 @@ fn a_removed_wallet_whose_import_again_fails_is_not_heard() {
         } else {
             f.import_again()
         };
-        let heard = f.hear_height(id, 777);
+        let heard = f.hears(id, &probe);
         eprintln!(
-            "ROW5965 a removed wallet whose import again failed (watch-only {watch_only}): {again:?}; its checkpoint at 777 heard {heard:?}"
+            "ROW5965 a removed wallet whose import again failed (watch-only {watch_only}): {again:?}; an event of it heard {heard}"
         );
         assert!(again.is_err());
-        assert_eq!(heard, None, "watch_only={watch_only}");
+        assert!(!heard, "watch_only={watch_only}");
     }
 }
 
