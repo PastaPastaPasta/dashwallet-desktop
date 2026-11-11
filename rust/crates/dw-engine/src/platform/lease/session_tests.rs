@@ -3080,7 +3080,7 @@ impl key_wallet::ExtendedPubKeySigner for RemovingSigner {
 /// or future, can make it read unclaimed while a signature of it may be
 /// out.
 #[test]
-fn mode_b_a_lock_the_library_sends_unstored_leaves_its_step_maybe_sent() {
+fn mode_b_a_lock_signed_for_a_wallet_that_left_leaves_its_step_maybe_sent() {
     const STEP: &str = "registration/1/funding";
     let f = fixture(false);
     f.credit(110, COIN);
