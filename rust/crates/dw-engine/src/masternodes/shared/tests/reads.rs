@@ -1,4 +1,4 @@
-use super::dissolve::{confirm, listed, listed_with};
+use super::dissolve::{confirm, listed, listed_with, listed_with_reward};
 use super::*;
 use crate::masternodes::{SharedEligibility, SharedShares, StandbyVariant};
 
@@ -10,8 +10,21 @@ fn shares(f: &Fx, txid: Txid) -> SharedShares {
 #[test]
 fn ep_t5_injected_history_shares_report_sessionless_eligibility() {
     let f = fx(3, true);
-    let (id, txid) = listed(&f);
+    let (id, txid) = listed_with_reward(&f, COIN, RewardChoice::NewAddress);
     let original = shares(&f, txid);
+    let rows = f.session_of(0, &id).rows;
+    assert_ne!(rows[0].reward_address, rows[0].refund_address);
+    for (index, (fact, row)) in original.shares.iter().zip(&rows).enumerate() {
+        assert_eq!(usize::from(fact.index), index);
+        assert_eq!(fact.refund_address, *row.refund_address.as_ref().unwrap());
+        assert_eq!(
+            fact.reward.at_registration,
+            *row.reward_address
+                .as_ref()
+                .or(row.refund_address.as_ref())
+                .unwrap()
+        );
+    }
     assert_eq!(original.session.as_deref(), Some(id.as_str()));
     assert_eq!(original.eligibility, SharedEligibility::Ok);
     assert_eq!(original.registered_height, 50);
@@ -33,7 +46,18 @@ fn ep_t5_injected_history_shares_report_sessionless_eligibility() {
     confirm(&restored, 0, registration.clone(), 50);
     let mut expected = original.clone();
     expected.session = None;
-    assert_eq!(shares(&restored, txid), expected);
+    let restored_facts = shares(&restored, txid);
+    for (fact, row) in restored_facts.shares.iter().zip(&rows) {
+        assert_eq!(fact.refund_address, *row.refund_address.as_ref().unwrap());
+        assert_eq!(
+            fact.reward.at_registration,
+            *row.reward_address
+                .as_ref()
+                .or(row.refund_address.as_ref())
+                .unwrap()
+        );
+    }
+    assert_eq!(restored_facts, expected);
     let cap = expected.early_penalty + 1_000;
     restored
         .run(restored.mn().create_standby(
@@ -279,8 +303,20 @@ fn ep_r2_scanned_shared_registration_survives_reopening() {
         CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
     };
     let f = fx(3, true);
-    let (_, txid) = listed(&f);
+    let (id, txid) = listed_with_reward(&f, COIN, RewardChoice::NewAddress);
     let mut expected = shares(&f, txid);
+    let rows = f.session_of(0, &id).rows;
+    assert_ne!(rows[0].reward_address, rows[0].refund_address);
+    for (fact, row) in expected.shares.iter().zip(&rows) {
+        assert_eq!(fact.refund_address, *row.refund_address.as_ref().unwrap());
+        assert_eq!(
+            fact.reward.at_registration,
+            *row.reward_address
+                .as_ref()
+                .or(row.refund_address.as_ref())
+                .unwrap()
+        );
+    }
     expected.session = None;
     let registration = f.seam.shared_mined.lock().unwrap()[0].1.clone();
     let mut restored = fx(3, true);
