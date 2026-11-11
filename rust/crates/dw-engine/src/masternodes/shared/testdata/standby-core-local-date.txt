@@ -1,8 +1,8 @@
-Fixture produced from Dash Core standbyFileText source layout (regtest); no Core-written file was available.
+Fixture produced from Dash Core standbyFileText source layout (regtest); no Core-written file was available. Created uses the local ISO date; FULL uses a local short date/time estimate.
 Dash shared masternode — standby dissolution
 Masternode: cee6bfa949b9f8e2020378ec33d16bcdb36e053de098d800e786fbdbb3c548a7
 Share 1 of 3
-Created: 11/10/26
+Created: 2026-11-10
 
 Each block below is a complete signed transaction. Broadcast one of them with "sendrawtransaction" only when you want to end the masternode and get your principal back. They never expire. Store this file with your refund-address backup, separately from the wallet.
 

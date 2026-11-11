@@ -3129,6 +3129,11 @@ fn ep_t2_overdue_read_recomputes_after_restart_reorg_and_confirmation() {
             .unwrap()
     };
     assert!(read());
+    session.hub.tracker().set_tip_height(90);
+    assert!(
+        !read(),
+        "old tip time is unavailable until the reorg tip time arrives"
+    );
     tip(&session, 90, 90, Some(sent + 5_000));
     assert!(!read(), "a reorg follows the replacement tip time");
     tip(&session, 100, 100, Some(sent + 10_800));

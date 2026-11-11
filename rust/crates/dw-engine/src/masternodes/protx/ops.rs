@@ -254,7 +254,7 @@ pub(crate) fn operation_of(
                     tracker.masternodes_synced(),
                     tracker.masternode_list_height(),
                     tracker.tip_height(),
-                    tracker.snapshot().tip_time,
+                    tracker.current_tip_time(),
                 )
             }),
         created_at: row.created_at,
