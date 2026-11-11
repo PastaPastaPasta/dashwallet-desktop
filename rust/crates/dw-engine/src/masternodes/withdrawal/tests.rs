@@ -1699,6 +1699,17 @@ async fn a_verified_try_again_raises_its_siblings_floor() {
 
 /// P5: a read rule 5 lets pass on a fallback (`Probe`, `Off`), of the
 /// identity or a document, raises no floor however high it claims.
+/// P5: the final look's SPV-verified identity read raises a new record's
+/// floor over an older nonce read.
+#[tokio::test]
+async fn a_newer_look_raises_a_new_records_floor_over_its_nonce_read() {
+    let f = fx();
+    f.plat.with(|w| w.height = 30);
+    f.plat.claim(Read::Nonce, ALWAYS, 20);
+    let row = f.withdraw(Payout, AMOUNT).await.unwrap();
+    assert_eq!(row.floor_height, 30);
+}
+
 /// P5: the final look's identity read is held to the group's floor, as
 /// the nonce read is: a Try again whose look reads below the refused
 /// record's floor plans and signs nothing.
@@ -1967,6 +1978,19 @@ async fn a_done_records_recheck_refreshes_its_status_and_a_not_executed_match_al
         .await
         .unwrap();
     assert_eq!(done.document_status, Some(4));
+    // A read below the record's floor refreshes nothing (P5).
+    f.plat.with(|w| {
+        let Document::V0(d) = &mut w.documents[0];
+        d.properties
+            .insert(withdrawal::properties::STATUS.into(), Value::U8(5));
+    });
+    let floor = f.row(&row.signed.id).floor_height;
+    f.plat.claim(Read::Document, ALWAYS, floor - 1);
+    let kept = recheck_record(&f.scene, &*f.plat, &row.signed.id)
+        .await
+        .unwrap();
+    assert_eq!(kept.document_status, Some(4));
+    f.plat.claim(Read::Document, 0, 0);
     // A not-executed group whose document later matches: kept, alarmed.
     f.plat.answer(Answer::Unknown("lost".into()), false);
     let lost = f.withdraw(Payout, AMOUNT).await.unwrap();
