@@ -1948,6 +1948,25 @@ fn refused_after_the_signature(script: FundScript) {
     assert_eq!(lib.counts(), (1, 0), "the step was called again");
 }
 
+/// Both refusals the library raises after signing map to `Failed`, so no
+/// caller reads them as not sent, refused, or a timeout to wait out.
+#[test]
+fn fund_error_maps_the_refusals_after_a_signature_to_failed() {
+    use platform_wallet::PlatformWalletError as E;
+    for e in [
+        E::WalletRemovedBeforeSend("w".into()),
+        E::AssetLockTooManyInputs {
+            count: 101,
+            max: 100,
+        },
+    ] {
+        match flow::fund_error(e) {
+            FundError::Failed(_) => {}
+            other => panic!("not Failed: {other:?}"),
+        }
+    }
+}
+
 /// The dispatch state of `draft`'s funding step, if it has one.
 fn funding_state(f: &Fixture, draft: i64) -> Option<crate::platform::DispatchState> {
     let steps = f

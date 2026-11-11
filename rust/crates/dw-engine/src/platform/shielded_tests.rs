@@ -3268,13 +3268,17 @@ fn shield_refused_after_the_signature(end: FundEnd) {
     let lib = Arc::new(FakeShielded::default());
     *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), fx.wallet));
     *lib.fund_end.lock().unwrap() = Some(end);
-    assert_eq!(code(shield_with(&fx, &lib)), "platform.broadcast_unknown");
+    let unknown = |r: Result<ShieldState, ShieldedError>| match r {
+        Err(ShieldedError::Platform(PlatformError::BroadcastUnknown { artifact })) => artifact,
+        other => panic!("not broadcast_unknown: {other:?}"),
+    };
+    assert_eq!(unknown(shield_with(&fx, &lib)), step);
     assert_eq!(
         fx.s.leases.funding_status(fx.wallet, &step),
         Some(DispatchState::MaybeSent)
     );
     assert!(fx.s.leases.signed_lock_txids(fx.wallet, &step).is_empty());
-    assert_eq!(code(shield_with(&fx, &lib)), "platform.broadcast_unknown");
+    assert_eq!(unknown(shield_with(&fx, &lib)), step);
     assert!(lib.funded.lock().unwrap().is_empty());
 }
 
