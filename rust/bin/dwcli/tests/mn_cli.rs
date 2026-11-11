@@ -586,6 +586,18 @@ fn mn_withdrawal_commands_answer_in_json_lines() {
             "masternodes.withdrawal_not_found",
         ),
         (
+            &[
+                "mn",
+                "withdraw-retry",
+                &hash,
+                "not-an-id",
+                "--key",
+                "owner",
+                "--all",
+            ],
+            "invalid_argument",
+        ),
+        (
             &["mn", "recheck-withdrawal", &id],
             "masternodes.withdrawal_not_found",
         ),

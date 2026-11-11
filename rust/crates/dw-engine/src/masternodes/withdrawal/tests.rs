@@ -1697,8 +1697,6 @@ async fn a_verified_try_again_raises_its_siblings_floor() {
     assert_eq!(f.row(&refused.signed.id).floor_height, 40);
 }
 
-/// P5: a read rule 5 lets pass on a fallback (`Probe`, `Off`), of the
-/// identity or a document, raises no floor however high it claims.
 /// P5: the final look's SPV-verified identity read raises a new record's
 /// floor over an older nonce read.
 #[tokio::test]
@@ -1762,6 +1760,8 @@ async fn try_again_of_another_masternodes_record_reads_and_signs_nothing() {
     assert_eq!(f.row(&refused.signed.id).state, WithdrawalState::Refused);
 }
 
+/// P5: a read rule 5 lets pass on a fallback (`Probe`, `Off`), of the
+/// identity or a document, raises no floor however high it claims.
 #[tokio::test]
 async fn a_fallback_identity_or_document_read_raises_no_floor() {
     for rule in [Rule5::Probe, Rule5::Off] {
@@ -1965,27 +1965,112 @@ async fn a_faulted_finalize_of_a_marked_group_keeps_every_late_proof_link() {
     }
 }
 
+/// Sets the status of the first document Drive wrote.
+fn set_status(f: &Fx, status: u8) {
+    f.plat.with(|w| {
+        let Document::V0(d) = &mut w.documents[0];
+        d.properties
+            .insert(withdrawal::properties::STATUS.into(), Value::U8(status));
+    });
+}
+
+/// R3-1 (r2 Sol m1, P5): a `done` record's SPV-verified status read raises
+/// its group's floor, durably and before the status is stored. After a
+/// restart, a read below that floor refreshes nothing, and neither does an
+/// at-height read that fails rule 5 (Enforce).
+#[tokio::test]
+async fn a_done_records_verified_status_read_raises_the_groups_floor() {
+    let mut f = fx();
+    f.plat.answer(Answer::Refused("10001 merits".into()), false);
+    let refused = f.withdraw(Payout, AMOUNT).await.unwrap();
+    let sibling = f.retry(&refused.signed.id, Owner, AMOUNT).await.unwrap();
+    f.plat.block();
+    f.recheck(3).await;
+    let ids = [refused.signed.id.clone(), sibling.signed.id.clone()];
+    let floors = |f: &Fx| {
+        ids.iter()
+            .map(|id| f.row(id).floor_height)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(f.row(&ids[1]).state, WithdrawalState::Done);
+    assert!(floors(&f).iter().all(|&h| h < 20), "{:?}", floors(&f));
+    set_status(&f, 4);
+    f.plat.with(|w| w.height = 30);
+    let done = recheck_record(&f.scene, &*f.plat, &ids[1]).await.unwrap();
+    assert_eq!(done.document_status, Some(4));
+    assert_eq!(floors(&f), [30, 30]);
+    f.restart();
+    set_status(&f, 5);
+    f.plat.claim(Read::Document, ALWAYS, 20);
+    recheck_record(&f.scene, &*f.plat, &ids[1]).await.unwrap();
+    assert_eq!(f.row(&ids[1]).document_status, Some(4), "an older read");
+    assert_eq!(floors(&f), [30, 30]);
+    f.plat.claim(Read::Document, 0, 0);
+    f.plat.deviate(Read::Document, Dev::Unverified, ALWAYS);
+    recheck_record(&f.scene, &*f.plat, &ids[1]).await.unwrap();
+    assert_eq!(
+        f.row(&ids[1]).document_status,
+        Some(4),
+        "an unverified read"
+    );
+    assert_eq!(floors(&f), [30, 30]);
+}
+
+/// R3-1 (P5): a `not_executed` record's re-read raises its group's floor on
+/// its SPV-verified reads, though nothing matches.
+#[tokio::test]
+async fn a_not_executed_records_verified_re_read_raises_the_groups_floor() {
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    let lost = f.withdraw(Payout, AMOUNT).await.unwrap();
+    f.plat.rival(3, None);
+    assert_eq!(f.recheck(3).await, Outcome::NotExecuted);
+    assert!(f.row(&lost.signed.id).floor_height < 30);
+    f.plat.with(|w| w.height = 30);
+    let kept = recheck_record(&f.scene, &*f.plat, &lost.signed.id)
+        .await
+        .unwrap();
+    assert_eq!(kept.state, WithdrawalState::NotExecuted);
+    assert_eq!(kept.floor_height, 30);
+    assert!(f.scene.alarms().is_empty());
+}
+
+/// R3-2 (r2 Opus m1, P5): step 2's verified reads raise the floor though
+/// the round doesn't decide. The nonce is read at H = 30, step 2's identity
+/// at 45, then its documents fail rule 5: the stored floor is 45.
+#[tokio::test]
+async fn step_twos_verified_read_raises_the_floor_on_an_undecided_round() {
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    let row = f.withdraw(Owner, AMOUNT).await.unwrap();
+    f.plat.rival(3, None);
+    f.plat.with(|w| w.height = 30);
+    // From the nonce read on: one identity read at 45, every document
+    // read unverified.
+    let plat = Arc::clone(&f.plat);
+    let after_nonce: Hook = Box::new(move || {
+        plat.claim(Read::Identity, 1, 45);
+        plat.deviate(Read::Document, Dev::Unverified, ALWAYS);
+    });
+    *f.plat.hook.lock().unwrap() = Some((Read::Nonce, after_nonce));
+    let outcome = f.recheck(3).await;
+    assert_ne!(outcome, Outcome::NotExecuted);
+    assert_eq!(f.row(&row.signed.id).floor_height, 45, "{outcome:?}");
+}
+
 #[tokio::test]
 async fn a_done_records_recheck_refreshes_its_status_and_a_not_executed_match_alarms() {
     let f = fx();
     let row = f.withdraw(Payout, AMOUNT).await.unwrap();
     f.plat.block();
     f.recheck(3).await;
-    f.plat.with(|w| {
-        let Document::V0(d) = &mut w.documents[0];
-        d.properties
-            .insert(withdrawal::properties::STATUS.into(), Value::U8(4));
-    });
+    set_status(&f, 4);
     let done = recheck_record(&f.scene, &*f.plat, &row.signed.id)
         .await
         .unwrap();
     assert_eq!(done.document_status, Some(4));
     // A read below the record's floor refreshes nothing (P5).
-    f.plat.with(|w| {
-        let Document::V0(d) = &mut w.documents[0];
-        d.properties
-            .insert(withdrawal::properties::STATUS.into(), Value::U8(5));
-    });
+    set_status(&f, 5);
     let floor = f.row(&row.signed.id).floor_height;
     f.plat.claim(Read::Document, ALWAYS, floor - 1);
     let kept = recheck_record(&f.scene, &*f.plat, &row.signed.id)
@@ -3092,7 +3177,6 @@ async fn step(f: &Fx, n: usize) -> Result<(), WithdrawalError> {
 
 const STEPS: usize = 11;
 
-/// The nonces of the identity's undecided groups.
 /// Has the scripted Platform read, at each broadcast, the nonces of the
 /// groups undecided then (the scene's database; again after a restart).
 fn watch_sends(f: &Fx) {

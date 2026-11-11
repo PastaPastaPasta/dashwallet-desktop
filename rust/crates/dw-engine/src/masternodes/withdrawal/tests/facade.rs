@@ -566,6 +566,18 @@ fn another_masternodes_record_or_grant_is_withdraw_target_mismatch() {
     let reads = fa.plat.reads(Read::Identity);
     assert_eq!(code(retry(&a, &a_grant)), mismatch);
     assert_eq!(fa.plat.reads(Read::Identity), reads);
+    // The facade refuses it first: an invalid destination is
+    // `invalid_argument` only once the call reaches the request.
+    let to_nowhere = fa.on(fa.mn.retry_withdrawal(
+        fa.f.wallet,
+        display_hex(&a),
+        refused.id.clone(),
+        Key::Payout,
+        WithdrawAmount::Credits { credits: AMOUNT },
+        Some("not an address".into()),
+        a_grant.clone(),
+    ));
+    assert_eq!(code(to_nowhere), mismatch);
     // B's hash under A's grant: refused on the grant.
     assert_eq!(code(retry(&PRO_TX, &a_grant)), mismatch);
     assert_eq!(

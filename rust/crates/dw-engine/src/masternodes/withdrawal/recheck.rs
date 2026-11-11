@@ -581,10 +581,12 @@ pub(crate) async fn recheck_all(
 
 /// `recheck_withdrawal(id)` (P13): an undecided record's group as
 /// [`recheck_group`]; a `done` one's document status refreshed from a read
-/// at or above its floor that passes rule 5; a `not_executed` one's
-/// documents read once more, where a match is an invariant violation:
-/// logged, alarmed, the state kept (P6). Neither final case raises the
-/// floor.
+/// at or above the group's floor that passes rule 5; a `not_executed`
+/// one's documents read once more, where a match is an invariant
+/// violation: logged, alarmed, the state kept (P6). Both final cases run
+/// under the identity lock, and their SPV-verified reads raise the group's
+/// floor (P5) before a status is stored, so an older read never replaces
+/// a newer status.
 pub(crate) async fn recheck_record(
     env: &impl Env,
     net: &impl MnWithdrawNet,
@@ -597,11 +599,25 @@ pub(crate) async fn recheck_record(
             recheck_group(env, net, &id, row.signed.nonce).await?;
         }
         WithdrawalState::Done => {
-            let floor = row.floor_height;
-            if let Some(proof) = &row.proof
-                && let Ok(doc_id) = parse_id(&proof.document_id)
-                && let Ok(read) =
-                    reached(env, floor, "the document", &mut 0, || net.document(doc_id)).await
+            let nonce = row.signed.nonce;
+            let lock = identity_lock(id);
+            let _guard = lock.lock().await;
+            let floor = floor_of(&group(env, &id, nonce).await?);
+            let mut top = floor;
+            let read = match row
+                .proof
+                .as_ref()
+                .and_then(|p| parse_id(&p.document_id).ok())
+            {
+                Some(doc_id) => reached(env, floor, "the document", &mut top, || {
+                    net.document(doc_id)
+                })
+                .await
+                .ok(),
+                _ => None,
+            };
+            raise_floor(env, &id, nonce, floor, top).await?;
+            if let Some(read) = read
                 && read.passed
                 && let Some(status) = read.read.value.as_ref().and_then(document_status)
             {
@@ -619,9 +635,13 @@ pub(crate) async fn recheck_record(
             }
         }
         WithdrawalState::NotExecuted => {
-            let group = group(env, &id, row.signed.nonce).await?;
-            let floor = row.floor_height;
-            let identity = match identity_for(env, net, &id, &group, floor, &mut 0).await {
+            let nonce = row.signed.nonce;
+            let lock = identity_lock(id);
+            let _guard = lock.lock().await;
+            let group = group(env, &id, nonce).await?;
+            let floor = floor_of(&group);
+            let mut top = floor;
+            let identity = match identity_for(env, net, &id, &group, floor, &mut top).await {
                 Ok(identity) => identity,
                 Err(why) => {
                     tracing::info!(why = %why.why, "rechecking a not-executed masternode withdrawal");
@@ -629,7 +649,9 @@ pub(crate) async fn recheck_record(
                 }
             };
             let identity = identity.as_ref().and_then(|g| g.read.value.as_ref());
-            if let Ok(found) = documents(env, net, &id, &group, identity, floor, &mut 0).await
+            let found = documents(env, net, &id, &group, identity, floor, &mut top).await;
+            raise_floor(env, &id, nonce, floor, top).await?;
+            if let Ok(found) = found
                 && !found.matches.is_empty()
             {
                 env.alarm(Alarm {
