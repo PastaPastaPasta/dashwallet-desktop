@@ -583,7 +583,7 @@ fn mn_withdrawal_commands_answer_in_json_lines() {
             ],
             // Resolved first: no record of this masternode has the id, so
             // no quote is read and no grant made.
-            "masternodes.withdraw_target_mismatch",
+            "masternodes.withdrawal_not_found",
         ),
         (
             &["mn", "recheck-withdrawal", &id],

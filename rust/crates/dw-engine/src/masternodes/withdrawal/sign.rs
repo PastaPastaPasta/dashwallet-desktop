@@ -133,6 +133,11 @@ async fn signed_and_sent(
         }
         _ => {}
     }
+    // P5: the plan comes from a read at or above every floor, as the nonce
+    // read does.
+    if seen.identity.read.height < floor_of(&records) {
+        return Err(WithdrawalError::Pending);
+    }
     let plan = plan(net, keys, network, &identity, req).await?;
     let (nonce, floor) = nonce_for(env, net, &id, &records, sibling_of).await?;
     // P5: the final look's identity read is used for the record too.

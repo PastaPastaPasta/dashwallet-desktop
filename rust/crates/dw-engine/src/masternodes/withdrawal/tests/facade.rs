@@ -143,6 +143,29 @@ fn fee() -> u64 {
     Rules::at(PlatformVersion::latest()).unwrap().fee
 }
 
+/// A ProUpRegTx of `PRO_TX` signed in the app (MG-04's `update_registrar` row).
+fn signed_op(id: &str) -> MasternodeOpRow {
+    MasternodeOpRow {
+        id: id.into(),
+        kind: "update_registrar".into(),
+        terms: "{}".into(),
+        request: "{}".into(),
+        unsigned_tx: None,
+        sign_address: None,
+        sign_message: None,
+        fee_inputs: "[]".into(),
+        signed_tx: Some(vec![2]),
+        txid: Some("ab".repeat(32)),
+        pro_tx_hash: Some(display_hex(&PRO_TX)),
+        locked_collateral: false,
+        fee: 7,
+        created_at: 1,
+        signed_at: Some(1),
+        sent_at: None,
+        last_error: None,
+    }
+}
+
 fn address(script: &CoreScript) -> String {
     dashcore::Address::from_script(
         &dashcore::ScriptBuf::from_bytes(script.as_bytes().to_vec()),
@@ -326,25 +349,7 @@ fn close_waits_for_the_ready_waits_barrier_row_read() {
     let pause = Arc::new(crate::coins::TestPause::default());
     *withdrawals.pause_op_read.lock().unwrap() = Some(Arc::clone(&pause));
     // A payout change signed in the app to a script the window doesn't pay.
-    let row = MasternodeOpRow {
-        id: "op-1".into(),
-        kind: "update_registrar".into(),
-        terms: "{}".into(),
-        request: "{}".into(),
-        unsigned_tx: None,
-        sign_address: None,
-        sign_message: None,
-        fee_inputs: "[]".into(),
-        signed_tx: Some(vec![2]),
-        txid: Some("ab".repeat(32)),
-        pro_tx_hash: Some(display_hex(&PRO_TX)),
-        locked_collateral: false,
-        fee: 7,
-        created_at: 1,
-        signed_at: Some(1),
-        sent_at: None,
-        last_error: None,
-    };
+    let row = signed_op("op-1");
     let elsewhere = CoreScript::new_p2pkh([0x66; 20]);
     (fa.f.session.live().unwrap().appdb)
         .insert_masternode_op_with_barrier_durable(
@@ -556,8 +561,11 @@ fn another_masternodes_record_or_grant_is_withdraw_target_mismatch() {
             .is_ok()
     };
     let mismatch = "masternodes.withdraw_target_mismatch";
-    // A's hash, B's record: refused on the record.
+    // A's hash, B's record: refused on the record, before any Platform
+    // read (the facade and the sign path both check it).
+    let reads = fa.plat.reads(Read::Identity);
     assert_eq!(code(retry(&a, &a_grant)), mismatch);
+    assert_eq!(fa.plat.reads(Read::Identity), reads);
     // B's hash under A's grant: refused on the grant.
     assert_eq!(code(retry(&PRO_TX, &a_grant)), mismatch);
     assert_eq!(
@@ -698,25 +706,7 @@ fn each_failing_condition_is_withdrawal_destination_checking_with_its_reason() {
     // wallet unknown) holds until Platform pays its script (P16).
     let fa = Fa::new(true);
     let grant = fa.grant(AMOUNT + fee(), None);
-    let row = MasternodeOpRow {
-        id: "op".into(),
-        kind: "update_registrar".into(),
-        terms: "{}".into(),
-        request: "{}".into(),
-        unsigned_tx: None,
-        sign_address: None,
-        sign_message: None,
-        fee_inputs: "[]".into(),
-        signed_tx: Some(vec![2]),
-        txid: Some("ab".repeat(32)),
-        pro_tx_hash: Some(display_hex(&PRO_TX)),
-        locked_collateral: false,
-        fee: 7,
-        created_at: 1,
-        signed_at: Some(1),
-        sent_at: None,
-        last_error: None,
-    };
+    let row = signed_op("op");
     fa.on(fa.f.session.appdb_op(move |db| {
         db.insert_masternode_op_with_barrier_durable("w", &row, &[], 1, Some(&[0x51]))
     }))

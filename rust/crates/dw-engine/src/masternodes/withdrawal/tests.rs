@@ -279,6 +279,7 @@ enum Dev {
 }
 
 type Hook = Box<dyn FnOnce() + Send>;
+type UndecidedAt = Arc<dyn Fn() -> BTreeSet<u64> + Send + Sync>;
 
 /// Platform as a masternode withdrawal sees it.
 pub(super) struct Platform {
@@ -293,8 +294,11 @@ pub(super) struct Platform {
     answers: Mutex<VecDeque<(Answer, bool)>>,
     /// Every broadcast's bytes.
     sent: Mutex<Vec<Vec<u8>>>,
-    /// Each broadcast's nonce and Drive's nonce state when it was sent.
-    sends: Mutex<Vec<(u64, u64)>>,
+    /// Each broadcast's nonce, Drive's nonce state and the undecided
+    /// groups' nonces (`at_send`) when it was sent.
+    sends: Mutex<Vec<(u64, u64, BTreeSet<u64>)>>,
+    /// Reads the undecided groups' nonces at each broadcast (the sweep).
+    at_send: Mutex<Option<UndecidedAt>>,
     mempool: Mutex<Vec<Vec<u8>>>,
     reads: Mutex<HashMap<Read, usize>>,
     /// Runs at the next read of its kind.
@@ -326,6 +330,7 @@ impl Platform {
             answers: Mutex::default(),
             sent: Mutex::default(),
             sends: Mutex::default(),
+            at_send: Mutex::default(),
             mempool: Mutex::default(),
             reads: Mutex::default(),
             hook: Mutex::default(),
@@ -571,7 +576,9 @@ impl MnWithdrawNet for Platform {
     async fn broadcast(&self, bytes: &[u8]) -> Answer {
         self.sent.lock().unwrap().push(bytes.to_vec());
         let state = self.with(|w| w.nonce_state());
-        (self.sends.lock().unwrap()).push((decoded(bytes).nonce, state));
+        let at_send = self.at_send.lock().unwrap().clone();
+        let undecided = at_send.map(|at| at()).unwrap_or_default();
+        (self.sends.lock().unwrap()).push((decoded(bytes).nonce, state, undecided));
         let scripted = self.answers.lock().unwrap().pop_front();
         match scripted {
             Some((answer, lands)) => {
@@ -1692,6 +1699,56 @@ async fn a_verified_try_again_raises_its_siblings_floor() {
 
 /// P5: a read rule 5 lets pass on a fallback (`Probe`, `Off`), of the
 /// identity or a document, raises no floor however high it claims.
+/// P5: the final look's identity read is held to the group's floor, as
+/// the nonce read is: a Try again whose look reads below the refused
+/// record's floor plans and signs nothing.
+#[tokio::test]
+async fn a_look_below_the_groups_floor_signs_nothing() {
+    let f = fx();
+    f.plat.with(|w| w.height = 40);
+    f.plat.answer(Answer::Refused("10001 merits".into()), false);
+    let refused = f.withdraw(Payout, AMOUNT).await.unwrap();
+    assert_eq!(refused.floor_height, 40);
+    let signed = f.signatures();
+    f.plat.claim(Read::Identity, ALWAYS, 30);
+    let e = f
+        .retry(&refused.signed.id, Owner, AMOUNT)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "masternodes.withdrawal_pending");
+    assert_eq!(f.signatures(), signed);
+    assert_eq!(f.row(&refused.signed.id).state, WithdrawalState::Refused);
+}
+
+/// Sol M1 in the engine: Try again of another masternode's record is
+/// `withdraw_target_mismatch` before any read or signature.
+#[tokio::test]
+async fn try_again_of_another_masternodes_record_reads_and_signs_nothing() {
+    let f = fx();
+    f.plat.answer(Answer::Refused("10001 merits".into()), false);
+    let refused = f.withdraw(Payout, AMOUNT).await.unwrap();
+    let (signed, reads) = (f.signatures(), f.plat.reads(Read::Identity));
+    let mut req = f.req(Owner, AMOUNT);
+    req.pro_tx_hash = pro_tx(40);
+    let e = retry(
+        &f.scene,
+        &*f.plat,
+        &f.keys,
+        f.auth(),
+        Network::Regtest,
+        &refused.signed.id,
+        &req,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(e.code(), "masternodes.withdraw_target_mismatch");
+    assert_eq!(
+        (f.signatures(), f.plat.reads(Read::Identity)),
+        (signed, reads)
+    );
+    assert_eq!(f.row(&refused.signed.id).state, WithdrawalState::Refused);
+}
+
 #[tokio::test]
 async fn a_fallback_identity_or_document_read_raises_no_floor() {
     for rule in [Rule5::Probe, Rule5::Off] {
@@ -3010,23 +3067,27 @@ async fn step(f: &Fx, n: usize) -> Result<(), WithdrawalError> {
 const STEPS: usize = 11;
 
 /// The nonces of the identity's undecided groups.
-fn undecided(f: &Fx) -> BTreeSet<u64> {
-    (f.rows().iter())
-        .filter(|r| !r.state.is_final())
-        .map(|r| r.signed.nonce)
-        .collect()
+/// Has the scripted Platform read, at each broadcast, the nonces of the
+/// groups undecided then (the scene's database; again after a restart).
+fn watch_sends(f: &Fx) {
+    let (db, identity) = (Arc::clone(&f.scene.db), shown(&f.id));
+    *f.plat.at_send.lock().unwrap() = Some(Arc::new(move || {
+        (db.withdrawals_of_identity(&identity).unwrap().iter())
+            .filter(|r| !r.state.is_final())
+            .map(|r| r.signed.nonce)
+            .collect()
+    }));
 }
 
 /// Invariant 1 over the sends of one step: no bytes at a nonce m went out
-/// while a group n < m, undecided before and after the step (so all
-/// through it), had its nonce taken by Drive at that send.
-fn sends_kept_order(f: &Fx, from: usize, before: &BTreeSet<u64>, what: &str) {
-    let after = undecided(f);
+/// while a group n < m was undecided and had its nonce taken by Drive at
+/// that send.
+fn sends_kept_order(f: &Fx, from: usize, what: &str) {
     let sends = f.plat.sends.lock().unwrap().clone();
-    for &(m, state) in &sends[from..] {
-        for &n in before.intersection(&after).filter(|&&n| n < m) {
+    for (m, state, undecided) in &sends[from..] {
+        for &n in undecided.iter().filter(|&&n| n < *m) {
             assert!(
-                !takes(state, n, f.id),
+                !takes(*state, n, f.id),
                 "{what}: sent at {m} while {n} was undecided and taken"
             );
         }
@@ -3120,6 +3181,7 @@ async fn sweep_run(armed: Option<(&str, dw_appdb::fault::Stage)>) -> bool {
         .unwrap()
         .insert("mine".into(), ProTxOperationState::Conflicted);
     f.barrier(&pro_tx(0x70), "other", &[9], 1_000);
+    watch_sends(&f);
     let path = f.scene.path.clone();
     let what = format!("{armed:?}");
     let mut hit = false;
@@ -3127,10 +3189,10 @@ async fn sweep_run(armed: Option<(&str, dw_appdb::fault::Stage)>) -> bool {
         dw_appdb::fault::arm(&path, point, stage);
     }
     for n in 0..STEPS {
-        let (before, sends) = (undecided(&f), f.plat.sends.lock().unwrap().len());
+        let sends = f.plat.sends.lock().unwrap().len();
         let r = step(&f, n).await;
         let what = format!("{what} step {n}");
-        sends_kept_order(&f, sends, &before, &what);
+        sends_kept_order(&f, sends, &what);
         if let (Some((point, stage)), false) = (armed, hit) {
             // Still armed: re-armed by the probe's hit; else hit here.
             match dw_appdb::fault::hit(&path, point, stage) {
@@ -3138,6 +3200,7 @@ async fn sweep_run(armed: Option<(&str, dw_appdb::fault::Stage)>) -> bool {
                 Ok(()) => {
                     hit = true;
                     f.restart();
+                    watch_sends(&f);
                     if let Err(e) = &r {
                         assert!(e.to_string().contains("fault"), "{what}: {e}");
                     }

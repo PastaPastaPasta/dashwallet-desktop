@@ -192,7 +192,6 @@ async fn pending_barriers(
 ) -> Result<bool, WithdrawalError> {
     let shown = crate::masternodes::display_hex(pro_tx_hash);
     let barriers = on_db(env, move |db| db.payout_barriers_of(&shown)).await?;
-    // An incomplete backfill may not have written an older barrier yet.
     let mut older_pending = !env.barriers_ready();
     for barrier in barriers {
         if clears(env, &barrier, identity, !older_pending).await? {

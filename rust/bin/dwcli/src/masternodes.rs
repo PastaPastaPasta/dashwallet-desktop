@@ -163,8 +163,8 @@ enum MnCommand {
     },
     /// Try again: a `refused` withdrawal's sibling at its nonce, under a
     /// new grant as `withdraw` takes it. The record must be one of
-    /// `pro_tx_hash`'s (else `withdraw_target_mismatch`, before the quote
-    /// or any grant). Prints the quote and the new record.
+    /// `pro_tx_hash`'s (else `withdrawal_not_found`, before the quote or
+    /// any grant). Prints the quote and the new record.
     WithdrawRetry {
         pro_tx_hash: String,
         /// The refused record's id.
@@ -945,10 +945,19 @@ fn withdraw(
         )
         .into());
     }
+    // Try again names one of this masternode's records, resolved before
+    // any quote or grant. The facade has no read by id, so a record of
+    // another masternode reads as none here.
     if let Some(id) = &retry {
+        if id.len() != 32 || !id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(EngineError::InvalidArgument(
+                "not a withdrawal id (32 lower-case hex)".into(),
+            )
+            .into());
+        }
         let records = engine.block_on(mn.withdrawals(pro_tx_hash.clone()))?;
         if !records.iter().any(|r| &r.id == id) {
-            return Err(MasternodesError::WithdrawTargetMismatch.into());
+            return Err(MasternodesError::WithdrawalNotFound.into());
         }
     }
     let quote = engine.block_on(mn.withdrawal_quote(w, pro_tx_hash.clone()))?;

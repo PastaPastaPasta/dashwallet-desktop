@@ -431,7 +431,8 @@ impl NetworkSession {
         let hash = parse_pro_tx_hash(&call.pro_tx_hash)?;
         // The grant names the masternode the user acted on: one for
         // another is refused here, unredeemed, and its signer would refuse
-        // to sign this one (dw-vault).
+        // to sign this one (dw-vault). A grant this read can't name goes on
+        // to the lease, which refuses it again.
         if let Ok(GrantPurpose::MasternodeWithdraw { pro_tx_hash, .. }) =
             (self.vault).grant_purpose(grant, GrantKind::MasternodeWithdraw, Some(&wallet.0))
             && pro_tx_hash != hash
@@ -439,7 +440,7 @@ impl NetworkSession {
             return Err(WithdrawalError::TargetMismatch);
         }
         let net = &self.mn_withdraw_net()?;
-        let (hash, keys) = self.withdrawal_keys(wallet, &call.pro_tx_hash).await?;
+        let (_, keys) = self.withdrawal_keys(wallet, &call.pro_tx_hash).await?;
         let req = self.request(wallet, hash, call)?;
         let env = SessionEnv::of(self)?;
         let auth = LeaseGrant {

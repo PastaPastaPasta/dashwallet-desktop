@@ -240,8 +240,6 @@ async fn finalize(
         paid_script: script.as_bytes().to_vec(),
         document_status: document_status(doc).unwrap_or(0),
     };
-    // The marked records' late-proof links are written in the same
-    // transaction (P9).
     let (done, from) = (row.signed.id.clone(), row.state);
     on_db(env, move |db| {
         db.finalize_withdrawal_group_durable(&done, &[from], &proof)
@@ -602,9 +600,9 @@ pub(crate) async fn recheck_record(
             let floor = row.floor_height;
             if let Some(proof) = &row.proof
                 && let Ok(doc_id) = parse_id(&proof.document_id)
-                && let Ok(read) = at_least(env, floor, || net.document(doc_id)).await
+                && let Ok(read) =
+                    reached(env, floor, "the document", &mut 0, || net.document(doc_id)).await
                 && read.passed
-                && read.read.height >= floor
                 && let Some(status) = read.read.value.as_ref().and_then(document_status)
             {
                 let rid = row.signed.id.clone();

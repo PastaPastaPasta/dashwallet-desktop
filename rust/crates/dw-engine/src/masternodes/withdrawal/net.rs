@@ -250,6 +250,12 @@ mod tests {
             assert!(fetched(&[true]).await.verified);
         })
         .await;
-        assert!(!outer.verified(), "the inner read still counts outside");
+        assert!(!outer.verified());
+        // The inner read's lookups still count outside: an outer scope of
+        // none of its own is verified by a verified one, and not by another.
+        for (inner, verified) in [(true, true), (false, false)] {
+            let (_, outer) = trust::scoped(fetched(&[inner])).await;
+            assert_eq!(outer.verified(), verified, "inner {inner}");
+        }
     }
 }
