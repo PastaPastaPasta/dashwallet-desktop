@@ -366,7 +366,7 @@ fn ep_r2_scanned_shared_registration_survives_reopening() {
             !records.is_empty(),
             "the wallet scanner must recognize the registration"
         );
-        (records, info.balance.clone())
+        (records, info.balance)
     });
     assert!(
         restored
