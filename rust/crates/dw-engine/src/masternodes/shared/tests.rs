@@ -36,6 +36,7 @@ use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, Wa
 
 mod dissolve;
 mod key_change;
+mod reads;
 mod standby;
 mod together;
 

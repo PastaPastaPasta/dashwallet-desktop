@@ -37,9 +37,10 @@ pub use records::{
 };
 pub use shared_records::{
     Activation, DeadReason, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyBase,
-    KeyChangeRequest, KeyChangeView, MaintenanceSent, RewardChoice, ShareReturn, ShareRow,
-    ShareSlot, ShareTerms, ShareTermsView, SharedCapability, SharedImport, SharedKind,
-    SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedStage,
+    KeyChangeRequest, KeyChangeView, MaintenanceSent, RewardAttempt, RewardAttemptState,
+    RewardChoice, RewardDestination, RewardUpdate, ShareFact, ShareReturn, ShareRow, ShareSlot,
+    ShareTerms, ShareTermsView, SharedCapability, SharedEligibility, SharedImport, SharedKind,
+    SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedShares, SharedStage,
     SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource, StandbyVariant,
     StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
 };

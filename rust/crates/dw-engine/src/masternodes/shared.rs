@@ -20,6 +20,7 @@ mod dissolve;
 mod flow;
 mod import;
 mod key_change;
+mod reads;
 mod send;
 mod standby;
 mod store;
@@ -202,6 +203,21 @@ impl Masternodes {
                 evonode_shares: Activation::Inactive,
                 can_send,
             })
+        })
+        .await
+    }
+
+    /// The registration's shares from this wallet's history, with maintenance
+    /// eligibility and this wallet's reward updates; no session is required.
+    pub async fn shared_shares(
+        &self,
+        wallet: WalletId,
+        pro_tx_hash: String,
+    ) -> Result<super::shared_records::SharedShares, MasternodesError> {
+        let hash = parse_pro_tx_hash(&pro_tx_hash)?;
+        self.protx_op(move |s| async move {
+            s.require_wallet(&wallet)?;
+            s.shared_share_facts(wallet, hash).await
         })
         .await
     }

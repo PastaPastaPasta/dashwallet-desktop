@@ -525,3 +525,66 @@ pub struct StandbyFile {
     pub file_name: String,
     pub text: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SharedEligibility {
+    Ok,
+    UpgradeUnknown,
+    ListUnavailable,
+    TooEarly,
+    Delisted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedShares {
+    pub registered_height: u32,
+    pub spend_height: u32,
+    pub early_period_blocks: u32,
+    pub early_penalty: u64,
+    pub full_valid_from: u32,
+    pub eligibility: SharedEligibility,
+    pub full_valid_now: bool,
+    pub session: Option<String>,
+    pub shares: Vec<ShareFact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareFact {
+    pub index: u16,
+    pub amount: u64,
+    pub refund_address: String,
+    pub mine: bool,
+    pub reward: RewardDestination,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewardDestination {
+    pub at_registration: String,
+    pub latest_confirmed_local: Option<RewardUpdate>,
+    pub latest_attempt: Option<RewardAttempt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewardUpdate {
+    pub operation: String,
+    pub address: String,
+    pub confirmed_height: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RewardAttemptState {
+    Signed,
+    NotSent,
+    Sent,
+    Conflicted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewardAttempt {
+    pub operation: String,
+    pub address: String,
+    pub state: RewardAttemptState,
+    pub sent_at: Option<u64>,
+}
