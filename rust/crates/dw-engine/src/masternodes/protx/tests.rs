@@ -2799,3 +2799,200 @@ fn ep_t1_collateral_release_is_explicit_and_survives_restart() {
     f.hold(collateral, tx.output[vout as usize].clone());
     assert_eq!(row(&f), true);
 }
+
+#[test]
+fn ep_t2_operation_debit_matches_resend_caps_for_every_kind_and_state() {
+    for (kind, flavour, penalty, foreign, together) in [
+        ("registration", "registration", 0, false, false),
+        ("update_registrar", "registrar", 0, false, false),
+        ("update_share", "share", 0, false, false),
+        ("dissolve", "alone_early", COIN, false, false),
+        ("dissolve", "alone_full", 0, false, false),
+        ("dissolve", "standby_immediate", COIN, false, false),
+        ("dissolve", "standby_full", 0, false, false),
+        ("dissolve", "foreign", COIN, true, false),
+        ("dissolve", "together", 0, false, true),
+    ] {
+        for state in [
+            ProTxOperationState::Signed,
+            ProTxOperationState::NotSent,
+            ProTxOperationState::Sent,
+        ] {
+            let f = fx(Library::Accept);
+            f.credit(1, MASTERNODE_COLLATERAL + COIN);
+            *f.seam.crash.lock().unwrap() = Some(CrashPoint::Saved);
+            assert!(
+                f.register(request(CollateralChoice::FundNew), f.grant(COIN))
+                    .is_err()
+            );
+            let wallet = f.wallet.to_string();
+            let mut row = f.db().masternode_ops(&wallet).unwrap().pop().unwrap();
+            assert!(
+                f.db()
+                    .delete_unsent_masternode_op(&wallet, &row.id)
+                    .unwrap()
+            );
+            row.kind = kind.into();
+            row.locked_collateral = false;
+            if kind == "dissolve" {
+                row.request = serde_json::json!({
+                    "pro_tx_hash": row.pro_tx_hash, "share_index": 0, "fee": row.fee,
+                    "penalty": penalty, "actor_output": 0, "foreign": foreign, "together": together
+                })
+                .to_string();
+            }
+            if state == ProTxOperationState::NotSent {
+                row.last_error = Some("send.no_peers".into());
+            }
+            f.db()
+                .insert_masternode_op_durable(&wallet, &row, &[], row.created_at)
+                .unwrap();
+            if state == ProTxOperationState::Sent {
+                f.db()
+                    .begin_masternode_op_attempt(&wallet, &row.id, row.created_at)
+                    .unwrap();
+            }
+            let op = f
+                .engine
+                .block_on(f.mn().operations(f.wallet))
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(op.state, state, "{flavour}");
+            let debit = if foreign || together {
+                0
+            } else {
+                row.fee + penalty
+            };
+            assert_eq!(
+                serde_json::to_value(&op).unwrap()["debit"],
+                debit,
+                "{flavour} {state:?}"
+            );
+            if debit > 0 {
+                let e = f
+                    .engine
+                    .block_on(
+                        f.mn()
+                            .resend_operation(f.wallet, row.id.clone(), f.grant(debit - 1)),
+                    )
+                    .unwrap_err();
+                assert_eq!(
+                    super::ops::error_code(e.engine().unwrap()),
+                    "send.grant_exceeded",
+                    "{flavour} {state:?}"
+                );
+                assert!(f.lib.sent().is_empty());
+            }
+            *f.seam.crash.lock().unwrap() = None;
+            let sent = f
+                .engine
+                .block_on(f.mn().resend_operation(f.wallet, row.id, f.grant(debit)))
+                .unwrap();
+            assert_eq!(sent.state, ProTxOperationState::Sent, "{flavour}");
+            assert_eq!(f.lib.sent().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn ep_t2_overdue_read_recomputes_after_restart_reorg_and_confirmation() {
+    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+    let f = fx(Library::Accept);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    let sent = op.sent_at.unwrap();
+    let tip = |session: &NetworkSession, list: u32, height: u32, time: Option<u64>| {
+        let mut headers = BlockHeadersProgress::default();
+        headers.update_target_height(height);
+        headers.update_tip_height(height);
+        headers.set_state(SyncState::Synced);
+        let mut mn = MasternodesProgress::default();
+        mn.update_target_height(list);
+        mn.update_current_height(list);
+        mn.set_state(SyncState::Synced);
+        let mut progress = SyncProgress::default();
+        progress.update_headers(headers);
+        progress.update_masternodes(mn);
+        let mut tracker = session.hub.tracker();
+        tracker.on_progress(&progress);
+        tracker.set_tip_time(height, time);
+    };
+    let read = |mn: Masternodes| {
+        serde_json::to_value(
+            f.engine
+                .block_on(mn.operations(f.wallet))
+                .unwrap()
+                .pop()
+                .unwrap(),
+        )
+        .unwrap()["overdue"]
+            .as_bool()
+            .unwrap()
+    };
+    tip(&f.session, 100, 100, Some(sent + 10_799));
+    assert!(!read(f.mn()));
+    tip(&f.session, 99, 100, Some(sent + 10_800));
+    assert!(read(f.mn()));
+    tip(&f.session, 98, 100, Some(sent + 10_800));
+    assert!(!read(f.mn()));
+    tip(&f.session, 100, 100, Some(sent + 7_200));
+    assert!(!read(f.mn()));
+    tip(&f.session, 100, 100, None);
+    assert!(!read(f.mn()));
+    tip(&f.session, 100, 100, Some(sent + 10_800));
+    assert!(read(f.mn()));
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    let engine = Engine::new(
+        config(&f.dir, Arc::new(MemoryOsStore::new())),
+        Arc::new(NoEvents),
+    )
+    .unwrap();
+    let session = open(&engine);
+    seam_for(&session, &f.lib);
+    tip(&session, 100, 100, Some(sent + 10_800));
+    let read = || {
+        serde_json::to_value(
+            engine
+                .block_on(session.masternodes().operations(f.wallet))
+                .unwrap()
+                .pop()
+                .unwrap(),
+        )
+        .unwrap()["overdue"]
+            .as_bool()
+            .unwrap()
+    };
+    assert!(read());
+    tip(&session, 90, 90, Some(sent + 5_000));
+    assert!(!read(), "a reorg follows the replacement tip time");
+    tip(&session, 100, 100, Some(sent + 10_800));
+    let record = key_wallet::managed_account::transaction_record::TransactionRecord::new(
+        f.lib.sent()[0].clone(),
+        key_wallet::account::AccountType::Standard {
+            index: 0,
+            standard_account_type: key_wallet::account::StandardAccountType::BIP44Account,
+        },
+        key_wallet::transaction_checking::TransactionContext::InBlock(
+            key_wallet::transaction_checking::BlockInfo::new(
+                99,
+                dashcore::BlockHash::all_zeros(),
+                0,
+            ),
+        ),
+        key_wallet::transaction_checking::TransactionType::Standard,
+        key_wallet::managed_account::transaction_record::TransactionDirection::Internal,
+        Vec::new(),
+        Vec::new(),
+        0,
+    );
+    session
+        .hub
+        .history
+        .with_wallet(f.wallet, |h| h.upsert(&record, None));
+    assert!(!read(), "confirmed rows are never overdue");
+}

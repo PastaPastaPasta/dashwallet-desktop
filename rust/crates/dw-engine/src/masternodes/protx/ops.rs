@@ -196,9 +196,28 @@ fn tx_conflict_height(tx: &Transaction, history: &HashMap<Txid, TxEntry>) -> Opt
     conflict_height(history, &inputs, Some(&tx.txid()))
 }
 
+pub(crate) const OVERDUE_SECS: u64 = 10_800;
+
+pub(crate) fn tip_overdue(sent_at: u64, tip_time: Option<u64>) -> bool {
+    tip_time.is_some_and(|time| time.saturating_sub(sent_at) >= OVERDUE_SECS)
+}
+
+pub(crate) fn overdue(
+    sent_at: u64,
+    list_synced: bool,
+    list_height: Option<u32>,
+    tip_height: Option<u32>,
+    tip_time: Option<u64>,
+) -> bool {
+    list_synced
+        && matches!((list_height, tip_height), (Some(list), Some(tip)) if list.saturating_add(1) >= tip)
+        && tip_overdue(sent_at, tip_time)
+}
+
 pub(crate) fn operation_of(
     row: &MasternodeOpRow,
     state: ProTxOperationState,
+    tracker: &crate::sync::SyncTracker,
 ) -> Result<ProTxOperation, MasternodesError> {
     let terms: ProTxTerms = serde_json::from_str(&row.terms)
         .map_err(|e| EngineError::Internal(format!("stored ProTx terms: {e}")))?;
@@ -217,6 +236,17 @@ pub(crate) fn operation_of(
         state,
         sign_request,
         fee: row.fee,
+        debit: crate::masternodes::shared::row_debit(row)?,
+        overdue: state == ProTxOperationState::Sent
+            && row.sent_at.is_some_and(|sent_at| {
+                overdue(
+                    sent_at,
+                    tracker.masternodes_synced(),
+                    tracker.masternode_list_height(),
+                    tracker.tip_height(),
+                    tracker.snapshot().tip_time,
+                )
+            }),
         created_at: row.created_at,
         signed_at: row.signed_at,
         sent_at: row.sent_at,
@@ -411,7 +441,7 @@ impl NetworkSession {
     ) -> Result<ProTxOperation, MasternodesError> {
         let row = self.op_row(wallet, id).await?;
         let state = self.op_state(wallet, &row).await?;
-        operation_of(&row, state)
+        operation_of(&row, state, &self.hub.tracker())
     }
 
     /// Saves a new row durably with the coin locks it holds (its inputs,
@@ -784,5 +814,29 @@ mod tests {
         assert_eq!(state_of(&r, &h, &u), ProTxOperationState::NotSent);
         r.sent_at = Some(1);
         assert_eq!(state_of(&r, &h, &u), ProTxOperationState::Sent);
+    }
+
+    #[test]
+    fn ep_t2_overdue_uses_only_current_tip_and_a_current_list() {
+        let sent = 20_000;
+        let check = |delta, synced, list, tip| overdue(sent, synced, list, tip, Some(sent + delta));
+        assert!(!check(10_799, true, Some(100), Some(100)));
+        assert!(check(10_800, true, Some(100), Some(100)));
+        assert!(!check(7_200, true, Some(100), Some(100)));
+        assert!(!overdue(sent, true, Some(100), Some(100), None));
+        assert!(!check(10_800, true, Some(98), Some(100)));
+        assert!(check(10_800, true, Some(99), Some(100)));
+        assert!(!check(10_800, false, Some(100), Some(100)));
+        assert!(!check(10_800, true, None, Some(100)));
+        assert!(!check(10_800, true, Some(100), None));
+        assert!(
+            tip_overdue(sent, Some(sent + 10_800)),
+            "abandon does not wait on a list"
+        );
+        assert!(
+            !overdue(sent, true, Some(90), Some(90), Some(sent - 1)),
+            "reorg time is authoritative"
+        );
+        assert!(check(10_800, true, Some(u32::MAX), Some(u32::MAX)));
     }
 }
