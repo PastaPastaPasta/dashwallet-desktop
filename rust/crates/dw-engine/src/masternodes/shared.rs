@@ -23,6 +23,7 @@ mod key_change;
 mod reads;
 mod send;
 mod standby;
+pub use standby::standby_file_transactions;
 mod store;
 #[cfg(test)]
 #[allow(non_snake_case)]

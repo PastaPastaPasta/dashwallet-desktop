@@ -17,6 +17,7 @@ mod protx_records;
 mod reads;
 mod records;
 mod shared;
+pub use shared::standby_file_transactions;
 mod shared_records;
 mod tracking;
 

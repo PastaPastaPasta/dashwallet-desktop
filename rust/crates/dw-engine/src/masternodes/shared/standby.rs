@@ -307,6 +307,30 @@ pub(super) fn file_text(f: &FileFacts) -> String {
     lines.join("\n")
 }
 
+/// Extracts distinct transaction lines in file order, independently of
+/// the standby file's labels, language and date format.
+pub fn standby_file_transactions(text: &str) -> Result<Vec<String>, MasternodesError> {
+    let mut transactions = Vec::new();
+    let mut seen = HashSet::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.len() % 2 != 0 {
+            continue;
+        }
+        let Ok(bytes) = hex::decode(line) else {
+            continue;
+        };
+        if dashcore::consensus::deserialize::<dashcore::Transaction>(&bytes).is_ok()
+            && seen.insert(bytes)
+        {
+            transactions.push(line.to_string());
+        }
+    }
+    if transactions.is_empty() {
+        return Err(invalid("not a standby file"));
+    }
+    Ok(transactions)
+}
+
 /// The shared registration `hash` in a block of the wallet's history, and
 /// that block's height (D29); else `shared_registration_unknown`.
 pub(super) fn in_history(

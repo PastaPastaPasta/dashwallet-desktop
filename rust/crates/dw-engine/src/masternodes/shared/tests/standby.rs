@@ -899,6 +899,69 @@ fn ep_t3_standby_penalty_matches_created_and_imported_charges() {
 }
 
 #[test]
+fn ep_t8_standby_file_extracts_importable_variants_without_labels() {
+    use crate::masternodes::standby_file_transactions;
+    for penalty in [COIN, 0] {
+        let f = fx(3, true);
+        let (_, txid) = listed_with(&f, penalty);
+        create(&f, 0, txid, penalty + 1_000).unwrap();
+        let file = export(&f, 0, txid, 0).unwrap();
+        let lines = standby_file_transactions(&file.text).unwrap();
+        assert_eq!(lines.len(), if penalty == 0 { 1 } else { 2 });
+        for text in &lines {
+            assert!(matches!(
+                import(&f, 1, text).unwrap(),
+                SharedImport::Standby { .. }
+            ));
+        }
+        for text in &lines {
+            let restored = fx(3, true);
+            *restored.seam.list.lock().unwrap() = f.seam.list.lock().unwrap().clone();
+            *restored.seam.shared_mined.lock().unwrap() =
+                f.seam.shared_mined.lock().unwrap().clone();
+            imported_standby(&restored, 0, text);
+            let half = export(&restored, 0, txid, 0).unwrap();
+            let extracted = standby_file_transactions(&half.text).unwrap();
+            assert_eq!(extracted, vec![text.clone()]);
+            for tx in extracted {
+                assert!(matches!(
+                    import(&restored, 1, &tx).unwrap(),
+                    SharedImport::Standby { .. }
+                ));
+            }
+        }
+        let decorated = format!(
+            "ignored header\n{}\nabc\n {} \n{}\n",
+            "12".repeat(32),
+            lines[0],
+            lines[0].to_uppercase()
+        );
+        assert_eq!(
+            standby_file_transactions(&decorated).unwrap(),
+            vec![lines[0].clone()]
+        );
+        if penalty > 0 {
+            for fixture in [
+                include_str!("../testdata/standby-core-local-date.txt"),
+                include_str!("../testdata/standby-core-translated.txt"),
+            ] {
+                let extracted = standby_file_transactions(fixture).unwrap();
+                assert_eq!(extracted, lines);
+                for text in extracted {
+                    assert!(matches!(
+                        import(&f, 1, &text).unwrap(),
+                        SharedImport::Standby { .. }
+                    ));
+                }
+            }
+        }
+    }
+    let e = standby_file_transactions("private input\nabc\n0123\n").unwrap_err();
+    assert_eq!(e.code(), "invalid_argument");
+    assert!(!e.to_string().contains("private input"));
+}
+
+#[test]
 fn ep_registered_split_preserves_registered_and_my_shares() {
     let f = fx(3, true);
     let (_, txid) = listed(&f);
