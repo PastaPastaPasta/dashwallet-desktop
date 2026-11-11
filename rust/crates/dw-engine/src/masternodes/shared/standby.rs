@@ -52,6 +52,7 @@ const SECONDS_PER_BLOCK: u64 = 150;
 /// A shared masternode as the standby calls read it: its registration from
 /// the wallet's history and the height of the block holding it (D29), the
 /// list's voting key and service, one block deep and listed (m-16).
+#[derive(Debug, PartialEq, Eq)]
 pub(super) struct Registered {
     pub hash: [u8; 32],
     collateral: OutPoint,
@@ -71,8 +72,59 @@ pub(super) struct Registered {
     pub spend_height: u32,
 }
 
+pub(super) struct HistoryReg {
+    pub hash: [u8; 32],
+    pub collateral: OutPoint,
+    pub shares: Vec<CollateralShare>,
+    pub registered_height: u32,
+    pub early_period_blocks: u32,
+    pub early_penalty: i64,
+    pub operator_public_key: [u8; 48],
+    pub operator_reward: u16,
+    pub voting_key_id: [u8; 20],
+}
+
+impl HistoryReg {
+    pub(super) fn mn(&self) -> SharedMn<'_> {
+        SharedMn {
+            pro_tx_hash: Txid::from_byte_array(self.hash),
+            collateral: self.collateral,
+            shares: &self.shares,
+            registered_height: self.registered_height,
+            early_period_blocks: self.early_period_blocks,
+            early_penalty: self.early_penalty,
+            voting_key_id: self.voting_key_id,
+        }
+    }
+}
+
+pub(super) struct Listed {
+    pub voting_key_id: [u8; 20],
+    pub service: String,
+    pub tip: u32,
+    pub spend_height: u32,
+}
+
+pub(super) fn registration_of(
+    chain: &ChainView,
+    hash: [u8; 32],
+) -> Result<HistoryReg, MasternodesError> {
+    let (height, p) = in_history(chain, hash)?;
+    Ok(HistoryReg {
+        hash,
+        collateral: OutPoint::new(Txid::from_byte_array(hash), p.collateral.vout),
+        shares: p.shares,
+        registered_height: height,
+        early_period_blocks: p.early_period_blocks,
+        early_penalty: p.early_penalty,
+        operator_public_key: p.operator_public_key,
+        operator_reward: p.operator_reward,
+        voting_key_id: p.voting_key_id,
+    })
+}
+
 impl Registered {
-    pub fn mn(&self) -> SharedMn<'_> {
+    pub(super) fn mn(&self) -> SharedMn<'_> {
         SharedMn {
             pro_tx_hash: Txid::from_byte_array(self.hash),
             collateral: self.collateral,
@@ -286,14 +338,39 @@ impl NetworkSession {
         hash: [u8; 32],
         ctx: &Context,
     ) -> Result<Registered, MasternodesError> {
-        let txid = Txid::from_byte_array(hash);
+        let chain = self.shared_chain(wallet).await?;
+        let history = registration_of(&chain, hash)?;
+        let listed = self.listed_of(ctx, &history)?;
+        Ok(Registered {
+            hash,
+            collateral: history.collateral,
+            shares: history.shares,
+            registered_height: history.registered_height,
+            early_period_blocks: history.early_period_blocks,
+            early_penalty: history.early_penalty,
+            voting_key_id: listed.voting_key_id,
+            operator_public_key: history.operator_public_key,
+            operator_reward: history.operator_reward,
+            service: listed.service,
+            tip: listed.tip,
+            spend_height: listed.spend_height,
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) async fn registered_before_split(
+        &self,
+        wallet: WalletId,
+        hash: [u8; 32],
+        ctx: &Context,
+    ) -> Result<Registered, MasternodesError> {
         let chain = self.shared_chain(wallet).await?;
         let (height, p) = in_history(&chain, hash)?;
         let (list_height, listed) = listed_above(ctx, hash, height)?;
         let tip = list_height.max(self.hub.tracker().tip_height().unwrap_or(0));
         Ok(Registered {
             hash,
-            collateral: OutPoint::new(txid, p.collateral.vout),
+            collateral: OutPoint::new(Txid::from_byte_array(hash), p.collateral.vout),
             shares: p.shares,
             registered_height: height,
             early_period_blocks: p.early_period_blocks,
@@ -310,15 +387,33 @@ impl NetworkSession {
         })
     }
 
+    pub(super) fn listed_of(
+        &self,
+        ctx: &Context,
+        history: &HistoryReg,
+    ) -> Result<Listed, MasternodesError> {
+        let (height, entry) = listed_above(ctx, history.hash, history.registered_height)?;
+        let tip = height.max(self.hub.tracker().tip_height().unwrap_or(0));
+        Ok(Listed {
+            voting_key_id: entry.voting_key_id,
+            service: entry
+                .service_address
+                .map(|address| address.to_string())
+                .unwrap_or_default(),
+            tip,
+            spend_height: tip + 1,
+        })
+    }
+
     /// The keychain owner index of each share of `reg` that is this
     /// wallet's (D10).
     pub(super) async fn my_shares(
         &self,
         wallet: WalletId,
-        reg: &Registered,
+        shares: &[CollateralShare],
     ) -> Result<Vec<(u16, u32)>, MasternodesError> {
         let mut mine = Vec::new();
-        for (i, share) in reg.shares.iter().enumerate() {
+        for (i, share) in shares.iter().enumerate() {
             if let Some(index) = self.keychain_owner(wallet, share.owner_key_id).await? {
                 mine.push((i as u16, index));
             }
@@ -373,23 +468,13 @@ impl NetworkSession {
     ) -> Result<Vec<Standby>, MasternodesError> {
         let rows = self.standby_rows(wallet, Some(hash)).await?;
         let history = match self.shared_chain(wallet).await {
-            Ok(chain) => in_history(&chain, hash).ok(),
+            Ok(chain) => registration_of(&chain, hash).ok(),
             Err(_) => None,
         };
-        let valid_from = history
+        let valid_from = history.as_ref().map(|reg| penalty_free_from(&reg.mn()));
+        let penalty = history
             .as_ref()
-            .map(|(height, p)| height.saturating_add(p.early_period_blocks));
-        let penalty = history.as_ref().map_or(0, |(height, p)| {
-            standby::early_penalty(&SharedMn {
-                pro_tx_hash: Txid::from_byte_array(hash),
-                collateral: OutPoint::new(Txid::from_byte_array(hash), p.collateral.vout),
-                shares: &p.shares,
-                registered_height: *height,
-                early_period_blocks: p.early_period_blocks,
-                early_penalty: p.early_penalty,
-                voting_key_id: p.voting_key_id,
-            })
-        });
+            .map_or(0, |reg| standby::early_penalty(&reg.mn()));
         Ok(rows
             .iter()
             .map(|r| standby_of(r, valid_from, penalty))
@@ -411,7 +496,7 @@ impl NetworkSession {
         let ctx = super::v24_context(self, wallet).await?;
         let reg = self.registered(wallet, hash, &ctx).await?;
         let mn = reg.mn();
-        let mine = self.my_shares(wallet, &reg).await?;
+        let mine = self.my_shares(wallet, &reg.shares).await?;
         if mine.is_empty() {
             return Err(MasternodesError::ShareNotMine);
         }
@@ -585,7 +670,7 @@ impl NetworkSession {
             .standby_row(wallet, hash, checked.actor, checked.fee)
             .await?;
         let mine: HashSet<u16> = self
-            .my_shares(wallet, &reg)
+            .my_shares(wallet, &reg.shares)
             .await?
             .into_iter()
             .map(|(share, _)| share)

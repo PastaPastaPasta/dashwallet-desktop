@@ -897,3 +897,97 @@ fn ep_t3_standby_penalty_matches_created_and_imported_charges() {
     let (_, hash) = listed_with(&zero, 0);
     assert_eq!(penalty(&create(&zero, 0, hash, 1_000).unwrap()[0]), 0);
 }
+
+#[test]
+fn ep_registered_split_preserves_registered_and_my_shares() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    for tip in [0, 100, 150] {
+        f.tip(tip);
+        for height in [49, 50, 51, 100] {
+            list_at(&f, height);
+            let ctx = f.run(f.session.protx_context(f.wallets[0])).unwrap();
+            let old = f.run(f.session.registered_before_split(
+                f.wallets[0],
+                txid.to_byte_array(),
+                &ctx,
+            ));
+            let new = f.run(
+                f.session
+                    .registered(f.wallets[0], txid.to_byte_array(), &ctx),
+            );
+            match (old, new) {
+                (Ok(old), Ok(new)) => {
+                    assert_eq!(old, new);
+                    for w in 0..3 {
+                        let mut expected = Vec::new();
+                        for (i, share) in old.shares.iter().enumerate() {
+                            if let Some(index) = f
+                                .run(f.session.keychain_owner(f.wallets[w], share.owner_key_id))
+                                .unwrap()
+                            {
+                                expected.push((i as u16, index));
+                            }
+                        }
+                        assert_eq!(
+                            f.run(f.session.my_shares(f.wallets[w], &new.shares))
+                                .unwrap(),
+                            expected
+                        );
+                        assert_eq!(expected.len(), 1);
+                        assert_eq!(expected[0].0, w as u16);
+                    }
+                }
+                (Err(old), Err(new)) => assert_eq!(old.code(), new.code()),
+                other => panic!("split changed the result: {other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn ep_registered_standby_call_sites_preserve_refusal_order() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    create(&f, 0, txid, COIN + 1_000).unwrap();
+    let immediate = hex_lines(&export(&f, 0, txid, 0).unwrap()).1.unwrap();
+    let entries = f.seam.list.lock().unwrap().clone();
+    let mined = f.seam.shared_mined.lock().unwrap().clone();
+    for (guard, expected) in [
+        (0, "masternodes.unsupported"),
+        (1, "masternodes.list_unavailable"),
+        (2, "masternodes.shared_registration_unknown"),
+        (3, "masternodes.shared_too_early"),
+    ] {
+        *f.seam.list.lock().unwrap() = entries.clone();
+        *f.seam.shared_mined.lock().unwrap() = mined.clone();
+        list_at(&f, 100);
+        f.db()
+            .set_setting_durable(GLOBAL_SCOPE, "masternodes.any_shared_seen", Some("1"))
+            .unwrap();
+        match guard {
+            0 => {
+                f.db()
+                    .set_setting_durable(GLOBAL_SCOPE, "masternodes.any_shared_seen", None)
+                    .unwrap();
+                *f.seam.list.lock().unwrap() = Some(Vec::new());
+            }
+            1 => *f.seam.list.lock().unwrap() = None,
+            2 => f.seam.shared_mined.lock().unwrap().clear(),
+            _ => list_at(&f, 50),
+        }
+        for call in 0..4 {
+            let result = match call {
+                0 => create(&f, 0, txid, COIN + 1_000).map(|_| ()),
+                1 => export(&f, 0, txid, 0).map(|_| ()),
+                2 => import(&f, 0, &immediate).map(|_| ()),
+                _ => send(&f, 0, txid, 0, StandbyVariant::Immediate, COIN + 1_000).map(|_| ()),
+            };
+            assert_eq!(
+                result.unwrap_err().code(),
+                expected,
+                "standby call {call}, guard {guard}"
+            );
+        }
+    }
+}

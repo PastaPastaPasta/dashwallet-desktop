@@ -829,6 +829,57 @@ fn test_QT_127_a_replay_holds_a_key_changes_fee_inputs() {
 }
 
 #[test]
+fn ep_registered_key_change_call_sites_preserve_refusal_order() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, request) = complete(&f, txid);
+    let entries = f.seam.list.lock().unwrap().clone();
+    let mined = f.seam.shared_mined.lock().unwrap().clone();
+    for (guard, expected) in [
+        (0, "masternodes.unsupported"),
+        (1, "masternodes.list_unavailable"),
+        (2, "masternodes.shared_registration_unknown"),
+        (3, "masternodes.shared_too_early"),
+    ] {
+        *f.seam.list.lock().unwrap() = entries.clone();
+        *f.seam.shared_mined.lock().unwrap() = mined.clone();
+        *f.seam.list_height.lock().unwrap() = 100;
+        f.db()
+            .set_setting_durable(GLOBAL_SCOPE, "masternodes.any_shared_seen", Some("1"))
+            .unwrap();
+        match guard {
+            0 => {
+                f.db()
+                    .set_setting_durable(GLOBAL_SCOPE, "masternodes.any_shared_seen", None)
+                    .unwrap();
+                *f.seam.list.lock().unwrap() = Some(Vec::new());
+            }
+            1 => *f.seam.list.lock().unwrap() = None,
+            2 => f.seam.shared_mined.lock().unwrap().clear(),
+            _ => *f.seam.list_height.lock().unwrap() = 50,
+        }
+        for call in 0..4 {
+            let result = match call {
+                0 => start(&f, 0, rotate(txid), 0).map(|_| ()),
+                1 => import_into(&f, 1, &request.message.text).map(|_| ()),
+                2 => approve(&f, 1, &id, 0).map(|_| ()),
+                _ => send(&f, 0, &id, COIN).map(|_| ()),
+            };
+            let expected = if guard == 2 && call == 3 {
+                "masternodes.shared_stage"
+            } else {
+                expected
+            };
+            assert_eq!(
+                result.unwrap_err().code(),
+                expected,
+                "key change call {call}, guard {guard}"
+            );
+        }
+    }
+}
+
+#[test]
 fn ep_conflict_height_preserves_key_change_follower_release() {
     let f = fx(3, true);
     let (_, txid) = keyed(&f);

@@ -951,3 +951,54 @@ fn test_QT_127_dissolve_together_stages_decode() {
         r#""dissolve_together""#
     );
 }
+
+#[test]
+fn ep_registered_together_call_sites_preserve_refusal_order() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let (id, reply) = combined_at_c(&f, txid);
+    let entries = f.seam.list.lock().unwrap().clone();
+    let mined = f.seam.shared_mined.lock().unwrap().clone();
+    for (guard, expected) in [
+        (0, "masternodes.unsupported"),
+        (1, "masternodes.list_unavailable"),
+        (2, "masternodes.shared_registration_unknown"),
+        (3, "masternodes.shared_too_early"),
+    ] {
+        *f.seam.list.lock().unwrap() = entries.clone();
+        *f.seam.shared_mined.lock().unwrap() = mined.clone();
+        *f.seam.list_height.lock().unwrap() = 100;
+        f.db()
+            .set_setting_durable(GLOBAL_SCOPE, "masternodes.any_shared_seen", Some("1"))
+            .unwrap();
+        match guard {
+            0 => {
+                f.db()
+                    .set_setting_durable(GLOBAL_SCOPE, "masternodes.any_shared_seen", None)
+                    .unwrap();
+                *f.seam.list.lock().unwrap() = Some(Vec::new());
+            }
+            1 => *f.seam.list.lock().unwrap() = None,
+            2 => f.seam.shared_mined.lock().unwrap().clear(),
+            _ => *f.seam.list_height.lock().unwrap() = 50,
+        }
+        for call in 0..4 {
+            let result = match call {
+                0 => start(&f, 0, txid, 0, FEE_T).map(|_| ()),
+                1 => import_into(&f, 0, &reply.message.text, None).map(|_| ()),
+                2 => approve(&f, 0, &id, FEE_T, true).map(|_| ()),
+                _ => send(&f, 2, &id).map(|_| ()),
+            };
+            let expected = if guard == 2 && call == 3 {
+                "masternodes.shared_stage"
+            } else {
+                expected
+            };
+            assert_eq!(
+                result.unwrap_err().code(),
+                expected,
+                "together call {call}, guard {guard}"
+            );
+        }
+    }
+}

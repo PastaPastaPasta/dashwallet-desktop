@@ -578,7 +578,11 @@ impl NetworkSession {
         wallet: WalletId,
         reg: &Registered,
     ) -> Result<BTreeMap<u16, u32>, MasternodesError> {
-        Ok(self.my_shares(wallet, reg).await?.into_iter().collect())
+        Ok(self
+            .my_shares(wallet, &reg.shares)
+            .await?
+            .into_iter()
+            .collect())
     }
 
     /// Signs `checked` with each of `to_sign` (share, keychain owner key)
