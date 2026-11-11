@@ -1745,15 +1745,10 @@ where
     rt.spawn(async move {
         // Before the session's gate: a close holding it to write waits for
         // the calls that entered, never for this one.
-        let _admitted = match signing {
-            true => Some(
-                session
-                    .signing_preflight()
-                    .await
-                    .map_err(PlatformError::from)?,
-            ),
-            false => None,
-        };
+        let _admitted = session
+            .signing_preflight(signing)
+            .await
+            .map_err(PlatformError::from)?;
         let _op = session.enter().await.map_err(PlatformError::from)?;
         session
             .require_wallet(&wallet_id)

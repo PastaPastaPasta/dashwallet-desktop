@@ -578,15 +578,10 @@ where
     let session = Arc::clone(session);
     let rt = session.rt.clone();
     rt.spawn(async move {
-        let _admitted = match signing {
-            true => Some(
-                session
-                    .signing_preflight()
-                    .await
-                    .map_err(PlatformError::from)?,
-            ),
-            false => None,
-        };
+        let _admitted = session
+            .signing_preflight(signing)
+            .await
+            .map_err(PlatformError::from)?;
         let _op = session.enter().await.map_err(PlatformError::from)?;
         session
             .require_wallet(&wallet)
