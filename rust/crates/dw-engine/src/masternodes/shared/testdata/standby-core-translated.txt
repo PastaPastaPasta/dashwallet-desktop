@@ -1,8 +1,8 @@
-Fixture produced from Dash Core standbyFileText source layout (regtest); no Core-written file was available.
+Fixture produced from Dash Core standbyFileText source layout (regtest); no Core-written file was available. Created uses the local ISO date; FULL uses a local short date/time estimate.
 Dash — Bereitschaftsauflösung einer geteilten Masternode
 Masternode: cee6bfa949b9f8e2020378ec33d16bcdb36e053de098d800e786fbdbb3c548a7
 Anteil 1 von 3
-Erstellt: 10.11.26
+Erstellt: 2026-11-10
 
 Jeder folgende Block ist eine vollständig signierte Transaktion. Senden Sie eine davon mit "sendrawtransaction", um die Masternode zu beenden. Diese Transaktionen verfallen nie. Bewahren Sie diese Datei zusammen mit der Sicherung der Rückzahlungsadresse getrennt von der Wallet auf.
 
