@@ -205,3 +205,51 @@ fn consensus(c: &ConsensusError) -> Answer {
         _ => Answer::Refused(text),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scripted fetch answering at height 7 after quorum lookups, each
+    /// SPV-verified or not, as a proof's would be.
+    async fn fetched(lookups: &[bool]) -> Proved<u8> {
+        let lookups = lookups.to_vec();
+        proved(async move {
+            for verified in lookups {
+                trust::note_lookup(verified);
+            }
+            let at = ResponseMetadata {
+                height: 7,
+                core_chain_locked_height: 3,
+                time_ms: 9,
+                ..ResponseMetadata::default()
+            };
+            Ok::<_, dash_sdk::Error>((1u8, at))
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Sol (r1): the SDK adapter's provenance is its own trust scope's
+    /// tally. A read is `verified` (Enforce passes it, and only it raises a
+    /// floor; P5, P12) only when it used a quorum key and SPV verified
+    /// every one; an outer scope's lookups don't count for it.
+    #[tokio::test]
+    async fn a_read_is_verified_only_when_its_scope_verified_every_quorum_key() {
+        let read = fetched(&[true, true]).await;
+        assert!(read.verified);
+        assert_eq!(
+            (read.value, read.height, read.core_height, read.time_ms),
+            (1, 7, 3, 9)
+        );
+        assert!(!fetched(&[true, false]).await.verified);
+        assert!(!fetched(&[false]).await.verified);
+        assert!(!fetched(&[]).await.verified, "no quorum key: no proof");
+        let ((), outer) = trust::scoped(async {
+            trust::note_lookup(false);
+            assert!(fetched(&[true]).await.verified);
+        })
+        .await;
+        assert!(!outer.verified(), "the inner read still counts outside");
+    }
+}

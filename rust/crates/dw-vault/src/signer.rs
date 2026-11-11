@@ -138,13 +138,15 @@ pub enum SignerScope {
     /// key (the wallet-held payout key), or the `owner` or `payout` key
     /// attached to a tracked masternode. No digest, message, public key,
     /// owner payload or vote: the vault lays out what it signs from the
-    /// transition's checked fields. `max_credits` caps the amount;
+    /// transition's checked fields. `pro_tx_hash` (wire order) is the one
+    /// masternode it withdraws from; `max_credits` caps the amount;
     /// `destination` is the output script the user approved for a payout-key
     /// withdrawal, bound as its SHA-256 ([`WithdrawalDestination`]), and
     /// `None` for an owner-key one (Drive picks the payout address, so the
     /// transition carries no script). A signer of this scope signs at most
     /// once, its clones included (r2 m5).
     MasternodeWithdrawal {
+        pro_tx_hash: [u8; 32],
         max_credits: u64,
         destination: Option<WithdrawalDestination>,
     },
@@ -729,11 +731,13 @@ mod tests {
     ];
     /// A withdrawal scope of each key kind (MG-13 P3).
     const WITHDRAW_OWNER: SignerScope = SignerScope::MasternodeWithdrawal {
+        pro_tx_hash: [0; 32],
         max_credits: 1,
         destination: None,
     };
     fn withdraw_payout() -> SignerScope {
         SignerScope::MasternodeWithdrawal {
+            pro_tx_hash: [0; 32],
             max_credits: 1,
             destination: Some(WithdrawalDestination::of_script(&[0x76, 0xa9])),
         }

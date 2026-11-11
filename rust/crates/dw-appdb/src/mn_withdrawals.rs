@@ -431,7 +431,18 @@ fn insert_signed(conn: &Connection, row: &SignedWithdrawal, floor_height: u64) -
         ],
     );
     match inserted {
-        Ok(_) => Ok(()),
+        // The group carries one floor (P5): a sibling signed on a newer
+        // verified read raises the others to it.
+        Ok(_) => {
+            conn.execute(
+                "UPDATE mn_withdrawals SET floor_height = (SELECT floor_height
+                     FROM mn_withdrawals WHERE id = ?3)
+                 WHERE identity_id = ?1 AND nonce = ?2 AND floor_height < (SELECT
+                     floor_height FROM mn_withdrawals WHERE id = ?3)",
+                params![row.identity_id, sql_u64(row.nonce), row.id],
+            )?;
+            Ok(())
+        }
         Err(rusqlite::Error::SqliteFailure(e, Some(msg)))
             if e.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
                 && msg == "UNIQUE constraint failed: mn_withdrawals.identity_id" =>
@@ -447,7 +458,8 @@ impl AppDb {
     /// synced transaction (MG-13 P5) that first checks no payout-change
     /// barrier of its masternode exists (`PayoutChangePending`, r4 n1). The
     /// record starts at its group's floor, at least `floor_height` (the
-    /// signing-time nonce read's height). A second open record of the
+    /// height of the signing-time verified reads), and raises its siblings'
+    /// to it (P5: one floor per group). A second open record of the
     /// identity, from any process, is refused by the unique index
     /// (`WithdrawalPending`, P6).
     pub fn insert_withdrawal_durable(
@@ -590,9 +602,11 @@ impl AppDb {
 
     /// Decides a nonce group by its proved document (MG-13 P7, P8 step 1),
     /// one synced transaction: record `id` becomes `done` with `proof` if its
-    /// state is one of `from` (compare-and-set), and every other undecided
-    /// record of its (identity, nonce) `sibling_paid`. Whether it applied;
-    /// `false` writes nothing.
+    /// state is one of `from` (compare-and-set), every other undecided
+    /// record of its (identity, nonce) `sibling_paid`, and every record of
+    /// the group the user marked (P9) gets `id` as its `late_proof_link`,
+    /// the marks read in the same transaction. Whether it applied; `false`
+    /// writes nothing.
     pub fn finalize_withdrawal_group_durable(
         &self,
         id: &str,
@@ -634,6 +648,11 @@ impl AppDb {
                      WHERE identity_id = ?1 AND nonce = ?2 AND id <> ?3
                        AND state NOT IN {FINAL_STATES}"
                 ),
+                params![identity, sql_u64(nonce), id],
+            )?;
+            tx.execute(
+                "UPDATE mn_withdrawals SET late_proof_link = ?3
+                 WHERE identity_id = ?1 AND nonce = ?2 AND user_mark IS NOT NULL",
                 params![identity, sql_u64(nonce), id],
             )?;
             fault_before(&tx, MN_WITHDRAW_FINALIZE)?;

@@ -167,6 +167,11 @@ pub enum MasternodesError {
     /// longer taken (MG-13 P15).
     #[error("this withdrawal cannot be tried again")]
     WithdrawalRetryState,
+    /// The masternode the call names isn't the one its withdrawal record or
+    /// its `MasternodeWithdraw` grant is for (MG-13 P13, P15): refused
+    /// before any read, grant or signature; the grant is left unredeemed.
+    #[error("the withdrawal is for another masternode")]
+    WithdrawTargetMismatch,
     /// A mark from a state other than `couldnt_confirm` (MG-13 P9).
     #[error("this withdrawal cannot be marked")]
     WithdrawalMarkState,
@@ -227,6 +232,7 @@ impl MasternodesError {
             Self::WithdrawalPending => "masternodes.withdrawal_pending",
             Self::WithdrawalUnverified => "masternodes.withdrawal_unverified",
             Self::WithdrawalRetryState => "masternodes.withdrawal_retry_state",
+            Self::WithdrawTargetMismatch => "masternodes.withdraw_target_mismatch",
             Self::WithdrawalMarkState => "masternodes.withdrawal_mark_state",
             Self::WithdrawalNotFound => "masternodes.withdrawal_not_found",
             Self::WithdrawalAmountOutOfRange { .. } => "masternodes.withdrawal_amount_out_of_range",

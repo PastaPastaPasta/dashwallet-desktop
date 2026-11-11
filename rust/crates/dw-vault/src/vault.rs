@@ -2224,7 +2224,7 @@ impl Vault {
     /// `wallet` (MG-13 P3, P12), authorized by a redeemed
     /// `MasternodeWithdraw` grant for that wallet whose key is the vault's;
     /// any other grant is `GrantPurposeMismatch`. The scope carries the
-    /// grant's `max_credits` and `destination`. A token issues one such
+    /// grant's `pro_tx_hash`, `max_credits` and `destination`. A token issues one such
     /// signer, once: a token that already issued a signer is `GrantInvalid`,
     /// and so is every later call with it, even when this one then fails
     /// (it is spent first). A token with its own key issues one only
@@ -2258,6 +2258,7 @@ impl Vault {
         token: &GrantToken,
     ) -> Result<VaultSigner, VaultError> {
         let GrantPurpose::MasternodeWithdraw {
+            pro_tx_hash,
             max_credits,
             destination,
         } = token.purpose
@@ -2273,6 +2274,7 @@ impl Vault {
             return Err(VaultError::GrantInvalid);
         }
         let scope = SignerScope::MasternodeWithdrawal {
+            pro_tx_hash,
             max_credits,
             destination,
         };

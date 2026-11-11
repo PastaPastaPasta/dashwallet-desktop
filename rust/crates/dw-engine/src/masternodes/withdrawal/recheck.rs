@@ -1,11 +1,16 @@
 //! Recheck (MG-13 P8), marks (P9) and late proof: each undecided nonce
 //! group, oldest first, under the app-wide identity lock.
 //!
+//! Every SPV-verified read a round uses (identity, documents, nonce)
+//! raises the group's floor to its height, durably and group-wide, whether
+//! or not the round decides (P5); a read that rule 5 lets pass on a
+//! fallback (`Probe`, `Off`) never does.
+//!
 //! 1. **Documents.** Every record's candidate documents (P7), read at or
 //!    above the group's floor: a match makes that record `done` and its
 //!    siblings `sibling_paid` (equal-amount siblings: the newest is `done`).
 //! 2. **No match: the proved nonce state**, read at a height H at or above
-//!    the floor (an SPV-verified read raises the floor to H, group-wide):
+//!    the floor (step 1's raised included; a verified read raises it to H):
 //!    - n taken by Drive (`takes`): the open record's stored bytes again,
 //!      unchanged (a `superseded` sibling is never sent again);
 //!    - n above the tip: nothing is decided (DP6-02's future-state guard);
@@ -105,11 +110,13 @@ fn unverified(what: &str) -> Undecided {
 
 /// `what`'s read under rule 5 at or above `height` ([`at_least`]), or why
 /// the round is undecidable: a read below `height` (counted when it passed
-/// rule 5) or a failed one (not counted).
+/// rule 5) or a failed one (not counted). `top` takes the height of a
+/// read at or above `height` that is SPV-verified (P5).
 async fn reached<T, F, Fut>(
     env: &impl Env,
     height: u64,
     what: &str,
+    top: &mut u64,
     read: F,
 ) -> Result<Gated<T>, Undecided>
 where
@@ -117,7 +124,12 @@ where
     Fut: Future<Output = Result<Proved<T>, PlatformError>>,
 {
     match at_least(env, height, read).await {
-        Ok(r) if r.read.height >= height => Ok(r),
+        Ok(r) if r.read.height >= height => {
+            if r.read.verified {
+                *top = (*top).max(r.read.height);
+            }
+            Ok(r)
+        }
         Ok(r) => Err(Undecided {
             why: format!("{what} read was below the floor"),
             counts: r.passed,
@@ -156,7 +168,7 @@ struct Found {
 
 /// Reads every record's candidate documents at or above `height`, each
 /// once; undecidable when a read is (below `height`, failed, or a positive
-/// match whose read failed rule 5).
+/// match whose read failed rule 5). `top` as [`reached`] takes it.
 async fn documents(
     env: &impl Env,
     net: &impl MnWithdrawNet,
@@ -164,6 +176,7 @@ async fn documents(
     group: &[WithdrawalRow],
     identity: Option<&Identity>,
     height: u64,
+    top: &mut u64,
 ) -> Result<Found, Undecided> {
     let mut read: HashMap<Identifier, Gated<Option<Document>>> = HashMap::new();
     let mut found = Found {
@@ -182,7 +195,7 @@ async fn documents(
         for script in scripts {
             let doc_id = document_id(id, row.signed.nonce, &script);
             if let Entry::Vacant(slot) = read.entry(doc_id) {
-                let r = reached(env, height, "a document", || net.document(doc_id)).await?;
+                let r = reached(env, height, "a document", top, || net.document(doc_id)).await?;
                 found.lowest = found.lowest.min(r.read.height);
                 slot.insert(r);
             }
@@ -227,25 +240,11 @@ async fn finalize(
         paid_script: script.as_bytes().to_vec(),
         document_status: document_status(doc).unwrap_or(0),
     };
+    // The marked records' late-proof links are written in the same
+    // transaction (P9).
     let (done, from) = (row.signed.id.clone(), row.state);
-    let marked: Vec<String> = (group.iter())
-        .filter(|r| r.mark.is_some())
-        .map(|r| r.signed.id.clone())
-        .collect();
     on_db(env, move |db| {
-        if !db.finalize_withdrawal_group_durable(&done, &[from], &proof)? {
-            return Ok(false);
-        }
-        for id in marked {
-            db.note_withdrawal_durable(
-                &id,
-                &WithdrawalNote {
-                    late_proof_link: Some(done.clone()),
-                    ..WithdrawalNote::default()
-                },
-            )?;
-        }
-        Ok(true)
+        db.finalize_withdrawal_group_durable(&done, &[from], &proof)
     })
     .await
 }
@@ -265,20 +264,43 @@ async fn finalized(
 
 /// The identity read at or above `height` the owner-key candidates come
 /// from, when the group has an owner-key record. `passed` false under
-/// `Enforce` is undecidable only where the caller needs (ii).
+/// `Enforce` is undecidable only where the caller needs (ii). `top` as
+/// [`reached`] takes it.
 async fn identity_for(
     env: &impl Env,
     net: &impl MnWithdrawNet,
     id: &Identifier,
     group: &[WithdrawalRow],
     height: u64,
+    top: &mut u64,
 ) -> Result<Option<Gated<Option<Identity>>>, Undecided> {
     if !group.iter().any(needs_identity) {
         return Ok(None);
     }
-    reached(env, height, "the identity", || net.identity(*id))
+    reached(env, height, "the identity", top, || net.identity(*id))
         .await
         .map(Some)
+}
+
+/// Raises the group's floor from `floor` to `top`, the highest
+/// SPV-verified read the round used (P5), when that is higher; the floor
+/// the round's later reads then need.
+async fn raise_floor(
+    env: &impl Env,
+    id: &Identifier,
+    nonce: u64,
+    floor: u64,
+    top: u64,
+) -> Result<u64, WithdrawalError> {
+    if top <= floor {
+        return Ok(floor);
+    }
+    let shown = shown(id);
+    on_db(env, move |db| {
+        db.raise_withdrawal_floor_durable(&shown, nonce, top)
+    })
+    .await?;
+    Ok(top)
 }
 
 /// P8 step 1 alone, as `withdraw` reads back after its hand-off: a match
@@ -296,34 +318,39 @@ pub(crate) async fn read_back(
         return Ok(false);
     }
     Ok(matches!(
-        step_one(env, net, id, &group).await?,
+        step_one(env, net, id, nonce, &group).await?.0,
         Some(Round::Decided(_))
     ))
 }
 
-/// Step 1: `None` when no document matches.
+/// Step 1: `None` when no document matches; with the group's floor after
+/// its reads raised it.
 async fn step_one(
     env: &impl Env,
     net: &impl MnWithdrawNet,
     id: &Identifier,
+    nonce: u64,
     group: &[WithdrawalRow],
-) -> Result<Option<Round>, WithdrawalError> {
+) -> Result<(Option<Round>, u64), WithdrawalError> {
     let floor = floor_of(group);
+    let mut top = floor;
     fault_before(env.db(), points::READ_DOCUMENTS)?;
     let found = async {
-        let identity = identity_for(env, net, id, group, floor).await?;
+        let identity = identity_for(env, net, id, group, floor, &mut top).await?;
         let identity = identity.as_ref().and_then(|g| g.read.value.as_ref());
-        documents(env, net, id, group, identity, floor).await
-    };
-    let found = match found.await {
+        documents(env, net, id, group, identity, floor, &mut top).await
+    }
+    .await;
+    let floor = raise_floor(env, id, nonce, floor, top).await?;
+    let found = match found {
         Ok(found) => found,
-        Err(why) => return Ok(Some(Round::Undecidable(why))),
+        Err(why) => return Ok((Some(Round::Undecidable(why)), floor)),
     };
     fault_after(env.db(), points::READ_DOCUMENTS)?;
     if found.matches.is_empty() {
-        return Ok(None);
+        return Ok((None, floor));
     }
-    Ok(Some(finalized(env, &found, group).await?))
+    Ok((Some(finalized(env, &found, group).await?), floor))
 }
 
 /// One round of P8 over the group (module doc).
@@ -337,45 +364,42 @@ async fn round(
     if all_final(&group) {
         return Ok(Round::Decided(Outcome::Final));
     }
-    if let Some(decided) = step_one(env, net, id, &group).await? {
-        return Ok(decided);
-    }
-    let (h, tip) = match step_nonce(env, net, id, nonce, &group).await? {
+    let floor = match step_one(env, net, id, nonce, &group).await? {
+        (Some(decided), _) => return Ok(decided),
+        (None, floor) => floor,
+    };
+    let (h, tip, floor) = match step_nonce(env, net, id, nonce, &group, floor).await? {
         Ok(Some(at)) => at,
         Ok(None) => return Ok(Round::Decided(Outcome::Pending)),
         Err(round) => return Ok(round),
     };
-    match not_executed(env, net, id, nonce, &group, h, tip).await? {
+    match not_executed(env, net, id, nonce, &group, (h, tip), floor).await? {
         Ok(round) => Ok(round),
         Err(why) => Ok(Round::Undecidable(why)),
     }
 }
 
-/// Step 2's nonce read: the floor raised to an SPV-verified read's H; the
-/// open record handed off again while Drive takes the nonce (`Ok(None)`);
-/// else `Ok(Some((H, tip)))` once (i) holds, n at or below the tip and not
-/// taken, or the round's end.
+/// Step 2's nonce read at or above `floor`: the floor raised to an
+/// SPV-verified read's H; the open record handed off again while Drive
+/// takes the nonce (`Ok(None)`); else `Ok(Some((H, tip, floor)))` once (i)
+/// holds, n at or below the tip and not taken, or the round's end.
 async fn step_nonce(
     env: &impl Env,
     net: &impl MnWithdrawNet,
     id: &Identifier,
     nonce: u64,
     group: &[WithdrawalRow],
-) -> Result<Result<Option<(u64, u64)>, Round>, WithdrawalError> {
+    floor: u64,
+) -> Result<Result<Option<(u64, u64, u64)>, Round>, WithdrawalError> {
     fault_before(env.db(), points::READ_NONCE)?;
-    let read = match reached(env, floor_of(group), "the nonce", || net.nonce_state(*id)).await {
+    let mut top = floor;
+    let read = match reached(env, floor, "the nonce", &mut top, || net.nonce_state(*id)).await {
         Ok(read) => read,
         Err(why) => return Ok(Err(Round::Undecidable(why))),
     };
     fault_after(env.db(), points::READ_NONCE)?;
     let h = read.read.height;
-    if read.read.verified {
-        let shown = shown(id);
-        on_db(env, move |db| {
-            db.raise_withdrawal_floor_durable(&shown, nonce, h)
-        })
-        .await?;
-    }
+    let floor = raise_floor(env, id, nonce, floor, top).await?;
     let state = read.read.value;
     let tip = state & IDENTITY_NONCE_VALUE_FILTER;
     if takes(state, nonce, *id) {
@@ -391,25 +415,27 @@ async fn step_nonce(
     if !read.passed {
         return Ok(Err(Round::Undecidable(unverified("the nonce"))));
     }
-    Ok(Ok(Some((h, tip))))
+    Ok(Ok(Some((h, tip, floor))))
 }
 
 /// Step 2's proof that nothing at `nonce` paid, (ii)–(iv) at or above H
-/// once (i) holds: `not_executed` for the whole group, or `done` on a match
-/// read at H or above.
+/// once (i) holds (`at`: H and the tip): `not_executed` for the whole
+/// group, or `done` on a match read at H or above. Its verified reads raise
+/// the group's `floor`.
 async fn not_executed(
     env: &impl Env,
     net: &impl MnWithdrawNet,
     id: &Identifier,
     nonce: u64,
     group: &[WithdrawalRow],
-    h: u64,
-    tip: u64,
+    (h, tip): (u64, u64),
+    floor: u64,
 ) -> Result<Result<Round, Undecided>, WithdrawalError> {
     fault_before(env.db(), points::READ_PROOF)?;
+    let mut top = floor;
     let read = async {
         // (ii): the candidates from an identity proved at H or above.
-        let identity = identity_for(env, net, id, group, h).await?;
+        let identity = identity_for(env, net, id, group, h, &mut top).await?;
         if identity.as_ref().is_some_and(|g| !g.passed) {
             return Err(unverified("the identity"));
         }
@@ -419,10 +445,12 @@ async fn not_executed(
             return Err(answered("no identity at H for the owner-key candidates"));
         }
         // (iii) and (iv).
-        let found = documents(env, net, id, group, identity, h).await?;
+        let found = documents(env, net, id, group, identity, h, &mut top).await?;
         Ok((identity_height, found))
-    };
-    let (identity_height, found) = match read.await {
+    }
+    .await;
+    raise_floor(env, id, nonce, floor, top).await?;
+    let (identity_height, found) = match read {
         Ok(read) => read,
         Err(why) => return Ok(Err(why)),
     };
@@ -554,9 +582,11 @@ pub(crate) async fn recheck_all(
 }
 
 /// `recheck_withdrawal(id)` (P13): an undecided record's group as
-/// [`recheck_group`]; a `done` one's document status refreshed; a
-/// `not_executed` one's documents read once more, where a match is an
-/// invariant violation: logged, alarmed, the state kept (P6).
+/// [`recheck_group`]; a `done` one's document status refreshed from a read
+/// at or above its floor that passes rule 5; a `not_executed` one's
+/// documents read once more, where a match is an invariant violation:
+/// logged, alarmed, the state kept (P6). Neither final case raises the
+/// floor.
 pub(crate) async fn recheck_record(
     env: &impl Env,
     net: &impl MnWithdrawNet,
@@ -569,10 +599,13 @@ pub(crate) async fn recheck_record(
             recheck_group(env, net, &id, row.signed.nonce).await?;
         }
         WithdrawalState::Done => {
+            let floor = row.floor_height;
             if let Some(proof) = &row.proof
                 && let Ok(doc_id) = parse_id(&proof.document_id)
-                && let Ok(read) = net.document(doc_id).await
-                && let Some(status) = read.value.as_ref().and_then(document_status)
+                && let Ok(read) = at_least(env, floor, || net.document(doc_id)).await
+                && read.passed
+                && read.read.height >= floor
+                && let Some(status) = read.read.value.as_ref().and_then(document_status)
             {
                 let rid = row.signed.id.clone();
                 on_db(env, move |db| {
@@ -589,7 +622,8 @@ pub(crate) async fn recheck_record(
         }
         WithdrawalState::NotExecuted => {
             let group = group(env, &id, row.signed.nonce).await?;
-            let identity = match identity_for(env, net, &id, &group, row.floor_height).await {
+            let floor = row.floor_height;
+            let identity = match identity_for(env, net, &id, &group, floor, &mut 0).await {
                 Ok(identity) => identity,
                 Err(why) => {
                     tracing::info!(why = %why.why, "rechecking a not-executed masternode withdrawal");
@@ -597,7 +631,7 @@ pub(crate) async fn recheck_record(
                 }
             };
             let identity = identity.as_ref().and_then(|g| g.read.value.as_ref());
-            if let Ok(found) = documents(env, net, &id, &group, identity, row.floor_height).await
+            if let Ok(found) = documents(env, net, &id, &group, identity, floor, &mut 0).await
                 && !found.matches.is_empty()
             {
                 env.alarm(Alarm {

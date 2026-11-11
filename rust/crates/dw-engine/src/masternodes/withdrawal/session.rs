@@ -10,7 +10,7 @@ use dpp::identity::IdentityPublicKey;
 use dpp::identity::core_script::CoreScript;
 use dpp::state_transition::StateTransition;
 use dw_appdb::{AppDb, PayoutBarrierRow, WithdrawalMark, WithdrawalRow};
-use dw_vault::{SignerError, WithdrawalKey};
+use dw_vault::{GrantKind, GrantPurpose, SignerError, WithdrawalKey};
 use platform_wallet::wallet::platform_wallet::PlatformWallet;
 
 use dpp::document::Document;
@@ -80,11 +80,33 @@ impl Env for SessionEnv {
         self.session.masternodes.barriers_ready()
     }
 
+    /// The operation's row is read on the tracked path (`on_db`), so close
+    /// waits for it like every other app database call of the runtime.
     async fn barrier_state(
         &self,
         barrier: &PayoutBarrierRow,
     ) -> Result<Option<ProTxOperationState>, WithdrawalError> {
-        Ok(self.session.barrier_operation_state(barrier).await?)
+        let Ok(wallet) = barrier.barrier.created_by.parse::<WalletId>() else {
+            return Ok(None);
+        };
+        let (w, id) = (wallet.to_string(), barrier.barrier.op_id.clone());
+        #[cfg(test)]
+        let pause = (self.session.masternodes.withdrawals.pause_op_read)
+            .lock()
+            .unwrap()
+            .take();
+        let row = on_db(self, move |db| {
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                return pause.hold_then(|| db.masternode_op(&w, &id));
+            }
+            db.masternode_op(&w, &id)
+        })
+        .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(self.session.barrier_operation_state(wallet, &row).await?)
     }
 
     fn waits(&self) -> Waits {
@@ -406,6 +428,16 @@ impl NetworkSession {
         grant: &str,
         sibling_of: Option<&str>,
     ) -> Result<WithdrawalRow, WithdrawalError> {
+        let hash = parse_pro_tx_hash(&call.pro_tx_hash)?;
+        // The grant names the masternode the user acted on: one for
+        // another is refused here, unredeemed, and its signer would refuse
+        // to sign this one (dw-vault).
+        if let Ok(GrantPurpose::MasternodeWithdraw { pro_tx_hash, .. }) =
+            (self.vault).grant_purpose(grant, GrantKind::MasternodeWithdraw, Some(&wallet.0))
+            && pro_tx_hash != hash
+        {
+            return Err(WithdrawalError::TargetMismatch);
+        }
         let net = &self.mn_withdraw_net()?;
         let (hash, keys) = self.withdrawal_keys(wallet, &call.pro_tx_hash).await?;
         let req = self.request(wallet, hash, call)?;

@@ -162,8 +162,9 @@ enum MnCommand {
         how: WithdrawArgs,
     },
     /// Try again: a `refused` withdrawal's sibling at its nonce, under a
-    /// new grant as `withdraw` takes it. Prints the quote and the new
-    /// record.
+    /// new grant as `withdraw` takes it. The record must be one of
+    /// `pro_tx_hash`'s (else `withdraw_target_mismatch`, before the quote
+    /// or any grant). Prints the quote and the new record.
     WithdrawRetry {
         pro_tx_hash: String,
         /// The refused record's id.
@@ -920,8 +921,10 @@ fn masternode_grant(
     Ok(grant.id)
 }
 
-/// `mn withdraw` and `mn withdraw-retry` (Try again of `retry`'s record):
-/// the quote, then a grant of exactly what the command line names. The
+/// `mn withdraw` and `mn withdraw-retry` (Try again of `retry`'s record,
+/// which must be one of `pro_tx_hash`'s: resolved first, so the quote, the
+/// grant and the retry name the one masternode): the quote, then a grant
+/// of exactly what the command line names, bound to that masternode. The
 /// destination must read `fixed` first (P4: the wait comes before consent);
 /// a payout key's grant binds the script of `--to`, else of the quote's
 /// address, and that address goes to the facade too. An owner key's grant
@@ -942,7 +945,17 @@ fn withdraw(
         )
         .into());
     }
+    if let Some(id) = &retry {
+        let records = engine.block_on(mn.withdrawals(pro_tx_hash.clone()))?;
+        if !records.iter().any(|r| &r.id == id) {
+            return Err(MasternodesError::WithdrawTargetMismatch.into());
+        }
+    }
     let quote = engine.block_on(mn.withdrawal_quote(w, pro_tx_hash.clone()))?;
+    let mut target = [0u8; 32];
+    hex::decode_to_slice(&quote.pro_tx_hash, &mut target)
+        .map_err(|_| EngineError::Internal("the quote's ProTx hash".into()))?;
+    target.reverse();
     let shown = match how.key {
         WithdrawalKeyChoice::Owner => &quote.owner_destination,
         WithdrawalKeyChoice::Payout => &quote.payout_destination,
@@ -975,6 +988,7 @@ fn withdraw(
         .vault()
         .authorize(
             GrantPurpose::MasternodeWithdraw {
+                pro_tx_hash: target,
                 max_credits,
                 destination,
             },
@@ -985,7 +999,9 @@ fn withdraw(
         .id;
     let record = match retry {
         None => engine.block_on(mn.withdraw_credits(w, pro_tx_hash, how.key, amount, to, grant)),
-        Some(id) => engine.block_on(mn.retry_withdrawal(w, id, how.key, amount, to, grant)),
+        Some(id) => {
+            engine.block_on(mn.retry_withdrawal(w, pro_tx_hash, id, how.key, amount, to, grant))
+        }
     }?;
     value(json!({ "quote": quote, "withdrawal": record }))
 }

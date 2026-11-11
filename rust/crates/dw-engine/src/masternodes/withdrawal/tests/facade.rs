@@ -70,8 +70,19 @@ impl Fa {
     /// The `MasternodeWithdraw` grant the user confirms (P12): the amount
     /// and the fee reserve, and a payout key's destination.
     fn grant(&self, max_credits: u64, destination: Option<&CoreScript>) -> String {
+        self.grant_for(&PRO_TX, max_credits, destination)
+    }
+
+    /// The grant of [`Self::grant`] bound to the masternode `pro_tx`.
+    fn grant_for(
+        &self,
+        pro_tx: &[u8; 32],
+        max_credits: u64,
+        destination: Option<&CoreScript>,
+    ) -> String {
         self.f.grant(
             GrantPurpose::MasternodeWithdraw {
+                pro_tx_hash: *pro_tx,
                 max_credits,
                 destination: destination.map(|s| WithdrawalDestination::of_script(s.as_bytes())),
             },
@@ -302,6 +313,71 @@ fn a_quote_in_flight_at_close_starts_no_ready_wait() {
     assert!(session.upgrade().is_none(), "something holds the session");
 }
 
+/// Fix round 2 m1 (r1 Opus m2, Sol m1): the ready wait reads a barrier's
+/// operation row on the tracked app database path. A barrier Platform's
+/// window doesn't clear sends the wait to that row; with the read held,
+/// close doesn't return until the read has.
+#[test]
+fn close_waits_for_the_ready_waits_barrier_row_read() {
+    let fa = Fa::new(true);
+    fa.tip(Some(TIP + 5));
+    fa.quote().unwrap();
+    let withdrawals = &fa.f.session.masternodes.withdrawals;
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *withdrawals.pause_op_read.lock().unwrap() = Some(Arc::clone(&pause));
+    // A payout change signed in the app to a script the window doesn't pay.
+    let row = MasternodeOpRow {
+        id: "op-1".into(),
+        kind: "update_registrar".into(),
+        terms: "{}".into(),
+        request: "{}".into(),
+        unsigned_tx: None,
+        sign_address: None,
+        sign_message: None,
+        fee_inputs: "[]".into(),
+        signed_tx: Some(vec![2]),
+        txid: Some("ab".repeat(32)),
+        pro_tx_hash: Some(display_hex(&PRO_TX)),
+        locked_collateral: false,
+        fee: 7,
+        created_at: 1,
+        signed_at: Some(1),
+        sent_at: None,
+        last_error: None,
+    };
+    let elsewhere = CoreScript::new_p2pkh([0x66; 20]);
+    (fa.f.session.live().unwrap().appdb)
+        .insert_masternode_op_with_barrier_durable(
+            &fa.f.wallet.to_string(),
+            &row,
+            &[],
+            1,
+            Some(elsewhere.as_bytes()),
+        )
+        .unwrap();
+    assert!(
+        until(Duration::from_secs(5), || pause
+            .reached
+            .load(Ordering::SeqCst)),
+        "the wait reads the barrier's operation row"
+    );
+    std::thread::scope(|scope| {
+        let close = scope.spawn(|| fa.on(fa.f.engine.close_network(crate::DashNetwork::Regtest)));
+        assert!(until(Duration::from_secs(5), || withdrawals
+            .work
+            .is_closed()));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(
+            !close.is_finished(),
+            "close returned while the barrier's row read was running"
+        );
+        assert!(!pause.done.load(Ordering::SeqCst));
+        pause.release.notify_one();
+        assert!(close.join().unwrap().unwrap());
+        assert!(pause.done.load(Ordering::SeqCst), "the read ended first");
+    });
+}
+
 #[test]
 fn the_ready_wait_stops_at_its_bound_and_one_runs_per_masternode() {
     let fa = Fa::new(true);
@@ -402,6 +478,7 @@ fn try_again_supersedes_the_refused_record_with_a_sibling_at_its_nonce() {
     let sibling = fa
         .on(fa.mn.retry_withdrawal(
             fa.f.wallet,
+            display_hex(&PRO_TX),
             refused.id.clone(),
             Key::Owner,
             WithdrawAmount::Credits { credits: half },
@@ -422,6 +499,87 @@ fn try_again_supersedes_the_refused_record_with_a_sibling_at_its_nonce() {
         states,
         [(refused.id, State::Superseded), (sibling.id, State::Sent)]
     );
+}
+
+/// Sol M1 (r1): a Try again withdraws from the masternode the user acted
+/// on. Evonodes A and B pay different payout addresses, and B has a refused
+/// record. With A's quote and a grant from it, B's record signs nothing,
+/// sends nothing and redeems no grant, whichever hash the call names; so
+/// does a withdrawal of B under A's grant. B's own grant then tries B's
+/// record again.
+#[test]
+fn another_masternodes_record_or_grant_is_withdraw_target_mismatch() {
+    let fa = Fa::new(true);
+    let a = pro_tx(40);
+    let a_script = CoreScript::new_p2pkh([0x55; 20]);
+    fa.plat.with(|w| {
+        (w.others).push(masternode_identity(
+            &a,
+            vec![other_key(0, 0x55), owner_key()],
+        ));
+    });
+    (fa.f.session.vault())
+        .store_masternode_key(&a, "owner", &OWNER_SECRET)
+        .unwrap();
+    fa.plat
+        .answer(Answer::Refused("10001 merits".into()), false);
+    let refused = fa.withdraw(Key::Owner, AMOUNT, None).unwrap();
+    assert_eq!(refused.state, State::Refused);
+    let sent = fa.plat.sent().len();
+
+    let q = (fa.on(fa.mn.withdrawal_quote(fa.f.wallet, display_hex(&a)))).unwrap();
+    let Some(WithdrawalDestinationCheck::Fixed { address: shown, .. }) = &q.owner_destination
+    else {
+        panic!("A's destination: {q:?}");
+    };
+    assert_eq!(shown, &address(&a_script));
+    assert_ne!(shown, &address(&payout_script()));
+    let a_grant = fa.grant_for(&a, AMOUNT + fee(), None);
+    let retry = |hash: &[u8; 32], grant: &str| {
+        fa.on(fa.mn.retry_withdrawal(
+            fa.f.wallet,
+            display_hex(hash),
+            refused.id.clone(),
+            Key::Owner,
+            WithdrawAmount::Credits { credits: AMOUNT },
+            None,
+            grant.to_owned(),
+        ))
+    };
+    let unredeemed = |grant: &str| {
+        (fa.f.session.vault())
+            .check_grant(
+                grant,
+                dw_vault::GrantKind::MasternodeWithdraw,
+                Some(&fa.f.wallet.0),
+            )
+            .is_ok()
+    };
+    let mismatch = "masternodes.withdraw_target_mismatch";
+    // A's hash, B's record: refused on the record.
+    assert_eq!(code(retry(&a, &a_grant)), mismatch);
+    // B's hash under A's grant: refused on the grant.
+    assert_eq!(code(retry(&PRO_TX, &a_grant)), mismatch);
+    assert_eq!(
+        code(fa.withdraw_with(Key::Owner, AMOUNT, None, a_grant.clone())),
+        mismatch
+    );
+    assert!(unredeemed(&a_grant), "no grant is redeemed");
+    assert_eq!(fa.plat.sent().len(), sent, "nothing is sent");
+    let states: Vec<_> = (fa.records().into_iter())
+        .map(|r| (r.id, r.state))
+        .collect();
+    assert_eq!(states, [(refused.id.clone(), State::Refused)]);
+    let none_of_a = fa.on(fa.mn.withdrawals(display_hex(&a))).unwrap();
+    assert!(none_of_a.is_empty(), "nothing is signed for A");
+
+    let b_grant = fa.grant(AMOUNT + fee(), None);
+    let sibling = retry(&PRO_TX, &b_grant).unwrap();
+    assert_eq!(
+        (sibling.pro_tx_hash.as_str(), sibling.nonce),
+        (display_hex(&PRO_TX).as_str(), refused.nonce)
+    );
+    assert!(!unredeemed(&b_grant));
 }
 
 #[test]
@@ -606,6 +764,7 @@ fn try_again_from_another_state_is_withdrawal_retry_state() {
     let grant = fa.grant(AMOUNT + fee(), None);
     let retry = fa.on(fa.mn.retry_withdrawal(
         fa.f.wallet,
+        display_hex(&PRO_TX),
         r.id,
         Key::Owner,
         WithdrawAmount::Credits { credits: AMOUNT },
@@ -660,6 +819,7 @@ fn unknown_records_identities_and_malformed_arguments_are_refused() {
     let retry = |id: String| {
         fa.on(fa.mn.retry_withdrawal(
             fa.f.wallet,
+            display_hex(&PRO_TX),
             id,
             Key::Owner,
             WithdrawAmount::All,

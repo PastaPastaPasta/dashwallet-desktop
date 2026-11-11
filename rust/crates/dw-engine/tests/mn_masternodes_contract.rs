@@ -811,6 +811,7 @@ fn error_codes_match_the_contract() {
             MasternodesError::WithdrawalPending,
             MasternodesError::WithdrawalUnverified,
             MasternodesError::WithdrawalRetryState,
+            MasternodesError::WithdrawTargetMismatch,
             MasternodesError::WithdrawalMarkState,
             MasternodesError::WithdrawalNotFound,
             MasternodesError::WithdrawalAmountOutOfRange { min: 0, max: 0 },
@@ -1096,6 +1097,7 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             .map(drop),
             mn.retry_withdrawal(
                 wallet,
+                "zz".into(),
                 "zz".into(),
                 WithdrawalKeyChoice::Owner,
                 WithdrawAmount::All,
@@ -1401,6 +1403,7 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
         for refused in [
             mn.retry_withdrawal(
                 wallet,
+                hash.clone(),
                 id(),
                 WithdrawalKeyChoice::Payout,
                 WithdrawAmount::Credits { credits: 1 },
@@ -1778,6 +1781,7 @@ fn errors_never_quote_a_secret_shaped_argument() {
                 "retry_withdrawal",
                 mn.retry_withdrawal(
                     as_wallet,
+                    secret(),
                     secret(),
                     WithdrawalKeyChoice::Payout,
                     WithdrawAmount::All,

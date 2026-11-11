@@ -581,7 +581,9 @@ fn mn_withdrawal_commands_answer_in_json_lines() {
                 "owner",
                 "--all",
             ],
-            "masternodes.platform_unavailable",
+            // Resolved first: no record of this masternode has the id, so
+            // no quote is read and no grant made.
+            "masternodes.withdraw_target_mismatch",
         ),
         (
             &["mn", "recheck-withdrawal", &id],

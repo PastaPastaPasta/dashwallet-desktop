@@ -91,21 +91,30 @@ impl Masternodes {
     /// still takes it, by `key`, `amount` and `destination` as
     /// [`Self::withdraw_credits`] takes them, under a new grant. Returns the
     /// sibling; the refused record is `superseded` in the same write.
+    /// `pro_tx_hash` is the masternode the user acted on: a record of
+    /// another is `withdraw_target_mismatch`, before any Platform read,
+    /// grant or signature.
+    #[allow(clippy::too_many_arguments)]
     pub async fn retry_withdrawal(
         &self,
         wallet: WalletId,
+        pro_tx_hash: String,
         id: String,
         key: WithdrawalKeyChoice,
         amount: WithdrawAmount,
         destination: Option<String>,
         grant: String,
     ) -> Result<CreditWithdrawal, MasternodesError> {
+        let hash = parse_pro_tx_hash(&pro_tx_hash)?;
         check_id(&id)?;
         self.protx_op(move |s| async move {
             s.require_wallet(&wallet)?;
             let refused = s.mn_withdrawal(&id).await?;
+            if refused.signed.pro_tx_hash != display_hex(&hash) {
+                return Err(MasternodesError::WithdrawTargetMismatch);
+            }
             let call = WithdrawCall {
-                pro_tx_hash: refused.signed.pro_tx_hash,
+                pro_tx_hash,
                 key,
                 amount,
                 destination,

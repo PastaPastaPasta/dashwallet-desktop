@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 63
+Contract-Version: 64
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -865,7 +865,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 36796ec39563641e3d421bc086a8cc4b9be53c5a4368befdfb03752b8d9b26af version: 63 -->
+<!-- surface-sha256: 36796ec39563641e3d421bc086a8cc4b9be53c5a4368befdfb03752b8d9b26af version: 64 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -4183,9 +4183,12 @@ renames or reshapes them takes the next version bump:
 
 **From MG-13** (version 63):
 
-86. **The evonode credit withdrawal's lease (MG-13 P3, P12, version 63).** `FlowKind` gains `MasternodeWithdraw`:
-    one `MasternodeWithdraw{max_credits, destination}` grant of the wallet (grant purpose
-    `GrantPurpose::MasternodeWithdraw`); any other grant kind is `platform.grant_invalid`. `max_credits` caps the
+86. **The evonode credit withdrawal's lease (MG-13 P3, P12, version 63; version 64 binds it to its masternode).**
+    `FlowKind` gains `MasternodeWithdraw`: one `MasternodeWithdraw{pro_tx_hash, max_credits, destination}` grant of
+    the wallet (grant purpose `GrantPurpose::MasternodeWithdraw`); any other grant kind is `platform.grant_invalid`.
+    `pro_tx_hash` (wire order) is the masternode the user acted on: its signer signs that masternode's withdrawal
+    only, and the facade refuses a call for another before redeeming it (`masternodes.withdraw_target_mismatch`,
+    [`mn-engine.md`](mn-engine.md) §4). `max_credits` caps the
     withdrawal's amount plus Platform's fee reserve; `destination` is `None` for an owner-key withdrawal (Drive pays
     the identity's payout key) and, for a payout key, the approved script (`WithdrawalDestination::of_script`, its
     SHA-256), so a withdrawal to any other script is outside the signer's scope. The grant is single use: it yields

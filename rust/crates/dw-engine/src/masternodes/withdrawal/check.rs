@@ -177,9 +177,14 @@ pub(crate) async fn look(
 ///   height of at least `h`;
 /// - **conflicted**: the operation is `Conflicted`.
 ///
-/// An operation that can't be read (its wallet deleted or not loaded)
-/// leaves Platform evidence the only term (fail closed). Backfill not
-/// complete (`barriers_ready` false) is pending whatever the table holds.
+/// Oldest first: while an older barrier of the masternode is pending, a
+/// later one doesn't clear on Platform evidence (its change may be applied
+/// after the older one's, as in A→B→A, so the window paying its script now
+/// proves nothing); it clears only when confirmed and covered, or
+/// conflicted. An operation that can't be read (its wallet deleted or not
+/// loaded) leaves Platform evidence the only term (fail closed). Backfill
+/// not complete (`barriers_ready` false) is pending whatever the table
+/// holds, and counts as an older pending barrier.
 async fn pending_barriers(
     env: &impl Env,
     pro_tx_hash: &[u8; 32],
@@ -187,25 +192,28 @@ async fn pending_barriers(
 ) -> Result<bool, WithdrawalError> {
     let shown = crate::masternodes::display_hex(pro_tx_hash);
     let barriers = on_db(env, move |db| db.payout_barriers_of(&shown)).await?;
-    let mut pending = !env.barriers_ready();
+    // An incomplete backfill may not have written an older barrier yet.
+    let mut older_pending = !env.barriers_ready();
     for barrier in barriers {
-        if clears(env, &barrier, identity).await? {
+        if clears(env, &barrier, identity, !older_pending).await? {
             let cleared = on_db(env, move |db| db.clear_payout_barrier_durable(barrier.id)).await?;
             tracing::info!(cleared, "a payout-change barrier cleared (MG-13 P16)");
         } else {
-            pending = true;
+            older_pending = true;
         }
     }
-    Ok(pending)
+    Ok(older_pending)
 }
 
 async fn clears(
     env: &impl Env,
     barrier: &PayoutBarrierRow,
     identity: &Gated<Option<Identity>>,
+    evidence: bool,
 ) -> Result<bool, WithdrawalError> {
     let platform = identity.passed.then_some(&identity.read);
-    if let Some(read) = platform
+    if evidence
+        && let Some(read) = platform
         && let Some(id) = &read.value
         && read.time_ms >= barrier.created_at.saturating_mul(1000)
         && let Window::Pays { script, .. } = window(id)

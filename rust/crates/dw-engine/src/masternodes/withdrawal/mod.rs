@@ -94,6 +94,9 @@ pub(crate) enum WithdrawalError {
     /// longer taken (P15).
     #[error("this withdrawal cannot be tried again")]
     RetryState,
+    /// The call's masternode isn't its record's or its grant's.
+    #[error("the withdrawal is for another masternode")]
+    TargetMismatch,
     /// A mark from a state other than `couldnt_confirm` (P9).
     #[error("this withdrawal cannot be marked")]
     MarkState,
@@ -129,6 +132,7 @@ impl From<WithdrawalError> for MasternodesError {
             WithdrawalError::Pending => E::WithdrawalPending,
             WithdrawalError::Unverified => E::WithdrawalUnverified,
             WithdrawalError::RetryState => E::WithdrawalRetryState,
+            WithdrawalError::TargetMismatch => E::WithdrawTargetMismatch,
             WithdrawalError::MarkState => E::WithdrawalMarkState,
             WithdrawalError::NotFound => E::WithdrawalNotFound,
             WithdrawalError::Credits(CreditsError::WithdrawalOutOfRange { min, max }) => {
@@ -421,6 +425,10 @@ pub(crate) struct WithdrawalRuntime {
     /// calls use instead of the SDK's, SPV's and the defaults.
     #[cfg(test)]
     seam: Mutex<Option<tests::Seam>>,
+    /// Tests: holds the next barrier's operation row read
+    /// (`SessionEnv::barrier_state`) on its blocking thread.
+    #[cfg(test)]
+    pub(crate) pause_op_read: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 impl WithdrawalRuntime {

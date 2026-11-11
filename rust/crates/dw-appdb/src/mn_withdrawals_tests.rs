@@ -679,8 +679,8 @@ fn supersede_and_insert_is_atomic() {
     assert!(db.withdrawal("b").unwrap().is_none());
 }
 
-/// MG-13 P5: a group's floor only rises, every sibling carries it, and
-/// another group's is its own.
+/// MG-13 P5: a group's floor only rises, every sibling carries it (a new
+/// sibling's higher one included), and another group's is its own.
 #[test]
 fn the_floor_only_rises_and_covers_every_sibling() {
     let db = group_with_x_in(Signed);
@@ -735,6 +735,13 @@ fn the_floor_only_rises_and_covers_every_sibling() {
             )
             .is_err()
     );
+    // A sibling signed on a newer verified read raises the group to it.
+    db.set_withdrawal_state_durable("y", &[Signed], Refused, None)
+        .unwrap();
+    db.supersede_and_insert_withdrawal_durable("y", &signed("z", 3), 25)
+        .unwrap();
+    assert_eq!(floors(&db), [25, 25, 25, 25]);
+    assert_eq!(db.withdrawal("n").unwrap().unwrap().floor_height, 3);
 }
 
 #[test]

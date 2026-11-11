@@ -129,12 +129,15 @@ pub enum GrantPurpose {
         max_duffs: u64,
     },
     /// One Platform credit withdrawal from a masternode's owner identity
-    /// (MG-13 P12): `max_credits` caps its amount and `destination` is the
+    /// (MG-13 P12): `pro_tx_hash` (wire order) is the masternode the user
+    /// acted on, `max_credits` caps its amount and `destination` is the
     /// output script the user approved for a payout-key withdrawal (`None`:
     /// an owner-key one, which Drive pays to the registered payout address).
     /// Yields one single-use [`crate::SignerScope::MasternodeWithdrawal`]
-    /// signer bound to both ([`crate::Vault::masternode_withdrawal_signer`]).
+    /// signer bound to all three
+    /// ([`crate::Vault::masternode_withdrawal_signer`]).
     MasternodeWithdraw {
+        pro_tx_hash: [u8; 32],
         max_credits: u64,
         destination: Option<WithdrawalDestination>,
     },

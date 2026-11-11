@@ -3,7 +3,8 @@
 //! `VaultSigner::sign_masternode_withdrawal`, held byte-equal to Platform's
 //! own construction (`IdentityCreditWithdrawalTransition::try_from_identity`,
 //! which platform-wallet's `masternode_withdraw` calls) and checked with
-//! dpp's own verification at the pin.
+//! dpp's ECDSA signature verification over the signable bytes, against the
+//! identity key's hash160.
 
 mod common;
 
@@ -16,14 +17,14 @@ use dashcore::hashes::{Hash, hash160};
 use dashcore::secp256k1::{PublicKey, SecretKey};
 use dpp::ProtocolError;
 use dpp::address_funds::AddressWitness;
-use dpp::bls::native_bls::NativeBlsModule;
 use dpp::identity::accessors::IdentityGettersV0;
 use dpp::identity::core_script::CoreScript;
+use dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dpp::identity::signer::Signer as IdentitySigner;
 use dpp::identity::{Identity, IdentityPublicKey, KeyType, Purpose, SecurityLevel};
 use dpp::platform_value::{BinaryData, Identifier};
-use dpp::serialization::PlatformSerializable;
+use dpp::serialization::{PlatformSerializable, Signable};
 use dpp::state_transition::StateTransition;
 use dpp::state_transition::identity_credit_withdrawal_transition::methods::{
     IdentityCreditWithdrawalTransitionMethodsV0, PreferredKeyPurposeForSigningWithdrawal,
@@ -125,6 +126,7 @@ impl Case {
 
     fn purpose(&self) -> GrantPurpose {
         GrantPurpose::MasternodeWithdraw {
+            pro_tx_hash: self.pro_tx_hash,
             max_credits: self.max_credits,
             destination: self.destination,
         }
@@ -293,9 +295,10 @@ async fn platform(c: &Case) -> StateTransition {
 // MARK: The grant (P12)
 
 #[test]
-fn the_grant_purpose_is_wallet_bound_and_carries_its_cap_and_destination() {
+fn the_grant_purpose_is_wallet_bound_and_carries_its_target_cap_and_destination() {
     let dest = WithdrawalDestination::of_script(&[0x76, 0xa9, 0x14]);
     let p = GrantPurpose::MasternodeWithdraw {
+        pro_tx_hash: PRO_TX,
         max_credits: 2_000_001,
         destination: Some(dest),
     };
@@ -318,6 +321,7 @@ fn the_grant_purpose_is_wallet_bound_and_carries_its_cap_and_destination() {
     assert_eq!(
         s.scope(),
         SignerScope::MasternodeWithdrawal {
+            pro_tx_hash: PRO_TX,
             max_credits: 2_000_001,
             destination: Some(dest),
         }
@@ -348,6 +352,7 @@ fn only_a_withdraw_grant_issues_the_withdrawal_signer() {
         );
     }
     let p = GrantPurpose::MasternodeWithdraw {
+        pro_tx_hash: PRO_TX,
         max_credits: MAX,
         destination: None,
     };
@@ -425,13 +430,13 @@ fn an_own_key_grant_signs_through_a_hold() {
 // MARK: Signing (P3)
 
 /// Every key kind signs a valid withdrawal; the result is Platform's own
-/// construction byte for byte (RFC 6979 is deterministic) and passes dpp's
-/// verification for the identity key.
+/// construction byte for byte (RFC 6979 is deterministic) and verifies
+/// over its signable bytes for the key whose hash160 is the identity key's
+/// data, as Drive's `ECDSA_HASH160` check does.
 #[tokio::test]
 async fn withdrawals_equal_platforms_construction_and_verify() {
     let fx = Fixture::new();
     let v = encrypted(&fx);
-    let version = PlatformVersion::latest();
     for c in cases(&v) {
         let s = withdrawal_signer(&v, &c);
         let sig = c.sign(&s).unwrap();
@@ -442,17 +447,17 @@ async fn withdrawals_equal_platforms_construction_and_verify() {
             ours.serialize_to_bytes().unwrap(),
             theirs.serialize_to_bytes().unwrap()
         );
-        ours.verify_identity_signed_signature(&c.identity_key, &NativeBlsModule, version)
-            .unwrap();
-        // Another identity key does not verify it.
-        let other = identity_key(
-            c.key.is_owner(),
-            &SecretKey::from_secret_bytes([3; 32]).unwrap(),
+        let signable = ours.signable_bytes().unwrap();
+        let public = PublicKey::from_secret_key(&c.secret).serialize();
+        assert_eq!(
+            hash160::Hash::hash(&public).to_byte_array().as_slice(),
+            c.identity_key.data().as_slice()
         );
-        assert!(
-            ours.verify_identity_signed_signature(&other, &NativeBlsModule, version)
-                .is_err()
-        );
+        dpp::dashcore::signer::verify_data_signature(&signable, &sig, &public).unwrap();
+        // Another key does not verify it.
+        let other = SecretKey::from_secret_bytes([3; 32]).unwrap();
+        let other = PublicKey::from_secret_key(&other).serialize();
+        assert!(dpp::dashcore::signer::verify_data_signature(&signable, &sig, &other).is_err());
     }
 }
 
@@ -543,17 +548,29 @@ fn another_identity_is_refused() {
             |c| c.t.identity_id = Identifier::from(PRO_TX),
             key_mismatch("another identity"),
         );
+    }
+}
+
+/// A grant is bound to the masternode the user acted on (MG-13 Sol M1): a
+/// withdrawal of another one, consistent in itself (its identity and
+/// attached key follow the other proTxHash), signs nothing under it.
+#[test]
+fn another_masternode_than_the_grants_is_refused() {
+    for pick in ALL {
         refused_before_the_secret(
             pick,
             |c| {
                 c.pro_tx_hash[0] ^= 1;
+                let mut identity = c.pro_tx_hash;
+                identity.reverse();
+                c.t.identity_id = Identifier::from(identity);
                 if let WithdrawalKey::AttachedOwner { pro_tx_hash }
                 | WithdrawalKey::AttachedPayout { pro_tx_hash } = &mut c.key
                 {
-                    pro_tx_hash[0] ^= 1;
+                    *pro_tx_hash = c.pro_tx_hash;
                 }
             },
-            key_mismatch("another identity"),
+            path_not_allowed("than the grant's"),
         );
     }
 }

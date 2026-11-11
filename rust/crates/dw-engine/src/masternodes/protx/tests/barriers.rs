@@ -48,8 +48,12 @@ impl Fx {
         let row = (self.db().payout_barriers().unwrap().into_iter())
             .find(|r| r.barrier == *barrier)
             .unwrap();
+        let wallet = row.barrier.created_by.parse().unwrap();
+        let op = (self.db())
+            .masternode_op(&row.barrier.created_by, &row.barrier.op_id)
+            .unwrap()?;
         self.engine
-            .block_on(self.session.barrier_operation_state(&row))
+            .block_on(self.session.barrier_operation_state(wallet, &op))
             .unwrap()
     }
 

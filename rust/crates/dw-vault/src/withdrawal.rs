@@ -110,7 +110,8 @@ impl VaultSigner {
     ///
     /// Refused before the secret is read, the signer still unspent:
     /// - another scope, or a key whose path or attached role the scope
-    ///   refuses: [`SignerError::PathNotAllowed`];
+    ///   refuses; a `pro_tx_hash` other than the scope's:
+    ///   [`SignerError::PathNotAllowed`];
     /// - a transition other than an `IdentityCreditWithdrawal` V1;
     ///   `user_fee_increase` not 0, `core_fee_per_byte` not
     ///   `MIN_CORE_FEE_PER_BYTE`, `pooling` not `Never`; an amount above the
@@ -140,6 +141,7 @@ impl VaultSigner {
 
         let scope = self.scope();
         let SignerScope::MasternodeWithdrawal {
+            pro_tx_hash: granted,
             max_credits,
             destination,
         } = scope
@@ -154,7 +156,11 @@ impl VaultSigner {
             return refused("a transition other than an identity credit withdrawal V1");
         };
 
-        // The masternode's owner identity (module doc).
+        // The masternode the user acted on, and its owner identity (module
+        // doc).
+        if *pro_tx_hash != granted {
+            return refused("a withdrawal from another masternode than the grant's");
+        }
         let mut owner_identity = *pro_tx_hash;
         owner_identity.reverse();
         if t.identity_id.to_buffer() != owner_identity {

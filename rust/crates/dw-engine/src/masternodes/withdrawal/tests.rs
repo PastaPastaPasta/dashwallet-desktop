@@ -55,7 +55,7 @@ use dw_vault::{
 use zeroize::Zeroizing;
 
 use super::background::{Background, Job};
-use super::check::{Destination, gated, identity_of, quote};
+use super::check::{Destination, gated, identity_of, look, quote};
 use super::drive::{Window, candidates, identity_key, matches, window};
 use super::net::{Answer, MnWithdrawNet, Proved, classify};
 use super::recheck::{Outcome, mark, recheck_all, recheck_group, recheck_record};
@@ -88,6 +88,7 @@ impl WithdrawalError {
             Self::Pending => "masternodes.withdrawal_pending",
             Self::Unverified => "masternodes.withdrawal_unverified",
             Self::RetryState => "masternodes.withdrawal_retry_state",
+            Self::TargetMismatch => "masternodes.withdraw_target_mismatch",
             Self::MarkState => "masternodes.withdrawal_mark_state",
             Self::NotFound => "masternodes.withdrawal_not_found",
             Self::Credits(CreditsError::WithdrawalOutOfRange { .. }) => {
@@ -229,6 +230,8 @@ fn decoded(bytes: &[u8]) -> IdentityCreditWithdrawalTransitionV1 {
 #[derive(Clone)]
 struct World {
     identity: Option<Identity>,
+    /// Other masternodes' identities, read only (no nonce or documents).
+    others: Vec<Identity>,
     /// The identity's nonces Drive took.
     used: BTreeSet<u64>,
     height: u64,
@@ -290,6 +293,8 @@ pub(super) struct Platform {
     answers: Mutex<VecDeque<(Answer, bool)>>,
     /// Every broadcast's bytes.
     sent: Mutex<Vec<Vec<u8>>>,
+    /// Each broadcast's nonce and Drive's nonce state when it was sent.
+    sends: Mutex<Vec<(u64, u64)>>,
     mempool: Mutex<Vec<Vec<u8>>>,
     reads: Mutex<HashMap<Read, usize>>,
     /// Runs at the next read of its kind.
@@ -307,6 +312,7 @@ impl Platform {
                     pro_tx,
                     vec![payout_key(0), owner_key()],
                 )),
+                others: Vec::new(),
                 used: BTreeSet::from([1, 2]),
                 height: 10,
                 core_height: TIP,
@@ -319,6 +325,7 @@ impl Platform {
             core_heights: Mutex::default(),
             answers: Mutex::default(),
             sent: Mutex::default(),
+            sends: Mutex::default(),
             mempool: Mutex::default(),
             reads: Mutex::default(),
             hook: Mutex::default(),
@@ -541,7 +548,9 @@ impl MnWithdrawNet for Platform {
 
     async fn identity(&self, id: Identifier) -> Result<Proved<Option<Identity>>, PlatformError> {
         self.read(Read::Identity, |w| {
-            w.identity.clone().filter(|i| i.id() == id)
+            (w.identity.iter().chain(&w.others))
+                .find(|i| i.id() == id)
+                .cloned()
         })
     }
 
@@ -561,6 +570,8 @@ impl MnWithdrawNet for Platform {
 
     async fn broadcast(&self, bytes: &[u8]) -> Answer {
         self.sent.lock().unwrap().push(bytes.to_vec());
+        let state = self.with(|w| w.nonce_state());
+        (self.sends.lock().unwrap()).push((decoded(bytes).nonce, state));
         let scripted = self.answers.lock().unwrap().pop_front();
         match scripted {
             Some((answer, lands)) => {
@@ -748,6 +759,7 @@ impl Authorize for Auth {
             panic!("not a V1 withdrawal");
         };
         let purpose = GrantPurpose::MasternodeWithdraw {
+            pro_tx_hash,
             max_credits: credits,
             destination: (t.output_script.as_ref())
                 .map(|s| WithdrawalDestination::of_script(s.as_bytes())),
@@ -1541,6 +1553,27 @@ async fn a_key_added_after_signing_with_the_identity_served_below_h_decides_no_n
     );
 }
 
+/// Opus (r1): an owner-key group needs the identity at H or above for its
+/// candidates (P8 (ii)). Its nonce was used by its own transition, which
+/// paid a new window key; the identity is proved absent at H. Its recorded
+/// destination alone shows no document, and that is no proof: nothing is
+/// `not_executed`.
+#[tokio::test]
+async fn an_owner_group_with_its_identity_proved_absent_at_h_decides_no_not_executed() {
+    let f = fx();
+    f.plat.answer(Answer::Accepted, true);
+    let row = f.withdraw(Owner, AMOUNT).await.unwrap();
+    f.plat.identity_mut(|i| {
+        i.public_keys_mut().insert(2, other_key(2, 0x22));
+    });
+    assert_eq!(f.plat.block(), 1);
+    f.plat.with(|w| w.identity = None);
+    let outcome = f.recheck(3).await;
+    assert_ne!(outcome, Outcome::NotExecuted);
+    assert!(matches!(outcome, Outcome::CouldntConfirm(_)), "{outcome:?}");
+    assert_ne!(f.row(&row.signed.id).state, WithdrawalState::NotExecuted);
+}
+
 #[tokio::test]
 async fn a_payout_change_between_signing_and_execution_pays_the_new_window() {
     let f = fx();
@@ -1616,6 +1649,91 @@ async fn a_verified_nonce_read_raises_the_groups_floor() {
     f.plat.with(|w| w.height = 30);
     assert_eq!(f.recheck(3).await, Outcome::Pending);
     assert_eq!(f.row(&row.signed.id).floor_height, 30);
+}
+
+/// Fix round 2 m3 (r1 Sol m3, P5): a verified identity or document proof
+/// newer than the nonce proof raises the group's floor, durably, and a
+/// later, older nonce read is refused: nothing is decided or sent again on
+/// it.
+#[tokio::test]
+async fn a_newer_identity_or_document_proof_raises_the_floor_over_an_older_nonce_read() {
+    for kind in [Read::Identity, Read::Document] {
+        let f = fx();
+        f.plat.answer(Answer::Unknown("lost".into()), false);
+        let row = f.withdraw(Owner, AMOUNT).await.unwrap();
+        assert_eq!(row.floor_height, 10);
+        let sent = f.plat.sent().len();
+        f.plat.claim(kind, 1, 30);
+        let outcome = f.recheck(3).await;
+        assert_eq!(f.row(&row.signed.id).floor_height, 30, "{kind:?}");
+        assert!(
+            matches!(outcome, Outcome::CouldntConfirm(_)),
+            "{kind:?}: {outcome:?}"
+        );
+        assert_eq!(f.plat.sent().len(), sent, "{kind:?}: sent on an older read");
+    }
+}
+
+/// P5: the floor of a Try again's group is one: a sibling signed on a newer
+/// verified read raises the refused record's floor to its own.
+#[tokio::test]
+async fn a_verified_try_again_raises_its_siblings_floor() {
+    let f = fx();
+    f.plat.answer(Answer::Refused("10001 merits".into()), false);
+    let refused = f.withdraw(Payout, AMOUNT).await.unwrap();
+    assert_eq!(refused.floor_height, 10);
+    f.plat.with(|w| w.height = 40);
+    // Its read-back reads nothing newer.
+    f.plat.deviate(Read::Document, Dev::Fail, ALWAYS);
+    let sibling = f.retry(&refused.signed.id, Owner, AMOUNT).await.unwrap();
+    assert_eq!(sibling.floor_height, 40);
+    assert_eq!(f.row(&refused.signed.id).floor_height, 40);
+}
+
+/// P5: a read rule 5 lets pass on a fallback (`Probe`, `Off`), of the
+/// identity or a document, raises no floor however high it claims.
+#[tokio::test]
+async fn a_fallback_identity_or_document_read_raises_no_floor() {
+    for rule in [Rule5::Probe, Rule5::Off] {
+        for kind in [Read::Identity, Read::Document] {
+            let f = fx();
+            f.scene.rule(rule);
+            f.plat.answer(Answer::Unknown("lost".into()), false);
+            let row = f.withdraw(Owner, AMOUNT).await.unwrap();
+            assert_eq!(row.floor_height, 10);
+            f.plat.deviate(kind, Dev::Unverified, ALWAYS);
+            f.plat.claim(kind, 1_000, 1_000_000_000);
+            assert_eq!(f.recheck(3).await, Outcome::Pending, "{rule:?} {kind:?}");
+            assert_eq!(f.row(&row.signed.id).floor_height, 10, "{rule:?} {kind:?}");
+        }
+    }
+}
+
+/// Sol n1 (r1): a pass that ends `Unanswered` leaves the withdrawal's
+/// disposition as it was, and a verified floor raise of one of its reads
+/// may still be stored. Here the nonce read at 40 passes and raises the
+/// floor; every proof of absence after it fails rule 5.
+#[tokio::test]
+async fn an_unanswered_pass_keeps_the_disposition_and_may_store_a_verified_floor() {
+    let f = fx();
+    f.plat.answer(Answer::Unknown("lost".into()), false);
+    let row = f.withdraw(Payout, AMOUNT).await.unwrap();
+    f.plat.rival(3, None);
+    f.plat.with(|w| w.height = 40);
+    f.plat.deviate(Read::Document, Dev::Unverified, ALWAYS);
+    let outcome = f.recheck(3).await;
+    assert!(matches!(outcome, Outcome::Unanswered(_)), "{outcome:?}");
+    let after = f.row(&row.signed.id);
+    assert_eq!(
+        (after.state, &after.state_reason, &after.evidence),
+        (row.state, &row.state_reason, &None),
+        "the disposition"
+    );
+    assert_eq!(
+        (row.floor_height, after.floor_height),
+        (10, 40),
+        "the floor"
+    );
 }
 
 #[tokio::test]
@@ -1729,6 +1847,54 @@ async fn a_late_proof_after_either_mark_makes_the_record_done() {
     }
 }
 
+/// Fix round 2 m2 (r1 Sol m2, Opus n3): the marked records' late-proof
+/// links are written in the transaction that finalizes their group. Two
+/// marked siblings at one nonce, the first's bytes landing late: with the
+/// finalize faulted before or after its commit, then a restart, the paid
+/// record and the marked losing sibling both carry the link.
+#[tokio::test]
+async fn a_faulted_finalize_of_a_marked_group_keeps_every_late_proof_link() {
+    use dw_appdb::fault::{MN_WITHDRAW_FINALIZE, Stage, arm, disarm, hit};
+    for stage in [Stage::Before, Stage::After] {
+        let mut f = fx();
+        let mut marked = Vec::new();
+        // Amounts apart, so the document matches the first alone (D7).
+        for (key, amount, to) in [
+            (Owner, AMOUNT, WithdrawalMark::Received),
+            (Payout, AMOUNT / 2, WithdrawalMark::NotReceived),
+        ] {
+            f.plat.answer(Answer::Unknown("lost".into()), false);
+            let row = f.withdraw(key, amount).await.unwrap();
+            assert_eq!(row.signed.nonce, 3, "a mark keeps the next withdrawal at n");
+            f.plat.lagging(Read::Document);
+            f.recheck(3).await;
+            f.plat.calm();
+            mark(&f.scene, &row.signed.id, to).await.unwrap();
+            marked.push(row);
+        }
+        let (paid, lost) = (&marked[0], &marked[1]);
+        assert!(f.plat.execute(&paid.signed.signed_bytes));
+        let path = f.scene.path.clone();
+        arm(&path, MN_WITHDRAW_FINALIZE, stage);
+        let e = recheck_all(&f.scene, &*f.plat).await.unwrap_err();
+        assert!(e.to_string().contains("fault"), "{stage:?}: {e}");
+        assert!(hit(&path, MN_WITHDRAW_FINALIZE, stage).is_ok());
+        disarm(&path);
+        f.restart();
+        recheck_all(&f.scene, &*f.plat).await.unwrap();
+        let link = Some(paid.signed.id.as_str());
+        let (paid, lost) = (f.row(&paid.signed.id), f.row(&lost.signed.id));
+        assert_eq!(
+            (paid.state, lost.state),
+            (WithdrawalState::Done, WithdrawalState::SiblingPaid),
+            "{stage:?}"
+        );
+        assert_eq!(paid.late_proof_link.as_deref(), link, "{stage:?}: paid");
+        assert_eq!(lost.late_proof_link.as_deref(), link, "{stage:?}: lost");
+        assert!(paid.mark.is_some() && lost.mark.is_some());
+    }
+}
+
 #[tokio::test]
 async fn a_done_records_recheck_refreshes_its_status_and_a_not_executed_match_alarms() {
     let f = fx();
@@ -1819,6 +1985,59 @@ async fn try_again_only_from_refused_while_the_nonce_is_taken() {
         .unwrap_err();
     assert_eq!(e.code(), "masternodes.withdrawal_retry_state");
     assert_eq!(f.signatures(), 1);
+}
+
+/// Opus n5 (r1): Try again reads the refused record again under the
+/// identity lock. A recheck that decides it while the retry waits for the
+/// lock leaves the retry `withdrawal_retry_state` before the nonce read, so
+/// no grant is redeemed for an insert the supersede would refuse.
+#[tokio::test]
+async fn try_again_rereads_the_refused_record_under_the_lock() {
+    let f = fx();
+    f.plat.answer(Answer::Refused("10001 merits".into()), false);
+    let refused = f.withdraw(Payout, AMOUNT).await.unwrap();
+    assert_eq!(refused.state, WithdrawalState::Refused);
+    let signed = f.signatures();
+    let (db, id, identity, nonce) = (
+        Arc::clone(&f.scene.db),
+        refused.signed.id.clone(),
+        shown(&f.id),
+        refused.signed.nonce,
+    );
+    // The first identity read is the wait's, outside the lock.
+    *f.plat.hook.lock().unwrap() = Some((
+        Read::Identity,
+        Box::new(move || {
+            let evidence = dw_appdb::NotExecutedEvidence {
+                nonce_height: 10,
+                identity_height: 10,
+                document_height: 10,
+                reason: None,
+            };
+            let to = [(id.as_str(), WithdrawalState::Refused)];
+            assert!(
+                (db.not_executed_withdrawal_group_durable(&identity, nonce, &to, &evidence))
+                    .unwrap()
+            );
+        }),
+    ));
+    let nonces = f.plat.reads(Read::Nonce);
+    let e = f
+        .retry(&refused.signed.id, Owner, AMOUNT)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), "masternodes.withdrawal_retry_state");
+    assert_eq!(f.signatures(), signed, "no grant redeemed, nothing signed");
+    assert_eq!(
+        f.plat.reads(Read::Nonce),
+        nonces,
+        "refused before the nonce read"
+    );
+    assert_eq!(f.plat.sent().len(), 1);
+    assert_eq!(
+        f.row(&refused.signed.id).state,
+        WithdrawalState::NotExecuted
+    );
 }
 
 #[tokio::test]
@@ -1983,8 +2202,8 @@ async fn close_waits_for_a_write_its_aborted_recheck_started() {
     let row = f.withdraw(Payout, AMOUNT).await.unwrap();
     assert_eq!(row.floor_height, 10);
     f.plat.with(|w| w.height = 30);
-    // The recheck's nonce read arms the pause: the floor raise, its next
-    // app database call, waits on the test.
+    // The recheck's document read arms the pause: step 1's floor raise,
+    // its next app database call, waits on the test.
     let (entered_tx, entered) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let pause = Arc::clone(&f.scene.pause);
@@ -1994,7 +2213,7 @@ async fn close_waits_for_a_write_its_aborted_recheck_started() {
             released.recv().unwrap();
         }));
     });
-    *f.plat.hook.lock().unwrap() = Some((Read::Nonce, arm));
+    *f.plat.hook.lock().unwrap() = Some((Read::Document, arm));
     let recheck = {
         let f = Arc::clone(&f);
         async move {
@@ -2397,6 +2616,7 @@ async fn an_unverified_nonce_read_under_enforce_signs_nothing_at_any_nonce() {
             let before = f.signatures();
             f.scene.rule(rule);
             f.plat.deviate(Read::Nonce, Dev::Unverified, ALWAYS);
+            f.plat.claim(Read::Nonce, ALWAYS, 1_000_000_000);
             let r = f.withdraw(Payout, AMOUNT).await;
             match rule {
                 Rule5::Enforce => {
@@ -2405,10 +2625,11 @@ async fn an_unverified_nonce_read_under_enforce_signs_nothing_at_any_nonce() {
                 }
                 _ => {
                     let row = r.unwrap_or_else(|e| panic!("case {case} {rule:?}: {e}"));
-                    // An unverified read sets no floor: the new group's is
-                    // 0, the same-nonce group keeps its verified 10.
-                    let floor = if case == 1 { 10 } else { 0 };
-                    assert_eq!(row.floor_height, floor, "case {case} {rule:?}");
+                    // The unverified nonce read at 10^9 sets no floor; the
+                    // final look's verified identity read at the tip does
+                    // (D5).
+                    let tip = f.plat.with(|w| w.height);
+                    assert_eq!(row.floor_height, tip, "case {case} {rule:?}");
                 }
             }
         }
@@ -2555,6 +2776,41 @@ async fn a_conflicted_or_a_confirmed_and_covered_operation_clears_its_barrier() 
     }
 }
 
+/// Fix round 2 m4 (r1 Opus m1): an A→B→A payout change. B1 moves the
+/// payout from S1 to S2, B2 back to S1, neither operation readable. While
+/// B1 is pending, Drive's window still paying S1 is no evidence for B2 (its
+/// change may be applied after B1's): B2 stays until B1 clears, and then
+/// clears on its own evidence, the window paying S1 after S2.
+#[tokio::test]
+async fn a_later_barrier_waits_for_an_older_pending_one_before_platform_evidence() {
+    let f = fx();
+    let s2 = CoreScript::new_p2pkh([0x22; 20]);
+    f.barrier(&PRO_TX, "b1", s2.as_bytes(), 1_000);
+    f.barrier(&PRO_TX, "b2", payout_script().as_bytes(), 1_001);
+    let reason = || async { look(&f.scene, &*f.plat, &PRO_TX).await.unwrap().reason };
+    let pending = Some(CheckingReason::PayoutChangePending);
+    // The window pays S1: B1's change not applied, and B2 not evidenced.
+    assert_eq!(reason().await, pending);
+    assert_eq!(f.barriers(), 2);
+    // Platform applies B1: the window pays S2; B1 clears, B2 stays.
+    f.plat
+        .identity_mut(|i| i.public_keys_mut().insert(2, other_key(2, 0x22)));
+    assert_eq!(reason().await, pending);
+    let left = (f.scene.db.payout_barriers_of(&display_hex(&PRO_TX))).unwrap();
+    assert_eq!(
+        left.iter()
+            .map(|b| b.barrier.op_id.as_str())
+            .collect::<Vec<_>>(),
+        ["b2"]
+    );
+    // Then B2's: the window pays S1 again, read after B1 cleared.
+    f.plat
+        .identity_mut(|i| i.public_keys_mut().insert(3, payout_key(3)));
+    assert_eq!(reason().await, None);
+    assert_eq!(f.barriers(), 0);
+    assert_eq!(f.signatures(), 0);
+}
+
 #[tokio::test]
 async fn barriers_not_backfilled_read_as_a_pending_payout_change() {
     let f = fx();
@@ -2616,6 +2872,7 @@ fn the_lease_grant_charges_the_credits_and_signs_once() {
     let grant = |max| {
         f.grant(
             GrantPurpose::MasternodeWithdraw {
+                pro_tx_hash: PRO_TX,
                 max_credits: max,
                 destination: None,
             },
@@ -2752,7 +3009,32 @@ async fn step(f: &Fx, n: usize) -> Result<(), WithdrawalError> {
 
 const STEPS: usize = 11;
 
-/// The five invariants after a restart and the settling rechecks.
+/// The nonces of the identity's undecided groups.
+fn undecided(f: &Fx) -> BTreeSet<u64> {
+    (f.rows().iter())
+        .filter(|r| !r.state.is_final())
+        .map(|r| r.signed.nonce)
+        .collect()
+}
+
+/// Invariant 1 over the sends of one step: no bytes at a nonce m went out
+/// while a group n < m, undecided before and after the step (so all
+/// through it), had its nonce taken by Drive at that send.
+fn sends_kept_order(f: &Fx, from: usize, before: &BTreeSet<u64>, what: &str) {
+    let after = undecided(f);
+    let sends = f.plat.sends.lock().unwrap().clone();
+    for &(m, state) in &sends[from..] {
+        for &n in before.intersection(&after).filter(|&&n| n < m) {
+            assert!(
+                !takes(state, n, f.id),
+                "{what}: sent at {m} while {n} was undecided and taken"
+            );
+        }
+    }
+}
+
+/// The five invariants: after a restart, after each later step, and after
+/// the settling rechecks.
 fn invariants(f: &Fx, what: &str) {
     let rows = f.rows();
     let world = f.plat.with(|w| w.clone());
@@ -2845,7 +3127,10 @@ async fn sweep_run(armed: Option<(&str, dw_appdb::fault::Stage)>) -> bool {
         dw_appdb::fault::arm(&path, point, stage);
     }
     for n in 0..STEPS {
+        let (before, sends) = (undecided(&f), f.plat.sends.lock().unwrap().len());
         let r = step(&f, n).await;
+        let what = format!("{what} step {n}");
+        sends_kept_order(&f, sends, &before, &what);
         if let (Some((point, stage)), false) = (armed, hit) {
             // Still armed: re-armed by the probe's hit; else hit here.
             match dw_appdb::fault::hit(&path, point, stage) {
@@ -2856,14 +3141,15 @@ async fn sweep_run(armed: Option<(&str, dw_appdb::fault::Stage)>) -> bool {
                     if let Err(e) = &r {
                         assert!(e.to_string().contains("fault"), "{what}: {e}");
                     }
+                    invariants(&f, &format!("{what}, restarted"));
                 }
             }
-        } else if let Err(e) = r {
-            // Without a fault, only the script's own state refusals.
-            assert!(
-                !matches!(e, WithdrawalError::Engine(_)),
-                "{what} step {n}: {e}"
-            );
+        } else {
+            if let Err(e) = r {
+                // Without a fault, only the script's own state refusals.
+                assert!(!matches!(e, WithdrawalError::Engine(_)), "{what}: {e}");
+            }
+            invariants(&f, &what);
         }
     }
     dw_appdb::fault::disarm(&path);

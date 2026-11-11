@@ -28,7 +28,9 @@
 --   state              P6's table; `state_reason` the refusal or the
 --                      undecidable read.
 --   proof_*            the proved document behind `done`: its id, the proof's
---                      Platform height and block time.
+--                      Platform height and block time (`proof_block_time`
+--                      in milliseconds since the UNIX epoch, as Platform
+--                      gives it).
 --   evidence_*         P8's heights behind `not_executed`: (i) the nonce
 --                      read, (ii) the identity read, (iv) the document reads.
 --   floor_height       the highest proved Platform height an SPV-verified read

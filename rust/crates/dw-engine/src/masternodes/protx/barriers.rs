@@ -11,11 +11,13 @@
 //!   at session open ([`backfill_payout_barriers`]).
 //!
 //! Clearing is the withdrawal quote's (MG-13 P16's terms);
-//! [`NetworkSession::barrier_operation_state`] is what it reads of MG-04.
+//! [`NetworkSession::barrier_operation_state`] is what it reads of MG-04,
+//! from the operation's row, which the quote reads on its own tracked app
+//! database path.
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::{Network, ScriptBuf};
-use dw_appdb::{AppDb, MasternodeOpRow, NewPayoutBarrier, PayoutBarrierRow};
+use dw_appdb::{AppDb, MasternodeOpRow, NewPayoutBarrier};
 
 use super::super::MasternodesError;
 use super::super::protx_records::{ProTxOperationKind, ProTxOperationState, ProTxTerms};
@@ -112,24 +114,18 @@ pub(crate) fn backfill_payout_barriers(db: &AppDb, network: Network, now: u64) -
 }
 
 impl NetworkSession {
-    /// The state of `barrier`'s operation in its creating wallet's history,
-    /// read as MG-04 reads every row (`Confirmed { height }`, `Conflicted`
-    /// after D49's abandon, ...), for the quote's clearing terms (MG-13
-    /// P16). `None` when that can't be read: the wallet isn't loaded (or
-    /// was deleted), or no longer holds the row; then only Platform
-    /// evidence clears the barrier.
+    /// The state of a barrier's operation `row` in its creating `wallet`'s
+    /// history, read as MG-04 reads every row (`Confirmed { height }`,
+    /// `Conflicted` after D49's abandon, ...), for the quote's clearing
+    /// terms (MG-13 P16). `None` when that can't be read: the wallet isn't
+    /// loaded (or was deleted); then only Platform evidence clears the
+    /// barrier, as when the wallet no longer holds the row.
     pub(crate) async fn barrier_operation_state(
         &self,
-        barrier: &PayoutBarrierRow,
+        wallet: WalletId,
+        row: &MasternodeOpRow,
     ) -> Result<Option<ProTxOperationState>, MasternodesError> {
-        let Ok(wallet) = barrier.barrier.created_by.parse::<WalletId>() else {
-            return Ok(None);
-        };
-        let (w, id) = (wallet.to_string(), barrier.barrier.op_id.clone());
-        let Some(row) = self.appdb_op(move |db| db.masternode_op(&w, &id)).await? else {
-            return Ok(None);
-        };
-        match self.op_state(wallet, &row).await {
+        match self.op_state(wallet, row).await {
             Err(MasternodesError::Engine(EngineError::WalletNotFound(_))) => Ok(None),
             state => state.map(Some),
         }

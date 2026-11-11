@@ -84,9 +84,10 @@ pub(crate) async fn retry(
     req: &Request,
 ) -> Result<WithdrawalRow, WithdrawalError> {
     let refused = load(env, refused_id).await?;
-    if refused.state != WithdrawalState::Refused
-        || refused.signed.pro_tx_hash != crate::masternodes::display_hex(&req.pro_tx_hash)
-    {
+    if refused.signed.pro_tx_hash != crate::masternodes::display_hex(&req.pro_tx_hash) {
+        return Err(WithdrawalError::TargetMismatch);
+    }
+    if refused.state != WithdrawalState::Refused {
         return Err(WithdrawalError::RetryState);
     }
     signed_and_sent(env, net, keys, auth, network, req, Some(refused_id)).await
@@ -120,11 +121,25 @@ async fn signed_and_sent(
     seen.holds()?;
     let identity = seen.identity()?.clone();
     let records = group_records(env, &id).await?;
-    if records.iter().any(|r| r.state.is_open()) && sibling_of.is_none() {
-        return Err(WithdrawalError::Pending);
+    match sibling_of {
+        None if records.iter().any(|r| r.state.is_open()) => return Err(WithdrawalError::Pending),
+        // Still refused under the lock, or the grant would be redeemed for
+        // an insert the supersede refuses.
+        Some(refused)
+            if !(records.iter())
+                .any(|r| r.signed.id == refused && r.state == WithdrawalState::Refused) =>
+        {
+            return Err(WithdrawalError::RetryState);
+        }
+        _ => {}
     }
     let plan = plan(net, keys, network, &identity, req).await?;
     let (nonce, floor) = nonce_for(env, net, &id, &records, sibling_of).await?;
+    // P5: the final look's identity read is used for the record too.
+    let floor = match &seen.identity.read {
+        r if r.verified => floor.max(r.height),
+        _ => floor,
+    };
     let signed = sign(env, auth, req, &identity, &plan, nonce).await?;
     let inserted = signed.clone();
     let refused = sibling_of.map(str::to_owned);
