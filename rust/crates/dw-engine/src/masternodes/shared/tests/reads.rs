@@ -195,7 +195,8 @@ fn ep_t7_reward_destination_keeps_confirmed_and_attempt_separate() {
     assert!(confirmed.latest_attempt.is_none());
     let wallet = f.wallets[0].to_string();
     let mut row = f.db().masternode_op(&wallet, &op.id).unwrap().unwrap();
-    row.id = "ep-confirmed-tie".into();
+    row.id = "0".repeat(64);
+    assert!(row.id < op.id);
     row.created_at += 1;
     row.sent_at = None;
     f.db()
@@ -474,4 +475,114 @@ fn ep_r2_scanned_shared_registration_survives_reopening() {
             restored.grant(0, cap),
         ))
         .unwrap();
+}
+
+#[test]
+fn ep_r4_share_reads_match_tip_registration_and_owner() {
+    let f = fx(3, true);
+    let (first, first_hash) = listed(&f);
+    let first_tx = f.seam.shared_mined.lock().unwrap()[0].1.clone();
+    for wallet in 0..3 {
+        for input in &first_tx.input {
+            f.spend(wallet, input.previous_output);
+        }
+    }
+    let (second, second_hash) = confirmed_with_reward(&f, 60, COIN, RewardChoice::Refund, 11);
+    assert_ne!(first_hash, second_hash);
+    let second_tx =
+        super::super::send::typed(&decode_frozen(&parse(&f.message(0, &second))).unwrap().tx)
+            .unwrap();
+    for wallet in 0..3 {
+        for input in &second_tx.input {
+            f.spend(wallet, input.previous_output);
+        }
+    }
+    {
+        let mut mined = f.seam.shared_mined.lock().unwrap();
+        mined.retain(|(id, _, _)| *id != second_hash);
+        mined.push((second_hash, second_tx, 60));
+    }
+    f.follow();
+    {
+        let mut list = f.seam.list.lock().unwrap();
+        let list = list.as_mut().unwrap();
+        let mut entry = list[0].clone();
+        entry.pro_tx_hash = second_hash.to_byte_array();
+        entry.service_address = Some("1.2.3.11:19999".parse().unwrap());
+        list.push(entry);
+    }
+    f.credit(0, 21, 401 * COIN);
+    let mut request = request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
+    request.terms.service = "1.2.3.21:19999".into();
+    let draft = start(&f, 0, request).unwrap().session;
+    assert_eq!(draft.stage, SharedStage::Draft);
+    assert_eq!(
+        f.run(f.mn().shared_sessions(f.wallets[0])).unwrap().len(),
+        3
+    );
+    f.tip(150);
+    for (hash, session) in [(first_hash, first), (second_hash, second)] {
+        let facts = shares(&f, hash);
+        assert_eq!(facts.session.as_deref(), Some(session.as_str()));
+        assert_eq!(facts.spend_height, 151, "header tip is above list 100");
+        let other = f
+            .run(f.mn().shared_shares(f.wallets[1], hash.to_string()))
+            .unwrap();
+        assert_eq!(
+            other.shares.iter().map(|s| s.mine).collect::<Vec<_>>(),
+            [false, true, false],
+            "public read for share 1's owner"
+        );
+    }
+}
+
+#[test]
+fn ep_r4_reward_height_precedes_creation_time() {
+    let f = fx(3, true);
+    let (_, hash) = listed(&f);
+    f.credit(0, 9, COIN);
+    let req = UpdateShareRequest {
+        pro_tx_hash: hash.to_string(),
+        share_index: 0,
+        reward: RewardChoice::NewAddress,
+    };
+    let first = f
+        .run(
+            f.mn()
+                .update_share(f.wallets[0], req.clone(), f.grant(0, COIN)),
+        )
+        .unwrap();
+    let first_tx = f.net.sent().last().unwrap().clone();
+    confirm(&f, 0, first_tx.clone(), 110);
+    f.spend(0, first_tx.input[0].previous_output);
+    *f.seam.list_height.lock().unwrap() = 110;
+    f.tip(115);
+    f.follow();
+    f.credit(0, 10, COIN);
+    f.net.reject_next();
+    let second = f
+        .run(f.mn().update_share(f.wallets[0], req, f.grant(0, COIN)))
+        .unwrap();
+    assert_ne!(first.terms.payout_address, second.terms.payout_address);
+    let wallet = f.wallets[0].to_string();
+    let mut row = f.db().masternode_op(&wallet, &second.id).unwrap().unwrap();
+    assert!(
+        f.db()
+            .delete_unsent_masternode_op(&wallet, &row.id)
+            .unwrap()
+    );
+    row.created_at = first.created_at - 1;
+    f.db()
+        .insert_masternode_op_durable(&wallet, &row, &[], row.created_at)
+        .unwrap();
+    let tx = dashcore::consensus::deserialize(row.signed_tx.as_ref().unwrap()).unwrap();
+    confirm(&f, 0, tx, 120);
+    let latest = shares(&f, hash).shares[0]
+        .reward
+        .latest_confirmed_local
+        .clone()
+        .unwrap();
+    assert_eq!(latest.operation, second.id);
+    assert_eq!(latest.address, second.terms.payout_address);
+    assert_eq!(latest.confirmed_height, 120);
 }

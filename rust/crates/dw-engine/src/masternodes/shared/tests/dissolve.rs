@@ -27,7 +27,7 @@ pub(super) fn listed_with_reward(
     early_penalty: u64,
     reward: RewardChoice,
 ) -> (String, Txid) {
-    let (id, txid) = confirmed_with_reward(f, 50, early_penalty, reward);
+    let (id, txid) = confirmed_with_reward(f, 50, early_penalty, reward, 1);
     f.follow();
     let entry = platform_wallet::masternode::MasternodeListSummary {
         pro_tx_hash: txid.to_byte_array(),

@@ -3157,3 +3157,60 @@ fn ep_t2_overdue_read_recomputes_after_restart_reorg_and_confirmation() {
         .with_wallet(f.wallet, |h| h.upsert(&record, None));
     assert!(!read(), "confirmed rows are never overdue");
 }
+
+#[test]
+fn ep_r4_overdue_uses_resend_time_instead_of_signing_time() {
+    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+    let f = fx(Library::NoPeers);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    assert_eq!(op.state, ProTxOperationState::NotSent);
+    let wallet = f.wallet.to_string();
+    let mut row = f.db().masternode_op(&wallet, &op.id).unwrap().unwrap();
+    assert!(
+        f.db()
+            .delete_unsent_masternode_op(&wallet, &row.id)
+            .unwrap()
+    );
+    row.created_at -= 21_601;
+    row.signed_at = row.signed_at.map(|at| at - 21_600);
+    f.db()
+        .insert_masternode_op_durable(&wallet, &row, &[], row.created_at)
+        .unwrap();
+    *f.lib.mode.lock().unwrap() = Library::Accept;
+    let resent = f
+        .engine
+        .block_on(f.mn().resend_operation(f.wallet, op.id, f.grant(COIN)))
+        .unwrap();
+    let sent = resent.sent_at.unwrap();
+    assert!(sent > row.signed_at.unwrap() + 10_800);
+    assert!(sent > row.created_at + 10_800);
+    let mut headers = BlockHeadersProgress::default();
+    headers.update_target_height(100);
+    headers.update_tip_height(100);
+    headers.set_state(SyncState::Synced);
+    let mut mn = MasternodesProgress::default();
+    mn.update_target_height(100);
+    mn.update_current_height(100);
+    mn.set_state(SyncState::Synced);
+    let mut progress = SyncProgress::default();
+    progress.update_headers(headers);
+    progress.update_masternodes(mn);
+    f.session.hub.tracker().on_progress(&progress);
+    for (elapsed, expected) in [(10_799, false), (10_800, true)] {
+        f.session
+            .hub
+            .tracker()
+            .set_tip_time(100, Some(sent + elapsed));
+        let read = f
+            .engine
+            .block_on(f.mn().operations(f.wallet))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(read.state, ProTxOperationState::Sent);
+        assert_eq!(read.overdue, expected, "elapsed since resend {elapsed}");
+    }
+}

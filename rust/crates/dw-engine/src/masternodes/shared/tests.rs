@@ -553,15 +553,23 @@ fn three_approved(f: &Fx) -> String {
 
 /// [`three_approved`] with the terms' early penalty `early_penalty`.
 fn three_approved_with(f: &Fx, early_penalty: u64) -> String {
-    three_approved_with_reward(f, early_penalty, RewardChoice::Refund)
+    three_approved_with_reward(f, early_penalty, RewardChoice::Refund, 1)
 }
 
-fn three_approved_with_reward(f: &Fx, early_penalty: u64, reward: RewardChoice) -> String {
-    f.credit(0, 1, 401 * COIN);
-    f.credit(1, 2, 300 * COIN + 50_000);
-    f.credit(2, 3, 350 * COIN);
+fn three_approved_with_reward(
+    f: &Fx,
+    early_penalty: u64,
+    reward: RewardChoice,
+    seed: u8,
+) -> String {
+    f.credit(0, seed, 401 * COIN);
+    f.credit(1, seed + 1, 300 * COIN + 50_000);
+    f.credit(2, seed + 2, 350 * COIN);
     let mut req = request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
     req.terms.early_penalty = early_penalty;
+    if seed != 1 {
+        req.terms.service = format!("1.2.3.{seed}:19999");
+    }
     req.reward = reward;
     let invitation = start(f, 0, req).unwrap();
     let id = invitation.session.id.clone();
@@ -1386,7 +1394,7 @@ fn confirmed(f: &Fx, height: u32) -> (String, Txid) {
 
 /// [`confirmed`] with the terms' early penalty `early_penalty`.
 fn confirmed_with(f: &Fx, height: u32, early_penalty: u64) -> (String, Txid) {
-    confirmed_with_reward(f, height, early_penalty, RewardChoice::Refund)
+    confirmed_with_reward(f, height, early_penalty, RewardChoice::Refund, 1)
 }
 
 fn confirmed_with_reward(
@@ -1394,8 +1402,9 @@ fn confirmed_with_reward(
     height: u32,
     early_penalty: u64,
     reward: RewardChoice,
+    seed: u8,
 ) -> (String, Txid) {
-    let id = three_approved_with_reward(f, early_penalty, reward);
+    let id = three_approved_with_reward(f, early_penalty, reward, seed);
     let request = f.message(0, &id);
     for w in [1, 2] {
         f.imported(w, &request);
