@@ -422,10 +422,10 @@ enum FundScript {
     /// Failed with an unknown outcome and no tracked row (the wallet
     /// closing under the call).
     LostUntracked,
-    /// platform-wallet's `WalletRemovedBeforeSend` before anything was
-    /// signed or tracked, mapped by the engine's `fund_error`.
+    /// Signed, then platform-wallet's `WalletRemovedBeforeSend` before
+    /// the tracking write, mapped by the engine's `fund_error`.
     RemovedBeforeSend,
-    /// platform-wallet's `AssetLockTooManyInputs`, likewise.
+    /// Signed, then platform-wallet's `AssetLockTooManyInputs`, likewise.
     OverInputCap,
 }
 
@@ -727,11 +727,13 @@ impl RegistrationLib for Fake {
                 return Err(FundError::Failed(PlatformError::Unavailable));
             }
             FundScript::RemovedBeforeSend => {
+                permit.note_signed([0xfe; 32]);
                 return Err(super::registration_flow::fund_error(
                     platform_wallet::PlatformWalletError::WalletRemovedBeforeSend("w".into()),
                 ));
             }
             FundScript::OverInputCap => {
+                permit.note_signed([0xfe; 32]);
                 return Err(super::registration_flow::fund_error(
                     platform_wallet::PlatformWalletError::AssetLockTooManyInputs {
                         count: 101,
@@ -1904,49 +1906,46 @@ fn funding_failures_follow_the_tracked_row() {
     }
 }
 
-/// A funding whose wallet was removed or re-created before the library
-/// sent its lock never reached the wire: the row is back at
-/// `KeysPrepared`, retryable, with no outpoint, nothing committed and its
-/// step not possibly sent.
+/// A funding whose wallet was removed or re-created after its lock was
+/// signed, before the library tracked it: the released signature leaves
+/// the step `MaybeSent`, so the row fails `broadcast_unknown`, not
+/// retryable, its funds committed, and discard and the step's next call
+/// are refused.
 #[test]
-fn a_funding_whose_wallet_left_before_the_send_is_not_sent() {
-    let f = fixture(false);
-    let lib = f.fake();
-    lib.w().fund_script = Some(FundScript::RemovedBeforeSend);
-    let draft = f.insert(core_row(PLAIN));
-    f.drive(&lib, draft, Some(f.lease()), false);
-    let row = f.row(draft);
-    assert_eq!(phase(&row), Phase::KeysPrepared);
-    assert_eq!(row.asset_lock_outpoint, None);
-    assert!(row.retryable && row.error.is_some());
-    assert!(!f.status(&lib, draft).funds_committed);
-    assert!(matches!(
-        funding_state(&f, draft),
-        None | Some(crate::platform::DispatchState::NotSent)
-    ));
-    f.discard(&lib, draft).unwrap();
+fn a_funding_whose_wallet_left_after_its_signature_reads_broadcast_unknown() {
+    refused_after_the_signature(FundScript::RemovedBeforeSend);
 }
 
-/// A funding the library refuses for more inputs than an asset lock may
-/// carry fails retryable, nothing committed and its step not possibly
-/// sent.
+/// A funding the library refuses over the asset lock's input cap after
+/// signing it reads the same.
 #[test]
-fn a_funding_over_the_asset_lock_input_cap_is_refused() {
+fn a_funding_over_the_asset_lock_input_cap_reads_broadcast_unknown() {
+    refused_after_the_signature(FundScript::OverInputCap);
+}
+
+fn refused_after_the_signature(script: FundScript) {
     let f = fixture(false);
     let lib = f.fake();
-    lib.w().fund_script = Some(FundScript::OverInputCap);
+    lib.w().fund_script = Some(script);
     let draft = f.insert(core_row(PLAIN));
-    f.drive(&lib, draft, Some(f.lease()), false);
+    f.drive(&lib, draft, Some(f.lease()), true);
     let row = f.row(draft);
     assert_eq!(row.asset_lock_outpoint, None);
-    assert!(row.retryable);
-    assert_eq!(row.error.as_deref(), Some("internal"));
-    assert!(!f.status(&lib, draft).funds_committed);
-    assert!(matches!(
+    assert_eq!(row.error.as_deref(), Some(flow::broadcast_unknown()));
+    assert!(!row.retryable);
+    assert_eq!(
         funding_state(&f, draft),
-        None | Some(crate::platform::DispatchState::NotSent)
-    ));
-    f.discard(&lib, draft).unwrap();
+        Some(crate::platform::DispatchState::MaybeSent)
+    );
+    let status = f.status(&lib, draft);
+    assert!(status.funds_committed);
+    assert_eq!(status.waiting, Some(RegistrationWait::FundingUnknown));
+    assert_eq!(
+        f.discard(&lib, draft).unwrap_err().code(),
+        "invalid_argument"
+    );
+    f.drive(&lib, draft, Some(f.lease()), true);
+    assert_eq!(lib.counts(), (1, 0), "the step was called again");
 }
 
 /// The dispatch state of `draft`'s funding step, if it has one.
