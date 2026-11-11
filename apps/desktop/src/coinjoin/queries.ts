@@ -98,7 +98,7 @@ export function useMixingAction(walletId: string, network: NetworkInfo) {
     } catch (e) {
       setProblem(actionFailureText(e, amount));
     } finally {
-      await client.invalidateQueries({ queryKey: keys.coinjoinStatus(walletId) });
+      await Promise.all([client.invalidateQueries({ queryKey: keys.coinjoinStatus(walletId) }), client.invalidateQueries({ queryKey: keys.coinsAll(walletId) })]);
       setBusy(false);
     }
   };

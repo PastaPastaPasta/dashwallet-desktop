@@ -6,14 +6,15 @@ import { defineConfig } from "@playwright/test";
 // size, so element boxes compare across engines and with `--selftest` (U3c). The gate runs the
 // style spec again at its self-test size: DW_VIEWPORT=1000x620 (as the G-02 gate did).
 const [width, height] = (process.env.DW_VIEWPORT ?? "1280x820").split("x").map(Number);
+const port = Number(process.env.DW_E2E_PORT ?? 1420);
 export default defineConfig({
   testDir: "e2e",
   outputDir: "test-results",
   fullyParallel: true,
   reporter: [["list"], ["html", { open: "never" }]],
-  webServer: { command: "pnpm preview:fixture", port: 1420, reuseExistingServer: !process.env.CI },
+  webServer: { command: `pnpm exec vite preview --mode fixture --port ${port} --strictPort`, port, reuseExistingServer: !process.env.CI },
   use: {
-    baseURL: "http://localhost:1420",
+    baseURL: `http://localhost:${port}`,
     viewport: { width, height },
     deviceScaleFactor: 1,
     locale: "en-US",

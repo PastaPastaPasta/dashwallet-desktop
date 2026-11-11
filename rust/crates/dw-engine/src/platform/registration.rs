@@ -373,10 +373,10 @@ impl DashPay {
             .rt
             .spawn(async move {
                 // Before the session's gate, as `run_on_pool` takes it.
-                let _admitted = match signing {
-                    true => Some(session.platform.close_preflight.read().await),
-                    false => None,
-                };
+                let _admitted = session
+                    .signing_preflight(signing)
+                    .await
+                    .map_err(PlatformError::from)?;
                 let _op = session.enter().await.map_err(PlatformError::from)?;
                 let (manager, lib) = PwLib::open(&session, wallet_id).await?;
                 body(Arc::clone(&session), manager, Arc::new(lib)).await

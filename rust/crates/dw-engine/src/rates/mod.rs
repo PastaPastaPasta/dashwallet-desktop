@@ -89,8 +89,8 @@ impl Rates {
     }
 
     /// Stores the settings (`rates.json`) and applies them: turning prices
-    /// off stops every request at once; a request already out is let
-    /// finish, and what it brings is dropped.
+    /// off stops every request at once; a request already out is aborted,
+    /// and nothing it would have brought is kept.
     pub fn set_settings(&self, settings: RatesSettings) -> Result<RatesView, RatesError> {
         self.hub.set_settings(settings)
     }

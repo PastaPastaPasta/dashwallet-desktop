@@ -1241,3 +1241,37 @@ fn a_close_returns_once_the_wallet_database_is_released() {
     open().unwrap();
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+/// Row 74: an in-app close (a network switch) locks the vault. A session
+/// reference held past the close (a command still finishing) reads locked,
+/// and a grant issued before the close is refused.
+#[test]
+fn a_close_locks_the_vault_of_a_retained_session() {
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s) = session_at(dir.path(), vec!["http://127.0.0.1:1".into()], true);
+    assert_eq!(s.vault().status().state, LockState::Unlocked);
+    let grant = s
+        .vault()
+        .authorize(
+            dw_vault::GrantPurpose::ChangeCredential,
+            None,
+            dw_vault::Credential::Passphrase(PASSPHRASE),
+        )
+        .unwrap();
+    s.vault()
+        .check_grant(&grant.id, dw_vault::GrantKind::ChangeCredential, None)
+        .unwrap();
+
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    assert_eq!(s.vault().status().state, LockState::Locked);
+    assert!(
+        s.vault()
+            .check_grant(&grant.id, dw_vault::GrantKind::ChangeCredential, None)
+            .is_err()
+    );
+    engine.block_on(engine.shutdown()).unwrap();
+}

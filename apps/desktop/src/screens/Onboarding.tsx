@@ -220,17 +220,18 @@ function Done({ model, network, onDone }: { model: OnboardingModel; network: Net
 }
 
 function Welcome({ model, onCancel }: { model: OnboardingModel; onCancel: (() => void) | null }) {
-  // A wallet is made on the network this window runs on: with another one chosen, it waits for
-  // the restart that opens it. While a choice is being saved the view still shows the previous
-  // one, so it waits for the saved view too.
+  // A wallet is made on the network this window runs on. Choosing the other one moves the window
+  // there (the page boots again), so until then neither action may go on. "Add a wallet" adds to
+  // this network and has no picker: switching networks is Settings' (row 74).
   const picker = useNetworkPicker();
-  const wait = picker.restart || picker.loading || picker.saving;
+  const showPicker = onCancel === null && (picker.available || picker.loading);
+  const wait = showPicker && (picker.loading || picker.switching !== null);
   return (
     <>
       <Title>{onCancel ? "Add a wallet" : "Welcome to Dash Wallet"}</Title>
       <p className="onboarding-text">Create a new wallet, or restore one with its recovery phrase.</p>
       {/* Without the command (a build before it) the first screen shows no picker. */}
-      {(picker.available || picker.loading) && <NetworkPicker state={picker} testId="onboarding-network" />}
+      {showPicker && <NetworkPicker state={picker} testId="onboarding-network" />}
       <div className="onboarding-actions">
         <DashButton variant="filledBlue" size="large" fill disabled={model.busy || wait} data-testid="onboarding-create" onClick={() => void model.startCreate()}>
           Create a new wallet

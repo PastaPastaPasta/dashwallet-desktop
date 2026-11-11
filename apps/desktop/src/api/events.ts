@@ -95,7 +95,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
           return [keys.dashpayAll];
       }
     case "coinJoin":
-      return [keys.coinjoinStatus(event.walletId)];
+      return [keys.coinjoinStatus(event.walletId), keys.coinsAll(event.walletId)];
     // The store, the sync state or the list's voting keys changed (≤ 1 Hz, mg-engine §5). A new
     // block sends none, so the tip-derived clock and statuses go stale until the next (MG-02 D96).
     case "governance":
@@ -128,8 +128,17 @@ const rereadsHistory = (domain: PlatformChangeName["domain"]) => domain === "con
 export const RECONCILE_COALESCE_MS = 100;
 export const RECONCILE_MAX_WAIT_MS = 500;
 
-/** Subscribes the query client to the backend's events; returns the unsubscribe function. */
-export async function bridgeEvents(backend: Backend, client: QueryClient): Promise<() => void> {
+/** An event of another network than the window's (`network`, its directory name): from a session
+ * the window left, as a command that ran on it finishes after a network switch. `eventsOverflowed`
+ * and `rates` belong to no network, and a notice without one to none in particular. */
+export function ofOtherNetwork(event: AppEvent, network: string): boolean {
+  const tagged = "network" in event ? event.network : null;
+  return tagged != null && tagged !== network;
+}
+
+/** Subscribes the query client to the backend's events of the window's `network` (its directory
+ * name); returns the unsubscribe function. */
+export async function bridgeEvents(backend: Backend, client: QueryClient, network: string): Promise<() => void> {
   let reconcile: ReturnType<typeof setTimeout> | undefined;
   let reconcileBy = 0;
   const stopReconcile = () => {
@@ -137,6 +146,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient): Promi
     reconcile = undefined;
   };
   const unsubscribe = await backend.onEvent((event) => {
+    if (ofOtherNetwork(event, network)) return;
     if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
     // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
     // below. Not the query's, which only follows once its refetch is back.

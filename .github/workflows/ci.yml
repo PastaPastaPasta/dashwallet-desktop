@@ -89,11 +89,19 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo clippy -p dw-app --all-targets --features selftest --locked -- -D warnings
       - run: cargo clippy -p dwcli --all-targets --features mix-shield-test --locked -- -D warnings
-      # Pinned like tauri-driver below; rust-cache keeps the installed binary between runs.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/cargo-deny
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: cargo-deny-${{ runner.os }}-${{ runner.arch }}-0.20.2
       - name: cargo-deny
         run: cargo install cargo-deny --version 0.20.2 --locked
       - name: RustSec advisories (Cargo.lock; ignores in rust/deny.toml)
@@ -125,6 +133,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --workspace --no-run --locked
       - run: cargo test --workspace --locked --no-fail-fast
       # Without the feature, dw-app's tests prove the self-test's options, commands and grant
@@ -273,7 +283,15 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
-          key: tauri-e2e
+          shared-key: ci-${{ runner.os }}
+          save-if: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/tauri-driver
+            ~/.cargo/.crates.toml
+            ~/.cargo/.crates2.json
+          key: tauri-driver-${{ runner.os }}-${{ runner.arch }}-2.1.0
       - name: tauri-driver
         run: cargo install tauri-driver --version 2.1.0 --locked
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
@@ -330,9 +348,12 @@ jobs:
         working-directory: rust
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        env:
+          CFLAGS_x86_64_pc_windows_msvc: ${{ runner.os == 'Windows' && env.CFLAGS_x86_64_pc_windows_msvc || '' }}
         with:
           workspaces: rust -> target
-          key: deep-links
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           package_json_file: apps/desktop/package.json
@@ -398,13 +419,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            .build/repositories
-            ~/.cache/org.swift.swiftpm
-          key: swiftpm-linux-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-linux-
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - name: Rust core bundle (and check the committed bindings)
         run: scripts/build-core.sh --check-bindings
       # By product: a plain `swift build --build-tests` also compiles swift-winui's
@@ -451,13 +467,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            .build/repositories
-            ~/Library/Caches/org.swift.swiftpm
-          key: swiftpm-macos-${{ hashFiles('Package.resolved') }}
-          restore-keys: swiftpm-macos-
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cargo test --workspace
         working-directory: rust
         run: cargo test --workspace --locked --no-fail-fast
@@ -537,6 +548,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: cargo build --workspace
         working-directory: rust
         run: cargo build --workspace --locked
@@ -580,6 +593,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
+          shared-key: ci-${{ runner.os }}
+          save-if: false
       - uses: compnerd/gha-setup-swift@bbae8ce86bac5a3449f3992b3d88bc4ca25f2057 # v0.5.0
         with:
           swift-version: swift-6.3.3-release

@@ -110,6 +110,7 @@ import type { NameVoteCast } from "./NameVoteCast";
 import type { NetworkChoiceView } from "./NetworkChoiceView";
 import type { NetworkData } from "./NetworkData";
 import type { NetworkInfo } from "./NetworkInfo";
+import type { NetworkSwitch } from "./NetworkSwitch";
 import type { NodeSummary } from "./NodeSummary";
 import type { NodeWarning } from "./NodeWarning";
 import type { OpenedFile } from "./OpenedFile";
@@ -214,16 +215,19 @@ export const SHELL_EVENT = "shell://event";
 export const MAX_TXIDS = 256;
 
 /**
- * How the app was launched: the self-test, the forced theme and the
- * network `openNetwork` opens by default.
+ * How the app was launched: the self-test, the forced theme, and the
+ * network `openNetwork` opens by default: the window's, which
+ * `switchNetwork` changes.
  */
 export function launchInfo(): Promise<LaunchInfo> {
   return invoke<LaunchInfo>("launch_info");
 }
 
 /**
- * The last 64 engine notices, oldest first, kept apart from the event
- * queue: after `eventsOverflowed`, the notices it may have dropped.
+ * Of the last 64 engine notices, oldest first, those of the window's
+ * network and those of none, kept apart from the event queue: after
+ * `eventsOverflowed`, the notices it may have dropped. A network the
+ * window left (`switchNetwork`) keeps its notices out, as its events.
  */
 export function recentNotices(): Promise<Array<RecentNotice>> {
   return invoke<Array<RecentNotice>>("recent_notices");
@@ -264,16 +268,43 @@ export function probeUnlisted(): Promise<string> {
 }
 
 /**
- * Makes `network` (a directory name; `null`: the launch network) the
- * active one, opening it if needed and closing the network that was
- * active, with its draft handles. When it is already active, the open
- * session is kept and `settings` are ignored. Opening the launch
- * network starts SPV on mainnet and testnet unless the app was launched
- * with `--no-sync`, and on another network with `--sync`; a failed
- * start leaves the network open, readable offline.
+ * Makes `network` (a directory name; `null`: the window's network,
+ * the launch network until `switchNetwork` opens another) the active
+ * one, opening it if needed and closing the network that was active,
+ * with its draft handles. When it is already active, the open session
+ * is kept and `settings` are ignored. Opening the window's network
+ * starts SPV on mainnet and testnet unless the app was launched with
+ * `--no-sync`, and on another network with `--sync`; a failed start
+ * leaves the network open, readable offline.
  */
 export function openNetwork(network: string | null, settings: SessionSettings | null): Promise<OpenedNetwork> {
   return invoke<OpenedNetwork>("open_network", { network, settings });
+}
+
+/**
+ * Moves the window to `network` (onboarding, Settings), saving the
+ * choice for the next start once it is open. A pinned window
+ * ([`NetworkChoiceView::forced_by_flag`]) only saves it. Otherwise,
+ * unless it is already the window's, the network is closed as
+ * [`Engine::close_network_unless_busy`] closes it: its operations
+ * paused, it is refused with `app.network_busy` while a Platform flow
+ * holds a lease, a wallet mixes or a broadcast has not returned,
+ * checked before and after the operations already running finish
+ * (`draining` when they do not within 2 s); then the engine's own
+ * refusals (`wallet` while a wallet is still opening,
+ * `shielded_spend_unresolved`, both with
+ * [`ErrorData::NetworkCloseRefused`]). A refusal changes nothing:
+ * the session, its drafts, the window and the choice stay, and the
+ * paused operations run. Once closed, its vault is locked and its
+ * draft handles dropped, and the chosen one opens with SPV started as
+ * at launch. A failed open reopens the network it left and is
+ * `app.network_switch_failed`, the choice unsaved. The renderer boots
+ * again on success: every read of the old network is gone.
+ *
+ * [`Engine::close_network_unless_busy`]: dw_engine::Engine::close_network_unless_busy
+ */
+export function switchNetwork(network: ChosenNetwork): Promise<NetworkSwitch> {
+  return invoke<NetworkSwitch>("switch_network", { network });
 }
 
 /**
@@ -292,19 +323,11 @@ export function activeNetwork(): Promise<NetworkInfo | null> {
 }
 
 /**
- * The saved network choice (mainnet or testnet) and whether the app
- * must restart to open it.
+ * The saved network choice (mainnet or testnet), the window's network
+ * and whether the window is pinned to it.
  */
 export function getNetworkChoice(): Promise<NetworkChoiceView> {
   return invoke<NetworkChoiceView>("get_network_choice");
-}
-
-/**
- * Saves the network the app opens from the next start (onboarding,
- * Settings); the running session is left as it is.
- */
-export function setNetworkChoice(network: ChosenNetwork): Promise<NetworkChoiceView> {
-  return invoke<NetworkChoiceView>("set_network_choice", { network });
 }
 
 /**
@@ -690,8 +713,8 @@ export function addresses(walletId: string, filter: AddressFilter): Promise<Arra
  * Stores a payment request on a freshly issued address. An amount of 0
  * means any amount.
  */
-export function createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null): Promise<ReceiveRequest> {
-  return invoke<ReceiveRequest>("create_receive_request", { walletId, amount, label, message });
+export function createReceiveRequest(walletId: string, amount: number | null, label: string | null, message: string | null, includeUsername: boolean | null): Promise<ReceiveRequest> {
+  return invoke<ReceiveRequest>("create_receive_request", { walletId, amount, label, message, includeUsername });
 }
 
 /**
@@ -711,8 +734,7 @@ export function receiveUsername(walletId: string): Promise<string | null> {
 
 /**
  * "Include my username in payment requests" for the wallet (DP3-03b);
- * on by default. Off, `receiveUsername` is `null` and requests carry
- * no username.
+ * off by default. Requests can override this default individually.
  */
 export function usernameInRequests(walletId: string): Promise<boolean> {
   return invoke<boolean>("username_in_requests", { walletId });
@@ -2736,10 +2758,10 @@ export type CommandArgs = {
   set_ui_settings: { settings: UiSettings };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
+  switch_network: { network: ChosenNetwork };
   close_network: {  };
   active_network: {  };
   get_network_choice: {  };
-  set_network_choice: { network: ChosenNetwork };
   existing_networks: {  };
   lock_status: {  };
   unlock: { passphrase: string };
@@ -2785,7 +2807,7 @@ export type CommandArgs = {
   current_receive_address: { walletId: string };
   next_receive_address: { walletId: string; label: string | null };
   addresses: { walletId: string; filter: AddressFilter };
-  create_receive_request: { walletId: string; amount: number | null; label: string | null; message: string | null };
+  create_receive_request: { walletId: string; amount: number | null; label: string | null; message: string | null; includeUsername: boolean | null };
   receive_requests: { walletId: string };
   receive_username: { walletId: string };
   username_in_requests: { walletId: string };
@@ -3049,10 +3071,10 @@ export type CommandResults = {
   set_ui_settings: UiSettings;
   probe_unlisted: string;
   open_network: OpenedNetwork;
+  switch_network: NetworkSwitch;
   close_network: boolean;
   active_network: NetworkInfo | null;
   get_network_choice: NetworkChoiceView;
-  set_network_choice: NetworkChoiceView;
   existing_networks: Array<NetworkData>;
   lock_status: LockStatus;
   unlock: LockStatus;
@@ -3364,10 +3386,10 @@ export const COMMANDS: Record<CommandName, string> = {
   set_ui_settings: "app",
   probe_unlisted: "app",
   open_network: "network",
+  switch_network: "network",
   close_network: "network",
   active_network: "network",
   get_network_choice: "network",
-  set_network_choice: "network",
   existing_networks: "network",
   lock_status: "vault",
   unlock: "vault",
@@ -3687,6 +3709,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.no_qr_code",
   "app.screen_capture_unavailable",
   "app.screen_capture",
+  "app.network_busy",
+  "app.network_switch_failed",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

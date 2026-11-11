@@ -656,7 +656,14 @@ export const HANDLERS: Handlers = {
   // App and network
   launch_info: (_, { world }) => world.launch,
   recent_notices: (_, { world }) => world.notices,
-  open_network: (_, { world }) => ({ network: world.launch.network, lock: world.lock }),
+  open_network: (_, { world }) => {
+    // Row 74: the network a failed switch left did not reopen; the splash's Retry opens it.
+    if (world.networkSwitch?.reopenFails) {
+      world.networkSwitch.reopenFails = false;
+      throw { code: "storage_in_use", message: `fixture: reopening ${world.launch.network.dirName} failed`, data: null } satisfies AppError;
+    }
+    return { network: world.launch.network, lock: world.lock };
+  },
   active_network: (_, { world }) => world.launch.network,
 
   // Vault, leases and the lock report (E0-04, E0-13 D3)

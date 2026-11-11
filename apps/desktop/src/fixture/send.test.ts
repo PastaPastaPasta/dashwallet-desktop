@@ -43,9 +43,10 @@ async function prepared(r: Recipient) {
 describe("fixture receive username (DP3-03)", () => {
   it("is the main name, and a stored request follows it when read", async () => {
     expect(await cmd.receiveUsername(W)).toBeNull();
-    const plain = await cmd.createReceiveRequest(W, null, "Rent", null);
+    const plain = await cmd.createReceiveRequest(W, null, "Rent", null, null);
     expect(plain).toMatchObject({ username: null, uri: `dash:${plain.address}?label=Rent` });
     fixture.world.dashpay = registered();
+    await cmd.setUsernameInRequests(W, true);
     expect(await cmd.receiveUsername(W)).toBe("alice");
     const [stored] = await cmd.receiveRequests(W);
     expect(stored).toMatchObject({ id: plain.id, username: "alice", uri: `dash:${plain.address}?label=Rent&user=alice` });
@@ -56,13 +57,14 @@ describe("fixture receive username (DP3-03)", () => {
 
   it("leaves the username out while the wallet's opt-out is off, and stored requests follow (DP3-03b)", async () => {
     fixture.world.dashpay = registered();
+    await cmd.setUsernameInRequests(W, true);
     expect(await cmd.usernameInRequests(W)).toBe(true);
-    const stored = await cmd.createReceiveRequest(W, null, "Rent & co", null);
+    const stored = await cmd.createReceiveRequest(W, null, "Rent & co", null, null);
     expect(stored.uri).toBe(`dash:${stored.address}?label=Rent%20%26%20co&user=alice`);
     await cmd.setUsernameInRequests(W, false);
     expect(await cmd.usernameInRequests(W)).toBe(false);
     expect(await cmd.receiveUsername(W)).toBeNull();
-    const fresh = await cmd.createReceiveRequest(W, null, null, null);
+    const fresh = await cmd.createReceiveRequest(W, null, null, null, null);
     expect(fresh).toMatchObject({ username: null, uri: `dash:${fresh.address}` });
     expect((await cmd.receiveRequests(W)).map((r) => [r.username, r.uri])).toEqual([
       [null, `dash:${fresh.address}`],
@@ -73,8 +75,21 @@ describe("fixture receive username (DP3-03)", () => {
     await expect(cmd.setUsernameInRequests("ff".repeat(32), false)).rejects.toMatchObject({ code: "wallet_not_found" });
   });
 
+  it("defaults off and persists a per-request opt-in without changing the wallet setting", async () => {
+    fixture.world.dashpay = registered();
+    expect(await cmd.usernameInRequests(W)).toBe(false);
+    const plain = await cmd.createReceiveRequest(W, null, null, null, false);
+    const named = await cmd.createReceiveRequest(W, null, "Rent", null, true);
+    expect(plain.username).toBeNull();
+    expect(named.username).toBe("alice");
+    expect(await cmd.usernameInRequests(W)).toBe(false);
+    expect(await cmd.receiveRequests(W)).toEqual([named, plain]);
+    await cmd.setUsernameInRequests(W, true);
+    expect((await cmd.receiveRequests(W))[1].username).toBeNull();
+  });
+
   it("stores no request whose amount is out of range", async () => {
-    await expect(cmd.createReceiveRequest(W, -1, "Rent", null)).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(cmd.createReceiveRequest(W, -1, "Rent", null, null)).rejects.toMatchObject({ code: "invalid_argument" });
     expect(await cmd.receiveRequests(W)).toEqual([]);
   });
 });
@@ -244,7 +259,7 @@ describe("fixture send engine", () => {
     expect(await cmd.currentReceiveAddress(W)).toEqual(current);
     const next = await cmd.nextReceiveAddress(W, null);
     expect(next.address).not.toBe(current.address);
-    const r = await cmd.createReceiveRequest(W, 25_000_000, "Rent", null);
+    const r = await cmd.createReceiveRequest(W, 25_000_000, "Rent", null, null);
     expect(r.uri).toBe(`dash:${r.address}?amount=0.25&label=Rent`);
     expect(await cmd.receiveRequests(W)).toEqual([r]);
     await cmd.deleteReceiveRequest(W, r.id);

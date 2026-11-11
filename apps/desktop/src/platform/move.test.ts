@@ -199,3 +199,9 @@ describe("invalidArgumentText", () => {
     expect(invalidArgumentText({ message: " ", data: null })).toBe("That was not accepted.");
   });
 });
+
+// The grant includes a fee reserve; Amount names only the planned withdrawal.
+it("separates the planned withdrawal from its grant cap", async () => {
+  const { plannedWithdrawalCredits } = await import("./move");
+  expect(plannedWithdrawalCredits({ credits: "40000000000", feeCredits: "2000000" })).toBe("39998000000");
+});

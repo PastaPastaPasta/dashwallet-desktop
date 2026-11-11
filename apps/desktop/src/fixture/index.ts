@@ -14,7 +14,7 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
-import { landSend, PENDING_HANDLERS } from "./pending";
+import { landSend, PENDING_HANDLERS, switchedWorld } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
 import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type ScenarioName, type World } from "./scenarios";
@@ -53,8 +53,8 @@ export interface FixtureHandle {
   shellCommand(command: ShellCommand): void;
   /** Makes `command` reject with a sample of `cls` from now on (`null` clears it). */
   fail(command: CommandName, cls: ErrorClass | null): void;
-  /** Holds the next call of `command`: it answers from the world as it is when called, but only
-   * once the returned function is called (a reply that arrives late). */
+  /** Holds the next call of `command`: it answers from the world as it is when called, a result
+   * or an error, but only once the returned function is called (a reply that arrives late). */
   hold(command: CommandName): () => void;
   /** Releases the call a `hold=` URL option held at the start (no-op when none is out). */
   release(command: CommandName): void;
@@ -96,7 +96,7 @@ function relaunchedWorld(): World | null {
 }
 
 export function installFixture(opts: FixtureOptions): FixtureHandle {
-  const world = relaunchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
+  const world = relaunchedWorld() ?? switchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
   const failures = new Map(Object.entries(opts.failures ?? {}) as [CommandName, ErrorClass][]);
   const calls: string[] = [];
   const held = new Map<string, Promise<void>>();
@@ -119,13 +119,19 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       if (cls) throw sampleError(cls);
       const handler = (HANDLERS[cmd as CommandName] ?? PENDING_HANDLERS[cmd]) as ((args: unknown, ctx: Ctx) => unknown) | undefined;
       if (!handler) throw notImplemented(cmd);
-      const result = handler(payload ?? {}, ctx);
+      let answer: { result: unknown } | { error: unknown };
+      try {
+        answer = { result: handler(payload ?? {}, ctx) };
+      } catch (error) {
+        answer = { error };
+      }
       const release = held.get(cmd);
       if (release) {
         held.delete(cmd);
         await release;
       }
-      return result;
+      if ("error" in answer) throw answer.error;
+      return answer.result;
     },
     { shouldMockEvents: true },
   );

@@ -127,14 +127,6 @@ export function GeneralTab() {
         <NotYetRow testId="settings-start-on-login" title="Start Dash Wallet on system login" why="it comes with the installers (W-02, PK)." />
         <NotYetRow testId="settings-proxy" title="Connect through a SOCKS5 proxy or Tor" why="the engine has no proxy setting yet." />
       </SettingsCard>
-      <SettingsCard title="Not used by this wallet" testId="settings-spv-footnote">
-        <Hint>Dash Wallet does not keep the whole blockchain, so these Dash Core options do not apply:</Hint>
-        <ul className="settings-list">
-          {OptionsText.spvFootnote.map((o) => (
-            <li key={o}>{o}</li>
-          ))}
-        </ul>
-      </SettingsCard>
       <SettingsCard title="Reset" testId="settings-reset-card">
         <Done text={resetDone ? OptionsText.resetDone : null} testId="settings-reset-done" />
         <DashButton variant="plainRed" data-testid="settings-reset" onClick={() => setResetting(true)}>
@@ -248,8 +240,8 @@ function DustCard() {
   );
 }
 
-/** The window's network and data directory, and the network the next start opens (the 0.1
- * release plan; D6's switch without a restart is U-04b). */
+/** The window's network and data directory, and the switch to the other one (the 0.1 release
+ * plan; D6's switch without a restart, row 74). */
 function NetworkCard() {
   const { network } = useLaunch();
   const node = useNodeInfo();

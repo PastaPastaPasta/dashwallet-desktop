@@ -1,11 +1,14 @@
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Mutex;
 
 use crate::fsutil::create_private_dir;
+use crate::gate::PauseRefused;
 use crate::{DashNetwork, EngineError, EngineEvent, EventSink, NetworkSession, SessionOptions};
 
 /// Stack size of the engine runtime's threads: the async workers and the
@@ -43,6 +46,25 @@ fn install_poison_hook() {
 const CLOSE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 #[cfg(test)]
 pub(crate) const CLOSE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn close_load_wait(_session: &NetworkSession) -> Duration {
+    #[cfg(any(test, all(debug_assertions, feature = "test-support")))]
+    if let Some(wait) = *_session.close_load_wait.lock().unwrap() {
+        return wait;
+    }
+    CLOSE_LOAD_WAIT
+}
+
+/// Why [`Engine::close_network_unless_busy`] left the session open.
+#[derive(Debug)]
+pub enum CloseRefused<B> {
+    /// The close's own refusals, as [`Engine::close_network`]'s.
+    Engine(EngineError),
+    /// What the check found running.
+    Busy(B),
+    /// The session's operations did not finish within the drain.
+    Draining,
+}
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
@@ -195,46 +217,109 @@ impl Engine {
     /// could not reopen in this process. [`Self::shutdown`] (app quit) is
     /// never refused.
     pub async fn close_network(&self, network: DashNetwork) -> Result<bool, EngineError> {
+        let never = None::<(Duration, fn(&NetworkSession) -> Option<Infallible>)>;
+        match self.close(network, never).await {
+            Ok(closed) => Ok(closed),
+            Err(CloseRefused::Engine(e)) => Err(e),
+            Err(CloseRefused::Busy(never)) => match never {},
+            Err(CloseRefused::Draining) => unreachable!("no drain without a pause"),
+        }
+    }
+
+    /// [`Self::close_network`], refused as well when it would cut what runs
+    /// on the session. After the wallet-load wait, the session's operations
+    /// are paused: new ones wait. `busy` is asked at once, and again once
+    /// every admitted operation has finished, waiting up to `drain` for
+    /// them; a session `busy` names, or one whose operations did not finish
+    /// in time, refuses the close. Then the close's own refusals. On every
+    /// refusal the session goes on unchanged and the operations that
+    /// waited run; once the close commits they are refused with
+    /// `NetworkNotOpen`. So an operation admitted before the close, such as
+    /// a flow taking a lease or mixing starting, is either seen by `busy`
+    /// or finished before the session is closed: none is cut.
+    pub async fn close_network_unless_busy<B: Send + 'static>(
+        &self,
+        network: DashNetwork,
+        drain: Duration,
+        busy: impl Fn(&NetworkSession) -> Option<B> + Send + Sync + 'static,
+    ) -> Result<bool, CloseRefused<B>> {
+        self.close(network, Some((drain, busy))).await
+    }
+
+    async fn close<B: Send + 'static>(
+        &self,
+        network: DashNetwork,
+        pause: Option<(
+            Duration,
+            impl Fn(&NetworkSession) -> Option<B> + Send + Sync + 'static,
+        )>,
+    ) -> Result<bool, CloseRefused<B>> {
         let shared = Arc::clone(&self.shared);
-        self.handle
-            .spawn(async move {
-                let Some(session) = shared.sessions.lock().await.get(&network).cloned() else {
-                    return Ok(false);
-                };
-                // From the check to the commit no wallet loads and no
-                // signing shielded call starts (E1 r2 R2-3). A load in
-                // flight is waited for, briefly, without the sessions lock,
-                // so opens, lookups and quit go on meanwhile; a call running
-                // refuses the close.
-                let loads = session.platform.wallet_loads.write();
-                let Ok(_loads) = tokio::time::timeout(CLOSE_LOAD_WAIT, loads).await else {
-                    return Err(EngineError::Wallet(
-                        "a wallet is still opening; close the network once it is open".into(),
-                    ));
-                };
-                let mut sessions = shared.sessions.lock().await;
-                // Closed (quit) or reopened while it waited: nothing of this
-                // session is left to close.
-                if !sessions
-                    .get(&network)
-                    .is_some_and(|open| Arc::ptr_eq(open, &session))
-                {
-                    return Ok(false);
+        let closing = self.handle.spawn(async move {
+            let Some(session) = shared.sessions.lock().await.get(&network).cloned() else {
+                return Ok(false);
+            };
+            // Until a switch's close is decided, a shielded store's first
+            // open waits for it (`shielded_pool::coordinator`) rather than
+            // failing; a refusal releases the load fence before it resumes
+            // the gate.
+            let mut hold = session.gate.hold(pause.is_some());
+            // From the check to the commit no wallet loads and no
+            // signing shielded call starts (E1 r2 R2-3). A load in
+            // flight is waited for, briefly, without the sessions lock,
+            // so opens, lookups and quit go on meanwhile; a call running
+            // refuses the close.
+            let loads = session.platform.wallet_loads.write();
+            let Ok(loads) = tokio::time::timeout(close_load_wait(&session), loads).await else {
+                return Err(CloseRefused::Engine(EngineError::Wallet(
+                    "a wallet is still opening; close the network once it is open".into(),
+                )));
+            };
+            hold.fence(loads);
+            // After the load wait: a load takes `wallet_loads` before it
+            // asks the gate, so none waits on the pause here.
+            if let Some((drain, busy)) = &pause {
+                // A signing shielded call holds this to read, and an
+                // operation guard, for its whole run: named, not drained.
+                let shielded = || session.platform.close_preflight.try_write().is_err();
+                let unresolved = || CloseRefused::Engine(EngineError::ShieldedSpendUnresolved);
+                if shielded() {
+                    return Err(unresolved());
                 }
-                let Ok(_preflight) = session.platform.close_preflight.try_write() else {
-                    return Err(EngineError::ShieldedSpendUnresolved);
-                };
-                if session.holds_shielded_spends().await {
-                    return Err(EngineError::ShieldedSpendUnresolved);
+                hold.pause();
+                match hold.check(*drain, || busy(&session)).await {
+                    Ok(()) => {}
+                    Err(PauseRefused::Busy(b)) => return Err(CloseRefused::Busy(b)),
+                    Err(PauseRefused::Draining) if shielded() => return Err(unresolved()),
+                    Err(PauseRefused::Draining) => return Err(CloseRefused::Draining),
                 }
-                sessions.remove(&network);
-                if network == DashNetwork::Mainnet {
-                    shared.rates.mainnet_closed();
-                }
-                session.close().await;
-                Ok(true)
-            })
-            .await?
+            }
+            #[cfg(test)]
+            crate::coins::pause_at(&session.gate.hold_before_sessions).await;
+            let mut sessions = shared.sessions.lock().await;
+            // Closed (quit) or reopened while it waited: nothing of this
+            // session is left to close.
+            if !sessions
+                .get(&network)
+                .is_some_and(|open| Arc::ptr_eq(open, &session))
+            {
+                return Ok(false);
+            }
+            let Ok(_preflight) = session.platform.close_preflight.try_write() else {
+                return Err(CloseRefused::Engine(EngineError::ShieldedSpendUnresolved));
+            };
+            if session.holds_shielded_spends().await {
+                return Err(CloseRefused::Engine(EngineError::ShieldedSpendUnresolved));
+            }
+            let _loads = hold.commit();
+            sessions.remove(&network);
+            if network == DashNetwork::Mainnet {
+                shared.rates.mainnet_closed();
+            }
+            session.close().await;
+            Ok(true)
+        });
+        closing.await.map_err(|e| CloseRefused::Engine(e.into()))?
     }
 
     /// Closes every open session.

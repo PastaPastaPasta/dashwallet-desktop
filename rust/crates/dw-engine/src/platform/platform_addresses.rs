@@ -501,6 +501,14 @@ impl DashPay {
         operation: String,
         grant: String,
     ) -> Result<PlatformSendOutcome, CreditsError> {
+        #[cfg(all(debug_assertions, feature = "test-support"))]
+        {
+            let held = self.session.hold_platform_send.lock().unwrap().take();
+            if let Some((reached, release)) = held {
+                let _ = reached.send(());
+                let _ = release.await;
+            }
+        }
         let wallet_id = self.wallet_id;
         self.on_wallet(move |session, manager, wallet| async move {
             let net = platform_moves::SdkMoves {

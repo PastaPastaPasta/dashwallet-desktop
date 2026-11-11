@@ -15,8 +15,8 @@ mod update;
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use dashcore::OutPoint;
 use dashcore::hashes::Hash;
+use dashcore::{OutPoint, Txid};
 use dw_appdb::{Holder, MasternodeOpRow};
 use dw_protx::params::collateral_amount;
 use dw_vault::VaultSigner;
@@ -769,9 +769,11 @@ impl Masternodes {
         .await
     }
 
-    /// Unlocks the collateral coin of one of the wallet's masternodes, and
-    /// remembers the release so the follower leaves it unlocked (D9,
-    /// MG-00 D38). Sends nothing.
+    /// Unlocks the collateral coin of one of the wallet's masternodes, or of
+    /// a ProRegTx the history keeps out of sight (a DashPay contact's
+    /// record) by its hash, and remembers the release so the follower
+    /// leaves it unlocked (D9, MG-00 D38). Sends nothing. A hash that is
+    /// neither is `NotFound`.
     pub async fn release_collateral(
         &self,
         wallet: WalletId,
@@ -1002,12 +1004,12 @@ impl NetworkSession {
         })
         .await?
         .unwrap_or_default();
-        let collateral = owned
-            .iter()
-            .find(|o| o.record.pro_tx_hash == hash)
-            .ok_or(MasternodesError::NotFound)?
-            .collateral
-            .ok_or(MasternodesError::CollateralUnavailable)?;
+        let collateral = match owned.iter().find(|o| o.record.pro_tx_hash == hash) {
+            Some(o) => (o.collateral).ok_or(MasternodesError::CollateralUnavailable)?,
+            None => (self.hub.history)
+                .hidden_registration_collateral(&wallet, &Txid::from_byte_array(hash))
+                .ok_or(MasternodesError::NotFound)?,
+        };
         let _fence = self.coin_fence(wallet).await?;
         let (w, key) = (
             wallet.to_string(),

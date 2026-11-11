@@ -126,3 +126,64 @@ pub async fn create_invitation(
     voucher.non_secure_erase();
     Ok(zeroize::Zeroizing::new(uri?))
 }
+
+/// What [`hold_close_fence`] holds.
+pub enum CloseFence {
+    /// The load fence, as a wallet load in flight holds it.
+    WalletLoad,
+    /// The close preflight and an operation guard, as a signing shielded
+    /// call holds them.
+    ShieldedSpend,
+    /// An operation guard, as any operation in flight holds it.
+    Operation,
+}
+
+/// Holds `fence` of `session` until the returned sender is dropped, so an
+/// in-app close of it is refused: `wallet` once it waited `load_wait`,
+/// `shielded_spend_unresolved`, or (a switch's close) not drained. Call it
+/// off the engine's runtime.
+pub fn hold_close_fence(
+    session: &std::sync::Arc<NetworkSession>,
+    fence: CloseFence,
+    load_wait: std::time::Duration,
+) -> tokio::sync::oneshot::Sender<()> {
+    *session.close_load_wait.lock().unwrap() = Some(load_wait);
+    let (held_tx, held) = std::sync::mpsc::channel();
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let s = std::sync::Arc::clone(session);
+    session.rt.spawn(async move {
+        let _fence = match fence {
+            CloseFence::WalletLoad => Some(s.platform.wallet_loads.read().await),
+            CloseFence::ShieldedSpend => Some(s.platform.close_preflight.read().await),
+            CloseFence::Operation => None,
+        };
+        let _op = match fence {
+            CloseFence::WalletLoad => None,
+            _ => Some(s.enter().await.expect("the session is open")),
+        };
+        let _ = held_tx.send(());
+        let _ = released.await;
+    });
+    held.recv().expect("the fence is held");
+    release
+}
+
+/// Marks `wallet` mixing (or not) without starting its loop.
+pub fn set_mixing(session: &NetworkSession, wallet: crate::WalletId, mixing: bool) {
+    session.coinjoin.set_mixing_for_test(wallet, mixing);
+}
+
+/// Holds the next Platform send of `session` (`DashPay::platform_send`)
+/// before it starts, until the returned sender is dropped. The receiver
+/// hears once it is held.
+pub fn hold_platform_send(
+    session: &NetworkSession,
+) -> (
+    std::sync::mpsc::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    let (reached_tx, reached) = std::sync::mpsc::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    *session.hold_platform_send.lock().unwrap() = Some((reached_tx, released));
+    (reached, release)
+}

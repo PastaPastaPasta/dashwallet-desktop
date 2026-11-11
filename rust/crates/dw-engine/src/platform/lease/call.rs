@@ -503,6 +503,10 @@ pub struct CallPermit {
     unsent: AtomicBool,
     deadline: Instant,
     done: bool,
+    /// The coins its funding's fenced read found free
+    /// ([`crate::coins::CoinFence::checked_coins`]); its funding signer
+    /// signs no input outside them.
+    checked: Option<Arc<std::collections::HashSet<dashcore::OutPoint>>>,
 }
 
 /// A permit's J step: the call's id, its charge and its deadline.
@@ -586,6 +590,7 @@ impl Lease {
         fence: Option<crate::coins::CoinFence>,
     ) -> Result<CallPermit, LeaseError> {
         let mut fence = fence;
+        let checked = fence.as_ref().and_then(|f| f.checked_coins());
         let signatures = Arc::<SignatureCount>::default();
         let label = label.into();
         let purpose = quote.map_or(BudgetPurpose::Crypto, |q| q.purpose);
@@ -652,6 +657,7 @@ impl Lease {
         // here, it ends as a call that never started.
         let mut permit = self.permit(took, prior, Some(step));
         permit.signatures = signatures;
+        permit.checked = checked;
         #[cfg(test)]
         if table.inspect(|i| i.mutation) == Some(Mutation::CallBeforeMarker) {
             // The mutation: the call may start before its marker is durable.
@@ -784,6 +790,7 @@ impl Lease {
             step,
             deadline: took.deadline,
             done: false,
+            checked: None,
         }
     }
 }
@@ -890,11 +897,15 @@ impl CallPermit {
             step: step.id().to_owned(),
             done: tokio::sync::OnceCell::new(),
         });
-        Ok(CountingFundingSigner::new(
+        let signer = CountingFundingSigner::new(
             self.lease.call_funding_signer()?,
             self.signatures(),
             release,
-        ))
+        );
+        Ok(match &self.checked {
+            Some(free) => signer.with_checked_inputs(Arc::clone(free)),
+            None => signer,
+        })
     }
 
     /// Ends the call: `ok` when the library returned Ok. Returns the call's

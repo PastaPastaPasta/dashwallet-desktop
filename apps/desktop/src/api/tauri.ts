@@ -17,6 +17,33 @@ const IN_TAURI = typeof window !== "undefined" && "__TAURI_INTERNALS__" in windo
 /** True inside the Tauri webview (not under the fixture backend's mock IPC). */
 export const inTauri = () => IN_TAURI;
 
+/** The page's event subscriptions, each until its unlisten runs. Tauri keeps a listener's entry
+ * on its side across a page reload, so the page ends every one before it reloads
+ * (`releaseListeners`, a network switch). */
+const liveListeners = new Set<() => Promise<void>>();
+
+function tracked(registered: Promise<() => void>): Promise<() => void> {
+  return registered.then((unlisten) => {
+    let ended: Promise<void> | null = null;
+    // Tauri's unlisten is async (its `plugin:event|unlisten` call) though typed `() => void`.
+    const end = () => {
+      liveListeners.delete(end);
+      ended ??= Promise.resolve(unlisten());
+      return ended;
+    };
+    liveListeners.add(end);
+    return () => void end();
+  });
+}
+
+/** Ends every event subscription of the page, once Tauri has dropped each; the page then reloads. */
+export async function releaseListeners(): Promise<void> {
+  await Promise.allSettled([...liveListeners].map((end) => end()));
+}
+
+/** The page's live event subscriptions (tests). */
+export const liveListenerCount = () => liveListeners.size;
+
 /** The one `Backend`: dw-app's commands over IPC. In a fixture build outside Tauri the IPC is
  * the fixture backend's mock (src/fixture), so both modes run this same code. */
 export class IpcBackend implements Backend {
@@ -57,7 +84,7 @@ export class IpcBackend implements Backend {
   // Against a dw-app without the command (api/pending.ts): the optional reads answer `null` (orAbsent),
   // the calls that mean nothing without it fail with a message the screen shows (orUnavailable).
   networkChoice = () => orAbsent(cmd.getNetworkChoice());
-  setNetworkChoice = (...a: Parameters<typeof cmd.setNetworkChoice>) => orUnavailable(cmd.setNetworkChoice(...a));
+  switchNetwork = (...a: Parameters<typeof cmd.switchNetwork>) => orUnavailable(cmd.switchNetwork(...a));
   shieldedStatus = (walletId: string) => orAbsent(cmd.shieldedStatus(walletId));
   shieldedReceiveAddress = (...a: Parameters<typeof cmd.shieldedReceiveAddress>) => orUnavailable(cmd.shieldedReceiveAddress(...a));
   shieldQuote = (...a: Parameters<typeof cmd.shieldQuote>) => orUnavailable(cmd.shieldQuote(...a));
@@ -288,8 +315,8 @@ export class IpcBackend implements Backend {
   governanceCreateProposal = cmd.governanceCreateProposal;
   governanceMyProposals = cmd.governanceMyProposals;
   governanceSubmitProposal = cmd.governanceSubmitProposal;
-  onEvent = (listener: (e: AppEvent) => void) => listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload));
-  onShellEvent = (listener: (e: ShellEvent) => void) => listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload));
+  onEvent = (listener: (e: AppEvent) => void) => tracked(listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload)));
+  onShellEvent = (listener: (e: ShellEvent) => void) => tracked(listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload)));
   now = () => this.clock();
 }
 

@@ -213,7 +213,24 @@ impl NetworkSession {
         }
     }
 
-    async fn supervise(
+    /// Settles the invitation holds unless `cancel` comes first: the settle
+    /// waits out a switch's pause, which a quit during that switch never
+    /// ends. Its own task: a cancel ends only the wait, never a settle
+    /// already admitted, whose guard keeps the close waiting for it.
+    pub(super) async fn settle_holds_unless(
+        self: &Arc<Self>,
+        cancel: &mut watch::Receiver<bool>,
+    ) -> bool {
+        let this = Arc::clone(self);
+        let settle = tokio::spawn(async move { this.settle_invitation_holds().await });
+        tokio::select! {
+            biased;
+            () = until(cancel, |c| *c) => false,
+            _ = settle => true,
+        }
+    }
+
+    pub(super) async fn supervise(
         self: Arc<Self>,
         manager: Arc<Manager>,
         wallets: Vec<WalletId>,
@@ -228,7 +245,9 @@ impl NetworkSession {
         // Its names checks start only while it runs (D32).
         let epoch = self.platform.recovery.names_runs.arm();
         // Holds of claims that ended while the process was gone (DP5-03 D12).
-        self.settle_invitation_holds().await;
+        if !self.settle_holds_unless(&mut cancel).await {
+            return;
+        }
         if !self
             .for_wallets(&manager, wallets.clone(), Job::BringUp, since, &mut cancel)
             .await
@@ -249,7 +268,7 @@ impl NetworkSession {
             return;
         }
         self.apply_cadence(&manager);
-        super::shielded_pool::start(&self, &manager, &wallets).await;
+        super::shielded_pool::start(&self, &manager, &wallets, &cancel).await;
         let mut loops_pending = !self.start_loops(&manager).await;
         // The shielded passes (0.1 E1, on an active network only,
         // `shielded_pool::start`): the first with the loops, ahead of the

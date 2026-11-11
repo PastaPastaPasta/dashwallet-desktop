@@ -33,7 +33,7 @@ const COIN: u64 = 100_000_000;
 
 /// What the stand-in broadcast does with the n-th chunk it is handed.
 #[derive(Clone, Copy)]
-enum Outcome {
+pub(super) enum Outcome {
     Sent,
     Rejected,
     Unknown,
@@ -41,12 +41,12 @@ enum Outcome {
 
 /// The chunks handed to the network, in order.
 #[derive(Default)]
-struct Wire {
+pub(super) struct Wire {
     seen: Mutex<Vec<Transaction>>,
 }
 
 impl Wire {
-    fn txs(&self) -> Vec<Transaction> {
+    pub(super) fn txs(&self) -> Vec<Transaction> {
         self.seen.lock().unwrap().clone()
     }
 }
@@ -55,7 +55,7 @@ impl Wire {
 /// end) and chunks of at most `max_inputs`. A chunk it does not refuse
 /// goes into the wallet's history as a mempool transaction, as dash-spv
 /// hands every broadcast to the wallet before any peer has it.
-fn hook(f: &Fixture, max_inputs: usize, outcomes: &[Outcome]) -> Arc<Wire> {
+pub(super) fn hook(f: &Fixture, max_inputs: usize, outcomes: &[Outcome]) -> Arc<Wire> {
     let wire = Arc::new(Wire::default());
     let (w, outcomes) = (Arc::clone(&wire), outcomes.to_vec());
     let (session, wallet) = (Arc::downgrade(&f.session), f.wallet);
@@ -93,7 +93,7 @@ fn hook(f: &Fixture, max_inputs: usize, outcomes: &[Outcome]) -> Arc<Wire> {
     wire
 }
 
-fn spend_grant(f: &Fixture) -> String {
+pub(super) fn spend_grant(f: &Fixture) -> String {
     f.grant(
         GrantPurpose::Spend {
             max_duffs: 1_000 * COIN,
@@ -112,7 +112,7 @@ fn consolidation_quote(f: &Fixture) -> String {
 }
 
 /// The move plan's quote ("" when there is no plan).
-fn move_quote(f: &Fixture) -> String {
+pub(super) fn move_quote(f: &Fixture) -> String {
     (f.engine)
         .block_on(
             f.session
@@ -248,7 +248,10 @@ fn a_move_is_refused_while_the_wallet_mixes() {
 }
 
 /// A pause point of the hooks, set by `set` on the installed hooks.
-fn pause_at(f: &Fixture, set: impl FnOnce(&mut Hooks, Arc<TestPause>)) -> Arc<TestPause> {
+pub(super) fn pause_at(
+    f: &Fixture,
+    set: impl FnOnce(&mut Hooks, Arc<TestPause>),
+) -> Arc<TestPause> {
     let pause = Arc::new(TestPause::default());
     set(
         &mut f.session.coinjoin.sweep_hooks.lock().unwrap(),
@@ -259,7 +262,7 @@ fn pause_at(f: &Fixture, set: impl FnOnce(&mut Hooks, Arc<TestPause>)) -> Arc<Te
 
 /// Releases its pauses when dropped, so a failing assertion leaves no task
 /// waiting on one for the fixture's shutdown to wait for.
-struct ReleaseOnDrop(Vec<Arc<TestPause>>);
+pub(super) struct ReleaseOnDrop(pub(super) Vec<Arc<TestPause>>);
 
 impl Drop for ReleaseOnDrop {
     fn drop(&mut self) {
@@ -272,7 +275,7 @@ impl Drop for ReleaseOnDrop {
 /// `fut` on the engine's runtime, or `Internal` after 20 s: a call that
 /// waits on a fence another task holds fails the test instead of hanging
 /// it.
-fn within<T>(
+pub(super) fn within<T>(
     f: &Fixture,
     fut: impl std::future::Future<Output = Result<T, EngineError>>,
 ) -> Result<T, EngineError> {
@@ -284,7 +287,7 @@ fn within<T>(
 }
 
 /// Waits (on the test thread) until `pause` is reached.
-fn reached(pause: &TestPause) {
+pub(super) fn reached(pause: &TestPause) {
     for _ in 0..2_000 {
         if pause.reached.load(Ordering::SeqCst) {
             return;
@@ -295,7 +298,7 @@ fn reached(pause: &TestPause) {
 }
 
 /// The move, on the session's runtime, while the test thread goes on.
-fn spawn_move(f: &Fixture) -> tokio::task::JoinHandle<Result<SweepResult, EngineError>> {
+pub(super) fn spawn_move(f: &Fixture) -> tokio::task::JoinHandle<Result<SweepResult, EngineError>> {
     let (quote, grant) = (move_quote(f), spend_grant(f));
     let (s, w) = (Arc::clone(&f.session), f.wallet);
     (f.session.rt).spawn(async move {

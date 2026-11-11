@@ -126,7 +126,7 @@ export interface ReceiveWorld {
   usernameInRequests: boolean;
 }
 
-export const newReceiveWorld = (): ReceiveWorld => ({ firstUnused: 0, issued: 0, requests: [], nextRequest: 1, usernameInRequests: true });
+export const newReceiveWorld = (): ReceiveWorld => ({ firstUnused: 0, issued: 0, requests: [], nextRequest: 1, usernameInRequests: false });
 
 /** The funded wallet's coins: the confirmed ones add up to `FUNDED_BALANCES.confirmed`; the
  * unconfirmed one (neither mined nor InstantSend-locked) cannot be spent yet. */
@@ -214,8 +214,8 @@ export function paymentUri(address: string, amount: number | null, label: string
   return `dash:${address}${query.length ? `?${query.join("&")}` : ""}`;
 }
 
-/** The username requests and the Receive QR carry: none while the wallet's opt-out is off. */
-const requestUsername = (world: World, w: FixtureWallet): string | null => (w.receive.usernameInRequests ? mainUsername(world.dashpay) : null);
+/** An explicit request choice overrides the wallet default. */
+const requestUsername = (world: World, w: FixtureWallet, includeUsername?: boolean | null): string | null => ((includeUsername ?? w.receive.usernameInRequests) ? mainUsername(world.dashpay) : null);
 
 /** A stored request as a read shows it: `username` and its `uri` follow the current main name. */
 const withUsername = (r: ReceiveRequest, username: string | null): ReceiveRequest => ({
@@ -281,7 +281,7 @@ function checkRate(fee: FeeMode) {
 
 /** The coins `source` may spend, largest first. */
 function sourceCoins(wallet: FixtureWallet, source: CoinSource): Utxo[] {
-  const coins = wallet.coins.filter((u) => u.spendable);
+  const coins = wallet.coins.filter((u) => u.spendable && !u.reserved && !u.userLocked);
   return pickCoins(coins, source).toSorted((a, b) => b.amount - a.amount);
 }
 
@@ -833,10 +833,11 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       return receiveAddress(w, w.receive.firstUnused, null);
     },
     next_receive_address: ({ walletId, label }, { world }) => issueAddress(wallet(world, walletId), label),
-    create_receive_request: ({ walletId, amount, label, message }, { world }) => {
+    create_receive_request: ({ walletId, amount, label, message, includeUsername }, { world }) => {
       const w = wallet(world, walletId);
       const { address } = issueAddress(w, label);
       const request: ReceiveRequest = {
+        includeUsername: includeUsername ?? null,
         id: w.receive.nextRequest++,
         createdAt: secs(FIXTURE_NOW),
         address,
@@ -847,15 +848,14 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         uri: "",
       };
       // Before it is stored: an amount out of range stores nothing, as the engine.
-      const shown = withUsername(request, requestUsername(world, w));
+      const shown = withUsername(request, requestUsername(world, w, includeUsername));
       w.receive.requests = [request, ...w.receive.requests];
       return shown;
     },
     // The username is the current main name, not stored (DP3-03 D18).
     receive_requests: ({ walletId }, { world }) => {
       const w = wallet(world, walletId);
-      const username = requestUsername(world, w);
-      return w.receive.requests.map((r) => withUsername(r, username));
+      return w.receive.requests.map((r) => withUsername(r, requestUsername(world, w, r.includeUsername)));
     },
     receive_username: ({ walletId }, { world }) => requestUsername(world, wallet(world, walletId)),
     username_in_requests: ({ walletId }, { world }) => wallet(world, walletId).receive.usernameInRequests,
