@@ -8,7 +8,7 @@ fn shares(f: &Fx, txid: Txid) -> SharedShares {
 }
 
 #[test]
-fn ep_t5_history_shares_survive_restore_and_report_eligibility() {
+fn ep_t5_injected_history_shares_report_sessionless_eligibility() {
     let f = fx(3, true);
     let (id, txid) = listed(&f);
     let original = shares(&f, txid);
@@ -112,13 +112,13 @@ fn ep_t5_history_shares_survive_restore_and_report_eligibility() {
     confirm(&restored, 0, registration, 50);
     restored.tip(0);
     assert_eq!(shares(&restored, txid), expected);
-    let unrelated = fx(1, true);
+    let unrelated = fx(3, true);
     assert_eq!(
         unrelated
             .run(
                 unrelated
                     .mn()
-                    .shared_shares(unrelated.wallets[0], txid.to_string())
+                    .shared_shares(unrelated.wallets[1], txid.to_string())
             )
             .unwrap_err()
             .code(),
@@ -266,4 +266,176 @@ fn ep_t7_reward_destination_keeps_confirmed_and_attempt_separate() {
             .unwrap()
     );
     assert_eq!(shares(&f, txid).shares[0].reward, reward);
+}
+
+#[test]
+fn ep_r2_scanned_shared_registration_survives_reopening() {
+    use dash_spv::EventHandler;
+    use key_wallet::transaction_checking::{
+        BlockInfo, TransactionContext, WalletTransactionChecker,
+    };
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    use platform_wallet::changeset::{
+        CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+    };
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let mut expected = shares(&f, txid);
+    expected.session = None;
+    let registration = f.seam.shared_mined.lock().unwrap()[0].1.clone();
+    let mut restored = fx(3, true);
+    *restored.seam.list.lock().unwrap() = f.seam.list.lock().unwrap().clone();
+    let wallet_id = restored.wallets[0];
+    assert!(
+        restored
+            .session
+            .hub
+            .history
+            .get(&wallet_id, &txid)
+            .is_none()
+    );
+    assert!(
+        restored
+            .run(restored.mn().shared_sessions(wallet_id))
+            .unwrap()
+            .is_empty()
+    );
+    let (records, balance) = restored.run(async {
+        let wm = restored.session.manager().unwrap().wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let (wallet, info) = wm.get_wallet_and_info_mut(&wallet_id.0).unwrap();
+        let mut wallet = wallet.clone();
+        let info = &mut info.core_wallet;
+        info.check_core_transaction(
+            &registration,
+            TransactionContext::InBlock(BlockInfo::new(
+                50,
+                dashcore::BlockHash::from_byte_array([42; 32]),
+                1_793_598_712,
+            )),
+            &mut wallet,
+            true,
+            true,
+        )
+        .await;
+        info.update_balance();
+        let records: Vec<_> = info
+            .transaction_history()
+            .into_iter()
+            .filter(|r| r.txid == txid)
+            .cloned()
+            .collect();
+        assert!(
+            !records.is_empty(),
+            "the wallet scanner must recognize the registration"
+        );
+        (records, info.balance.clone())
+    });
+    assert!(
+        restored
+            .session
+            .hub
+            .history
+            .get(&wallet_id, &txid)
+            .is_none(),
+        "scanning alone does not bypass ingestion"
+    );
+    restored
+        .session
+        .live()
+        .unwrap()
+        .store
+        .store(
+            wallet_id.0,
+            PlatformWalletChangeSet {
+                core: Some(CoreChangeSet {
+                    records: records.clone(),
+                    synced_height: Some(100),
+                    last_processed_height: Some(100),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    restored
+        .session
+        .live()
+        .unwrap()
+        .store
+        .flush(wallet_id.0)
+        .unwrap();
+    restored
+        .session
+        .hub
+        .on_wallet_event(&platform_wallet::events::WalletEvent::BlockProcessed {
+            wallet_id: wallet_id.0,
+            height: 50,
+            chain_lock: None,
+            inserted: records,
+            updated: Vec::new(),
+            matured: Vec::new(),
+            balance,
+            account_balances: Default::default(),
+            addresses_derived: Vec::new(),
+        });
+    assert_eq!(shares(&restored, txid), expected);
+    assert!(
+        restored
+            .run(restored.mn().shared_sessions(wallet_id))
+            .unwrap()
+            .is_empty()
+    );
+    restored.restart();
+    *restored.seam.list.lock().unwrap() = f.seam.list.lock().unwrap().clone();
+    assert_eq!(
+        shares(&restored, txid),
+        expected,
+        "history reconstructed from persisted scanner records"
+    );
+    assert!(
+        restored
+            .run(restored.mn().shared_sessions(wallet_id))
+            .unwrap()
+            .is_empty()
+    );
+    let cap = expected.early_penalty + 1_000;
+    let short = restored
+        .run(restored.mn().create_standby(
+            wallet_id,
+            txid.to_string(),
+            1_000,
+            restored.grant(0, cap - 1),
+        ))
+        .unwrap_err();
+    assert_eq!(send_code(&short), "send.grant_exceeded");
+    restored
+        .run(restored.mn().create_standby(
+            wallet_id,
+            txid.to_string(),
+            1_000,
+            restored.grant(0, cap),
+        ))
+        .unwrap();
+    let short = restored
+        .run(restored.mn().send_standby(
+            wallet_id,
+            txid.to_string(),
+            0,
+            1_000,
+            StandbyVariant::Immediate,
+            restored.grant(0, cap - 1),
+        ))
+        .unwrap_err();
+    assert_eq!(send_code(&short), "send.grant_exceeded");
+    restored
+        .run(restored.mn().send_standby(
+            wallet_id,
+            txid.to_string(),
+            0,
+            1_000,
+            StandbyVariant::Immediate,
+            restored.grant(0, cap),
+        ))
+        .unwrap();
 }
