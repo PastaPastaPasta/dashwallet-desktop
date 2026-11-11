@@ -33,7 +33,7 @@ pub use records::{
     AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, HeldShares,
     KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState,
     MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus,
-    MasternodeType, RegistrationFacts, UntrackOutcome,
+    MasternodeType, RegistrarCapability, RegistrarSigner, RegistrationFacts, UntrackOutcome,
 };
 pub use shared_records::{
     Activation, DeadReason, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyBase,

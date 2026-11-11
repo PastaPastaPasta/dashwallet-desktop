@@ -21,7 +21,7 @@ use super::super::protx_records::{
     UpdateRegistrarRequest, VotingChoice,
 };
 use super::super::reads::owner_facts;
-use super::super::records::MasternodeType;
+use super::super::records::{MasternodeType, RegistrarCapability, RegistrarSigner};
 use super::super::{MasternodesError, display_hex, parse_pro_tx_hash};
 use super::build::{
     Context, Funding, assemble, dummy_output, invalid, preview_script, refused, shared_voting,
@@ -229,20 +229,27 @@ impl NetworkSession {
             });
         }
         let owner_key_id = facts.owner_key_id.ok_or(MasternodesError::NoOwnerKey)?;
-        let (owner, owner_source, owner_index) =
-            match self.keychain_owner(wallet, owner_key_id).await? {
-                Some(index) => (
+        let keychain = self.keychain_owner(wallet, owner_key_id).await?;
+        let (owner, owner_source, owner_index) = match facts.registrar(keychain.is_some()) {
+            RegistrarCapability::Available {
+                signer: RegistrarSigner::Keychain,
+            } => {
+                let index = keychain.ok_or(MasternodesError::NoOwnerKey)?;
+                (
                     OwnerKey::Keychain { index },
                     OwnerKeySource::Keychain { index },
                     Some(index),
-                ),
-                None if facts.attached_owner => (
-                    OwnerKey::Attached { pro_tx_hash: hash },
-                    OwnerKeySource::Attached,
-                    None,
-                ),
-                None => return Err(MasternodesError::NoOwnerKey),
-            };
+                )
+            }
+            RegistrarCapability::Available {
+                signer: RegistrarSigner::Attached,
+            } => (
+                OwnerKey::Attached { pro_tx_hash: hash },
+                OwnerKeySource::Attached,
+                None,
+            ),
+            _ => return Err(MasternodesError::NoOwnerKey),
+        };
         // Refused while an operation on this masternode may not be in the
         // list yet: a kept key is the list's (D43), and two updates out at
         // once may be mined in either order (D49).

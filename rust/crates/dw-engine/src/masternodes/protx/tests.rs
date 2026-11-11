@@ -2896,6 +2896,167 @@ fn ep_t2_operation_debit_matches_resend_caps_for_every_kind_and_state() {
 }
 
 #[test]
+fn ep_t6_registrar_capability_matches_the_preview_owner_guard() {
+    let f = fx(Library::Accept);
+    let (reg, op) = f.registered();
+    let read = |hash: &str| {
+        serde_json::to_value(
+            f.engine
+                .block_on(f.mn().masternode(f.wallet, hash.into()))
+                .unwrap(),
+        )
+        .unwrap()["registrar"]
+            .clone()
+    };
+    let hash = op.pro_tx_hash.unwrap();
+    let own_hash = hash.clone();
+    assert_eq!(
+        read(&hash),
+        serde_json::json!({"kind": "available", "signer": "keychain"})
+    );
+    assert!(f.preview_update(keep(&hash)).is_ok());
+    let mut other = reg;
+    if let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+        &mut other.special_transaction_payload
+    {
+        p.owner_key_hash = dashcore::PubkeyHash::from_byte_array(key_id_of(OWNER_KEY));
+        p.service_address = dashcore::sml::masternode_list_entry::MasternodeNetInfo::Legacy(
+            "1.2.3.9:19899".parse().unwrap(),
+        );
+    }
+    let hash = other.txid().to_string();
+    let keys = f
+        .engine
+        .block_on(f.mn().registration_keys(f.wallet, MasternodeType::Regular))
+        .unwrap();
+    let mut entry = entry_of(&other);
+    entry.voting_key_id = [0x42; 20];
+    hex::decode_to_slice(
+        keys.operator.public_key.unwrap(),
+        &mut entry.operator_public_key,
+    )
+    .unwrap();
+    *f.seam.list.lock().unwrap() = Some(vec![entry]);
+    f.session
+        .manager()
+        .unwrap()
+        .tracked_masternodes_service()
+        .track_blocking(other.txid().to_byte_array(), None)
+        .unwrap();
+    assert_eq!(
+        f.engine
+            .block_on(f.mn().attach_key(
+                hash.clone(),
+                AttachedKeyRole::Owner,
+                Zeroizing::new(hex::encode(OWNER_KEY))
+            ))
+            .unwrap(),
+        KeyCheck::Unchecked
+    );
+    assert_eq!(
+        read(&hash),
+        serde_json::json!({"kind": "registration_unavailable"})
+    );
+    assert_eq!(
+        f.preview_update(keep(&hash)).unwrap_err().code(),
+        "masternodes.no_owner_key"
+    );
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            let grant = v.authorize(GrantPurpose::ChangeCredential, None, Credential::None)?;
+            v.encrypt(b"ep-test-passphrase", &grant.id)
+        }))
+        .unwrap();
+    assert_eq!(
+        read(&hash),
+        serde_json::json!({"kind": "registration_unavailable"})
+    );
+    assert_eq!(
+        read(&own_hash),
+        serde_json::json!({"kind": "available", "signer": "keychain"})
+    );
+    f.engine
+        .block_on(
+            f.session
+                .vault_op(|v| v.unlock(b"ep-test-passphrase", dw_vault::UnlockScope::Full)),
+        )
+        .unwrap();
+    let second = f
+        .engine
+        .block_on(f.session.import_wallet(
+            Zeroizing::new(b"zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong".to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    use key_wallet::account::{AccountType, StandardAccountType};
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
+    let record = TransactionRecord::new(
+        other.clone(),
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        TransactionContext::InBlock(BlockInfo::new(8, dashcore::BlockHash::all_zeros(), 0)),
+        TransactionType::Standard,
+        TransactionDirection::Internal,
+        Vec::new(),
+        Vec::new(),
+        0,
+    );
+    f.session
+        .hub
+        .history
+        .with_wallet(second, |h| h.upsert(&record, None));
+    assert_eq!(
+        read(&hash),
+        serde_json::json!({"kind": "available", "signer": "attached"})
+    );
+    assert!(f.preview_update(keep(&hash)).is_ok());
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            v.lock();
+            Ok(())
+        }))
+        .unwrap();
+    assert_eq!(read(&hash), serde_json::json!({"kind": "vault_locked"}));
+    assert_eq!(
+        f.preview_update(keep(&hash)).unwrap_err().code(),
+        "masternodes.no_owner_key"
+    );
+    f.engine
+        .block_on(
+            f.session
+                .vault_op(|v| v.unlock(b"ep-test-passphrase", dw_vault::UnlockScope::Full)),
+        )
+        .unwrap();
+    f.engine
+        .block_on(f.mn().detach_key(hash.clone(), AttachedKeyRole::Owner))
+        .unwrap();
+    assert_eq!(read(&hash), serde_json::json!({"kind": "no_owner_key"}));
+    assert_eq!(
+        f.preview_update(keep(&hash)).unwrap_err().code(),
+        "masternodes.no_owner_key"
+    );
+    f.seam.list.lock().unwrap().as_mut().unwrap()[0].has_extended_net_info = true;
+    f.db()
+        .set_setting_durable(
+            dw_appdb::GLOBAL_SCOPE,
+            &format!("masternodes.shared_seen:{hash}"),
+            Some("1"),
+        )
+        .unwrap();
+    assert_eq!(read(&hash), serde_json::json!({"kind": "shared"}));
+    assert_eq!(
+        f.preview_update(keep(&hash)).unwrap_err().code(),
+        "masternodes.unsupported"
+    );
+}
+
+#[test]
 fn ep_t2_overdue_read_recomputes_after_restart_reorg_and_confirmation() {
     use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
     let f = fx(Library::Accept);
