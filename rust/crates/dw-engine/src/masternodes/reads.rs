@@ -22,7 +22,7 @@ use super::records::{
     AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, HeldShares,
     KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState,
     MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus,
-    MasternodeType, RegistrationFacts,
+    MasternodeType, RegistrarCapability, RegistrarSigner, RegistrationFacts,
 };
 use super::tracking::{KeyReferences, reconcile_key_ids};
 use super::{Masternodes, MasternodesError, display_hex, outpoint_string, parse_pro_tx_hash};
@@ -59,6 +59,8 @@ struct WalletView {
     unspent: HashSet<OutPoint>,
     /// User- and dust-locked outpoints (`lock_key` form).
     locked: HashSet<(String, u32)>,
+    released: HashSet<String>,
+    vault_locked: bool,
     /// Coinbase outputs to the wallet that count, newest first.
     generated: Vec<TxRecord>,
     notes: Notes,
@@ -123,14 +125,20 @@ impl WalletView {
         };
         let unspent = coins.coins.iter().map(|c| c.utxo.outpoint).collect();
         let id = wallet.to_string();
-        let locked = session
+        let (locked, released) = session
             .appdb_op(move |db| {
-                Ok(db
+                let locked = db
                     .locks(&id)?
                     .into_iter()
                     .filter(|row| row.is_locked())
                     .map(|row| (row.txid, row.vout))
-                    .collect())
+                    .collect();
+                let released = db
+                    .settings_with_prefix(&id, super::protx::ops::RELEASED)?
+                    .into_iter()
+                    .map(|(key, _)| key)
+                    .collect();
+                Ok((locked, released))
             })
             .await?;
         let own_scripts = session
@@ -165,6 +173,11 @@ impl WalletView {
             coins,
             unspent,
             locked,
+            released,
+            vault_locked: matches!(
+                session.vault.lock_state(),
+                dw_vault::LockState::Locked | dw_vault::LockState::UnlockedMixingOnly
+            ),
             generated,
             notes,
             held,
@@ -411,6 +424,13 @@ impl WalletView {
             shares: self.held.get(hash).copied(),
             roles,
             collateral: collateral_state(owned),
+            collateral_released: owned.and_then(|o| o.collateral).is_some_and(|c| {
+                self.released.contains(&format!(
+                    "{}{}",
+                    super::protx::ops::RELEASED,
+                    outpoint_string(&c)
+                ))
+            }),
             payout_address: self.payout_address(hash),
             payouts_30d: windowed()
                 .filter(|p| !p.unattributed)
@@ -517,10 +537,43 @@ impl WalletView {
         coins
     }
 
+    fn owner_facts(&self, hash: &[u8; 32]) -> OwnerFacts {
+        let record = self
+            .tracked_owned
+            .get(hash)
+            .or_else(|| self.owned(hash))
+            .filter(|owned| !owned.shared_unsupported);
+        let collateral = self.owned(hash).and_then(|owned| owned.collateral);
+        OwnerFacts {
+            owner_key_id: record.and_then(|owned| owned.record.owner_key_hash),
+            attached_owner: self
+                .attached_keys(hash)
+                .into_iter()
+                .flatten()
+                .any(|key| key.role == AttachedKeyRole::Owner && key.check == KeyCheck::Matched),
+            vault_locked: self.vault_locked || self.attached.is_none(),
+            payout_script: self.payout_script(hash),
+            collateral_script: self
+                .coins
+                .coins
+                .iter()
+                .find(|coin| Some(coin.utxo.outpoint) == collateral)
+                .map(|coin| coin.utxo.txout.script_pubkey.clone()),
+            operator_reward: record.and_then(|owned| owned.operator_reward),
+            shared: self.shared_unsupported(hash),
+        }
+    }
+
     fn detail(&self, hash: &[u8; 32]) -> MasternodeDetail {
         let owned = self.owned(hash);
+        let facts = self.owner_facts(hash);
         MasternodeDetail {
             row: self.row(hash),
+            registrar: facts.registrar(
+                facts
+                    .owner_key_id
+                    .is_some_and(|id| self.owner_ids.contains(&id)),
+            ),
             list: self.list.entry(hash).map(|e| list_facts(e, self.network)),
             registration: owned.map(|o| self.registration_facts(o)),
             payout_checked_height: None,
@@ -879,6 +932,7 @@ pub(super) struct OwnerFacts {
     pub owner_key_id: Option<[u8; 20]>,
     /// An `owner` key is attached and matches that id.
     pub attached_owner: bool,
+    pub vault_locked: bool,
     /// The wallet's latest payout script of it.
     pub payout_script: Option<ScriptBuf>,
     /// Its collateral's script, when the collateral is this wallet's coin.
@@ -888,34 +942,36 @@ pub(super) struct OwnerFacts {
     pub shared: bool,
 }
 
+impl OwnerFacts {
+    pub(super) fn registrar(&self, keychain_owner: bool) -> RegistrarCapability {
+        if self.shared {
+            RegistrarCapability::Shared
+        } else if self.owner_key_id.is_none() {
+            RegistrarCapability::RegistrationUnavailable
+        } else if keychain_owner {
+            RegistrarCapability::Available {
+                signer: RegistrarSigner::Keychain,
+            }
+        } else if self.vault_locked {
+            RegistrarCapability::VaultLocked
+        } else if self.attached_owner {
+            RegistrarCapability::Available {
+                signer: RegistrarSigner::Attached,
+            }
+        } else {
+            RegistrarCapability::NoOwnerKey
+        }
+    }
+}
+
 /// [`OwnerFacts`] of `hash` for `wallet`.
 pub(super) async fn owner_facts(
     session: &NetworkSession,
     wallet: WalletId,
     hash: [u8; 32],
 ) -> Result<OwnerFacts, MasternodesError> {
-    let v = WalletView::read(session, wallet).await?;
-    let record = (v.tracked_owned.get(&hash))
-        .or_else(|| v.owned(&hash))
-        .filter(|o| !o.shared_unsupported);
-    let collateral = v.owned(&hash).and_then(|o| o.collateral);
-    Ok(OwnerFacts {
-        owner_key_id: record.and_then(|o| o.record.owner_key_hash),
-        attached_owner: v
-            .attached_keys(&hash)
-            .into_iter()
-            .flatten()
-            .any(|k| k.role == AttachedKeyRole::Owner && k.check == KeyCheck::Matched),
-        payout_script: v.payout_script(&hash),
-        collateral_script: v
-            .coins
-            .coins
-            .iter()
-            .find(|c| Some(c.utxo.outpoint) == collateral)
-            .map(|c| c.utxo.txout.script_pubkey.clone()),
-        operator_reward: record.and_then(|o| o.operator_reward),
-        shared: v.shared_unsupported(&hash),
-    })
+    let view = WalletView::read(session, wallet).await?;
+    Ok(view.owner_facts(&hash))
 }
 
 /// `masternodes.not_found`, or `list_unavailable` when the list that
@@ -1008,6 +1064,8 @@ mod tests {
             },
             unspent: HashSet::new(),
             locked: HashSet::new(),
+            released: HashSet::new(),
+            vault_locked: false,
             generated,
             notes: Notes::default(),
             held: HashMap::new(),

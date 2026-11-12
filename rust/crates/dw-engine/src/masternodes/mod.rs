@@ -17,6 +17,7 @@ mod protx_records;
 mod reads;
 mod records;
 mod shared;
+pub use shared::standby_file_transactions;
 mod shared_records;
 mod tracking;
 
@@ -36,13 +37,14 @@ pub use records::{
     AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, HeldShares,
     KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState,
     MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus,
-    MasternodeType, RegistrationFacts, UntrackOutcome,
+    MasternodeType, RegistrarCapability, RegistrarSigner, RegistrationFacts, UntrackOutcome,
 };
 pub use shared_records::{
     Activation, DeadReason, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyBase,
-    KeyChangeRequest, KeyChangeView, MaintenanceSent, RewardChoice, ShareReturn, ShareRow,
-    ShareSlot, ShareTerms, ShareTermsView, SharedCapability, SharedImport, SharedKind,
-    SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedStage,
+    KeyChangeRequest, KeyChangeView, MaintenanceSent, RewardAttempt, RewardAttemptState,
+    RewardChoice, RewardDestination, RewardUpdate, ShareFact, ShareReturn, ShareRow, ShareSlot,
+    ShareTerms, ShareTermsView, SharedCapability, SharedEligibility, SharedImport, SharedKind,
+    SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedShares, SharedStage,
     SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource, StandbyVariant,
     StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
 };

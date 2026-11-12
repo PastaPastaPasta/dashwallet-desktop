@@ -238,6 +238,7 @@ pub struct MasternodeRow {
     pub shares: Option<HeldShares>,
     pub roles: MasternodeRoles,
     pub collateral: CollateralState,
+    pub collateral_released: bool,
     pub payout_address: Option<String>,
     /// Payouts to this wallet in the last 30 days (duffs), without the
     /// `unattributed` ones.
@@ -293,6 +294,7 @@ pub struct MasternodeOverview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MasternodeDetail {
     pub row: MasternodeRow,
+    pub registrar: RegistrarCapability,
     /// `None` when the list isn't synced or doesn't hold it.
     pub list: Option<ListFacts>,
     /// `None` when the wallet holds none of its provider transactions.
@@ -326,4 +328,21 @@ pub struct EvonodeCredits {
     /// `credits` / 1,000 (dpp's `CREDITS_PER_DUFF`), rounded down.
     pub duffs: u64,
     pub fetched_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegistrarSigner {
+    Keychain,
+    Attached,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RegistrarCapability {
+    Available { signer: RegistrarSigner },
+    RegistrationUnavailable,
+    NoOwnerKey,
+    VaultLocked,
+    Shared,
 }

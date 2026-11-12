@@ -325,6 +325,13 @@ impl SyncTracker {
         (self.tip_time_height != Some(tip)).then_some(tip)
     }
 
+    pub(crate) fn current_tip_time(&self) -> Option<u64> {
+        let height = self.tip_height()?;
+        (self.tip_time_height == Some(height))
+            .then_some(self.tip_time)
+            .flatten()
+    }
+
     /// Moves the header tip, as a progress report would, and reads as
     /// running and caught up (tests only).
     #[cfg(test)]
