@@ -213,6 +213,9 @@ struct FakeShielded {
     applied: Mutex<Vec<OutPoint>>,
     /// The coordinator has no dispatch hook.
     unhooked: AtomicBool,
+    /// The answers of the next reads of the hook, in order, before
+    /// `unhooked` answers.
+    hook_reads: Mutex<std::collections::VecDeque<bool>>,
     /// The spends the library resolved unproved and holds the notes of.
     held: Mutex<HashSet<[u8; 32]>>,
     /// What a send that fails (not an unconfirmed one) leaves.
@@ -399,6 +402,7 @@ impl Default for FakeShielded {
             queued: Mutex::default(),
             applied: Mutex::default(),
             unhooked: AtomicBool::new(false),
+            hook_reads: Mutex::default(),
             held: Mutex::default(),
             after_failure: Mutex::default(),
             held_unreadable: AtomicBool::new(false),
@@ -791,6 +795,9 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn hooked(&self) -> bool {
+        if let Some(answer) = self.hook_reads.lock().unwrap().pop_front() {
+            return answer;
+        }
         !self.unhooked.load(Ordering::SeqCst)
     }
 
@@ -3386,6 +3393,24 @@ fn a_spend_is_refused_while_the_hook_is_not_set() {
         0,
         "the refusal issued no receive address"
     );
+
+    // The hook is read again under the wallet's lock, after the quote:
+    // one that is gone by then still refuses before the grant or a key.
+    for unshield in [false, true] {
+        *lib.hook_reads.lock().unwrap() = [true].into();
+        let grant = fx.grant(10 * NOTE);
+        let g = grant.clone();
+        let refused = run(&fx, &lib, move |s, lib| async move {
+            code(if unshield {
+                pool::unshield(&s, wallet, &*lib, NOTE, None, &g, false).await
+            } else {
+                pool::send(&s, wallet, &*lib, (&payee_text(), NOTE), None, &g, false).await
+            })
+        });
+        assert_eq!(refused, "platform.unavailable", "read again under the lock");
+        assert!(fx.unused(&grant), "the later refusal keeps the grant");
+    }
+    assert!(lib.spent().is_empty(), "no key left the vault");
 
     // With the hook the same send runs.
     lib.unhooked.store(false, Ordering::SeqCst);
