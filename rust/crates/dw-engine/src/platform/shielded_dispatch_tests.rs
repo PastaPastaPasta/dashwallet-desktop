@@ -183,6 +183,13 @@ fn nullifiers(positions: &[u64]) -> Vec<[u8; 32]> {
     positions.iter().map(|p| note(*p, NOTE).nullifier).collect()
 }
 
+/// An artifact's selected notes at `positions`, none seen spent.
+fn unspent(positions: &[u64]) -> Vec<([u8; 32], bool)> {
+    (nullifiers(positions).into_iter())
+        .map(|n| (n, false))
+        .collect()
+}
+
 async fn recording(coordinator: &NetworkShieldedCoordinator) -> bool {
     (coordinator.store().read().await).records_spend_dispositions()
 }
@@ -275,7 +282,7 @@ fn settle_evidence_reads_real_note_nullifiers_only() {
 
     assert_eq!(h.dispatch(payload), Ok(()));
     let written = h.artifact(1).unwrap();
-    assert_eq!(written.selected, nullifiers(&[1]));
+    assert_eq!(written.selected, unspent(&[1]));
     assert_eq!(written.published, [nullifiers(&[1])[0], PADDING]);
 
     // The padding nullifier seen spent, through the store's tap.
@@ -350,7 +357,7 @@ fn h1_writes_the_artifact_before_returning_ok() {
         (written.status, written.disposition, written.acked),
         (ArtifactStatus::Registered, None, false)
     );
-    assert_eq!(written.selected, nullifiers(&[1, 2]));
+    assert_eq!(written.selected, unspent(&[1, 2]));
     assert_eq!(written.published, nullifiers(&[1, 2]));
     assert_eq!(h.f.session.leases.journal_synchronous(), Some(2), "FULL");
 
@@ -414,6 +421,7 @@ fn admit_refuses_an_imported_row() {
             st_hash: Some(st_hash(n)),
             kind: None,
             anchor: Some([0xa0; 32]),
+            identity_id: None,
             selected: nullifiers(&[1]),
             published: Vec::new(),
         };
