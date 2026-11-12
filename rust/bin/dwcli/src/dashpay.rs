@@ -965,6 +965,7 @@ fn shielded_params(e: &ShieldedError) -> Value {
         ShieldedError::NotSynced { reason } => json!({"reason": reason}),
         ShieldedError::CoinsLocked
         | ShieldedError::UnrecordedSpend
+        | ShieldedError::SpendRefused
         | ShieldedError::MixingActive
         | ShieldedError::NothingToMove
         | ShieldedError::MoveRunning

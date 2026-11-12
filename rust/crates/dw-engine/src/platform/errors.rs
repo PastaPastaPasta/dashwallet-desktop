@@ -633,6 +633,14 @@ pub enum ShieldedError {
         "a shielded payment from before the restart may still go through; confirm to send anyway"
     )]
     UnrecordedSpend,
+    /// A send or unshield was refused before anything was sent: the
+    /// engine's check of the spend the library was about to send did not
+    /// pass (the session is closing, its notes are not the account's or
+    /// not the ones reserved for it, or it could not be recorded first),
+    /// or the key set released for it is not the account's. Nothing left
+    /// the wallet: "The payment was not sent."
+    #[error("the shielded payment was refused before it was sent")]
+    SpendRefused,
     /// "Move mixed coins": the wallet mixes; stop mixing first.
     #[error("stop mixing first")]
     MixingActive,
@@ -675,6 +683,7 @@ impl ShieldedError {
             Self::PoolTooSmall { .. } => "shielded.pool_too_small",
             Self::TooManyInputs { .. } => "shielded.too_many_inputs",
             Self::UnrecordedSpend => "shielded.unrecorded_spend",
+            Self::SpendRefused => "shielded.spend_refused",
             Self::MixingActive => "shielded.mixing_active",
             Self::NothingToMove => "shielded.nothing_to_move",
             Self::CoinsUnconfirmed { .. } => "shielded.coins_unconfirmed",

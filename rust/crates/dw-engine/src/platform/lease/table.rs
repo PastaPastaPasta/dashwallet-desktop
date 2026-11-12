@@ -354,6 +354,9 @@ pub struct LeaseTable {
     /// holds the wallet, then never ends on its own.
     #[cfg(test)]
     pub(crate) test_hold_rows: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Tests: holds the next shielded artifact's write before it runs.
+    #[cfg(test)]
+    pub(crate) hold_artifact_write: Mutex<Option<Arc<crate::coins::TestPause>>>,
 }
 
 impl std::fmt::Debug for LeaseTable {
@@ -404,6 +407,8 @@ impl LeaseTable {
             test_rows: Default::default(),
             #[cfg(test)]
             test_hold_rows: Default::default(),
+            #[cfg(test)]
+            hold_artifact_write: Default::default(),
         })
     }
 
