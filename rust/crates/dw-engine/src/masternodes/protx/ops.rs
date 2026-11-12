@@ -5,8 +5,9 @@
 //! fence, the outcome recorded.
 //!
 //! A row whose bytes may be out is never deleted (D6): the only delete is
-//! `discard_operation`'s `... WHERE sent_at IS NULL`, and `sent_at` is
-//! durable before each hand-off. A row's inputs stay persistently locked
+//! `discard_operation`'s `... WHERE sent_at IS NULL`, which takes the row's
+//! payout-change barrier with it in one transaction (MG-13 P16), and
+//! `sent_at` is durable before each hand-off. A row's inputs stay persistently locked
 //! from its save until its transaction is in a block or conflicted, or the
 //! row is discarded (D8, D25), so no build after a restart can spend them
 //! in a second transaction.
@@ -470,13 +471,36 @@ impl NetworkSession {
         row: MasternodeOpRow,
         locks: Vec<OutPoint>,
     ) -> Result<(), MasternodesError> {
+        self.save_operation_with_barrier(wallet, row, locks, None)
+            .await
+    }
+
+    /// [`Self::save_operation`] of a signed ProUpRegTx that may change the
+    /// payout to `new_payout`: its payout-change barrier is written in the
+    /// same transaction as the row (MG-13 P16), so no crash keeps either
+    /// without the other.
+    pub(crate) async fn save_operation_with_barrier(
+        &self,
+        wallet: WalletId,
+        row: MasternodeOpRow,
+        locks: Vec<OutPoint>,
+        new_payout: Option<Vec<u8>>,
+    ) -> Result<(), MasternodesError> {
         let w = wallet.to_string();
         let locks: Vec<(String, u32)> =
             locks.iter().map(|o| (o.txid.to_string(), o.vout)).collect();
         #[cfg(test)]
         crate::coins::pause_at(&self.coin_fences.pause_row_write).await;
-        self.appdb_op(move |db| db.insert_masternode_op_durable(&w, &row, &locks, now_secs()))
-            .await?;
+        self.appdb_op(move |db| {
+            db.insert_masternode_op_with_barrier_durable(
+                &w,
+                &row,
+                &locks,
+                now_secs(),
+                new_payout.as_deref(),
+            )
+        })
+        .await?;
         self.masternodes.local_change();
         Ok(())
     }
@@ -667,7 +691,10 @@ impl NetworkSession {
         let (w, id) = (wallet.to_string(), id.to_string());
         let deleted = self
             .appdb_op(move |db| {
-                if !db.delete_unsent_masternode_op(&w, &id)? {
+                // The row and its payout-change barrier go in one
+                // transaction, only while `sent_at IS NULL` (MG-13 P16,
+                // r4 m1): a row that may be out keeps both.
+                if !db.discard_unsent_masternode_op_durable(&w, &id)? {
                     return Ok(false);
                 }
                 let now = now_secs();

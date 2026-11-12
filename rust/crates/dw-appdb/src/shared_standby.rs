@@ -6,7 +6,7 @@
 
 use rusqlite::{OptionalExtension, Row, params};
 
-use crate::{AppDb, Result};
+use crate::{AppDb, Result, sql_u64};
 
 /// One `shared_mn_standby` row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,10 +39,6 @@ fn read_row(r: &Row<'_>) -> rusqlite::Result<StandbyRow> {
         source: r.get(6)?,
         created_at: u64::try_from(r.get::<_, i64>(7)?).unwrap_or(0),
     })
-}
-
-fn sql_u64(v: u64) -> i64 {
-    i64::try_from(v).unwrap_or(i64::MAX)
 }
 
 impl AppDb {

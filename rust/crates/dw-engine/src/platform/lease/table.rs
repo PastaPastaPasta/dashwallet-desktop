@@ -78,6 +78,8 @@ pub(crate) struct Signers {
     /// A `ShieldDrain` lease's signer life: its funding signer stops when
     /// the lease drops it, on the vault's key too (0.2 MIX-SHIELD).
     pub(crate) life: Option<SignerLife>,
+    /// `MasternodeWithdrawal`, single use (MG-13 P3, P12).
+    pub(crate) withdrawal: Option<VaultSigner>,
 }
 
 /// What a redemption produced (§4.1 step 2): the caps per purpose, the one
@@ -1101,6 +1103,30 @@ impl Lease {
                 .budget_mut(purpose)
                 .ok_or(LeaseError::NeedsGrant(purpose))?;
             let charge = budget.charge(amount).map_err(|x| LeaseError::Exceeded {
+                purpose,
+                needed: x.needed,
+                remaining: x.remaining,
+            })?;
+            Ok((charge, signer))
+        })?;
+        self.table.with_j(|_, fx| fx.changed(self.id));
+        Ok(charged)
+    }
+
+    /// Charges `amount`, a masternode withdrawal's credits and fee reserve,
+    /// to the Credits budget and hands out the lease's single-use
+    /// `MasternodeWithdrawal` signer in one J step (MG-13 P12), as
+    /// [`Self::charge_tx_signer`] does for a transaction: a lease without
+    /// the signer is charged nothing. The caller refunds the charge only
+    /// while nothing was signed.
+    pub(crate) fn charge_withdrawal_signer(
+        &self,
+        amount: u64,
+    ) -> Result<(Charge, VaultSigner), LeaseError> {
+        let purpose = BudgetPurpose::Credits;
+        let charged = self.with_entry(purpose, |e| {
+            let signer = (e.signers.withdrawal.clone()).ok_or(LeaseError::NeedsGrant(purpose))?;
+            let charge = e.credits.charge(amount).map_err(|x| LeaseError::Exceeded {
                 purpose,
                 needed: x.needed,
                 remaining: x.remaining,

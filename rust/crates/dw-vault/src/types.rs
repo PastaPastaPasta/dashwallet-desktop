@@ -9,6 +9,7 @@ use zeroize::Zeroizing;
 use crate::VaultError;
 use crate::crypto::{KdfPolicy, Key32};
 use crate::os_store::{KeyringOsStore, OsSecretStore};
+use crate::withdrawal::WithdrawalDestination;
 
 /// 32-byte network-scoped wallet id (key-wallet's `compute_wallet_id`).
 pub type WalletId = [u8; 32];
@@ -67,8 +68,8 @@ pub enum Credential<'a> {
     /// mixing-only vault the unwrapped key serves the issued grant only.
     Passphrase(&'a [u8]),
     /// The 32-byte wrap key the OS biometric store released (slot B). Issues
-    /// `Spend`, `PlatformOp`, `SignMessage`, `Governance` and `MasternodeOp`
-    /// grants whose combined value
+    /// `Spend`, `PlatformOp`, `SignMessage`, `Governance`, `MasternodeOp`
+    /// and `MasternodeWithdraw` grants whose combined value
     /// ([`GrantPurpose::quick_unlock_value`]) is within the quick-unlock
     /// spending limit, only while the passphrase was entered within
     /// [`PASSPHRASE_MAX_AGE_SECS`]. Like `Passphrase`, it does not change the
@@ -127,6 +128,19 @@ pub enum GrantPurpose {
     MasternodeOp {
         max_duffs: u64,
     },
+    /// One Platform credit withdrawal from a masternode's owner identity
+    /// (MG-13 P12): `pro_tx_hash` (wire order) is the masternode the user
+    /// acted on, `max_credits` caps its amount and `destination` is the
+    /// output script the user approved for a payout-key withdrawal (`None`:
+    /// an owner-key one, which Drive pays to the registered payout address).
+    /// Yields one single-use [`crate::SignerScope::MasternodeWithdrawal`]
+    /// signer bound to all three
+    /// ([`crate::Vault::masternode_withdrawal_signer`]).
+    MasternodeWithdraw {
+        pro_tx_hash: [u8; 32],
+        max_credits: u64,
+        destination: Option<WithdrawalDestination>,
+    },
 }
 
 /// [`GrantPurpose`] without its payload; what a call expects.
@@ -141,6 +155,7 @@ pub enum GrantKind {
     IdentityScan,
     Governance,
     MasternodeOp,
+    MasternodeWithdraw,
 }
 
 /// Platform's fixed rate: credits per duff.
@@ -158,6 +173,7 @@ impl GrantPurpose {
             GrantPurpose::IdentityScan => GrantKind::IdentityScan,
             GrantPurpose::Governance => GrantKind::Governance,
             GrantPurpose::MasternodeOp { .. } => GrantKind::MasternodeOp,
+            GrantPurpose::MasternodeWithdraw { .. } => GrantKind::MasternodeWithdraw,
         }
     }
 
@@ -180,8 +196,10 @@ impl GrantPurpose {
     /// Whether a redeemed grant of this purpose may obtain a full signer.
     /// `PlatformOp` gets scoped signers (`Vault::platform_signer`),
     /// `IdentityScan` the identity-scan key (`Vault::scan_key`),
-    /// `Governance` a vote signer (`Vault::vote_signer`) and `MasternodeOp`
-    /// a `MasternodeOwner` signer (`Vault::masternode_signer`) instead.
+    /// `Governance` a vote signer (`Vault::vote_signer`), `MasternodeOp`
+    /// a `MasternodeOwner` signer (`Vault::masternode_signer`) and
+    /// `MasternodeWithdraw` a single-use `MasternodeWithdrawal` signer
+    /// (`Vault::masternode_withdrawal_signer`) instead.
     pub(crate) fn signs(&self) -> bool {
         matches!(self, GrantPurpose::Spend { .. } | GrantPurpose::SignMessage)
     }
@@ -189,7 +207,9 @@ impl GrantPurpose {
     /// What this grant counts against the quick-unlock spending limit, in
     /// duffs (E0-04 design §3.7): `max_duffs` for `Spend` and
     /// `MasternodeOp`; `max_duffs + ceil(max_credits / CREDITS_PER_DUFF)`
-    /// for `PlatformOp`; 0 for `SignMessage` and `Governance` (MG-05 D2);
+    /// for `PlatformOp`; `ceil(max_credits / CREDITS_PER_DUFF)` for
+    /// `MasternodeWithdraw`, as `PlatformOp`'s credits count (MG-13 P12);
+    /// 0 for `SignMessage` and `Governance` (MG-05 D2);
     /// `None` for a purpose quick unlock never issues.
     /// Saturates at `u64::MAX`, which is above every spending limit.
     pub fn quick_unlock_value(&self) -> Option<u64> {
@@ -201,6 +221,9 @@ impl GrantPurpose {
                 max_duffs,
                 max_credits,
             } => Some(max_duffs.saturating_add(max_credits.div_ceil(CREDITS_PER_DUFF))),
+            GrantPurpose::MasternodeWithdraw { max_credits, .. } => {
+                Some(max_credits.div_ceil(CREDITS_PER_DUFF))
+            }
             GrantPurpose::SignMessage | GrantPurpose::Governance => Some(0),
             _ => None,
         }
@@ -407,10 +430,11 @@ impl GrantToken {
         }
     }
 
-    /// The credit cap of a `PlatformOp` grant.
+    /// The credit cap of a `PlatformOp` or `MasternodeWithdraw` grant.
     pub fn max_credits(&self) -> Option<u64> {
         match self.purpose {
-            GrantPurpose::PlatformOp { max_credits, .. } => Some(max_credits),
+            GrantPurpose::PlatformOp { max_credits, .. }
+            | GrantPurpose::MasternodeWithdraw { max_credits, .. } => Some(max_credits),
             _ => None,
         }
     }

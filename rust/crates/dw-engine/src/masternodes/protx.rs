@@ -5,6 +5,7 @@
 //! transaction to `TxDraft`'s fenced path (§2). The lease ends when the
 //! call returns.
 
+pub(crate) mod barriers;
 pub(crate) mod build;
 pub(crate) mod keys;
 pub(crate) mod ops;
@@ -374,6 +375,9 @@ impl Masternodes {
                     dashcore::consensus::serialize(&tx),
                     now_secs(),
                 );
+                // An External row is always a registration, so it writes
+                // no payout-change barrier (MG-13 P16: ProUpRegTxs only,
+                // and those are saved signed by `update_registrar`).
                 let signed = s
                     .appdb_op(move |db| {
                         db.sign_masternode_op_durable(
@@ -609,7 +613,15 @@ impl Masternodes {
                     sent_at: None,
                     last_error: None,
                 };
-                s.save_operation(wallet, row, inputs).await?;
+                // A payout that may change (`payout_changes` true, or
+                // unknown: the wallet holds no payout of it) holds MG-13's
+                // withdrawals until it settles: its barrier is saved with
+                // the row (P16). An operator- or voting-only update writes
+                // none.
+                let new_payout = (up.payout_changes != Some(false))
+                    .then(|| up.placeholder.script_payout.to_bytes());
+                s.save_operation_with_barrier(wallet, row, inputs, new_payout)
+                    .await?;
                 drop(updating);
                 #[cfg(test)]
                 ops::crash_at(&s, ops::CrashPoint::Saved)?;

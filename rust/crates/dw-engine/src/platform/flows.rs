@@ -78,6 +78,10 @@ pub enum FlowKind {
     /// signer is `ShieldDrainFunding` (CoinJoin account 0's address keys
     /// and the shielded credit keys), and nothing else.
     ShieldDrain,
+    /// An evonode's Platform credit withdrawal under a `MasternodeWithdraw`
+    /// grant (MG-13 P12): its single-use `MasternodeWithdrawal` signer and
+    /// a Credits budget charged the amount plus the fee reserve.
+    MasternodeWithdraw,
 }
 
 /// A lease's budgets (E0-04 §4.2).

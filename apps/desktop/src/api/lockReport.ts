@@ -51,6 +51,8 @@ export const FLOW_NAME: Record<FlowKindName, string> = {
   dissolution: "Dissolution",
   // MG-06: the proposal fee.
   proposal: "Proposal fee",
+  // MG-13: an evonode's Platform credit withdrawal (MG-00 D35's name).
+  masternodeWithdraw: "Credit withdrawal",
   // 0.1 lane E2: "Move to Dash wallet" from the Platform addresses.
   platformAddressMove: "Move to Dash wallet",
   // 0.2 X1b: a payment to another Platform address.

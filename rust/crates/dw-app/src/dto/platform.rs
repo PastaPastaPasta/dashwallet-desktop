@@ -59,19 +59,24 @@ pub enum FlowKindName {
     /// "Move mixed coins" to Shielded: the CoinJoin account drained into one
     /// lock under a `spend` grant's duffs.
     ShieldDrain,
+    /// An evonode's Platform credit withdrawal under a
+    /// `masternodeWithdraw` grant (MG-13).
+    MasternodeWithdraw,
 }
 
 mirror_enum!(FlowKind => FlowKindName {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
     MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal,
-    PlatformAddressMove, PlatformAddressSend, Shield, PlatformAddressFund, ShieldedSpend, ShieldDrain
+    PlatformAddressMove, PlatformAddressSend, Shield, PlatformAddressFund, ShieldedSpend, ShieldDrain,
+    MasternodeWithdraw
 });
 mirror_enum!(FlowKindName => FlowKind {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
     MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal,
-    PlatformAddressMove, PlatformAddressSend, Shield, PlatformAddressFund, ShieldedSpend, ShieldDrain
+    PlatformAddressMove, PlatformAddressSend, Shield, PlatformAddressFund, ShieldedSpend, ShieldDrain,
+    MasternodeWithdraw
 });
 
 /// A lease budget: `funding`, `spend` and `masternode` are duffs, `credits`

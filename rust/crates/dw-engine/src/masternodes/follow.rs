@@ -15,6 +15,8 @@ use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
+pub(crate) use super::protx::barriers::backfill_payout_barriers;
+
 use super::aggregate::{OwnedMasternode, add_history, aggregate};
 use super::records::AttachedKeyRole;
 use crate::events::{EngineEvent, EventSink};
@@ -273,6 +275,12 @@ pub(crate) struct MasternodesRuntime {
     pub(super) ids_verified: AtomicBool,
     /// ProTx operations with a call running on them (MG-04 §5).
     protx_in_flight: Mutex<HashSet<(WalletId, String)>>,
+    /// This session's open backfilled the payout-change barriers, or found
+    /// them backfilled (MG-13 P16). Until then a barrier may be missing,
+    /// and a masternode withdrawal's quote reads `payout_change_pending`.
+    barriers_ready: AtomicBool,
+    /// Masternode withdrawals' alarms and background recheck (MG-13 P8).
+    pub(crate) withdrawals: super::withdrawal::WithdrawalRuntime,
     /// The ProTx hand-off's test seam (MG-04 §7).
     #[cfg(test)]
     protx_seam: Mutex<Option<Arc<super::protx::ops::Seam>>>,
@@ -304,9 +312,21 @@ impl MasternodesRuntime {
             unsettled: Mutex::default(),
             ids_verified: AtomicBool::new(false),
             protx_in_flight: Mutex::default(),
+            barriers_ready: AtomicBool::new(false),
+            withdrawals: Default::default(),
             #[cfg(test)]
             protx_seam: Mutex::default(),
         }
+    }
+
+    /// Whether every payout-change barrier is in place (`barriers_ready`).
+    pub(crate) fn barriers_ready(&self) -> bool {
+        self.barriers_ready.load(Ordering::SeqCst)
+    }
+
+    /// The outcome of the open's barrier backfill (MG-13 P16).
+    pub(crate) fn set_barriers_ready(&self, ready: bool) {
+        self.barriers_ready.store(ready, Ordering::SeqCst);
     }
 
     pub(crate) fn protx_in_flight(&self) -> std::sync::MutexGuard<'_, HashSet<(WalletId, String)>> {
@@ -367,9 +387,17 @@ impl MasternodesRuntime {
         self.unsettled_keys().contains(&(hash, role))
     }
 
-    /// Something the facade changed itself (tracked set, a label, a key).
+    /// Something the facade changed itself (tracked set, a label, a key, a
+    /// ProTx operation, a withdrawal record), or a withdrawal's destination
+    /// that became fixed (MG-13 P4's `withdrawal_ready`).
     pub fn local_change(&self) {
         self.changes.bump();
+    }
+
+    /// Tests: how many changes §6's event has been told of.
+    #[cfg(test)]
+    pub(crate) fn generation(&self) -> u64 {
+        self.changes.generation.load(Ordering::SeqCst)
     }
 
     /// `sink`, also telling this runtime when the wallet set changes. The

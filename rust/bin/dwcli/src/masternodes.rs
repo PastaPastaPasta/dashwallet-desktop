@@ -10,7 +10,9 @@
 //! facade previews; no command takes or signs with an operator secret. The
 //! `mn shared` commands (MG-04b slice 1a) read a pasted message from stdin,
 //! take a grant capped at 0 to give consent, and reach nothing that hands
-//! bytes to the network.
+//! bytes to the network. The evonode credit withdrawal commands (MG-13,
+//! mn-engine §2.5) take a `MasternodeWithdraw` grant of exactly the amount
+//! and destination the command line names, once the quote has fixed it.
 
 use std::io::{Read, Write};
 use std::sync::Arc;
@@ -24,10 +26,12 @@ use dw_engine::masternodes::{
     KeyChangeRequest, MasternodeType, Masternodes, MasternodesError, OperatorChoice, PayoutChoice,
     PlatformNodeChoice, RegistrationRequest, RewardChoice, ShareSlot, ShareTerms, SharedKind,
     StandbyVariant, StartSharedRequest, UpdateRegistrarRequest, UpdateShareRequest, VotingChoice,
+    WithdrawalDestinationCheck, WithdrawalKeyChoice, WithdrawalMark,
 };
+use dw_engine::platform::WithdrawAmount;
 use dw_engine::{Engine, EngineError, NetworkSession, WalletId};
 use dw_protx::params::MAX_ENVELOPE_BYTES;
-use dw_vault::GrantPurpose;
+use dw_vault::{GrantPurpose, WithdrawalDestination};
 use serde::Serialize;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
@@ -140,6 +144,46 @@ enum MnCommand {
     },
     /// An evonode's claimable credits (a proved Platform read).
     Credits { pro_tx_hash: String },
+    /// What the wallet can withdraw from the evonode's Platform identity
+    /// and where to, each destination `fixed` or `checking` (MG-13); signs
+    /// nothing.
+    WithdrawQuote {
+        pro_tx_hash: String,
+        #[arg(long)]
+        wallet: Option<String>,
+    },
+    /// Withdraw the evonode identity's credits to Core under a
+    /// `MasternodeWithdraw` grant of the amount plus Drive's fee, bound to
+    /// a payout key's destination; refused while the quote's destination is
+    /// `checking`. Prints the quote and the record.
+    Withdraw {
+        pro_tx_hash: String,
+        #[command(flatten)]
+        how: WithdrawArgs,
+    },
+    /// Try again: a `refused` withdrawal's sibling at its nonce, under a
+    /// new grant as `withdraw` takes it. The record must be one of
+    /// `pro_tx_hash`'s (else `withdrawal_not_found`, before the quote or
+    /// any grant). Prints the quote and the new record.
+    WithdrawRetry {
+        pro_tx_hash: String,
+        /// The refused record's id.
+        id: String,
+        #[command(flatten)]
+        how: WithdrawArgs,
+    },
+    /// The masternode's withdrawal records, any wallet's, oldest first.
+    Withdrawals { pro_tx_hash: String },
+    /// Read Platform again for a withdrawal record now.
+    RecheckWithdrawal { id: String },
+    /// Mark a `couldnt_confirm` withdrawal as received or not; the record
+    /// stays undecided and is still read.
+    MarkWithdrawal {
+        id: String,
+        /// `received` or `not-received`.
+        #[arg(long, value_parser = parse_mark)]
+        mark: WithdrawalMark,
+    },
     /// Register a masternode (a version-2 ProRegTx). With
     /// `--external-address`, only prepares it: the result's `sign_request`
     /// is what the collateral's key signs (`mn register-submit`).
@@ -692,6 +736,26 @@ impl RegisterArgs {
     }
 }
 
+/// `mn withdraw` and `mn withdraw-retry`: the key, the amount and the
+/// destination the grant is made for.
+#[derive(Args)]
+struct WithdrawArgs {
+    /// `owner` (Drive pays the identity's payout address) or `payout`.
+    #[arg(long, value_parser = parse_key)]
+    key: WithdrawalKeyChoice,
+    #[arg(long, required_unless_present = "all", conflicts_with = "all")]
+    credits: Option<u64>,
+    /// Everything but Drive's fee reserve.
+    #[arg(long)]
+    all: bool,
+    /// A payout key's destination address (default: the quote's, its own
+    /// address); an owner key takes none.
+    #[arg(long)]
+    to: Option<String>,
+    #[arg(long)]
+    wallet: Option<String>,
+}
+
 impl MnArgs {
     pub fn starts_spv(&self) -> bool {
         self.spv || self.sync_height.is_some()
@@ -704,6 +768,22 @@ fn parse_role(s: &str) -> Result<AttachedKeyRole, String> {
         "voting" => Ok(AttachedKeyRole::Voting),
         "payout" => Ok(AttachedKeyRole::Payout),
         _ => Err("one of owner, voting, payout".into()),
+    }
+}
+
+fn parse_key(s: &str) -> Result<WithdrawalKeyChoice, String> {
+    match s {
+        "owner" => Ok(WithdrawalKeyChoice::Owner),
+        "payout" => Ok(WithdrawalKeyChoice::Payout),
+        _ => Err("owner or payout".into()),
+    }
+}
+
+fn parse_mark(s: &str) -> Result<WithdrawalMark, String> {
+    match s {
+        "received" => Ok(WithdrawalMark::Received),
+        "not-received" => Ok(WithdrawalMark::NotReceived),
+        _ => Err("received or not-received".into()),
     }
 }
 
@@ -839,6 +919,111 @@ fn masternode_grant(
         )
         .map_err(MasternodesError::from)?;
     Ok(grant.id)
+}
+
+/// `mn withdraw` and `mn withdraw-retry` (Try again of `retry`'s record,
+/// which must be one of `pro_tx_hash`'s: resolved first, so the quote, the
+/// grant and the retry name the one masternode): the quote, then a grant
+/// of exactly what the command line names, bound to that masternode. The
+/// destination must read `fixed` first (P4: the wait comes before consent);
+/// a payout key's grant binds the script of `--to`, else of the quote's
+/// address, and that address goes to the facade too. An owner key's grant
+/// binds none: Drive pays the address the quote shows.
+fn withdraw(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    passphrase: Option<&Zeroizing<Vec<u8>>>,
+    mn: &Masternodes,
+    pro_tx_hash: String,
+    retry: Option<String>,
+    how: WithdrawArgs,
+) -> Result<Value, Failure> {
+    let w = wallet(session, how.wallet)?;
+    if how.key == WithdrawalKeyChoice::Owner && how.to.is_some() {
+        return Err(EngineError::InvalidArgument(
+            "--to takes a payout key; an owner-key withdrawal pays the payout address".into(),
+        )
+        .into());
+    }
+    // Try again names one of this masternode's records, resolved before
+    // any quote or grant. The facade has no read by id, so a record of
+    // another masternode reads as none here.
+    if let Some(id) = &retry {
+        if id.len() != 32 || !id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(EngineError::InvalidArgument(
+                "not a withdrawal id (32 lower-case hex)".into(),
+            )
+            .into());
+        }
+        let records = engine.block_on(mn.withdrawals(pro_tx_hash.clone()))?;
+        if !records.iter().any(|r| &r.id == id) {
+            return Err(MasternodesError::WithdrawalNotFound.into());
+        }
+    }
+    let quote = engine.block_on(mn.withdrawal_quote(w, pro_tx_hash.clone()))?;
+    let mut target = [0u8; 32];
+    hex::decode_to_slice(&quote.pro_tx_hash, &mut target)
+        .map_err(|_| EngineError::Internal("the quote's ProTx hash".into()))?;
+    target.reverse();
+    let shown = match how.key {
+        WithdrawalKeyChoice::Owner => &quote.owner_destination,
+        WithdrawalKeyChoice::Payout => &quote.payout_destination,
+    };
+    let quoted = match shown {
+        Some(WithdrawalDestinationCheck::Checking { reason }) => {
+            return Err(MasternodesError::WithdrawalDestinationChecking { reason: *reason }.into());
+        }
+        Some(WithdrawalDestinationCheck::Fixed { address, .. }) => Some(address.clone()),
+        None => None,
+    };
+    let (to, destination) = match how.key {
+        WithdrawalKeyChoice::Owner => (None, None),
+        WithdrawalKeyChoice::Payout => {
+            // No payout key the identity holds: nothing to bind.
+            let to = (how.to.as_deref().or(quoted.as_deref()))
+                .ok_or(MasternodesError::WithdrawalKeyMissing)?
+                .trim()
+                .to_owned();
+            let script = core_script(session.network().core_network(), &to)?;
+            (Some(to), Some(WithdrawalDestination::of_script(&script)))
+        }
+    };
+    let (amount, credits) = match how.credits {
+        Some(credits) => (WithdrawAmount::Credits { credits }, credits),
+        None => (WithdrawAmount::All, quote.claimable_credits),
+    };
+    let max_credits = credits.saturating_add(quote.rules.fee_credits);
+    let grant = session
+        .vault()
+        .authorize(
+            GrantPurpose::MasternodeWithdraw {
+                pro_tx_hash: target,
+                max_credits,
+                destination,
+            },
+            Some(&w.0),
+            crate::pay::credential(session, passphrase),
+        )
+        .map_err(MasternodesError::from)?
+        .id;
+    let record = match retry {
+        None => engine.block_on(mn.withdraw_credits(w, pro_tx_hash, how.key, amount, to, grant)),
+        Some(id) => {
+            engine.block_on(mn.retry_withdrawal(w, pro_tx_hash, id, how.key, amount, to, grant))
+        }
+    }?;
+    value(json!({ "quote": quote, "withdrawal": record }))
+}
+
+/// The output script of `to`, an address of `network`; the refusal
+/// doesn't quote it.
+fn core_script(network: dashcore::Network, to: &str) -> Result<Vec<u8>, Failure> {
+    use std::str::FromStr;
+    let invalid =
+        || EngineError::InvalidArgument("--to is not a Dash address of this network".into());
+    let address = dashcore::Address::from_str(to).map_err(|_| invalid())?;
+    let address = address.require_network(network).map_err(|_| invalid())?;
+    Ok(address.script_pubkey().to_bytes())
 }
 
 /// The fee an operation's grant must cover (its saved transaction's).
@@ -1013,6 +1198,28 @@ fn command(
         }
         MnCommand::Credits { pro_tx_hash } => {
             value(engine.block_on(mn.evonode_credits(pro_tx_hash))?)
+        }
+        MnCommand::WithdrawQuote {
+            pro_tx_hash,
+            wallet: w,
+        } => {
+            let w = wallet(session, w)?;
+            value(engine.block_on(mn.withdrawal_quote(w, pro_tx_hash))?)
+        }
+        MnCommand::Withdraw { pro_tx_hash, how } => {
+            withdraw(engine, session, passphrase, &mn, pro_tx_hash, None, how)
+        }
+        MnCommand::WithdrawRetry {
+            pro_tx_hash,
+            id,
+            how,
+        } => withdraw(engine, session, passphrase, &mn, pro_tx_hash, Some(id), how),
+        MnCommand::Withdrawals { pro_tx_hash } => {
+            value(engine.block_on(mn.withdrawals(pro_tx_hash))?)
+        }
+        MnCommand::RecheckWithdrawal { id } => value(engine.block_on(mn.recheck_withdrawal(id))?),
+        MnCommand::MarkWithdrawal { id, mark } => {
+            value(engine.block_on(mn.mark_withdrawal(id, mark))?)
         }
         MnCommand::Register(a) => {
             let w = wallet(session, a.wallet.clone())?;
@@ -1806,6 +2013,213 @@ mod tests {
             "1",
         ]);
         assert!(both.is_err());
+    }
+
+    /// The `mn` command of a command line, or clap's refusal.
+    fn mn(args: &[&str]) -> Result<MnCommand, clap::error::ErrorKind> {
+        let cli = crate::Cli::try_parse_from(
+            ["dwcli", "--datadir", "d", "mn"]
+                .into_iter()
+                .chain(args.iter().copied()),
+        )
+        .map_err(|e| e.kind())?;
+        match cli.command {
+            crate::Command::Mn(a) => Ok(a.command),
+            _ => panic!("not an `mn` command"),
+        }
+    }
+
+    const ID: &str = "00112233445566778899aabbccddeeff";
+
+    #[test]
+    fn withdrawal_subcommands_parse_with_their_required_arguments() {
+        for args in [
+            &["withdraw-quote", HASH][..],
+            &["withdraw-quote", HASH, "--wallet", "w"],
+            &["withdraw", HASH, "--key", "owner", "--all"],
+            &["withdraw", HASH, "--key", "payout", "--credits", "5000"],
+            &["withdraw", HASH, "--key", "payout", "--all", "--to", "a"],
+            &["withdraw-retry", HASH, ID, "--key", "owner", "--all"],
+            &["withdrawals", HASH],
+            &["recheck-withdrawal", ID],
+            &["mark-withdrawal", ID, "--mark", "received"],
+            &["mark-withdrawal", ID, "--mark", "not-received"],
+        ] {
+            assert!(mn(args).is_ok(), "{args:?}: {:?}", mn(args).err());
+        }
+        let Ok(MnCommand::WithdrawRetry {
+            pro_tx_hash,
+            id,
+            how,
+        }) = mn(&[
+            "withdraw-retry",
+            HASH,
+            ID,
+            "--key",
+            "payout",
+            "--credits",
+            "7",
+            "--to",
+            "addr",
+            "--wallet",
+            "w",
+        ])
+        else {
+            panic!("not withdraw-retry");
+        };
+        assert_eq!((pro_tx_hash.as_str(), id.as_str()), (HASH, ID));
+        assert_eq!(how.key, WithdrawalKeyChoice::Payout);
+        assert_eq!((how.credits, how.all), (Some(7), false));
+        assert_eq!(
+            (how.to.as_deref(), how.wallet.as_deref()),
+            (Some("addr"), Some("w"))
+        );
+        let Ok(MnCommand::MarkWithdrawal { mark, .. }) =
+            mn(&["mark-withdrawal", ID, "--mark", "not-received"])
+        else {
+            panic!("not mark-withdrawal");
+        };
+        assert_eq!(mark, WithdrawalMark::NotReceived);
+    }
+
+    #[test]
+    fn withdrawal_subcommands_refuse_missing_or_malformed_arguments() {
+        use clap::error::ErrorKind as K;
+        for (args, kind) in [
+            (&["withdraw-quote"][..], K::MissingRequiredArgument),
+            (&["withdraw", HASH], K::MissingRequiredArgument),
+            (&["withdraw", HASH, "--all"], K::MissingRequiredArgument),
+            (
+                &["withdraw", HASH, "--key", "owner"],
+                K::MissingRequiredArgument,
+            ),
+            (
+                &[
+                    "withdraw",
+                    HASH,
+                    "--key",
+                    "owner",
+                    "--all",
+                    "--credits",
+                    "1",
+                ],
+                K::ArgumentConflict,
+            ),
+            (
+                &["withdraw", HASH, "--key", "operator", "--all"],
+                K::ValueValidation,
+            ),
+            (
+                &["withdraw", HASH, "--key", "owner", "--credits=-1"],
+                K::ValueValidation,
+            ),
+            (
+                &["withdraw", HASH, "--key", "owner", "--credits", "x"],
+                K::ValueValidation,
+            ),
+            (
+                &["withdraw-retry", HASH, "--key", "owner", "--all"],
+                K::MissingRequiredArgument,
+            ),
+            (&["recheck-withdrawal"], K::MissingRequiredArgument),
+            (&["mark-withdrawal", ID], K::MissingRequiredArgument),
+            (
+                &["mark-withdrawal", ID, "--mark", "paid"],
+                K::ValueValidation,
+            ),
+        ] {
+            assert_eq!(mn(args).err(), Some(kind), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn a_withdrawal_destination_is_an_address_of_the_network() {
+        use dashcore::hashes::Hash;
+        let script =
+            dashcore::ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array([7; 20]));
+        let at = |network| {
+            dashcore::Address::from_script(&script, network)
+                .unwrap()
+                .to_string()
+        };
+        let testnet = at(dashcore::Network::Testnet);
+        assert_eq!(
+            core_script(dashcore::Network::Testnet, &testnet).ok(),
+            Some(script.to_bytes())
+        );
+        // What the grant binds is that script's hash, as the engine checks.
+        let bound = WithdrawalDestination::of_script(&script.to_bytes());
+        assert!(bound.matches(script.as_bytes()));
+        let mainnet = at(dashcore::Network::Mainnet);
+        for to in [mainnet.as_str(), "not an address", ""] {
+            let Err(f) = core_script(dashcore::Network::Testnet, to) else {
+                panic!("{to:?} accepted");
+            };
+            assert_eq!(f.code, "invalid_argument");
+            assert_eq!(
+                f.message,
+                "invalid argument: --to is not a Dash address of this network"
+            );
+        }
+    }
+
+    #[test]
+    fn withdrawal_failures_and_records_have_the_contract_shapes() {
+        let f = Failure::from(MasternodesError::WithdrawalDestinationChecking {
+            reason: dw_engine::masternodes::WithdrawalCheckingReason::PlatformBehind,
+        });
+        assert_eq!(f.code, "masternodes.withdrawal_destination_checking");
+        let line = error_line(&f.code, &f.message);
+        assert_eq!(line["ok"], false);
+        assert_eq!(
+            line["error"]["code"],
+            "masternodes.withdrawal_destination_checking"
+        );
+        for (e, code) in [
+            (
+                MasternodesError::WithdrawalKeyMissing,
+                "masternodes.withdrawal_key_missing",
+            ),
+            (
+                MasternodesError::WithdrawalNotFound,
+                "masternodes.withdrawal_not_found",
+            ),
+            (
+                MasternodesError::WithdrawalAmountOutOfRange { min: 1, max: 2 },
+                "masternodes.withdrawal_amount_out_of_range",
+            ),
+        ] {
+            assert_eq!(Failure::from(e).code, code);
+        }
+        let checking = WithdrawalDestinationCheck::Checking {
+            reason: dw_engine::masternodes::WithdrawalCheckingReason::PayoutChangePending,
+        };
+        assert_eq!(
+            value(checking).ok(),
+            Some(json!({"kind": "checking", "reason": "payout_change_pending"}))
+        );
+        let fixed = WithdrawalDestinationCheck::Fixed {
+            address: "y".into(),
+            platform_height: 9,
+            core_height: 100,
+            header_tip: 101,
+            lag: 1,
+        };
+        assert_eq!(
+            value(fixed).ok(),
+            Some(
+                json!({"kind": "fixed", "address": "y", "platform_height": 9,
+                "core_height": 100, "header_tip": 101, "lag": 1})
+            )
+        );
+        assert_eq!(
+            value(dw_engine::masternodes::CreditWithdrawalState::CouldntConfirm).ok(),
+            Some(json!("couldnt_confirm"))
+        );
+        assert_eq!(
+            value(WithdrawalMark::NotReceived).ok(),
+            Some(json!("not_received"))
+        );
     }
 
     #[test]

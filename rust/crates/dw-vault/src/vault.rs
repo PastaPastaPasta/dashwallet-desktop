@@ -1154,7 +1154,8 @@ impl Vault {
     ///   with scope Full except for [`GrantPurpose::requires_credential`]
     ///   purposes, which need the passphrase whenever slot P exists.
     /// - `QuickUnlock`: the slot B wrap key. Issues `Spend`, `PlatformOp`,
-    ///   `SignMessage`, `Governance` and `MasternodeOp` grants whose value
+    ///   `SignMessage`, `Governance`, `MasternodeOp` and `MasternodeWithdraw`
+    ///   grants whose value
     ///   ([`GrantPurpose::quick_unlock_value`]) is within the spending limit
     ///   (`QuickUnlockLimitExceeded` above it), only while the passphrase was
     ///   entered within [`PASSPHRASE_MAX_AGE_SECS`] (`PassphraseStale`).
@@ -2217,6 +2218,67 @@ impl Vault {
             return Err(VaultError::GrantPurposeMismatch);
         }
         self.token_signer(wallet, token, SignerScope::MasternodeOwner, hold)
+    }
+
+    /// The single-use [`SignerScope::MasternodeWithdrawal`] signer of
+    /// `wallet` (MG-13 P3, P12), authorized by a redeemed
+    /// `MasternodeWithdraw` grant for that wallet whose key is the vault's;
+    /// any other grant is `GrantPurposeMismatch`. The scope carries the
+    /// grant's `pro_tx_hash`, `max_credits` and `destination`. A token issues one such
+    /// signer, once: a token that already issued a signer is `GrantInvalid`,
+    /// and so is every later call with it, even when this one then fails
+    /// (it is spent first). A token with its own key issues one only
+    /// through its hold ([`Self::masternode_withdrawal_signer_held`]). The
+    /// signer makes one withdrawal signature
+    /// ([`VaultSigner::sign_masternode_withdrawal`]) and nothing else, and
+    /// stops when the vault locks or changes unlock scope.
+    pub fn masternode_withdrawal_signer(
+        &self,
+        wallet: &WalletId,
+        token: &GrantToken,
+    ) -> Result<VaultSigner, VaultError> {
+        self.withdrawal_signer(wallet, None, token)
+    }
+
+    /// [`Self::masternode_withdrawal_signer`] for a token whose key `hold`
+    /// holds: the signer stops when the hold drops.
+    pub fn masternode_withdrawal_signer_held(
+        &self,
+        wallet: &WalletId,
+        hold: &KeyHold,
+        token: &GrantToken,
+    ) -> Result<VaultSigner, VaultError> {
+        self.withdrawal_signer(wallet, Some(hold), token)
+    }
+
+    fn withdrawal_signer(
+        &self,
+        wallet: &WalletId,
+        hold: Option<&KeyHold>,
+        token: &GrantToken,
+    ) -> Result<VaultSigner, VaultError> {
+        let GrantPurpose::MasternodeWithdraw {
+            pro_tx_hash,
+            max_credits,
+            destination,
+        } = token.purpose
+        else {
+            return Err(VaultError::GrantPurposeMismatch);
+        };
+        // One signer per grant (r2 m5): a second one would sign again.
+        if token
+            .issued
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(VaultError::GrantInvalid);
+        }
+        let scope = SignerScope::MasternodeWithdrawal {
+            pro_tx_hash,
+            max_credits,
+            destination,
+        };
+        self.token_signer(wallet, token, scope, hold)
     }
 
     fn scoped_signer(

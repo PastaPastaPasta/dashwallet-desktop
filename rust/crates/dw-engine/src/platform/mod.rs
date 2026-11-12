@@ -112,6 +112,7 @@ mod users;
 mod users_tests;
 pub(crate) mod withdrawal;
 
+pub(crate) use avatar::{Locks, keyed_lock};
 pub use bringup::CREATED_HERE_BUDGET;
 pub use contacts::{
     ChannelState, ContactDetail, ContactQuery, ContactSection, ContactSectionPage, ContactSort,

@@ -17,6 +17,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("Masternodes::list_state", "deferred (MG-10 S1)"),
     ("Masternodes::lock_collateral", "deferred (MG-10 S2)"),
     ("Masternodes::lock_shared_terms", "deferred (MG-10 S5)"),
+    ("Masternodes::mark_withdrawal", "deferred (MG-10 S4)"),
     ("Masternodes::masternode", "deferred (MG-10 S1)"),
     ("Masternodes::operations", "deferred (MG-10 S1)"),
     ("Masternodes::payouts", "deferred (MG-10 S1)"),
@@ -31,6 +32,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "deferred (MG-10 S3)",
     ),
     ("Masternodes::preview_update_share", "deferred (MG-10 S6)"),
+    ("Masternodes::recheck_withdrawal", "deferred (MG-10 S4)"),
     (
         "Masternodes::refresh_external_registration",
         "deferred (MG-10 S2)",
@@ -43,6 +45,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "Masternodes::resolve_collateral",
         "not bound: always refuses collateral_lookup (MG-03 D11)",
     ),
+    ("Masternodes::retry_withdrawal", "deferred (MG-10 S4)"),
     ("Masternodes::send_maintenance", "deferred (MG-10 S6)"),
     (
         "Masternodes::send_shared_registration",
@@ -73,6 +76,9 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("Masternodes::untrack", "deferred (MG-10 S1)"),
     ("Masternodes::update_registrar", "deferred (MG-10 S3)"),
     ("Masternodes::update_share", "deferred (MG-10 S6)"),
+    ("Masternodes::withdraw_credits", "deferred (MG-10 S4)"),
+    ("Masternodes::withdrawal_quote", "deferred (MG-10 S4)"),
+    ("Masternodes::withdrawals", "deferred (MG-10 S4)"),
     (
         "dw_engine::masternodes::standby_file_transactions",
         "deferred (MG-10 S5)",

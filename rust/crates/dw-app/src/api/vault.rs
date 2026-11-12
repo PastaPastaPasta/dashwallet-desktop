@@ -74,7 +74,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "NetworkSession::masternodes",
-        "deferred (MG): the masternodes facade (mn-engine.md) is bound with the Masternodes domain (MG-03 D8)",
+        "deferred (MG): the masternodes facade (mn-engine.md) is bound with the Masternodes domain (MG-03 D8); its evonode credit withdrawal calls (mn-engine.md §2.5: `withdrawal_quote`, `withdraw_credits`, `retry_withdrawal`, `withdrawals`, `recheck_withdrawal`, `mark_withdrawal`) are deferred (MG-10), MG-13 P14",
     ),
     (
         "Vault::with_revealed_seed",
@@ -211,6 +211,14 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
         "Vault::masternode_signer_held",
         "internal: masternode signers are built by the lease table (MG-05)",
+    ),
+    (
+        "Vault::masternode_withdrawal_signer",
+        "internal: the evonode credit withdrawal's single-use signer is built by the engine's lease under a MasternodeWithdraw grant (MG-13 P3, P12); the withdrawal calls are deferred (MG-10)",
+    ),
+    (
+        "Vault::masternode_withdrawal_signer_held",
+        "internal: the evonode credit withdrawal's single-use signer is built by the lease table (MG-13 P12)",
     ),
     (
         "Vault::dashpay_crypto_signer",
@@ -358,6 +366,13 @@ impl From<GrantPurpose> for GrantPurposeSpec {
             P::IdentityScan => Self::IdentityScan,
             P::Governance => Self::Governance,
             P::MasternodeOp { max_duffs } => Self::MasternodeOp { max_duffs },
+            // The host cannot request a masternode withdrawal yet (MG-13 is
+            // engine-only; MG-10 binds it): an engine-issued one shows as the
+            // Platform credits it caps, as dw-ffi shows purposes it lacks.
+            P::MasternodeWithdraw { max_credits, .. } => Self::PlatformOp {
+                max_duffs: 0,
+                max_credits,
+            },
         }
     }
 }

@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 62
+Contract-Version: 64
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -865,7 +865,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 7d40eac0129b9873eff48e48c586c6ba00803513f001a4b457dc950fb571f995 version: 62 -->
+<!-- surface-sha256: 36796ec39563641e3d421bc086a8cc4b9be53c5a4368befdfb03752b8d9b26af version: 64 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1342,6 +1342,7 @@ pub enum FlowKind {
     PlatformAddressFund,
     ShieldedSpend,
     ShieldDrain,
+    MasternodeWithdraw,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2759,7 +2760,7 @@ The shapes are in §3. What they mean, where the name does not say:
   engine charges no more than it quoted; a quote that went stale (a fee change) is `platform.grant_exceeded`, and the
   host quotes again.
 - **`FlowKind`** names what a lease is for; `AcceptAndPay` carries both the `PlatformOp` grant and the payment's
-  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59), with `SharedMasternode` (item 65) and `Dissolution` (item 66); `Proposal` pays a governance proposal's fee (item 60). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
+  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59), with `SharedMasternode` (item 65) and `Dissolution` (item 66), and `MasternodeWithdraw` an evonode's Platform credit withdrawal (item 86); `Proposal` pays a governance proposal's fee (item 60). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
   §6). **`LeaseView`**, `LeaseStateView` (`Active`, `AwaitingProof`, `Parked{reason}`, `NeedsGrant`,
   `Revoked{cause}`, `Ended`) and `BudgetView{purpose, ceiling, spent}` are E0-04 §4.6's view, owned here
   (E0-04 §16.1); `AwaitingProof`'s deadline is `key_expires_in_secs`. **`RevokeCause`**: `Lock`, `Close`,
@@ -4179,6 +4180,23 @@ renames or reshapes them takes the next version bump:
     `NotSent` with no release, Repair lists nothing, and the next funding is not held. The refusal is the same
     `invalid_argument`; its detail now names the selection's count ("this payment would use 51 coins ...")
     where it said "more than 50".
+
+**From MG-13** (version 63):
+
+86. **The evonode credit withdrawal's lease (MG-13 P3, P12, version 63; version 64 binds it to its masternode).**
+    `FlowKind` gains `MasternodeWithdraw`: one `MasternodeWithdraw{pro_tx_hash, max_credits, destination}` grant of
+    the wallet (grant purpose `GrantPurpose::MasternodeWithdraw`); any other grant kind is `platform.grant_invalid`.
+    `pro_tx_hash` (wire order) is the masternode the user acted on: its signer signs that masternode's withdrawal
+    only, and the facade refuses a call for another before redeeming it (`masternodes.withdraw_target_mismatch`,
+    [`mn-engine.md`](mn-engine.md) §4). `max_credits` caps the
+    withdrawal's amount plus Platform's fee reserve; `destination` is `None` for an owner-key withdrawal (Drive pays
+    the identity's payout key) and, for a payout key, the approved script (`WithdrawalDestination::of_script`, its
+    SHA-256), so a withdrawal to any other script is outside the signer's scope. The grant is single use: it yields
+    one `MasternodeWithdrawal` signer that its first signature consumes. Its quick-unlock value is
+    ceil(`max_credits` / 1000) duffs. The withdrawal charges its amount plus the fee reserve to `Credits` and takes
+    the signer in one step, before the owner or payout key signs; the charge goes back when nothing was signed. The
+    calls that use it are the masternodes facade's ([`mn-engine.md`](mn-engine.md) §2.5: `withdraw_credits` and
+    `retry_withdrawal`).
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 
