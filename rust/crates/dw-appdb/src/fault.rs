@@ -10,6 +10,9 @@ pub enum Fault {
     /// The classification of the imported shielded artifacts, before its
     /// first write ([`crate::dispatch::DispatchJournal::classify_shielded_imports`]).
     ClassifyWrite,
+    /// The same classification, after its first row's write: the
+    /// transaction holds a partial classification when it fails.
+    ClassifyAfterFirstWrite,
 }
 
 static ARMED: Mutex<Vec<(PathBuf, Fault)>> = Mutex::new(Vec::new());
