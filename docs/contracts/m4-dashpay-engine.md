@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 64
+Contract-Version: 65
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -627,8 +627,9 @@ deterministic), so another build's refusal of the identical transition is this o
 ### 2.13 Shielded funds (`shielded.rs`; 0.1 E1, RELEASE-PLAN §1 "Shielded")
 
 The wallet's Orchard account 0 in Platform's shielded pool, over platform-wallet's `wallet::shielded` at the pin: the
-coordinator's sync and balance, `fund_from_asset_lock.rs` (Core → Shielded), `operations.rs` `transfer` (Shielded →
-Shielded) and `withdraw` (Shielded → Core). Keys are platform-wallet's own ZIP-32 derivation, `OrchardKeySet::from_seed`
+coordinator's sync and balance, `fund_from_asset_lock.rs` (Core → Shielded), and the wallet's
+`shielded_transfer_to_with_keyset` (Shielded → Shielded) and `shielded_withdraw_to_with_keyset` (Shielded → Core),
+which take the key set the lease released, never the seed. Keys are platform-wallet's own ZIP-32 derivation, `OrchardKeySet::from_seed`
 (seed, network, account 0): the spending key at `m_orchard/32'/coin'/0'` (coin 5 on mainnet, 1 elsewhere), as iOS
 derives it through the FFI. The viewing keys are bound to the library at the session's Platform start, or by the first
 shielded call that finds the account unbound, and persisted through the session's store (`shielded.sqlite` holds the
@@ -670,13 +671,47 @@ a definitive rejection: the library releases the notes and marks the row `failed
 the row (`activity_id`), Platform's hash of the transition (`transition`, SHA-256 of its bytes) and the re-sends so far.
 The facade has no resend, and a host must not offer a retry or a new send of the same payment for a pending one. The
 re-sends run only inside the session, in the engine's own sync passes (the library's loop never runs): a pass is
-admitted only while the session is open and each wallet holding such a spend holds its background lease, with every
-such spend recorded first in the dispatch journal (its activity and transition hash); a spend holds the passes off
-from its library call until its record is written. A lock (async, synchronous or the relock timer's) and the close
+admitted only while the session is open, the dispatch hook is set (below) and each wallet holding such a spend holds
+its background lease, with every such spend recorded first in the dispatch journal (its activity and transition hash);
+a spend holds the passes off from its library call until its record is written. Inside the pass the library asks the
+hook before each re-send of a spend stored under it (below). A lock (async, synchronous or the relock timer's) and the close
 wait for a pass in flight to end, so no re-send runs after a lock completes or a close returns; the close then seals
 the coordinator. A lock completes at its `LockProgress::Done`; the async `lock_vault` also returns only then, while
 the synchronous `lock_vault_sync` (dw-ffi's `Vault.lock`, the console's `walletlock`, the relock timer) returns once
 its own vault gate ran, before the drain, so a pass admitted earlier may still re-send until `Done`. A re-send signs nothing: the bytes are those the spend's lease charged.
+
+**The dispatch hook (version 65).** The engine sets platform-wallet's `ShieldedDispatch` hook on the network's
+coordinator every time it opens `shielded.sqlite` (the Platform start, or the session's first shielded call), before
+the coordinator is used: the library keeps no hook across an open. With it, the library stores a spend's signed
+transition, unsent, before anything is broadcast, then asks the engine, and sends only on its `Ok`:
+- **Before the first broadcast** the engine accepts a spend only while the session is open, when each note the spend
+  selected is a note of the account (the nullifier of a padding action is not one) and they are exactly the notes the
+  library reserved for it, and only after the spend's artifact is written to `dispatch.sqlite` (schema 11,
+  `synchronous=FULL`): the wallet, the history row, Platform's hash of the transition, its kind, its anchor, the
+  nullifiers of the notes it takes and of every action it publishes. Anything else is refused and nothing is sent.
+- **Before a pass re-sends** a spend stored under the hook, the engine allows it only when the journal holds that
+  artifact (same wallet, history row and hash, written by the engine before the first broadcast, neither settled nor
+  archived), the wallet holds its background lease and the session is open. A spend imported from a 0.1 journal, one
+  the journal does not hold and one it cannot read are refused; the stored spend stays as it was, its re-send count
+  unchanged. The library does not ask about a spend stored before any hook was set (a 0.1 one): the pass's own
+  admission above holds those.
+- **Without the hook** nothing is sent: `shielded_send` and `unshield_to_core` are `platform.unavailable` before the
+  quote under the hold, the grant or any key, no pass is admitted, and a coordinator whose hook did not set is not
+  handed to any call (the next call sets it or fails the same way).
+- **A refused spend** (`shielded.spend_refused`, "The payment was not sent"): the engine refused it before its first
+  broadcast, or the library refused the key set as not the account's before it selected, built or stored anything.
+  Nothing left the wallet; the lease keeps the quote it charged when the key set was released.
+- **A first send that fails after the library stored the spend** proves nothing about whether it went out, so the
+  library holds its notes with no verdict. The call then returns `ShieldedSpendOutcome{state: pending, unresolved:
+  null}`, never an error, whatever the failure was; an error is returned only when the library holds nothing new for
+  the spend (it freed the notes, or never stored it). When what the library holds cannot be read the call is
+  `platform.broadcast_unknown{artifact: "shielded transfer"}` (or `"shielded withdraw"`): the payment may still go
+  through. The engine never releases such notes by itself.
+- The 0.1 records stay beside the artifact: the journal row of an unconfirmed spend (schema 9) and the marker of one
+  the library kept no record of (schema 10, "Unrecorded spends" below) are still written, and still gate as below.
+- **No way back.** Once a build with the hook has run on a data directory, a build on a platform-wallet older than
+  the hooked one must not open that directory: it knows neither the unsent mark of a stored spend nor the outcomes
+  the hooked library recorded.
 
 **Closing with an unresolved spend (DEC-1046).** At the pin, removing a wallet from platform-wallet's manager deletes its
 stored transitions and reservations (`remove_wallet` → `unregister_wallet` → `purge_wallet`, `wallet_lifecycle.rs:847`,
@@ -779,7 +814,7 @@ again after a restart (the step's signed-lock record, the library's tracked row,
 | `shield_mixed_coins(grant)` | async | The quote's refusals, read again under the coin fence and the wallet's lock, then under a `ShieldDrain` lease begun from `grant` (a `Spend` grant whose `max_duffs` covers `total_duffs`, else `platform.grant_exceeded`; any other grant `platform.grant_invalid`), and the wallet's claim on its CoinJoin account, held through the funding (`shielded.move_running` while a sweep, consolidation or send again of its chunks runs, `shielded.mixing_active` while it mixes; no mixing starts meanwhile, m3 `start_mixing`), one asset lock spending every planned coin, signed by the drain scope `ShieldDrainFunding` (item 80), which signs only the planned coins, one signature each, their sum within the grant, and admits the library's build before its first signature only when its inputs are exactly the planned coins at their planned values, each still confirmed, and its one output is the lock's burn of a credit to the account's next shield address within the planned fee of the planned sum: any other build (a coin that arrived after the plan, a planned coin replaced or unconfirmed) is refused unsigned (`shielded.coins_changed`: quote again; nothing tracked or sent), and so is a credit below the library's drain minimum (`shielded.below_minimum{min}`), which the library itself would only judge after signing. The lock is a shield's (funding type `AssetLockShieldedAddressTopUp`, step `shield/<k>/funding`): applied as `shield_from_core`'s, `ShieldOutcome` with the same states, pending in `pending_shields`, resumed by `resume_shield`, and a pending one blocks a new drain (`shielded.shield_pending{txid}`). A refusal before the lease begins leaves the grant unused: the gate and the holds, the claim, the quote's refusals read again, `platform.grant_exceeded` and `platform.grant_invalid`. One after it leaves the grant redeemed, since the lease redeemed the vault grant when it began, so a new move needs a new grant: the funding permit's refusal, the drain signer's (`shielded.coins_changed`, `shielded.below_minimum`, and `shielded.too_many_inputs` past 50 inputs), and any other failure of the funding call. A refusal before any signature charges nothing against the lease's budget: the call ends `Cancelled` (or `NotSent`), nothing is signed, and its Funding charge is refunded. A failure after the drain signer signed reads possibly sent as a shield's does (`shield_from_core`), a definitive rejection after signing included (the broadcaster's refusal; the library's minimum-lock floor, which it judges only after signing, is a backstop the drain signer's check before signing reaches first): its step reads `MaybeSent`, and every later drain or shield is `platform.broadcast_unknown{artifact}` with that step, its grant unused, until Tools ▸ Repair resolves it. For a drain's step `resolve_stuck_funding` spends exactly the lock's recorded CoinJoin inputs still unspent, never pooled with other coins and signed as a CoinJoin payment, refused while the wallet mixes (`coinjoin.mixing_active`) or a move of its CoinJoin coins runs (`coinjoin.move_running`); the step reads `NotSent` once that self-spend is ChainLocked, and the next drain funds its lock on the next step. | `ShieldedError` |
 | `stuck_shield_fundings()` | async | Tools ▸ Repair's listing: the wallet's shield funding steps (`shield/<k>/funding`, a shield's or a drain's) that read `MaybeSent` or `WillBeSent`, in step order, the steps every later shield and drain is refused for (`platform.broadcast_unknown{artifact}`, `platform.will_be_sent{artifact}`). Nothing applied or not sent is listed, nor a step whose lock was broadcast and waits for its proof or its apply, after the proof window ran out or read back after a restart (`pending_shields` lists that lock, `resume_shield` applies it). Each `StuckShieldFunding` carries `repair`: what `resolve_stuck_funding(step)` would spend now, from the same draft, estimated without signing or reserving anything (`ShieldRepairCost`: `mixed` when the step's lock drained the CoinJoin account, so the self-spend takes only the CoinJoin coins its records name; the inputs, their sum `total_duffs`, and `fee_duffs`, the self-spend's fee, which its `Spend` grant must cover), or the error that call would answer now (`stuck_funding` with its refusal, `coinjoin.mixing_active`, `coinjoin.move_running`, `invalid_argument` when no coin is left). The app's listing passes on only a reason that names no transaction, coin or address, and whether it may clear by itself (dw-app `ShieldRepairBlocked`), never the error: `resolve_stuck_funding` answers the details. Reads the dispatch journal and the wallet's coins only; `platform.unavailable` until the journal and the tracked rows are read. | `ShieldedError` |
 | `shielded_send_quote(to, credits)` | async | `ShieldedSpendQuote`: `credits`, Platform's `fee_credits` for the transfer, `total_credits` and the `grant` (`max_credits` = total). The gate; `shielded.invalid_address{detail}` for `to` that is not a shielded address of the network; `shielded.not_synced{account}` until the account is established; `shielded.below_minimum{min}` for 0; `shielded.insufficient_funds{needed, available}` above the spendable balance. | `ShieldedError` |
-| `shielded_send(to, credits, memo, grant, confirm_unrecorded)` | async | Shielded → Shielded: `invalid_argument` for a memo over 36 bytes and `shielded.invalid_address`, then `shielded.not_synced{journal}` while the dispatch journal is not read (only a closing session's, §2.13) (`platform.unavailable` if it cannot be) and `shielded.unrecorded_spend` while the wallet holds an unrecorded spend and `confirm_unrecorded` is false (DEC-1057, above), then the quote's refusals, then under the `ShieldedSpend` lease, quoted again once no sync pass can move the notes and charged that total (a fee above what the grant confirmed is `platform.grant_exceeded`, nothing signed), the library's `transfer` from account 0's notes to `to` (change to the account's own address), proved and broadcast, waiting for Platform's proved result. Returns `ShieldedSpendOutcome{credits, balance, to, state, unresolved}`: `state` `done`, or `pending` for a broadcast with no proved answer ("Unconfirmed spends" above; no retry). | `ShieldedError` |
+| `shielded_send(to, credits, memo, grant, confirm_unrecorded)` | async | Shielded → Shielded: `invalid_argument` for a memo over 36 bytes and `shielded.invalid_address`, then `shielded.not_synced{journal}` while the dispatch journal is not read (only a closing session's, §2.13) (`platform.unavailable` if it cannot be) and `shielded.unrecorded_spend` while the wallet holds an unrecorded spend and `confirm_unrecorded` is false (DEC-1057, above), then the quote's refusals, then under the `ShieldedSpend` lease, quoted again once no sync pass can move the notes and charged that total (a fee above what the grant confirmed is `platform.grant_exceeded`, nothing signed), the library's transfer from account 0's notes to `to` (change to the account's own address), proved, accepted by the dispatch hook and broadcast, waiting for Platform's proved result. `platform.unavailable` while the hook is not set, before the grant is redeemed; `shielded.spend_refused` when the spend was refused before anything was sent (§2.13 "The dispatch hook"). Returns `ShieldedSpendOutcome{credits, balance, to, state, unresolved}`: `state` `done`, or `pending` for a broadcast with no proved answer ("Unconfirmed spends" above; no retry) and for a send that failed after the library stored it (`unresolved: null`, "The dispatch hook"). | `ShieldedError` |
 | `unshield_quote(credits, to)` | async | As `shielded_send_quote` for a withdrawal to Core: `to` a P2PKH or P2SH address of the network, or the wallet's next receive address when `None` (`shielded.invalid_address` otherwise), plus `expected_duffs`, what reaches the address. | `ShieldedError` |
 | `unshield_to_core(credits, to, grant, confirm_unrecorded)` | async | Shielded → Core: the journal and `confirm_unrecorded` gates as `shielded_send`'s, then the quote's refusals, then under the `ShieldedSpend` lease the library's `withdraw` to `to` at Core fee rate 1, as `shielded_send` otherwise. The duffs arrive when Platform's asset unlock is mined. Platform refuses a withdrawal from a pool holding fewer than its minimum of notes (250 in every version at the pin, `minimum_pool_notes_for_outgoing`); that refusal is `shielded.pool_too_small{notes, required}` ("Shielded withdrawals open once the network's shielded pool has enough activity. Try again later."). The engine does not check the floor first: mainnet and testnet are past it. | `ShieldedError` |
 | `shielded_history(offset, limit)` | async | The account's activity rows (`ShieldedActivity`), pending first, then by block height, newest first: kind, direction, credits, fee, counterparty (a shielded, Platform or Core address), memo, block height, status and when this device recorded it. `limit` above 500 is `invalid_argument`. The gate. | `ShieldedError` |
@@ -1300,6 +1335,7 @@ pub enum ShieldedError {
     TooManyInputs { inputs: u64, max: u64 },
     PoolTooSmall { notes: u64, required: u64 },
     UnrecordedSpend,
+    SpendRefused,
     MixingActive,
     NothingToMove,
     CoinsUnconfirmed { coins: u64 },
@@ -2450,7 +2486,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
 | `AvatarError` | `avatar.too_large`, `avatar.unsupported`, `avatar.fetch_failed`, `avatar.hash_mismatch`, `avatar.upload_unconfigured` |
 | `CreditsError` | `credits.funding_insufficient`, `credits.below_minimum`, `credits.coins_locked`, `credits.top_up_pending`, `credits.withdrawal_out_of_range`, `credits.withdrawal_landed`, `credits.move_pending`, `credits.recipient_invalid`, `credits.send_out_of_range`, `credits.fund_pending`, `credits.too_many_inputs`, `credits.quote_changed` |
-| `ShieldedError` | `shielded.not_active`, `shielded.not_synced`, `shielded.invalid_address`, `shielded.insufficient_funds`, `shielded.funding_insufficient`, `shielded.below_minimum`, `shielded.coins_locked`, `shielded.shield_pending`, `shielded.too_many_inputs`, `shielded.pool_too_small`, `shielded.unrecorded_spend`, `shielded.mixing_active`, `shielded.nothing_to_move`, `shielded.coins_unconfirmed`, `shielded.move_running`, `shielded.coins_changed` |
+| `ShieldedError` | `shielded.not_active`, `shielded.not_synced`, `shielded.invalid_address`, `shielded.insufficient_funds`, `shielded.funding_insufficient`, `shielded.below_minimum`, `shielded.coins_locked`, `shielded.shield_pending`, `shielded.too_many_inputs`, `shielded.pool_too_small`, `shielded.unrecorded_spend`, `shielded.spend_refused`, `shielded.mixing_active`, `shielded.nothing_to_move`, `shielded.coins_unconfirmed`, `shielded.move_running`, `shielded.coins_changed` |
 
 - `PlatformError` carries the m1 common codes (`invalid_argument`, `network_not_open`, `wallet_not_found`, `storage`,
   `internal`), unprefixed as in m1 §4. m1's common `not_implemented` is `platform.not_implemented{call}` here, so a
@@ -4180,7 +4216,6 @@ renames or reshapes them takes the next version bump:
     `NotSent` with no release, Repair lists nothing, and the next funding is not held. The refusal is the same
     `invalid_argument`; its detail now names the selection's count ("this payment would use 51 coins ...")
     where it said "more than 50".
-
 **From MG-13** (version 63):
 
 86. **The evonode credit withdrawal's lease (MG-13 P3, P12, version 63; version 64 binds it to its masternode).**
@@ -4197,6 +4232,18 @@ renames or reshapes them takes the next version bump:
     the signer in one step, before the owner or payout key signs; the charge goes back when nothing was signed. The
     calls that use it are the masternodes facade's ([`mn-engine.md`](mn-engine.md) §2.5: `withdraw_credits` and
     `retry_withdrawal`).
+
+**From the hooked wallet library** (version 65):
+
+87. **The shielded dispatch hook (version 65).** Every send and unshield goes through platform-wallet's
+    `ShieldedDispatch` hook, which the engine sets at each open of the shielded store: nothing is broadcast before
+    the engine checked the spend's notes and wrote its artifact (dispatch journal schema 11), and a pass re-sends
+    only what the engine accepted (§2.13 "The dispatch hook"). `ShieldedError` gains `shielded.spend_refused`: the
+    spend was refused before anything was sent (by the hook, or for a key set that is not the account's). A new
+    `shielded.*` code and no existing one: `platform.unavailable` says "Platform did not answer, retry", and the
+    other shielded refusals name a cause the user acts on, while this one says only that nothing left the wallet.
+    A first send that fails after the library stored the spend returns `pending` (`unresolved: null`), not an
+    error; without the hook a spend is `platform.unavailable` and no pass runs.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 
