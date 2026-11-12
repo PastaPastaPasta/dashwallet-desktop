@@ -565,58 +565,66 @@ pub(crate) type LoadedJournal = (
 /// Opens and loads `dispatch.sqlite` (§6.2, §6.5), Mode B's standing rows
 /// included, after reading its imported shielded spends against `known`,
 /// the wallets the session knows: one whose wallet is not among them is
-/// archived. `None`: the journal is unavailable (unopenable, or a newer
+/// archived. `Ok(None)`: the journal is unavailable (unopenable, or a newer
 /// schema); the fence then refuses leased Firsts, registrations and call
-/// steps.
+/// steps. An error: the imported spends could not be read, and the
+/// session must not open (a removal or restore before they are read would
+/// change which are archived); the next open reads them.
 pub(crate) async fn open_journal(
     data_dir: &Path,
     known: HashSet<[u8; 32]>,
-) -> Option<LoadedJournal> {
+) -> Result<Option<LoadedJournal>, EngineError> {
+    enum Failed {
+        Unavailable(dw_appdb::AppDbError),
+        Unread(dw_appdb::AppDbError),
+    }
     if let Err(e) = crate::fsutil::create_owned_file(data_dir, Path::new(DISPATCH_DB_FILE)) {
         tracing::warn!(error = %e, "could not create the dispatch journal");
-        return None;
+        return Ok(None);
     }
     let path = data_dir.join(DISPATCH_DB_FILE);
     let opened = tokio::task::spawn_blocking(move || {
-        let journal = match DispatchJournal::open(&path, crate::events::unix_now())? {
+        let journal = match DispatchJournal::open(&path, crate::events::unix_now())
+            .map_err(Failed::Unavailable)?
+        {
             JournalOpen::Ready(j) => j,
             JournalOpen::NewerSchema(v) => {
                 tracing::warn!(schema = v, "the dispatch journal is newer than this build");
                 return Ok(None);
             }
         };
-        // Unread, they stay unclassified, and the next open reads them.
-        match journal.classify_shielded_imports(|w| known.contains(w)) {
-            Ok(c) if c != Default::default() => tracing::info!(
+        let c =
+            (journal.classify_shielded_imports(|w| known.contains(w))).map_err(Failed::Unread)?;
+        if c != Default::default() {
+            tracing::info!(
                 unresolved = c.unresolved,
                 archived = c.archived,
                 "imported shielded spends read"
-            ),
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "the imported shielded spends could not be read");
-            }
+            );
         }
-        let (rows, steps) = journal.load()?;
-        let calls = journal.load_calls()?;
-        Ok::<_, dw_appdb::AppDbError>(Some((journal, rows, steps, calls)))
+        let (rows, steps) = journal.load().map_err(Failed::Unavailable)?;
+        let calls = journal.load_calls().map_err(Failed::Unavailable)?;
+        Ok(Some((journal, rows, steps, calls)))
     })
     .await;
     match opened {
-        Ok(Ok(Some((journal, rows, steps, calls)))) => Some((
+        Ok(Ok(Some((journal, rows, steps, calls)))) => Ok(Some((
             Arc::new(journal) as Arc<dyn JournalBackend>,
             rows,
             steps,
             calls,
-        )),
-        Ok(Ok(None)) => None,
-        Ok(Err(e)) => {
+        ))),
+        Ok(Ok(None)) => Ok(None),
+        Ok(Err(Failed::Unread(e))) => Err(EngineError::Storage(format!(
+            "the imported shielded spends could not be read: {e}"
+        ))),
+        Ok(Err(Failed::Unavailable(e))) => {
             tracing::warn!(error = %e, "could not open the dispatch journal");
-            None
+            Ok(None)
         }
         Err(e) => {
             tracing::warn!(error = %e, "could not open the dispatch journal");
-            None
+            Ok(None)
         }
     }
 }

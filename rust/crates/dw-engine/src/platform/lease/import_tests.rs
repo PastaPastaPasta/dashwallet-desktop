@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+use dw_vault::{Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use rusqlite::{Connection, params};
 use zeroize::Zeroizing;
 
@@ -151,12 +151,11 @@ type ArtifactRow = (
 );
 
 fn artifacts(session: &NetworkSession) -> Vec<ArtifactRow> {
-    let conn = Connection::open(
-        session
-            .data_dir()
-            .join(dw_appdb::dispatch::DISPATCH_DB_FILE),
-    )
-    .unwrap();
+    artifacts_at(session.data_dir())
+}
+
+fn artifacts_at(data_dir: &Path) -> Vec<ArtifactRow> {
+    let conn = Connection::open(data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE)).unwrap();
     let schema: i64 = conn
         .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
         .unwrap();
@@ -195,13 +194,15 @@ fn unresolved(wallet: WalletId, activity: [u8; 32], transition: [u8; 32]) -> Art
 
 /// The session opens over a schema 10 journal: a loaded wallet's redrive
 /// row reads unresolved and its marker unresolved (unrecorded), with no
-/// `st_hash`; a wallet the session does not know has its row archived.
+/// `st_hash`; a wallet the session does not know has its row archived. The
+/// loaded wallet has no app database row, so only the loaded set knows it.
 #[test]
 fn a_v10_journal_opens_with_its_imported_rows_classified() {
     let mut f = Fixture::new();
     let a = f.import(PHRASE_A);
     let gone = [0x77; 32];
     let data_dir = f.close();
+    forget_name(&data_dir, a);
     as_schema_10(
         &data_dir,
         &[(a.0, [1; 32], [10; 32]), (gone, [2; 32], [20; 32])],
@@ -238,6 +239,17 @@ fn a_v10_journal_opens_with_its_imported_rows_classified() {
     ));
 }
 
+/// Deletes `wallet`'s app database row, which names it.
+fn forget_name(data_dir: &Path, wallet: WalletId) {
+    Connection::open(data_dir.join(dw_appdb::APP_DB_FILE))
+        .unwrap()
+        .execute(
+            "DELETE FROM wallets WHERE wallet_id = ?1",
+            [wallet.to_string()],
+        )
+        .unwrap();
+}
+
 /// A wallet off the load-on-startup list is in the session's unloaded
 /// set: its imported rows stay unresolved, even with no app database row
 /// naming it.
@@ -250,10 +262,7 @@ fn an_unloaded_wallets_imported_rows_stay_unresolved() {
         .block_on(f.session.set_load_on_startup(b, false))
         .unwrap();
     let data_dir = f.close();
-    Connection::open(data_dir.join(dw_appdb::APP_DB_FILE))
-        .unwrap()
-        .execute("DELETE FROM wallets WHERE wallet_id = ?1", [b.to_string()])
-        .unwrap();
+    forget_name(&data_dir, b);
     as_schema_10(&data_dir, &[(b.0, [1; 32], [10; 32])], &[]);
     f.open();
     assert!(f.session.live().unwrap().store.is_unloaded(&b.0));
@@ -284,4 +293,48 @@ fn a_wallet_listed_only_in_the_app_db_keeps_its_rows_unresolved() {
         artifacts(&f.session),
         [unresolved(listed, [1; 32], [10; 32])]
     );
+}
+
+/// A failed read of the imported spends fails the session's open: no
+/// session is returned and the rows stay unclassified. The next open reads
+/// them against the wallet set as it is, and a restore of the archived
+/// wallet's id afterwards leaves its row archived.
+#[test]
+fn a_failed_classification_fails_the_open_and_the_next_open_reads_the_rows() {
+    let mut f = Fixture::new();
+    let a = f.import(PHRASE_A);
+    let b = f.import(PHRASE_B);
+    let wipe = (f.session.vault())
+        .authorize(GrantPurpose::Wipe, Some(&b.0), Credential::None)
+        .unwrap()
+        .id;
+    f.engine.block_on(f.session.remove_wallet(b, wipe)).unwrap();
+    let data_dir = f.close();
+    as_schema_10(
+        &data_dir,
+        &[(a.0, [1; 32], [10; 32]), (b.0, [2; 32], [20; 32])],
+        &[],
+    );
+    let journal = data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    dw_appdb::fault::arm(&journal, dw_appdb::fault::Fault::ClassifyWrite);
+    let failed = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()));
+    assert!(
+        matches!(failed, Err(crate::EngineError::Storage(_))),
+        "{:?}",
+        failed.err()
+    );
+    let statuses = |rows: Vec<ArtifactRow>| rows.into_iter().map(|r| r.4).collect::<Vec<_>>();
+    assert_eq!(
+        statuses(artifacts_at(&data_dir)),
+        ["unclassified", "unclassified"]
+    );
+
+    f.open();
+    assert_eq!(statuses(artifacts(&f.session)), ["unresolved", "archived"]);
+    assert_eq!(f.import(PHRASE_B), b, "the same id, restored");
+    f.close();
+    f.open();
+    assert_eq!(statuses(artifacts(&f.session)), ["unresolved", "archived"]);
 }

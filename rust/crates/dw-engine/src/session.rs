@@ -519,7 +519,35 @@ impl NetworkSession {
             .chain(store.unloaded())
             .chain(listed)
             .collect();
-        let journal = crate::platform::lease::session::open_journal(&data_dir, known).await;
+        let journal = match crate::platform::lease::session::open_journal(&data_dir, known).await {
+            Ok(journal) => journal,
+            Err(e) => {
+                let report = manager.shutdown().await;
+                if !report.all_clean() {
+                    tracing::warn!(
+                        ?report,
+                        "manager shutdown after failed journal read was not clean"
+                    );
+                }
+                // Released before the error returns, as a close does, so
+                // the next open in this process can read the journal again:
+                // the loaded wallets are unloaded first, or upstream's
+                // reference cycle keeps the persister (see `close`). The
+                // shielded store is not configured yet, so the unload
+                // deletes nothing of it.
+                for id in manager.list_wallet_ids_blocking() {
+                    if let Err(e) = manager.remove_wallet(&id).await {
+                        tracing::warn!(wallet_id = %hex::encode(id), error = %e, "unload after a failed open failed");
+                    }
+                }
+                let released = Arc::downgrade(&persister);
+                drop((manager, store, persister, replay, tap));
+                if !persister_released(&released).await {
+                    tracing::warn!("the wallet database is still held after a failed open");
+                }
+                return Err(e);
+            }
+        };
         let leases = crate::platform::lease::LeaseTable::new(
             network.clone(),
             Arc::clone(&sink),
