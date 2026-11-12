@@ -1601,3 +1601,39 @@ fn a_tick_reads_the_history_once_and_never_for_settled_proposals() {
     p.tick(Instant::now());
     assert_eq!(p.fee_scans(), n);
 }
+
+/// Rows 59 and 65: a fee mined in a block a fork replaced, with no event
+/// announcing it, has no depth once the truncation is found, so its coins
+/// are an unseen fee's again.
+#[test]
+fn a_fee_in_a_replaced_block_has_no_depth_after_a_silent_truncation() {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let p = props(Mode::Unconfirmed);
+    let (hash, fee) = p.restarted();
+    let (f, wallet) = (&p.f, p.f.wallet);
+    let w = f.engine.block_on(f.session.wallet(&wallet)).unwrap();
+    f.engine.block_on(async {
+        crate::events::set_checkpoint(&mut w.state_mut().await.core_wallet, TIP)
+    });
+    (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {
+        wallet_id: wallet.0,
+        height: TIP,
+    });
+    p.confirm(&hash, 6);
+    let held = |p: &Props| p.f.session.unseen_proposal_fee_inputs(&p.f.wallet).unwrap();
+    assert!(held(&p).is_empty(), "the fee is mined");
+    let manager = f.session.manager().unwrap();
+    f.engine.block_on(async {
+        let wm = manager.wallet_manager_arc();
+        wm.write().await.truncate_above(TIP - 10).unwrap();
+    });
+    let guard = f.engine.block_on(f.session.replay_guard(wallet, 0));
+    let inputs: HashSet<OutPoint> = fee.input.iter().map(|i| i.previous_output).collect();
+    let after = held(&p);
+    eprintln!(
+        "ROW5965 fee mined at {}, silent truncation to {}: guard {guard:?}, unseen fee inputs {after:?}",
+        TIP - 5,
+        TIP - 10
+    );
+    assert_eq!(after, inputs, "the fee keeps its depth");
+}

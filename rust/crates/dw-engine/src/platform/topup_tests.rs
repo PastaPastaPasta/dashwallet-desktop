@@ -2091,7 +2091,6 @@ fn the_funding_hold_waits_for_platform_writes() {
 #[test]
 fn a_replay_holds_asset_lock_funding_until_it_reaches_its_target() {
     use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
-    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     use platform_wallet::events::WalletEvent;
 
     let f = fixture(false);
@@ -2110,11 +2109,7 @@ fn a_replay_holds_asset_lock_funding_until_it_reaches_its_target() {
     let (_, lib) = f.engine.block_on(PwLib::open(&session, f.wallet)).unwrap();
     let checkpoint = |height: u32| {
         (f.engine).block_on(async {
-            lib.wallet
-                .state_mut()
-                .await
-                .core_wallet
-                .update_synced_height(height)
+            crate::events::set_checkpoint(&mut lib.wallet.state_mut().await.core_wallet, height)
         })
     };
     let advance = |height: u32| {

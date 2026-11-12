@@ -345,6 +345,7 @@ impl NetworkSession {
             // stored replay is resumed (`WalletState::loading`); a store
             // SPV commits for it meanwhile ends no record
             // (`ReplayRecords::committed`).
+            this.hub.admit(id);
             this.hub.update_wallet_state(id, |s| s.loading = true);
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
@@ -352,6 +353,7 @@ impl NetworkSession {
                 this.hub.unload_wallet(&id);
                 return Err(e.into());
             }
+            this.admit_loaded(&live.manager, id).await;
             if live.manager.get_wallet(&id.0).await.is_none() {
                 live.store.set_unloaded(id.0, true);
                 this.hub.unload_wallet(&id);
@@ -510,31 +512,42 @@ impl NetworkSession {
             // DEC-210: before the first write, as an import of a seed.
             let readmit = id.to_string();
             let readmitted = this.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
-            let store = Arc::clone(&live.store);
-            let refused = crate::keys::registration_refused(this.data_dir());
-            let stored = tokio::task::spawn_blocking(move || {
-                if refused {
-                    return Err("test: registration refused".to_owned());
+            let was_unloaded = this.hub.admit(id);
+            let registered = async {
+                let store = Arc::clone(&live.store);
+                let refused = crate::keys::registration_refused(this.data_dir());
+                let stored = tokio::task::spawn_blocking(move || {
+                    if refused {
+                        return Err("test: registration refused".to_owned());
+                    }
+                    store
+                        .store(id.0, changeset)
+                        .and_then(|()| store.flush(id.0))
+                        .map_err(|e| e.to_string())
+                })
+                .await?;
+                if let Err(e) = stored {
+                    // Not registered: removed again, as a failed seed import.
+                    if readmitted {
+                        this.record_removed_again(&held, id).await;
+                    }
+                    return Err(EngineError::Storage(format!("watch-only registration: {e}")));
                 }
-                store
-                    .store(id.0, changeset)
-                    .and_then(|()| store.flush(id.0))
-                    .map_err(|e| e.to_string())
-            })
-            .await?;
-            if let Err(e) = stored {
-                // Not registered: removed again, as a failed seed import.
-                if readmitted {
-                    this.record_removed_again(&held, id).await;
-                }
-                return Err(EngineError::Storage(format!("watch-only registration: {e}")));
+                live.manager.load_from_persistor().await?;
+                this.admit_loaded(&live.manager, id).await;
+                live.manager
+                    .get_wallet(&id.0)
+                    .await
+                    .ok_or_else(|| EngineError::Internal(format!("watch-only wallet {id} did not load")))
             }
-            live.manager.load_from_persistor().await?;
-            let wallet = live
-                .manager
-                .get_wallet(&id.0)
-                .await
-                .ok_or_else(|| EngineError::Internal(format!("watch-only wallet {id} did not load")))?;
+            .await;
+            let wallet = match registered {
+                Ok(wallet) => wallet,
+                Err(e) => {
+                    this.unadmit(&live.manager, id, was_unloaded).await;
+                    return Err(e);
+                }
+            };
             if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD {
                 if let Err(e) = crate::keys::apply_lookahead(&wallet, lookahead).await {
                     tracing::warn!(wallet_id = %id, error = %e, "could not set the watch-only lookahead");
@@ -565,6 +578,30 @@ impl NetworkSession {
             Ok(id)
         })
         .await
+    }
+}
+
+impl NetworkSession {
+    /// Admits the wallets other than `id` a load from the store brought
+    /// back into `manager` ([`crate::events::SessionHub::admit_loaded`]);
+    /// `id`, the wallet being loaded, was admitted before.
+    pub(crate) async fn admit_loaded(&self, manager: &crate::session::Manager, id: WalletId) {
+        let ids = manager.wallet_ids().await;
+        (self.hub).admit_loaded(ids.into_iter().map(WalletId).filter(|w| *w != id));
+    }
+
+    /// A registration of `id` that failed after
+    /// [`crate::events::SessionHub::admit`]: a wallet unloaded or removed
+    /// before (`was_unloaded`) is again, unless `manager` holds it.
+    pub(crate) async fn unadmit(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        was_unloaded: bool,
+    ) {
+        if was_unloaded && manager.get_wallet(&id.0).await.is_none() {
+            self.hub.unload_wallet(&id);
+        }
     }
 }
 

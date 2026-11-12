@@ -311,6 +311,11 @@ pub(crate) struct WalletState {
     /// The wallet is being opened and its stored replay not yet resumed:
     /// spends wait (`NetworkSession::load_wallet`).
     pub loading: bool,
+    /// The height of the last truncation the hub found in key-wallet
+    /// ([`SessionHub::detect_truncation`]) and has not yet heard the
+    /// `ChainTruncated` event of: the event at this height, or one above
+    /// it that would lower nothing, is that truncation's, heard late.
+    pub detected: Option<u32>,
 }
 
 impl WalletState {
@@ -341,6 +346,7 @@ impl WalletState {
             replay_cancelled: self.replay_cancelled,
             loading: self.loading,
             fully_mixed: self.fully_mixed,
+            detected: self.detected,
             ..read
         };
     }
@@ -375,6 +381,45 @@ impl WalletState {
     pub fn tip(&self) -> u32 {
         self.processed_height.max(self.synced_height)
     }
+}
+
+/// Tests: moves key-wallet's filter checkpoint to `height`, as a commit
+/// of dash-spv's filter batch does (its processed height rises with it,
+/// filters/manager.rs:628-634 at 8e7ad2c1) or a rewind does (it stays).
+#[cfg(test)]
+pub(crate) fn set_checkpoint(
+    core: &mut key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    height: u32,
+) {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    core.update_synced_height(height);
+    process_to(core, height);
+}
+
+/// Tests: key-wallet processed a block at `height`, as before its
+/// `BlockProcessed` event (process_block.rs:620-626 at 8e7ad2c1).
+#[cfg(test)]
+pub(crate) fn process_to(
+    core: &mut key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    height: u32,
+) {
+    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+    if height > core.last_processed_height() {
+        core.update_last_processed_height(height);
+    }
+}
+
+/// What a fork truncation dropped ([`SessionHub::apply_truncation`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Truncated<'a> {
+    /// Transactions recorded in blocks above the height, gone.
+    pub removed: &'a [Txid],
+    /// InstantSend-locked transactions recorded in blocks above the
+    /// height, out of a block now.
+    pub unconfirmed: &'a [Txid],
+    /// Found in key-wallet ([`SessionHub::detect_truncation`]), not
+    /// announced by its event.
+    pub detected: bool,
 }
 
 /// Display name and creation time of a wallet (dw-appdb `wallets`).
@@ -449,6 +494,10 @@ pub(crate) struct SessionHub {
     sweep_retry: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The SPV header chain ([`HeaderSource`]); unset, no header answers.
     headers: RwLock<Option<HeaderSource>>,
+    /// The last header tip a progress report gave: a lower one (a fork
+    /// truncated the header chain, or Rebuild Index) checks every wallet
+    /// for a truncation ([`Self::detect_truncation`]).
+    header_tip: Mutex<Option<u32>>,
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -472,6 +521,29 @@ pub(crate) struct SessionHub {
     pub(crate) record_read_fault: Mutex<Option<crate::history_ops::RecordFault>>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next resume between its record read and its rewind.
+    #[cfg(test)]
+    pub(crate) pause_resume: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next rescan's publication, after its rewind.
+    #[cfg(test)]
+    pub(crate) pause_publish: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: holds the next truncation between its heights and the rest.
+    #[cfg(test)]
+    pub(crate) pause_truncation: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
+    /// Held through each fork truncation's application
+    /// ([`Self::apply_truncation`]), and through a check for one
+    /// ([`Self::detect_truncation`]): a check waits for the heights and
+    /// the history of one being applied, not only its heights.
+    truncating: Mutex<()>,
+    /// The wallets unloaded or removed, and not added again: an event of
+    /// one is stale, from before. Held through each event's application
+    /// and through a wallet's unload, removal and admission, so an event
+    /// is applied wholly before the wallet leaves or not at all; taken
+    /// before every other lock of the hub's.
+    unloaded: Mutex<HashSet<WalletId>>,
+    /// Tests: holds the next event right after its wallet's check.
+    #[cfg(test)]
+    pub(crate) pause_event: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
 }
 
 impl SessionHub {
@@ -557,6 +629,7 @@ impl SessionHub {
             sweep_retry_due: Mutex::new(HashSet::new()),
             sweep_retry: OnceLock::new(),
             headers: RwLock::new(None),
+            header_tip: Mutex::new(None),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
@@ -572,6 +645,16 @@ impl SessionHub {
             record_read_fault: Mutex::new(None),
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
+            #[cfg(test)]
+            pause_resume: Mutex::new(None),
+            #[cfg(test)]
+            pause_publish: Mutex::new(None),
+            #[cfg(test)]
+            pause_truncation: Mutex::new(None),
+            truncating: Mutex::new(()),
+            unloaded: Mutex::new(HashSet::new()),
+            #[cfg(test)]
+            pause_event: Mutex::new(None),
         }
     }
 
@@ -696,6 +779,12 @@ impl SessionHub {
         {
             start(id);
         }
+    }
+
+    /// Records header tip `tip`; whether it is below the last one.
+    fn header_tip_dropped(&self, tip: u32) -> bool {
+        let mut last = self.header_tip.lock().unwrap_or_else(|p| p.into_inner());
+        last.replace(tip).is_some_and(|last| tip < last)
     }
 
     /// A reconcile of wallet `id` begins: later events start another.
@@ -827,6 +916,8 @@ impl SessionHub {
     /// Forgets the in-memory state of an unloaded wallet; its name stays
     /// (the "Open Wallet" menu lists it).
     pub(crate) fn unload_wallet(&self, id: &WalletId) {
+        let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        unloaded.insert(*id);
         self.wallets
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -837,8 +928,51 @@ impl SessionHub {
         }
     }
 
+    /// Publishes rescan state: `f` changes the running rescan under the
+    /// lock a fork's truncation is applied under, and each wallet's part
+    /// is then no higher than its replay target. A truncation either
+    /// lowers the target first or finds the published part.
+    pub(crate) fn publish_rescan<R>(&self, f: impl FnOnce(&mut Option<RescanState>) -> R) -> R {
+        let _truncating = self.truncating.lock().unwrap_or_else(|p| p.into_inner());
+        let mut rescan = self.rescan();
+        let out = f(&mut rescan);
+        if let Some(state) = rescan.as_mut() {
+            for id in state.wallets.keys().copied().collect::<Vec<_>>() {
+                if let Some(s) = self.wallet_state(&id) {
+                    state.truncate(&id, s.scan_target);
+                }
+            }
+        }
+        out
+    }
+
+    /// An unloaded or removed wallet joins the manager again: its events
+    /// are heard, and the transactions key-wallet holds are this load's.
+    /// Returns whether it was unloaded or removed.
+    pub(crate) fn admit(&self, id: WalletId) -> bool {
+        let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        let was = unloaded.remove(&id);
+        self.history.with_wallet(id, |h| h.session_held.clear());
+        was
+    }
+
+    /// Admits those of `ids`, wallets the manager holds, still unloaded or
+    /// removed ([`Self::admit`]): a load from the store registers every
+    /// wallet stored and not closed, a removed one whose deletion failed
+    /// too.
+    pub(crate) fn admit_loaded(&self, ids: impl IntoIterator<Item = WalletId>) {
+        let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        for id in ids {
+            if unloaded.remove(&id) {
+                self.history.with_wallet(id, |h| h.session_held.clear());
+            }
+        }
+    }
+
     /// Forgets everything about a removed wallet.
     pub(crate) fn forget_wallet(&self, id: &WalletId) {
+        let mut unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        unloaded.insert(*id);
         self.wallets
             .write()
             .unwrap_or_else(|p| p.into_inner())
@@ -907,16 +1041,168 @@ impl SessionHub {
         known_before != state.balances().is_some()
     }
 
-    /// Lowers a wallet's heights to `height` after a fork truncated it;
-    /// returns whether its balances became known or unknown.
-    fn lower_heights(&self, id: WalletId, height: u32) -> bool {
-        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
-        let state = map.entry(id).or_default();
-        let known_before = state.balances().is_some();
-        state.synced_height = state.synced_height.min(height);
-        state.scan_target = state.scan_target.min(height);
-        state.processed_height = state.processed_height.min(height);
-        known_before != state.balances().is_some()
+    /// A fork truncated wallet `id` to `height`: the wallet dropped what
+    /// the blocks above recorded, kept their InstantSend-locked
+    /// transactions unconfirmed and lowered its heights. The hub's heights
+    /// follow it, and so do the history, the sweep chunks a winner in
+    /// those blocks beat, the running rescan and the replay record. Applied
+    /// once: a truncation found ([`Self::detect_truncation`]) only while the
+    /// hub's processed height is above `height`, and the event of one found
+    /// (at its height, or above it with nothing to lower) not at all.
+    /// Returns whether it was applied.
+    pub(crate) fn apply_truncation(
+        &self,
+        _truncating: &std::sync::MutexGuard<'_, ()>,
+        id: WalletId,
+        height: u32,
+        found: Truncated<'_>,
+        balance: &WalletCoreBalance,
+        accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+    ) -> bool {
+        let lowered = {
+            let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+            let state = map.entry(id).or_default();
+            // An event is matched to a found truncation by its height
+            // alone. That holds while a truncation's event reaches the hub
+            // before the new chain's progress past its height does, so a
+            // truncation is never found above its own event's height.
+            let heard = !found.detected
+                && state.detected.is_some_and(|d| {
+                    height == d || (height > d && state.processed_height <= height)
+                });
+            if heard || (!found.detected && state.detected.is_some_and(|d| height <= d)) {
+                state.detected = None;
+            }
+            let news = !heard && (!found.detected || state.processed_height > height);
+            news.then(|| {
+                let known_before = state.balances().is_some();
+                let from = state.scan_target.max(state.processed_height);
+                state.synced_height = state.synced_height.min(height);
+                state.scan_target = state.scan_target.min(height);
+                state.processed_height = state.processed_height.min(height);
+                if found.detected {
+                    state.detected = Some(height);
+                }
+                (from, known_before != state.balances().is_some())
+            })
+        };
+        let Some((from, flipped)) = lowered else {
+            return false;
+        };
+        #[cfg(test)]
+        if let Some((reached, release)) = self.pause_truncation.lock().unwrap().take() {
+            reached.wait();
+            release.wait();
+        }
+        self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
+        let changed = self
+            .history
+            .with_wallet(id, |h| h.truncate(found.removed, found.unconfirmed));
+        if let Some(rescan) = self.rescan().as_mut()
+            && rescan.truncate(&id, height)
+        {
+            self.pump.mark_sync();
+        }
+        if let Some(replay) = self.replay.get().and_then(std::sync::Weak::upgrade) {
+            replay.note(crate::replay_record::ReplayNote::Truncated {
+                wallet: id,
+                height,
+                from,
+            });
+        }
+        if !changed.is_empty() {
+            self.pump.mark_history(id, Some(&changed));
+        }
+        self.mark_young(id);
+        if self.update_balance(id, balance, accounts) || flipped {
+            self.pump.mark_balances(id);
+        }
+        true
+    }
+
+    /// Applies a truncation of wallet `id` that no event announced
+    /// (dash-spv truncates with its event monitor stopped): key-wallet's
+    /// processed height, read with `core` under the manager's lock, is
+    /// below the hub's. Only a truncation lowers it. Returns the height
+    /// when applied.
+    ///
+    /// The history drops the transactions mined above that height that
+    /// key-wallet no longer holds, and keeps those it holds out of a block
+    /// (InstantSend-locked) unconfirmed. The new chain may have advanced
+    /// past the fork before the check, so the height can be above it: the
+    /// same applies below it to the transactions key-wallet held this
+    /// session and neither holds in a block nor finalized, unless the
+    /// history has them in a ChainLocked block (no fork replaces one). A
+    /// record only read from storage stays: key-wallet never held it, and
+    /// nothing tells it apart from one mined below the fork. A ProRegTx the
+    /// history keeps out of sight (a contact's record) has no height: it
+    /// goes when key-wallet held it this session and now neither holds nor
+    /// finalized it. Key-wallet's ChainLock bounds nothing here: it can be
+    /// the new chain's.
+    pub(crate) fn detect_truncation(
+        &self,
+        id: WalletId,
+        core: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    ) -> Option<u32> {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let truncating = self.truncating.lock().unwrap_or_else(|p| p.into_inner());
+        let height = core.last_processed_height();
+        if !self
+            .wallet_state(&id)
+            .is_some_and(|s| height < s.processed_height)
+        {
+            return None;
+        }
+        let accounts = core.accounts.all_accounts();
+        let records: HashMap<Txid, bool> = (accounts.iter())
+            .flat_map(|a| a.transactions().iter())
+            .filter(|(_, r)| crate::history::is_wallets(r))
+            .map(|(t, r)| (*t, r.context.block_info().is_some()))
+            .collect();
+        let finalized = |t: &Txid| accounts.iter().any(|a| a.transaction_is_finalized(t));
+        let still_recorded = |t: &Txid| accounts.iter().any(|a| a.transactions().contains_key(t));
+        let (mut removed, mut unconfirmed) = (Vec::new(), Vec::new());
+        self.history.read_wallet(&id, |h| {
+            for (txid, entry) in &h.txs {
+                let Some(mined) = entry.context.block_info().map(|b| b.height()) else {
+                    continue;
+                };
+                let is_final = matches!(entry.context, TransactionContext::InChainLockedBlock(_))
+                    || finalized(txid);
+                if mined <= height && (!h.session_held.contains(txid) || is_final) {
+                    continue;
+                }
+                match records.get(txid) {
+                    None => removed.push(*txid),
+                    Some(false) => unconfirmed.push(*txid),
+                    Some(true) => {}
+                }
+            }
+            // A ProRegTx kept out of sight has no height: one key-wallet
+            // held this session, and now neither holds in an account nor
+            // has finalized, went with the fork.
+            removed.extend(
+                (h.hidden())
+                    .map(|(t, _)| *t)
+                    .filter(|t| h.session_held.contains(t) && !still_recorded(t) && !finalized(t)),
+            );
+        });
+        self.apply_truncation(
+            &truncating,
+            id,
+            height,
+            Truncated {
+                removed: &removed,
+                unconfirmed: &unconfirmed,
+                detected: true,
+            },
+            &core.balance(),
+            &core.account_balances(),
+        )
+        .then(|| {
+            tracing::warn!(wallet = %id, height, removed = removed.len(), unconfirmed = unconfirmed.len(), "applied a fork truncation no event announced");
+            height
+        })
     }
 
     /// Marks history entries whose confirmation count changed with a new
@@ -931,8 +1217,22 @@ impl SessionHub {
 
     pub(crate) fn apply_wallet_event(&self, event: &WalletEvent) {
         let id = WalletId(event.wallet_id());
+        let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        if unloaded.contains(&id) {
+            return;
+        }
+        #[cfg(test)]
+        if let Some((reached, release)) = self.pause_event.lock().unwrap().take() {
+            reached.wait();
+            release.wait();
+        }
         let now = Some(unix_now());
         self.run_sweep_retry(id);
+        let carried = carried_txids(event);
+        if !carried.is_empty() {
+            self.history
+                .with_wallet(id, |h| h.session_held.extend(carried));
+        }
         match event {
             WalletEvent::TransactionDetected {
                 record,
@@ -940,10 +1240,12 @@ impl SessionHub {
                 account_balances,
                 ..
             } => {
+                // A contact's record shows nowhere; a ProRegTx among them is
+                // kept out of sight for its collateral, as at a load.
+                if self.history.with_wallet(id, |h| h.upsert(record, now)) {
+                    self.pump.mark_new_txs(id, &[record.txid]);
+                }
                 if crate::history::is_wallets(record) {
-                    if self.history.with_wallet(id, |h| h.upsert(record, now)) {
-                        self.pump.mark_new_txs(id, &[record.txid]);
-                    }
                     self.pump.mark_history(id, Some(&[record.txid]));
                 }
                 if self.update_balance(id, balance, account_balances) {
@@ -1014,39 +1316,19 @@ impl SessionHub {
                 account_balances,
                 ..
             } => {
-                // A fork replaced the blocks above `height`: the wallet
-                // dropped what they recorded, kept their InstantSend-locked
-                // transactions unconfirmed and lowered its heights. The
-                // history follows it, and so do the sweep chunks a winner in
-                // those blocks beat.
-                self.note_sweep_news(
+                let truncating = self.truncating.lock().unwrap_or_else(|p| p.into_inner());
+                self.apply_truncation(
+                    &truncating,
                     id,
-                    crate::coinjoin::SweepNews::Truncated { height: *height },
+                    *height,
+                    Truncated {
+                        removed: txids,
+                        unconfirmed: unconfirmed_txids,
+                        detected: false,
+                    },
+                    balance,
+                    account_balances,
                 );
-                let changed = self
-                    .history
-                    .with_wallet(id, |h| h.truncate(txids, unconfirmed_txids));
-                let from = self.wallet_state(&id).map_or(0, |s| s.scan_target);
-                let flipped = self.lower_heights(id, *height);
-                if let Some(rescan) = self.rescan().as_mut()
-                    && rescan.truncate(&id, *height)
-                {
-                    self.pump.mark_sync();
-                }
-                if let Some(replay) = self.replay.get().and_then(std::sync::Weak::upgrade) {
-                    replay.note(crate::replay_record::ReplayNote::Truncated {
-                        wallet: id,
-                        height: *height,
-                        from,
-                    });
-                }
-                if !changed.is_empty() {
-                    self.pump.mark_history(id, Some(&changed));
-                }
-                self.mark_young(id);
-                if self.update_balance(id, balance, account_balances) || flipped {
-                    self.pump.mark_balances(id);
-                }
             }
             WalletEvent::BlockProcessed {
                 height,
@@ -1063,12 +1345,11 @@ impl SessionHub {
                         .iter()
                         .chain(updated)
                         .chain(matured)
-                        .filter(|r| crate::history::is_wallets(r))
-                        .map(|r| {
+                        .filter_map(|r| {
                             if h.upsert(r, now) {
                                 new.push(r.txid);
                             }
-                            r.txid
+                            crate::history::is_wallets(r).then_some(r.txid)
                         })
                         .collect()
                 });
@@ -1123,17 +1404,57 @@ impl SessionHub {
     }
 }
 
+/// The transactions a wallet event names.
+fn carried_txids(event: &WalletEvent) -> Vec<Txid> {
+    match event {
+        WalletEvent::TransactionDetected { record, .. } => vec![record.txid],
+        WalletEvent::TransactionInstantLocked { txid, .. } => vec![*txid],
+        WalletEvent::TransactionsSwept { txids, .. } => txids.clone(),
+        WalletEvent::ChainTruncated {
+            txids,
+            unconfirmed_txids,
+            ..
+        } => txids.iter().chain(unconfirmed_txids).copied().collect(),
+        WalletEvent::BlockProcessed {
+            inserted,
+            updated,
+            matured,
+            ..
+        } => (inserted.iter().chain(updated).chain(matured))
+            .map(|r| r.txid)
+            .collect(),
+        WalletEvent::SyncHeightAdvanced { .. } => Vec::new(),
+        WalletEvent::ChainLockProcessed {
+            locked_transactions,
+            ..
+        } => locked_transactions.values().flatten().copied().collect(),
+    }
+}
+
 impl EventHandler for SessionHub {
     fn on_progress(&self, progress: &SyncProgress) {
-        let (changed, masternodes_synced) = {
+        let (changed, masternodes_synced, tip) = {
             let mut tracker = self.tracker();
-            (tracker.on_progress(progress), tracker.masternodes_synced())
+            (
+                tracker.on_progress(progress),
+                tracker.masternodes_synced(),
+                tracker.tip_height(),
+            )
         };
         if masternodes_synced && let Some(trust) = self.trust.get() {
             trust.note_masternodes_synced();
         }
         if changed {
             self.pump.mark_sync();
+        }
+        if tip.is_some_and(|tip| self.header_tip_dropped(tip)) {
+            let wallets: Vec<WalletId> = (self.wallets.read().unwrap_or_else(|p| p.into_inner()))
+                .keys()
+                .copied()
+                .collect();
+            for id in wallets {
+                self.schedule_reconcile(id);
+            }
         }
     }
 
@@ -1471,6 +1792,77 @@ mod tests {
         hub.reconcile_running(W);
         hub.apply_wallet_event(&advanced(101));
         assert_eq!(*started.lock().unwrap(), [W, other, W]);
+    }
+
+    /// Only the wallet's own records are marked for the history view: a
+    /// block event carrying an own record and a contact's ProRegTx marks
+    /// the own one alone, and a transaction event carrying a contact's
+    /// ProRegTx marks nothing. Both ProRegTxs are kept out of sight.
+    #[test]
+    fn only_the_wallets_own_records_are_marked_for_the_history_view() {
+        use crate::masternodes::provider_fixtures::{coins, null, registration};
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let own = tx(1);
+        let amount = dw_protx::params::collateral_amount(false);
+        let [mined, seen] = [1, 2].map(|n| registration(null(0), false, n, coins(&[amount])));
+        let contact = |t: &Transaction, context| {
+            TransactionRecord::new(
+                t.clone(),
+                AccountType::DashpayExternalAccount {
+                    index: 0,
+                    user_identity_id: [0xaa; 32],
+                    friend_identity_id: [0xbb; 32],
+                },
+                context,
+                TransactionType::Standard,
+                TransactionDirection::Internal,
+                Vec::new(),
+                Vec::new(),
+                0,
+            )
+        };
+        hub.apply_wallet_event(&WalletEvent::BlockProcessed {
+            wallet_id: W.0,
+            height: 100,
+            chain_lock: None,
+            inserted: vec![
+                in_block(&own, 100),
+                contact(
+                    &mined,
+                    TransactionContext::InBlock(BlockInfo::new(100, BlockHash::all_zeros(), 0)),
+                ),
+            ],
+            updated: Vec::new(),
+            matured: Vec::new(),
+            balance: WalletCoreBalance::new(1_000, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        });
+        let block_marks = (hub.pump.take_wallet_marks().1, hub.pump.take_new_txs());
+        hub.apply_wallet_event(&WalletEvent::TransactionDetected {
+            wallet_id: W.0,
+            record: Box::new(contact(&seen, TransactionContext::Mempool)),
+            balance: WalletCoreBalance::new(1_000, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        });
+        let tx_marks = (hub.pump.take_wallet_marks().1, hub.pump.take_new_txs());
+        let hidden: std::collections::HashSet<Txid> =
+            (hub.history).read_wallet(&W, |h| h.hidden().map(|(t, _)| *t).collect());
+        assert_eq!(
+            block_marks,
+            (
+                BTreeMap::from([(W, crate::pump::TxidSet::Some([own.txid()].into()))]),
+                BTreeMap::from([(W, vec![own.txid()])]),
+            ),
+            "the block event marks its own record alone"
+        );
+        assert_eq!(
+            tx_marks,
+            (BTreeMap::new(), BTreeMap::new()),
+            "a contact's record marks nothing"
+        );
+        assert_eq!(hidden, [mined.txid(), seen.txid()].into());
     }
 
     /// The reconcile's balance replaces an event's doubled one, and is

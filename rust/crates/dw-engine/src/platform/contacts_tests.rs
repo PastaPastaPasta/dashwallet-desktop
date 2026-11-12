@@ -1280,6 +1280,11 @@ fn a_mined_payment_moves_last_activity_on_history_changed() {
     // Unmined: no block time, so Bob's activity is his request's.
     assert_eq!(activity(), (names(&[CAROL, BOB]), Some(2_000)));
 
+    let (manager, wallet_id) = (f.s.manager().unwrap(), f.wallet);
+    f.engine.block_on(async move {
+        let wallet = manager.get_wallet(&wallet_id.0).await.unwrap();
+        crate::events::process_to(&mut wallet.state_mut().await.core_wallet, 10);
+    });
     (f.s.hub).apply_wallet_event(&WalletEvent::BlockProcessed {
         wallet_id: f.wallet.0,
         height: 10,

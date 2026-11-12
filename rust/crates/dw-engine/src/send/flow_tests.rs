@@ -2128,19 +2128,15 @@ fn a_data_output_takes_only_automatic_change() {
 
 impl Fixture {
     /// Sets key-wallet's filter checkpoint, as a rewind does
-    /// (`reconcile_dashpay_rescan`, `spv_rescan_filters_blocking`).
+    /// (`reconcile_dashpay_rescan`, `spv_rescan_filters_blocking`), or a
+    /// filter commit, which raises the processed height with it.
     fn checkpoint(&self, height: u32) {
-        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
         let (session, id) = (Arc::clone(&self.session), self.wallet);
         let inner = Arc::clone(&session);
         self.engine
             .block_on(session.on_runtime(async move {
                 let wallet = inner.wallet(&id).await?;
-                wallet
-                    .state_mut()
-                    .await
-                    .core_wallet
-                    .update_synced_height(height);
+                crate::events::set_checkpoint(&mut wallet.state_mut().await.core_wallet, height);
                 Ok(())
             }))
             .unwrap();
@@ -3180,6 +3176,29 @@ fn a_replay_the_hub_holds_keeps_its_record() {
     assert!(replaying(f.guard()));
 }
 
+/// A clean quit with the new chain at 901, below the old chain's height
+/// 1000 a fork left stored: the record survives, the reopen replays from
+/// `reached` and sends are back at the new tip; the record goes once the
+/// chain is stored at the old height.
+fn quit_below_then_past_the_old_height(f: Fixture, reached: u32) {
+    f.advance(901);
+    f.commit(901).unwrap();
+    let f = f.reopen();
+    assert_eq!(
+        f.record().map(|r| (r.target, r.reached, r.forked_from)),
+        Some((901, reached, 1_000)),
+        "the clean close kept the record"
+    );
+    assert_eq!(f.synced(), reached);
+    f.advance(901);
+    assert_eq!(f.guard().unwrap(), 901);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    let f = f.reopen();
+    assert_eq!((f.record(), f.synced()), (None, 1_000));
+    assert!(f.guard().is_ok());
+}
+
 /// A fork lowers the replay's target to the new chain, and a restart keeps
 /// it lowered: the replay is done at the shorter chain's tip, though the
 /// stored checkpoint stays above it.
@@ -3208,11 +3227,7 @@ fn a_fork_lowered_replay_target_stays_lowered_after_a_restart() {
     let guard = f.guard();
     eprintln!("ROW58 fork then restart: replay guard at the new tip 900 {guard:?}");
     assert_eq!(guard.unwrap(), 900, "the target went back above the chain");
-    f.advance(901);
-    f.commit(901).unwrap();
-    let f = f.reopen();
-    assert_eq!(f.record(), None);
-    assert!(f.guard().is_ok());
+    quit_below_then_past_the_old_height(f, 399);
 }
 
 /// Without a fork, a replay resumed after a restart is not done below
@@ -3756,11 +3771,14 @@ fn an_abandon_whose_replay_is_not_stored_does_not_happen() {
 /// Seams for forks, transactions the wallet sees, and the record store.
 impl Fixture {
     /// A fork truncated the chain to `height`: the wallet lowers its
-    /// checkpoint to it, and the hub hears of it.
+    /// heights to it, and the hub hears of it.
     fn truncate(&self, height: u32) {
-        if self.synced() > height {
-            self.checkpoint(height);
-        }
+        self.truncate_silently(height);
+        self.hear_truncation(height);
+    }
+
+    /// The hub hears the `ChainTruncated` event of a fork to `height`.
+    fn hear_truncation(&self, height: u32) {
         (self.session.hub).apply_wallet_event(
             &platform_wallet::events::WalletEvent::ChainTruncated {
                 wallet_id: self.wallet.0,
@@ -3772,6 +3790,19 @@ impl Fixture {
                 account_balances: Default::default(),
             },
         );
+    }
+
+    /// A fork truncated the chain to `height` with no event the hub hears:
+    /// dash-spv truncates with its event monitor stopped
+    /// (lifecycle.rs:263-287 at 8e7ad2c1). key-wallet's `truncate_above`,
+    /// under the manager's lock.
+    fn truncate_silently(&self, height: u32) {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let manager = Arc::clone(&self.session.live().unwrap().manager);
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            wm.write().await.truncate_above(height).unwrap();
+        });
     }
 
     fn cancel(&self) {
@@ -3889,8 +3920,8 @@ impl Fixture {
 }
 
 /// A fork lowers the running rescan's target with the record's: the
-/// rescan is back at the shorter chain's tip, and a clean close then ends
-/// the record.
+/// rescan is back at the shorter chain's tip; the record ends once the
+/// chain is stored at the old height.
 #[test]
 fn a_rescan_a_fork_shortened_is_back_at_the_new_tip() {
     let f = fixture(false);
@@ -3909,16 +3940,12 @@ fn a_rescan_a_fork_shortened_is_back_at_the_new_tip() {
         "the rescan waits for the old chain's height"
     );
     assert_eq!(guard.unwrap(), 900);
-    f.advance(901);
-    f.commit(901).unwrap();
-    let f = f.reopen();
-    assert_eq!(f.record(), None, "the clean close kept the record");
-    assert!(f.guard().is_ok());
+    quit_below_then_past_the_old_height(f, 399);
 }
 
 /// After a fork, a cancel leaves the checkpoint at the shorter chain's
-/// tip, and a rescan from the birth height then replays to that tip; a
-/// clean close ends its record.
+/// tip, and a rescan from the birth height then replays to that tip; its
+/// record ends once the chain is stored at the old height.
 #[test]
 fn a_fork_then_a_cancel_and_a_rescan_from_the_birth_height_complete_at_the_shorter_tip() {
     let f = fixture(false);
@@ -3947,11 +3974,7 @@ fn a_fork_then_a_cancel_and_a_rescan_from_the_birth_height_complete_at_the_short
         "ROW58 fork, cancel, rescan from the birth height: replay guard at the new tip 900 {guard:?}, record {record:?}"
     );
     assert_eq!(guard.unwrap(), 900, "the target went back above the chain");
-    f.advance(901);
-    f.commit(901).unwrap();
-    let f = f.reopen();
-    assert_eq!(f.record(), None);
-    assert!(f.guard().is_ok());
+    quit_below_then_past_the_old_height(f, 299);
 }
 
 /// The same after a restart: the stored checkpoint stays the old chain's,
@@ -3982,11 +4005,7 @@ fn a_fork_then_a_cancel_and_a_rescan_from_the_birth_height_complete_at_the_short
          {guard:?}, record {record:?}"
     );
     assert_eq!(guard.unwrap(), 900, "the target went back above the chain");
-    f.advance(901);
-    f.commit(901).unwrap();
-    let f = f.reopen();
-    assert_eq!(f.record(), None);
-    assert!(f.guard().is_ok());
+    quit_below_then_past_the_old_height(f, 299);
 }
 
 /// A stored checkpoint above the target of a record no fork lowered is
@@ -4758,4 +4777,1953 @@ mod normal_payment_beside_mixing {
         // The CoinJoin account's coins are where they were.
         assert_eq!(max(&f, CoinSource::FullyMixedOnly), MIXED);
     }
+}
+
+// ---- rows 59 and 65: a fork truncation no event announces -------------------
+
+impl Fixture {
+    /// The wallet's transaction `seed` spending `inputs`, paying no one.
+    fn spend_of(&self, seed: u8, inputs: &[OutPoint]) -> dashcore::Transaction {
+        dashcore::Transaction {
+            version: 1,
+            lock_time: u32::from(seed),
+            input: (inputs.iter())
+                .map(|o| dashcore::TxIn {
+                    previous_output: *o,
+                    ..Default::default()
+                })
+                .collect(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        }
+    }
+
+    /// The wallet sees `tx` in `context`, and the hub hears key-wallet's
+    /// event of it.
+    fn see_in(
+        &self,
+        tx: &dashcore::Transaction,
+        context: key_wallet::transaction_checking::TransactionContext,
+    ) {
+        let event = self.seen_event(tx, context);
+        self.session.hub.apply_wallet_event(&event);
+    }
+
+    /// The wallet sees `tx` in `context`: key-wallet records it. Returns
+    /// the event that carries its record, not heard yet.
+    fn seen_event(
+        &self,
+        tx: &dashcore::Transaction,
+        context: key_wallet::transaction_checking::TransactionContext,
+    ) -> platform_wallet::events::WalletEvent {
+        use key_wallet::transaction_checking::WalletTransactionChecker;
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let (manager, id, tx) = (
+            Arc::clone(&self.session.live().unwrap().manager),
+            self.wallet,
+            tx.clone(),
+        );
+        let (record, balance, account_balances) = self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+            let mut wallet = wallet.clone();
+            info.core_wallet
+                .check_core_transaction(&tx, context, &mut wallet, true, true)
+                .await;
+            let record = (info.core_wallet.transaction_history().into_iter())
+                .find(|r| r.txid == tx.txid())
+                .cloned();
+            (
+                record,
+                info.core_wallet.balance(),
+                info.core_wallet.account_balances(),
+            )
+        });
+        platform_wallet::events::WalletEvent::TransactionDetected {
+            wallet_id: self.wallet.0,
+            record: Box::new(record.expect("key-wallet records the transaction")),
+            balance,
+            account_balances,
+            addresses_derived: Vec::new(),
+        }
+    }
+
+    /// key-wallet applies a ChainLock at `height`.
+    fn chain_lock_at(&self, height: u32) {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let manager = Arc::clone(&self.session.live().unwrap().manager);
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            wm.write().await.apply_chain_lock(dashcore::ChainLock {
+                block_height: height,
+                block_hash: dashcore::BlockHash::all_zeros(),
+                signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+            });
+        });
+    }
+
+    /// Spawns a wallet open, and waits for its pause `pause`.
+    fn load_until(
+        &self,
+        pause: &Arc<crate::coins::TestPause>,
+    ) -> tokio::task::JoinHandle<Result<(), EngineError>> {
+        let load = {
+            let (s, id) = (Arc::clone(&self.session), self.wallet);
+            self.session
+                .rt
+                .spawn(async move { s.load_wallet(id).await })
+        };
+        eventually("the open's pause", || {
+            pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        load
+    }
+
+    /// Key-wallet's checkpoint and processed height, and the hub's
+    /// heights, at `height`, with no event: no reconcile is scheduled.
+    fn quietly_at(&self, height: u32) {
+        self.checkpoint(height);
+        self.session.hub.update_wallet_state(self.wallet, |s| {
+            s.synced_height = height;
+            s.processed_height = height;
+            s.scan_target = s.scan_target.max(height);
+        });
+    }
+
+    /// Under one hold of the manager's lock, so nothing checks for the fork
+    /// between: key-wallet sees `before`, a fork truncates it to `fork`,
+    /// it sees `after` on the new chain, and its checkpoint advances to
+    /// `to`.
+    fn fork_and_progress(
+        &self,
+        before: &[(
+            &dashcore::Transaction,
+            key_wallet::transaction_checking::TransactionContext,
+        )],
+        fork: u32,
+        after: &[(
+            &dashcore::Transaction,
+            key_wallet::transaction_checking::TransactionContext,
+        )],
+        to: u32,
+    ) {
+        use key_wallet::transaction_checking::WalletTransactionChecker;
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let (manager, id) = (
+            Arc::clone(&self.session.live().unwrap().manager),
+            self.wallet,
+        );
+        type Seen<'a> = (
+            &'a dashcore::Transaction,
+            key_wallet::transaction_checking::TransactionContext,
+        );
+        let owned = |l: &[Seen<'_>]| -> Vec<(
+            dashcore::Transaction,
+            key_wallet::transaction_checking::TransactionContext,
+        )> { l.iter().map(|(t, c)| ((*t).clone(), c.clone())).collect() };
+        let (before, after) = (owned(before), owned(after));
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            {
+                let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+                let mut wallet = wallet.clone();
+                for (tx, context) in before {
+                    (info.core_wallet)
+                        .check_core_transaction(&tx, context, &mut wallet, true, true)
+                        .await;
+                }
+            }
+            wm.truncate_above(fork).unwrap();
+            let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+            let mut wallet = wallet.clone();
+            for (tx, context) in after {
+                (info.core_wallet)
+                    .check_core_transaction(&tx, context, &mut wallet, true, true)
+                    .await;
+            }
+            crate::events::set_checkpoint(&mut info.core_wallet, to);
+        });
+    }
+
+    /// The hub's synced height, processed height and replay target.
+    fn hub_heights(&self) -> (u32, u32, u32) {
+        let s = self.session.hub.wallet_state(&self.wallet).unwrap();
+        (s.synced_height, s.processed_height, s.scan_target)
+    }
+
+    /// The history's entry of `txid`: its block height, and whether it is
+    /// held InstantSend-locked out of a block.
+    fn entry_of(&self, txid: Txid) -> Option<(Option<u32>, bool)> {
+        (self.session.hub.history.get(&self.wallet, &txid)).map(|e| {
+            (
+                e.context.block_info().map(|b| b.height()),
+                e.instant_locked && e.context.block_info().is_none(),
+            )
+        })
+    }
+
+    /// Stores both of key-wallet's heights at `height`, as the persister
+    /// does once a block there and its filter batch are stored.
+    fn store_heights(&self, synced: u32, processed: u32) {
+        self.store_core(platform_wallet::changeset::CoreChangeSet {
+            synced_height: Some(synced),
+            last_processed_height: Some(processed),
+            ..Default::default()
+        });
+    }
+}
+
+/// A fork truncated the wallet to 900 from 1000 and announced nothing,
+/// and the new chain is committed to 905: the replay target follows the
+/// chain down, so a payment is admitted, and the hub's heights are the new
+/// chain's.
+#[test]
+fn a_silent_truncation_leaves_no_replay_target_above_the_new_chain() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.truncate_silently(900);
+    f.advance(905);
+    f.commit(905).unwrap();
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let payment = f.pay_from_the_draft(&draft);
+    let heights = f.hub_heights();
+    eprintln!(
+        "ROW5965 silent truncation to 900 from 1000, new chain at 905: payment {:?}, hub synced/processed/target {heights:?}",
+        payment.as_ref().map(|p| p.summary().inputs[0].outpoint)
+    );
+    assert!(payment.is_ok(), "{payment:?}");
+    assert!(
+        heights.0 <= 905 && heights.1 <= 905 && heights.2 <= 905,
+        "{heights:?}"
+    );
+}
+
+/// The history follows a truncation no event announced: a spend mined in
+/// a replaced block, which key-wallet dropped, is gone and its coin, which
+/// key-wallet put back, is no longer reserved; an InstantSend-locked
+/// transaction mined there reads unconfirmed.
+#[test]
+fn a_silent_truncation_drops_the_replaced_blocks_spends_from_the_history() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    let mined = |height| {
+        TransactionContext::InBlock(BlockInfo::new(height, dashcore::BlockHash::all_zeros(), 9))
+    };
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    let other = f.credit(2, COIN);
+    let dropped = f.spend_of(7, &[coin]);
+    let locked = f.spend_of(8, &[other]);
+    f.see_in(&dropped, mined(950));
+    f.see_in(
+        &locked,
+        TransactionContext::InstantSend(dashcore::InstantLock::default()),
+    );
+    f.see_in(&locked, mined(960));
+    f.advance(1_000);
+    f.truncate_silently(900);
+    let guard = f.guard();
+    let (gone, unconfirmed, reserved, offered) = (
+        f.entry_of(dropped.txid()),
+        f.entry_of(locked.txid()),
+        f.reserved(),
+        f.offers(coin),
+    );
+    eprintln!(
+        "ROW5965 silent truncation to 900: guard {guard:?}, spend mined at 950 {gone:?}, IS-locked at 960 {unconfirmed:?}, reserved {reserved:?}, coin offered {offered}"
+    );
+    assert_eq!(gone, None, "the replaced spend stays");
+    assert_eq!(unconfirmed, Some((None, true)), "still mined at 960");
+    assert!(offered, "key-wallet did not put the coin back");
+    assert!(!reserved.contains(&coin), "the coin stays reserved");
+}
+
+/// A check for a fork waits for one being applied: a replay guard read
+/// while a fork, heard or found, has lowered the heights but not yet the
+/// history sees the history without the replaced spend.
+#[test]
+fn a_guard_during_a_forks_application_sees_its_history() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    use std::sync::Barrier;
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    let dropped = f.spend_of(7, &[coin]);
+    f.see_in(
+        &dropped,
+        TransactionContext::InBlock(BlockInfo::new(950, dashcore::BlockHash::all_zeros(), 9)),
+    );
+    f.advance(1_000);
+    // Set before the fork: the first to apply it pauses, the event below or
+    // a reconcile the advance scheduled.
+    let (reached, release) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
+    *f.session.hub.pause_truncation.lock().unwrap() =
+        Some((Arc::clone(&reached), Arc::clone(&release)));
+    f.truncate_silently(900);
+    let (hub, wallet, txid) = (Arc::clone(&f.session.hub), f.wallet, dropped.txid());
+    let heard = std::thread::spawn(move || {
+        hub.apply_wallet_event(&platform_wallet::events::WalletEvent::ChainTruncated {
+            wallet_id: wallet.0,
+            height: 900,
+            txids: vec![txid],
+            unconfirmed_txids: Vec::new(),
+            restored_outpoints: Vec::new(),
+            balance: key_wallet::wallet::balance::WalletCoreBalance::new(COIN, 0, 0, 0),
+            account_balances: Default::default(),
+        });
+    });
+    reached.wait();
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        release.wait();
+    });
+    let guard = f.guard();
+    let gone = f.entry_of(dropped.txid());
+    heard.join().unwrap();
+    releaser.join().unwrap();
+    eprintln!(
+        "ROW5965 a guard during a heard fork's application: guard {guard:?}, spend mined at 950 {gone:?}"
+    );
+    assert_eq!(guard.unwrap(), 900);
+    assert_eq!(gone, None, "the guard read the history before the fork's");
+}
+
+/// Opus m1: a rescan from 400 to 1000, then a fork to 900 no event
+/// announced, then a cancel: the checkpoint goes back no higher than the
+/// new chain, and a rescan from the birth height ends at its tip.
+#[test]
+fn a_cancel_after_a_silent_truncation_leaves_the_checkpoint_on_the_new_chain() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.engine
+        .block_on(f.session.set_birth_height(f.wallet, 300))
+        .unwrap();
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.advance(600);
+    f.truncate_silently(900);
+    f.cancel();
+    let (synced, guard) = (f.synced(), f.guard());
+    eprintln!(
+        "ROW5965 silent fork then cancel: filter checkpoint {synced}, replay guard {guard:?}"
+    );
+    assert!(synced <= 900, "the cancel left the checkpoint at {synced}");
+    assert!(interrupted(&guard), "{guard:?}");
+    f.rescan(300).unwrap();
+    f.advance(900);
+    let (progress, guard) = (f.session.rescan_progress().unwrap(), f.guard());
+    eprintln!(
+        "ROW5965 silent fork, cancel, rescan from the birth height at the new tip 900: progress {progress:?}, guard {guard:?}"
+    );
+    assert!(progress.is_none(), "the rescan waits for the old height");
+    assert_eq!(guard.unwrap(), 900);
+}
+
+/// Opus m2 route 1: a fork no event announced, with no record, then a
+/// rescan from the birth height: the record's target is the new chain's,
+/// and after a quit mid-rescan the reopened wallet admits spends at the
+/// new tip, though the stored checkpoint is still the old chain's.
+#[test]
+fn a_rescan_after_a_silent_truncation_ends_at_the_new_tip_across_a_restart() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.engine
+        .block_on(f.session.set_birth_height(f.wallet, 300))
+        .unwrap();
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.truncate_silently(900);
+    f.rescan(300).unwrap();
+    let record = f.record();
+    eprintln!("ROW5965 silent fork, no record, rescan from the birth height: record {record:?}");
+    assert!(record.is_some_and(|r| r.target <= 900), "{record:?}");
+    f.advance(600);
+    let f = f.reopen();
+    f.advance(900);
+    let (guard, record) = (f.guard(), f.record());
+    eprintln!(
+        "ROW5965 silent fork, rescan, quit at 600, reopen: replay guard at the new tip 900 {guard:?}, record {record:?}"
+    );
+    assert_eq!(guard.unwrap(), 900);
+}
+
+/// Sol M1: a fork lands while a wallet opens mid-session, between the
+/// resume's read of its record and the rewind: the resumed replay ends at
+/// the new chain's height, and so does the record after a restart.
+#[test]
+fn a_fork_while_a_wallet_opens_lowers_the_replay_it_resumes() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.rescan(400).unwrap();
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_resume.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let (s, id) = (Arc::clone(&f.session), f.wallet);
+        f.session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the resume's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    f.truncate(900);
+    f.settle();
+    pause.release.notify_one();
+    f.engine.block_on(load).unwrap().unwrap();
+    let (record, target) = (f.record(), f.hub_heights().2);
+    eprintln!(
+        "ROW5965 fork during a mid-session open's resume: record {record:?}, hub target {target}"
+    );
+    assert!(record.is_some_and(|r| r.target <= 900), "{record:?}");
+    assert!(target <= 900, "the hub waits for {target}");
+    f.crash_on_close();
+    let f = f.reopen();
+    let record = f.record();
+    f.advance(900);
+    let guard = f.guard();
+    eprintln!("ROW5965 the same after a restart: record {record:?}, replay guard at 900 {guard:?}");
+    assert!(record.is_some_and(|r| r.target <= 900), "{record:?}");
+    assert_eq!(guard.unwrap(), 900);
+}
+
+/// A rewind with no fork is no truncation: key-wallet's processed height
+/// stays, so the target does too.
+#[test]
+fn a_rewind_with_no_fork_keeps_its_target() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.checkpoint(500);
+    let (guard, heights, record) = (f.guard(), f.hub_heights(), f.record());
+    eprintln!(
+        "ROW5965 rewind to 500, no fork: guard {guard:?}, hub {heights:?}, record {record:?}"
+    );
+    assert!(replaying(guard));
+    assert_eq!(heights.2, 1_000);
+    assert!(record.is_some_and(|r| r.target == 1_000), "{record:?}");
+}
+
+/// A wallet stored with its processed height below its filter checkpoint
+/// (platform-wallet stores them apart; dash-spv lifts the first to the
+/// second when its filter sync starts) and a replay record above both
+/// opens with that record's target: no truncation is read into it.
+#[test]
+fn a_wallet_stored_with_its_processed_height_behind_keeps_its_replay_target_at_open() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 900);
+    f.store_record("1:1100:399:0");
+    f.crash_on_close();
+    let f = f.reopen();
+    let guard = f.guard();
+    let (record, heights) = (f.record(), f.hub_heights());
+    eprintln!(
+        "ROW5965 stored processed 900 below synced 1000, record target 1100: guard {guard:?}, record {record:?}, hub {heights:?}"
+    );
+    assert!(replaying(guard));
+    assert!(record.is_some_and(|r| r.target == 1_100), "{record:?}");
+    assert_eq!(heights.2, 1_100);
+}
+
+/// A truncation the hub found is not applied again when its event comes
+/// late, after the new chain's progress: nothing is lowered further.
+#[test]
+fn a_truncation_heard_after_it_was_found_lowers_nothing_further() {
+    for rescan in [true, false] {
+        let f = fixture(false);
+        f.credit(1, COIN);
+        f.advance(1_000);
+        f.commit(1_000).unwrap();
+        if rescan {
+            f.rescan(400).unwrap();
+        }
+        f.truncate_silently(900);
+        let _ = f.guard();
+        f.advance(905);
+        f.commit(905).unwrap();
+        let before = (f.hub_heights(), f.record());
+        f.hear_truncation(900);
+        let after = (f.hub_heights(), f.record());
+        eprintln!(
+            "ROW5965 the event of a found truncation, late (a rescan's record {rescan}): before {before:?}, after {after:?}"
+        );
+        assert!(before.1.is_some());
+        assert_eq!(before, after);
+    }
+}
+
+/// A later fork's event, after a truncation the hub found, is applied:
+/// below the found height, above it once the new chain passed it, and at
+/// it once the found truncation's own event was heard.
+#[test]
+fn a_later_forks_event_after_a_found_truncation_is_applied() {
+    for (heard_late, second) in [(false, 850), (false, 950), (true, 900)] {
+        let f = fixture(false);
+        f.credit(1, COIN);
+        f.advance(1_000);
+        f.commit(1_000).unwrap();
+        f.truncate_silently(900);
+        let _ = f.guard();
+        if heard_late {
+            f.hear_truncation(900);
+        }
+        f.advance(1_000);
+        f.commit(1_000).unwrap();
+        f.truncate(second);
+        let heights = f.hub_heights();
+        eprintln!(
+            "ROW5965 a later fork to {second} after a found one to 900 (its event heard {heard_late}): hub heights {heights:?}"
+        );
+        assert_eq!(heights, (second, second, second));
+    }
+}
+
+/// A truncation whose event the hub heard is not found again in
+/// key-wallet, before or after the new chain's progress.
+#[test]
+fn a_truncation_found_after_its_event_was_heard_is_not_applied_again() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.truncate(900);
+    let heard = (f.hub_heights(), f.record());
+    let _ = f.guard();
+    let found = (f.hub_heights(), f.record());
+    f.advance(905);
+    f.commit(905).unwrap();
+    let progressed = (f.hub_heights(), f.record());
+    let _ = f.guard();
+    let after = (f.hub_heights(), f.record());
+    eprintln!(
+        "ROW5965 a heard truncation: heard {heard:?}, after a guard {found:?}, at 905 {progressed:?}, after a guard {after:?}"
+    );
+    assert_eq!(heard, found);
+    assert_eq!(progressed, after);
+}
+
+/// platform#5380: the store keeps the old chain's checkpoint. A quit after
+/// a fork no event announced, before the new chain passes the old height,
+/// reopens to a replay from where the fork was found (900, or up to the
+/// new chain's 905 when found after its progress), so the new chain's
+/// blocks up to the old height are scanned; the record goes once the
+/// checkpoint is back at the old one. The fork is found by a replay guard
+/// before the new chain's progress, by a guard after it, or with neither
+/// by a reconcile or at the latest by the close.
+#[test]
+fn a_quit_after_a_silent_truncation_below_the_old_height_replays_from_the_fork() {
+    for (guard_before, guard_after) in [(true, false), (false, false), (false, true)] {
+        let f = fixture(false);
+        f.credit(1, COIN);
+        f.store_heights(1_000, 1_000);
+        f.advance(1_000);
+        f.truncate_silently(900);
+        if guard_before {
+            let _ = f.guard();
+        }
+        f.advance(905);
+        f.commit(905).unwrap();
+        if guard_after {
+            let _ = f.guard();
+        }
+        let record = f.record();
+        let f = f.reopen();
+        let (synced, reopened) = (f.synced(), f.record());
+        f.advance(950);
+        f.commit(950).unwrap();
+        let f = f.reopen();
+        let (again, at_950) = (f.synced(), f.record());
+        f.advance(1_000);
+        f.commit(1_000).unwrap();
+        let before_quit = f.record();
+        let f = f.reopen();
+        let (past, after) = (f.synced(), f.record());
+        eprintln!(
+            "ROW5965 #5380 quit after a silent fork to 900 from 1000, new chain at 905, guard before {guard_before} after {guard_after}: record at the quit {record:?}; reopen: checkpoint {synced}, record {reopened:?}; at 950 reopen: checkpoint {again}, record {at_950:?}; at 1000 before the quit {before_quit:?}, reopen: checkpoint {past}, record {after:?}"
+        );
+        let shape = |r: Option<crate::replay_record::ReplayRecord>| {
+            r.map(|r| (r.target, r.reached, r.forked_from))
+        };
+        let found = reopened.map_or(0, |r| r.reached);
+        assert!((900..=905).contains(&found), "found at {found}");
+        if guard_before {
+            assert_eq!(found, 900);
+        }
+        if guard_before || guard_after {
+            assert_eq!(shape(record), Some((905, found, 1_000)));
+        }
+        assert_eq!(
+            (synced, shape(reopened)),
+            (found, Some((905, found, 1_000)))
+        );
+        assert_eq!((again, shape(at_950)), (found, Some((950, found, 1_000))));
+        assert_eq!(shape(before_quit), Some((1_000, found, 1_000)));
+        assert_eq!((past, after), (1_000, None));
+    }
+}
+
+/// Row 58's record of a replay a fork lowered survives a clean quit
+/// before the new chain passes the old height: the reopen replays from
+/// its start, below the fork.
+#[test]
+fn a_forks_lowered_record_survives_a_clean_quit_below_the_old_height() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.rescan(400).unwrap();
+    f.truncate(900);
+    f.advance(905);
+    f.commit(905).unwrap();
+    let record = f.record();
+    let f = f.reopen();
+    let (synced, reopened) = (f.synced(), f.record());
+    eprintln!(
+        "ROW5965 a fork lowered a rescan's record, clean quit at 905: record at the quit {record:?}; reopen: checkpoint {synced}, record {reopened:?}"
+    );
+    assert_eq!(
+        reopened.map(|r| (r.target, r.reached, r.forked_from)),
+        Some((905, 399, 1_000))
+    );
+    assert_eq!(synced, 399);
+}
+
+/// A store of the old chain whose note comes before a fork's, applied
+/// after the fork's record is written, does not raise its target back to
+/// the old height.
+#[test]
+fn an_old_chains_store_heard_after_a_forks_record_leaves_its_target() {
+    use crate::replay_record::ReplayNote;
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.truncate_silently(900);
+    f.settle();
+    let wallet = f.wallet;
+    let replay = Arc::clone(&f.session.live().unwrap().replay);
+    replay.note(ReplayNote::Committed {
+        wallet,
+        height: 1_000,
+    });
+    replay.note(ReplayNote::Truncated {
+        wallet,
+        height: 900,
+        from: 1_000,
+    });
+    let record = f.record();
+    eprintln!("ROW5965 the old chain's store at 1000 heard after a fork to 900: record {record:?}");
+    assert_eq!(
+        record.map(|r| (r.target, r.reached, r.forked_from)),
+        Some((900, 900, 1_000))
+    );
+}
+
+/// A fork's record goes once the new chain is stored past the old height:
+/// a quit then leaves none, and the reopen replays nothing.
+#[test]
+fn a_chain_past_the_old_height_at_the_quit_leaves_no_record() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.truncate_silently(900);
+    let _ = f.guard();
+    f.advance(1_001);
+    f.commit(1_001).unwrap();
+    let record = f.record();
+    let f = f.reopen();
+    let (synced, reopened) = (f.synced(), f.record());
+    eprintln!(
+        "ROW5965 silent fork to 900, new chain stored at 1001: record at the quit {record:?}; reopen: checkpoint {synced}, record {reopened:?}"
+    );
+    assert_eq!((record, reopened, synced), (None, None, 1_001));
+}
+
+/// A fork at the highest checkpoint the wallet can have stored, or above
+/// it, leaves nothing to replay: no record is written.
+#[test]
+fn a_fork_at_the_stored_checkpoint_writes_no_record() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.hear_truncation(1_000);
+    let record = f.record();
+    eprintln!("ROW5965 a fork at the stored checkpoint 1000: record {record:?}");
+    assert_eq!(record, None);
+}
+
+/// After the reopen of a fork's replay, a send waits for the replay to the
+/// new chain's tip only, never for the chain to pass the old height.
+#[test]
+fn a_send_after_a_forks_reopen_waits_only_for_the_replay_to_the_tip() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.truncate_silently(900);
+    let _ = f.guard();
+    f.advance(905);
+    f.commit(905).unwrap();
+    let f = f.reopen();
+    let replaying = f.guard();
+    f.advance(905);
+    let at_tip = f.guard();
+    eprintln!(
+        "ROW5965 reopen of a fork's replay from 900 to 905, old height 1000: guard while replaying {replaying:?}, at the tip {at_tip:?}"
+    );
+    assert!(matches!(replaying, Err(EngineError::RescanInProgress)));
+    assert_eq!(at_tip.unwrap(), 905);
+}
+
+/// The new chain's progress past a fork no event announced, before
+/// anything checked for it: the fork is found at 905, above the fork at
+/// 900. A spend mined at 902 in a replaced block is gone and its coin no
+/// longer reserved; a transaction mined again at 903 stays; an
+/// InstantSend-locked one mined at 903 reads unconfirmed; records only
+/// read from storage, at 600 and 800, stay.
+#[test]
+fn a_fork_found_past_its_height_drops_the_replaced_blocks_spends_below_it() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    let mined = |height| {
+        TransactionContext::InBlock(BlockInfo::new(height, dashcore::BlockHash::all_zeros(), 9))
+    };
+    let f = fixture(false);
+    let (coin, other, third) = (f.credit(1, COIN), f.credit(2, COIN), f.credit(3, COIN));
+    f.quietly_at(1_000);
+    let (replaced, locked, remined) = (
+        f.spend_of(7, &[coin]),
+        f.spend_of(8, &[other]),
+        f.spend_of(9, &[third]),
+    );
+    f.see_in(&replaced, mined(902));
+    f.see_in(
+        &locked,
+        TransactionContext::InstantSend(dashcore::InstantLock::default()),
+    );
+    f.see_in(&locked, mined(903));
+    f.see_in(&remined, mined(902));
+    let (stored_600, stored_800) = (
+        Txid::from_byte_array([60; 32]),
+        Txid::from_byte_array([80; 32]),
+    );
+    f.funded_at(stored_600, 600);
+    f.funded_at(stored_800, 800);
+    f.fork_and_progress(&[], 900, &[(&remined, mined(903))], 905);
+    let guard = f.guard();
+    let entries = [
+        replaced.txid(),
+        locked.txid(),
+        remined.txid(),
+        stored_600,
+        stored_800,
+    ]
+    .map(|t| f.entry_of(t));
+    let (reserved, offered) = (f.reserved(), f.offers(coin));
+    eprintln!(
+        "ROW5965 fork to 900 found at 905: guard {guard:?}; replaced at 902, IS-locked at 903, mined again at 903, stored at 600 and 800: {entries:?}; reserved {reserved:?}, coin offered {offered}"
+    );
+    assert_eq!(guard.unwrap(), 905);
+    assert_eq!(entries[0], None, "the replaced spend stays");
+    assert_eq!(entries[1], Some((None, true)), "still mined at 903");
+    assert!(entries[2].is_some(), "the transaction mined again is gone");
+    assert_eq!(entries[3], Some((Some(600), false)));
+    assert_eq!(entries[4], Some((Some(800), false)));
+    assert!(offered, "key-wallet did not put the coin back");
+    assert!(!reserved.contains(&coin), "the coin stays reserved");
+}
+
+/// A transaction seen this session first in a ChainLocked block, which
+/// key-wallet finalized at once (it keeps only the txid), stays in the
+/// history across a fork found past its height.
+#[test]
+fn a_fork_found_past_its_height_keeps_a_finalized_transaction() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    let info = BlockInfo::new(902, dashcore::BlockHash::all_zeros(), 9);
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    f.quietly_at(1_000);
+    let finalized = f.spend_of(7, &[coin]);
+    f.funded_at(finalized.txid(), 902);
+    f.session.hub.history.with_wallet(f.wallet, |h| {
+        h.session_held.insert(finalized.txid());
+    });
+    f.fork_and_progress(
+        &[(&finalized, TransactionContext::InChainLockedBlock(info))],
+        900,
+        &[],
+        905,
+    );
+    let guard = f.guard();
+    let entry = f.entry_of(finalized.txid());
+    eprintln!("ROW5965 fork to 900 found at 905: guard {guard:?}, finalized at 902 {entry:?}");
+    assert_eq!(guard.unwrap(), 905);
+    assert_eq!(entry, Some((Some(902), false)));
+}
+
+/// key-wallet's last ChainLock, at 950, refuses a fork below it. A fork
+/// above it, to 960, found at 965: a transaction key-wallet still holds
+/// in a block at 940 stays, one it held at 962 that the fork replaced is
+/// gone, and one only read from storage at 970, above the found height,
+/// is gone.
+#[test]
+fn a_fork_above_a_chain_lock_drops_what_it_replaced_and_keeps_what_key_wallet_holds() {
+    use dashcore::bls_sig_utils::BLSSignature;
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let mined = |height| {
+        TransactionContext::InBlock(BlockInfo::new(height, dashcore::BlockHash::all_zeros(), 9))
+    };
+    let f = fixture(false);
+    let (coin, other) = (f.credit(1, COIN), f.credit(2, COIN));
+    f.quietly_at(1_000);
+    let (kept, replaced) = (f.spend_of(7, &[coin]), f.spend_of(8, &[other]));
+    f.see_in(&kept, mined(940));
+    f.see_in(&replaced, mined(962));
+    let (manager, id) = (Arc::clone(&f.session.live().unwrap().manager), f.wallet);
+    let refused = f.engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&id.0).unwrap();
+        info.core_wallet.metadata.last_applied_chain_lock = Some(dashcore::ChainLock {
+            block_height: 950,
+            block_hash: dashcore::BlockHash::all_zeros(),
+            signature: BLSSignature::from([0; 96]),
+        });
+        wm.truncate_above(940).is_err()
+    });
+    let stored = Txid::from_byte_array([97; 32]);
+    f.funded_at(stored, 970);
+    f.fork_and_progress(&[], 960, &[], 965);
+    let guard = f.guard();
+    let entries = [kept.txid(), replaced.txid(), stored].map(|t| f.entry_of(t));
+    eprintln!(
+        "ROW5965 ChainLock 950, fork to 960 found at 965: fork to 940 refused {refused}, guard {guard:?}, held at 940, replaced at 962, stored at 970: {entries:?}"
+    );
+    assert!(refused);
+    assert_eq!(guard.unwrap(), 965);
+    assert_eq!(entries, [Some((Some(940), false)), None, None]);
+}
+
+/// The transactions key-wallet held are the session's: an unload forgets
+/// them, an event key-wallet sent before the unload and heard after it
+/// brings back neither them nor the wallet's history, and the wallet
+/// loaded again starts anew, whatever the set held before.
+#[test]
+fn the_transactions_key_wallet_held_are_forgotten_at_unload() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    let mined = |height| {
+        TransactionContext::InBlock(BlockInfo::new(height, dashcore::BlockHash::all_zeros(), 9))
+    };
+    let f = fixture(false);
+    let (coin, other) = (f.credit(1, COIN), f.credit(2, COIN));
+    let (tx, late) = (f.spend_of(7, &[coin]), f.spend_of(8, &[other]));
+    f.see_in(&tx, mined(902));
+    let stale = f.seen_event(&late, mined(903));
+    let held = || {
+        (f.session.hub.history).read_wallet(&f.wallet, |h| {
+            (
+                h.session_held.contains(&tx.txid()),
+                h.session_held.contains(&late.txid()),
+            )
+        })
+    };
+    let before = held();
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let unloaded = held();
+    f.session.hub.apply_wallet_event(&stale);
+    let (after_stale, entry) = (held(), f.entry_of(late.txid()));
+    f.session.hub.history.with_wallet(f.wallet, |h| {
+        h.session_held.insert(late.txid());
+    });
+    f.engine.block_on(f.session.load_wallet(f.wallet)).unwrap();
+    let loaded = held();
+    eprintln!(
+        "ROW5965 transactions key-wallet held: held {before:?}, after an unload {unloaded:?}, after a stale event {after_stale:?} (its entry {entry:?}), loaded again {loaded:?}"
+    );
+    assert_eq!(before, (true, false));
+    assert_eq!(unloaded, (false, false));
+    assert_eq!((after_stale, entry), ((false, false), None));
+    assert_eq!(loaded, (false, false));
+}
+
+/// A found truncation's event heard late above its height lowers nothing
+/// and ends the wait for it: a later fork's event at the found height is
+/// applied.
+#[test]
+fn a_found_truncations_event_heard_above_it_ends_the_wait_for_it() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.truncate_silently(900);
+    let _ = f.guard();
+    f.hear_truncation(950);
+    let heard = f.hub_heights();
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.truncate(900);
+    let heights = f.hub_heights();
+    eprintln!(
+        "ROW5965 found at 900, its event heard at 950: hub {heard:?}; a later fork to 900: hub {heights:?}"
+    );
+    assert_eq!(heard, (900, 900, 900));
+    assert_eq!(heights, (900, 900, 900));
+}
+
+/// A wallet opening mid-session with a cancelled replay {1000, 600}: a
+/// fork to 900 between the resume's read of the record and its hold
+/// leaves the hold's target at 900, so a rescan from the birth height
+/// ends there and spends wait only for it.
+#[test]
+fn a_fork_while_a_wallet_opens_lowers_its_cancelled_replays_hold() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.engine
+        .block_on(f.session.set_birth_height(f.wallet, 300))
+        .unwrap();
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    f.store_record("2:1000:600:1:0");
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_resume.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let (s, id) = (Arc::clone(&f.session), f.wallet);
+        f.session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the resume's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    f.truncate(900);
+    f.settle();
+    pause.release.notify_one();
+    f.engine.block_on(load).unwrap().unwrap();
+    let (record, target, held) = (f.record(), f.hub_heights().2, f.guard());
+    eprintln!(
+        "ROW5965 fork during the open of a cancelled replay: record {record:?}, hub target {target}, guard {held:?}"
+    );
+    assert!(
+        record.is_some_and(|r| r.cancelled && r.target <= 900),
+        "{record:?}"
+    );
+    assert!(target <= 900, "the hub waits for {target}");
+    assert!(interrupted(&held), "{held:?}");
+    f.rescan(300).unwrap();
+    f.advance(900);
+    let (progress, guard) = (f.session.rescan_progress().unwrap(), f.guard());
+    eprintln!(
+        "ROW5965 the same, then a rescan from the birth height at the new tip 900: progress {progress:?}, guard {guard:?}"
+    );
+    assert!(progress.is_none(), "the rescan waits for the old height");
+    assert_eq!(guard.unwrap(), 900);
+}
+
+/// A fork's replay record that cannot be stored when the fork is applied
+/// stays due: a read once writes work stores it, and the reopen replays
+/// from below the old checkpoint to the new chain's tip. With no record
+/// before, and with a rescan's record the fork lowers.
+#[test]
+fn a_forks_record_that_failed_to_store_is_stored_by_the_next_read() {
+    for rescan in [false, true] {
+        let f = fixture(false);
+        f.credit(1, COIN);
+        f.store_heights(1_000, 1_000);
+        f.advance(1_000);
+        f.commit(1_000).unwrap();
+        if rescan {
+            f.rescan(400).unwrap();
+        }
+        let records = f.records();
+        records
+            .fail_writes
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        f.truncate_silently(900);
+        let _ = f.guard();
+        f.settle();
+        records
+            .fail_writes
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let record = f.record();
+        let f = f.reopen();
+        let (synced, reopened) = (f.synced(), f.record());
+        f.advance(900);
+        let guard = f.guard();
+        eprintln!(
+            "ROW5965 fork to 900 whose record failed to store (a rescan's record {rescan}): record after a read {record:?}; reopen: checkpoint {synced}, record {reopened:?}, guard at 900 {guard:?}"
+        );
+        let start = if rescan { 399 } else { 900 };
+        let shape = |r: Option<crate::replay_record::ReplayRecord>| {
+            r.map(|r| (r.target, r.reached, r.forked_from))
+        };
+        assert_eq!(shape(record), Some((900, start, 1_000)));
+        assert_eq!(
+            (synced, shape(reopened)),
+            (start, Some((900, start, 1_000)))
+        );
+        assert_eq!(guard.unwrap(), 900);
+    }
+}
+
+/// The old chain's store at 1010, heard after the fork's record was
+/// written with the old checkpoint 1000: the record keeps 1010 as the old
+/// chain's. A quit with the new chain at 1005 keeps the record, and the
+/// reopen replays from the fork; a quit at 905 reopens to spends that
+/// wait only for the new chain's tip.
+#[test]
+fn an_old_chains_store_heard_after_a_forks_record_raises_its_old_checkpoint() {
+    for tip in [1_005, 905] {
+        let f = fixture(false);
+        f.credit(1, COIN);
+        f.store_heights(1_000, 1_000);
+        f.advance(1_000);
+        f.truncate_silently(900);
+        let _ = f.guard();
+        f.commit(1_010).unwrap();
+        f.settle();
+        f.advance(tip);
+        f.commit(tip).unwrap();
+        let record = f.record();
+        let f = f.reopen();
+        let (synced, reopened) = (f.synced(), f.record());
+        f.advance(tip);
+        let guard = f.guard();
+        eprintln!(
+            "ROW5965 fork to 900, the old chain's store at 1010 heard late, quit at {tip}: record {record:?}; reopen: checkpoint {synced}, record {reopened:?}, guard at {tip} {guard:?}"
+        );
+        let shape = |r: Option<crate::replay_record::ReplayRecord>| {
+            r.map(|r| (r.target, r.reached, r.forked_from))
+        };
+        assert_eq!(shape(record), Some((tip, 900, 1_010)));
+        assert_eq!((synced, shape(reopened)), (900, Some((tip, 900, 1_010))));
+        assert_eq!(guard.unwrap(), tip);
+    }
+}
+
+/// A store of the old chain whose note comes before a fork's, with the
+/// wallet's checkpoint past the store's (no cap): the record is the
+/// fork's, neither raised by that store nor ended by it.
+#[test]
+fn an_old_chains_store_heard_before_a_forks_note_leaves_its_record() {
+    use crate::replay_record::ReplayNote;
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.quietly_at(1_000);
+    f.truncate_silently(900);
+    f.checkpoint(1_005);
+    f.settle();
+    let (wallet, replay) = (f.wallet, f.records());
+    replay.note(ReplayNote::Committed {
+        wallet,
+        height: 1_000,
+    });
+    replay.note(ReplayNote::Truncated {
+        wallet,
+        height: 900,
+        from: 1_000,
+    });
+    let record = f.record();
+    eprintln!(
+        "ROW5965 the old chain's store at 1000 noted before a fork to 900, checkpoint 1005: record {record:?}"
+    );
+    assert_eq!(
+        record.map(|r| (r.target, r.reached, r.forked_from)),
+        Some((900, 900, 1_000))
+    );
+}
+
+/// The header tip falls below one seen before: the hub checks every wallet
+/// for a fork, so one no event announced is applied before the new chain
+/// passes it.
+#[test]
+fn a_falling_header_tip_finds_a_fork_no_event_announced() {
+    use dash_spv::EventHandler;
+    use dash_spv::sync::{BlockHeadersProgress, SyncProgress, SyncState};
+    let progress = |tip| {
+        let mut headers = BlockHeadersProgress::default();
+        headers.update_target_height(tip);
+        headers.update_tip_height(tip);
+        headers.set_state(SyncState::Synced);
+        let mut p = SyncProgress::default();
+        p.update_headers(headers);
+        p
+    };
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.quietly_at(1_000);
+    f.session.hub.on_progress(&progress(1_000));
+    f.truncate_silently(900);
+    f.session.hub.on_progress(&progress(900));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while f.hub_heights().1 != 900 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let heights = f.hub_heights();
+    eprintln!("ROW5965 header tip 1000 then 900 after a silent fork to 900: hub {heights:?}");
+    assert_eq!(heights, (900, 900, 900));
+}
+
+/// A cancel that cannot store its hold puts the rescan back no higher than
+/// the fork it found.
+#[test]
+fn a_failed_cancel_after_a_silent_truncation_restores_the_rescan_on_the_new_chain() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.quietly_at(1_000);
+    f.rescan(400).unwrap();
+    f.truncate_silently(900);
+    let records = f.records();
+    records
+        .fail_writes
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let cancelled = f.engine.block_on(f.session.cancel_rescan());
+    records
+        .fail_writes
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let resume = (f.session.hub.rescan().as_ref())
+        .and_then(|r| r.wallets.get(&f.wallet).map(|w| w.resume_height));
+    eprintln!(
+        "ROW5965 silent fork to 900, cancel failed: {cancelled:?}, the rescan resumes to {resume:?}"
+    );
+    assert!(cancelled.is_err());
+    assert_eq!(resume, Some(900));
+}
+
+fn record_shape(r: Option<crate::replay_record::ReplayRecord>) -> Option<(u32, u32, u32)> {
+    r.map(|r| (r.target, r.reached, r.forked_from))
+}
+
+fn mined_at(height: u32) -> key_wallet::transaction_checking::TransactionContext {
+    key_wallet::transaction_checking::TransactionContext::InBlock(
+        key_wallet::transaction_checking::BlockInfo::new(
+            height,
+            dashcore::BlockHash::all_zeros(),
+            9,
+        ),
+    )
+}
+
+/// The new chain's ChainLock at 905, applied after a fork to 900 and
+/// before anything checked for it: a spend mined at 902 in a replaced
+/// block is gone, and its coin no longer reserved.
+#[test]
+fn a_new_chains_chain_lock_before_the_check_keeps_no_spend_the_fork_replaced() {
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    f.quietly_at(1_000);
+    let replaced = f.spend_of(7, &[coin]);
+    f.see_in(&replaced, mined_at(902));
+    f.fork_and_progress(&[], 900, &[], 905);
+    f.chain_lock_at(905);
+    let guard = f.guard();
+    let (entry, reserved, offered) = (f.entry_of(replaced.txid()), f.reserved(), f.offers(coin));
+    eprintln!(
+        "ROW5965 fork to 900, new chain to 905 with its ChainLock at 905, then found: guard {guard:?}, replaced at 902 {entry:?}, reserved {reserved:?}, coin offered {offered}"
+    );
+    assert_eq!(guard.unwrap(), 905);
+    assert_eq!(entry, None, "the replaced spend stays");
+    assert!(offered, "key-wallet did not put the coin back");
+    assert!(!reserved.contains(&coin), "the coin stays reserved");
+}
+
+/// The new chain's ChainLock one block above its filters, at 906, and an
+/// old chain's transaction at 906, above the found height 905: it is
+/// gone.
+#[test]
+fn an_old_chains_transaction_at_a_chain_lock_above_the_found_height_is_dropped() {
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    f.quietly_at(1_000);
+    let old = f.spend_of(7, &[coin]);
+    f.see_in(&old, mined_at(906));
+    f.fork_and_progress(&[], 900, &[], 905);
+    f.chain_lock_at(906);
+    let guard = f.guard();
+    let entry = f.entry_of(old.txid());
+    eprintln!(
+        "ROW5965 fork to 900 found at 905, ChainLock at 906: guard {guard:?}, the old chain's at 906 {entry:?}"
+    );
+    assert_eq!(guard.unwrap(), 905);
+    assert_eq!(entry, None);
+}
+
+/// A transaction the history has in a ChainLocked block at 902, held this
+/// session, stays across a fork found past its height: no fork replaces
+/// a ChainLocked block.
+#[test]
+fn a_fork_found_past_its_height_keeps_a_chain_locked_entry() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.quietly_at(1_000);
+    let locked = Txid::from_byte_array([92; 32]);
+    f.funded_in(
+        locked,
+        TransactionContext::InChainLockedBlock(BlockInfo::new(
+            902,
+            dashcore::BlockHash::all_zeros(),
+            9,
+        )),
+    );
+    f.session.hub.history.with_wallet(f.wallet, |h| {
+        h.session_held.insert(locked);
+    });
+    f.fork_and_progress(&[], 900, &[], 905);
+    let guard = f.guard();
+    let entry = f.entry_of(locked);
+    eprintln!("ROW5965 fork to 900 found at 905: guard {guard:?}, ChainLocked at 902 {entry:?}");
+    assert_eq!(guard.unwrap(), 905);
+    assert_eq!(entry, Some((Some(902), false)));
+}
+
+/// An event key-wallet sent before an unload, for a transaction mined at
+/// 800, heard after it: the wallet loaded again at its stored checkpoint
+/// 1000 with the transaction's stored record keeps it across a fork to
+/// 900 found at 905.
+#[test]
+fn a_stale_event_from_before_an_unload_leaves_the_reloaded_history() {
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.quietly_at(1_000);
+    let tx = f.spend_of(7, &[coin]);
+    let stale = f.seen_event(&tx, mined_at(800));
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    f.session.hub.apply_wallet_event(&stale);
+    f.engine.block_on(f.session.load_wallet(f.wallet)).unwrap();
+    f.funded_at(tx.txid(), 800);
+    let held =
+        (f.session.hub.history).read_wallet(&f.wallet, |h| h.session_held.contains(&tx.txid()));
+    f.fork_and_progress(&[], 900, &[], 905);
+    let guard = f.guard();
+    let entry = f.entry_of(tx.txid());
+    eprintln!(
+        "ROW5965 stale event for 800 heard after an unload, reloaded at 1000, fork to 900 found at 905: held {held}, guard {guard:?}, stored at 800 {entry:?}"
+    );
+    assert!(!held);
+    assert_eq!(guard.unwrap(), 905);
+    assert_eq!(entry, Some((Some(800), false)));
+}
+
+/// A transaction key-wallet holds when the history is read, with no event
+/// of it, is this session's: a fork found past its height that replaced
+/// it drops it.
+#[test]
+fn a_record_key_wallet_holds_at_the_history_load_is_this_sessions() {
+    use key_wallet::transaction_checking::WalletTransactionChecker;
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    f.quietly_at(1_000);
+    let replaced = f.spend_of(7, &[coin]);
+    let (manager, id, tx) = (
+        Arc::clone(&f.session.live().unwrap().manager),
+        f.wallet,
+        replaced.clone(),
+    );
+    f.engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+        let mut wallet = wallet.clone();
+        (info.core_wallet)
+            .check_core_transaction(&tx, mined_at(902), &mut wallet, true, true)
+            .await;
+    });
+    let s = Arc::clone(&f.session);
+    f.engine
+        .block_on(
+            f.session
+                .on_runtime(async move { s.load_history_for(vec![id]).await }),
+        )
+        .unwrap();
+    let loaded = f.entry_of(replaced.txid());
+    f.fork_and_progress(&[], 900, &[], 905);
+    let guard = f.guard();
+    let entry = f.entry_of(replaced.txid());
+    eprintln!(
+        "ROW5965 held by key-wallet at the history load, fork to 900 found at 905: loaded {loaded:?}, guard {guard:?}, replaced at 902 {entry:?}"
+    );
+    assert_eq!(loaded, Some((Some(902), false)));
+    assert_eq!(guard.unwrap(), 905);
+    assert_eq!(entry, None);
+}
+
+/// A clean quit while the old chain's store at 1010 is committed and its
+/// note not applied: the close lifts the fork's record as the note would,
+/// so it stays, and the reopen replays from the fork. At 1005 and 905.
+#[test]
+fn a_close_before_the_old_chains_store_is_applied_keeps_its_checkpoint() {
+    for tip in [1_005, 905] {
+        let f = fixture(false);
+        f.credit(1, COIN);
+        f.store_heights(1_000, 1_000);
+        f.advance(1_000);
+        f.truncate_silently(900);
+        let _ = f.guard();
+        f.settle();
+        let pause = Arc::new(crate::coins::TestPause::default());
+        *f.records().pause_commit.lock().unwrap() = Some(Arc::clone(&pause));
+        f.commit(1_010).unwrap();
+        eventually("the commit's pause", || {
+            pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        f.advance(tip);
+        f.commit(tip).unwrap();
+        let f = f.reopen();
+        pause.release.notify_one();
+        let (synced, reopened) = (f.synced(), f.record());
+        f.advance(tip);
+        let guard = f.guard();
+        eprintln!(
+            "ROW5965 fork to 900, the old chain's store at 1010 not applied at a quit at {tip}: reopen: checkpoint {synced}, record {reopened:?}, guard at {tip} {guard:?}"
+        );
+        assert_eq!(
+            (synced, record_shape(reopened)),
+            (900, Some((tip, 900, 1_010)))
+        );
+        assert_eq!(guard.unwrap(), tip);
+    }
+}
+
+impl Fixture {
+    /// The wallet's replay record as the store holds it.
+    fn stored_record(&self) -> Option<String> {
+        (self.session.live().unwrap().appdb)
+            .setting(&self.wallet.to_string(), "replay")
+            .unwrap()
+    }
+
+    /// A fork to 900 from 1000, and the old chain's store at 1010 whose
+    /// record lift cannot be stored; the wallet's checkpoint is then at
+    /// 1005, and the store fails until the caller lets it recover.
+    fn lift_failed_at_1010(&self) {
+        self.credit(1, COIN);
+        self.store_heights(1_000, 1_000);
+        self.advance(1_000);
+        self.truncate_silently(900);
+        let _ = self.guard();
+        self.settle();
+        (self.records().fail_writes).store(true, std::sync::atomic::Ordering::SeqCst);
+        self.commit(1_010).unwrap();
+        self.settle();
+        self.advance(1_005);
+    }
+}
+
+/// The old chain's store at 1010 whose record lift cannot be stored: the
+/// lift stays due, so a commit of the new chain at 1005 stores it and
+/// keeps the record.
+#[test]
+fn a_forks_lift_that_failed_to_store_is_stored_by_the_next_read() {
+    let f = fixture(false);
+    f.lift_failed_at_1010();
+    (f.records().fail_writes).store(false, std::sync::atomic::Ordering::SeqCst);
+    f.commit(1_005).unwrap();
+    let record = f.record();
+    let stored = f.stored_record();
+    eprintln!(
+        "ROW5965 fork to 900, the old chain's store at 1010 whose lift failed, new chain committed at 1005: record {record:?}, stored {stored:?}"
+    );
+    assert_eq!(record_shape(record), Some((900, 900, 1_010)));
+    assert_eq!(stored.as_deref(), Some("2:900:900:0:1010"));
+}
+
+/// As above, with a quit at 1005 instead of the commit: the close lifts
+/// the record from the session's commit at 1010 (the path of a close
+/// before the old chain's store is applied), and the reopen replays from
+/// the fork.
+#[test]
+fn a_quit_after_a_forks_lift_failed_to_store_keeps_its_checkpoint() {
+    let f = fixture(false);
+    f.lift_failed_at_1010();
+    (f.records().fail_writes).store(false, std::sync::atomic::Ordering::SeqCst);
+    let f = f.reopen();
+    let (synced, reopened) = (f.synced(), f.record());
+    eprintln!(
+        "ROW5965 fork to 900, the old chain's store at 1010 whose lift failed, quit at 1005: reopen: checkpoint {synced}, record {reopened:?}"
+    );
+    assert_eq!(
+        (synced, record_shape(reopened)),
+        (900, Some((1_005, 900, 1_010)))
+    );
+}
+
+/// The lift of the old chain's 1010 fails, and so do its retry and the
+/// raise at a close; the store then recovers and the new chain's queued
+/// commit at 1005 is applied: the lift stays due through the close, so
+/// the record is stored with 1010 and does not end.
+#[test]
+fn a_forks_lift_that_keeps_failing_through_a_close_stays_due() {
+    let f = fixture(false);
+    f.lift_failed_at_1010();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.records().pause_commit.lock().unwrap() = Some(Arc::clone(&pause));
+    f.commit(1_005).unwrap();
+    eventually("the commit's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let (records, s) = (f.records(), Arc::clone(&f.session));
+    f.engine
+        .block_on(f.session.on_runtime(async move {
+            let live = s.live().unwrap();
+            records.close(&live.manager, &s.hub).await;
+            Ok(())
+        }))
+        .unwrap();
+    let closed = f.stored_record();
+    (f.records().fail_writes).store(false, std::sync::atomic::Ordering::SeqCst);
+    pause.release.notify_one();
+    f.settle();
+    let stored = f.stored_record();
+    let record = f.record();
+    eprintln!(
+        "ROW5965 fork to 900, the old chain's lift at 1010 failing through a close, then the commit at 1005: stored at the close {closed:?}, after the commit {stored:?}, record {record:?}"
+    );
+    assert_eq!(closed.as_deref(), Some("2:900:900:0:1000"));
+    assert_eq!(stored.as_deref(), Some("2:900:900:0:1010"));
+    assert_eq!(record_shape(record), Some((900, 900, 1_010)));
+}
+
+/// A fork to 900 between a resumed replay's rewind and its publication:
+/// the rescan ends at 900, and a new one is not refused.
+#[test]
+fn a_fork_before_a_resumed_replay_is_published_ends_it_at_the_new_tip() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    f.store_record("2:1000:600:0:0");
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_publish.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = f.load_until(&pause);
+    f.truncate(900);
+    f.settle();
+    pause.release.notify_one();
+    f.engine.block_on(load).unwrap().unwrap();
+    let resume = (f.session.hub.rescan().as_ref())
+        .and_then(|r| r.wallets.get(&f.wallet).map(|w| w.resume_height));
+    f.advance(900);
+    let progress = f.session.rescan_progress().unwrap();
+    let again = f.rescan(400);
+    eprintln!(
+        "ROW5965 fork to 900 before a resume's publication: resumes to {resume:?}; at 900 progress {progress:?}, a new rescan {again:?}"
+    );
+    assert_eq!(resume, Some(900));
+    assert!(progress.is_none(), "the rescan waits for the old height");
+    assert!(again.is_ok(), "{again:?}");
+}
+
+/// A fork to 900 between a rescan's rewind and its publication: the
+/// rescan ends at 900, and a new one is not refused.
+#[test]
+fn a_fork_before_a_rescan_is_published_ends_it_at_the_new_tip() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_publish.lock().unwrap() = Some(Arc::clone(&pause));
+    let rescan = {
+        let (s, id) = (Arc::clone(&f.session), f.wallet);
+        f.session
+            .rt
+            .spawn(async move { s.start_rescan(vec![id], 400, |_| 400).await })
+    };
+    eventually("the rescan's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    f.truncate(900);
+    f.settle();
+    pause.release.notify_one();
+    f.engine.block_on(rescan).unwrap().unwrap();
+    let resume = (f.session.hub.rescan().as_ref())
+        .and_then(|r| r.wallets.get(&f.wallet).map(|w| w.resume_height));
+    f.advance(900);
+    let progress = f.session.rescan_progress().unwrap();
+    let again = f.rescan(400);
+    eprintln!(
+        "ROW5965 fork to 900 before a rescan's publication: resumes to {resume:?}; at 900 progress {progress:?}, a new rescan {again:?}"
+    );
+    assert_eq!(resume, Some(900));
+    assert!(progress.is_none(), "the rescan waits for the old height");
+    assert!(again.is_ok(), "{again:?}");
+}
+
+/// A fork to 900 between a resume's read of its record {1000, 600} and a
+/// rewind that fails: the hold it publishes waits for 900, so a rescan
+/// from the birth height ends there.
+#[test]
+fn a_fork_before_a_failed_resume_lowers_its_hold() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.engine
+        .block_on(f.session.set_birth_height(f.wallet, 300))
+        .unwrap();
+    f.store_heights(1_000, 1_000);
+    f.advance(1_000);
+    f.commit(1_000).unwrap();
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    f.store_record("2:1000:600:0:0");
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_resume.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = f.load_until(&pause);
+    f.truncate(900);
+    f.settle();
+    f.records()
+        .crash_after_write
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    pause.release.notify_one();
+    let loaded = f.engine.block_on(load).unwrap();
+    let (target, held) = (f.hub_heights().2, f.guard());
+    eprintln!(
+        "ROW5965 fork to 900 before a failed resume of {{1000, 600}}: open {loaded:?}, hub target {target}, guard {held:?}"
+    );
+    assert!(target <= 900, "the hub waits for {target}");
+    assert!(interrupted(&held), "{held:?}");
+    f.rescan(300).unwrap();
+    f.advance(900);
+    let (progress, guard) = (f.session.rescan_progress().unwrap(), f.guard());
+    eprintln!(
+        "ROW5965 the same, then a rescan from the birth height at the new tip 900: progress {progress:?}, guard {guard:?}"
+    );
+    assert!(progress.is_none(), "the rescan waits for the old height");
+    assert_eq!(guard.unwrap(), 900);
+}
+
+impl Fixture {
+    /// A grant to remove `wallet`.
+    fn wipe_grant(&self, wallet: WalletId) -> String {
+        (self.session.vault())
+            .authorize(GrantPurpose::Wipe, Some(&wallet.0), Credential::None)
+            .unwrap()
+            .id
+    }
+
+    /// The wallet imported again from its seed.
+    fn import_again(&self) -> Result<WalletId, EngineError> {
+        self.engine.block_on(
+            self.session.import_wallet(
+                Zeroizing::new(
+                    crate::platform::lease::session_tests::PHRASE
+                        .as_bytes()
+                        .to_vec(),
+                ),
+                Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(0),
+                    core_compat: false,
+                    ..Default::default()
+                },
+            ),
+        )
+    }
+
+    /// The xpub of the wallet's first account.
+    fn first_xpub(&self) -> String {
+        (self.engine)
+            .block_on(self.session.account_xpub(self.wallet, 0))
+            .unwrap()
+            .xpub
+    }
+
+    /// A watch-only wallet of the wallet's first account.
+    fn import_watch_only(&self, xpub: &str) -> Result<WalletId, EngineError> {
+        (self.engine)
+            .block_on((self.session).import_watch_only(xpub.to_owned(), Default::default()))
+    }
+
+    /// A record of the wallet's spend in the mempool that key-wallet does
+    /// not keep: only an event of it puts it in the hub history.
+    fn probe(&self) -> key_wallet::managed_account::transaction_record::TransactionRecord {
+        use key_wallet::transaction_checking::WalletTransactionChecker;
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let coin = self.credit(1, COIN);
+        let (manager, id, tx) = (
+            Arc::clone(&self.session.live().unwrap().manager),
+            self.wallet,
+            self.spend_of(7, &[coin]),
+        );
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+            let (mut wallet, mut core) = (wallet.clone(), info.core_wallet.clone());
+            core.check_core_transaction(
+                &tx,
+                key_wallet::transaction_checking::TransactionContext::Mempool,
+                &mut wallet,
+                true,
+                true,
+            )
+            .await;
+            (core.transaction_history().into_iter())
+                .find(|r| r.txid == tx.txid())
+                .cloned()
+                .expect("key-wallet records the transaction")
+        })
+    }
+
+    /// The hub hears an event of `record` for `wallet`. Returns whether
+    /// the hub history has it.
+    fn hears(
+        &self,
+        wallet: WalletId,
+        record: &key_wallet::managed_account::transaction_record::TransactionRecord,
+    ) -> bool {
+        (self.session.hub).apply_wallet_event(
+            &platform_wallet::events::WalletEvent::TransactionDetected {
+                wallet_id: wallet.0,
+                record: Box::new(record.clone()),
+                balance: Default::default(),
+                account_balances: Default::default(),
+                addresses_derived: Vec::new(),
+            },
+        );
+        (self.session.hub.history.get(&wallet, &record.txid)).is_some()
+    }
+}
+
+/// An event paused right after its wallet's check while the wallet is
+/// unloaded, or removed: the unload or removal waits for it, so nothing
+/// the event writes outlives the wallet.
+#[test]
+fn an_event_past_its_check_leaves_nothing_of_a_wallet_unloaded_meanwhile() {
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    use std::sync::Barrier;
+    for remove in [false, true] {
+        let f = fixture(false);
+        let coin = f.credit(1, COIN);
+        let tx = f.spend_of(7, &[coin]);
+        let event = f.seen_event(
+            &tx,
+            TransactionContext::InBlock(BlockInfo::new(902, dashcore::BlockHash::all_zeros(), 9)),
+        );
+        let (reached, release) = (Arc::new(Barrier::new(2)), Arc::new(Barrier::new(2)));
+        *f.session.hub.pause_event.lock().unwrap() =
+            Some((Arc::clone(&reached), Arc::clone(&release)));
+        let hub = Arc::clone(&f.session.hub);
+        let heard = std::thread::spawn(move || hub.apply_wallet_event(&event));
+        reached.wait();
+        let wipe = remove.then(|| f.wipe_grant(f.wallet));
+        let during_pause = std::thread::scope(|scope| {
+            let gone = scope.spawn(|| match &wipe {
+                Some(wipe) => (f.engine).block_on(f.session.remove_wallet(f.wallet, wipe.clone())),
+                None => (f.engine).block_on(f.session.unload_wallet(f.wallet)),
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !gone.is_finished() && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let during_pause = gone.is_finished();
+            release.wait();
+            gone.join().unwrap().unwrap();
+            during_pause
+        });
+        heard.join().unwrap();
+        let held =
+            (f.session.hub.history).read_wallet(&f.wallet, |h| h.session_held.contains(&tx.txid()));
+        let (entry, state) = (
+            f.entry_of(tx.txid()),
+            f.session.hub.wallet_state(&f.wallet).is_some(),
+        );
+        eprintln!(
+            "ROW5965 an event paused past its check, the wallet {} meanwhile: done during the pause {during_pause}; held {held}, entry {entry:?}, wallet state {state}",
+            if remove { "removed" } else { "unloaded" }
+        );
+        assert!(!during_pause, "remove={remove}: done before the event");
+        assert_eq!(
+            (held, entry, state),
+            (false, None, false),
+            "remove={remove}"
+        );
+    }
+}
+
+/// A removal whose store deletion fails leaves the wallet stored, and the
+/// next load from the store brings it back into the manager: another
+/// wallet's open, or a watch-only registration. It is admitted, and its
+/// events are heard.
+#[test]
+fn a_wallet_a_failed_removal_left_stored_is_heard_once_loaded_again() {
+    for open in [true, false] {
+        let f = fixture(false);
+        let (xpub, probe) = (f.first_xpub(), f.probe());
+        let other = open.then(|| {
+            let other = f.import_watch_only(&xpub).unwrap();
+            (f.engine).block_on(f.session.unload_wallet(other)).unwrap();
+            other
+        });
+        (crate::wallets::FAIL_DELETE_IN.lock().unwrap()).push(f.session.data_dir().to_path_buf());
+        let removed =
+            (f.engine).block_on(f.session.remove_wallet(f.wallet, f.wipe_grant(f.wallet)));
+        match other {
+            Some(other) => (f.engine).block_on(f.session.load_wallet(other)).unwrap(),
+            None => {
+                f.import_watch_only(&xpub).unwrap();
+            }
+        }
+        let manager = Arc::clone(&f.session.live().unwrap().manager);
+        let back = (f.engine)
+            .block_on(manager.get_wallet(&f.wallet.0))
+            .is_some();
+        let heard = f.hears(f.wallet, &probe);
+        eprintln!(
+            "ROW5965 a removal whose store deletion failed: {removed:?}; back in the manager after {} {back}; an event of it heard {heard}",
+            if open {
+                "another wallet's open"
+            } else {
+                "a watch-only registration"
+            }
+        );
+        assert!(removed.is_err());
+        assert!(back, "open={open}");
+        assert!(heard, "open={open}");
+    }
+}
+
+/// A removed wallet imported again, from its seed or as watch-only: its
+/// events are heard.
+#[test]
+fn a_removed_wallet_imported_again_is_heard() {
+    for watch_only in [false, true] {
+        let f = fixture(false);
+        let (xpub, probe) = (f.first_xpub(), f.probe());
+        let id = if watch_only {
+            f.import_watch_only(&xpub).unwrap()
+        } else {
+            f.wallet
+        };
+        (f.engine)
+            .block_on(f.session.remove_wallet(id, f.wipe_grant(id)))
+            .unwrap();
+        let again = if watch_only {
+            f.import_watch_only(&xpub)
+        } else {
+            f.import_again()
+        };
+        let heard = f.hears(id, &probe);
+        eprintln!(
+            "ROW5965 a removed wallet imported again (watch-only {watch_only}): {again:?}; an event of it heard {heard}"
+        );
+        assert_eq!(again.unwrap(), id);
+        assert!(heard, "watch_only={watch_only}");
+    }
+}
+
+/// A removed wallet whose import again fails after it was admitted, from
+/// its seed or as watch-only: it stays removed, and its events are not
+/// heard.
+#[test]
+fn a_removed_wallet_whose_import_again_fails_is_not_heard() {
+    for watch_only in [false, true] {
+        let f = fixture(false);
+        let (xpub, probe) = (f.first_xpub(), f.probe());
+        let id = if watch_only {
+            f.import_watch_only(&xpub).unwrap()
+        } else {
+            f.wallet
+        };
+        (f.engine)
+            .block_on(f.session.remove_wallet(id, f.wipe_grant(id)))
+            .unwrap();
+        (crate::keys::FAIL_REGISTRATION_IN.lock().unwrap())
+            .push(f.session.data_dir().to_path_buf());
+        let again = if watch_only {
+            f.import_watch_only(&xpub)
+        } else {
+            f.import_again()
+        };
+        let heard = f.hears(id, &probe);
+        eprintln!(
+            "ROW5965 a removed wallet whose import again failed (watch-only {watch_only}): {again:?}; an event of it heard {heard}"
+        );
+        assert!(again.is_err());
+        assert!(!heard, "watch_only={watch_only}");
+    }
+}
+
+/// A transaction only a block's event carries (`BlockProcessed::inserted`)
+/// is this session's: a fork found past its height that replaced it drops
+/// it.
+#[test]
+fn a_transaction_only_a_block_event_carried_is_this_sessions() {
+    let f = fixture(false);
+    let coin = f.credit(1, COIN);
+    f.quietly_at(1_000);
+    let replaced = f.spend_of(7, &[coin]);
+    let platform_wallet::events::WalletEvent::TransactionDetected {
+        record,
+        balance,
+        account_balances,
+        ..
+    } = f.seen_event(&replaced, mined_at(902))
+    else {
+        unreachable!()
+    };
+    (f.session.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::BlockProcessed {
+        wallet_id: f.wallet.0,
+        height: 902,
+        chain_lock: None,
+        inserted: vec![*record],
+        updated: Vec::new(),
+        matured: Vec::new(),
+        balance,
+        account_balances,
+        addresses_derived: Vec::new(),
+    });
+    let seen = f.entry_of(replaced.txid());
+    f.fork_and_progress(&[], 900, &[], 905);
+    let guard = f.guard();
+    let entry = f.entry_of(replaced.txid());
+    eprintln!(
+        "ROW5965 carried by a block's event only, fork to 900 found at 905: seen {seen:?}, guard {guard:?}, replaced at 902 {entry:?}"
+    );
+    assert_eq!(seen, Some((Some(902), false)));
+    assert_eq!(guard.unwrap(), 905);
+    assert_eq!(entry, None);
+}
+
+/// A removed wallet whose import again registers it and then fails: the
+/// manager holds it, so it stays admitted, and its events are heard.
+#[test]
+fn a_removed_wallet_whose_import_fails_after_registering_is_heard() {
+    let f = fixture(false);
+    let probe = f.probe();
+    (f.engine)
+        .block_on(f.session.remove_wallet(f.wallet, f.wipe_grant(f.wallet)))
+        .unwrap();
+    (crate::keys::FAIL_AFTER_REGISTRATION_IN.lock().unwrap())
+        .push(f.session.data_dir().to_path_buf());
+    let again = f.import_again();
+    let manager = Arc::clone(&f.session.live().unwrap().manager);
+    let registered = (f.engine)
+        .block_on(manager.get_wallet(&f.wallet.0))
+        .is_some();
+    let heard = f.hears(f.wallet, &probe);
+    eprintln!(
+        "ROW5965 a removed wallet whose import again failed after registering: {again:?}; in the manager {registered}; an event of it heard {heard}"
+    );
+    assert!(again.is_err());
+    assert!(registered);
+    assert!(heard);
+}
+
+/// Row 71's ProRegTxs the history keeps out of sight (a DashPay contact's
+/// records), loaded from key-wallet or only from storage, and a fork to
+/// 900 no event announced, found at 905: the one key-wallet held this
+/// session and the fork replaced goes, its collateral with it; the one
+/// key-wallet still holds, and the one only read from storage, stay.
+#[test]
+fn a_found_fork_drops_a_hidden_registration_key_wallet_no_longer_holds() {
+    use crate::masternodes::provider_fixtures::{coins, null, registration};
+    use key_wallet::account::AccountType;
+    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::TransactionType;
+    use std::collections::HashSet;
+    let f = fixture(false);
+    f.credit(1, COIN);
+    f.quietly_at(1_000);
+    let amount = dw_protx::params::collateral_amount(false);
+    let [gone, kept, stored] = [1, 2, 3].map(|n| registration(null(0), false, n, coins(&[amount])));
+    let contact = AccountType::DashpayExternalAccount {
+        index: 0,
+        user_identity_id: [0xaa; 32],
+        friend_identity_id: [0xbb; 32],
+    };
+    let record = |t: &dashcore::Transaction, height: u32| {
+        TransactionRecord::new(
+            t.clone(),
+            contact,
+            mined_at(height),
+            TransactionType::Standard,
+            TransactionDirection::Internal,
+            Vec::new(),
+            Vec::new(),
+            0,
+        )
+    };
+    let (manager, id) = (Arc::clone(&f.session.live().unwrap().manager), f.wallet);
+    let held = [
+        (gone.clone(), record(&gone, 950)),
+        (kept.clone(), record(&kept, 800)),
+    ];
+    f.engine.block_on(async move {
+        use key_wallet::bip32::{ExtendedPrivKey, ExtendedPubKey};
+        let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[7; 32]).unwrap();
+        let mut account = key_wallet::managed_account::ManagedCoreFundsAccount::from_account(
+            &key_wallet::Account {
+                parent_wallet_id: Some(id.0),
+                account_type: contact,
+                network: dashcore::Network::Regtest,
+                account_xpub: ExtendedPubKey::from_priv(&master),
+                is_watch_only: true,
+            },
+        );
+        for (t, r) in held {
+            account.transactions_mut().insert(t.txid(), r);
+        }
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let (_, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+        (info.core_wallet.accounts)
+            .insert_funds_bearing_account(account)
+            .unwrap();
+    });
+    let s = Arc::clone(&f.session);
+    f.engine
+        .block_on(
+            f.session
+                .on_runtime(async move { s.load_history_for(vec![id]).await }),
+        )
+        .unwrap();
+    (f.session.hub.history).with_wallet(f.wallet, |h| h.upsert(&record(&stored, 950), None));
+    let collaterals = || -> HashSet<Txid> {
+        (f.session
+            .hub
+            .history
+            .registration_collaterals(&f.wallet)
+            .into_iter())
+        .map(|(o, _)| o.txid)
+        .collect()
+    };
+    let before = collaterals();
+    f.fork_and_progress(&[], 900, &[], 905);
+    let guard = f.guard();
+    let after = collaterals();
+    eprintln!(
+        "ROW5965 hidden registrations, fork to 900 found at 905: before {before:?}, guard {guard:?}, after {after:?} (gone {}, kept {}, stored {})",
+        gone.txid(),
+        kept.txid(),
+        stored.txid()
+    );
+    assert_eq!(
+        before,
+        HashSet::from([gone.txid(), kept.txid(), stored.txid()])
+    );
+    assert_eq!(guard.unwrap(), 905);
+    assert_eq!(after, HashSet::from([kept.txid(), stored.txid()]));
 }

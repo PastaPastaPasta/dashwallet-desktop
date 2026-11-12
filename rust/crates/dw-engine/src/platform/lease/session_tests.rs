@@ -3556,13 +3556,14 @@ fn mode_b_the_coinjoin_pass_spends_nothing_while_the_journal_is_not_read() {
 /// whose inputs come through it) selects nothing during a replay.
 #[test]
 fn the_coinjoin_pass_selects_nothing_during_a_replay() {
-    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let f = fixture(false);
     f.credit(4, COIN);
     let s = &f.session;
     let w = f.engine.block_on(s.wallet(&f.wallet)).unwrap();
     let checkpoint = |height: u32| {
-        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+        (f.engine).block_on(async {
+            crate::events::set_checkpoint(&mut w.state_mut().await.core_wallet, height)
+        })
     };
     let pass = || {
         f.engine
@@ -3933,13 +3934,14 @@ fn close_waits_for_a_funding_refresh_that_holds_the_wallet() {
 /// answers.
 #[test]
 fn a_mixed_sweep_is_refused_while_a_replay_runs() {
-    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
     let f = fixture(false);
     f.credit_coinjoin(3, COIN);
     let s = &f.session;
     let w = f.engine.block_on(s.wallet(&f.wallet)).unwrap();
     let checkpoint = |height: u32| {
-        (f.engine).block_on(async { w.state_mut().await.core_wallet.update_synced_height(height) })
+        (f.engine).block_on(async {
+            crate::events::set_checkpoint(&mut w.state_mut().await.core_wallet, height)
+        })
     };
     checkpoint(1_000);
     (s.hub).apply_wallet_event(&platform_wallet::events::WalletEvent::SyncHeightAdvanced {

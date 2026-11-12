@@ -13,6 +13,12 @@ use crate::events::{WalletName, unix_now};
 use crate::platform::RevokeCause;
 use crate::{EngineError, EngineEvent, NetworkSession, WalletBalances, WalletId};
 
+/// Tests: the next wallet removal of a session on one of these data
+/// directories fails to delete the wallet's store.
+#[cfg(test)]
+pub(crate) static FAIL_DELETE_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// Longest wallet name, in characters, after trimming.
 pub const MAX_WALLET_NAME: usize = 64;
 
@@ -273,10 +279,16 @@ impl NetworkSession {
             let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
             #[cfg(test)]
             let pause = crate::coins::held_appdb_job();
+            #[cfg(test)]
+            let fail_delete = crate::keys::take_test_failure(&FAIL_DELETE_IN, this.data_dir());
             let deleted = tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
                 #[cfg(test)]
                 if let Some(pause) = pause {
                     pause.hold();
+                }
+                #[cfg(test)]
+                if fail_delete {
+                    return Err(EngineError::Storage("test: wallet delete failed".into()));
                 }
                 persister.delete_wallet(id.0)?;
                 appdb

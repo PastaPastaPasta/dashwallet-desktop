@@ -40,7 +40,7 @@ pub(crate) static FAIL_AFTER_REGISTRATION_IN: std::sync::Mutex<Vec<std::path::Pa
 
 /// Tests: whether `list` names `data_dir`, taking it out.
 #[cfg(test)]
-fn take_test_failure(
+pub(crate) fn take_test_failure(
     list: &std::sync::Mutex<Vec<std::path::PathBuf>>,
     data_dir: &std::path::Path,
 ) -> bool {
@@ -578,6 +578,7 @@ impl NetworkSession {
         }
 
         let default_name = self.next_default_name();
+        let was_unloaded = self.hub.admit(wallet_id);
         let registered = if registration_refused(self.data_dir()) {
             Err(EngineError::Internal("test: registration refused".into()))
         } else {
@@ -604,12 +605,14 @@ impl NetworkSession {
         let wallet = match registered {
             Ok(wallet) if wallet.wallet_id() == wallet_id.0 => wallet,
             Ok(wallet) => {
+                self.unadmit(&manager, wallet_id, was_unloaded).await;
                 return Err(EngineError::Internal(format!(
                     "platform-wallet registered {} for the seed of {wallet_id}",
                     hex::encode(wallet.wallet_id())
                 )));
             }
             Err(e) => {
+                self.unadmit(&manager, wallet_id, was_unloaded).await;
                 // A registration that exists keeps the stored seed: only
                 // our own failure is rolled back.
                 if !matches!(e, EngineError::WalletAlreadyExists(_)) {
