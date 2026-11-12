@@ -18,6 +18,7 @@ pub const FACADES: &[(&str, &str)] = &[
     ("NetworkSession", "dw-engine"),
     ("DashPay", "dw-engine"),
     ("Governance", "dw-engine"),
+    ("Masternodes", "dw-engine"),
     ("Rates", "dw-engine"),
     ("TxDraft", "dw-engine"),
     ("PreparedTx", "dw-engine"),
@@ -37,6 +38,10 @@ pub const FREE: &[(&str, &str)] = &[
     (
         "dw_engine::is_coinjoin_internal",
         "dw-engine/src/tx_actions.rs",
+    ),
+    (
+        "dw_engine::masternodes::standby_file_transactions",
+        "dw-engine/src/masternodes/shared/standby.rs",
     ),
 ];
 

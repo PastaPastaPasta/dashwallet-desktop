@@ -165,6 +165,7 @@ fn test_QT_127_create_standby_signs_cores_pair_and_stores_it() {
         pro_tx_hash: txid.to_string(),
         share_index: 0,
         fee: 1_000,
+        penalty: Some(COIN),
         full_valid_from: 1_050,
         full: true,
         immediate: true,
@@ -480,6 +481,8 @@ fn test_QT_127_a_zero_penalty_standby_is_one_copy() {
     let short = create(&f, 0, txid, 999).unwrap_err();
     assert_eq!(send_code(&short), "send.grant_exceeded");
     let made = create(&f, 0, txid, 1_000).unwrap();
+    assert_eq!(made[0].penalty, Some(0));
+    assert_eq!(standbys(&f, 0, txid)[0].penalty, Some(0));
     assert_eq!((made[0].full, made[0].immediate), (true, false));
     let file = export(&f, 0, txid, 0).unwrap();
     let (full, immediate) = hex_lines(&file);
@@ -510,6 +513,7 @@ fn test_QT_127_an_imported_standby_is_checked_stored_and_sent() {
     // B imports A's file line by line.
     let (d, stored) = imported_standby(&f, 1, &format!("  {full}\n"));
     assert!(stored);
+    assert_eq!(d.standby.penalty, Some(COIN));
     assert_eq!(
         (d.variant, d.penalty, d.returns_principal),
         (StandbyVariant::Full, 0, true)
@@ -538,6 +542,7 @@ fn test_QT_127_an_imported_standby_is_checked_stored_and_sent() {
     assert!(!imported_standby(&f, 1, &full).1, "held already");
     let (d, stored) = imported_standby(&f, 1, &immediate);
     assert!(stored);
+    assert_eq!(d.standby.penalty, Some(COIN));
     assert_eq!(
         (d.variant, d.penalty, d.returns_principal),
         (StandbyVariant::Immediate, COIN, false)
@@ -848,4 +853,271 @@ fn test_QT_127_a_confirmed_session_prompts_create_standby() {
     assert_eq!(f.session_of(0, &id).next, SharedNext::Nothing);
     let all = f.run(f.mn().shared_sessions(f.wallets[0])).unwrap();
     assert_eq!(all[0].next, SharedNext::Nothing);
+}
+
+#[test]
+fn ep_t3_standby_penalty_matches_created_and_imported_charges() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    let made = create(&f, 0, txid, COIN + 1_000).unwrap();
+    let penalty = |s: &Standby| {
+        serde_json::to_value(s).unwrap()["penalty"]
+            .as_u64()
+            .unwrap()
+    };
+    assert_eq!(penalty(&made[0]), COIN);
+    let (full, immediate) = hex_lines(&export(&f, 0, txid, 0).unwrap());
+    assert_eq!(
+        send_code(&send(&f, 0, txid, 0, StandbyVariant::Immediate, COIN + 999).unwrap_err()),
+        "send.grant_exceeded"
+    );
+    send(&f, 0, txid, 0, StandbyVariant::Immediate, COIN + 1_000).unwrap();
+    for full_only in [false, true] {
+        let restored = fx(3, true);
+        *restored.seam.list.lock().unwrap() = f.seam.list.lock().unwrap().clone();
+        *restored.seam.shared_mined.lock().unwrap() = f.seam.shared_mined.lock().unwrap().clone();
+        let text = if full_only {
+            full.as_ref().unwrap()
+        } else {
+            immediate.as_ref().unwrap()
+        };
+        let (description, stored) = imported_standby(&restored, 0, text);
+        assert!(stored);
+        assert_eq!(description.standby.source, StandbySource::Imported);
+        assert_eq!(penalty(&description.standby), COIN);
+        let (variant, debit) = if full_only {
+            list_at(&restored, 1_050);
+            (StandbyVariant::Full, 1_000)
+        } else {
+            (StandbyVariant::Immediate, COIN + 1_000)
+        };
+        assert_eq!(
+            send_code(&send(&restored, 0, txid, 0, variant, debit - 1).unwrap_err()),
+            "send.grant_exceeded"
+        );
+        send(&restored, 0, txid, 0, variant, debit).unwrap();
+    }
+    let zero = fx(3, true);
+    let (_, hash) = listed_with(&zero, 0);
+    assert_eq!(penalty(&create(&zero, 0, hash, 1_000).unwrap()[0]), 0);
+}
+
+#[test]
+fn ep_t8_standby_file_extracts_importable_variants_without_labels() {
+    use crate::masternodes::standby_file_transactions;
+    for penalty in [COIN, 0] {
+        let f = fx(3, true);
+        let (_, txid) = listed_with(&f, penalty);
+        create(&f, 0, txid, penalty + 1_000).unwrap();
+        let file = export(&f, 0, txid, 0).unwrap();
+        let lines = standby_file_transactions(&file.text).unwrap();
+        assert_eq!(lines.len(), if penalty == 0 { 1 } else { 2 });
+        for text in &lines {
+            assert!(matches!(
+                import(&f, 1, text).unwrap(),
+                SharedImport::Standby { .. }
+            ));
+        }
+        for text in &lines {
+            let restored = fx(3, true);
+            *restored.seam.list.lock().unwrap() = f.seam.list.lock().unwrap().clone();
+            *restored.seam.shared_mined.lock().unwrap() =
+                f.seam.shared_mined.lock().unwrap().clone();
+            imported_standby(&restored, 0, text);
+            let half = export(&restored, 0, txid, 0).unwrap();
+            let extracted = standby_file_transactions(&half.text).unwrap();
+            assert_eq!(extracted, vec![text.clone()]);
+            for tx in extracted {
+                assert!(matches!(
+                    import(&restored, 1, &tx).unwrap(),
+                    SharedImport::Standby { .. }
+                ));
+            }
+        }
+        let decorated = format!(
+            "ignored header\n{}\nabc\n {} \n{}\n",
+            "12".repeat(32),
+            lines[0],
+            lines[0].to_uppercase()
+        );
+        assert_eq!(
+            standby_file_transactions(&decorated).unwrap(),
+            vec![lines[0].clone()]
+        );
+        if penalty > 0 {
+            for fixture in [
+                include_str!("../testdata/standby-core-local-date.txt"),
+                include_str!("../testdata/standby-core-translated.txt"),
+            ] {
+                let extracted = standby_file_transactions(fixture).unwrap();
+                assert_eq!(extracted, lines);
+                for text in extracted {
+                    assert!(matches!(
+                        import(&f, 1, &text).unwrap(),
+                        SharedImport::Standby { .. }
+                    ));
+                }
+            }
+        }
+    }
+    let e = standby_file_transactions("private input\nabc\n0123\n").unwrap_err();
+    assert_eq!(e.code(), "invalid_argument");
+    assert!(!e.to_string().contains("private input"));
+}
+
+#[test]
+fn ep_registered_split_preserves_registered_and_my_shares() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    for tip in [0, 100, 150] {
+        f.tip(tip);
+        for height in [49, 50, 51, 100] {
+            list_at(&f, height);
+            let ctx = f.run(f.session.protx_context(f.wallets[0])).unwrap();
+            let old = f.run(f.session.registered_before_split(
+                f.wallets[0],
+                txid.to_byte_array(),
+                &ctx,
+            ));
+            let new = f.run(
+                f.session
+                    .registered(f.wallets[0], txid.to_byte_array(), &ctx),
+            );
+            match (old, new) {
+                (Ok(old), Ok(new)) => {
+                    assert_eq!(old, new);
+                    for w in 0..3 {
+                        let mut expected = Vec::new();
+                        for (i, share) in old.shares.iter().enumerate() {
+                            if let Some(index) = f
+                                .run(f.session.keychain_owner(f.wallets[w], share.owner_key_id))
+                                .unwrap()
+                            {
+                                expected.push((i as u16, index));
+                            }
+                        }
+                        assert_eq!(
+                            f.run(f.session.my_shares(f.wallets[w], &new.shares))
+                                .unwrap(),
+                            expected
+                        );
+                        assert_eq!(expected.len(), 1);
+                        assert_eq!(expected[0].0, w as u16);
+                    }
+                }
+                (Err(old), Err(new)) => assert_eq!(old.code(), new.code()),
+                other => panic!("split changed the result: {other:?}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn ep_registered_standby_call_sites_preserve_refusal_order() {
+    let f = fx(3, true);
+    let (_, txid) = listed(&f);
+    create(&f, 0, txid, COIN + 1_000).unwrap();
+    let immediate = hex_lines(&export(&f, 0, txid, 0).unwrap()).1.unwrap();
+    let entries = f.seam.list.lock().unwrap().clone();
+    let mined = f.seam.shared_mined.lock().unwrap().clone();
+    for (guard, expected) in [
+        (0, "masternodes.unsupported"),
+        (1, "masternodes.list_unavailable"),
+        (2, "masternodes.shared_registration_unknown"),
+        (3, "masternodes.shared_too_early"),
+    ] {
+        *f.seam.list.lock().unwrap() = entries.clone();
+        *f.seam.shared_mined.lock().unwrap() = mined.clone();
+        list_at(&f, 100);
+        f.db()
+            .set_setting_durable(GLOBAL_SCOPE, "masternodes.any_shared_seen", Some("1"))
+            .unwrap();
+        match guard {
+            0 => {
+                f.db()
+                    .set_setting_durable(GLOBAL_SCOPE, "masternodes.any_shared_seen", None)
+                    .unwrap();
+                *f.seam.list.lock().unwrap() = Some(Vec::new());
+            }
+            1 => *f.seam.list.lock().unwrap() = None,
+            2 => f.seam.shared_mined.lock().unwrap().clear(),
+            _ => list_at(&f, 50),
+        }
+        for call in 0..4 {
+            let result = match call {
+                0 => create(&f, 0, txid, COIN + 1_000).map(|_| ()),
+                1 => export(&f, 0, txid, 0).map(|_| ()),
+                2 => import(&f, 0, &immediate).map(|_| ()),
+                _ => send(&f, 0, txid, 0, StandbyVariant::Immediate, COIN + 1_000).map(|_| ()),
+            };
+            assert_eq!(
+                result.unwrap_err().code(),
+                expected,
+                "standby call {call}, guard {guard}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ep_r1_standby_penalty_distinguishes_missing_history_from_zero() {
+    use super::dissolve::confirm;
+    for full_only in [false, true] {
+        let f = fx(3, true);
+        let (_, txid) = listed(&f);
+        create(&f, 0, txid, COIN + 1_000).unwrap();
+        let registration = f.seam.shared_mined.lock().unwrap()[0].1.clone();
+        let (full, _) = hex_lines(&export(&f, 0, txid, 0).unwrap());
+        let restored = fx(3, true);
+        *restored.seam.list.lock().unwrap() = f.seam.list.lock().unwrap().clone();
+        confirm(&restored, 0, registration, 50);
+        if full_only {
+            imported_standby(&restored, 0, full.as_ref().unwrap());
+        } else {
+            create(&restored, 0, txid, COIN + 1_000).unwrap();
+            assert_eq!(
+                send_code(
+                    &send(&restored, 0, txid, 0, StandbyVariant::Immediate, COIN + 999)
+                        .unwrap_err()
+                ),
+                "send.grant_exceeded"
+            );
+            send(
+                &restored,
+                0,
+                txid,
+                0,
+                StandbyVariant::Immediate,
+                COIN + 1_000,
+            )
+            .unwrap();
+        }
+        let penalty =
+            || serde_json::to_value(&standbys(&restored, 0, txid)[0]).unwrap()["penalty"].clone();
+        assert_eq!(penalty(), serde_json::json!(COIN));
+        restored
+            .session
+            .hub
+            .history
+            .with_wallet(restored.wallets[0], |h| {
+                h.truncate(&[], &[txid]);
+            });
+        assert_eq!(
+            penalty(),
+            serde_json::json!(COIN),
+            "mempool registration, full_only={full_only}"
+        );
+        restored
+            .session
+            .hub
+            .history
+            .with_wallet(restored.wallets[0], |h| {
+                h.truncate(&[txid], &[]);
+            });
+        assert!(
+            penalty().is_null(),
+            "unknown penalty, full_only={full_only}"
+        );
+        assert_eq!(standbys(&restored, 0, txid).len(), 1);
+    }
 }

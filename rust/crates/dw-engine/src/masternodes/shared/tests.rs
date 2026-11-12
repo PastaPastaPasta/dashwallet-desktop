@@ -36,6 +36,7 @@ use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, Wa
 
 mod dissolve;
 mod key_change;
+mod reads;
 mod standby;
 mod together;
 
@@ -553,11 +554,24 @@ fn three_approved(f: &Fx) -> String {
 
 /// [`three_approved`] with the terms' early penalty `early_penalty`.
 fn three_approved_with(f: &Fx, early_penalty: u64) -> String {
-    f.credit(0, 1, 401 * COIN);
-    f.credit(1, 2, 300 * COIN + 50_000);
-    f.credit(2, 3, 350 * COIN);
+    three_approved_with_reward(f, early_penalty, RewardChoice::Refund, 1)
+}
+
+fn three_approved_with_reward(
+    f: &Fx,
+    early_penalty: u64,
+    reward: RewardChoice,
+    seed: u8,
+) -> String {
+    f.credit(0, seed, 401 * COIN);
+    f.credit(1, seed + 1, 300 * COIN + 50_000);
+    f.credit(2, seed + 2, 350 * COIN);
     let mut req = request(&[("A", 400), ("B", 300), ("C", 300)], FEE);
     req.terms.early_penalty = early_penalty;
+    if seed != 1 {
+        req.terms.service = format!("1.2.3.{seed}:19999");
+    }
+    req.reward = reward;
     let invitation = start(f, 0, req).unwrap();
     let id = invitation.session.id.clone();
     assert_eq!(invitation.message.name, "Invitation");
@@ -1381,7 +1395,17 @@ fn confirmed(f: &Fx, height: u32) -> (String, Txid) {
 
 /// [`confirmed`] with the terms' early penalty `early_penalty`.
 fn confirmed_with(f: &Fx, height: u32, early_penalty: u64) -> (String, Txid) {
-    let id = three_approved_with(f, early_penalty);
+    confirmed_with_reward(f, height, early_penalty, RewardChoice::Refund, 1)
+}
+
+fn confirmed_with_reward(
+    f: &Fx,
+    height: u32,
+    early_penalty: u64,
+    reward: RewardChoice,
+    seed: u8,
+) -> (String, Txid) {
+    let id = three_approved_with_reward(f, early_penalty, reward, seed);
     let request = f.message(0, &id);
     for w in [1, 2] {
         f.imported(w, &request);
@@ -3000,4 +3024,105 @@ fn an_unseen_dissolution_stays_sent_after_a_silent_truncation() {
         "ROW5965 list at 950, silent truncation to 900: guard {guard:?}, scanned and status {after:?}"
     );
     assert_eq!(after.1, Sent, "{after:?}");
+}
+
+#[test]
+fn ep_conflict_height_keeps_shared_stage_and_release_decisions() {
+    use super::super::protx::ops::{conflict_height, conflict_of};
+    use super::store::{Loaded, derive_stage, releasable, session_hash};
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    for w in [0, 1] {
+        if w == 0 {
+            f.send(0, &id, 401 * COIN).unwrap();
+        }
+        let row = f.row(w, &id);
+        let loaded = Loaded::of(row.clone(), dashcore::Network::Regtest).unwrap();
+        let mut chain = f.run(f.session.shared_chain(f.wallets[w])).unwrap();
+        let inputs = loaded.own_inputs();
+        let own = session_hash(&loaded, &chain)
+            .or_else(|| row.txid.as_ref().and_then(|id| id.parse().ok()));
+        assert!(!inputs.is_empty());
+        for (seed, height) in [(71, 60), (72, 59), (73, 60)] {
+            let tx = Transaction {
+                version: 2,
+                lock_time: seed,
+                input: vec![dashcore::TxIn {
+                    previous_output: inputs[0],
+                    script_sig: Default::default(),
+                    sequence: u32::MAX,
+                    witness: Default::default(),
+                }],
+                output: vec![TxOut {
+                    value: 1_000,
+                    script_pubkey: Default::default(),
+                }],
+                special_transaction_payload: None,
+            };
+            chain.history.insert(
+                tx.txid(),
+                crate::history::TxEntry {
+                    tx,
+                    context: key_wallet::transaction_checking::TransactionContext::InBlock(
+                        key_wallet::transaction_checking::BlockInfo::new(
+                            height,
+                            dashcore::BlockHash::all_zeros(),
+                            0,
+                        ),
+                    ),
+                    instant_locked: false,
+                    first_seen: None,
+                    own_inputs: Default::default(),
+                    abandoned: false,
+                },
+            );
+        }
+        let original = chain
+            .history
+            .iter()
+            .filter(|(id, e)| {
+                Some(**id) != own
+                    && e.tx
+                        .input
+                        .iter()
+                        .any(|input| inputs.contains(&input.previous_output))
+            })
+            .filter_map(|(_, e)| e.context.block_info().map(|b| b.height()))
+            .min();
+        assert_eq!(
+            conflict_height(&chain.history, &inputs, own.as_ref()),
+            original
+        );
+        assert_eq!(
+            conflict_of(&chain.history, &inputs, own.as_ref(), &[]).map(|(_, h)| h),
+            original
+        );
+        assert_eq!(derive_stage(&loaded, &chain), SharedStage::Conflicted);
+        for tip in [59u32, 63, 64, 65] {
+            let buried = |height: u32| tip.saturating_sub(height) + 1 >= 6;
+            assert_eq!(
+                releasable(&row, dashcore::Network::Regtest, &chain, buried),
+                original.is_some_and(buried)
+            );
+        }
+        if let Some(own) = own {
+            let mut own_tx = chain.history.values().next().unwrap().clone();
+            own_tx.context = key_wallet::transaction_checking::TransactionContext::InBlock(
+                key_wallet::transaction_checking::BlockInfo::new(
+                    58,
+                    dashcore::BlockHash::all_zeros(),
+                    0,
+                ),
+            );
+            chain.history.insert(own, own_tx);
+            assert_eq!(
+                derive_stage(&loaded, &chain),
+                SharedStage::Confirmed { height: 58 }
+            );
+            assert!(releasable(&row, dashcore::Network::Regtest, &chain, |_| {
+                false
+            }));
+        }
+    }
 }

@@ -294,13 +294,23 @@ pub(super) enum FundEnd {
     /// Sent, and no proof within the wait (`FinalityTimeout`): its row
     /// stays `Broadcast` with no proof, stored (`real_rows`, shields only).
     ProofTimeout,
+    /// Its wallet removed or re-created after the last signature, before
+    /// the tracking write: nothing tracked or sent
+    /// (`WalletRemovedBeforeSend`).
+    RemovedBeforeSend,
+    /// Over the asset lock's input cap after the last signature: nothing
+    /// tracked or sent (`AssetLockTooManyInputs`).
+    OverInputCap,
 }
 
 impl FundEnd {
     /// Whether the library tracked the lock first, so the session's tap
     /// recorded it as the step's.
     fn tracked(self) -> bool {
-        self != Self::BelowFloor
+        !matches!(
+            self,
+            Self::BelowFloor | Self::RemovedBeforeSend | Self::OverInputCap
+        )
     }
 
     fn error(self) -> FundError {
@@ -310,6 +320,11 @@ impl FundEnd {
             Self::BelowFloor => E::AssetLockTransaction("below the required minimum".into()),
             Self::Unknown => E::TransactionBroadcastUnconfirmed("no verdict".into()),
             Self::ProofTimeout => E::FinalityTimeout(OutPoint::null()),
+            Self::RemovedBeforeSend => E::WalletRemovedBeforeSend("w".into()),
+            Self::OverInputCap => E::AssetLockTooManyInputs {
+                count: 101,
+                max: 100,
+            },
         })
     }
 }
@@ -3227,6 +3242,44 @@ fn a_shield_failing_after_its_signature_stays_possibly_sent() {
         assert_eq!(code(shield_with(&fx, &lib)), "platform.broadcast_unknown");
         assert!(lib.funded.lock().unwrap().is_empty());
     }
+}
+
+/// A shield whose wallet was removed or re-created after its lock was
+/// signed, before the library tracked or sent it: its
+/// released signature leaves the step possibly sent, so the call reads
+/// `broadcast_unknown` whatever the library said, and the next shield is
+/// refused on the step.
+#[test]
+fn a_shield_whose_wallet_left_after_its_signature_reads_broadcast_unknown() {
+    shield_refused_after_the_signature(FundEnd::RemovedBeforeSend);
+}
+
+/// A shield the library refuses over the asset lock's input cap after
+/// signing it reads the same.
+#[test]
+fn a_shield_over_the_asset_lock_input_cap_reads_broadcast_unknown() {
+    shield_refused_after_the_signature(FundEnd::OverInputCap);
+}
+
+fn shield_refused_after_the_signature(end: FundEnd) {
+    use super::flows::DispatchState;
+    let step = pool::shield_step(0);
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), fx.wallet));
+    *lib.fund_end.lock().unwrap() = Some(end);
+    let unknown = |r: Result<ShieldState, ShieldedError>| match r {
+        Err(ShieldedError::Platform(PlatformError::BroadcastUnknown { artifact })) => artifact,
+        other => panic!("not broadcast_unknown: {other:?}"),
+    };
+    assert_eq!(unknown(shield_with(&fx, &lib)), step);
+    assert_eq!(
+        fx.s.leases.funding_status(fx.wallet, &step),
+        Some(DispatchState::MaybeSent)
+    );
+    assert!(fx.s.leases.signed_lock_txids(fx.wallet, &step).is_empty());
+    assert_eq!(unknown(shield_with(&fx, &lib)), step);
+    assert!(lib.funded.lock().unwrap().is_empty());
 }
 
 #[path = "shield_drain_tests.rs"]

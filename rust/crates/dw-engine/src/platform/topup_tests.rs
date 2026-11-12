@@ -20,7 +20,9 @@ use dw_vault::{
 use platform_wallet::changeset::{
     AssetLockChangeSet, AssetLockEntry, PlatformWalletChangeSet, PlatformWalletPersistence,
 };
-use platform_wallet::{AssetLockFundingType, AssetLockStatus, TrackedAssetLock};
+use platform_wallet::{
+    AssetLockFundingType, AssetLockStatus, PlatformWalletError, TrackedAssetLock,
+};
 use zeroize::Zeroizing;
 
 use super::credits::{StuckTopUpFunding, TopUpOutcome, TopUpState};
@@ -29,7 +31,7 @@ use super::flows::{DispatchState, FlowKind};
 use super::lease::mode_b::{TrackedRow, TrackedStatus, index_trusted};
 use super::lease::{CallPermit, FundingKey, Lease, StoredLock};
 use super::registration::{FinishReport, RegistrationWait};
-use super::registration_flow::{FundError, LockInfo, LockStatus, PwLib, Spendable};
+use super::registration_flow::{FundError, LockInfo, LockStatus, PwLib, Spendable, fund_error};
 use super::topup::{self, Applied, TopUpLib, top_up_step};
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
 
@@ -406,6 +408,11 @@ enum FundScript {
     NotSent,
     /// Signed, then lost untracked with an unknown outcome.
     LostUntracked,
+    /// Signed, then platform-wallet's `WalletRemovedBeforeSend` before
+    /// the tracking write, mapped by the engine's `fund_error`.
+    RemovedBeforeSend,
+    /// Signed, then platform-wallet's `AssetLockTooManyInputs`, likewise.
+    OverInputCap,
 }
 
 #[derive(Default)]
@@ -723,6 +730,19 @@ impl TopUpLib for Fake {
                 permit.note_signed([0xfe; 32]);
                 return Err(FundError::Failed(PlatformError::Unavailable));
             }
+            FundScript::RemovedBeforeSend => {
+                permit.note_signed([0xfe; 32]);
+                return Err(fund_error(PlatformWalletError::WalletRemovedBeforeSend(
+                    "w".into(),
+                )));
+            }
+            FundScript::OverInputCap => {
+                permit.note_signed([0xfe; 32]);
+                return Err(fund_error(PlatformWalletError::AssetLockTooManyInputs {
+                    count: 101,
+                    max: 100,
+                }));
+            }
             _ => {}
         }
         // Signed by the permit's funding signer, recorded as the step's own
@@ -800,7 +820,10 @@ impl TopUpLib for Fake {
                 self.set_status(outpoint, LockStatus::Broadcast).await;
                 Err(FundError::IsTimeout)
             }
-            FundScript::NotSent | FundScript::LostUntracked => unreachable!(),
+            FundScript::NotSent
+            | FundScript::LostUntracked
+            | FundScript::RemovedBeforeSend
+            | FundScript::OverInputCap => unreachable!(),
         }
     }
 
@@ -1095,6 +1118,38 @@ fn an_unknown_funding_outcome_is_never_funded_again() {
     for _ in 0..2 {
         assert_eq!(unknown(f.top_up_with(&lib, DUFFS, &grant)), first);
     }
+    assert_eq!(lib.counts(), (1, 0));
+}
+
+/// A top-up whose wallet was removed or re-created after its lock was
+/// signed, before the library tracked it: the released signature leaves
+/// the step `MaybeSent`, so the call reads `broadcast_unknown` for it, not
+/// the library's error, and the next top-up is refused on the step.
+#[test]
+fn a_top_up_whose_wallet_left_after_its_signature_reads_broadcast_unknown() {
+    refused_after_the_signature(FundScript::RemovedBeforeSend);
+}
+
+/// A top-up the library refuses over the asset lock's input cap after
+/// signing it reads the same.
+#[test]
+fn a_top_up_over_the_asset_lock_input_cap_reads_broadcast_unknown() {
+    refused_after_the_signature(FundScript::OverInputCap);
+}
+
+fn refused_after_the_signature(script: FundScript) {
+    let f = fixture(false);
+    let lib = f.fake();
+    lib.w().fund_script = Some(script);
+    let first = top_up_step(0, 0);
+    let unknown = |r: Result<TopUpOutcome, CreditsError>| match r {
+        Err(CreditsError::Platform(PlatformError::BroadcastUnknown { artifact })) => artifact,
+        other => panic!("not broadcast_unknown: {other:?}"),
+    };
+    assert_eq!(unknown(f.top_up(&lib, DUFFS)), first);
+    assert_eq!(f.status(&first), Some(DispatchState::MaybeSent));
+    assert!(f.signed(&first).is_empty());
+    assert_eq!(unknown(f.top_up(&lib, DUFFS)), first);
     assert_eq!(lib.counts(), (1, 0));
 }
 

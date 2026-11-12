@@ -578,7 +578,11 @@ impl NetworkSession {
         wallet: WalletId,
         reg: &Registered,
     ) -> Result<BTreeMap<u16, u32>, MasternodesError> {
-        Ok(self.my_shares(wallet, reg).await?.into_iter().collect())
+        Ok(self
+            .my_shares(wallet, &reg.shares)
+            .await?
+            .into_iter()
+            .collect())
     }
 
     /// Signs `checked` with each of `to_sign` (share, keychain owner key)
@@ -1166,5 +1170,53 @@ fn view(
         created_at: t.row.created_at,
         updated_at: t.row.updated_at,
         last_error: t.row.last_error.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dashcore::{PubkeyHash, ScriptBuf, ScriptHash};
+    use dw_protx::shared::CollateralShare;
+
+    #[test]
+    fn ep_t8_together_default_fee_covers_every_standard_refund() {
+        for n in 2..=8 {
+            for p2sh in [false, true] {
+                let total = dw_protx::params::MASTERNODE_COLLATERAL;
+                let mut shares: Vec<_> = (0..n)
+                    .map(|i| CollateralShare {
+                        amount: total / n as u64,
+                        refund_script: if p2sh {
+                            ScriptBuf::new_p2sh(&ScriptHash::from_byte_array([i as u8 + 1; 20]))
+                        } else {
+                            ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([i as u8 + 1; 20]))
+                        },
+                        reward_script: ScriptBuf::new(),
+                        owner_key_id: [i as u8 + 1; 20],
+                    })
+                    .collect();
+                shares[n - 1].amount += total % n as u64;
+                let hash = Txid::from_byte_array([42; 32]);
+                let mn = SharedMn {
+                    pro_tx_hash: hash,
+                    collateral: OutPoint::new(hash, 0),
+                    shares: &shares,
+                    registered_height: 50,
+                    early_period_blocks: 1_000,
+                    early_penalty: 0,
+                    voting_key_id: [99; 20],
+                };
+                let fee = 300 + 110 * n as u64;
+                let request = together::prepare(&mn, 0, fee).unwrap();
+                let checked = together::check(&request.tx, &mn).unwrap();
+                assert_eq!(checked.dissolution.tx.output.len(), n);
+                let size = combined_size(&checked, &mn);
+                assert!(
+                    relay_floor(size).unwrap() <= fee,
+                    "n={n} p2sh={p2sh} size={size}"
+                );
+            }
+        }
     }
 }

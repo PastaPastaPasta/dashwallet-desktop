@@ -653,7 +653,13 @@ impl Masternodes {
             let (history, unspent) = s.op_view(wallet).await?;
             let view = s.dissolution_view(wallet, &rows).await;
             rows.iter()
-                .map(|r| operation_of(r, list_settled(r, state_of(r, &history, &unspent), &view)))
+                .map(|r| {
+                    operation_of(
+                        r,
+                        list_settled(r, state_of(r, &history, &unspent), &view),
+                        &s.hub.tracker(),
+                    )
+                })
                 .collect()
         })
         .await

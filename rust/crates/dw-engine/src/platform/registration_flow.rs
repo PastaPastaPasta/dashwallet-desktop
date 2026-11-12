@@ -234,7 +234,10 @@ pub(crate) struct Spendable {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FundError {
     /// The engine refused before the library call started (a lease that
-    /// no longer signs): nothing was signed, so nothing can be out.
+    /// no longer signs, the coin fence or a replay, the engine's input
+    /// bound, the permit gate, a funding key it could not derive): nothing
+    /// of this call was signed, so nothing of it can be out. An earlier
+    /// call of the step may be.
     Refused(PlatformError),
     /// A funding coin is held back (locked, or reserved by a send), read
     /// under the coin fence the call then holds (DEC-173 (3)), refused
@@ -3209,6 +3212,15 @@ pub(super) fn fund_error(e: platform_wallet::PlatformWalletError) -> FundError {
         | E::AssetLockInsufficientFunds { .. }
         | E::InputMidBroadcast { .. }
         | E::TransactionBuild(_)) => FundError::NotSent(e.into()),
+        // Raised once the lock is signed (its wallet left before tracking,
+        // or over the asset lock's input cap): the step stays `MaybeSent`,
+        // which Repair settles, so neither reads as not sent. The input cap
+        // is also raised by the proof wait's resume of a tracked lock over
+        // it, which leaves the lock tracked: a failure there too, never a
+        // timeout to wait out again.
+        e @ (E::WalletRemovedBeforeSend(_) | E::AssetLockTooManyInputs { .. }) => {
+            FundError::Failed(e.into())
+        }
         e => FundError::Failed(e.into()),
     }
 }
