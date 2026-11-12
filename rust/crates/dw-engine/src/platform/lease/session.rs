@@ -28,7 +28,8 @@ use crate::platform::shielded_pool::drain_passes;
 /// `Spend` for "Accept and pay"'s payment (§16.1); a contact payment's own
 /// lease only the `Spend` (DP3-01), as a proposal's fee (MG-06 D10) and a
 /// CoinJoin drain its coins (0.2 MIX-SHIELD: no `PlatformOp` grant reaches a
-/// CoinJoin coin); the masternode flows their own grant alone (MG-05 §4).
+/// CoinJoin coin); the masternode flows their own grant alone (MG-05 §4), as
+/// a masternode withdrawal (MG-13 P12).
 fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
     match flow {
         FlowKind::AcceptAndPay => &[GrantKind::PlatformOp, GrantKind::Spend],
@@ -40,6 +41,7 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::KeyChange
         | FlowKind::SharedMasternode
         | FlowKind::Dissolution => &[GrantKind::MasternodeOp],
+        FlowKind::MasternodeWithdraw => &[GrantKind::MasternodeWithdraw],
         FlowKind::Registration
         | FlowKind::TopUp
         | FlowKind::Withdraw
@@ -220,6 +222,16 @@ pub(crate) fn issue(
                     None => vault.masternode_signer(&wallet.0, token),
                 };
                 out.signers.masternode = Some(signer.map_err(issuing)?);
+            }
+            GrantPurpose::MasternodeWithdraw { max_credits, .. } => {
+                // MG-13 P12: the credits the withdrawal and its fee take;
+                // the signer is single use (dw-vault, r2 m5).
+                out.credits = max_credits;
+                let signer = match &key {
+                    Some(hold) => vault.masternode_withdrawal_signer_held(&wallet.0, hold, token),
+                    None => vault.masternode_withdrawal_signer(&wallet.0, token),
+                };
+                out.signers.withdrawal = Some(signer.map_err(issuing)?);
             }
             GrantPurpose::Governance => {
                 out.voting = true;

@@ -3018,7 +3018,8 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
     // removed wallets with their triggers, DP2-05's page index, DP3-01's
     // payment-lock inputs, BL-229's governance registrations, MG-06's
     // proposals, MG-04's ProTx operations, MG-04b's shared sessions and
-    // standbys, MP-01's price stamps), which such a build never had, or the
+    // standbys, MP-01's price stamps, the requests' username choice, MG-13's
+    // withdrawals and payout barriers), which such a build never had, or the
     // runner refuses the gap below them.
     let conn = rusqlite::Connection::open(&appdb).unwrap();
     let drop_triggers: String = conn
@@ -3043,6 +3044,8 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
              DROP TABLE masternode_ops;
              DROP TABLE shared_mn_sessions;
              DROP TABLE shared_mn_standby;
+             DROP TABLE mn_withdrawals;
+             DROP TABLE mn_payout_barriers;
              DROP TABLE mg_proposals;
              DROP TABLE mg_proposals_kept;
              DROP TABLE tx_fiat;

@@ -21,6 +21,9 @@ test-fund = []
 # `debug_assertions`; `tests/mix_shield_release_check.rs` proves it absent
 # from a release build.
 test-mix-shield = []
+# Debug builds only: the engine's masternode-withdrawal fault points and
+# `DW_FAULT=<point>` (MG-13 §3 fault sweep, T2 (4)), with dw-appdb's.
+fault-inject = ["dw-appdb/fault-inject"]
 
 [dependencies]
 platform-wallet = { workspace = true }

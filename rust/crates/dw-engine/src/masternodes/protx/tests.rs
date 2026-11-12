@@ -31,6 +31,8 @@ use crate::send::test_support::{FOREIGN, pay, send_failure};
 use crate::send::{SendFailure, SpendOwner, TestBroadcaster};
 use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, WalletId};
 
+mod barriers;
+
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const COIN: u64 = 100_000_000;
@@ -3687,5 +3689,471 @@ fn r71_d_an_abandoned_registration_seen_again_locks_its_collateral() {
                 "{what}: the abandon stays"
             );
         }
+    }
+}
+
+#[test]
+fn ep_t1_collateral_release_is_explicit_and_survives_restart() {
+    let mut f = fx(Library::Accept);
+    let (tx, op) = f.registered();
+    let hash = op.pro_tx_hash.unwrap();
+    let vout = payload(&tx).collateral_outpoint.vout;
+    let collateral = OutPoint::new(tx.txid(), vout);
+    let row = |f: &Fx| {
+        let detail = f
+            .engine
+            .block_on(f.mn().masternode(f.wallet, hash.clone()))
+            .unwrap();
+        serde_json::to_value(detail.row).unwrap()["collateral_released"].clone()
+    };
+    assert_eq!(row(&f), false);
+    f.db()
+        .lock_manual(&f.wallet.to_string(), &collateral.txid.to_string(), vout, 1)
+        .unwrap();
+    assert_eq!(row(&f), false, "coin control alone is not a release");
+    f.engine
+        .block_on(f.mn().release_collateral(f.wallet, hash.clone()))
+        .unwrap();
+    assert_eq!(row(&f), true);
+    f.engine
+        .block_on(f.mn().lock_collateral(f.wallet, hash.clone()))
+        .unwrap();
+    assert_eq!(row(&f), false);
+    f.engine
+        .block_on(f.mn().release_collateral(f.wallet, hash.clone()))
+        .unwrap();
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    f.engine = Engine::new(
+        config(&f.dir, Arc::new(MemoryOsStore::new())),
+        Arc::new(NoEvents),
+    )
+    .unwrap();
+    f.session = open(&f.engine);
+    f.seam = seam_for(&f.session, &f.lib);
+    f.watch_rows();
+    f.confirm(tx.clone(), 7);
+    f.hold(collateral, tx.output[vout as usize].clone());
+    assert_eq!(row(&f), true);
+}
+
+#[test]
+fn ep_t2_operation_debit_matches_resend_caps_for_every_kind_and_state() {
+    for (kind, flavour, penalty, foreign, together) in [
+        ("registration", "registration", 0, false, false),
+        ("update_registrar", "registrar", 0, false, false),
+        ("update_share", "share", 0, false, false),
+        ("dissolve", "alone_early", COIN, false, false),
+        ("dissolve", "alone_full", 0, false, false),
+        ("dissolve", "standby_immediate", COIN, false, false),
+        ("dissolve", "standby_full", 0, false, false),
+        ("dissolve", "foreign", COIN, true, false),
+        ("dissolve", "together", 0, false, true),
+    ] {
+        for state in [
+            ProTxOperationState::Signed,
+            ProTxOperationState::NotSent,
+            ProTxOperationState::Sent,
+        ] {
+            let f = fx(Library::Accept);
+            f.credit(1, MASTERNODE_COLLATERAL + COIN);
+            *f.seam.crash.lock().unwrap() = Some(CrashPoint::Saved);
+            assert!(
+                f.register(request(CollateralChoice::FundNew), f.grant(COIN))
+                    .is_err()
+            );
+            let wallet = f.wallet.to_string();
+            let mut row = f.db().masternode_ops(&wallet).unwrap().pop().unwrap();
+            assert!(
+                f.db()
+                    .delete_unsent_masternode_op(&wallet, &row.id)
+                    .unwrap()
+            );
+            row.kind = kind.into();
+            row.locked_collateral = false;
+            if kind == "dissolve" {
+                row.request = serde_json::json!({
+                    "pro_tx_hash": row.pro_tx_hash, "share_index": 0, "fee": row.fee,
+                    "penalty": penalty, "actor_output": 0, "foreign": foreign, "together": together
+                })
+                .to_string();
+            }
+            if state == ProTxOperationState::NotSent {
+                row.last_error = Some("send.no_peers".into());
+            }
+            f.db()
+                .insert_masternode_op_durable(&wallet, &row, &[], row.created_at)
+                .unwrap();
+            if state == ProTxOperationState::Sent {
+                f.db()
+                    .begin_masternode_op_attempt(&wallet, &row.id, row.created_at)
+                    .unwrap();
+            }
+            let op = f
+                .engine
+                .block_on(f.mn().operations(f.wallet))
+                .unwrap()
+                .pop()
+                .unwrap();
+            assert_eq!(op.state, state, "{flavour}");
+            let debit = if foreign || together {
+                0
+            } else {
+                row.fee + penalty
+            };
+            assert_eq!(
+                serde_json::to_value(&op).unwrap()["debit"],
+                debit,
+                "{flavour} {state:?}"
+            );
+            if debit > 0 {
+                let e = f
+                    .engine
+                    .block_on(
+                        f.mn()
+                            .resend_operation(f.wallet, row.id.clone(), f.grant(debit - 1)),
+                    )
+                    .unwrap_err();
+                assert_eq!(
+                    super::ops::error_code(e.engine().unwrap()),
+                    "send.grant_exceeded",
+                    "{flavour} {state:?}"
+                );
+                assert!(f.lib.sent().is_empty());
+            }
+            *f.seam.crash.lock().unwrap() = None;
+            let sent = f
+                .engine
+                .block_on(f.mn().resend_operation(f.wallet, row.id, f.grant(debit)))
+                .unwrap();
+            assert_eq!(sent.state, ProTxOperationState::Sent, "{flavour}");
+            assert_eq!(f.lib.sent().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn ep_t6_registrar_capability_matches_the_preview_owner_guard() {
+    let f = fx(Library::Accept);
+    let (reg, op) = f.registered();
+    let read = |hash: &str| {
+        serde_json::to_value(
+            f.engine
+                .block_on(f.mn().masternode(f.wallet, hash.into()))
+                .unwrap(),
+        )
+        .unwrap()["registrar"]
+            .clone()
+    };
+    let hash = op.pro_tx_hash.unwrap();
+    let own_hash = hash.clone();
+    assert_eq!(
+        read(&hash),
+        serde_json::json!({"kind": "available", "signer": "keychain"})
+    );
+    assert!(f.preview_update(keep(&hash)).is_ok());
+    let mut other = reg;
+    if let Some(TransactionPayload::ProviderRegistrationPayloadType(p)) =
+        &mut other.special_transaction_payload
+    {
+        p.owner_key_hash = dashcore::PubkeyHash::from_byte_array(key_id_of(OWNER_KEY));
+        p.service_address = dashcore::sml::masternode_list_entry::MasternodeNetInfo::Legacy(
+            "1.2.3.9:19899".parse().unwrap(),
+        );
+    }
+    let hash = other.txid().to_string();
+    let keys = f
+        .engine
+        .block_on(f.mn().registration_keys(f.wallet, MasternodeType::Regular))
+        .unwrap();
+    let mut entry = entry_of(&other);
+    entry.voting_key_id = [0x42; 20];
+    hex::decode_to_slice(
+        keys.operator.public_key.unwrap(),
+        &mut entry.operator_public_key,
+    )
+    .unwrap();
+    *f.seam.list.lock().unwrap() = Some(vec![entry]);
+    f.session
+        .manager()
+        .unwrap()
+        .tracked_masternodes_service()
+        .track_blocking(other.txid().to_byte_array(), None)
+        .unwrap();
+    assert_eq!(
+        f.engine
+            .block_on(f.mn().attach_key(
+                hash.clone(),
+                AttachedKeyRole::Owner,
+                Zeroizing::new(hex::encode(OWNER_KEY))
+            ))
+            .unwrap(),
+        KeyCheck::Unchecked
+    );
+    assert_eq!(
+        read(&hash),
+        serde_json::json!({"kind": "registration_unavailable"})
+    );
+    assert_eq!(
+        f.preview_update(keep(&hash)).unwrap_err().code(),
+        "masternodes.no_owner_key"
+    );
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            let grant = v.authorize(GrantPurpose::ChangeCredential, None, Credential::None)?;
+            v.encrypt(b"ep-test-passphrase", &grant.id)
+        }))
+        .unwrap();
+    assert_eq!(
+        read(&hash),
+        serde_json::json!({"kind": "registration_unavailable"})
+    );
+    assert_eq!(
+        read(&own_hash),
+        serde_json::json!({"kind": "available", "signer": "keychain"})
+    );
+    f.engine
+        .block_on(
+            f.session
+                .vault_op(|v| v.unlock(b"ep-test-passphrase", dw_vault::UnlockScope::Full)),
+        )
+        .unwrap();
+    let second = f
+        .engine
+        .block_on(f.session.import_wallet(
+            Zeroizing::new(b"zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong".to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    use key_wallet::account::{AccountType, StandardAccountType};
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext, TransactionType};
+    let record = TransactionRecord::new(
+        other.clone(),
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        TransactionContext::InBlock(BlockInfo::new(8, dashcore::BlockHash::all_zeros(), 0)),
+        TransactionType::Standard,
+        TransactionDirection::Internal,
+        Vec::new(),
+        Vec::new(),
+        0,
+    );
+    f.session
+        .hub
+        .history
+        .with_wallet(second, |h| h.upsert(&record, None));
+    assert_eq!(
+        read(&hash),
+        serde_json::json!({"kind": "available", "signer": "attached"})
+    );
+    assert!(f.preview_update(keep(&hash)).is_ok());
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            v.lock();
+            Ok(())
+        }))
+        .unwrap();
+    assert_eq!(read(&hash), serde_json::json!({"kind": "vault_locked"}));
+    assert_eq!(
+        f.preview_update(keep(&hash)).unwrap_err().code(),
+        "masternodes.no_owner_key"
+    );
+    f.engine
+        .block_on(
+            f.session
+                .vault_op(|v| v.unlock(b"ep-test-passphrase", dw_vault::UnlockScope::Full)),
+        )
+        .unwrap();
+    f.engine
+        .block_on(f.mn().detach_key(hash.clone(), AttachedKeyRole::Owner))
+        .unwrap();
+    assert_eq!(read(&hash), serde_json::json!({"kind": "no_owner_key"}));
+    assert_eq!(
+        f.preview_update(keep(&hash)).unwrap_err().code(),
+        "masternodes.no_owner_key"
+    );
+    f.seam.list.lock().unwrap().as_mut().unwrap()[0].has_extended_net_info = true;
+    f.db()
+        .set_setting_durable(
+            dw_appdb::GLOBAL_SCOPE,
+            &format!("masternodes.shared_seen:{hash}"),
+            Some("1"),
+        )
+        .unwrap();
+    assert_eq!(read(&hash), serde_json::json!({"kind": "shared"}));
+    assert_eq!(
+        f.preview_update(keep(&hash)).unwrap_err().code(),
+        "masternodes.unsupported"
+    );
+}
+
+#[test]
+fn ep_t2_overdue_read_recomputes_after_restart_reorg_and_confirmation() {
+    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+    let f = fx(Library::Accept);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    let sent = op.sent_at.unwrap();
+    let tip = |session: &NetworkSession, list: u32, height: u32, time: Option<u64>| {
+        let mut headers = BlockHeadersProgress::default();
+        headers.update_target_height(height);
+        headers.update_tip_height(height);
+        headers.set_state(SyncState::Synced);
+        let mut mn = MasternodesProgress::default();
+        mn.update_target_height(list);
+        mn.update_current_height(list);
+        mn.set_state(SyncState::Synced);
+        let mut progress = SyncProgress::default();
+        progress.update_headers(headers);
+        progress.update_masternodes(mn);
+        let mut tracker = session.hub.tracker();
+        tracker.on_progress(&progress);
+        tracker.set_tip_time(height, time);
+    };
+    let read = |mn: Masternodes| {
+        serde_json::to_value(
+            f.engine
+                .block_on(mn.operations(f.wallet))
+                .unwrap()
+                .pop()
+                .unwrap(),
+        )
+        .unwrap()["overdue"]
+            .as_bool()
+            .unwrap()
+    };
+    tip(&f.session, 100, 100, Some(sent + 10_799));
+    assert!(!read(f.mn()));
+    tip(&f.session, 99, 100, Some(sent + 10_800));
+    assert!(read(f.mn()));
+    tip(&f.session, 98, 100, Some(sent + 10_800));
+    assert!(!read(f.mn()));
+    tip(&f.session, 100, 100, Some(sent + 7_200));
+    assert!(!read(f.mn()));
+    tip(&f.session, 100, 100, None);
+    assert!(!read(f.mn()));
+    tip(&f.session, 100, 100, Some(sent + 10_800));
+    assert!(read(f.mn()));
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    let engine = Engine::new(
+        config(&f.dir, Arc::new(MemoryOsStore::new())),
+        Arc::new(NoEvents),
+    )
+    .unwrap();
+    let session = open(&engine);
+    seam_for(&session, &f.lib);
+    tip(&session, 100, 100, Some(sent + 10_800));
+    let read = || {
+        serde_json::to_value(
+            engine
+                .block_on(session.masternodes().operations(f.wallet))
+                .unwrap()
+                .pop()
+                .unwrap(),
+        )
+        .unwrap()["overdue"]
+            .as_bool()
+            .unwrap()
+    };
+    assert!(read());
+    session.hub.tracker().set_tip_height(90);
+    assert!(
+        !read(),
+        "old tip time is unavailable until the reorg tip time arrives"
+    );
+    tip(&session, 90, 90, Some(sent + 5_000));
+    assert!(!read(), "a reorg follows the replacement tip time");
+    tip(&session, 100, 100, Some(sent + 10_800));
+    let record = key_wallet::managed_account::transaction_record::TransactionRecord::new(
+        f.lib.sent()[0].clone(),
+        key_wallet::account::AccountType::Standard {
+            index: 0,
+            standard_account_type: key_wallet::account::StandardAccountType::BIP44Account,
+        },
+        key_wallet::transaction_checking::TransactionContext::InBlock(
+            key_wallet::transaction_checking::BlockInfo::new(
+                99,
+                dashcore::BlockHash::all_zeros(),
+                0,
+            ),
+        ),
+        key_wallet::transaction_checking::TransactionType::Standard,
+        key_wallet::managed_account::transaction_record::TransactionDirection::Internal,
+        Vec::new(),
+        Vec::new(),
+        0,
+    );
+    session
+        .hub
+        .history
+        .with_wallet(f.wallet, |h| h.upsert(&record, None));
+    assert!(!read(), "confirmed rows are never overdue");
+}
+
+#[test]
+fn ep_r4_overdue_uses_resend_time_instead_of_signing_time() {
+    use dash_spv::sync::{BlockHeadersProgress, MasternodesProgress, SyncProgress, SyncState};
+    let f = fx(Library::NoPeers);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    assert_eq!(op.state, ProTxOperationState::NotSent);
+    let wallet = f.wallet.to_string();
+    let mut row = f.db().masternode_op(&wallet, &op.id).unwrap().unwrap();
+    assert!(
+        f.db()
+            .delete_unsent_masternode_op(&wallet, &row.id)
+            .unwrap()
+    );
+    row.created_at -= 21_601;
+    row.signed_at = row.signed_at.map(|at| at - 21_600);
+    f.db()
+        .insert_masternode_op_durable(&wallet, &row, &[], row.created_at)
+        .unwrap();
+    *f.lib.mode.lock().unwrap() = Library::Accept;
+    let resent = f
+        .engine
+        .block_on(f.mn().resend_operation(f.wallet, op.id, f.grant(COIN)))
+        .unwrap();
+    let sent = resent.sent_at.unwrap();
+    assert!(sent > row.signed_at.unwrap() + 10_800);
+    assert!(sent > row.created_at + 10_800);
+    let mut headers = BlockHeadersProgress::default();
+    headers.update_target_height(100);
+    headers.update_tip_height(100);
+    headers.set_state(SyncState::Synced);
+    let mut mn = MasternodesProgress::default();
+    mn.update_target_height(100);
+    mn.update_current_height(100);
+    mn.set_state(SyncState::Synced);
+    let mut progress = SyncProgress::default();
+    progress.update_headers(headers);
+    progress.update_masternodes(mn);
+    f.session.hub.tracker().on_progress(&progress);
+    for (elapsed, expected) in [(10_799, false), (10_800, true)] {
+        f.session
+            .hub
+            .tracker()
+            .set_tip_time(100, Some(sent + elapsed));
+        let read = f
+            .engine
+            .block_on(f.mn().operations(f.wallet))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(read.state, ProTxOperationState::Sent);
+        assert_eq!(read.overdue, expected, "elapsed since resend {elapsed}");
     }
 }

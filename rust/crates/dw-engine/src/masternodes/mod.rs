@@ -5,9 +5,12 @@
 //! masternodes belong to the network (MG-03 D13).
 //!
 //! The ProTx calls (`protx.rs`, MG-04) sign the owner's side of a ProRegTx
-//! under a `MasternodeOp` grant; no call signs as operator, withdraws
-//! credits (MG-13), or takes, holds or returns an operator secret (MG-01's
-//! guard).
+//! under a `MasternodeOp` grant; no call signs as operator, or takes,
+//! holds or returns an operator secret (MG-01's
+//! guard). An evonode's Platform credit withdrawal (MG-13) is
+//! `withdrawals.rs`, its records `withdrawal_records.rs` and its engine
+//! side `withdrawal/`: the owner or payout key signs one withdrawal under a
+//! `MasternodeWithdraw` grant.
 
 mod aggregate;
 mod errors;
@@ -17,8 +20,12 @@ mod protx_records;
 mod reads;
 mod records;
 mod shared;
+pub use shared::standby_file_transactions;
 mod shared_records;
 mod tracking;
+pub(crate) mod withdrawal;
+mod withdrawal_records;
+mod withdrawals;
 
 use std::sync::Arc;
 
@@ -36,17 +43,24 @@ pub use records::{
     AttachedKey, AttachedKeyRole, CollateralCoin, CollateralState, EvonodeCredits, HeldShares,
     KeyCheck, ListFacts, ListedMasternode, MasternodeDetail, MasternodeListState,
     MasternodeOverview, MasternodePayout, MasternodeRoles, MasternodeRow, MasternodeStatus,
-    MasternodeType, RegistrationFacts, UntrackOutcome,
+    MasternodeType, RegistrarCapability, RegistrarSigner, RegistrationFacts, UntrackOutcome,
 };
 pub use shared_records::{
     Activation, DeadReason, DissolvePreview, DissolveRequest, JoinSharedRequest, KeyBase,
-    KeyChangeRequest, KeyChangeView, MaintenanceSent, RewardChoice, ShareReturn, ShareRow,
-    ShareSlot, ShareTerms, ShareTermsView, SharedCapability, SharedImport, SharedKind,
-    SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedStage,
+    KeyChangeRequest, KeyChangeView, MaintenanceSent, RewardAttempt, RewardAttemptState,
+    RewardChoice, RewardDestination, RewardUpdate, ShareFact, ShareReturn, ShareRow, ShareSlot,
+    ShareTerms, ShareTermsView, SharedCapability, SharedEligibility, SharedImport, SharedKind,
+    SharedMessage, SharedNext, SharedOutcome, SharedRole, SharedSession, SharedShares, SharedStage,
     SharedWarning, Standby, StandbyDescription, StandbyFile, StandbySource, StandbyVariant,
     StartSharedRequest, UpdateSharePreview, UpdateShareRequest,
 };
 pub use tracking::MAX_MASTERNODE_LABEL;
+pub use withdrawal_records::{
+    CreditWithdrawal, CreditWithdrawalState, HeldWithdrawalKey, NotExecutedFacts,
+    WithdrawalCheckingReason, WithdrawalDestinationCheck, WithdrawalIdentityKey,
+    WithdrawalKeyChoice, WithdrawalKeySource, WithdrawalMark, WithdrawalPlatformStatus,
+    WithdrawalProofFacts, WithdrawalQuote, WithdrawalRules,
+};
 
 use crate::{EngineError, NetworkSession};
 

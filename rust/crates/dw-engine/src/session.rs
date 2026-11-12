@@ -510,6 +510,19 @@ impl NetworkSession {
             Arc::clone(&sink),
             &Handle::current(),
         );
+        // The barriers of payout changes signed before MG-13, once per app
+        // database, before anything can quote a withdrawal (P16).
+        masternodes.set_barriers_ready({
+            let (db, core) = (Arc::clone(&appdb), network.core_network());
+            tokio::task::spawn_blocking(move || {
+                crate::masternodes::follow::backfill_payout_barriers(
+                    &db,
+                    core,
+                    crate::events::unix_now(),
+                )
+            })
+            .await?
+        });
         // A change of the wallet set re-reads the masternodes (MG-03 D28).
         let sink = masternodes.watch_wallets(sink);
         // The wallets the session knows: loaded, unloaded, or listed in the
@@ -635,6 +648,9 @@ impl NetworkSession {
         }
         session.leases.start_reaper();
         session.masternodes.follow(&session);
+        // MG-13 P8: undecided masternode withdrawals are rechecked from the
+        // start, then periodically.
+        session.masternodes.withdrawals.start(&session);
         // Mode B's funding statuses (E0-04 §2a.5, H15): its evidence source,
         // the tap's hook on tracked-row changes, and a first read of every
         // loaded wallet's rows. The same source resumes tracked rows for
@@ -943,6 +959,10 @@ impl NetworkSession {
         // E0-04 §8.5: revoke, drain and abort the flows before the gate,
         // which waits for the flows' operation guards.
         self.close_leases().await;
+        // No withdrawal recheck, `withdrawal_ready` wait or app database
+        // call of theirs outlives the session, and none starts after this
+        // (MG-13 P4, P8; a quote still running starts no wait).
+        self.masternodes.withdrawals.stop().await;
         // A shielded pass admitted under the leases just dropped ends first,
         // as the lock's (0.1 E1, DEC-1032); none is admitted for a wallet
         // holding a stored spend from here.

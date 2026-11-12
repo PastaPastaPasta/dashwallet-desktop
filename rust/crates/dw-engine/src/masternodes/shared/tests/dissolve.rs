@@ -19,7 +19,15 @@ pub(super) fn listed(f: &Fx) -> (String, Txid) {
 
 /// [`listed`] with the terms' early penalty `early_penalty`.
 pub(super) fn listed_with(f: &Fx, early_penalty: u64) -> (String, Txid) {
-    let (id, txid) = confirmed_with(f, 50, early_penalty);
+    listed_with_reward(f, early_penalty, RewardChoice::Refund)
+}
+
+pub(super) fn listed_with_reward(
+    f: &Fx,
+    early_penalty: u64,
+    reward: RewardChoice,
+) -> (String, Txid) {
+    let (id, txid) = confirmed_with_reward(f, 50, early_penalty, reward, 1);
     f.follow();
     let entry = platform_wallet::masternode::MasternodeListSummary {
         pro_tx_hash: txid.to_byte_array(),

@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use dw_engine::masternodes::*;
+use dw_engine::platform::WithdrawAmount;
 use dw_engine::{
     DashNetwork, Engine, EngineConfig, EngineError, EngineEvent, EventSink, ImportOptions,
     SessionOptions, WalletId,
@@ -34,8 +35,8 @@ use quote::ToTokens;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-/// Calls with real bodies: all of MG-03's, MG-04's and MG-04b slices 1a's
-/// to 2d's.
+/// Calls with real bodies: all of MG-03's, MG-04's, MG-04b slices 1a's
+/// to 2d's and MG-13's.
 const IMPLEMENTED: &[&str] = &[
     "NetworkSession.masternodes",
     "Masternodes.list_state",
@@ -64,6 +65,8 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.release_collateral",
     "Masternodes.lock_collateral",
     "Masternodes.shared_capability",
+    "Masternodes.shared_shares",
+    "standby_file_transactions",
     "Masternodes.shared_sessions",
     "Masternodes.shared_session",
     "Masternodes.start_shared",
@@ -90,6 +93,12 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.approve_maintenance",
     "Masternodes.send_maintenance",
     "Masternodes.start_key_change",
+    "Masternodes.withdrawal_quote",
+    "Masternodes.withdraw_credits",
+    "Masternodes.retry_withdrawal",
+    "Masternodes.withdrawals",
+    "Masternodes.recheck_withdrawal",
+    "Masternodes.mark_withdrawal",
 ];
 
 /// The facade's files in `src/masternodes/` (mn-engine.md §0). A new file
@@ -102,16 +111,20 @@ const FACADE: &[&str] = &[
     "reads.rs",
     "records.rs",
     "shared.rs",
+    "shared/standby.rs",
     "shared_records.rs",
     "tracking.rs",
+    "withdrawal_records.rs",
+    "withdrawals.rs",
 ];
 
 /// Files of `src/masternodes/` that are not part of the facade: the
 /// provider-transaction aggregation, the list reader with its follower, and
-/// the ProTx keys, builder and operations behind `protx.rs`, and the
+/// the ProTx keys, builder and operations behind `protx.rs`, the
 /// shared-masternode session store, builder and import table behind
-/// `shared.rs`.
-const NOT_FACADE: &[&str] = &["aggregate.rs", "follow.rs", "protx", "shared"];
+/// `shared.rs`, and the evonode credit withdrawal's checks, signer, session
+/// and recheck behind `withdrawals.rs` (MG-13).
+const NOT_FACADE: &[&str] = &["aggregate.rs", "follow.rs", "protx", "shared", "withdrawal"];
 
 const BEGIN: &str = "<!-- BEGIN GENERATED: masternodes-surface -->";
 const END: &str = "<!-- END GENERATED: masternodes-surface -->";
@@ -790,6 +803,25 @@ fn error_codes_match_the_contract() {
             MasternodesError::SharedTooEarly,
             MasternodesError::SharedRegistrationUnknown,
             MasternodesError::SharedActorFee { fee: 0 },
+            MasternodesError::WithdrawalKeyMissing,
+            MasternodesError::WithdrawalShared,
+            MasternodesError::WithdrawalNoPayoutKey {
+                detail: String::new(),
+            },
+            MasternodesError::WithdrawalDestinationChecking {
+                reason: WithdrawalCheckingReason::PlatformBehind,
+            },
+            MasternodesError::WithdrawalPending,
+            MasternodesError::WithdrawalUnverified,
+            MasternodesError::WithdrawalRetryState,
+            MasternodesError::WithdrawTargetMismatch,
+            MasternodesError::WithdrawalMarkState,
+            MasternodesError::WithdrawalNotFound,
+            MasternodesError::WithdrawalAmountOutOfRange { min: 0, max: 0 },
+            MasternodesError::WithdrawalAmountInsufficient {
+                needed: 0,
+                available: 0,
+            },
         ],
         MasternodesError::code,
     );
@@ -1006,6 +1038,8 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
         let long = Some("x".repeat(MAX_MASTERNODE_LABEL + 1));
         for refused in [
             mn.masternode(wallet, "zz".into()).await.map(drop),
+            mn.shared_shares(wallet, "zz".into()).await.map(drop),
+            standby_file_transactions("private text").map(drop),
             mn.payouts(wallet, "zz".into(), None).await.map(drop),
             mn.find("node.example".into()).await.map(drop),
             mn.evonode_credits("zz".into()).await.map(drop),
@@ -1055,6 +1089,34 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.discard_operation(wallet, "zz".into()).await,
             mn.release_collateral(wallet, "zz".into()).await,
             mn.lock_collateral(wallet, "zz".into()).await,
+            mn.withdrawal_quote(wallet, "zz".into()).await.map(drop),
+            mn.withdraw_credits(
+                wallet,
+                "zz".into(),
+                WithdrawalKeyChoice::Owner,
+                WithdrawAmount::All,
+                None,
+                "g".into(),
+            )
+            .await
+            .map(drop),
+            mn.retry_withdrawal(
+                wallet,
+                "zz".into(),
+                "zz".into(),
+                WithdrawalKeyChoice::Owner,
+                WithdrawAmount::All,
+                None,
+                "g".into(),
+            )
+            .await
+            .map(drop),
+            mn.withdrawals("zz".into()).await.map(drop),
+            mn.recheck_withdrawal("zz".into()).await.map(drop),
+            mn.recheck_withdrawal("AB".repeat(16)).await.map(drop),
+            mn.mark_withdrawal("zz".into(), WithdrawalMark::Received)
+                .await
+                .map(drop),
         ] {
             assert_eq!(code(refused), "invalid_argument");
         }
@@ -1066,6 +1128,19 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             matches!(&e, MasternodesError::Unsupported { feature, field }
                 if feature == "protx_v3" && field.as_deref() == Some("service")),
             "{e:?}"
+        );
+
+        assert_eq!(
+            code(mn.shared_shares(wallet, hash.clone()).await.map(drop)),
+            "masternodes.shared_registration_unknown"
+        );
+        assert_eq!(
+            code(
+                mn.shared_shares(WalletId([7; 32]), hash.clone())
+                    .await
+                    .map(drop)
+            ),
+            "wallet_not_found"
         );
 
         // Then the list.
@@ -1331,6 +1406,36 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             mn.discard_operation(wallet, op()).await,
         ] {
             assert_eq!(code(refused), "masternodes.operation_not_found");
+        }
+        // Withdrawals: none yet, and a quote needs a loaded wallet.
+        assert!(mn.withdrawals(hash.clone()).await.unwrap().is_empty());
+        assert_eq!(
+            code(
+                mn.withdrawal_quote(WalletId([7; 32]), hash.clone())
+                    .await
+                    .map(drop)
+            ),
+            "wallet_not_found"
+        );
+        let id = || "00".repeat(16);
+        for refused in [
+            mn.retry_withdrawal(
+                wallet,
+                hash.clone(),
+                id(),
+                WithdrawalKeyChoice::Payout,
+                WithdrawAmount::Credits { credits: 1 },
+                None,
+                "g".into(),
+            )
+            .await
+            .map(drop),
+            mn.recheck_withdrawal(id()).await.map(drop),
+            mn.mark_withdrawal(id(), WithdrawalMark::NotReceived)
+                .await
+                .map(drop),
+        ] {
+            assert_eq!(code(refused), "masternodes.withdrawal_not_found");
         }
         // Collateral locks need one of the wallet's masternodes.
         for refused in [
@@ -1672,6 +1777,47 @@ fn errors_never_quote_a_secret_shaped_argument() {
                 )
                 .await
                 .map(drop),
+            ),
+            (
+                "withdrawal_quote",
+                mn.withdrawal_quote(as_wallet, secret()).await.map(drop),
+            ),
+            (
+                "withdraw_credits",
+                mn.withdraw_credits(
+                    as_wallet,
+                    secret(),
+                    WithdrawalKeyChoice::Payout,
+                    WithdrawAmount::All,
+                    Some(secret()),
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "retry_withdrawal",
+                mn.retry_withdrawal(
+                    as_wallet,
+                    secret(),
+                    secret(),
+                    WithdrawalKeyChoice::Payout,
+                    WithdrawAmount::All,
+                    Some(secret()),
+                    secret(),
+                )
+                .await
+                .map(drop),
+            ),
+            (
+                "recheck_withdrawal",
+                mn.recheck_withdrawal(secret()).await.map(drop),
+            ),
+            (
+                "mark_withdrawal",
+                mn.mark_withdrawal(secret(), WithdrawalMark::Received)
+                    .await
+                    .map(drop),
             ),
         ]
     });

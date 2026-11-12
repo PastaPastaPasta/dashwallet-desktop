@@ -668,7 +668,11 @@ impl NetworkSession {
             .await?;
         let reg = self.registered(wallet, hash, &ctx).await?;
         let mn = reg.mn();
-        let mine: BTreeMap<u16, u32> = self.my_shares(wallet, &reg).await?.into_iter().collect();
+        let mine: BTreeMap<u16, u32> = self
+            .my_shares(wallet, &reg.shares)
+            .await?
+            .into_iter()
+            .collect();
         if mine.is_empty() {
             return Err(MasternodesError::ShareNotMine);
         }
@@ -853,7 +857,11 @@ impl NetworkSession {
         let request = stored.as_ref().map_or(request, |k| k.request.clone());
         let mut sigs = stored.as_ref().map(|k| k.sigs.clone()).unwrap_or_default();
         let (taken, skipped) = absorb(&mn, checked.sign_hash, &mut sigs, &entries);
-        let mine: BTreeMap<u16, u32> = self.my_shares(wallet, &reg).await?.into_iter().collect();
+        let mine: BTreeMap<u16, u32> = self
+            .my_shares(wallet, &reg.shares)
+            .await?
+            .into_iter()
+            .collect();
         let changed = match &stored {
             None => true,
             Some(k) => taken > 0 || k.mine != mine,
@@ -939,7 +947,11 @@ impl NetworkSession {
         let reg = self.registered(wallet, k.hash, &ctx).await?;
         let mn = reg.mn();
         let checked = key_change::check(&k.request, &mn).map_err(request_refusal)?;
-        let mine: BTreeMap<u16, u32> = self.my_shares(wallet, &reg).await?.into_iter().collect();
+        let mine: BTreeMap<u16, u32> = self
+            .my_shares(wallet, &reg.shares)
+            .await?
+            .into_iter()
+            .collect();
         if mine.is_empty() {
             return Err(MasternodesError::ShareNotMine);
         }

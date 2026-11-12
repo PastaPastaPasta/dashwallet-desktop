@@ -316,7 +316,7 @@ fn a_failed_classification_fails_the_open_and_the_next_open_reads_the_rows() {
         &[],
     );
     let journal = data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE);
-    dw_appdb::fault::arm(&journal, dw_appdb::fault::Fault::ClassifyWrite);
+    dw_appdb::fault::arm_fault(&journal, dw_appdb::fault::Fault::ClassifyWrite);
     let failed = f
         .engine
         .block_on(f.engine.open_network(DashNetwork::Regtest, options()));

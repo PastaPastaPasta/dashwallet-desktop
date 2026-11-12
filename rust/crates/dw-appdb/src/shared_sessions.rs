@@ -9,7 +9,7 @@
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
-use crate::{AppDb, AppDbError, Holder, Result};
+use crate::{AppDb, AppDbError, Holder, Result, sql_u64};
 
 /// One `shared_mn_sessions` row. `kind`, `role` and the JSON columns are
 /// the engine's encodings; this crate interprets only `reserved`.
@@ -83,10 +83,6 @@ fn read_row(r: &Row<'_>) -> rusqlite::Result<SharedSessionRow> {
         updated_at: u64::try_from(r.get::<_, i64>(14)?).unwrap_or(0),
         last_error: r.get(15)?,
     })
-}
-
-fn sql_u64(v: u64) -> i64 {
-    i64::try_from(v).unwrap_or(i64::MAX)
 }
 
 fn corrupt(what: &str, value: &str) -> AppDbError {

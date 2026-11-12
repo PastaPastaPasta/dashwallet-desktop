@@ -2115,7 +2115,8 @@ impl DispatchJournal {
             .collect::<std::result::Result<Vec<_>, _>>()?
         };
         #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
-        if !pending.is_empty() && crate::fault::take(tx.path(), crate::fault::Fault::ClassifyWrite)
+        if !pending.is_empty()
+            && crate::fault::take_fault(tx.path(), crate::fault::Fault::ClassifyWrite)
         {
             return Err(AppDbError::Corrupt(
                 "injected failure of the classification write".into(),
@@ -2143,7 +2144,7 @@ impl DispatchJournal {
             )?;
             #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
             if std::mem::take(&mut first)
-                && crate::fault::take(tx.path(), crate::fault::Fault::ClassifyAfterFirstWrite)
+                && crate::fault::take_fault(tx.path(), crate::fault::Fault::ClassifyAfterFirstWrite)
             {
                 return Err(AppDbError::Corrupt(
                     "injected failure after the first classification write".into(),
@@ -4981,7 +4982,7 @@ mod tests {
         }
         as_schema_10(&path);
         let j = ready(&path, 3);
-        crate::fault::arm(&path, crate::fault::Fault::ClassifyWrite);
+        crate::fault::arm_fault(&path, crate::fault::Fault::ClassifyWrite);
         assert!(j.classify_shielded_imports(|w| *w == W).is_err());
         assert_eq!(statuses(&j, &W), [([1; 32], ArtifactStatus::Unclassified)]);
         assert_eq!(
@@ -5020,7 +5021,7 @@ mod tests {
             );
         };
         let j = ready(&path, 3);
-        crate::fault::arm(&path, crate::fault::Fault::ClassifyAfterFirstWrite);
+        crate::fault::arm_fault(&path, crate::fault::Fault::ClassifyAfterFirstWrite);
         match j.classify_shielded_imports(|w| *w == W) {
             Err(AppDbError::Corrupt(e)) => assert!(e.contains("after the first"), "{e}"),
             other => panic!("the classification did not fail: {other:?}"),

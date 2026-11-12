@@ -23,8 +23,10 @@ test-mutations = []
 # Debug builds' tests only: power loss on an armed database (MG-03 D34);
 # never in a release.
 durability-sim = []
-# Debug builds' tests only: a one-shot failure of a dispatch journal write
-# (`fault::arm`); never in a release.
+# Debug builds only: one-shot fault points at the withdrawal and barrier
+# writes, and `DW_FAULT=<point>` aborts (MG-13 §3 fault sweep, T2); also a
+# one-shot failure of a dispatch journal write (`fault::arm_fault`), which
+# `DW_FAULT` does not name; never in a release.
 fault-inject = []
 
 [dev-dependencies]
