@@ -65,12 +65,12 @@ test.describe("Unfinished transfers", () => {
     await expect(card).toContainText("0.50 tDASH was funded on Core to add to your Platform address, and this wallet hasn't seen it added on Platform.");
     await expect(card).not.toContainText("Shielded");
     expect(await seriousAxeViolations(page)).toEqual([]);
-    const platformBefore = await page.getByTestId("platform-card-amount").textContent();
+    const platformBefore = await page.getByTestId("breakdown-platform").textContent();
     await page.getByTestId("unfinished-finish").click();
     await authorize(page);
     await expect(card).toHaveCount(0);
-    await expect(page.getByTestId("platform-card-amount")).not.toHaveText(platformBefore!);
-    await expect(page.getByTestId("platform-card-amount")).toContainText("0.89944");
+    await expect(page.getByTestId("breakdown-platform")).not.toHaveText(platformBefore!);
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.89944");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
     await expect(page.getByText("Moved from Dash wallet").first()).toBeVisible();
@@ -95,7 +95,7 @@ test.describe("Unfinished transfers", () => {
     await expect(text).toContainText("Shielded: 1 completed.");
     await expect(text).toContainText("Add from Dash wallet: 1 completed.");
     expect(await page.evaluate(() => window.__dwFixture!.world.pending.recovery.locks.length)).toBe(0);
-    await expect(page.getByTestId("platform-card-amount")).toContainText("0.64944");
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.64944");
     expect(errors).toEqual([]);
   });
 
@@ -143,7 +143,7 @@ test.describe("Unfinished transfers", () => {
   for (const scenario of ["funded", "recovery-confirming", "recovery-not-active"]) {
     test(`${scenario}: Home has no card`, async ({ page }) => {
       await open(page, scenario);
-      await expect(page.getByTestId("shielded-card")).toBeVisible();
+      await expect(page.getByTestId("shielded-card")).toHaveCount(0);
       await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
     });
   }

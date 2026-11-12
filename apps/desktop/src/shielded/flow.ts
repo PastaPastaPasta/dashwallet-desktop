@@ -42,9 +42,7 @@ export type ShieldedResult = { kind: "shield"; outcome: ShieldOutcome } | { kind
 export const SHIELDED_COPY = {
   card: {
     title: "Shielded",
-    text: "A private balance. Amounts and addresses in it are not visible on the network.",
     inactive: "Shielded is not active on this network yet.",
-    syncing: "Shielded is syncing. Its balance shows when it has.",
     pending: (amount: string) => `${amount} is on its way.`,
     /** A spend whose result is not confirmed: the wallet re-sends it itself, so it is never offered again. */
     unresolved: "A payment is still being confirmed. Do not send it again: the wallet checks it itself.",
