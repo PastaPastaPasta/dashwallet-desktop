@@ -1794,6 +1794,77 @@ mod tests {
         assert_eq!(*started.lock().unwrap(), [W, other, W]);
     }
 
+    /// Only the wallet's own records are marked for the history view: a
+    /// block event carrying an own record and a contact's ProRegTx marks
+    /// the own one alone, and a transaction event carrying a contact's
+    /// ProRegTx marks nothing. Both ProRegTxs are kept out of sight.
+    #[test]
+    fn only_the_wallets_own_records_are_marked_for_the_history_view() {
+        use crate::masternodes::provider_fixtures::{coins, null, registration};
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let own = tx(1);
+        let amount = dw_protx::params::collateral_amount(false);
+        let [mined, seen] = [1, 2].map(|n| registration(null(0), false, n, coins(&[amount])));
+        let contact = |t: &Transaction, context| {
+            TransactionRecord::new(
+                t.clone(),
+                AccountType::DashpayExternalAccount {
+                    index: 0,
+                    user_identity_id: [0xaa; 32],
+                    friend_identity_id: [0xbb; 32],
+                },
+                context,
+                TransactionType::Standard,
+                TransactionDirection::Internal,
+                Vec::new(),
+                Vec::new(),
+                0,
+            )
+        };
+        hub.apply_wallet_event(&WalletEvent::BlockProcessed {
+            wallet_id: W.0,
+            height: 100,
+            chain_lock: None,
+            inserted: vec![
+                in_block(&own, 100),
+                contact(
+                    &mined,
+                    TransactionContext::InBlock(BlockInfo::new(100, BlockHash::all_zeros(), 0)),
+                ),
+            ],
+            updated: Vec::new(),
+            matured: Vec::new(),
+            balance: WalletCoreBalance::new(1_000, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        });
+        let block_marks = (hub.pump.take_wallet_marks().1, hub.pump.take_new_txs());
+        hub.apply_wallet_event(&WalletEvent::TransactionDetected {
+            wallet_id: W.0,
+            record: Box::new(contact(&seen, TransactionContext::Mempool)),
+            balance: WalletCoreBalance::new(1_000, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        });
+        let tx_marks = (hub.pump.take_wallet_marks().1, hub.pump.take_new_txs());
+        let hidden: std::collections::HashSet<Txid> =
+            (hub.history).read_wallet(&W, |h| h.hidden().map(|(t, _)| *t).collect());
+        assert_eq!(
+            block_marks,
+            (
+                BTreeMap::from([(W, crate::pump::TxidSet::Some([own.txid()].into()))]),
+                BTreeMap::from([(W, vec![own.txid()])]),
+            ),
+            "the block event marks its own record alone"
+        );
+        assert_eq!(
+            tx_marks,
+            (BTreeMap::new(), BTreeMap::new()),
+            "a contact's record marks nothing"
+        );
+        assert_eq!(hidden, [mined.txid(), seen.txid()].into());
+    }
+
     /// The reconcile's balance replaces an event's doubled one, and is
     /// announced.
     #[test]

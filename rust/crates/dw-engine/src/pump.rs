@@ -206,6 +206,15 @@ impl EventPump {
         })
     }
 
+    /// Takes the pending new-transaction marks without delivering them.
+    #[cfg(test)]
+    pub(crate) fn take_new_txs(&self) -> BTreeMap<WalletId, Vec<Txid>> {
+        self.take(|p| {
+            p.new_txs_due = None;
+            std::mem::take(&mut p.new_txs)
+        })
+    }
+
     /// `txids = None` asks hosts to reload the whole history.
     pub(crate) fn mark_history(&self, wallet: WalletId, txids: Option<&[Txid]>) {
         self.with_pending(|p| {

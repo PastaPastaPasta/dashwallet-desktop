@@ -3796,6 +3796,12 @@ impl Fx {
             .unwrap();
     }
 
+    /// The txids of the ProRegTxs the history keeps out of sight.
+    fn hidden_registrations(&self) -> HashSet<Txid> {
+        (self.session.hub.history)
+            .read_wallet(&self.wallet, |h| h.hidden().map(|(t, _)| *t).collect())
+    }
+
     /// The txids of the ProRegTxs whose collateral the history names.
     fn named_registrations(&self) -> HashSet<Txid> {
         (self
@@ -3898,9 +3904,10 @@ fn a_found_fork_keeps_a_finalized_registration_kept_out_of_sight() {
 }
 
 /// Rows 59 and 65: a contact's ProRegTx a found fork replaced, which the
-/// new chain mines again, is kept out of sight again from the block or
-/// transaction event that carries it, and the next follower pass locks
-/// its collateral again.
+/// new chain mines again, is kept out of sight again by the block or
+/// transaction event that carries it, before any follower pass (the load's
+/// pending lock step is cleared after the fork); the next pass locks its
+/// collateral again, and the user's release finds it by its hash.
 #[test]
 fn a_registration_the_fork_replaced_is_kept_out_of_sight_again_when_mined_again() {
     use key_wallet::transaction_checking::BlockInfo;
@@ -3912,6 +3919,7 @@ fn a_registration_the_fork_replaced_is_kept_out_of_sight_again_when_mined_again(
     f.load_contact_with(seen.clone(), 960);
     let guard = f.found_fork_to_900();
     let gone = f.named_registrations();
+    f.clear_pending();
     f.contact_holds(mined.clone(), 902);
     let w = f.engine.block_on(f.session.wallet(&f.wallet)).unwrap();
     f.engine
@@ -3930,6 +3938,7 @@ fn a_registration_the_fork_replaced_is_kept_out_of_sight_again_when_mined_again(
         account_balances: std::collections::BTreeMap::new(),
         addresses_derived: Vec::new(),
     });
+    let after_block = f.hidden_registrations();
     (f.session.hub).apply_wallet_event(&WalletEvent::TransactionDetected {
         wallet_id: f.wallet.0,
         record: Box::new(tx_record_on(
@@ -3941,6 +3950,7 @@ fn a_registration_the_fork_replaced_is_kept_out_of_sight_again_when_mined_again(
         account_balances: std::collections::BTreeMap::new(),
         addresses_derived: Vec::new(),
     });
+    let after_tx = f.hidden_registrations();
     let again = f.named_registrations();
     let shown = (f.session.hub.history).read(&f.wallet, |txs| {
         txs.contains_key(&mined.txid()) || txs.contains_key(&seen.txid())
@@ -3948,13 +3958,30 @@ fn a_registration_the_fork_replaced_is_kept_out_of_sight_again_when_mined_again(
     f.collateral_pass();
     let locked = f.locked();
     eprintln!(
-        "ROW5965 contact ProRegTxs at 950 and 960, fork to 900 found (guard {guard}): named after it {gone:?}; mined again at 902 and seen in the mempool: named {again:?}, shown {shown}, locked {locked:?}"
+        "ROW5965 contact ProRegTxs at 950 and 960, fork to 900 found (guard {guard}): named after it {gone:?}; hidden after the block event at 902 {after_block:?}, after the mempool event {after_tx:?}; named {again:?}, shown {shown}, locked {locked:?}"
     );
     assert_eq!(guard, 900);
     assert!(gone.is_empty(), "{gone:?}");
+    assert_eq!(
+        after_block,
+        HashSet::from([mined.txid()]),
+        "the block event keeps it out of sight"
+    );
+    assert_eq!(
+        after_tx,
+        HashSet::from([mined.txid(), seen.txid()]),
+        "the transaction event keeps it out of sight"
+    );
     assert_eq!(again, HashSet::from([mined.txid(), seen.txid()]));
     assert!(!shown, "kept out of the history's view");
     assert_eq!(locked, HashSet::from([a, b]));
+    f.engine
+        .block_on(
+            f.mn()
+                .release_collateral(f.wallet, mined.txid().to_string()),
+        )
+        .unwrap();
+    assert_eq!(f.locked(), HashSet::from([b]), "released by its hash");
 }
 
 #[test]
