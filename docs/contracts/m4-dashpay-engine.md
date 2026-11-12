@@ -664,10 +664,12 @@ inline.
 confirm returns `ShieldedSpendOutcome{state: pending, unresolved}`, never an error and never failed. The library keeps
 its notes reserved, its history row pending (for the session: the shielded store keeps activity in memory,
 `file_store.rs:749-769`, so after a restart the row returns only when the scan re-derives it) and its signed transition, which the sync pass re-sends byte for byte, at
-most 3 times. The scan resolves it: the row turns `confirmed` when the notes are seen spent (done), or `failed` when the
-prune backstop releases them (not executed). A sync pass resolves it the same way when Platform answers a re-send with
-a definitive rejection: the library releases the notes and marks the row `failed` (platform-wallet
-`operations.rs:3286-3310`, its `DefinitiveRejection`). `unresolved` (and `shielded_status.unresolved_spends` until then) names
+most 3 times. The scan resolves it: the row turns `confirmed` when the notes are seen spent (done). The prune backstop ends
+it otherwise: `failed` (not executed, the notes released) only when the notes it takes are all known unspent, and
+else unresolved, with the notes still held until that is acknowledged, which is no proof that it did not execute.
+With the dispatch hook set (below) a rejection alone settles nothing: one node's answer to a re-send cannot show that
+an earlier send never executed, so the library counts the attempt and keeps the record and its reservations
+(platform-wallet's `DefinitiveRejection` becomes inconclusive), and the scan or the prune decides. `unresolved` (and `shielded_status.unresolved_spends` until then) names
 the row (`activity_id`), Platform's hash of the transition (`transition`, SHA-256 of its bytes) and the re-sends so far.
 The facade has no resend, and a host must not offer a retry or a new send of the same payment for a pending one. The
 re-sends run only inside the session, in the engine's own sync passes (the library's loop never runs): a pass is
@@ -695,16 +697,19 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   the journal does not hold and one it cannot read are refused; the stored spend stays as it was, its re-send count
   unchanged. The library does not ask about a spend stored before any hook was set (a 0.1 one): the pass's own
   admission above holds those.
-- **Without the hook** nothing is sent: `shielded_send` and `unshield_to_core` are `platform.unavailable` before the
-  quote under the hold, the grant or any key, no pass is admitted, and a coordinator whose hook did not set is not
+- **Without the hook** nothing is sent: `shielded_send` and `unshield_to_core` are `platform.unavailable` before any
+  quote, any address is issued, the grant or any key, no pass is admitted, and a coordinator whose hook did not set is not
   handed to any call (the next call sets it or fails the same way).
 - **A refused spend** (`shielded.spend_refused`, "The payment was not sent"): the engine refused it before its first
   broadcast, or the library refused the key set as not the account's before it selected, built or stored anything.
   Nothing left the wallet; the lease keeps the quote it charged when the key set was released.
-- **A first send that fails after the library stored the spend** proves nothing about whether it went out, so the
-  library holds its notes with no verdict. The call then returns `ShieldedSpendOutcome{state: pending, unresolved:
-  null}`, never an error, whatever the failure was; an error is returned only when the library holds nothing new for
-  the spend (it freed the notes, or never stored it). When what the library holds cannot be read the call is
+- **A first send that fails after the library stored the spend** proves nothing about whether it went out, and does
+  not say the library let go of it. Whatever the failure was, the call returns `pending`, never an error, in two
+  cases. The library still holds the signed transition, armed (it could not write the spend's end), so a later pass
+  may send it: `ShieldedSpendOutcome{state: pending, unresolved}` with that record, written to the journal as an
+  unconfirmed spend's is. Or the library ended the spend with no verdict and holds its notes: `{state: pending,
+  unresolved: null}`. An error is returned only when the library holds neither: no new stored transition and no new
+  held notes (it freed the notes, or never stored the spend). When either cannot be read the call is
   `platform.broadcast_unknown{artifact: "shielded transfer"}` (or `"shielded withdraw"`): the payment may still go
   through. The engine never releases such notes by itself.
 - The 0.1 records stay beside the artifact: the journal row of an unconfirmed spend (schema 9) and the marker of one
@@ -4216,6 +4221,7 @@ renames or reshapes them takes the next version bump:
     `NotSent` with no release, Repair lists nothing, and the next funding is not held. The refusal is the same
     `invalid_argument`; its detail now names the selection's count ("this payment would use 51 coins ...")
     where it said "more than 50".
+
 **From MG-13** (version 63):
 
 86. **The evonode credit withdrawal's lease (MG-13 P3, P12, version 63; version 64 binds it to its masternode).**
@@ -4243,7 +4249,9 @@ renames or reshapes them takes the next version bump:
     `shielded.*` code and no existing one: `platform.unavailable` says "Platform did not answer, retry", and the
     other shielded refusals name a cause the user acts on, while this one says only that nothing left the wallet.
     A first send that fails after the library stored the spend returns `pending` (`unresolved: null`), not an
-    error; without the hook a spend is `platform.unavailable` and no pass runs.
+    error; without the hook a spend is `platform.unavailable` and no pass runs. `platform.cancelled` ("cancelled
+    before anything was sent") is not reused either: it is the outcome of a lock that won the permit or an approval
+    that ended, and hosts group it with the ended-approval codes, while a refusal here is neither.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 
