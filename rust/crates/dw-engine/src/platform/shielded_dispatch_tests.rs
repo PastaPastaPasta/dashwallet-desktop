@@ -144,6 +144,20 @@ impl Hooked {
         artifact(&self.f, n)
     }
 
+    /// Rewrites the journal row of spend `n` in place, as a later writer
+    /// of its state would leave it: `set` is the SQL after `SET`.
+    fn rewrite(&self, n: u8, set: &str) {
+        let path = (self.f.session.data_dir()).join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+        let changed = rusqlite::Connection::open(path)
+            .unwrap()
+            .execute(
+                &format!("UPDATE shielded_artifact SET {set} WHERE wallet = ?1 AND activity = ?2"),
+                rusqlite::params![&self.f.wallet.0[..], &[n; 32][..]],
+            )
+            .unwrap();
+        assert_eq!(changed, 1, "one artifact row");
+    }
+
     /// The wallet's background lease, created while the vault is unlocked.
     fn lease(&self) {
         let (s, wallet) = (Arc::clone(&self.f.session), self.f.wallet);
@@ -429,10 +443,107 @@ fn admit_refuses_an_imported_row() {
             journal.record_shielded_artifact(&h.f.wallet.0, &imported),
             Ok(true)
         );
-        assert_eq!(h.artifact(n).unwrap().origin, origin);
+        // Classified, as the session's load leaves an imported spend: the
+        // state a dispatched artifact is re-sent from.
+        h.rewrite(n, "status = 'unresolved', status_reason = NULL");
+        let row = h.artifact(n).unwrap();
+        assert_eq!(
+            (row.origin, row.status, row.st_hash, row.disposition),
+            (
+                origin,
+                ArtifactStatus::Unresolved { unrecorded: false },
+                Some(st_hash(n)),
+                None
+            )
+        );
         let refused = h.admit(SHIELDED_ACCOUNT, n, st_hash(n)).unwrap_err();
         assert!(refused.contains("does not allow"), "{refused}");
     }
+    // The same state written by the hook is re-sent.
+    assert_eq!(h.dispatch(h.staged(3, &[3])), Ok(()));
+    h.rewrite(3, "status = 'unresolved', status_reason = NULL");
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 3, st_hash(3)), Ok(()));
+}
+
+/// An artifact the library's verdict is written on is never re-sent,
+/// whatever the verdict: executed, not executed or unresolved. Without one
+/// the same artifact is.
+#[test]
+fn admit_refuses_an_artifact_with_a_disposition() {
+    let h = Hooked::new();
+    h.lease();
+    assert_eq!(h.dispatch(h.staged(1, &[1])), Ok(()));
+    for (kind, reason) in [
+        ("'unresolved'", "'cancelled'"),
+        ("'not_executed'", "'refused'"),
+        ("'executed'", "NULL"),
+    ] {
+        h.rewrite(
+            1,
+            &format!("disposition_kind = {kind}, disposition_reason = {reason}"),
+        );
+        let row = h.artifact(1).unwrap();
+        assert_eq!(row.status, ArtifactStatus::Registered);
+        assert!(row.disposition.is_some());
+        let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+        assert!(refused.contains("does not allow"), "{kind}: {refused}");
+    }
+    h.rewrite(1, "disposition_kind = NULL, disposition_reason = NULL");
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.attempts(1), Some(0));
+}
+
+/// Only a registered artifact and one whose result is not known are
+/// re-sent: an archived one (its wallet was erased), a settled one, one not
+/// classified and one marked unrecorded are refused.
+#[test]
+fn admit_refuses_an_archived_or_settled_artifact() {
+    let h = Hooked::new();
+    h.lease();
+    assert_eq!(h.dispatch(h.staged(1, &[1])), Ok(()));
+    for (set, status) in [
+        ("status = 'archived'", ArtifactStatus::Archived),
+        ("status = 'executed'", ArtifactStatus::Executed),
+        ("status = 'not_executed'", ArtifactStatus::NotExecuted),
+        ("status = 'unclassified'", ArtifactStatus::Unclassified),
+        (
+            "status = 'unresolved', status_reason = 'unrecorded'",
+            ArtifactStatus::Unresolved { unrecorded: true },
+        ),
+    ] {
+        h.rewrite(1, "status = 'registered', status_reason = NULL");
+        h.rewrite(1, set);
+        let row = h.artifact(1).unwrap();
+        assert_eq!(
+            (row.origin, row.status, row.disposition),
+            (ArtifactOrigin::Dispatched, status, None)
+        );
+        let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+        assert!(refused.contains("does not allow"), "{status:?}: {refused}");
+    }
+    for set in [
+        "status = 'unresolved', status_reason = NULL",
+        "status = 'registered', status_reason = NULL",
+    ] {
+        h.rewrite(1, set);
+        assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    }
+    assert_eq!(h.attempts(1), Some(0));
+}
+
+/// A note named twice, or no note at all, is refused: the reserved set
+/// would otherwise match a selection that is not the one named.
+#[test]
+fn h1_refuses_a_note_selected_twice() {
+    let h = Hooked::new();
+    h.hold_notes(&[1]);
+    h.store_unsent(1, &[1]);
+    let refused = h.dispatch(h.payload(1, &[1, 1])).unwrap_err();
+    assert!(refused.contains("one twice"), "{refused}");
+    let refused = h.dispatch(h.payload(1, &[])).unwrap_err();
+    assert!(refused.contains("names no notes"), "{refused}");
+    assert_eq!(h.artifact(1), None);
+    assert_eq!(h.dispatch(h.payload(1, &[1])), Ok(()));
 }
 
 /// `admit` needs the wallet's background lease: refused once a lock drops

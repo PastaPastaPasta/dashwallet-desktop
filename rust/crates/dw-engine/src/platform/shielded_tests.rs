@@ -176,8 +176,13 @@ enum AfterFailure {
     Free,
     /// Its notes, resolved with no proof of either outcome.
     Held,
-    /// Unknown: the read fails.
+    /// Its signed transition, still armed, and its reservations: the write
+    /// that ends the spend failed, so a later pass may send it.
+    Armed,
+    /// Unknown: the read of the held spends fails.
     Unreadable,
+    /// Unknown: the read of the stored transitions fails.
+    StoredUnreadable,
 }
 
 /// platform-wallet's shielded side, scripted.
@@ -214,6 +219,10 @@ struct FakeShielded {
     after_failure: Mutex<AfterFailure>,
     /// The library's held spends cannot be read.
     held_unreadable: AtomicBool,
+    /// The library's stored transitions cannot be read.
+    stored_unreadable: AtomicBool,
+    /// The receive addresses issued.
+    issued: AtomicU32,
     /// The session a shield's funding records its lock in; none for tests
     /// that fund nothing.
     funder: Mutex<Option<(std::sync::Weak<NetworkSession>, crate::WalletId)>>,
@@ -393,6 +402,8 @@ impl Default for FakeShielded {
             held: Mutex::default(),
             after_failure: Mutex::default(),
             held_unreadable: AtomicBool::new(false),
+            stored_unreadable: AtomicBool::new(false),
+            issued: AtomicU32::new(0),
             funder: Mutex::default(),
             funded: Mutex::default(),
             syncs: AtomicU32::new(0),
@@ -585,8 +596,15 @@ impl FakeShielded {
                         AfterFailure::Held => {
                             self.held.lock().unwrap().insert([n; 32]);
                         }
+                        AfterFailure::Armed => {
+                            self.reserved.lock().unwrap().extend(reserved(n));
+                            self.unresolved.lock().unwrap().push(unresolved(n));
+                        }
                         AfterFailure::Unreadable => {
                             self.held_unreadable.store(true, Ordering::SeqCst)
+                        }
+                        AfterFailure::StoredUnreadable => {
+                            self.stored_unreadable.store(true, Ordering::SeqCst)
                         }
                     }
                 }
@@ -702,6 +720,7 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn receive_address(&self) -> Result<String, PlatformError> {
+        self.issued.fetch_add(1, Ordering::SeqCst);
         Ok(self.receive.clone())
     }
 
@@ -790,6 +809,11 @@ impl ShieldedLib for FakeShielded {
     }
 
     async fn unresolved(&self) -> Result<Vec<UnresolvedSpend>, PlatformError> {
+        if self.stored_unreadable.load(Ordering::SeqCst) {
+            return Err(PlatformError::Internal {
+                detail: "the stored spends cannot be read".into(),
+            });
+        }
         Ok(self.unresolved.lock().unwrap().clone())
     }
 
@@ -3330,7 +3354,8 @@ fn shield_refused_after_the_signature(end: FundEnd) {
 }
 
 /// Without the dispatch hook no spend starts: a send and an unshield are
-/// refused before the grant is redeemed or any key leaves the vault.
+/// refused before anything else, so nothing is quoted, no receive address
+/// is issued, the grant is kept and no key leaves the vault.
 #[test]
 fn a_spend_is_refused_while_the_hook_is_not_set() {
     let fx = Fixture::new(0);
@@ -3351,6 +3376,16 @@ fn a_spend_is_refused_while_the_hook_is_not_set() {
         assert!(fx.unused(&grant), "the refusal keeps the grant");
     }
     assert!(lib.spent().is_empty(), "no key left the vault");
+    assert_eq!(
+        lib.refreshes.load(Ordering::SeqCst),
+        0,
+        "the refusal quoted nothing"
+    );
+    assert_eq!(
+        lib.issued.load(Ordering::SeqCst),
+        0,
+        "the refusal issued no receive address"
+    );
 
     // With the hook the same send runs.
     lib.unhooked.store(false, Ordering::SeqCst);
@@ -3447,6 +3482,78 @@ fn a_failed_send_is_an_error_only_when_the_library_holds_nothing_of_it() {
     match send(false) {
         Err(ShieldedError::Platform(PlatformError::BroadcastUnknown { artifact })) => {
             assert_eq!(artifact, "shielded transfer")
+        }
+        other => panic!("not broadcast_unknown: {other:?}"),
+    }
+}
+
+/// A send that fails while the library still holds its signed transition,
+/// armed (the write that ends the spend failed too, while reads work), is
+/// pending, never an error: a later pass may send it, so the host must not
+/// offer the payment again. Its record goes to the journal as an
+/// unconfirmed spend's does, and the library keeps it to send. When the
+/// stored transitions cannot be read the payment may still go through:
+/// `platform.broadcast_unknown`.
+#[test]
+fn a_failed_send_the_library_still_holds_armed_is_pending_and_recorded() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    let wallet = fx.wallet;
+    let credits = Rules::at(version(LATEST)).unwrap().min.max(NOTE / 4);
+    let failures = || {
+        [
+            PlatformWalletError::ShieldedStoreError("the store is busy".into()),
+            PlatformWalletError::ShieldedBroadcastFailed("rejected".into()),
+        ]
+    };
+    let send = |unshield: bool| {
+        let lease = fx.flow(FlowKind::ShieldedSpend, vec![fx.grant(10 * NOTE)]);
+        run(&fx, &lib, move |s, lib| async move {
+            if unshield {
+                pool::unshield(&s, wallet, &*lib, credits, None, &lease, false).await
+            } else {
+                pool::send(
+                    &s,
+                    wallet,
+                    &*lib,
+                    (&payee_text(), credits),
+                    None,
+                    &lease,
+                    false,
+                )
+                .await
+            }
+        })
+    };
+
+    *lib.after_failure.lock().unwrap() = AfterFailure::Armed;
+    for (n, (failure, unshield)) in (0u8..).zip(failures().into_iter().zip([false, true])) {
+        lib.fail_with(failure);
+        let out = send(unshield).expect("a spend the library still holds is not an error");
+        assert_eq!(
+            (out.state, out.unresolved),
+            (ShieldedSpendState::Pending, Some(unresolved(n))),
+            "pending, naming the transition the library holds"
+        );
+        assert_eq!(
+            lib.recorded.lock().unwrap().last(),
+            Some(&unresolved(n)),
+            "recorded in the journal before any later pass"
+        );
+        assert!(
+            lib.unresolved.lock().unwrap().contains(&unresolved(n)),
+            "the library still holds it to send"
+        );
+    }
+    assert_eq!(lib.recorded.lock().unwrap().len(), 2);
+    assert!(lib.held.lock().unwrap().is_empty());
+
+    // The stored transitions cannot be read: may still go through.
+    *lib.after_failure.lock().unwrap() = AfterFailure::StoredUnreadable;
+    lib.fail_with(failures().into_iter().next().unwrap());
+    match send(true) {
+        Err(ShieldedError::Platform(PlatformError::BroadcastUnknown { artifact })) => {
+            assert_eq!(artifact, "shielded withdraw")
         }
         other => panic!("not broadcast_unknown: {other:?}"),
     }
