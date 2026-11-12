@@ -33,18 +33,24 @@
 //!   only when those notes are the wallet's and the ones the library
 //!   reserved for it. A refusal sends nothing. Without the hook no spend
 //!   starts and no pass runs. A first send that fails after the library
-//!   stored it is not known to have stayed unsent: the library holds its
-//!   notes, and the spend is pending, never failed. A
+//!   stored it is not known to have stayed unsent, nor to be let go of:
+//!   while the library still holds its signed transition (it could not
+//!   write the spend's end, and a later pass may send it) or holds its
+//!   notes with no proof of either outcome, the spend is pending, never
+//!   failed; an error only when the library holds neither. A
 //!   broadcast whose execution the library could not confirm is
 //!   pending, never failed (E0-04 Q15, ruling (c) for 0.1): the library
 //!   keeps its notes reserved, its activity row pending and its signed
 //!   transition (`shielded_pending_spends` in `shielded.sqlite`), which the
 //!   coordinator's sync pass re-sends byte for byte, at most 3 times
 //!   (`redrive_pending_spends`), until the scan sees the notes spent (the
-//!   row confirms: done) or the prune backstop releases them (the row
-//!   fails: not executed), or Platform answers a re-send with a definitive
-//!   rejection (the library releases them and fails the row,
-//!   `operations.rs:3286-3310`). The spend's outcome and the status name that
+//!   row confirms: done) or the prune backstop ends it. Under the hook a
+//!   rejection alone settles nothing: a node's answer to a re-send cannot
+//!   prove an earlier send never executed, so the library counts the
+//!   attempt and keeps the record and its reservations, and the scan or
+//!   the prune decides. The prune releases the notes only when they are
+//!   all known unspent (the row fails: not executed); otherwise it ends
+//!   the spend unresolved and keeps holding them. The spend's outcome and the status name that
 //!   transition by Platform's hash of it, and the dispatch journal records
 //!   it against the activity; nothing here resends. Every pass goes through
 //!   [`guarded_pass`]: admitted only while the session is open (the
@@ -932,11 +938,8 @@ async fn spend(
         To::Shielded(..) => "transfer",
         To::Core(_) => "withdraw",
     };
-    // Without the dispatch hook the library would send a spend the engine
-    // never accepted: refused before a quote, the grant or a key.
-    if !lib.hooked().await {
-        return Err(PlatformError::Unavailable.into());
-    }
+    // Again under the wallet's lock, before the quote, the grant or a key.
+    unhooked(lib).await?;
     // No pass runs from here until this spend's record is written: one
     // admitted meanwhile could find what the library stores on an unknown
     // result and re-send it before `admit_pass` saw it (Q15).
@@ -1054,41 +1057,74 @@ async fn spend(
         Err(SpendError::Lease(e)) => Err(PlatformError::from(e).into()),
         Err(SpendError::Library(e)) => {
             // A send that failed after the library stored the spend proves
-            // nothing about an earlier one: the library then holds its
-            // notes, and the spend is pending, not failed. An error only
-            // when the library holds nothing new for it; one that cannot
-            // be told may still go through.
-            match lib.held_spends().await {
-                Ok(held) if held.is_subset(&held_before) => Err(spend_error(*e)),
-                Ok(_) => {
-                    tracing::warn!(
-                        operation,
-                        error = %e,
-                        "a shielded spend failed after it was stored; the library holds its \
-                         notes and it stays pending"
-                    );
-                    Ok(Spent {
-                        balance: balance(lib).await,
-                        state: ShieldedSpendState::Pending,
-                        unresolved: None,
-                    })
-                }
-                Err(read) => {
+            // nothing about an earlier one, and does not say the library
+            // let go of it. It may still hold the signed transition to
+            // send in a later pass (it could not write the spend's end),
+            // or hold its notes with no proof of either outcome: both are
+            // pending, not failed. An error only when both reads show
+            // nothing new of the spend; one that cannot be told may still
+            // go through.
+            let (held, stored) = match (lib.held_spends().await, lib.unresolved().await) {
+                (Ok(held), Ok(stored)) => (held, stored),
+                (held, stored) => {
+                    let read = held.err().or(stored.err());
                     tracing::error!(
                         operation,
                         error = %e,
-                        %read,
+                        ?read,
                         "a shielded spend failed and what the library holds of it could not \
                          be read"
                     );
-                    Err(PlatformError::BroadcastUnknown {
+                    return Err(PlatformError::BroadcastUnknown {
                         artifact: format!("shielded {operation}"),
                     }
-                    .into())
+                    .into());
                 }
+            };
+            let armed = (stored.into_iter()).find(|u| !before.contains(&u.activity_id));
+            if let Some(u) = &armed {
+                tracing::warn!(
+                    operation,
+                    error = %e,
+                    activity_id = %u.activity_id,
+                    transition = %u.transition,
+                    "a shielded spend failed and the library still holds its signed \
+                     transition; it stays pending and a sync pass may send it"
+                );
+                // As an unconfirmed spend's: before any pass the engine
+                // admits after this one.
+                if let Err(e) = lib.record(u).await {
+                    tracing::warn!(error = %e, "could not record a shielded spend's transition");
+                }
+            } else if held.is_subset(&held_before) {
+                return Err(spend_error(*e));
+            } else {
+                tracing::warn!(
+                    operation,
+                    error = %e,
+                    "a shielded spend failed after it was stored; the library holds its \
+                     notes and it stays pending"
+                );
             }
+            drop(hold);
+            Ok(Spent {
+                balance: balance(lib).await,
+                state: ShieldedSpendState::Pending,
+                unresolved: armed,
+            })
         }
     }
+}
+
+/// Refuses a spend while the coordinator has no dispatch hook: the library
+/// would send what the engine never accepted. `send` and `unshield` ask
+/// before anything else, so the refusal quotes nothing, issues no address
+/// and keeps the grant.
+async fn unhooked(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
+    if !lib.hooked().await {
+        return Err(PlatformError::Unavailable.into());
+    }
+    Ok(())
 }
 
 pub(crate) async fn send(
@@ -1100,6 +1136,7 @@ pub(crate) async fn send(
     grant: &str,
     confirmed: bool,
 ) -> Result<ShieldedSpendOutcome, ShieldedError> {
+    unhooked(lib).await?;
     let memo = memo_field(memo)?;
     let address = shielded_address(lib.network(), to)?;
     let lock = wallet_lock(session, wallet);
@@ -1125,6 +1162,7 @@ pub(crate) async fn unshield(
     grant: &str,
     confirmed: bool,
 ) -> Result<ShieldedSpendOutcome, ShieldedError> {
+    unhooked(lib).await?;
     let lock = wallet_lock(session, wallet);
     let _spending = lock.lock().await;
     confirm_unrecorded(session, wallet, confirmed).await?;
