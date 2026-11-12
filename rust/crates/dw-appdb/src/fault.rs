@@ -133,3 +133,56 @@ pub(crate) fn hit_on(conn: &Connection, point: &str, stage: Stage) -> crate::Res
     let path = conn.path().filter(|p| !p.is_empty()).map(Path::new);
     hit_at(path, point, stage)
 }
+
+pub(crate) use import::take_fault;
+pub use import::{Fault, arm_fault};
+
+/// One-shot failures of a dispatch journal write, armed for one journal
+/// file. These are enum variants, not named points: `DW_FAULT` names none of
+/// them, and they are not in [`POINTS`](crate::fault::POINTS).
+mod import {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    /// Where the armed write fails.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Fault {
+        /// The classification of the imported shielded artifacts, before its
+        /// first write ([`crate::dispatch::DispatchJournal::classify_shielded_imports`]).
+        ClassifyWrite,
+        /// The same classification, after its first row's write: the
+        /// transaction holds a partial classification when it fails.
+        ClassifyAfterFirstWrite,
+    }
+
+    static ARMED: Mutex<Vec<(PathBuf, Fault)>> = Mutex::new(Vec::new());
+
+    fn canonical(path: &Path) -> PathBuf {
+        std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    }
+
+    /// Makes the next `fault` write of the journal at `path` fail, once.
+    pub fn arm_fault(path: &Path, fault: Fault) {
+        ARMED
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push((canonical(path), fault));
+    }
+
+    /// Whether `fault` was armed for the journal at `path` (`None` for an
+    /// in-memory one); disarms it.
+    pub(crate) fn take_fault(path: Option<&str>, fault: Fault) -> bool {
+        let Some(path) = path.filter(|p| !p.is_empty()) else {
+            return false;
+        };
+        let path = canonical(Path::new(path));
+        let mut armed = ARMED.lock().unwrap_or_else(|p| p.into_inner());
+        match armed.iter().position(|(p, f)| *p == path && *f == fault) {
+            Some(i) => {
+                armed.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+}

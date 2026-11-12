@@ -72,6 +72,19 @@
 //!   flagged once a proved scan (or a proved result) shows it spent. The
 //!   marker goes when all are, or with the wallet's removal; nothing else
 //!   deletes it.
+//! - Schema 11 adds `shielded_artifact` and its two nullifier tables: one
+//!   row per shielded spend (its activity id) the engine answers for, with
+//!   Platform's hash of its signed transition (`st_hash`), its kind, its
+//!   anchor, the nullifiers of the notes it selected and those it
+//!   published, where it came from (`origin`), its state, the library's
+//!   disposition of it and whether that was acknowledged. Only an imported
+//!   marker may lack an `st_hash`, which the table and the writer both
+//!   refuse otherwise. The 10 → 11 step imports every `shielded_redrive`
+//!   row (`st_hash` = its transition) and every marker with its
+//!   nullifiers (no `st_hash`), each `unclassified` until the engine's
+//!   classification ([`DispatchJournal::classify_shielded_imports`]) reads
+//!   it as `unresolved` or, its wallet unknown, `archived` for good. The
+//!   0.1 tables stay as they were.
 //! - `meta` holds the schema version, the creation time and the per-wallet
 //!   `seeded:<wallet hex>` marks.
 //!
@@ -103,7 +116,7 @@ pub const DISPATCH_DB_FILE: &str = "dispatch.sqlite";
 /// self-spend provenance), 5 (no `durable_record` flag) and 6 (no
 /// `funding_release`); every migration only adds, except that 6 → 7 clears
 /// the flags schema 6 set.
-pub const DISPATCH_SCHEMA: u32 = 10;
+pub const DISPATCH_SCHEMA: u32 = 11;
 
 const SCHEMA_BASE: &str = "
 CREATE TABLE meta (k TEXT PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID;
@@ -343,6 +356,95 @@ CREATE TABLE IF NOT EXISTS shielded_unrecorded_nullifier (
 /// Version 9 → 10: the markers are new and empty.
 const MIGRATE_V9: &str = "UPDATE meta SET v = 10 WHERE k = 'schema';";
 
+/// Version 11: each shielded spend the engine answers for, by its activity
+/// row's id. `st_hash` is Platform's hash of its signed transition, absent
+/// only for an imported marker (whose transition no one kept). `status`
+/// is the engine's reading: `unclassified` (imported, not read yet),
+/// `registered`, `unresolved` (`status_reason` `unrecorded` for a marker),
+/// `archived` (its wallet was gone when it was read: never shown, never
+/// gating, reserving nothing) or settled. `disposition_kind` and
+/// `disposition_reason` are the library's stored strings, in the
+/// combinations it decodes; no combination reads as unknown to the CHECK.
+/// `identity_id` is a top-up's identity. A note's `spent` is set once a
+/// proved scan or result shows it spent. `IF NOT EXISTS`, as
+/// `shielded_redrive`.
+const SHIELDED_ARTIFACT: &str = "
+CREATE TABLE IF NOT EXISTS shielded_artifact (
+  wallet             BLOB NOT NULL CHECK (length(wallet) = 32),
+  activity           BLOB NOT NULL CHECK (length(activity) = 32),
+  origin             TEXT NOT NULL
+    CHECK (origin IN ('dispatched', 'imported_redrive', 'imported_marker')),
+  st_hash            BLOB CHECK (st_hash IS NULL OR length(st_hash) = 32),
+  kind               TEXT CHECK (kind IS NULL OR kind IN
+    ('transfer', 'unshield', 'withdraw', 'identity_top_up', 'identity_create')),
+  anchor             BLOB CHECK (anchor IS NULL OR length(anchor) = 32),
+  identity_id        BLOB CHECK (identity_id IS NULL OR length(identity_id) = 32),
+  status             TEXT NOT NULL CHECK (status IN
+    ('unclassified', 'registered', 'unresolved', 'archived', 'executed', 'not_executed')),
+  status_reason      TEXT CHECK (status_reason IS NULL
+    OR (status_reason = 'unrecorded' AND status = 'unresolved')),
+  disposition_kind   TEXT,
+  disposition_reason TEXT,
+  acked              INTEGER NOT NULL DEFAULT 0 CHECK (acked IN (0, 1)),
+  at                 INTEGER NOT NULL,
+  PRIMARY KEY (wallet, activity),
+  CHECK (st_hash IS NOT NULL OR origin = 'imported_marker'),
+  CHECK (origin <> 'dispatched' OR (kind IS NOT NULL AND anchor IS NOT NULL)),
+  CHECK ((disposition_kind IS NULL AND disposition_reason IS NULL)
+    OR (disposition_kind = 'executed' AND disposition_reason IS NULL)
+    OR (disposition_kind IS NOT NULL AND disposition_reason IS NOT NULL
+        AND ((disposition_kind = 'not_executed'
+              AND disposition_reason IN ('refused', 'abandoned', 'rejected', 'pruned'))
+          OR (disposition_kind = 'unresolved' AND disposition_reason IN
+              ('deserialize_dropped', 'purged', 'unattributable', 'cancelled')))))
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS shielded_artifact_note (
+  wallet    BLOB NOT NULL CHECK (length(wallet) = 32),
+  activity  BLOB NOT NULL CHECK (length(activity) = 32),
+  nullifier BLOB NOT NULL CHECK (length(nullifier) = 32),
+  spent     INTEGER NOT NULL DEFAULT 0 CHECK (spent IN (0, 1)),
+  PRIMARY KEY (wallet, activity, nullifier)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS shielded_artifact_published (
+  wallet    BLOB NOT NULL CHECK (length(wallet) = 32),
+  activity  BLOB NOT NULL CHECK (length(activity) = 32),
+  position  INTEGER NOT NULL CHECK (position >= 0),
+  nullifier BLOB NOT NULL CHECK (length(nullifier) = 32),
+  PRIMARY KEY (wallet, activity, position)
+) WITHOUT ROWID;
+";
+
+/// Version 10 → 11: every shielded spend of the 0.1 tables becomes an
+/// artifact, `unclassified`: a `shielded_redrive` row with its transition
+/// as `st_hash`, a marker with its anchor and nullifiers and no `st_hash`.
+/// A spend in both keeps the redrive row's `st_hash` and gains the
+/// marker's anchor and nullifiers. Each note keeps its `spent` flag. The
+/// 0.1 rows are left as they were. Only a key conflict is skipped: a row
+/// any CHECK refuses fails the step.
+const MIGRATE_V10: &str = "
+INSERT INTO shielded_artifact (wallet, activity, origin, st_hash, status, at)
+  SELECT wallet, activity, 'imported_redrive', transition, 'unclassified', at
+  FROM shielded_redrive WHERE true
+  ON CONFLICT (wallet, activity) DO NOTHING;
+INSERT INTO shielded_artifact (wallet, activity, origin, anchor, status, at)
+  SELECT wallet, activity, 'imported_marker', anchor, 'unclassified', at
+  FROM shielded_unrecorded WHERE true
+  ON CONFLICT (wallet, activity) DO UPDATE SET anchor = excluded.anchor
+  WHERE shielded_artifact.anchor IS NULL;
+INSERT INTO shielded_artifact_note (wallet, activity, nullifier, spent)
+  SELECT wallet, activity, nullifier, spent FROM shielded_unrecorded_nullifier WHERE true
+  ON CONFLICT (wallet, activity, nullifier) DO NOTHING;
+UPDATE meta SET v = 11 WHERE k = 'schema';
+";
+
+/// [`DispatchJournal::record_shielded_artifact`]'s insert. Only a key
+/// conflict is skipped: a row any CHECK refuses is an error.
+const INSERT_ARTIFACT: &str = "
+INSERT INTO shielded_artifact
+  (wallet, activity, origin, st_hash, kind, anchor, identity_id, status, at)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+  ON CONFLICT (wallet, activity) DO NOTHING";
+
 /// How a top-up's lock was settled ([`DispatchJournal::settle_top_up`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TopUpSettled {
@@ -397,6 +499,164 @@ pub struct UnrecordedSpend {
     pub at: u64,
     /// Each nullifier it spent, by nullifier, `true` once seen spent.
     pub nullifiers: Vec<([u8; 32], bool)>,
+}
+
+/// Where a shielded artifact (schema 11) came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactOrigin {
+    /// Registered by the engine before the library sent it.
+    Dispatched,
+    /// A 0.1 `shielded_redrive` row.
+    ImportedRedrive,
+    /// A 0.1 marker: no transition was kept, so it has no `st_hash`.
+    ImportedMarker,
+}
+
+impl ArtifactOrigin {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Dispatched => "dispatched",
+            Self::ImportedRedrive => "imported_redrive",
+            Self::ImportedMarker => "imported_marker",
+        }
+    }
+
+    fn from_db(v: &str) -> Result<Self> {
+        match v {
+            "dispatched" => Ok(Self::Dispatched),
+            "imported_redrive" => Ok(Self::ImportedRedrive),
+            "imported_marker" => Ok(Self::ImportedMarker),
+            other => Err(AppDbError::Corrupt(format!(
+                "shielded_artifact.origin {other:?}"
+            ))),
+        }
+    }
+}
+
+/// A shielded artifact's kind (schema 11), as the library's dispatch
+/// payload names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactKind {
+    Transfer,
+    Unshield,
+    Withdraw,
+    IdentityTopUp,
+    IdentityCreate,
+}
+
+impl ArtifactKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Transfer => "transfer",
+            Self::Unshield => "unshield",
+            Self::Withdraw => "withdraw",
+            Self::IdentityTopUp => "identity_top_up",
+            Self::IdentityCreate => "identity_create",
+        }
+    }
+
+    fn from_db(v: &str) -> Result<Self> {
+        match v {
+            "transfer" => Ok(Self::Transfer),
+            "unshield" => Ok(Self::Unshield),
+            "withdraw" => Ok(Self::Withdraw),
+            "identity_top_up" => Ok(Self::IdentityTopUp),
+            "identity_create" => Ok(Self::IdentityCreate),
+            other => Err(AppDbError::Corrupt(format!(
+                "shielded_artifact.kind {other:?}"
+            ))),
+        }
+    }
+}
+
+/// The engine's reading of a shielded artifact (schema 11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactStatus {
+    /// Imported, not read against the session's wallets yet.
+    Unclassified,
+    Registered,
+    /// Its result is not known; `unrecorded` for an imported marker.
+    Unresolved {
+        unrecorded: bool,
+    },
+    /// Its wallet was gone when it was read: never shown, never gating,
+    /// reserving nothing, for good.
+    Archived,
+    Executed,
+    NotExecuted,
+}
+
+impl ArtifactStatus {
+    fn from_db(status: &str, reason: Option<&str>) -> Result<Self> {
+        match (status, reason) {
+            ("unclassified", None) => Ok(Self::Unclassified),
+            ("registered", None) => Ok(Self::Registered),
+            ("unresolved", None) => Ok(Self::Unresolved { unrecorded: false }),
+            ("unresolved", Some("unrecorded")) => Ok(Self::Unresolved { unrecorded: true }),
+            ("archived", None) => Ok(Self::Archived),
+            ("executed", None) => Ok(Self::Executed),
+            ("not_executed", None) => Ok(Self::NotExecuted),
+            (status, reason) => Err(AppDbError::Corrupt(format!(
+                "shielded_artifact.status {status:?} ({reason:?})"
+            ))),
+        }
+    }
+
+    /// Whether the artifact holds its wallet (and its notes) until it is
+    /// settled: everything but an archived or settled one. An unclassified
+    /// one holds (fail closed).
+    pub fn holds(self) -> bool {
+        matches!(
+            self,
+            Self::Unclassified | Self::Registered | Self::Unresolved { .. }
+        )
+    }
+}
+
+/// A new shielded artifact for [`DispatchJournal::record_shielded_artifact`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewShieldedArtifact {
+    pub activity: [u8; 32],
+    pub origin: ArtifactOrigin,
+    /// Required but for an imported marker.
+    pub st_hash: Option<[u8; 32]>,
+    /// Required for a dispatched one, as is `anchor`.
+    pub kind: Option<ArtifactKind>,
+    pub anchor: Option<[u8; 32]>,
+    /// A top-up's identity.
+    pub identity_id: Option<[u8; 32]>,
+    /// The nullifiers of the wallet's own notes it spends.
+    pub selected: Vec<[u8; 32]>,
+    /// Every nullifier the transition publishes, in action order.
+    pub published: Vec<[u8; 32]>,
+}
+
+/// One shielded artifact (schema 11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShieldedArtifact {
+    pub activity: [u8; 32],
+    pub origin: ArtifactOrigin,
+    pub st_hash: Option<[u8; 32]>,
+    pub kind: Option<ArtifactKind>,
+    pub anchor: Option<[u8; 32]>,
+    pub identity_id: Option<[u8; 32]>,
+    pub status: ArtifactStatus,
+    /// The library's disposition, as its `kind_str` and `reason_str`.
+    pub disposition: Option<(String, Option<String>)>,
+    pub acked: bool,
+    pub at: u64,
+    /// The nullifiers of the notes it selected, by nullifier, `true` once
+    /// seen spent.
+    pub selected: Vec<([u8; 32], bool)>,
+    /// The nullifiers it published, in action order.
+    pub published: Vec<[u8; 32]>,
+}
+
+/// What [`DispatchJournal::classify_shielded_imports`] did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ImportsClassified {
+    pub unresolved: usize,
+    pub archived: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -949,15 +1209,21 @@ impl DispatchJournal {
     /// Opens (creating if needed) the journal at `path`. The caller creates
     /// the file owner-only first.
     pub fn open(path: &Path, now: u64) -> Result<JournalOpen> {
-        Self::init(Connection::open(path)?, now)
+        Self::init(Connection::open(path)?, now, DISPATCH_SCHEMA)
     }
 
     /// A private in-memory journal (tests).
     pub fn open_in_memory(now: u64) -> Result<JournalOpen> {
-        Self::init(Connection::open_in_memory()?, now)
+        Self::init(Connection::open_in_memory()?, now, DISPATCH_SCHEMA)
     }
 
-    fn init(mut conn: Connection, now: u64) -> Result<JournalOpen> {
+    /// Opens `path` as a build whose schema is `schema` would (tests).
+    #[cfg(test)]
+    fn open_as_schema(path: &Path, now: u64, schema: u32) -> Result<JournalOpen> {
+        Self::init(Connection::open(path)?, now, schema)
+    }
+
+    fn init(mut conn: Connection, now: u64, schema_read: u32) -> Result<JournalOpen> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "secure_delete", "ON")?;
@@ -980,8 +1246,8 @@ impl DispatchJournal {
                 .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
                 .optional()?;
             match schema {
-                Some(v) if v == i64::from(DISPATCH_SCHEMA) => {}
-                Some(v @ 1..=9) => {
+                Some(v) if v == i64::from(schema_read) => {}
+                Some(v @ 1..=10) => {
                     if v == 1 {
                         tx.execute_batch(STEP_LOG)?;
                         tx.execute_batch(MIGRATE_V1)?;
@@ -1015,10 +1281,14 @@ impl DispatchJournal {
                         tx.execute_batch(SHIELDED_REDRIVE)?;
                         tx.execute_batch(MIGRATE_V8)?;
                     }
-                    tx.execute_batch(SHIELDED_UNRECORDED)?;
-                    tx.execute_batch(MIGRATE_V9)?;
+                    if v <= 9 {
+                        tx.execute_batch(SHIELDED_UNRECORDED)?;
+                        tx.execute_batch(MIGRATE_V9)?;
+                    }
+                    tx.execute_batch(SHIELDED_ARTIFACT)?;
+                    tx.execute_batch(MIGRATE_V10)?;
                 }
-                Some(v) if v > i64::from(DISPATCH_SCHEMA) => {
+                Some(v) if v > i64::from(schema_read) => {
                     return Ok(JournalOpen::NewerSchema(
                         u32::try_from(v).unwrap_or(u32::MAX),
                     ));
@@ -1041,6 +1311,7 @@ impl DispatchJournal {
             tx.execute_batch(TOP_UP_SETTLED)?;
             tx.execute_batch(SHIELDED_REDRIVE)?;
             tx.execute_batch(SHIELDED_UNRECORDED)?;
+            tx.execute_batch(SHIELDED_ARTIFACT)?;
             tx.execute(
                 "INSERT INTO meta (k, v) VALUES ('schema', ?1), ('created_at', ?2)",
                 params![i64::from(DISPATCH_SCHEMA), now as i64],
@@ -1493,15 +1764,25 @@ impl DispatchJournal {
     ) -> Result<Vec<[u8; 32]>> {
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut flagged = 0;
+        let (mut flagged, mut mirrored) = (0, 0);
         for nullifier in nullifiers {
             flagged += tx.execute(
                 "UPDATE shielded_unrecorded_nullifier SET spent = 1 \
                  WHERE wallet = ?1 AND nullifier = ?2 AND spent = 0",
                 params![&wallet[..], &nullifier[..]],
             )?;
+            // The artifacts' notes keep the flag (schema 11), which outlives
+            // the marker's delete below; nothing else of them changes.
+            mirrored += tx.execute(
+                "UPDATE shielded_artifact_note SET spent = 1 \
+                 WHERE wallet = ?1 AND nullifier = ?2 AND spent = 0",
+                params![&wallet[..], &nullifier[..]],
+            )?;
         }
         if flagged == 0 {
+            if mirrored > 0 {
+                tx.commit()?;
+            }
             return Ok(Vec::new());
         }
         let cleared = {
@@ -1524,6 +1805,354 @@ impl DispatchJournal {
         }
         tx.commit()?;
         Ok(cleared)
+    }
+
+    /// Records the shielded artifact `artifact` of `wallet` (schema 11), with
+    /// its nullifiers, in one transaction: `registered` when dispatched,
+    /// `unclassified` when imported. Only an imported marker may lack an
+    /// `st_hash`, and a dispatched one needs its kind and anchor; any other
+    /// is refused before anything is written. The first record stands:
+    /// `true` when this one was new, `false` when the same one stands, and
+    /// an error when one with another origin, hash, kind, anchor, identity,
+    /// set of selected notes or sequence of published nullifiers does (the
+    /// notes' `spent` flags and the status are not compared). Only a top-up
+    /// names an identity, and a dispatched top-up must.
+    pub fn record_shielded_artifact(
+        &self,
+        wallet: &[u8; 32],
+        artifact: &NewShieldedArtifact,
+        now: u64,
+    ) -> Result<bool> {
+        if artifact.st_hash.is_none() && artifact.origin != ArtifactOrigin::ImportedMarker {
+            return Err(AppDbError::Corrupt(format!(
+                "a {} shielded artifact has no st_hash",
+                artifact.origin.as_str()
+            )));
+        }
+        if artifact.origin == ArtifactOrigin::Dispatched
+            && (artifact.kind.is_none() || artifact.anchor.is_none())
+        {
+            return Err(AppDbError::Corrupt(
+                "a dispatched shielded artifact has no kind or no anchor".into(),
+            ));
+        }
+        let top_up = artifact.kind == Some(ArtifactKind::IdentityTopUp);
+        if (artifact.identity_id.is_some() && !top_up)
+            || (top_up
+                && artifact.origin == ArtifactOrigin::Dispatched
+                && artifact.identity_id.is_none())
+        {
+            return Err(AppDbError::Corrupt(
+                "only a top-up names an identity, and a dispatched one must".into(),
+            ));
+        }
+        let status = match artifact.origin {
+            ArtifactOrigin::Dispatched => "registered",
+            ArtifactOrigin::ImportedRedrive | ArtifactOrigin::ImportedMarker => "unclassified",
+        };
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let added = tx.execute(
+            INSERT_ARTIFACT,
+            params![
+                &wallet[..],
+                &artifact.activity[..],
+                artifact.origin.as_str(),
+                artifact.st_hash.as_ref().map(|h| &h[..]),
+                artifact.kind.map(ArtifactKind::as_str),
+                artifact.anchor.as_ref().map(|a| &a[..]),
+                artifact.identity_id.as_ref().map(|i| &i[..]),
+                status,
+                now as i64
+            ],
+        )? == 1;
+        if !added {
+            let standing = tx.query_row(
+                "SELECT origin, st_hash, kind, anchor, identity_id FROM shielded_artifact \
+                 WHERE wallet = ?1 AND activity = ?2",
+                params![&wallet[..], &artifact.activity[..]],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<Vec<u8>>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, Option<Vec<u8>>>(3)?,
+                        r.get::<_, Option<Vec<u8>>>(4)?,
+                    ))
+                },
+            )?;
+            let new = (
+                artifact.origin.as_str().to_owned(),
+                artifact.st_hash.map(|h| h.to_vec()),
+                artifact.kind.map(|k| k.as_str().to_owned()),
+                artifact.anchor.map(|a| a.to_vec()),
+                artifact.identity_id.map(|i| i.to_vec()),
+            );
+            let selected = {
+                let mut stmt = tx.prepare(
+                    "SELECT nullifier FROM shielded_artifact_note \
+                     WHERE wallet = ?1 AND activity = ?2",
+                )?;
+                stmt.query_map(params![&wallet[..], &artifact.activity[..]], |r| {
+                    r.get::<_, Vec<u8>>(0)
+                })?
+                .map(|row| fixed(row?, "shielded_artifact_note.nullifier"))
+                .collect::<Result<BTreeSet<[u8; 32]>>>()?
+            };
+            let published = {
+                let mut stmt = tx.prepare(
+                    "SELECT nullifier FROM shielded_artifact_published \
+                     WHERE wallet = ?1 AND activity = ?2 ORDER BY position",
+                )?;
+                stmt.query_map(params![&wallet[..], &artifact.activity[..]], |r| {
+                    r.get::<_, Vec<u8>>(0)
+                })?
+                .map(|row| fixed(row?, "shielded_artifact_published.nullifier"))
+                .collect::<Result<Vec<[u8; 32]>>>()?
+            };
+            let same_parent = standing == new;
+            let same_selected =
+                selected == artifact.selected.iter().copied().collect::<BTreeSet<_>>();
+            let same_published = published == artifact.published;
+            if !(same_parent && same_selected && same_published) {
+                return Err(AppDbError::Corrupt(
+                    "another shielded artifact stands for this activity".into(),
+                ));
+            }
+        }
+        if added {
+            for nullifier in &artifact.selected {
+                tx.execute(
+                    "INSERT INTO shielded_artifact_note (wallet, activity, nullifier) \
+                     VALUES (?1, ?2, ?3) ON CONFLICT (wallet, activity, nullifier) DO NOTHING",
+                    params![&wallet[..], &artifact.activity[..], &nullifier[..]],
+                )?;
+            }
+            for (position, nullifier) in (0i64..).zip(&artifact.published) {
+                tx.execute(
+                    "INSERT INTO shielded_artifact_published \
+                     (wallet, activity, position, nullifier) VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        &wallet[..],
+                        &artifact.activity[..],
+                        position,
+                        &nullifier[..]
+                    ],
+                )?;
+            }
+        }
+        tx.commit()?;
+        Ok(added)
+    }
+
+    /// The shielded artifacts of `wallet` (schema 11) but the archived ones,
+    /// by activity.
+    pub fn shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>> {
+        Ok(self
+            .all_shielded_artifacts(wallet)?
+            .into_iter()
+            .filter(|a| a.status != ArtifactStatus::Archived)
+            .collect())
+    }
+
+    /// Whether `wallet` has a shielded artifact that holds it
+    /// ([`ArtifactStatus::holds`]).
+    pub fn holds_shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<bool> {
+        Ok(self
+            .all_shielded_artifacts(wallet)?
+            .iter()
+            .any(|a| a.status.holds()))
+    }
+
+    /// The selected-note nullifiers of `wallet`'s shielded artifacts that
+    /// hold it.
+    pub fn shielded_artifact_nullifiers(&self, wallet: &[u8; 32]) -> Result<BTreeSet<[u8; 32]>> {
+        Ok(self
+            .all_shielded_artifacts(wallet)?
+            .into_iter()
+            .filter(|a| a.status.holds())
+            .flat_map(|a| a.selected.into_iter().map(|(n, _)| n))
+            .collect())
+    }
+
+    /// Every shielded artifact of `wallet`, archived ones included, by
+    /// activity.
+    pub fn all_shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>> {
+        type Row = (
+            Vec<u8>,
+            String,
+            Option<Vec<u8>>,
+            Option<String>,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+        );
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT activity, origin, st_hash, kind, anchor, identity_id, status, status_reason, \
+             disposition_kind, disposition_reason, acked, at \
+             FROM shielded_artifact WHERE wallet = ?1 ORDER BY activity",
+        )?;
+        let rows = stmt
+            .query_map(params![&wallet[..]], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                    r.get(11)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<Row>, _>>()?;
+        let mut selected = conn.prepare(
+            "SELECT nullifier, spent FROM shielded_artifact_note \
+             WHERE wallet = ?1 AND activity = ?2 ORDER BY nullifier",
+        )?;
+        let mut published = conn.prepare(
+            "SELECT nullifier FROM shielded_artifact_published \
+             WHERE wallet = ?1 AND activity = ?2 ORDER BY position",
+        )?;
+        rows.into_iter()
+            .map(
+                |(
+                    activity,
+                    origin,
+                    st_hash,
+                    kind,
+                    anchor,
+                    identity_id,
+                    status,
+                    reason,
+                    d_kind,
+                    d_reason,
+                    acked,
+                    at,
+                )| {
+                    let notes = selected
+                        .query_map(params![&wallet[..], &activity], |r| {
+                            Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)? != 0))
+                        })?
+                        .map(|n| {
+                            let (nullifier, spent) = n?;
+                            Ok((fixed(nullifier, "shielded_artifact_note.nullifier")?, spent))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let published = published
+                        .query_map(params![&wallet[..], &activity], |r| r.get::<_, Vec<u8>>(0))?
+                        .map(|n| fixed(n?, "shielded_artifact_published.nullifier"))
+                        .collect::<Result<Vec<[u8; 32]>>>()?;
+                    let disposition = match (d_kind, d_reason) {
+                        (None, None) => None,
+                        (Some(kind), reason) => Some((kind, reason)),
+                        (None, Some(reason)) => {
+                            return Err(AppDbError::Corrupt(format!(
+                                "shielded_artifact.disposition_reason {reason:?} without a kind"
+                            )));
+                        }
+                    };
+                    Ok(ShieldedArtifact {
+                        activity: fixed(activity, "shielded_artifact.activity")?,
+                        origin: ArtifactOrigin::from_db(&origin)?,
+                        st_hash: st_hash
+                            .map(|h| fixed(h, "shielded_artifact.st_hash"))
+                            .transpose()?,
+                        kind: kind.as_deref().map(ArtifactKind::from_db).transpose()?,
+                        anchor: anchor
+                            .map(|a| fixed(a, "shielded_artifact.anchor"))
+                            .transpose()?,
+                        identity_id: identity_id
+                            .map(|i| fixed(i, "shielded_artifact.identity_id"))
+                            .transpose()?,
+                        status: ArtifactStatus::from_db(&status, reason.as_deref())?,
+                        disposition,
+                        acked: acked != 0,
+                        at: at as u64,
+                        selected: notes,
+                        published,
+                    })
+                },
+            )
+            .collect()
+    }
+
+    /// Reads each `unclassified` shielded artifact once, in one
+    /// transaction: `archived` for good when `known` says its wallet does
+    /// not exist, else `unresolved` (`unrecorded` for an imported marker).
+    /// A classified artifact is never read again, so a wallet restored
+    /// later under the same id finds its archived rows archived. Until
+    /// this runs (a crash after the open), the artifacts stay
+    /// `unclassified` and the next open reads them.
+    pub fn classify_shielded_imports(
+        &self,
+        known: impl Fn(&[u8; 32]) -> bool,
+    ) -> Result<ImportsClassified> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let pending = {
+            let mut stmt = tx.prepare(
+                "SELECT wallet, activity, origin FROM shielded_artifact \
+                 WHERE status = 'unclassified'",
+            )?;
+            stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, Vec<u8>>(0)?,
+                    r.get::<_, Vec<u8>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+        if !pending.is_empty()
+            && crate::fault::take_fault(tx.path(), crate::fault::Fault::ClassifyWrite)
+        {
+            return Err(AppDbError::Corrupt(
+                "injected failure of the classification write".into(),
+            ));
+        }
+        let mut done = ImportsClassified::default();
+        #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+        let mut first = true;
+        for (wallet, activity, origin) in pending {
+            let id: [u8; 32] = fixed(wallet.clone(), "shielded_artifact.wallet")?;
+            let (status, reason) = if !known(&id) {
+                done.archived += 1;
+                ("archived", None)
+            } else {
+                done.unresolved += 1;
+                match ArtifactOrigin::from_db(&origin)? {
+                    ArtifactOrigin::ImportedMarker => ("unresolved", Some("unrecorded")),
+                    _ => ("unresolved", None),
+                }
+            };
+            tx.execute(
+                "UPDATE shielded_artifact SET status = ?3, status_reason = ?4 \
+                 WHERE wallet = ?1 AND activity = ?2 AND status = 'unclassified'",
+                params![wallet, activity, status, reason],
+            )?;
+            #[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+            if std::mem::take(&mut first)
+                && crate::fault::take_fault(tx.path(), crate::fault::Fault::ClassifyAfterFirstWrite)
+            {
+                return Err(AppDbError::Corrupt(
+                    "injected failure after the first classification write".into(),
+                ));
+            }
+        }
+        tx.commit()?;
+        Ok(done)
     }
 
     /// Appends `artifact`'s resolution (DEC-154). `NotSent` supersedes its
@@ -1708,6 +2337,14 @@ impl DispatchJournal {
             tx.execute("DELETE FROM meta WHERE k = ?1", params![seeded_key(wallet)])?;
         }
         let erased = compact(&tx, Some(wallet))?;
+        // Its shielded artifacts are archived for good (schema 11): kept
+        // with their notes, they never hold a wallet restored under the same
+        // id.
+        tx.execute(
+            "UPDATE shielded_artifact SET status = 'archived', status_reason = NULL \
+             WHERE wallet = ?1 AND status IN ('unclassified', 'registered', 'unresolved')",
+            params![&wallet[..]],
+        )?;
         // The wallet's shielded spend markers go with it (DEC-1057): its
         // notes and keys are deleted, so nothing is left to send them.
         for table in ["shielded_unrecorded", "shielded_unrecorded_nullifier"] {
@@ -2299,8 +2936,8 @@ mod tests {
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(
-            schema, 10,
-            "through versions 2, 3, 4, 5, 6, 7, 8 and 9 to 10"
+            schema, 11,
+            "through versions 2, 3, 4, 5, 6, 7, 8, 9 and 10 to 11"
         );
         let old: bool = j
             .conn()
@@ -2381,7 +3018,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 10);
+        assert_eq!(schema, 11);
         assert_mode_b_tables(&j);
         assert_eq!(j.load_calls().unwrap(), CallRows::default());
         // The new tables take writes; a reopen keeps them.
@@ -2431,7 +3068,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 10);
+        assert_eq!(schema, 11);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!((rows.funding.len(), rows.self_spends.len()), (1, 1));
@@ -2502,7 +3139,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 10);
+        assert_eq!(schema, 11);
         let rows = j.load_calls().unwrap();
         assert_eq!(
             (rows.funding.len(), rows.signed_locks.len()),
@@ -2543,7 +3180,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 10);
+        assert_eq!(schema, 11);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert_eq!(rows.funding.len(), 1);
@@ -2589,7 +3226,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 10);
+        assert_eq!(schema, 11);
         assert_mode_b_tables(&j);
         let rows = j.load_calls().unwrap();
         assert!(
@@ -2680,7 +3317,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 10);
+        assert_eq!(schema, 11);
         assert_eq!(j.load_calls().unwrap().funding[0].seq, marker);
         assert!(j.top_ups_settled(&W).unwrap().is_empty());
         j.settle_top_up(&W, &[7; 32], TopUpSettled::Applied, 4)
@@ -2711,7 +3348,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 10);
+        assert_eq!(schema, 11);
         assert_eq!(j.top_ups_settled(&W).unwrap().len(), 1);
         assert!(j.shielded_redrives(&W).unwrap().is_empty());
 
@@ -2764,7 +3401,7 @@ mod tests {
             .conn()
             .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(schema, 10);
+        assert_eq!(schema, 11);
         assert_eq!(j.shielded_redrives(&W).unwrap().len(), 1);
         assert!(j.unrecorded_spends(&W).unwrap().is_empty());
         assert_eq!(j.pragmas().unwrap().synchronous, 2, "written FULL");
@@ -3428,5 +4065,985 @@ mod tests {
             JournalOpen::NewerSchema(v) => assert_eq!(v, 99),
             JournalOpen::Ready(_) => panic!("opened a newer schema"),
         }
+    }
+
+    /// A journal at `path` as schema 10 left it: the artifacts' tables
+    /// absent, `meta.schema` 10.
+    fn as_schema_10(path: &Path) {
+        Connection::open(path)
+            .unwrap()
+            .execute_batch(
+                "DROP TABLE shielded_artifact; DROP TABLE shielded_artifact_note;
+                 DROP TABLE shielded_artifact_published;
+                 UPDATE meta SET v = 10 WHERE k = 'schema';",
+            )
+            .unwrap();
+    }
+
+    fn ready(path: &Path, now: u64) -> DispatchJournal {
+        match DispatchJournal::open(path, now).unwrap() {
+            JournalOpen::Ready(j) => j,
+            JournalOpen::NewerSchema(v) => panic!("newer schema {v}"),
+        }
+    }
+
+    /// Every row of the 0.1 tables, as stored.
+    fn v10_rows(j: &DispatchJournal) -> Vec<Vec<rusqlite::types::Value>> {
+        let conn = j.conn();
+        let mut out = Vec::new();
+        for table in [
+            "shielded_redrive",
+            "shielded_unrecorded",
+            "shielded_unrecorded_nullifier",
+        ] {
+            let mut stmt = conn
+                .prepare(&format!("SELECT * FROM {table} ORDER BY 1, 2, 3"))
+                .unwrap();
+            let n = stmt.column_count();
+            let rows = stmt
+                .query_map([], |r| {
+                    let mut row = vec![rusqlite::types::Value::Text(table.into())];
+                    for i in 0..n {
+                        row.push(r.get(i)?);
+                    }
+                    Ok(row)
+                })
+                .unwrap();
+            out.extend(rows.map(|r| r.unwrap()));
+        }
+        out
+    }
+
+    /// Every row of the artifacts' tables, as stored.
+    fn all_artifact_rows(j: &DispatchJournal) -> Vec<Vec<rusqlite::types::Value>> {
+        let conn = j.conn();
+        let mut out = Vec::new();
+        for table in [
+            "shielded_artifact",
+            "shielded_artifact_note",
+            "shielded_artifact_published",
+        ] {
+            let mut stmt = conn
+                .prepare(&format!("SELECT * FROM {table} ORDER BY 1, 2, 3"))
+                .unwrap();
+            let n = stmt.column_count();
+            let rows = stmt
+                .query_map([], |r| (0..n).map(|i| r.get(i)).collect())
+                .unwrap();
+            out.extend(rows.map(|r| r.unwrap()));
+        }
+        out
+    }
+
+    fn dispatched(activity: [u8; 32], st_hash: [u8; 32]) -> NewShieldedArtifact {
+        NewShieldedArtifact {
+            activity,
+            origin: ArtifactOrigin::Dispatched,
+            st_hash: Some(st_hash),
+            kind: Some(ArtifactKind::Transfer),
+            anchor: Some([2; 32]),
+            identity_id: None,
+            selected: vec![[3; 32]],
+            published: vec![[3; 32], [4; 32]],
+        }
+    }
+
+    fn constraint_violation(r: rusqlite::Result<usize>, what: &str) {
+        match r {
+            Err(rusqlite::Error::SqliteFailure(e, _)) => {
+                assert_eq!(e.code, rusqlite::ErrorCode::ConstraintViolation, "{what}")
+            }
+            other => panic!("{what}: not refused by the table: {other:?}"),
+        }
+    }
+
+    fn artifact_count(j: &DispatchJournal) -> [i64; 3] {
+        let conn = j.conn();
+        [
+            "shielded_artifact",
+            "shielded_artifact_note",
+            "shielded_artifact_published",
+        ]
+        .map(|table| {
+            conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap()
+        })
+    }
+
+    fn statuses(j: &DispatchJournal, wallet: &[u8; 32]) -> Vec<([u8; 32], ArtifactStatus)> {
+        (j.all_shielded_artifacts(wallet).unwrap().into_iter())
+            .map(|a| (a.activity, a.status))
+            .collect()
+    }
+
+    /// Schema 10 → 11 imports every redrive row with its transition as
+    /// `st_hash` and every marker with its anchor and nullifiers and no
+    /// `st_hash`, unclassified; read against a wallet set that knows their
+    /// wallets, each is unresolved, a marker as unrecorded. The 0.1 tables
+    /// keep every row as it was.
+    #[test]
+    fn schema10_journal_imports_redrive_rows_and_markers_unresolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let other = [9; 32];
+        let before = {
+            let j = ready(&path, 1);
+            j.record_shielded_redrive(&W, &[1; 32], &[10; 32], 2)
+                .unwrap();
+            j.record_shielded_redrive(&W, &[2; 32], &[20; 32], 2)
+                .unwrap();
+            j.record_unrecorded_spend(&W, &[3; 32], &[30; 32], &[[31; 32], [32; 32]], 3)
+                .unwrap();
+            j.note_spent_nullifiers(&W, &[[31; 32]]).unwrap();
+            // A spend in both tables.
+            j.record_shielded_redrive(&W, &[4; 32], &[40; 32], 2)
+                .unwrap();
+            j.record_unrecorded_spend(&W, &[4; 32], &[41; 32], &[[42; 32]], 3)
+                .unwrap();
+            j.record_unrecorded_spend(&other, &[5; 32], &[50; 32], &[[51; 32]], 3)
+                .unwrap();
+            j.insert_step(&W, "s", &T, 3).unwrap();
+            v10_rows(&j)
+        };
+        as_schema_10(&path);
+
+        let j = ready(&path, 4);
+        let schema: i64 = j
+            .conn()
+            .query_row("SELECT v FROM meta WHERE k = 'schema'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schema, 11);
+        assert_eq!(v10_rows(&j), before, "the 0.1 tables are unchanged");
+        assert_eq!(
+            j.load().unwrap().1.len(),
+            1,
+            "the other tables keep their rows"
+        );
+        assert!(
+            (j.all_shielded_artifacts(&W).unwrap().iter())
+                .all(|a| a.status == ArtifactStatus::Unclassified)
+        );
+        assert!(
+            j.holds_shielded_artifacts(&W).unwrap(),
+            "unclassified holds"
+        );
+
+        let read = j.classify_shielded_imports(|_| true).unwrap();
+        assert_eq!(
+            read,
+            ImportsClassified {
+                unresolved: 5,
+                archived: 0
+            }
+        );
+        let redrive = |activity: [u8; 32], st_hash: [u8; 32]| ShieldedArtifact {
+            activity,
+            origin: ArtifactOrigin::ImportedRedrive,
+            st_hash: Some(st_hash),
+            kind: None,
+            anchor: None,
+            identity_id: None,
+            status: ArtifactStatus::Unresolved { unrecorded: false },
+            disposition: None,
+            acked: false,
+            at: 2,
+            selected: Vec::new(),
+            published: Vec::new(),
+        };
+        assert_eq!(
+            j.shielded_artifacts(&W).unwrap(),
+            vec![
+                redrive([1; 32], [10; 32]),
+                redrive([2; 32], [20; 32]),
+                ShieldedArtifact {
+                    activity: [3; 32],
+                    origin: ArtifactOrigin::ImportedMarker,
+                    st_hash: None,
+                    kind: None,
+                    anchor: Some([30; 32]),
+                    identity_id: None,
+                    status: ArtifactStatus::Unresolved { unrecorded: true },
+                    disposition: None,
+                    acked: false,
+                    at: 3,
+                    selected: vec![([31; 32], true), ([32; 32], false)],
+                    published: Vec::new(),
+                },
+                ShieldedArtifact {
+                    anchor: Some([41; 32]),
+                    selected: vec![([42; 32], false)],
+                    ..redrive([4; 32], [40; 32])
+                },
+            ]
+        );
+        assert_eq!(
+            statuses(&j, &other),
+            [([5; 32], ArtifactStatus::Unresolved { unrecorded: true })]
+        );
+        assert_eq!(
+            j.shielded_artifact_nullifiers(&W).unwrap(),
+            BTreeSet::from([[31; 32], [32; 32], [42; 32]])
+        );
+        assert_eq!(v10_rows(&j), before, "classifying writes no 0.1 row");
+    }
+
+    /// A wallet purged under schema 10 keeps its redrive rows (its markers
+    /// went with it); imported and read with the wallet gone, they are
+    /// archived: not shown, not holding the wallet, reserving no note. An
+    /// unknown wallet's marker is archived the same way.
+    #[test]
+    fn purge_then_import_archives_the_orphan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        let (gone, kept) = ([7; 32], W);
+        {
+            let j = ready(&path, 1);
+            j.record_shielded_redrive(&gone, &[1; 32], &[10; 32], 2)
+                .unwrap();
+            j.record_unrecorded_spend(&gone, &[2; 32], &[20; 32], &[[21; 32]], 2)
+                .unwrap();
+            j.record_unrecorded_spend(&[8; 32], &[3; 32], &[30; 32], &[[31; 32]], 2)
+                .unwrap();
+            j.record_shielded_redrive(&kept, &[4; 32], &[40; 32], 2)
+                .unwrap();
+            j.erase_wallet(&gone, true).unwrap();
+            assert!(j.unrecorded_spends(&gone).unwrap().is_empty());
+            assert_eq!(j.shielded_redrives(&gone).unwrap().len(), 1);
+        }
+        as_schema_10(&path);
+        let j = ready(&path, 3);
+        let read = j.classify_shielded_imports(|w| *w == kept).unwrap();
+        assert_eq!(
+            read,
+            ImportsClassified {
+                unresolved: 1,
+                archived: 2
+            }
+        );
+        assert_eq!(statuses(&j, &gone), [([1; 32], ArtifactStatus::Archived)]);
+        assert_eq!(
+            statuses(&j, &[8; 32]),
+            [([3; 32], ArtifactStatus::Archived)]
+        );
+        for wallet in [gone, [8; 32]] {
+            assert!(
+                j.shielded_artifacts(&wallet).unwrap().is_empty(),
+                "never shown"
+            );
+            assert!(
+                !j.holds_shielded_artifacts(&wallet).unwrap(),
+                "never gating"
+            );
+            assert!(
+                j.shielded_artifact_nullifiers(&wallet).unwrap().is_empty(),
+                "reserves nothing"
+            );
+        }
+        assert_eq!(
+            j.all_shielded_artifacts(&[8; 32]).unwrap()[0].selected,
+            [([31; 32], false)]
+        );
+        assert_eq!(
+            statuses(&j, &kept),
+            [([4; 32], ArtifactStatus::Unresolved { unrecorded: false })]
+        );
+        assert!(j.holds_shielded_artifacts(&kept).unwrap());
+    }
+
+    /// An archived row stays archived once its wallet's id is known again
+    /// (a restore of the same wallet), in this session and at every later
+    /// open: classification never reads a classified row again.
+    #[test]
+    fn restore_of_the_same_id_after_import_keeps_it_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        {
+            let j = ready(&path, 1);
+            j.record_shielded_redrive(&W, &[1; 32], &[10; 32], 2)
+                .unwrap();
+            j.record_unrecorded_spend(&W, &[2; 32], &[20; 32], &[[21; 32]], 2)
+                .unwrap();
+        }
+        as_schema_10(&path);
+        {
+            let j = ready(&path, 3);
+            j.classify_shielded_imports(|_| false).unwrap();
+            assert_eq!(
+                j.classify_shielded_imports(|_| true).unwrap(),
+                ImportsClassified::default()
+            );
+        }
+        let j = ready(&path, 4);
+        assert_eq!(
+            j.classify_shielded_imports(|_| true).unwrap(),
+            ImportsClassified::default()
+        );
+        assert_eq!(
+            statuses(&j, &W),
+            [
+                ([1; 32], ArtifactStatus::Archived),
+                ([2; 32], ArtifactStatus::Archived)
+            ]
+        );
+        assert!(j.shielded_artifacts(&W).unwrap().is_empty());
+        assert!(!j.holds_shielded_artifacts(&W).unwrap());
+        assert!(j.shielded_artifact_nullifiers(&W).unwrap().is_empty());
+    }
+
+    /// Only an imported marker may lack an `st_hash`: the writer refuses
+    /// any other before writing, and the table's CHECK refuses one written
+    /// around the writer.
+    #[test]
+    fn a_new_artifact_without_st_hash_is_refused() {
+        let j = journal();
+        let artifact = |origin, st_hash| NewShieldedArtifact {
+            activity: [1; 32],
+            origin,
+            st_hash,
+            kind: Some(ArtifactKind::Transfer),
+            anchor: Some([2; 32]),
+            identity_id: None,
+            selected: vec![[3; 32]],
+            published: vec![[3; 32], [4; 32]],
+        };
+        for origin in [ArtifactOrigin::Dispatched, ArtifactOrigin::ImportedRedrive] {
+            match j.record_shielded_artifact(&W, &artifact(origin, None), 1) {
+                Err(AppDbError::Corrupt(e)) => assert!(e.contains("no st_hash"), "{e}"),
+                other => panic!("not refused by the writer: {other:?}"),
+            }
+        }
+        assert_eq!(artifact_count(&j), [0, 0, 0], "nothing written");
+
+        for origin in ["dispatched", "imported_redrive"] {
+            let raw = j.conn().execute(
+                "INSERT INTO shielded_artifact (wallet, activity, origin, kind, anchor, status, at) \
+                 VALUES (?1, ?2, ?3, 'transfer', ?4, 'registered', 1)",
+                params![&W[..], &[1u8; 32][..], origin, &[2u8; 32][..]],
+            );
+            match raw {
+                Err(rusqlite::Error::SqliteFailure(e, _)) => {
+                    assert_eq!(e.code, rusqlite::ErrorCode::ConstraintViolation)
+                }
+                other => panic!("{origin} without st_hash not refused by the table: {other:?}"),
+            }
+        }
+        assert_eq!(artifact_count(&j), [0, 0, 0]);
+
+        assert!(
+            j.record_shielded_artifact(&W, &artifact(ArtifactOrigin::ImportedMarker, None), 1)
+                .unwrap()
+        );
+        assert!(
+            j.record_shielded_artifact(
+                &[9; 32],
+                &artifact(ArtifactOrigin::Dispatched, Some([5; 32])),
+                2
+            )
+            .unwrap()
+        );
+        assert!(
+            !j.record_shielded_artifact(
+                &[9; 32],
+                &artifact(ArtifactOrigin::Dispatched, Some([5; 32])),
+                3
+            )
+            .unwrap(),
+            "the same record again"
+        );
+        let a = &j.shielded_artifacts(&[9; 32]).unwrap()[0];
+        assert_eq!(
+            (a.origin, a.st_hash, a.status, a.kind),
+            (
+                ArtifactOrigin::Dispatched,
+                Some([5; 32]),
+                ArtifactStatus::Registered,
+                Some(ArtifactKind::Transfer)
+            )
+        );
+        assert_eq!(
+            (a.selected.clone(), a.published.clone()),
+            (vec![([3; 32], false)], vec![[3; 32], [4; 32]])
+        );
+        assert_eq!(
+            j.shielded_artifacts(&W).unwrap()[0].status,
+            ArtifactStatus::Unclassified
+        );
+    }
+
+    /// A build of schema 10 reads a schema 11 journal as newer and leaves
+    /// it as it was.
+    #[test]
+    fn a_v11_journal_reads_newer_schema_in_a_v10_reader() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        {
+            let j = ready(&path, 1);
+            j.record_shielded_redrive(&W, &[1; 32], &[10; 32], 2)
+                .unwrap();
+        }
+        as_schema_10(&path);
+        let (v10, artifacts) = {
+            let j = ready(&path, 3);
+            (v10_rows(&j), all_artifact_rows(&j))
+        };
+        match DispatchJournal::open_as_schema(&path, 4, 10).unwrap() {
+            JournalOpen::NewerSchema(v) => assert_eq!(v, 11),
+            JournalOpen::Ready(_) => panic!("a schema 10 build opened schema 11"),
+        }
+        let j = ready(&path, 5);
+        assert_eq!(artifact_count(&j), [1, 0, 0]);
+        assert_eq!(statuses(&j, &W), [([1; 32], ArtifactStatus::Unclassified)]);
+        assert_eq!(v10_rows(&j), v10);
+        assert_eq!(all_artifact_rows(&j), artifacts);
+    }
+
+    /// The import runs once, in the 10 → 11 step: a later open imports
+    /// nothing, not even 0.1 rows written since, and changes no artifact.
+    #[test]
+    fn the_import_runs_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        {
+            let j = ready(&path, 1);
+            j.record_shielded_redrive(&W, &[1; 32], &[10; 32], 2)
+                .unwrap();
+            j.record_unrecorded_spend(&W, &[2; 32], &[20; 32], &[[21; 32], [22; 32]], 2)
+                .unwrap();
+        }
+        as_schema_10(&path);
+        let (counts, artifacts) = {
+            let j = ready(&path, 3);
+            j.classify_shielded_imports(|_| true).unwrap();
+            assert_eq!(artifact_count(&j), [2, 2, 0]);
+            j.record_shielded_redrive(&W, &[3; 32], &[30; 32], 4)
+                .unwrap();
+            j.record_unrecorded_spend(&W, &[4; 32], &[40; 32], &[[41; 32]], 4)
+                .unwrap();
+            (artifact_count(&j), j.all_shielded_artifacts(&W).unwrap())
+        };
+        for now in [5, 6] {
+            let j = ready(&path, now);
+            assert_eq!(artifact_count(&j), counts);
+            assert_eq!(j.all_shielded_artifacts(&W).unwrap(), artifacts);
+        }
+    }
+
+    /// A dispatched artifact needs its kind and its anchor: the writer
+    /// refuses one without either before writing, and the writer's own
+    /// insert, run past that check, fails the table's CHECK instead of
+    /// skipping the row.
+    #[test]
+    fn a_dispatched_artifact_without_kind_or_anchor_is_refused() {
+        let j = journal();
+        let no_kind = NewShieldedArtifact {
+            kind: None,
+            ..dispatched([1; 32], [5; 32])
+        };
+        let no_anchor = NewShieldedArtifact {
+            anchor: None,
+            ..dispatched([1; 32], [5; 32])
+        };
+        for artifact in [no_kind, no_anchor] {
+            match j.record_shielded_artifact(&W, &artifact, 1) {
+                Err(AppDbError::Corrupt(e)) => assert!(e.contains("no kind or no anchor"), "{e}"),
+                other => panic!("not refused by the writer: {other:?}"),
+            }
+        }
+        assert_eq!(artifact_count(&j), [0, 0, 0], "nothing written");
+        for (kind, anchor, st_hash, what) in [
+            (None, Some(&[2u8; 32][..]), Some(&[5u8; 32][..]), "no kind"),
+            (Some("transfer"), None, Some(&[5u8; 32][..]), "no anchor"),
+            (Some("transfer"), Some(&[2u8; 32][..]), None, "no st_hash"),
+        ] {
+            constraint_violation(
+                j.conn().execute(
+                    INSERT_ARTIFACT,
+                    params![
+                        &W[..],
+                        &[1u8; 32][..],
+                        "dispatched",
+                        st_hash,
+                        kind,
+                        anchor,
+                        None::<Vec<u8>>,
+                        "registered",
+                        1
+                    ],
+                ),
+                what,
+            );
+        }
+        assert_eq!(artifact_count(&j), [0, 0, 0]);
+    }
+
+    /// A standing artifact answers a second record of its activity: the
+    /// same record is `false`, also with its selected notes permuted or
+    /// repeated and after their spent flags advance; any other (hash, kind,
+    /// origin, anchor, identity, selected notes, or published nullifiers in
+    /// another order or number) is an error, and every stored row stays as
+    /// it was.
+    #[test]
+    fn a_different_record_for_a_standing_artifact_is_refused() {
+        let j = journal();
+        let first = dispatched([1; 32], [5; 32]);
+        let two_notes = NewShieldedArtifact {
+            selected: vec![[3; 32], [6; 32]],
+            ..dispatched([2; 32], [7; 32])
+        };
+        let top_up = NewShieldedArtifact {
+            kind: Some(ArtifactKind::IdentityTopUp),
+            identity_id: Some([8; 32]),
+            ..dispatched([3; 32], [9; 32])
+        };
+        for artifact in [&first, &two_notes, &top_up] {
+            assert!(j.record_shielded_artifact(&W, artifact, 1).unwrap());
+        }
+        let stored = all_artifact_rows(&j);
+        let same = [
+            first.clone(),
+            NewShieldedArtifact {
+                selected: vec![[3; 32], [3; 32]],
+                ..first.clone()
+            },
+            NewShieldedArtifact {
+                selected: vec![[6; 32], [3; 32]],
+                ..two_notes.clone()
+            },
+            NewShieldedArtifact {
+                selected: vec![[6; 32], [3; 32], [6; 32]],
+                ..two_notes.clone()
+            },
+            top_up.clone(),
+        ];
+        for artifact in &same {
+            assert!(
+                !j.record_shielded_artifact(&W, artifact, 2).unwrap(),
+                "{artifact:?}"
+            );
+        }
+        assert_eq!(
+            all_artifact_rows(&j),
+            stored,
+            "the same record writes nothing"
+        );
+        let others = [
+            ("hash", dispatched([1; 32], [6; 32])),
+            (
+                "kind",
+                NewShieldedArtifact {
+                    kind: Some(ArtifactKind::Withdraw),
+                    ..first.clone()
+                },
+            ),
+            (
+                "origin",
+                NewShieldedArtifact {
+                    origin: ArtifactOrigin::ImportedRedrive,
+                    ..first.clone()
+                },
+            ),
+            (
+                "anchor",
+                NewShieldedArtifact {
+                    anchor: Some([9; 32]),
+                    ..first.clone()
+                },
+            ),
+            (
+                "identity",
+                NewShieldedArtifact {
+                    identity_id: Some([9; 32]),
+                    ..top_up.clone()
+                },
+            ),
+            (
+                "another selected note",
+                NewShieldedArtifact {
+                    selected: vec![[4; 32]],
+                    ..first.clone()
+                },
+            ),
+            (
+                "a selected note less",
+                NewShieldedArtifact {
+                    selected: vec![[3; 32]],
+                    ..two_notes.clone()
+                },
+            ),
+            (
+                "published reordered",
+                NewShieldedArtifact {
+                    published: vec![[4; 32], [3; 32]],
+                    ..first.clone()
+                },
+            ),
+            (
+                "published appended",
+                NewShieldedArtifact {
+                    published: vec![[3; 32], [4; 32], [5; 32]],
+                    ..first.clone()
+                },
+            ),
+            (
+                "published removed",
+                NewShieldedArtifact {
+                    published: vec![[3; 32]],
+                    ..first.clone()
+                },
+            ),
+            (
+                "published repeated",
+                NewShieldedArtifact {
+                    published: vec![[3; 32], [4; 32], [4; 32]],
+                    ..first.clone()
+                },
+            ),
+        ];
+        for (what, other) in &others {
+            match j.record_shielded_artifact(&W, other, 3) {
+                Err(AppDbError::Corrupt(e)) => assert!(e.contains("another"), "{what}: {e}"),
+                r => panic!("{what}: a different record was not refused: {r:?}"),
+            }
+            assert_eq!(
+                all_artifact_rows(&j),
+                stored,
+                "{what}: the rows are unchanged"
+            );
+        }
+
+        assert!(
+            j.note_spent_nullifiers(&W, &[[3; 32], [6; 32]])
+                .unwrap()
+                .is_empty()
+        );
+        assert_ne!(all_artifact_rows(&j), stored, "the flags advanced");
+        for artifact in &same {
+            assert!(
+                !j.record_shielded_artifact(&W, artifact, 4).unwrap(),
+                "after the flags: {artifact:?}"
+            );
+        }
+    }
+
+    /// Only a top-up names an identity, and a dispatched top-up must: the
+    /// writer refuses any other before writing. An imported top-up may lack
+    /// one.
+    #[test]
+    fn only_a_top_up_names_an_identity() {
+        let j = journal();
+        let refused = [
+            (
+                "a transfer with an identity",
+                NewShieldedArtifact {
+                    identity_id: Some([7; 32]),
+                    ..dispatched([1; 32], [5; 32])
+                },
+            ),
+            (
+                "an import without a kind, with an identity",
+                NewShieldedArtifact {
+                    origin: ArtifactOrigin::ImportedRedrive,
+                    kind: None,
+                    identity_id: Some([7; 32]),
+                    ..dispatched([1; 32], [5; 32])
+                },
+            ),
+            (
+                "a dispatched top-up without an identity",
+                NewShieldedArtifact {
+                    kind: Some(ArtifactKind::IdentityTopUp),
+                    ..dispatched([1; 32], [5; 32])
+                },
+            ),
+        ];
+        for (what, artifact) in &refused {
+            match j.record_shielded_artifact(&W, artifact, 1) {
+                Err(AppDbError::Corrupt(e)) => assert!(e.contains("identity"), "{what}: {e}"),
+                other => panic!("{what}: not refused by the writer: {other:?}"),
+            }
+            assert_eq!(artifact_count(&j), [0, 0, 0], "{what}: nothing written");
+        }
+        let imported_top_up = NewShieldedArtifact {
+            origin: ArtifactOrigin::ImportedRedrive,
+            kind: Some(ArtifactKind::IdentityTopUp),
+            ..dispatched([2; 32], [6; 32])
+        };
+        assert!(j.record_shielded_artifact(&W, &imported_top_up, 2).unwrap());
+    }
+
+    /// The disposition CHECK reads no combination as unknown: a kind
+    /// without its reason, or a reason without a kind, is refused, and
+    /// every pair the library writes is stored.
+    #[test]
+    fn the_disposition_check_refuses_every_pair_it_does_not_decode() {
+        let j = journal();
+        j.record_shielded_artifact(&W, &dispatched([1; 32], [5; 32]), 1)
+            .unwrap();
+        let set = |kind: Option<&str>, reason: Option<&str>| {
+            j.conn().execute(
+                "UPDATE shielded_artifact SET disposition_kind = ?1, disposition_reason = ?2",
+                params![kind, reason],
+            )
+        };
+        for (kind, reason) in [
+            (Some("not_executed"), None),
+            (Some("unresolved"), None),
+            (None, Some("refused")),
+            (Some("executed"), Some("refused")),
+            (Some("not_executed"), Some("cancelled")),
+            (Some("unresolved"), Some("refused")),
+            (Some("other"), Some("refused")),
+        ] {
+            constraint_violation(set(kind, reason), &format!("{kind:?} {reason:?}"));
+        }
+        let allowed = [
+            ("executed", None),
+            ("not_executed", Some("refused")),
+            ("not_executed", Some("abandoned")),
+            ("not_executed", Some("rejected")),
+            ("not_executed", Some("pruned")),
+            ("unresolved", Some("deserialize_dropped")),
+            ("unresolved", Some("purged")),
+            ("unresolved", Some("unattributable")),
+            ("unresolved", Some("cancelled")),
+        ];
+        for (kind, reason) in allowed {
+            assert_eq!(set(Some(kind), reason).unwrap(), 1, "{kind} {reason:?}");
+            assert_eq!(
+                j.shielded_artifacts(&W).unwrap()[0].disposition,
+                Some((kind.to_owned(), reason.map(str::to_owned)))
+            );
+        }
+        assert_eq!(set(None, None).unwrap(), 1);
+    }
+
+    /// A marker's notes keep their `spent` flags through the import, and a
+    /// later scan's flags reach the artifact even once the 0.1 marker is
+    /// deleted; the artifact stays unresolved (unrecorded). Another wallet's
+    /// note with the same nullifier keeps its flag.
+    #[test]
+    fn a_marker_keeps_its_spent_flags_through_the_import_and_later_scans() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        {
+            let j = ready(&path, 1);
+            j.record_unrecorded_spend(&W, &[1; 32], &[10; 32], &[[11; 32], [12; 32], [13; 32]], 2)
+                .unwrap();
+            j.note_spent_nullifiers(&W, &[[11; 32]]).unwrap();
+        }
+        as_schema_10(&path);
+        let j = ready(&path, 3);
+        j.classify_shielded_imports(|_| true).unwrap();
+        let other = [9; 32];
+        let other_artifact = NewShieldedArtifact {
+            selected: vec![[12; 32], [13; 32]],
+            ..dispatched([2; 32], [5; 32])
+        };
+        assert!(
+            j.record_shielded_artifact(&other, &other_artifact, 3)
+                .unwrap()
+        );
+        let notes = |j: &DispatchJournal| j.all_shielded_artifacts(&W).unwrap()[0].selected.clone();
+        let others_notes = |j: &DispatchJournal| {
+            let notes = j.all_shielded_artifacts(&other).unwrap()[0]
+                .selected
+                .clone();
+            assert_eq!(
+                notes,
+                [([12; 32], false), ([13; 32], false)],
+                "another wallet's notes keep their flags"
+            );
+        };
+        assert_eq!(
+            notes(&j),
+            [([11; 32], true), ([12; 32], false), ([13; 32], false)]
+        );
+
+        assert!(j.note_spent_nullifiers(&W, &[[12; 32]]).unwrap().is_empty());
+        assert_eq!(
+            notes(&j),
+            [([11; 32], true), ([12; 32], true), ([13; 32], false)]
+        );
+        others_notes(&j);
+        assert_eq!(j.note_spent_nullifiers(&W, &[[13; 32]]).unwrap(), [[1; 32]]);
+        others_notes(&j);
+        assert!(
+            j.unrecorded_spends(&W).unwrap().is_empty(),
+            "the 0.1 marker is gone"
+        );
+        drop(j);
+        let j = ready(&path, 4);
+        assert_eq!(
+            notes(&j),
+            [([11; 32], true), ([12; 32], true), ([13; 32], true)]
+        );
+        others_notes(&j);
+        assert_eq!(
+            statuses(&j, &W),
+            [([1; 32], ArtifactStatus::Unresolved { unrecorded: true })]
+        );
+        assert!(j.holds_shielded_artifacts(&W).unwrap());
+    }
+
+    /// A wallet's removal archives its artifacts, imported or registered:
+    /// kept with their notes, they hold nothing for a wallet restored under
+    /// the same id, at every later open.
+    #[test]
+    fn removing_a_wallet_archives_its_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        {
+            let j = ready(&path, 1);
+            j.record_shielded_redrive(&W, &[1; 32], &[10; 32], 2)
+                .unwrap();
+            j.record_unrecorded_spend(&W, &[2; 32], &[20; 32], &[[21; 32]], 2)
+                .unwrap();
+            j.record_shielded_redrive(&[9; 32], &[3; 32], &[30; 32], 2)
+                .unwrap();
+        }
+        as_schema_10(&path);
+        let j = ready(&path, 3);
+        j.classify_shielded_imports(|_| true).unwrap();
+        j.record_shielded_artifact(&W, &dispatched([4; 32], [40; 32]), 4)
+            .unwrap();
+        assert!(j.holds_shielded_artifacts(&W).unwrap());
+        j.erase_wallet(&W, true).unwrap();
+        drop(j);
+        let j = ready(&path, 5);
+        j.classify_shielded_imports(|_| true).unwrap();
+        assert_eq!(
+            statuses(&j, &W),
+            [
+                ([1; 32], ArtifactStatus::Archived),
+                ([2; 32], ArtifactStatus::Archived),
+                ([4; 32], ArtifactStatus::Archived)
+            ]
+        );
+        assert_eq!(
+            artifact_count(&j),
+            [4, 2, 2],
+            "the rows and their notes stay"
+        );
+        assert!(j.shielded_artifacts(&W).unwrap().is_empty());
+        assert!(!j.holds_shielded_artifacts(&W).unwrap());
+        assert!(j.shielded_artifact_nullifiers(&W).unwrap().is_empty());
+        assert_eq!(
+            statuses(&j, &[9; 32]),
+            [([3; 32], ArtifactStatus::Unresolved { unrecorded: false })],
+            "another wallet's artifacts are untouched"
+        );
+    }
+
+    /// A top-up keeps its identity.
+    #[test]
+    fn a_top_up_keeps_its_identity() {
+        let j = journal();
+        let top_up = NewShieldedArtifact {
+            kind: Some(ArtifactKind::IdentityTopUp),
+            identity_id: Some([7; 32]),
+            ..dispatched([1; 32], [5; 32])
+        };
+        assert!(j.record_shielded_artifact(&W, &top_up, 1).unwrap());
+        let a = &j.shielded_artifacts(&W).unwrap()[0];
+        assert_eq!(
+            (a.kind, a.identity_id),
+            (Some(ArtifactKind::IdentityTopUp), Some([7; 32]))
+        );
+        assert!(!j.record_shielded_artifact(&W, &top_up, 2).unwrap());
+    }
+
+    /// A registered artifact holds its wallet and reserves its notes.
+    #[test]
+    fn a_registered_artifact_holds_its_wallet_and_notes() {
+        let j = journal();
+        assert!(!j.holds_shielded_artifacts(&W).unwrap());
+        j.record_shielded_artifact(&W, &dispatched([1; 32], [5; 32]), 1)
+            .unwrap();
+        assert_eq!(statuses(&j, &W), [([1; 32], ArtifactStatus::Registered)]);
+        assert!(j.holds_shielded_artifacts(&W).unwrap());
+        assert_eq!(
+            j.shielded_artifact_nullifiers(&W).unwrap(),
+            BTreeSet::from([[3; 32]])
+        );
+    }
+
+    /// A failed classification write leaves every row unclassified (its
+    /// transaction rolls back); the next read classifies them.
+    #[test]
+    fn a_failed_classification_leaves_the_rows_unclassified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        {
+            let j = ready(&path, 1);
+            j.record_shielded_redrive(&W, &[1; 32], &[10; 32], 2)
+                .unwrap();
+            j.record_shielded_redrive(&[9; 32], &[2; 32], &[20; 32], 2)
+                .unwrap();
+        }
+        as_schema_10(&path);
+        let j = ready(&path, 3);
+        crate::fault::arm_fault(&path, crate::fault::Fault::ClassifyWrite);
+        assert!(j.classify_shielded_imports(|w| *w == W).is_err());
+        assert_eq!(statuses(&j, &W), [([1; 32], ArtifactStatus::Unclassified)]);
+        assert_eq!(
+            statuses(&j, &[9; 32]),
+            [([2; 32], ArtifactStatus::Unclassified)]
+        );
+        assert_eq!(
+            j.classify_shielded_imports(|w| *w == W).unwrap(),
+            ImportsClassified {
+                unresolved: 1,
+                archived: 1
+            }
+        );
+    }
+
+    /// A classification that fails after its first row's write rolls back
+    /// whole: every row is still unclassified, also after a reopen, and the
+    /// next classification reads them all.
+    #[test]
+    fn a_classification_failing_after_a_write_leaves_every_row_unclassified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DISPATCH_DB_FILE);
+        {
+            let j = ready(&path, 1);
+            j.record_shielded_redrive(&W, &[1; 32], &[10; 32], 2)
+                .unwrap();
+            j.record_shielded_redrive(&[9; 32], &[2; 32], &[20; 32], 2)
+                .unwrap();
+        }
+        as_schema_10(&path);
+        let unclassified = |j: &DispatchJournal| {
+            assert_eq!(statuses(j, &W), [([1; 32], ArtifactStatus::Unclassified)]);
+            assert_eq!(
+                statuses(j, &[9; 32]),
+                [([2; 32], ArtifactStatus::Unclassified)]
+            );
+        };
+        let j = ready(&path, 3);
+        crate::fault::arm_fault(&path, crate::fault::Fault::ClassifyAfterFirstWrite);
+        match j.classify_shielded_imports(|w| *w == W) {
+            Err(AppDbError::Corrupt(e)) => assert!(e.contains("after the first"), "{e}"),
+            other => panic!("the classification did not fail: {other:?}"),
+        }
+        unclassified(&j);
+        drop(j);
+        let j = ready(&path, 4);
+        unclassified(&j);
+        assert_eq!(
+            j.classify_shielded_imports(|w| *w == W).unwrap(),
+            ImportsClassified {
+                unresolved: 1,
+                archived: 1
+            }
+        );
+        assert_eq!(
+            statuses(&j, &W),
+            [([1; 32], ArtifactStatus::Unresolved { unrecorded: false })]
+        );
+        assert_eq!(
+            statuses(&j, &[9; 32]),
+            [([2; 32], ArtifactStatus::Archived)]
+        );
     }
 }
