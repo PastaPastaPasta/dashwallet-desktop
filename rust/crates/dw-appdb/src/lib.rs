@@ -26,6 +26,8 @@ mod dashpay_journal;
 pub mod dispatch;
 #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
 pub mod durability_sim;
+#[cfg(all(debug_assertions, any(test, feature = "fault-inject")))]
+pub mod fault;
 mod holds;
 mod proposals;
 mod protx_ops;

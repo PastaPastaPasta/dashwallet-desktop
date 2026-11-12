@@ -23,6 +23,9 @@ test-mutations = []
 # Debug builds' tests only: power loss on an armed database (MG-03 D34);
 # never in a release.
 durability-sim = []
+# Debug builds' tests only: a one-shot failure of a dispatch journal write
+# (`fault::arm`); never in a release.
+fault-inject = []
 
 [dev-dependencies]
 tempfile = { workspace = true }
