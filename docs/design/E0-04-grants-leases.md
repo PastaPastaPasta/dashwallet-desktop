@@ -1071,8 +1071,8 @@ the first signature reads `NotSent`, one after it `MaybeSent`, in process and re
 zero broadcaster calls and `unrecorded_signer_of` naming the step, then the send once it landed, then a restart at
 the publication boundary); `session_tests.rs`:
 `mode_b_a_funding_signer_signs_one_lock_per_call`,
-`mode_b_a_lock_the_library_sends_unstored_leaves_its_step_maybe_sent` (R6-01: the real library build, the wallet
-removed from its manager after the first signature, the broadcaster reached with no store; release row on disk,
+`mode_b_a_lock_signed_for_a_wallet_that_left_leaves_its_step_maybe_sent` (R6-01: the real library build, the wallet
+removed from its manager after the first signature, the lock refused with no store; release row on disk,
 `MaybeSent`), `mode_b_a_funding_signature_waits_for_its_durable_release` (a refused release row: nothing signed,
 `Cancelled`), `mode_b_a_second_lock_under_one_permit_stops_at_the_first_record` (R6-02, two real locks over
 independent coins), `mode_b_a_store_with_no_lock_stops_a_call_whose_signatures_no_record_covers` (P2b r7: the

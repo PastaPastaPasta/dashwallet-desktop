@@ -267,21 +267,22 @@ pub struct LaunchInfo {
     /// the app was launched with `--selftest-link-trace`.
     pub selftest_link_trace: bool,
     pub theme: Option<ThemeName>,
-    /// The network `open_network` opens when it names none.
+    /// The network `open_network` opens when it names none: the window's
+    /// (the launch network until `switch_network` opens another).
     pub network: NetworkInfo,
     pub app_version: String,
     pub engine_version: String,
 }
 
 impl LaunchInfo {
-    pub fn new(opts: &LaunchOptions) -> Self {
+    pub fn new(opts: &LaunchOptions, network: &DashNetwork) -> Self {
         LaunchInfo {
             selftest: opts.selftest.is_some(),
             selftest_pause_ms: opts.selftest_pause_ms,
             selftest_unlock: opts.selftest.is_some() && opts.selftest_passphrase_file.is_some(),
             selftest_link_trace: opts.selftest_link_trace.is_some(),
             theme: opts.theme,
-            network: NetworkInfo::from(&opts.network),
+            network: NetworkInfo::from(network),
             app_version: env!("CARGO_PKG_VERSION").into(),
             engine_version: dw_engine::ENGINE_VERSION.into(),
         }

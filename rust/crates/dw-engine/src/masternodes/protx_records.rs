@@ -278,6 +278,8 @@ pub struct ProTxOperation {
     pub state: ProTxOperationState,
     pub sign_request: Option<SignRequest>,
     pub fee: u64,
+    pub debit: u64,
+    pub overdue: bool,
     pub created_at: u64,
     pub signed_at: Option<u64>,
     pub sent_at: Option<u64>,

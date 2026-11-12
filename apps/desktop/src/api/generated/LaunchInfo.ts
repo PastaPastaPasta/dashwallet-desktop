@@ -21,6 +21,7 @@ selftestUnlock: boolean,
  */
 selftestLinkTrace: boolean, theme: ThemeName | null,
 /**
- * The network `open_network` opens when it names none.
+ * The network `open_network` opens when it names none: the window's
+ * (the launch network until `switch_network` opens another).
  */
 network: NetworkInfo, appVersion: string, engineVersion: string, };

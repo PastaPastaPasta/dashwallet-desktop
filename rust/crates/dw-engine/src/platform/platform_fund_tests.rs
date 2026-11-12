@@ -33,7 +33,7 @@ use super::platform_addresses::{PlatformFundOutcome, PlatformFundQuote, Platform
 use super::platform_fund::{self as fund, FundLib};
 use super::platform_moves::{self, tests::World};
 use super::registration::RegistrationWait;
-use super::registration_flow::{FundError, Spendable};
+use super::registration_flow::{FundError, Spendable, fund_error};
 use super::requests::tests::Fixture;
 use super::shielded_pool::MAX_LOCK_INPUTS;
 use super::unfinished;
@@ -77,6 +77,11 @@ enum Script {
     LostUntracked,
     /// The input cap refused the build.
     TooMany,
+    /// Signed, then platform-wallet's `WalletRemovedBeforeSend` before
+    /// the tracking write, mapped by the engine's `fund_error`.
+    RemovedBeforeSend,
+    /// Signed, then platform-wallet's `AssetLockTooManyInputs`, likewise.
+    OverInputCap,
 }
 
 /// How the next apply ends, as platform-wallet would answer it.
@@ -285,6 +290,19 @@ impl FundLib for FakeFund {
                 return Err(FundError::TooManyInputs {
                     max: MAX_LOCK_INPUTS as u64,
                 });
+            }
+            Script::RemovedBeforeSend => {
+                permit.note_signed([0xfe; 32]);
+                return Err(fund_error(PlatformWalletError::WalletRemovedBeforeSend(
+                    "w".into(),
+                )));
+            }
+            Script::OverInputCap => {
+                permit.note_signed([0xfe; 32]);
+                return Err(fund_error(PlatformWalletError::AssetLockTooManyInputs {
+                    count: 101,
+                    max: 100,
+                }));
             }
             Script::Proved => (AssetLockStatus::InstantSendLocked, true),
             Script::Unproved => (AssetLockStatus::Broadcast, false),
@@ -650,6 +668,43 @@ fn a_fund_of_more_than_50_coins_leaves_its_step_free() {
         }
     );
     assert!(fund::next_step(&fx.s, fx.wallet).is_ok());
+}
+
+/// A fund whose wallet was removed or re-created after its lock was
+/// signed, before the library tracked it: the released signature leaves
+/// the step `MaybeSent`, so the call reads `broadcast_unknown` for it, not
+/// the library's error, and the next fund is refused on the step.
+#[test]
+fn a_fund_whose_wallet_left_after_its_signature_reads_broadcast_unknown() {
+    refused_after_the_signature(Script::RemovedBeforeSend);
+}
+
+/// A fund the library refuses over the asset lock's input cap after
+/// signing it reads the same.
+#[test]
+fn a_fund_over_the_asset_lock_input_cap_reads_broadcast_unknown() {
+    refused_after_the_signature(Script::OverInputCap);
+}
+
+fn refused_after_the_signature(script: Script) {
+    const STEP: &str = "paddr/0/funding";
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    *lib.funding.lock().unwrap() = script;
+    let unknown = |r: Result<PlatformFundOutcome, CreditsError>| match r {
+        Err(CreditsError::Platform(PlatformError::BroadcastUnknown { artifact })) => artifact,
+        other => panic!("not broadcast_unknown: {other:?}"),
+    };
+    assert_eq!(unknown(fund_of(&fx, &lib)), STEP);
+    assert_eq!(
+        fx.s.leases.funding_status(fx.wallet, STEP),
+        Some(super::flows::DispatchState::MaybeSent)
+    );
+    *lib.funding.lock().unwrap() = Script::Proved;
+    assert_eq!(unknown(fund_of(&fx, &lib)), STEP);
+    assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "funded once");
+    assert!(pending_of(&fx, &lib).is_empty());
+    assert!(settled(&fx).is_empty());
 }
 
 /// A lock out without its proof waits ("Pending — finish"): it is listed,

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use dw_engine::EngineError;
+use dw_engine::{EngineError, NetworkSession};
 use dw_engine::platform::RevokeCause;
 use dw_vault::mnemonic::{Checksum, Language};
 use dw_vault::{Credential, GrantPurpose, MnemonicError, UnlockScope};
@@ -458,13 +458,13 @@ fn check_payment_auth(
 /// "off"; one issued before the change keeps its 120 s, as D11 says.
 async fn issue_grants(
     state: &AppState,
+    session: Arc<NetworkSession>,
     purposes: &[GrantPurpose],
     credential: OwnedCredential,
     issue: impl FnOnce(&dw_vault::Vault, Credential<'_>) -> Result<Vec<dw_vault::AuthGrant>, dw_vault::VaultError>
     + Send
     + 'static,
 ) -> Result<Vec<dw_vault::AuthGrant>, AppError> {
-    let session = state.session().await?;
     let payment_policy = Arc::clone(&state.payment_policy);
     let (read_at, policy) = if pays(purposes) {
         #[cfg(test)]
@@ -862,7 +862,8 @@ commands! {
         let credential = OwnedCredential::from(credential);
         let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         let purpose = GrantPurpose::from(purpose);
-        let mut grants = issue_grants(&state, &[purpose], credential, move |v, credential| {
+        let session = state.session().await?;
+        let mut grants = issue_grants(&state, session, &[purpose], credential, move |v, credential| {
             v.authorize(purpose, wallet.as_ref().map(|w| &w.0), credential)
                 .map(|g| vec![g])
         })
@@ -897,14 +898,16 @@ commands! {
         // The secret first: an early return must not drop it unwrapped.
         let credential = OwnedCredential::from(credential);
         let wallet = parse_wallet_id(&wallet_id)?;
+        // One read of the session: the grant, its binding and a revoke all
+        // go to the same network's vault, even across a network switch.
         let session = state.session().await?;
-        let dashpay = state.dashpay(&wallet_id).await?;
+        let dashpay = session.dashpay(wallet);
         let cap = dashpay.platform_send_grant(operation.clone()).await?;
         let purpose = GrantPurpose::PlatformOp {
             max_duffs: cap.max_duffs,
             max_credits: cap.max_credits,
         };
-        let grant = issue_grants(&state, &[purpose], credential, move |v, credential| {
+        let grant = issue_grants(&state, Arc::clone(&session), &[purpose], credential, move |v, credential| {
             v.authorize(purpose, Some(&wallet.0), credential)
                 .map(|g| vec![g])
         })
@@ -947,7 +950,8 @@ commands! {
         let wallet = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
         let purposes: Vec<GrantPurpose> = purposes.into_iter().map(Into::into).collect();
         let issue = purposes.clone();
-        let grants = issue_grants(&state, &purposes, credential, move |v, credential| {
+        let session = state.session().await?;
+        let grants = issue_grants(&state, session, &purposes, credential, move |v, credential| {
             v.authorize_set(&issue, wallet.as_ref().map(|w| &w.0), credential)
         })
         .await?;

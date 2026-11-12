@@ -109,6 +109,11 @@ struct Props {
 fn props(mode: Mode) -> Props {
     let f = fixture(false);
     f.credit(1, 3 * COIN);
+    props_on(f, mode)
+}
+
+/// [`props`] on `f` as its coins stand.
+fn props_on(f: Fixture, mode: Mode) -> Props {
     f.session.hub.tracker().set_tip_height(TIP);
     let rt = &f.session.governance;
     rt.manual_ticks.store(true, Ordering::SeqCst);
@@ -1227,6 +1232,106 @@ fn a_resend_refuses_a_user_locked_coin() {
     assert_unavailable(&p.submit(&hash).unwrap_err(), coin);
     assert!(p.row(&hash).fee_sent_at.is_none(), "nothing handed off");
     assert_eq!(p.lib.sent.lock().unwrap().len(), 1, "no resend");
+}
+
+/// A transaction paying `value` to the wallet's next BIP44 receive address
+/// (a ProRegTx whose own output that is, when `registration`), its output
+/// put in the wallet as a confirmed coin.
+fn credited_funding(f: &Fixture, value: u64, registration: bool) -> (Transaction, OutPoint) {
+    use crate::masternodes::provider_fixtures::{null, registration as provider_registration};
+    let (session, id) = (Arc::clone(&f.session), f.wallet);
+    let inner = Arc::clone(&session);
+    f.engine.block_on(async move {
+        session
+            .on_runtime(async move {
+                let wallet = inner.wallet(&id).await?;
+                let address = wallet.core().next_receive_address_for_account(0).await?;
+                let output = dashcore::TxOut {
+                    value,
+                    script_pubkey: address.script_pubkey(),
+                };
+                let tx = match registration {
+                    true => provider_registration(null(0), false, 3, vec![output.clone()]),
+                    false => Transaction {
+                        version: 2,
+                        lock_time: 0,
+                        input: Vec::new(),
+                        output: vec![output.clone()],
+                        special_transaction_payload: None,
+                    },
+                };
+                let coin = OutPoint::new(tx.txid(), 0);
+                let mut utxo = key_wallet::Utxo::new(coin, output, address, 1, false);
+                utxo.is_confirmed = true;
+                (wallet
+                    .state_mut()
+                    .await
+                    .core_wallet
+                    .accounts
+                    .standard_bip44_accounts)
+                    .get_mut(&0)
+                    .expect("BIP44 account 0")
+                    .utxos
+                    .insert(coin, utxo);
+                Ok((tx, coin))
+            })
+            .await
+            .unwrap()
+    })
+}
+
+/// Row 71: a saved fee's coin of a masternode collateral amount whose
+/// transaction hasn't reached the history (it may be a ProRegTx's own
+/// collateral) is not the resend's to spend: refused naming it, with no
+/// hand-off and no claim. Once the transaction's event arrives, a plain
+/// payment's coin resends and a ProRegTx's collateral stays refused.
+#[test]
+fn a_resend_refuses_a_coin_awaiting_its_transactions_history() {
+    for registration in [false, true] {
+        let what = format!("ProRegTx: {registration}");
+        let f = fixture(false);
+        let value = dw_protx::params::collateral_amount(false);
+        let (funding, coin) = credited_funding(&f, value, registration);
+        // Known while the fee is made, as to the session that made it.
+        f.session.hub.history.hold_funding(f.wallet, coin.txid);
+        let p = props_on(f, Mode::Unconfirmed);
+        let (hash, fee) = p.restarted();
+        assert_eq!(fee.input[0].previous_output, coin, "{what}");
+        (p.f.session.hub.history).with_wallet(p.f.wallet, |h| h.txs.remove(&coin.txid));
+        let (wallet, spends) = (p.f.wallet, &p.f.session.spends);
+        let owner = crate::send::SpendOwner::Tx(fee.txid());
+
+        assert_unavailable(&p.submit(&hash).unwrap_err(), coin);
+        let row = p.row(&hash);
+        assert!(row.fee_sent_at.is_none(), "{what}: nothing handed off");
+        assert_ne!(
+            row.last_error.as_deref(),
+            Some(super::RESEND_IN_PROGRESS),
+            "{what}"
+        );
+        assert!(
+            spends.held_by(&wallet, owner).is_empty(),
+            "{what}: no claim"
+        );
+        assert_eq!(p.lib.sent.lock().unwrap().len(), 1, "{what}: no resend");
+
+        p.confirm_tx(funding, 1);
+        *p.lib.mode.lock().unwrap() = Mode::Accept;
+        let resent = p.submit(&hash);
+        if registration {
+            assert_unavailable(&resent.unwrap_err(), coin);
+            assert!(spends.held_by(&wallet, owner).is_empty(), "{what}");
+            assert_eq!(p.lib.sent.lock().unwrap().len(), 1, "{what}: no resend");
+        } else {
+            resent.unwrap();
+            assert_eq!(
+                spends.held_by(&wallet, owner),
+                HashSet::from([coin]),
+                "{what}"
+            );
+            assert_eq!(p.lib.sent.lock().unwrap().len(), 2, "{what}: resent");
+        }
+    }
 }
 
 /// D10: after a restart a resend claims the fee's coins again, so no

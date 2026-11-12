@@ -39,6 +39,33 @@ describe("while the wipe sheet is open", () => {
   });
 });
 
+// A network switch runs behind its card: nothing of the page it leaves acts (row 74).
+describe("while a network switch runs", () => {
+  it("drops every menu command and shortcut, lock and Add Wallet too", () => {
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => undefined);
+    vi.stubGlobal("document", { activeElement: null, addEventListener: () => undefined, removeEventListener: () => undefined });
+    ui.set({ route: "settings", switching: "mainnet" });
+    const lock = vi.fn();
+    for (const command of [
+      { kind: "navigate", route: "home" },
+      { kind: "tools", tab: "console" },
+      { kind: "addWallet" },
+      { kind: "about" },
+      { kind: "openUri" },
+      { kind: "recoveryPhrase" },
+      { kind: "toggleDiscreet" },
+      { kind: "lock" },
+    ] as const)
+      runCommand(command, lock);
+    expect(ui.get()).toMatchObject({ route: "settings", onboarding: false, dialog: null, discreet: false });
+    expect(lock).not.toHaveBeenCalled();
+    ui.set({ switching: null });
+    runCommand({ kind: "navigate", route: "home" }, lock);
+    expect(ui.get().route).toBe("home");
+  });
+});
+
 // The page a link or a menu opens takes the focus one frame later, unless the user moved it
 // with a key or a pointer meanwhile (BL-165).
 describe("focus after a link or a menu opens a page", () => {

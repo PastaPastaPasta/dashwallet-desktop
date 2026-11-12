@@ -22,6 +22,7 @@ use crate::platform::PlatformError;
 use crate::platform::flows::{
     BudgetPurpose, DispatchResolution, DispatchState, FlowKind, LeaseStateView, RevokeCause,
 };
+use crate::send::test_support::{FOREIGN, send_failure};
 use crate::send::{ChangePolicy, CoinSource, Recipient, SendFailure};
 use crate::{
     DashNetwork, Engine, EngineConfig, EngineError, ImportOptions, NetworkSession, WalletId,
@@ -29,7 +30,6 @@ use crate::{
 
 pub(crate) const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-const FOREIGN: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
 const COIN: u64 = 100_000_000;
 const PASS: &[u8] = b"pass phrase";
 
@@ -169,7 +169,7 @@ impl Fixture {
             .id
     }
 
-    fn platform_op(&self, max_duffs: u64, max_credits: u64) -> String {
+    pub(crate) fn platform_op(&self, max_duffs: u64, max_credits: u64) -> String {
         self.grant(
             GrantPurpose::PlatformOp {
                 max_duffs,
@@ -647,13 +647,6 @@ fn spent(lease: &Lease, purpose: BudgetPurpose) -> Option<u64> {
         .iter()
         .find(|b| b.purpose == purpose)
         .map(|b| b.spent)
-}
-
-fn send_failure<T: std::fmt::Debug>(r: Result<T, EngineError>) -> SendFailure {
-    match r {
-        Err(EngineError::Send(f)) => f,
-        other => panic!("expected a send failure, got {other:?}"),
-    }
 }
 
 #[test]
@@ -3001,9 +2994,8 @@ fn real_lock(
 
 /// A funding signer that, after its first signature, removes the wallet
 /// from the library's manager (what a removal racing a call past its
-/// permit's deadline does): the library's tracking of the lock then finds
-/// no wallet and returns an empty changeset, which its queue skips, so no
-/// store of the lock reaches the engine's tap before the send.
+/// permit's deadline does), so no store of the lock reaches the engine's
+/// tap.
 struct RemovingSigner {
     inner: crate::platform::CountingFundingSigner,
     manager: Arc<
@@ -3078,17 +3070,17 @@ impl key_wallet::ExtendedPubKeySigner for RemovingSigner {
 }
 
 /// Review P2b r6 R6-01 (Sol's probe `review_r6_teardown_publication_boundary`):
-/// the pinned library tracks a lock it signed into an empty changeset when
-/// the wallet left its manager meanwhile, skips the queue and still calls
-/// its broadcaster, so the engine's tap never sees the lock. The engine
-/// cannot reach that broadcaster at the pin (`SpvBroadcaster`, built inside
-/// the library); the boundary every lock does pass is the funding signer,
-/// which recorded the call's `funding_release` row before the vault signed
-/// anything. So the step reads `MaybeSent`, never `NotSent`: no producer
-/// of a lock, present or future, can make it read unclaimed while a
-/// signature of it may be out.
+/// a lock signed while its wallet left the manager never reaches the
+/// engine's tap. The pinned library now refuses it before tracking or
+/// sending it (`WalletRemovedBeforeSend`); earlier pins tracked it into an
+/// empty changeset and still called their broadcaster. Either way the
+/// boundary every lock passes is the funding signer, which recorded the
+/// call's `funding_release` row before the vault signed anything. So the
+/// step reads `MaybeSent`, never `NotSent`: no producer of a lock, present
+/// or future, can make it read unclaimed while a signature of it may be
+/// out.
 #[test]
-fn mode_b_a_lock_the_library_sends_unstored_leaves_its_step_maybe_sent() {
+fn mode_b_a_lock_signed_for_a_wallet_that_left_leaves_its_step_maybe_sent() {
     const STEP: &str = "registration/1/funding";
     let f = fixture(false);
     f.credit(110, COIN);
@@ -3125,9 +3117,9 @@ fn mode_b_a_lock_the_library_sends_unstored_leaves_its_step_maybe_sent() {
     assert!(
         matches!(
             &result,
-            Err(platform_wallet::PlatformWalletError::TransactionBroadcastUnconfirmed(_))
+            Err(platform_wallet::PlatformWalletError::WalletRemovedBeforeSend(_))
         ),
-        "the pinned library reaches its broadcaster past the empty changeset: {result:?}"
+        "the pinned library refuses the lock of a wallet that left: {result:?}"
     );
     assert!(permit.signatures().released() > 0);
     assert!(

@@ -3,19 +3,24 @@
 //! The window shows one network at a time (E0-13 D-row "one active
 //! session"): `open_network` makes a network the active one, closing the
 //! one before it, and every session command acts on the active one.
+//! `switch_network` moves the window itself to the other network (row 74).
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use dw_engine::network_choice::{self, NetworkChoice};
-use dw_engine::{DashNetwork, NetworkDataInfo, SessionOptions};
+use dw_engine::platform::{LeaseStateView, LeaseView};
+use dw_engine::{CloseRefused, DashNetwork, NetworkDataInfo, NetworkSession, SessionOptions};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::{LockStatus, NetworkInfo, parse_network};
-use crate::error::AppError;
+use crate::error::{AppCode, AppError, CloseRefusalReason, ErrorData};
 use crate::ipc::commands;
 use crate::launch::LaunchOptions;
+use crate::state::AppState;
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ("Engine::new", "internal: the app creates the engine at start-up"),
@@ -147,28 +152,34 @@ pub struct NetworkChoiceView {
     pub chosen: ChosenNetwork,
     /// A choice was saved (`false`: first run, onboarding may ask).
     pub saved: bool,
-    /// The network this run opens by default (`launchInfo.network`).
-    pub launched: NetworkInfo,
-    /// `--network` named the launch network: the saved choice applies only
-    /// to a launch without it.
+    /// The network the window shows (`launchInfo.network`).
+    pub active: NetworkInfo,
+    /// The window stays on its launch network (`--network`, or a flag of
+    /// one network: [`LaunchOptions::pinned`]): a choice is saved for a
+    /// later start without those flags, and the window does not switch.
     pub forced_by_flag: bool,
-    /// The choice takes effect at the next start (the app restarts to
-    /// switch).
-    pub restart_needed: bool,
 }
 
 impl NetworkChoiceView {
-    fn read(launch: &LaunchOptions, root: &std::path::Path) -> Self {
-        let saved = network_choice::read_network_choice(root);
-        let chosen = saved.unwrap_or_default();
+    fn read(state: &AppState) -> Self {
+        let saved = network_choice::read_network_choice(&state.data_root);
         NetworkChoiceView {
-            chosen: chosen.into(),
+            chosen: saved.unwrap_or_default().into(),
             saved: saved.is_some(),
-            launched: NetworkInfo::from(&launch.network),
-            forced_by_flag: launch.network_given,
-            restart_needed: !launch.network_given && chosen.network() != launch.network,
+            active: NetworkInfo::from(&state.window_network()),
+            forced_by_flag: state.launch.pinned(),
         }
     }
+}
+
+/// What `switch_network` did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct NetworkSwitch {
+    /// The window's network, open; `null` when the window is pinned and the
+    /// choice was only saved.
+    pub opened: Option<OpenedNetwork>,
+    pub choice: NetworkChoiceView,
 }
 
 /// The active network after `openNetwork`.
@@ -210,13 +221,14 @@ impl From<NetworkDataInfo> for NetworkData {
 }
 
 commands! {
-    /// Makes `network` (a directory name; `null`: the launch network) the
-    /// active one, opening it if needed and closing the network that was
-    /// active, with its draft handles. When it is already active, the open
-    /// session is kept and `settings` are ignored. Opening the launch
-    /// network starts SPV on mainnet and testnet unless the app was launched
-    /// with `--no-sync`, and on another network with `--sync`; a failed
-    /// start leaves the network open, readable offline.
+    /// Makes `network` (a directory name; `null`: the window's network,
+    /// the launch network until `switchNetwork` opens another) the active
+    /// one, opening it if needed and closing the network that was active,
+    /// with its draft handles. When it is already active, the open session
+    /// is kept and `settings` are ignored. Opening the window's network
+    /// starts SPV on mainnet and testnet unless the app was launched with
+    /// `--no-sync`, and on another network with `--sync`; a failed start
+    /// leaves the network open, readable offline.
     #[facade("Engine::open_network", "Engine::close_network")]
     fn open_network(
         state,
@@ -224,13 +236,14 @@ commands! {
         settings: Option<SessionSettings>,
     ) -> OpenedNetwork {
         let engine = &state.engine;
-        let network = match network {
-            Some(name) => parse_network(&name)?,
-            None => state.launch.network.clone(),
-        };
+        let requested = network.as_deref().map(parse_network).transpose()?;
         let settings = settings.unwrap_or_default();
-        settings.check_trust(&network)?;
         let mut slot = state.session_slot().await;
+        // Read under the slot: a switch moves the window network while it
+        // holds it.
+        let window = state.window_network();
+        let network = requested.unwrap_or_else(|| window.clone());
+        settings.check_trust(&network)?;
         let session = match &*slot {
             Some(s) if *s.network() == network => Arc::clone(s),
             active => {
@@ -238,21 +251,126 @@ commands! {
                     let old = old.network().clone();
                     close_active(&state, &mut slot, engine.close_network(old).await)?;
                 }
-                let options = settings.over(&state.launch);
-                let s = engine.open_network(network.clone(), options).await?;
+                let s = if network == window {
+                    open_window_network(&state, &network, settings).await?
+                } else {
+                    engine.open_network(network.clone(), settings.over(&state.launch)).await?
+                };
                 *slot = Some(Arc::clone(&s));
-                if state.launch.starts_spv()
-                    && network == state.launch.network
-                    && let Err(e) = s.start_spv().await
-                {
-                    eprintln!("dw-app: SPV did not start: {e}");
-                }
                 s
             }
         };
         Ok(OpenedNetwork {
             network: NetworkInfo::from(&network),
             lock: session.vault().status().into(),
+        })
+    }
+
+    /// Moves the window to `network` (onboarding, Settings), saving the
+    /// choice for the next start once it is open. A pinned window
+    /// ([`NetworkChoiceView::forced_by_flag`]) only saves it. Otherwise,
+    /// unless it is already the window's, the network is closed as
+    /// [`Engine::close_network_unless_busy`] closes it: its operations
+    /// paused, it is refused with `app.network_busy` while a Platform flow
+    /// holds a lease, a wallet mixes or a broadcast has not returned,
+    /// checked before and after the operations already running finish
+    /// (`draining` when they do not within 2 s); then the engine's own
+    /// refusals (`wallet` while a wallet is still opening,
+    /// `shielded_spend_unresolved`, both with
+    /// [`ErrorData::NetworkCloseRefused`]). A refusal changes nothing:
+    /// the session, its drafts, the window and the choice stay, and the
+    /// paused operations run. Once closed, its vault is locked and its
+    /// draft handles dropped, and the chosen one opens with SPV started as
+    /// at launch. A failed open reopens the network it left and is
+    /// `app.network_switch_failed`, the choice unsaved. The renderer boots
+    /// again on success: every read of the old network is gone.
+    ///
+    /// [`Engine::close_network_unless_busy`]: dw_engine::Engine::close_network_unless_busy
+    #[facade(
+        "Engine::close_network_unless_busy",
+        "NetworkSession::leases",
+        "NetworkSession::mixing_busy"
+    )]
+    fn switch_network(state, network: ChosenNetwork) -> NetworkSwitch {
+        let target = NetworkChoice::from(network).network();
+        if state.launch.pinned() {
+            network_choice::write_network_choice(&state.data_root, network.into())?;
+            return Ok(NetworkSwitch {
+                opened: None,
+                choice: NetworkChoiceView::read(&state),
+            });
+        }
+        let mut slot = state.session_slot().await;
+        let left = state.window_network();
+        let active = slot.clone();
+        let session = match active {
+            Some(s) if *s.network() == target => s,
+            active => {
+                if let Some(s) = active {
+                    let old = s.network().clone();
+                    drop(s);
+                    let busy = busy_check(state.broadcasts());
+                    let closed = match state.engine.close_network_unless_busy(old, SWITCH_DRAIN, busy).await {
+                        Ok(closed) => Ok(closed),
+                        Err(CloseRefused::Busy(e)) => return Err(e),
+                        Err(CloseRefused::Draining) => {
+                            return Err(busy_error(Busy {
+                                draining: true,
+                                ..Busy::default()
+                            }));
+                        }
+                        Err(CloseRefused::Engine(e)) => Err(e),
+                    };
+                    // A refusal keeps the session active: nothing changed. A
+                    // close that failed once the session was gone goes on
+                    // like one that went through.
+                    if let Err(e) = close_active(&state, &mut slot, closed) {
+                        if slot.is_some() {
+                            return Err(close_refusal(e));
+                        }
+                        eprintln!("dw-app: the close of {} failed: {e}", left.dir_name());
+                    }
+                }
+                match open_window_network(&state, &target, SessionSettings::default()).await {
+                    Ok(s) => {
+                        *slot = Some(Arc::clone(&s));
+                        s
+                    }
+                    Err(e) => {
+                        eprintln!("dw-app: {} did not open: {e}", target.dir_name());
+                        #[cfg(test)]
+                        if let Some(seam) = &*state.before_rollback.lock().unwrap() {
+                            seam();
+                        }
+                        let back = open_window_network(&state, &left, SessionSettings::default())
+                            .await
+                            .inspect_err(|e| eprintln!("dw-app: {} did not reopen: {e}", left.dir_name()));
+                        let rolled_back = back.is_ok();
+                        *slot = back.ok();
+                        return Err(AppError::app(
+                            AppCode::NetworkSwitchFailed,
+                            format!("{} did not open: {e}", target.dir_name()),
+                        )
+                        .with(ErrorData::NetworkSwitch {
+                            network: NetworkInfo::from(&target),
+                            rolled_back,
+                        }));
+                    }
+                }
+            }
+        };
+        state.set_window_network(target);
+        // Last: a switch that did not happen never changes what the next
+        // start opens.
+        if let Err(e) = network_choice::write_network_choice(&state.data_root, network.into()) {
+            eprintln!("dw-app: the network choice was not saved: {e}");
+        }
+        Ok(NetworkSwitch {
+            opened: Some(OpenedNetwork {
+                network: NetworkInfo::from(session.network()),
+                lock: session.vault().status().into(),
+            }),
+            choice: NetworkChoiceView::read(&state),
         })
     }
 
@@ -278,19 +396,11 @@ commands! {
             .map(|s| NetworkInfo::from(s.network())))
     }
 
-    /// The saved network choice (mainnet or testnet) and whether the app
-    /// must restart to open it.
+    /// The saved network choice (mainnet or testnet), the window's network
+    /// and whether the window is pinned to it.
     #[facade()]
     fn get_network_choice(state) -> NetworkChoiceView {
-        Ok(NetworkChoiceView::read(&state.launch, &state.data_root))
-    }
-
-    /// Saves the network the app opens from the next start (onboarding,
-    /// Settings); the running session is left as it is.
-    #[facade()]
-    fn set_network_choice(state, network: ChosenNetwork) -> NetworkChoiceView {
-        network_choice::write_network_choice(&state.data_root, network.into())?;
-        Ok(NetworkChoiceView::read(&state.launch, &state.data_root))
+        Ok(NetworkChoiceView::read(&state))
     }
 
     /// Every network with data under the data root, in network order.
@@ -299,6 +409,115 @@ commands! {
         let networks = state.engine.existing_networks().await?;
         Ok(networks.into_iter().map(Into::into).collect())
     }
+}
+
+/// Opens `network` as the window's: with the launch flags (or, on a
+/// developer network, `settings` over them), and SPV started as the launch
+/// starts it for that network.
+async fn open_window_network(
+    state: &AppState,
+    network: &DashNetwork,
+    settings: SessionSettings,
+) -> Result<Arc<NetworkSession>, AppError> {
+    #[cfg(test)]
+    let settings = state.test_endpoints.lock().unwrap().clone().unwrap_or(settings);
+    let s = state
+        .engine
+        .open_network(network.clone(), settings.over(&state.launch))
+        .await?;
+    if state.launch.starts_spv_on(network) {
+        #[cfg(test)]
+        state.spv_started.lock().unwrap().push(network.clone());
+        if let Err(e) = s.start_spv().await {
+            eprintln!("dw-app: SPV did not start: {e}");
+        }
+    }
+    Ok(s)
+}
+
+/// How long a switch waits for the operations admitted before it to
+/// finish before it checks the network again.
+const SWITCH_DRAIN: Duration = Duration::from_secs(2);
+
+/// What runs on the network a switch would leave.
+#[derive(Default)]
+struct Busy {
+    flows: Vec<crate::dto::platform::FlowKindName>,
+    stalled: bool,
+    mixing: bool,
+    broadcast: bool,
+    draining: bool,
+}
+
+/// The switch's check of the network it leaves: the error that refuses
+/// it, `app.network_busy`, when closing would cut a Platform flow's
+/// lease, mixing, or a broadcast not yet returned (`broadcasts`). A lease
+/// that cannot be read refuses too.
+fn busy_check(
+    broadcasts: Arc<AtomicUsize>,
+) -> impl Fn(&NetworkSession) -> Option<AppError> + Send + Sync + 'static {
+    move |session| {
+        let leases = match session.leases() {
+            Ok(leases) => leases,
+            Err(e) => return Some(e.into()),
+        };
+        let broadcast = broadcasts.load(Ordering::SeqCst) > 0;
+        busy_of(&leases, session.mixing_busy(), broadcast).map(busy_error)
+    }
+}
+
+/// What `leases`, mixing and a broadcast not yet returned make busy.
+/// `stalled`: every flow's lease is parked or waits for a grant, so
+/// locking the wallet ends them.
+fn busy_of(leases: &[LeaseView], mixing: bool, broadcast: bool) -> Option<Busy> {
+    let mut busy = Busy::default();
+    let mut stalled = true;
+    for lease in leases {
+        let flow = lease.flow.into();
+        match lease.state {
+            LeaseStateView::Revoked { .. } | LeaseStateView::Ended => continue,
+            LeaseStateView::Parked { .. } | LeaseStateView::NeedsGrant => {}
+            _ => stalled = false,
+        }
+        if !busy.flows.contains(&flow) {
+            busy.flows.push(flow);
+        }
+    }
+    busy.stalled = stalled && !busy.flows.is_empty();
+    busy.mixing = mixing;
+    busy.broadcast = broadcast;
+    (!busy.flows.is_empty() || busy.mixing || busy.broadcast).then_some(busy)
+}
+
+fn busy_error(busy: Busy) -> AppError {
+    let Busy {
+        flows,
+        stalled,
+        mixing,
+        broadcast,
+        draining,
+    } = busy;
+    AppError::app(
+        AppCode::NetworkBusy,
+        format!("running: {flows:?}, mixing {mixing}, broadcast {broadcast}, draining {draining}"),
+    )
+    .with(ErrorData::NetworkBusy {
+        flows,
+        stalled,
+        mixing,
+        broadcast,
+        draining,
+    })
+}
+
+/// The engine's own refusal of a switch's close, named for the renderer.
+fn close_refusal(e: AppError) -> AppError {
+    let reason = match e.code_str() {
+        "wallet" => CloseRefusalReason::WalletOpening,
+        "shielded_spend_unresolved" => CloseRefusalReason::ShieldedSpendUnresolved,
+        _ => return e,
+    };
+    e.with(ErrorData::NetworkCloseRefused { reason })
 }
 
 /// The active session's close, as `close_network` returned it: the slot and
@@ -323,6 +542,43 @@ pub(crate) fn close_active(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lease(flow: dw_engine::platform::FlowKind, state: LeaseStateView) -> LeaseView {
+        LeaseView {
+            id: "00000000".into(),
+            wallet_id: "00".repeat(32),
+            flow,
+            state,
+            own_key: false,
+            key_expires_in_secs: None,
+            funds_committed: false,
+            budgets: Vec::new(),
+            in_flight: 0,
+            call_running: false,
+        }
+    }
+
+    #[test]
+    fn flows_that_only_wait_for_a_grant_or_a_proof_are_stalled() {
+        use dw_engine::platform::{FlowKind, ParkReason};
+        let waiting = lease(FlowKind::ContactRequest, LeaseStateView::NeedsGrant);
+        let parked = lease(
+            FlowKind::Registration,
+            LeaseStateView::Parked {
+                reason: ParkReason::ProofWaiting,
+            },
+        );
+        let active = lease(FlowKind::TopUp, LeaseStateView::Active);
+        let ended = lease(FlowKind::TopUp, LeaseStateView::Ended);
+        let busy = busy_of(&[waiting.clone(), parked.clone(), ended.clone()], false, false).unwrap();
+        assert_eq!(busy.flows.len(), 2);
+        assert!(busy.stalled);
+        let busy = busy_of(&[waiting, active], false, false).unwrap();
+        assert!(!busy.stalled, "a flow still running is not stalled");
+        let busy = busy_of(std::slice::from_ref(&ended), true, false).unwrap();
+        assert!(!busy.stalled, "no flow, nothing to stall");
+        assert!(busy_of(&[ended], false, false).is_none());
+    }
 
     #[test]
     fn settings_fall_back_to_the_launch_flags() {

@@ -65,6 +65,8 @@ const IMPLEMENTED: &[&str] = &[
     "Masternodes.release_collateral",
     "Masternodes.lock_collateral",
     "Masternodes.shared_capability",
+    "Masternodes.shared_shares",
+    "standby_file_transactions",
     "Masternodes.shared_sessions",
     "Masternodes.shared_session",
     "Masternodes.start_shared",
@@ -109,6 +111,7 @@ const FACADE: &[&str] = &[
     "reads.rs",
     "records.rs",
     "shared.rs",
+    "shared/standby.rs",
     "shared_records.rs",
     "tracking.rs",
     "withdrawal_records.rs",
@@ -1035,6 +1038,8 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
         let long = Some("x".repeat(MAX_MASTERNODE_LABEL + 1));
         for refused in [
             mn.masternode(wallet, "zz".into()).await.map(drop),
+            mn.shared_shares(wallet, "zz".into()).await.map(drop),
+            standby_file_transactions("private text").map(drop),
             mn.payouts(wallet, "zz".into(), None).await.map(drop),
             mn.find("node.example".into()).await.map(drop),
             mn.evonode_credits("zz".into()).await.map(drop),
@@ -1123,6 +1128,19 @@ fn calls_refuse_as_the_contract_says_without_a_synced_list() {
             matches!(&e, MasternodesError::Unsupported { feature, field }
                 if feature == "protx_v3" && field.as_deref() == Some("service")),
             "{e:?}"
+        );
+
+        assert_eq!(
+            code(mn.shared_shares(wallet, hash.clone()).await.map(drop)),
+            "masternodes.shared_registration_unknown"
+        );
+        assert_eq!(
+            code(
+                mn.shared_shares(WalletId([7; 32]), hash.clone())
+                    .await
+                    .map(drop)
+            ),
+            "wallet_not_found"
         );
 
         // Then the list.

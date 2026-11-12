@@ -64,7 +64,24 @@ fn open(engine: &Engine) -> Arc<NetworkSession> {
 /// A new vault and the "abandon … about" wallet, its viewing key bound
 /// (and so persisted in wallet.sqlite).
 fn first_launch(engine: &Engine) -> (Arc<NetworkSession>, WalletId) {
-    let session = open(engine);
+    let (session, wallet) = unbound_launch(engine);
+    assert!(bind(engine, &session, wallet));
+    (session, wallet)
+}
+
+/// [`first_launch`] before the bind: no shielded call has run yet, so the
+/// shielded store is not open (a bind opens it).
+fn unbound_launch(engine: &Engine) -> (Arc<NetworkSession>, WalletId) {
+    unbound_launch_with(engine, options())
+}
+
+fn unbound_launch_with(
+    engine: &Engine,
+    options: crate::SessionOptions,
+) -> (Arc<NetworkSession>, WalletId) {
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, options))
+        .unwrap();
     engine
         .block_on(session.vault_op(|v| v.create(Some(PASS))))
         .unwrap();
@@ -79,7 +96,11 @@ fn first_launch(engine: &Engine) -> (Arc<NetworkSession>, WalletId) {
             },
         ))
         .unwrap();
-    assert!(bind(engine, &session, wallet));
+    let manager = session.manager().unwrap();
+    assert!(
+        engine.block_on(manager.shielded_coordinator()).is_none(),
+        "the shielded store opens on first use"
+    );
     (session, wallet)
 }
 
@@ -196,7 +217,7 @@ fn subwallet(wallet: WalletId) -> SubwalletId {
 /// Stores [`spends`] for `wallet` as the library's spend calls do.
 async fn stash_spends(s: &Arc<NetworkSession>, wallet: WalletId) {
     let m = s.manager().unwrap();
-    let coordinator = pool::coordinator(s, &m).await.unwrap();
+    let coordinator = pool::coordinator(s, &m, None).await.unwrap();
     let mut store = coordinator.store().write().await;
     for r in spends() {
         for n in &r.nullifiers {
@@ -231,7 +252,7 @@ struct Kept {
 fn kept(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> Kept {
     let (s, m) = (Arc::clone(session), session.manager().unwrap());
     let (mut redrives, mut reserved) = engine.block_on(async move {
-        let coordinator = pool::coordinator(&s, &m).await.unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
         let store = coordinator.store().read().await;
         (
             store.pending_redrives(subwallet(wallet)).unwrap(),
@@ -329,7 +350,7 @@ fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() 
     // The scan finds both spent: nothing is held any more.
     let (s, m) = (Arc::clone(&session), session.manager().unwrap());
     engine.block_on(async move {
-        let coordinator = pool::coordinator(&s, &m).await.unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
         let mut store = coordinator.store().write().await;
         for r in spends() {
             for n in &r.nullifiers {
@@ -463,7 +484,7 @@ fn a_spend_started_during_the_close_check_waits_and_finds_the_session_closed() {
     let session = open(&engine);
     let (s, m) = (Arc::clone(&session), session.manager().unwrap());
     let stored = engine.block_on(async move {
-        let coordinator = pool::coordinator(&s, &m).await.unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
         let store = coordinator.store().read().await;
         let mut stored = store.pending_redrives(subwallet(first)).unwrap();
         stored.extend(store.pending_redrives(subwallet(second)).unwrap());
@@ -515,14 +536,19 @@ fn a_coordinator_setup_during_the_close_check_is_refused() {
         let closing = scope.spawn(|| engine.block_on(engine.close_network(DashNetwork::Regtest)));
         assert_eq!(engine.block_on(reached).unwrap(), wallet);
         let (s, m) = (Arc::clone(&session), Arc::clone(&manager));
-        let configured = engine.block_on(async move { pool::coordinator(&s, &m).await.map(drop) });
+        // A close that is no switch's does not keep it waiting.
+        let configured = engine.block_on(async move {
+            tokio::time::timeout(Duration::from_secs(10), pool::coordinator(&s, &m, None))
+                .await
+                .map(|open| open.map(drop))
+        });
         resume.send(()).unwrap();
         (closing.join().unwrap(), configured)
     });
     assert!(
         matches!(
             configured,
-            Err(super::errors::PlatformError::NetworkNotOpen)
+            Ok(Err(super::errors::PlatformError::NetworkNotOpen))
         ),
         "{configured:?}"
     );
@@ -919,4 +945,630 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
     }
     let shield = engine.block_on(dp.shield_quote(100_000)).unwrap_err();
     assert_ne!(shield.code(), "shielded.unrecorded_spend", "{shield:?}");
+}
+
+/// Row 74 r1: a network switch's close holds the load fence while it
+/// drains, and may still be refused. A shielded store's first open meanwhile
+/// waits for the decision instead of failing, and opens once the close is
+/// refused (here: an operation still running when the drain ends).
+#[test]
+fn a_shielded_store_open_waits_out_a_switch_close_that_is_refused() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, _) = first_launch(&engine);
+    let manager = session.manager().unwrap();
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let (held_tx, held) = std::sync::mpsc::channel();
+    let s = Arc::clone(&session);
+    session.rt.spawn(async move {
+        let _op = s.enter().await.unwrap();
+        held_tx.send(()).unwrap();
+        let _ = released.await;
+    });
+    held.recv().unwrap();
+    let (closed, configured) = std::thread::scope(|scope| {
+        let closing = scope.spawn(|| {
+            engine.block_on(engine.close_network_unless_busy(
+                DashNetwork::Regtest,
+                Duration::from_millis(500),
+                |_| None::<()>,
+            ))
+        });
+        for _ in 0..2_000 {
+            if session.gate.drains() > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(session.gate.drains(), 1, "the close drains");
+        let (s, m) = (Arc::clone(&session), Arc::clone(&manager));
+        let configured =
+            engine.block_on(async move { pool::coordinator(&s, &m, None).await.map(drop) });
+        (closing.join().unwrap(), configured)
+    });
+    assert!(
+        matches!(closed, Err(crate::CloseRefused::Draining)),
+        "{closed:?}"
+    );
+    assert!(configured.is_ok(), "{configured:?}");
+    assert!(engine.block_on(manager.shielded_coordinator()).is_some());
+    drop(release);
+    assert!(session.is_open());
+}
+
+/// Holds an operation guard of `session` until the returned sender drops.
+fn hold_operation(session: &Arc<NetworkSession>) -> tokio::sync::oneshot::Sender<()> {
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    let (held_tx, held) = std::sync::mpsc::channel();
+    let s = Arc::clone(session);
+    session.rt.spawn(async move {
+        let _op = s.enter().await.unwrap();
+        held_tx.send(()).unwrap();
+        let _ = released.await;
+    });
+    held.recv().unwrap();
+    release
+}
+
+fn switch_close(engine: &Engine, drain: Duration) -> Result<bool, crate::CloseRefused<()>> {
+    engine.block_on(engine.close_network_unless_busy(DashNetwork::Regtest, drain, |_| None::<()>))
+}
+
+fn wait_until(what: impl Fn() -> bool, why: &str) {
+    for _ in 0..4_000 {
+        if what() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("{why}");
+}
+
+/// Row 74 r2 (test gap): a signing shielded call running refuses the
+/// switch's close before it pauses the gate, without a drain.
+#[test]
+fn a_shielded_call_running_refuses_the_switch_before_its_drain() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, _) = first_launch(&engine);
+    let signing = engine.block_on(session.platform.close_preflight.read());
+    let _op = hold_operation(&session);
+    let closed = switch_close(&engine, Duration::from_millis(300));
+    assert!(
+        matches!(
+            closed,
+            Err(crate::CloseRefused::Engine(
+                EngineError::ShieldedSpendUnresolved
+            ))
+        ),
+        "{closed:?}"
+    );
+    assert_eq!(session.gate.drains(), 0, "refused before the drain");
+    drop(signing);
+    assert!(session.is_open());
+}
+
+/// Row 74 r2 (test gap): a signing shielded call that starts while the
+/// switch drains (it holds the close preflight, then waits on the pause)
+/// names the refusal once the drain runs out.
+#[test]
+fn a_shielded_call_starting_during_the_drain_names_the_refusal() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, _) = first_launch(&engine);
+    let op = hold_operation(&session);
+    let (closed, signing) = std::thread::scope(|scope| {
+        let closing = scope.spawn(|| switch_close(&engine, Duration::from_millis(500)));
+        wait_until(|| session.gate.drains() == 1, "the close never drained");
+        let signing = engine.block_on(session.platform.close_preflight.read());
+        (closing.join().unwrap(), signing)
+    });
+    assert!(
+        matches!(
+            closed,
+            Err(crate::CloseRefused::Engine(
+                EngineError::ShieldedSpendUnresolved
+            ))
+        ),
+        "{closed:?}"
+    );
+    drop((signing, op));
+    assert!(session.is_open());
+}
+
+/// Row 74 r2 (test gap): a refused switch's close releases its load fence
+/// before it resumes the gate. A shielded store's first open at that point
+/// finds the fence free and opens.
+#[test]
+fn a_refused_switch_frees_the_load_fence_before_the_gate_resumes() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, _) = unbound_launch(&engine);
+    let manager = session.manager().unwrap();
+    let op = hold_operation(&session);
+    let (opened_tx, opened) = std::sync::mpsc::channel();
+    {
+        let (s, m) = (Arc::clone(&session), Arc::clone(&manager));
+        *session.gate.on_release.lock().unwrap() = Some(Box::new(move || {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let rt = s.rt.clone();
+            rt.spawn(async move {
+                let _ = tx.send(pool::coordinator(&s, &m, None).await.map(drop));
+            });
+            let open = tokio::task::block_in_place(|| rx.recv_timeout(Duration::from_secs(30)));
+            let _ = opened_tx.send(open);
+        }));
+    }
+    let closed = switch_close(&engine, Duration::from_millis(300));
+    assert!(
+        matches!(closed, Err(crate::CloseRefused::Draining)),
+        "{closed:?}"
+    );
+    let open = opened.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(matches!(open, Ok(Ok(()))), "{open:?}");
+    drop(op);
+    assert!(session.is_open());
+}
+
+/// Row 74 r2 m2: a switch's close waiting for a wallet load holds the gate
+/// too. A shielded store's first open meanwhile waits for the decision, and
+/// opens once the close is refused (`wallet`, the load still running).
+#[test]
+fn a_shielded_store_open_waits_out_a_close_refused_for_a_wallet_load() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, _) = unbound_launch(&engine);
+    let manager = session.manager().unwrap();
+    *session.close_load_wait.lock().unwrap() = Some(Duration::from_millis(500));
+    let loading = engine.block_on(session.platform.wallet_loads.read());
+    let (closed, opened) = std::thread::scope(|scope| {
+        let closing = scope.spawn(|| switch_close(&engine, Duration::from_millis(300)));
+        wait_until(|| session.gate.is_held(), "the close never held the gate");
+        wait_until(
+            || session.platform.wallet_loads.try_read().is_err(),
+            "the close's write never queued behind the load",
+        );
+        let (s, m) = (Arc::clone(&session), Arc::clone(&manager));
+        let opened =
+            engine.block_on(async move { pool::coordinator(&s, &m, None).await.map(drop) });
+        (closing.join().unwrap(), opened)
+    });
+    assert!(
+        matches!(
+            closed,
+            Err(crate::CloseRefused::Engine(EngineError::Wallet(_)))
+        ),
+        "{closed:?}"
+    );
+    assert_eq!(session.gate.drains(), 0);
+    assert!(opened.is_ok(), "{opened:?}");
+    assert!(engine.block_on(manager.shielded_coordinator()).is_some());
+    drop(loading);
+    assert!(session.is_open());
+}
+
+/// Row 74 r2 M2: a quit while a switch's close holds the load fence and the
+/// pause, with the Platform start waiting at its shielded store's first
+/// open, ends. The start's cancellation ends that open, the quit closes
+/// the session, and the switch then finds nothing left to close.
+#[test]
+fn a_quit_during_a_switch_ends_the_shielded_open_waiting_for_it() {
+    use super::runtime::{Supervisor, guard};
+    use super::shielded::SHIELDED_ACTIVATION_VERSION;
+    use crate::coins::TestPause;
+    const BOUND: Duration = Duration::from_secs(20);
+    let dir = dw_testutil::private_tempdir();
+    let engine = Arc::new(engine_at(dir.path()));
+    let active = crate::SessionOptions {
+        initial_protocol_version: Some(SHIELDED_ACTIVATION_VERSION),
+        ..options()
+    };
+    let (session, _) = unbound_launch_with(&engine, active);
+    let manager = session.manager().unwrap();
+    assert!(manager.sdk_arc().protocol_version_number() >= SHIELDED_ACTIVATION_VERSION);
+
+    // The Platform start's shielded step, held right before it begins.
+    let before_open = Arc::new(TestPause::default());
+    let (cancel, cancel_rx) = tokio::sync::watch::channel(false);
+    let (signals, _signals) = tokio::sync::mpsc::unbounded_channel();
+    let (opened_tx, opened) = std::sync::mpsc::channel();
+    let task = {
+        let (s, m, before_open) = (
+            Arc::clone(&session),
+            Arc::clone(&manager),
+            Arc::clone(&before_open),
+        );
+        session.rt.spawn(async move {
+            before_open
+                .reached
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            before_open.release.notified().await;
+            pool::start(&s, &m, &[], &cancel_rx).await;
+            let _ = opened_tx.send(());
+        })
+    };
+    *guard(&session.platform.supervisor) = Some(Supervisor {
+        cancel,
+        signals,
+        task: Some(task),
+        running: true,
+    });
+    wait_until(
+        || {
+            before_open
+                .reached
+                .load(std::sync::atomic::Ordering::SeqCst)
+        },
+        "the start never ran",
+    );
+
+    // The switch's close, checked, held right before the engine's sessions.
+    let checked = Arc::new(TestPause::default());
+    *session.gate.hold_before_sessions.lock().unwrap() = Some(Arc::clone(&checked));
+    let (switched_tx, switched) = std::sync::mpsc::channel();
+    {
+        let engine = Arc::clone(&engine);
+        std::thread::spawn(move || {
+            // Long enough for the launch's own operations to end.
+            let _ = switched_tx.send(switch_close(&engine, Duration::from_secs(10)));
+        });
+    }
+    wait_until(
+        || {
+            if let Ok(switched) = switched.try_recv() {
+                panic!("the switch ended before its check: {switched:?}");
+            }
+            checked.reached.load(std::sync::atomic::Ordering::SeqCst)
+        },
+        "the switch never checked",
+    );
+    before_open.release.notify_one();
+    std::thread::sleep(Duration::from_millis(200));
+    if let Ok(open) = opened.try_recv() {
+        panic!("the open waits for the switch: {open:?}");
+    }
+
+    // Quit.
+    let (quit_tx, quit) = std::sync::mpsc::channel();
+    {
+        let engine = Arc::clone(&engine);
+        std::thread::spawn(move || {
+            let _ = quit_tx.send(
+                engine.block_on(async { tokio::time::timeout(BOUND, engine.shutdown()).await }),
+            );
+        });
+    }
+    let quit = quit
+        .recv_timeout(BOUND + Duration::from_secs(10))
+        .expect("the quit returns");
+    assert!(matches!(quit, Ok(Ok(()))), "the quit did not end: {quit:?}");
+    opened
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the start ends");
+    assert!(
+        engine.block_on(manager.shielded_coordinator()).is_none(),
+        "the store never opened"
+    );
+    assert!(!session.is_open());
+
+    checked.release.notify_one();
+    let switched = switched.recv_timeout(BOUND).expect("the switch returns");
+    assert!(matches!(switched, Ok(false)), "{switched:?}");
+}
+
+/// The Platform start's first step, the invitation holds' settle, waits out
+/// the switch's pause too: the quit's cancel ends the start.
+#[test]
+fn a_quit_during_a_switch_ends_the_invitation_settle_waiting_for_it() {
+    use super::runtime::{Supervisor, guard};
+    use crate::coins::TestPause;
+    const BOUND: Duration = Duration::from_secs(20);
+    let dir = dw_testutil::private_tempdir();
+    let engine = Arc::new(engine_at(dir.path()));
+    let (session, _) = first_launch(&engine);
+
+    // The switch's close, checked, held right before the engine's sessions.
+    let checked = Arc::new(TestPause::default());
+    *session.gate.hold_before_sessions.lock().unwrap() = Some(Arc::clone(&checked));
+    let (switched_tx, switched) = std::sync::mpsc::channel();
+    {
+        let engine = Arc::clone(&engine);
+        std::thread::spawn(move || {
+            // Long enough for the launch's own operations to end.
+            let _ = switched_tx.send(switch_close(&engine, Duration::from_secs(10)));
+        });
+    }
+    wait_until(
+        || {
+            if let Ok(switched) = switched.try_recv() {
+                panic!("the switch ended before its check: {switched:?}");
+            }
+            checked.reached.load(std::sync::atomic::Ordering::SeqCst)
+        },
+        "the switch never checked",
+    );
+
+    // A Platform start begins under the pause.
+    let manager = session.manager().unwrap();
+    let (cancel, cancel_rx) = tokio::sync::watch::channel(false);
+    let (signals, signals_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (ended_tx, ended) = std::sync::mpsc::channel();
+    let task = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move {
+            s.supervise(
+                manager,
+                Vec::new(),
+                (std::time::Instant::now(), 0),
+                cancel_rx,
+                signals_rx,
+            )
+            .await;
+            let _ = ended_tx.send(());
+        })
+    };
+    *guard(&session.platform.supervisor) = Some(Supervisor {
+        cancel,
+        signals,
+        task: Some(task),
+        running: true,
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(ended.try_recv().is_err(), "the start waits for the switch");
+
+    // Quit.
+    let (quit_tx, quit) = std::sync::mpsc::channel();
+    {
+        let engine = Arc::clone(&engine);
+        std::thread::spawn(move || {
+            let _ = quit_tx.send(
+                engine.block_on(async { tokio::time::timeout(BOUND, engine.shutdown()).await }),
+            );
+        });
+    }
+    let quit = quit
+        .recv_timeout(BOUND + Duration::from_secs(10))
+        .expect("the quit returns");
+    assert!(matches!(quit, Ok(Ok(()))), "the quit did not end: {quit:?}");
+    ended
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the start ends");
+    assert!(!session.is_open());
+
+    checked.release.notify_one();
+    let switched = switched.recv_timeout(BOUND).expect("the switch returns");
+    assert!(matches!(switched, Ok(false)), "{switched:?}");
+}
+
+/// Quits `engine` on another thread; the result within `bound`.
+fn quit_within(
+    engine: &Arc<Engine>,
+    bound: Duration,
+) -> std::sync::mpsc::Receiver<Result<Result<(), crate::EngineError>, tokio::time::error::Elapsed>>
+{
+    let (quit_tx, quit) = std::sync::mpsc::channel();
+    let engine = Arc::clone(engine);
+    std::thread::spawn(move || {
+        let _ = quit_tx
+            .send(engine.block_on(async { tokio::time::timeout(bound, engine.shutdown()).await }));
+    });
+    quit
+}
+
+/// Row 74 r3 M1: a quit while a switch drains, with a shielded quote's
+/// nested protocol refresh waiting on the switch's pause, ends. The quit's
+/// gate close refuses the refresh at once, so it never queues behind the
+/// close's writer, which waits for the quote's own guard; the quote ends
+/// with an error, and the switch then finds nothing left to close.
+#[test]
+fn a_quit_during_a_switch_drain_ends_a_quote_waiting_on_its_nested_refresh() {
+    use crate::coins::TestPause;
+    use std::sync::atomic::Ordering;
+    const BOUND: Duration = Duration::from_secs(20);
+    let dir = dw_testutil::private_tempdir();
+    let engine = Arc::new(engine_at(dir.path()));
+    let (session, wallet) = first_launch(&engine);
+
+    // The quote, admitted, held right before its price's protocol refresh
+    // asks the gate.
+    let refresh = Arc::new(TestPause::default());
+    *session.platform.hold_refresh.lock().unwrap() = Some(Arc::clone(&refresh));
+    let (quoted_tx, quoted) = std::sync::mpsc::channel();
+    {
+        let dashpay = session.dashpay(wallet);
+        session.rt.spawn(async move {
+            let _ = quoted_tx.send(dashpay.shielded_send_quote("any".into(), 1_000).await);
+        });
+    }
+    wait_until(
+        || refresh.reached.load(Ordering::SeqCst),
+        "the quote never reached its refresh",
+    );
+
+    // The switch pauses and drains, which the quote's guard keeps going.
+    let (switched_tx, switched) = std::sync::mpsc::channel();
+    {
+        let engine = Arc::clone(&engine);
+        std::thread::spawn(move || {
+            let _ = switched_tx.send(switch_close(&engine, Duration::from_secs(10)));
+        });
+    }
+    wait_until(|| session.gate.drains() == 1, "the switch never drained");
+    // The refresh asks the gate and waits on the pause.
+    let waiting = session.gate.waiting_on_pause();
+    refresh.release.notify_one();
+    wait_until(
+        || session.gate.waiting_on_pause() > waiting,
+        "the refresh never waited on the pause",
+    );
+
+    // Quit, while the switch still drains.
+    let quit = quit_within(&engine, BOUND);
+    wait_until(
+        || session.gate.is_closed(),
+        "the quit never closed the gate",
+    );
+    let quit = quit
+        .recv_timeout(BOUND + Duration::from_secs(10))
+        .expect("the quit returns");
+    assert!(matches!(quit, Ok(Ok(()))), "the quit did not end: {quit:?}");
+    let quoted = quoted
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the quote ends");
+    assert!(quoted.is_err(), "{quoted:?}");
+    assert!(!session.is_open());
+    let switched = switched.recv_timeout(BOUND).expect("the switch returns");
+    assert!(matches!(switched, Ok(false)), "{switched:?}");
+}
+
+/// Row 74 r3 m1: a signing call that starts once a switch has drained
+/// waits for the pause to end before it takes the close preflight. The
+/// switch commits rather than refuse as an unresolved spend, and the call,
+/// which never started, finds the session closed.
+#[test]
+fn a_signing_call_after_the_drain_lets_the_switch_commit() {
+    use crate::coins::TestPause;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, wallet) = first_launch(&engine);
+    let checked = Arc::new(TestPause::default());
+    *session.gate.hold_before_sessions.lock().unwrap() = Some(Arc::clone(&checked));
+    let ran = Arc::new(AtomicBool::new(false));
+    let (switched, called) = std::thread::scope(|scope| {
+        let closing = scope.spawn(|| switch_close(&engine, Duration::from_secs(10)));
+        wait_until(
+            || checked.reached.load(Ordering::SeqCst),
+            "the switch never checked",
+        );
+        let waiting = session.gate.waiting_on_pause();
+        let (done, done_rx) = std::sync::mpsc::channel();
+        let (s, r) = (Arc::clone(&session), Arc::clone(&ran));
+        session.rt.spawn(async move {
+            let called = pool::on_pool_signing(&s, wallet, move |_, _| async move {
+                r.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+            .await;
+            let _ = done.send(called);
+        });
+        wait_until(
+            || session.gate.waiting_on_pause() > waiting,
+            "the call never waited on the pause",
+        );
+        checked.release.notify_one();
+        let switched = closing.join().unwrap();
+        (
+            switched,
+            done_rx.recv_timeout(Duration::from_secs(30)).unwrap(),
+        )
+    });
+    assert!(matches!(switched, Ok(true)), "{switched:?}");
+    assert!(!ran.load(Ordering::SeqCst), "no spend started");
+    assert!(
+        matches!(
+            called,
+            Err(super::errors::ShieldedError::Platform(
+                super::errors::PlatformError::NetworkNotOpen
+            ))
+        ),
+        "the call found the session closed: {called:?}"
+    );
+}
+
+/// Row 74 r3 (Opus N2): a shielded store's first open that found the load
+/// fence taken, with the switch then refused in full (fence freed, gate let
+/// go) before it looks at the hold, reads the fence again and opens. The
+/// switch is refused as busy once the open has found the fence taken and
+/// the operation it drains has ended.
+#[test]
+fn a_store_open_between_its_fence_reads_opens_after_the_refusal() {
+    use crate::coins::TestPause;
+    use std::sync::atomic::Ordering;
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, _) = unbound_launch(&engine);
+    let manager = session.manager().unwrap();
+    let op = hold_operation(&session);
+    let between = Arc::new(TestPause::default());
+    *session.platform.hold_between_fence_reads.lock().unwrap() = Some(Arc::clone(&between));
+    let (opened_tx, opened) = std::sync::mpsc::channel();
+    let closed = std::thread::scope(|scope| {
+        let reached = Arc::clone(&between);
+        let closing = scope.spawn(|| {
+            engine.block_on(engine.close_network_unless_busy(
+                DashNetwork::Regtest,
+                Duration::from_secs(60),
+                move |_| reached.reached.load(Ordering::SeqCst).then_some(()),
+            ))
+        });
+        wait_until(|| session.gate.drains() == 1, "the close never drained");
+        let (s, m) = (Arc::clone(&session), Arc::clone(&manager));
+        session.rt.spawn(async move {
+            let _ = opened_tx.send(pool::coordinator(&s, &m, None).await.map(drop));
+        });
+        wait_until(
+            || between.reached.load(Ordering::SeqCst),
+            "the open never found the fence taken",
+        );
+        drop(op);
+        closing.join().unwrap()
+    });
+    assert!(
+        matches!(closed, Err(crate::CloseRefused::Busy(()))),
+        "{closed:?}"
+    );
+    assert!(!session.gate.is_held());
+    between.release.notify_one();
+    let open = opened.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(open.is_ok(), "{open:?}");
+    assert!(engine.block_on(manager.shielded_coordinator()).is_some());
+    assert!(session.is_open());
+}
+
+/// Row 74 r3 (Sol): the supervisor's cancel during an invitation-hold
+/// settle already admitted ends only the supervisor's wait. The settle
+/// keeps its guard, and a close waits for its vault work to end.
+#[test]
+fn a_cancel_during_an_admitted_settle_keeps_the_close_behind_it() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine_at(dir.path());
+    let (session, _) = first_launch(&engine);
+    let (reached_tx, reached) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    *session.platform.hold_settle_retain.lock().unwrap() = Some((reached_tx, release_rx));
+    let (cancel, mut cancel_rx) = tokio::sync::watch::channel(false);
+    let (settled_tx, settled) = std::sync::mpsc::channel();
+    {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move {
+            let _ = settled_tx.send(s.settle_holds_unless(&mut cancel_rx).await);
+        });
+    }
+    reached
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the settle never reached its vault work");
+    wait_until(
+        || session.gate.admitted() == 1,
+        "the settle is not the one operation admitted",
+    );
+    cancel.send(true).unwrap();
+    let settled = settled.recv_timeout(Duration::from_secs(30)).unwrap();
+    assert!(!settled, "the cancel ends the supervisor's wait");
+    assert_eq!(
+        session.gate.admitted(),
+        1,
+        "the admitted settle keeps its guard"
+    );
+    let closed = std::thread::scope(|scope| {
+        let closing = scope.spawn(|| engine.block_on(engine.close_network(DashNetwork::Regtest)));
+        wait_until(
+            || session.gate.is_closed(),
+            "the close never reached the gate",
+        );
+        assert!(!closing.is_finished(), "the close waits for the settle");
+        release.send(()).unwrap();
+        closing.join().unwrap()
+    });
+    assert!(matches!(closed, Ok(true)), "{closed:?}");
 }

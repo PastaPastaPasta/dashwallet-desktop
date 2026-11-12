@@ -821,9 +821,9 @@ commands! {
         grant_id: String,
     ) -> MixedCoinsSweepResult {
         let id = parse_wallet_id(&wallet_id)?;
-        let result = state
-            .session()
-            .await?
+        let session = state.session().await?;
+        let _in_flight = state.broadcasting();
+        let result = session
             .move_mixed_coins(id, destination.into(), quote_id, grant_id)
             .await?;
         Ok(result.into())
@@ -850,6 +850,7 @@ commands! {
     ) -> MixedCoinsSweepResult {
         let id = parse_wallet_id(&wallet_id)?;
         let session = state.session().await?;
+        let _in_flight = state.broadcasting();
         Ok(session.consolidate_mixed_coins(id, quote_id, grant_id).await?.into())
     }
 
@@ -862,6 +863,7 @@ commands! {
         let id = parse_wallet_id(&wallet_id)?;
         let txid = txid.as_deref().map(crate::dto::parse_txid).transpose()?;
         let session = state.session().await?;
+        let _in_flight = state.broadcasting();
         let sent = session.resend_mixed_coins(id, txid).await?;
         Ok(sent.into_iter().map(Into::into).collect())
     }

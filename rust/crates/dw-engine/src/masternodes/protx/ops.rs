@@ -18,13 +18,14 @@ use std::sync::Arc;
 
 use dashcore::{OutPoint, Transaction, Txid};
 use dw_appdb::{AttemptEnd, Holder, MasternodeOpRow};
+use dw_protx::params::collateral_amount;
 
 use super::super::MasternodesError;
 use super::super::protx_records::{
     ProTxOperation, ProTxOperationKind, ProTxOperationState, ProTxTerms, SignRequest,
 };
 use super::super::shared::list_settled;
-use crate::coins::{CoinFence, now_secs, read_coins};
+use crate::coins::{CoinFence, WalletCoin, now_secs, read_coins};
 use crate::history::TxEntry;
 use crate::send::{PreparedSummary, SpendCharge};
 use crate::{EngineError, NetworkSession, WalletId};
@@ -178,17 +179,27 @@ pub(crate) fn conflict_height(
     inputs: &[OutPoint],
     except: Option<&Txid>,
 ) -> Option<u32> {
+    conflict_of(history, inputs, except, &[]).map(|(_, height)| height)
+}
+
+pub(crate) fn conflict_of(
+    history: &HashMap<Txid, TxEntry>,
+    inputs: &[OutPoint],
+    except: Option<&Txid>,
+    preferred: &[Txid],
+) -> Option<(Txid, u32)> {
     history
         .iter()
-        .filter(|(id, e)| {
+        .filter(|(id, entry)| {
             Some(*id) != except
-                && e.tx
+                && entry
+                    .tx
                     .input
                     .iter()
-                    .any(|i| inputs.contains(&i.previous_output))
+                    .any(|input| inputs.contains(&input.previous_output))
         })
-        .filter_map(|(_, e)| Some(e.context.block_info()?.height()))
-        .min()
+        .filter_map(|(id, entry)| Some((*id, entry.context.block_info()?.height())))
+        .min_by_key(|(id, height)| (*height, !preferred.contains(id), *id))
 }
 
 /// [`conflict_height`] of `tx`'s inputs.
@@ -197,9 +208,28 @@ fn tx_conflict_height(tx: &Transaction, history: &HashMap<Txid, TxEntry>) -> Opt
     conflict_height(history, &inputs, Some(&tx.txid()))
 }
 
+pub(crate) const OVERDUE_SECS: u64 = 10_800;
+
+pub(crate) fn tip_overdue(sent_at: u64, tip_time: Option<u64>) -> bool {
+    tip_time.is_some_and(|time| time.saturating_sub(sent_at) >= OVERDUE_SECS)
+}
+
+pub(crate) fn overdue(
+    sent_at: u64,
+    list_synced: bool,
+    list_height: Option<u32>,
+    tip_height: Option<u32>,
+    tip_time: Option<u64>,
+) -> bool {
+    list_synced
+        && matches!((list_height, tip_height), (Some(list), Some(tip)) if list.saturating_add(1) >= tip)
+        && tip_overdue(sent_at, tip_time)
+}
+
 pub(crate) fn operation_of(
     row: &MasternodeOpRow,
     state: ProTxOperationState,
+    tracker: &crate::sync::SyncTracker,
 ) -> Result<ProTxOperation, MasternodesError> {
     let terms: ProTxTerms = serde_json::from_str(&row.terms)
         .map_err(|e| EngineError::Internal(format!("stored ProTx terms: {e}")))?;
@@ -218,6 +248,17 @@ pub(crate) fn operation_of(
         state,
         sign_request,
         fee: row.fee,
+        debit: crate::masternodes::shared::row_debit(row)?,
+        overdue: state == ProTxOperationState::Sent
+            && row.sent_at.is_some_and(|sent_at| {
+                overdue(
+                    sent_at,
+                    tracker.masternodes_synced(),
+                    tracker.masternode_list_height(),
+                    tracker.tip_height(),
+                    tracker.current_tip_time(),
+                )
+            }),
         created_at: row.created_at,
         signed_at: row.signed_at,
         sent_at: row.sent_at,
@@ -267,6 +308,12 @@ pub(crate) enum CrashPoint {
     /// A shared session's signed copy saved with `out_at`, not returned
     /// (MG-04b D17).
     SharedOut,
+    /// The follower's settling of operation locks fails.
+    Settle,
+    /// The follower's pass over shared sessions fails.
+    SharedFollow,
+    /// The collateral lock step fails, past the coin fence.
+    LockStep,
 }
 
 /// The test seam of the ProTx hand-off: the library's broadcast faked, and
@@ -412,7 +459,7 @@ impl NetworkSession {
     ) -> Result<ProTxOperation, MasternodesError> {
         let row = self.op_row(wallet, id).await?;
         let state = self.op_state(wallet, &row).await?;
-        operation_of(&row, state)
+        operation_of(&row, state, &self.hub.tracker())
     }
 
     /// Saves a new row durably with the coin locks it holds (its inputs,
@@ -534,6 +581,8 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
     ) -> Result<(), MasternodesError> {
+        #[cfg(test)]
+        crash_at(self, CrashPoint::Settle)?;
         let w = wallet.to_string();
         let rows = self.appdb_op(move |db| db.masternode_ops(&w)).await?;
         if rows.iter().all(|r| r.fee_inputs == "[]") {
@@ -669,11 +718,9 @@ impl NetworkSession {
 
 impl NetworkSession {
     /// The follower's pass over every wallet (D9, D25): settled rows' input
-    /// locks released, and each of the wallet's masternodes' collateral
-    /// that the wallet holds unspent locked, unless the user released it
-    /// (Core's `AutoLockMasternodeCollaterals`, rc.3
-    /// `wallet/wallet.cpp:2515-2525`). A wallet whose coin fence a build
-    /// holds waits for the next pass.
+    /// locks released, then the wallet's collaterals locked
+    /// ([`Self::lock_own_collaterals`]). A failed earlier step is logged
+    /// and skips nothing after it.
     pub(crate) async fn protx_follow_pass(&self) -> Result<(), MasternodesError> {
         let manager = self.manager()?;
         let ids = {
@@ -682,57 +729,141 @@ impl NetworkSession {
         };
         for id in ids {
             let wallet = WalletId(id);
-            self.settle_operation_locks(wallet).await?;
-            self.shared_follow_pass(wallet).await?;
-            let Some(_fence) = self.try_coin_fence(wallet).await? else {
-                continue;
-            };
-            self.release_conflicted_collaterals(wallet).await?;
-            let (m, hub) = (Arc::clone(&manager), Arc::clone(&self.hub));
-            let collaterals: Vec<OutPoint> = tokio::task::spawn_blocking(move || {
-                super::super::follow::wallet_masternodes(&m, &hub.history, &wallet)
-                    .map(|(owned, _)| owned.iter().filter_map(|o| o.collateral).collect())
-                    .unwrap_or_default()
+            if let Err(e) = self.settle_operation_locks(wallet).await {
+                tracing::warn!(%wallet, error = %e, "settling ProTx operation locks");
+            }
+            if let Err(e) = self.shared_follow_pass(wallet).await {
+                tracing::warn!(%wallet, error = %e, "following shared masternode sessions");
+            }
+            self.collateral_step(wallet).await;
+        }
+        Ok(())
+    }
+
+    /// Locks the collaterals of the wallets whose history gained a ProRegTx
+    /// since the last call, whether or not the masternode list is synced.
+    pub(crate) async fn protx_collateral_pass(&self) {
+        for wallet in self.hub.history.take_collateral_pending() {
+            self.collateral_step(wallet).await;
+        }
+    }
+
+    /// One wallet's [`Self::lock_own_collaterals`]. A wallet whose coin
+    /// fence a build holds, or whose step failed, is marked pending again
+    /// for the next poll, unless it or the session is gone.
+    async fn collateral_step(&self, wallet: WalletId) {
+        match self.lock_own_collaterals(wallet).await {
+            Ok(true) => {}
+            Ok(false) => self.hub.history.rearm_collateral(wallet),
+            Err(e) => {
+                tracing::warn!(%wallet, error = %e, "locking masternode collaterals");
+                if !matches!(
+                    e,
+                    MasternodesError::Engine(
+                        EngineError::WalletNotFound(_) | EngineError::NetworkNotOpen(_)
+                    )
+                ) {
+                    self.hub.history.rearm_collateral(wallet);
+                }
+            }
+        }
+    }
+
+    /// Locks each of the wallet's masternodes' collateral that the wallet
+    /// holds unspent ([`Self::lock_collaterals`]), after unlocking what
+    /// conflicted rows locked. Core locks a ProRegTx's own collateral when
+    /// the transaction is added and every listed collateral at load
+    /// (v24.0.0 `wallet/wallet.cpp:1141`, `:2580-2590`). An external
+    /// collateral holding its type's amount is locked while its ProRegTx is
+    /// unconfirmed too, sooner than Core's load; one that never confirms
+    /// leaves it locked until `release-collateral`, or "Unlock unspent"
+    /// once it is abandoned. That is the safe side. The collateral of a
+    /// ProRegTx the history keeps out of sight (a contact's record) is
+    /// locked with them. `false` when a build holds the wallet's coin
+    /// fence, so nothing ran.
+    async fn lock_own_collaterals(&self, wallet: WalletId) -> Result<bool, MasternodesError> {
+        let Some(fence) = self.try_coin_fence(wallet).await? else {
+            return Ok(false);
+        };
+        #[cfg(test)]
+        crash_at(self, CrashPoint::LockStep)?;
+        self.release_conflicted_collaterals(wallet).await?;
+        let (m, hub) = (self.manager()?, Arc::clone(&self.hub));
+        let collaterals: Vec<(OutPoint, u64)> = tokio::task::spawn_blocking(move || {
+            super::super::follow::wallet_masternodes(&m, &hub.history, &wallet)
+                .map(|(owned, _)| {
+                    (owned.iter())
+                        .filter_map(|o| {
+                            Some((o.collateral?, collateral_amount(o.record.is_evonode)))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .chain(hub.history.hidden_registration_collaterals(&wallet))
+                .collect()
+        })
+        .await?;
+        if !collaterals.is_empty() {
+            let w = self.wallet(&wallet).await?;
+            let coins = read_coins(&w.state().await.core_wallet).coins;
+            self.lock_collaterals(&fence, collaterals, &coins).await?;
+        }
+        Ok(true)
+    }
+
+    /// Locks each of `collaterals` (an outpoint and the amount its type
+    /// needs) that is one of the fenced wallet's unspent `coins` holding that
+    /// amount, unless locked already or released by the user
+    /// (`release-collateral`, D9). Core accepts no other amount, so a
+    /// ProRegTx naming another coin locks nothing. The follower's step and
+    /// every build's coin read ([`Self::coin_snapshot`]) run it under the
+    /// fence they hold.
+    pub(crate) async fn lock_collaterals(
+        &self,
+        fence: &CoinFence,
+        collaterals: Vec<(OutPoint, u64)>,
+        coins: &[WalletCoin],
+    ) -> Result<(), EngineError> {
+        let wallet = fence.wallet_id();
+        let held: Vec<OutPoint> = (collaterals.into_iter())
+            .filter(|(o, amount)| {
+                (coins.iter()).any(|c| c.utxo.outpoint == *o && c.utxo.value() == *amount)
+            })
+            .map(|(o, _)| o)
+            .collect();
+        if held.is_empty() {
+            return Ok(());
+        }
+        let w = wallet.to_string();
+        let locked = self
+            .appdb_op(move |db| {
+                let active: HashSet<(String, u32)> = db
+                    .locks(&w)?
+                    .into_iter()
+                    .filter(|r| r.is_locked())
+                    .map(|r| (r.txid, r.vout))
+                    .collect();
+                let released: HashSet<String> = db
+                    .settings_with_prefix(&w, RELEASED)?
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .collect();
+                let now = now_secs();
+                let mut changed = false;
+                for o in &held {
+                    let key = (o.txid.to_string(), o.vout);
+                    let name = format!("{RELEASED}{}-{}", o.txid, o.vout);
+                    if !active.contains(&key) && !released.contains(&name) {
+                        db.lock_manual(&w, &key.0, key.1, now)?;
+                        changed = true;
+                    }
+                }
+                Ok(changed)
             })
             .await?;
-            if collaterals.is_empty() {
-                continue;
-            }
-            let (_, unspent) = self.op_view(wallet).await?;
-            let held: Vec<OutPoint> = collaterals
-                .into_iter()
-                .filter(|o| unspent.contains(o))
-                .collect();
-            let w = wallet.to_string();
-            let locked = self
-                .appdb_op(move |db| {
-                    let active: HashSet<(String, u32)> = db
-                        .locks(&w)?
-                        .into_iter()
-                        .filter(|r| r.is_locked())
-                        .map(|r| (r.txid, r.vout))
-                        .collect();
-                    let released: HashSet<String> = db
-                        .settings_with_prefix(&w, RELEASED)?
-                        .into_iter()
-                        .map(|(k, _)| k)
-                        .collect();
-                    let now = now_secs();
-                    let mut changed = false;
-                    for o in &held {
-                        let key = (o.txid.to_string(), o.vout);
-                        let name = format!("{RELEASED}{}-{}", o.txid, o.vout);
-                        if !active.contains(&key) && !released.contains(&name) {
-                            db.lock_manual(&w, &key.0, key.1, now)?;
-                            changed = true;
-                        }
-                    }
-                    Ok(changed)
-                })
-                .await?;
-            if locked {
-                self.hub.pump.mark_balances(wallet);
-            }
+        if locked {
+            self.hub.pump.mark_balances(wallet);
         }
         Ok(())
     }
@@ -811,5 +942,130 @@ mod tests {
         assert_eq!(state_of(&r, &h, &u), ProTxOperationState::NotSent);
         r.sent_at = Some(1);
         assert_eq!(state_of(&r, &h, &u), ProTxOperationState::Sent);
+    }
+
+    #[test]
+    fn ep_t2_overdue_uses_only_current_tip_and_a_current_list() {
+        let sent = 20_000;
+        let check = |delta, synced, list, tip| overdue(sent, synced, list, tip, Some(sent + delta));
+        assert!(!check(10_799, true, Some(100), Some(100)));
+        assert!(check(10_800, true, Some(100), Some(100)));
+        assert!(!check(7_200, true, Some(100), Some(100)));
+        assert!(!overdue(sent, true, Some(100), Some(100), None));
+        assert!(!check(10_800, true, Some(98), Some(100)));
+        assert!(check(10_800, true, Some(99), Some(100)));
+        assert!(!check(10_800, false, Some(100), Some(100)));
+        assert!(!check(10_800, true, None, Some(100)));
+        assert!(!check(10_800, true, Some(100), None));
+        assert!(
+            tip_overdue(sent, Some(sent + 10_800)),
+            "abandon does not wait on a list"
+        );
+        assert!(
+            !overdue(sent, true, Some(90), Some(90), Some(sent - 1)),
+            "reorg time is authoritative"
+        );
+        assert!(check(10_800, true, Some(u32::MAX), Some(u32::MAX)));
+    }
+
+    #[test]
+    fn ep_conflict_of_preserves_height_state_and_exceptions() {
+        use dashcore::hashes::Hash;
+        use dashcore::{ScriptBuf, TxIn, TxOut};
+        use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+        let input = OutPoint::new(Txid::from_byte_array([7; 32]), 0);
+        let tx = |value| Transaction {
+            version: 3,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: input,
+                script_sig: ScriptBuf::new(),
+                sequence: u32::MAX,
+                witness: Default::default(),
+            }],
+            output: vec![TxOut {
+                value,
+                script_pubkey: ScriptBuf::new(),
+            }],
+            special_transaction_payload: None,
+        };
+        let own = tx(1);
+        let candidates = [tx(2), tx(3), tx(4)];
+        let entry = |tx: Transaction, height: Option<u32>| TxEntry {
+            tx,
+            context: height.map_or(TransactionContext::Mempool, |h| {
+                TransactionContext::InBlock(BlockInfo::new(h, dashcore::BlockHash::all_zeros(), 0))
+            }),
+            instant_locked: false,
+            first_seen: None,
+            own_inputs: Default::default(),
+            abandoned: false,
+        };
+        let original = |history: &HashMap<Txid, TxEntry>, except: Option<&Txid>| {
+            history
+                .iter()
+                .filter(|(id, e)| {
+                    Some(*id) != except && e.tx.input.iter().any(|i| i.previous_output == input)
+                })
+                .filter_map(|(_, e)| e.context.block_info().map(|b| b.height()))
+                .min()
+        };
+        for order in [[0, 1, 2], [2, 1, 0], [1, 0, 2]] {
+            let mut history = HashMap::new();
+            for i in order {
+                history.insert(
+                    candidates[i].txid(),
+                    entry(candidates[i].clone(), Some(if i == 2 { 8 } else { 7 })),
+                );
+            }
+            history.insert(own.txid(), entry(own.clone(), None));
+            for except in [
+                None,
+                Some(own.txid()),
+                Some(candidates[0].txid()),
+                Some(candidates[2].txid()),
+            ] {
+                assert_eq!(
+                    conflict_height(&history, &[input], except.as_ref()),
+                    original(&history, except.as_ref())
+                );
+            }
+            let preferred = candidates[1].txid();
+            assert_eq!(
+                conflict_of(&history, &[input], Some(&own.txid()), &[preferred]),
+                Some((preferred, 7))
+            );
+            assert_eq!(
+                conflict_of(
+                    &history,
+                    &[input],
+                    Some(&own.txid()),
+                    &[candidates[2].txid()]
+                )
+                .unwrap()
+                .1,
+                7
+            );
+            assert_eq!(
+                conflict_of(&history, &[input], Some(&own.txid()), &[])
+                    .unwrap()
+                    .0,
+                candidates[0].txid().min(candidates[1].txid())
+            );
+            let r = MasternodeOpRow {
+                signed_tx: Some(dashcore::consensus::serialize(&own)),
+                sent_at: Some(1),
+                ..row()
+            };
+            assert_eq!(
+                state_of(&r, &history, &HashSet::new()),
+                ProTxOperationState::Conflicted
+            );
+            history.insert(own.txid(), entry(own.clone(), Some(9)));
+            assert_eq!(
+                state_of(&r, &history, &HashSet::new()),
+                ProTxOperationState::Confirmed { height: 9 }
+            );
+        }
     }
 }

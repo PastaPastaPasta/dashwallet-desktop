@@ -294,13 +294,23 @@ pub(super) enum FundEnd {
     /// Sent, and no proof within the wait (`FinalityTimeout`): its row
     /// stays `Broadcast` with no proof, stored (`real_rows`, shields only).
     ProofTimeout,
+    /// Its wallet removed or re-created after the last signature, before
+    /// the tracking write: nothing tracked or sent
+    /// (`WalletRemovedBeforeSend`).
+    RemovedBeforeSend,
+    /// Over the asset lock's input cap after the last signature: nothing
+    /// tracked or sent (`AssetLockTooManyInputs`).
+    OverInputCap,
 }
 
 impl FundEnd {
     /// Whether the library tracked the lock first, so the session's tap
     /// recorded it as the step's.
     fn tracked(self) -> bool {
-        self != Self::BelowFloor
+        !matches!(
+            self,
+            Self::BelowFloor | Self::RemovedBeforeSend | Self::OverInputCap
+        )
     }
 
     fn error(self) -> FundError {
@@ -310,6 +320,11 @@ impl FundEnd {
             Self::BelowFloor => E::AssetLockTransaction("below the required minimum".into()),
             Self::Unknown => E::TransactionBroadcastUnconfirmed("no verdict".into()),
             Self::ProofTimeout => E::FinalityTimeout(OutPoint::null()),
+            Self::RemovedBeforeSend => E::WalletRemovedBeforeSend("w".into()),
+            Self::OverInputCap => E::AssetLockTooManyInputs {
+                count: 101,
+                max: 100,
+            },
         })
     }
 }
@@ -2521,7 +2536,7 @@ fn a_pass_records_each_stored_spend_and_waits_for_the_wallets_lease() {
     let m = Arc::clone(&manager);
     engine.block_on(async move {
         assert!(pool::admit_pass(&s, &m).await.is_ok(), "nothing stored");
-        let coordinator = pool::coordinator(&s, &m).await.unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
         let redrive = PendingRedrive {
             activity_id: [5; 32],
             anchor: [0; 32],
@@ -2606,7 +2621,7 @@ fn a_wallet_bound_during_a_pass_waits_for_it_and_is_admitted_before_its_spend_is
     let manager = session.manager().unwrap();
     let (s, m) = (Arc::clone(session), Arc::clone(&manager));
     engine.block_on(async move {
-        let coordinator = pool::coordinator(&s, &m).await.unwrap();
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
         let sub = SubwalletId::new(b.0, dw_vault::SHIELDED_ACCOUNT);
         (coordinator.store().write().await)
             .arm_redrive(sub, redrive)
@@ -2792,6 +2807,7 @@ fn a_shield_lock_of_51_coins_is_refused_by_its_signer_and_leaves_nothing() {
         let lib = pool::PwShielded::open(&s, wallet).await.unwrap();
         let lease = (s.begin_lease(wallet, FlowKind::Shield, &[grant]).await).unwrap();
         let before = lease.available(BudgetPurpose::Funding).unwrap();
+        assert!(s.leases.refresh_funding(wallet).await);
         let step = pool::next_step(&s, wallet).unwrap();
         let key = FundingKey {
             funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
@@ -2834,6 +2850,86 @@ fn a_shield_lock_of_51_coins_is_refused_by_its_signer_and_leaves_nothing() {
     assert_eq!(tracked, 0, "no lock tracked, so none sent");
     assert_eq!(reserved(), 0, "no coin stays reserved");
     assert!(next.is_ok(), "the next shield is not held: {next:?}");
+}
+
+/// A coin of a masternode collateral amount credited after a shield's coin
+/// check and before the library's selection, the wallet's only coin: the
+/// funding signer refuses the build before any signature, as no coin the
+/// check read free, and the shield reads `CoinsLocked` with nothing
+/// released, no lock tracked and the call `Cancelled`.
+#[test]
+fn a_shield_refuses_a_coin_credited_after_its_coin_check() {
+    use super::lease::FlowOutcome;
+    use platform_wallet::AssetLockFundingType;
+    let f = super::topup_tests::fixture(false);
+    let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
+    let pw = engine.block_on(session.wallet(&wallet)).unwrap();
+    let grant = session
+        .vault()
+        .authorize(
+            dw_vault::GrantPurpose::PlatformOp {
+                max_duffs: 100_000_000,
+                max_credits: 0,
+            },
+            Some(&wallet.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    let s = Arc::clone(session);
+    let wallet_handle = Arc::clone(&pw);
+    let (funded, outcome, released) = engine.block_on(async move {
+        let lib = pool::PwShielded::open(&s, wallet).await.unwrap();
+        let lease = (s.begin_lease(wallet, FlowKind::Shield, &[grant]).await).unwrap();
+        assert!(s.leases.refresh_funding(wallet).await);
+        let step = pool::next_step(&s, wallet).unwrap();
+        let key = FundingKey {
+            funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
+            identity_index: 0,
+            account: 0,
+        };
+        let duffs = 10_000_000;
+        let permit = (lib.funding_permit(&lease, step, key, duffs).await).unwrap();
+        let address = (wallet_handle
+            .core()
+            .next_receive_address_for_account(0)
+            .await)
+            .unwrap();
+        let coin = OutPoint::new(Txid::from_byte_array([0xe8; 32]), 0);
+        let mut utxo = key_wallet::Utxo::new(
+            coin,
+            dashcore::TxOut {
+                value: dw_protx::params::collateral_amount(false),
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            1,
+            false,
+        );
+        utxo.is_confirmed = true;
+        (wallet_handle
+            .state_mut()
+            .await
+            .core_wallet
+            .accounts
+            .standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap()
+            .utxos
+            .insert(coin, utxo);
+        let funded = lib.fund(duffs, &permit).await;
+        let released = permit.signatures().released();
+        (funded, permit.finish(false), released)
+    });
+    assert_eq!(funded, Err(FundError::CoinsLocked));
+    assert_eq!(released, 0, "refused before any signature");
+    assert_eq!(outcome, FlowOutcome::Cancelled);
+    assert!(
+        engine
+            .block_on(pw.asset_locks().list_tracked_locks())
+            .is_empty(),
+        "no lock tracked, so none sent"
+    );
 }
 
 /// A fake over the fixture's wallet whose shield locks are the real
@@ -3146,6 +3242,44 @@ fn a_shield_failing_after_its_signature_stays_possibly_sent() {
         assert_eq!(code(shield_with(&fx, &lib)), "platform.broadcast_unknown");
         assert!(lib.funded.lock().unwrap().is_empty());
     }
+}
+
+/// A shield whose wallet was removed or re-created after its lock was
+/// signed, before the library tracked or sent it: its
+/// released signature leaves the step possibly sent, so the call reads
+/// `broadcast_unknown` whatever the library said, and the next shield is
+/// refused on the step.
+#[test]
+fn a_shield_whose_wallet_left_after_its_signature_reads_broadcast_unknown() {
+    shield_refused_after_the_signature(FundEnd::RemovedBeforeSend);
+}
+
+/// A shield the library refuses over the asset lock's input cap after
+/// signing it reads the same.
+#[test]
+fn a_shield_over_the_asset_lock_input_cap_reads_broadcast_unknown() {
+    shield_refused_after_the_signature(FundEnd::OverInputCap);
+}
+
+fn shield_refused_after_the_signature(end: FundEnd) {
+    use super::flows::DispatchState;
+    let step = pool::shield_step(0);
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded::default());
+    *lib.funder.lock().unwrap() = Some((Arc::downgrade(&fx.s), fx.wallet));
+    *lib.fund_end.lock().unwrap() = Some(end);
+    let unknown = |r: Result<ShieldState, ShieldedError>| match r {
+        Err(ShieldedError::Platform(PlatformError::BroadcastUnknown { artifact })) => artifact,
+        other => panic!("not broadcast_unknown: {other:?}"),
+    };
+    assert_eq!(unknown(shield_with(&fx, &lib)), step);
+    assert_eq!(
+        fx.s.leases.funding_status(fx.wallet, &step),
+        Some(DispatchState::MaybeSent)
+    );
+    assert!(fx.s.leases.signed_lock_txids(fx.wallet, &step).is_empty());
+    assert_eq!(unknown(shield_with(&fx, &lib)), step);
+    assert!(lib.funded.lock().unwrap().is_empty());
 }
 
 #[path = "shield_drain_tests.rs"]

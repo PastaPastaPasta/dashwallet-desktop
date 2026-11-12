@@ -41,7 +41,7 @@ security review of the MG signing paths (MG-12).
 | Recheck, marks, late proof | `…/withdrawal/recheck.rs` |
 | Session seams, entry points, runtime (alarms, background recheck) | `…/withdrawal/{mod,session}.rs` (not facade) |
 | Facade calls and records | `rust/crates/dw-engine/src/masternodes/{withdrawals,withdrawal_records}.rs` |
-| Contract | `docs/contracts/mn-engine.md` §2.5 (Contract-Version 18), `m4-dashpay-engine.md` item 86 (grant purpose) |
+| Contract | `docs/contracts/mn-engine.md` §2.5 (Contract-Version 19, after MG-10 EP-a's 18), `m4-dashpay-engine.md` item 86 (grant purpose) |
 | dwcli | `rust/bin/dwcli/src/masternodes.rs`: `mn withdraw-quote`, `withdraw`, `withdraw-retry`, `withdrawals`, `recheck-withdrawal`, `mark-withdrawal` |
 | Tests | `…/withdrawal/tests.rs`, `tests/facade.rs`; `dw-appdb/src/mn_withdrawals_tests.rs`; `dw-vault/tests/masternode_withdrawal.rs` |
 
@@ -158,9 +158,10 @@ sibling at the same nonce (D15). The facade is `mn-engine.md` §2.5; this file r
 - **Housekeeping:** contract markers re-blessed (mn-engine v18, m4 v40, the appdb schema; at the merge with main,
   m4 v63 with the grant as item 86 and the migration renumbered `V2026111002`, after main's newest), fmt, clippy
   `-D warnings`, `cargo check --workspace --all-targets` per commit, the dw-* suites, dwcli's, Swift T0 (569 tests).
-  Fix round 3: mn-engine v20 (a final record's recheck raises the floor; the retry's two `id` refusals).
-  Fix round 2: mn-engine v19 (`withdraw_target_mismatch`, the retry's `pro_tx_hash`), m4 v64 (item 86's
+  Fix round 3: mn-engine v21 (a final record's recheck raises the floor; the retry's two `id` refusals).
+  Fix round 2: mn-engine v20 (`withdraw_target_mismatch`, the retry's `pro_tx_hash`), m4 v64 (item 86's
   `pro_tx_hash`).
+  Follow-merge of main after MG-10 EP-a (mn-engine v18): MG-13's mn-engine versions renumbered 18-20 -> 19-21.
 - **T2 (DEC-1000)** runs on the owner's own dashmate `local` network. Its steps, each asserting the reason the engine
   reports at each stage on the real SDK path: (1) an owner-key withdrawal → `done` on the proved document, then the
   document reaches COMPLETE and Core receives the asset unlock at `paid_script`; (2) a payout change through MG-04

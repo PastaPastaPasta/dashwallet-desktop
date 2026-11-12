@@ -12,6 +12,6 @@
     "allow-active-network",
     "allow-existing-networks",
     "allow-get-network-choice",
-    "allow-set-network-choice"
+    "allow-switch-network"
   ]
 }

@@ -20,6 +20,7 @@ import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
 import type { ChosenNetwork } from "./generated/ChosenNetwork";
 import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
+import type { NetworkSwitch } from "./generated/NetworkSwitch";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { PlatformAddressBalance } from "./generated/PlatformAddressBalance";
 import type { LockFinish } from "./generated/LockFinish";
@@ -222,8 +223,9 @@ export interface Backend {
   // Lanes E1 and E2's commands; the optional reads answer `null` against a dw-app without them (api/pending.ts).
   /** The network choice (`get_network_choice`, contract §8). */
   networkChoice(): Promise<NetworkChoiceView | null>;
-  /** Saves the choice for the next start (`set_network_choice`); the window keeps its network. */
-  setNetworkChoice(network: ChosenNetwork): Promise<NetworkChoiceView>;
+  /** Moves the window to `network` and saves the choice (`switch_network`); a pinned window only
+   * saves it. On success the page boots again (network/switch.ts). */
+  switchNetwork(network: ChosenNetwork): Promise<NetworkSwitch>;
   /** Where the wallet's shielded account stands (`shielded_status`, contract §2.13). */
   shieldedStatus(walletId: string): Promise<ShieldedStatus | null>;
   /** The account's receive address, for Receive and its QR. */

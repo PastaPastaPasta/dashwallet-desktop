@@ -238,6 +238,8 @@ impl NetworkSession {
         grants: Vec<String>,
     ) -> Result<String, PlatformError> {
         let _op = self.enter().await.map_err(engine)?;
+        #[cfg(test)]
+        crate::coinjoin::test_pause(crate::coinjoin::sweep_hooks(self).flow_admitted).await;
         self.require_wallet(&wallet_id).map_err(engine)?;
         let lease = self.begin_lease(wallet_id, flow, &grants).await?;
         // A removal or Close Wallet holds its barrier until the wallet is

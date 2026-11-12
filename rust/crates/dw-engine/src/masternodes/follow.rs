@@ -90,7 +90,7 @@ pub(crate) fn wallet_masternodes(
     history.read(wallet, |entries| {
         add_history(
             &mut txs,
-            entries.values().filter(|e| !e.abandoned).map(|e| {
+            entries.values().filter(|e| !e.is_abandoned()).map(|e| {
                 let block = e.context.block_info();
                 let height = block.map_or(0, |b| b.height());
                 (height, block.and_then(|b| b.position()).unwrap_or(0), &e.tx)
@@ -256,6 +256,8 @@ pub(crate) struct MasternodesRuntime {
     changes: Arc<Changes>,
     coalescer: JoinHandle<()>,
     follower: Mutex<Option<JoinHandle<()>>>,
+    /// The follower's poll interval, seconds ([`POLL`]).
+    poll_secs: AtomicU64,
     /// Held across each tracking change, so an `attach_key` can't store a
     /// key for a masternode an `untrack` is removing.
     mutations: tokio::sync::Mutex<()>,
@@ -304,6 +306,7 @@ impl MasternodesRuntime {
             changes,
             coalescer,
             follower: Mutex::default(),
+            poll_secs: AtomicU64::new(POLL.as_secs()),
             mutations: tokio::sync::Mutex::new(()),
             updates: tokio::sync::Mutex::new(()),
             unsettled: Mutex::default(),
@@ -335,6 +338,12 @@ impl MasternodesRuntime {
     #[cfg(test)]
     pub(crate) fn protx_seam(&self) -> Option<Arc<super::protx::ops::Seam>> {
         self.protx_seam.lock().unwrap().clone()
+    }
+
+    /// Stretches the follower's poll, so that only a wake runs it.
+    #[cfg(test)]
+    pub(crate) fn set_poll(&self, secs: u64) {
+        self.poll_secs.store(secs, Ordering::Relaxed);
     }
 
     #[cfg(test)]
@@ -400,18 +409,33 @@ impl MasternodesRuntime {
         })
     }
 
-    /// Starts following the list for the session's life.
+    /// Starts following the list for the session's life. Each poll first
+    /// locks the collaterals of wallets whose history gained a ProRegTx,
+    /// which needs no list; a new ProRegTx wakes it early.
     pub fn follow(&self, session: &Arc<NetworkSession>) {
         let weak = Arc::downgrade(session);
+        let wake = session.hub.history.collateral_wake();
         let handle = session.rt.spawn(async move {
             let mut followed = Followed::default();
             loop {
                 let Some(s) = weak.upgrade() else { return };
+                // A test seam drives the passes itself.
+                #[cfg(test)]
+                let driven = s.masternodes.protx_seam().is_some();
+                #[cfg(not(test))]
+                let driven = false;
+                if !driven && let Ok(_op) = s.try_enter() {
+                    s.protx_collateral_pass().await;
+                }
                 if let Err(e) = s.masternodes.tick(&s, &mut followed).await {
                     tracing::debug!(error = %e, "masternode follower");
                 }
+                let poll = Duration::from_secs(s.masternodes.poll_secs.load(Ordering::Relaxed));
                 drop(s);
-                tokio::time::sleep(POLL).await;
+                tokio::select! {
+                    () = tokio::time::sleep(poll) => {}
+                    () = wake.notified() => {}
+                }
             }
         });
         *self.follower.lock().unwrap_or_else(|p| p.into_inner()) = Some(handle);
@@ -495,7 +519,7 @@ impl MasternodesRuntime {
             self.changes.notify.notify_one();
         }
         if let Err(e) = session.protx_follow_pass().await {
-            tracing::debug!(error = %e, "ProTx follower pass");
+            tracing::warn!(error = %e, "ProTx follower pass");
         }
         Ok(())
     }

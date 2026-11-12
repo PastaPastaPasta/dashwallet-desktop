@@ -14,6 +14,7 @@ use key_wallet::Utxo;
 use zeroize::Zeroizing;
 
 use super::psbt::{PsbtFailure, PsbtSignability};
+use super::test_support::{FOREIGN, pay, send_failure};
 use super::*;
 use crate::{
     BookPurpose, CoinFilter, DashNetwork, Engine, EngineConfig, EventSink, ImportOptions,
@@ -22,8 +23,6 @@ use crate::{
 
 const PHRASE: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-/// Someone else's regtest address (dashd `signmessagewithprivkey` vector).
-const FOREIGN: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
 const COIN: u64 = 100_000_000;
 
 struct NullSink;
@@ -277,26 +276,9 @@ fn other_foreign() -> String {
     .to_string()
 }
 
-fn pay(address: &str, amount: u64) -> Recipient {
-    Recipient {
-        address: address.into(),
-        amount,
-        subtract_fee_from_amount: false,
-        label: None,
-        message: None,
-    }
-}
-
 /// Room for the fee in a grant whose test is not about the cap: a few
 /// inputs at the default rate cost well under this.
 const FEE_ROOM: u64 = 10_000;
-
-fn send_failure<T: std::fmt::Debug>(r: Result<T, EngineError>) -> SendFailure {
-    match r {
-        Err(EngineError::Send(f)) => f,
-        other => panic!("expected a send failure, got {other:?}"),
-    }
-}
 
 #[test]
 fn prepare_signs_reserves_and_abandon_releases() {
@@ -3289,6 +3271,333 @@ fn a_wallet_opened_mid_session_refuses_spends_until_its_replay_resumes() {
     f.engine.block_on(load).unwrap().unwrap();
     assert!(f.synced() < 400);
     assert!(replaying(f.pay_from_the_draft(&draft)));
+}
+
+/// A wallet opened mid-session refuses spends until its history is
+/// loaded, so no coin read runs before the history holds the wallet's
+/// transactions.
+#[test]
+fn a_wallet_opened_mid_session_refuses_spends_until_its_history_is_loaded() {
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let coin = f.late_coin(7, COIN, 150);
+    f.put_coin(coin.clone());
+    f.store_core(CoreChangeSet {
+        new_utxos: vec![coin],
+        synced_height: Some(1_000),
+        ..Default::default()
+    });
+    f.advance(1_000);
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let (s, id) = (Arc::clone(&f.session), f.wallet);
+        f.session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the history load's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    assert!(
+        replaying(f.pay_from_the_draft(&draft)),
+        "a payment before the history load"
+    );
+    pause.release.notify_one();
+    f.engine.block_on(load).unwrap().unwrap();
+    let p = f.pay_from_the_draft(&draft).unwrap();
+    f.engine.block_on(draft.abandon(p)).unwrap();
+}
+
+impl Fixture {
+    /// A confirmed coin of exactly a masternode collateral amount, stored
+    /// with no transaction record (a height-only row), as legacy rows and
+    /// recordless credits leave it.
+    fn recordless_collateral(&self) -> OutPoint {
+        use platform_wallet::changeset::CoreChangeSet;
+        let coin = self.late_coin(7, dw_protx::params::MASTERNODE_COLLATERAL, 150);
+        self.put_coin(coin.clone());
+        self.store_core(CoreChangeSet {
+            new_utxos: vec![coin.clone()],
+            synced_height: Some(1_000),
+            ..Default::default()
+        });
+        self.advance(1_000);
+        coin.outpoint
+    }
+
+    /// The wallet closed and opened again in the session.
+    fn reopen_wallet(&self) {
+        (self.engine)
+            .block_on(self.session.unload_wallet(self.wallet))
+            .unwrap();
+        (self.engine)
+            .block_on(self.session.load_wallet(self.wallet))
+            .unwrap();
+    }
+
+    /// What an asset-lock funding's policy check finds held
+    /// (`held_funding_coins`; any refuses it with `CoinsLocked`).
+    fn funding_holds(&self) -> Vec<(OutPoint, crate::coins::CoinHold)> {
+        let fence = self
+            .engine
+            .block_on(self.session.coin_fence(self.wallet))
+            .unwrap();
+        let snapshot = self
+            .engine
+            .block_on(self.session.fenced_coins(&fence))
+            .unwrap();
+        (snapshot.held_funding_coins())
+            .map(|h| (h.outpoint, h.hold))
+            .collect()
+    }
+}
+
+/// A coin of a masternode collateral amount the wallet holds when its
+/// history loads, stored with no transaction record, is the wallet's like
+/// any other: no event is awaited for it, so a payment spends it and an
+/// asset-lock funding finds nothing held.
+#[test]
+fn a_recordless_collateral_sized_coin_is_spendable_after_a_reopen() {
+    let f = fixture(false);
+    let coin = f.recordless_collateral();
+    f.reopen_wallet();
+    assert_eq!(f.funding_holds(), Vec::new());
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let p = f.pay_from_the_draft(&draft).unwrap();
+    assert_eq!(p.summary().inputs[0].outpoint, coin);
+    f.engine.block_on(draft.abandon(p)).unwrap();
+}
+
+/// A history load that fails to read the stored records counts no coin
+/// as seen: that coin stays held, from a payment and from a funding.
+#[test]
+fn a_failed_history_read_keeps_a_recordless_collateral_sized_coin_held() {
+    let f = fixture(false);
+    let coin = f.recordless_collateral();
+    (f.session.hub.fail_history_read).store(true, std::sync::atomic::Ordering::SeqCst);
+    f.reopen_wallet();
+    assert_eq!(
+        f.funding_holds(),
+        vec![(coin, crate::coins::CoinHold::AwaitingHistory)]
+    );
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    assert_eq!(
+        send_failure(f.pay_from_the_draft(&draft)),
+        SendFailure::AmountExceedsBalance { available: 0 }
+    );
+}
+
+/// A history load whose read of a listed record goes wrong (`fault`)
+/// counts no coin as seen: a recordless coin of a collateral amount stays
+/// held.
+fn a_recordless_collateral_stays_held_after(fault: crate::history_ops::RecordFault) {
+    use key_wallet::account::{AccountType, StandardAccountType};
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let coin = f.recordless_collateral();
+    let paid = dashcore::Transaction {
+        version: 2,
+        lock_time: 0,
+        input: Vec::new(),
+        output: vec![TxOut {
+            value: COIN,
+            script_pubkey: dashcore::ScriptBuf::new(),
+        }],
+        special_transaction_payload: None,
+    };
+    let record = stored_record(
+        paid,
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        TransactionContext::InBlock(BlockInfo::new(120, dashcore::BlockHash::all_zeros(), 9)),
+    );
+    f.store_core(CoreChangeSet {
+        records: vec![record],
+        ..Default::default()
+    });
+    *f.session.hub.record_read_fault.lock().unwrap() = Some(fault);
+    f.reopen_wallet();
+    assert_eq!(
+        f.funding_holds(),
+        vec![(coin, crate::coins::CoinHold::AwaitingHistory)],
+        "{fault:?}"
+    );
+}
+
+/// `tx`'s record on `account`, as a store holds it.
+fn stored_record(
+    tx: dashcore::Transaction,
+    account: key_wallet::account::AccountType,
+    context: key_wallet::transaction_checking::TransactionContext,
+) -> key_wallet::managed_account::transaction_record::TransactionRecord {
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    TransactionRecord::new(
+        tx,
+        account,
+        context,
+        key_wallet::transaction_checking::TransactionType::Standard,
+        TransactionDirection::Incoming,
+        Vec::new(),
+        Vec::new(),
+        0,
+    )
+}
+
+#[test]
+fn a_failed_record_read_keeps_a_recordless_collateral_sized_coin_held() {
+    a_recordless_collateral_stays_held_after(crate::history_ops::RecordFault::Error);
+}
+
+#[test]
+fn a_listed_record_read_as_absent_keeps_a_recordless_collateral_sized_coin_held() {
+    a_recordless_collateral_stays_held_after(crate::history_ops::RecordFault::Missing);
+}
+
+#[test]
+fn a_record_naming_another_txid_keeps_a_recordless_collateral_sized_coin_held() {
+    a_recordless_collateral_stays_held_after(crate::history_ops::RecordFault::Mismatched);
+}
+
+#[test]
+fn a_record_holding_another_transaction_keeps_a_recordless_collateral_sized_coin_held() {
+    a_recordless_collateral_stays_held_after(crate::history_ops::RecordFault::OtherTransaction);
+}
+
+/// A contact account's stored record of an internal ProRegTx, from a store
+/// written before platform-wallet stopped persisting those, with no record
+/// of its own in key-wallet, no masternode list and no lock: after a
+/// reopen the history shows nothing of it, yet its own collateral (1000
+/// and 4000 DASH) is locked, so a payment cannot spend it and an
+/// asset-lock funding refuses it.
+#[test]
+fn a_contacts_stored_registration_locks_its_collateral_after_a_reopen() {
+    use crate::masternodes::provider_fixtures::{null, registration};
+    use key_wallet::account::AccountType;
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    use platform_wallet::changeset::CoreChangeSet;
+    for evonode in [false, true] {
+        let what = format!("evonode: {evonode}");
+        let f = fixture(false);
+        let value = dw_protx::params::collateral_amount(evonode);
+        let mut coin = f.late_coin(9, value, 150);
+        let reg = registration(null(0), evonode, 3, vec![coin.txout.clone()]);
+        coin.outpoint = OutPoint::new(reg.txid(), 0);
+        let record = stored_record(
+            reg.clone(),
+            AccountType::DashpayExternalAccount {
+                index: 0,
+                user_identity_id: [0xaa; 32],
+                friend_identity_id: [0xbb; 32],
+            },
+            TransactionContext::InBlock(BlockInfo::new(150, dashcore::BlockHash::all_zeros(), 9)),
+        );
+        assert!(!crate::history::is_wallets(&record));
+        f.put_coin(coin.clone());
+        f.store_core(CoreChangeSet {
+            records: vec![record],
+            new_utxos: vec![coin.clone()],
+            synced_height: Some(1_000),
+            ..Default::default()
+        });
+        f.advance(1_000);
+        f.reopen_wallet();
+        assert!(
+            (f.session.hub.history).read(&f.wallet, |txs| !txs.contains_key(&reg.txid())),
+            "{what}: not in the history"
+        );
+        assert_eq!(
+            f.funding_holds(),
+            vec![(coin.outpoint, crate::coins::CoinHold::UserLock)],
+            "{what}"
+        );
+        let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+        assert_eq!(
+            send_failure(f.pay_from_the_draft(&draft)),
+            SendFailure::AmountExceedsBalance { available: 0 },
+            "{what}"
+        );
+    }
+}
+
+/// A coin of a masternode collateral amount whose transaction is stored
+/// only with a record the history skips (a DashPay contact's account's) is
+/// one the load saw stored: it is not held after a reopen.
+#[test]
+fn a_collateral_sized_coin_whose_stored_record_the_history_skips_is_free_after_a_reopen() {
+    use key_wallet::account::AccountType;
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    use platform_wallet::changeset::CoreChangeSet;
+    let f = fixture(false);
+    let mut coin = f.late_coin(9, dw_protx::params::MASTERNODE_COLLATERAL, 150);
+    let paid = dashcore::Transaction {
+        version: 2,
+        lock_time: 0,
+        input: Vec::new(),
+        output: vec![coin.txout.clone()],
+        special_transaction_payload: None,
+    };
+    coin.outpoint = OutPoint::new(paid.txid(), 0);
+    let record = stored_record(
+        paid,
+        AccountType::DashpayExternalAccount {
+            index: 0,
+            user_identity_id: [0xaa; 32],
+            friend_identity_id: [0xbb; 32],
+        },
+        TransactionContext::InBlock(BlockInfo::new(150, dashcore::BlockHash::all_zeros(), 9)),
+    );
+    assert!(!crate::history::is_wallets(&record));
+    f.put_coin(coin.clone());
+    f.store_core(CoreChangeSet {
+        records: vec![record],
+        new_utxos: vec![coin.clone()],
+        synced_height: Some(1_000),
+        ..Default::default()
+    });
+    f.advance(1_000);
+    f.reopen_wallet();
+    assert_eq!(f.funding_holds(), Vec::new());
+}
+
+/// A coin credited while the history loads, after its read of the stored
+/// transactions and before its read of the wallet, is not one the load
+/// saw stored: of a collateral amount, it is held until its transaction's
+/// event reaches the history.
+#[test]
+fn a_collateral_sized_coin_credited_during_the_history_load_waits_for_its_event() {
+    let f = fixture(false);
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let (s, id) = (Arc::clone(&f.session), f.wallet);
+        f.session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the history load's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let coin = f.late_coin(8, dw_protx::params::MASTERNODE_COLLATERAL, 150);
+    let outpoint = coin.outpoint;
+    f.put_coin(coin);
+    pause.release.notify_one();
+    f.engine.block_on(load).unwrap().unwrap();
+    assert_eq!(
+        f.funding_holds(),
+        vec![(outpoint, crate::coins::CoinHold::AwaitingHistory)]
+    );
+    // Its transaction's event.
+    (f.session.hub.history).hold_funding(f.wallet, outpoint.txid);
+    assert_eq!(f.funding_holds(), Vec::new());
 }
 
 /// A stored replay this build cannot read (another format, or a start

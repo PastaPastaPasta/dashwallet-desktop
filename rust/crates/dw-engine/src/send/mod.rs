@@ -25,6 +25,8 @@ mod contact_tests;
 mod flow_tests;
 pub(crate) mod plan;
 pub(crate) mod psbt;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;

@@ -29,6 +29,9 @@ let wanted: UiSettings | null = null;
 /** Saves are written one at a time, in the order they were made. */
 let writes: Promise<unknown> = Promise.resolve();
 
+/** Settles once every save made so far has been answered (a page about to boot again waits). */
+export const prefsWritten = (): Promise<unknown> => writes;
+
 /** Saves `patch` over the current settings; the store changes once dw-app has written them. */
 export function savePrefs(backend: Backend, launch: LaunchInfo, patch: Partial<UiSettings>): Promise<UiSettings> {
   const next = { ...(wanted ?? ui.get().prefs), ...patch };

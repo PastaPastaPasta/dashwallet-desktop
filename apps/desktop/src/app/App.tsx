@@ -6,9 +6,11 @@ import type { TxRow } from "../api/generated/TxRow";
 import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { EmptyState, LoadingState } from "../components/history";
+import { SwitchingCard } from "../components/networkPicker";
 import { SheetLayer, useLayeredSheet } from "../components/sheet";
 import { chipState, Sidebar, StatusBar, Toolbar } from "../components/shell";
 import { showToast, ToastHost } from "../components/toast";
+import { takeSwitchNote } from "../network/switch";
 import { ForgotPassphraseSheet } from "../screens/ForgotPassphrase";
 import { LockScreen, UnlockSheet } from "../screens/LockScreen";
 import { Onboarding } from "../screens/Onboarding";
@@ -313,13 +315,24 @@ export function App() {
   // Opening the network loads the wallet database; the splash is up meanwhile.
   const network = useOpenNetwork();
   useEffect(() => mark("shell"), []);
+  // A network switch that failed booted this page again; it says what happened (row 74).
+  useEffect(() => {
+    const note = takeSwitchNote();
+    if (note !== null) showToast(note, 8);
+  }, []);
+  // A network switch covers every page, onboarding and the lock screen until the page boots again
+  // or the switch is refused; what is under its card takes no input (row 74).
+  const switching = useUi((s) => s.switching) !== null;
   return (
     <div className="app" data-testid="app-shell">
-      {network.isSuccess ? (
-        <Shell />
-      ) : (
-        <Splash error={network.isError ? openFailure(network.error) : null} onRetry={() => void network.refetch()} />
-      )}
+      <div className="app-under-switch" inert={switching}>
+        {network.isSuccess ? (
+          <Shell />
+        ) : (
+          <Splash error={network.isError ? openFailure(network.error) : null} onRetry={() => void network.refetch()} />
+        )}
+      </div>
+      <SwitchingCard />
       <ToastHost />
     </div>
   );
