@@ -143,6 +143,7 @@ test.describe("Unfinished transfers", () => {
   for (const scenario of ["funded", "recovery-confirming", "recovery-not-active"]) {
     test(`${scenario}: Home has no card`, async ({ page }) => {
       await open(page, scenario);
+      await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
       await expect(page.getByTestId("shielded-card")).toHaveCount(0);
       await expect(page.getByTestId("unfinished-card")).toHaveCount(0);
     });

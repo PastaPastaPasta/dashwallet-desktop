@@ -912,9 +912,9 @@ async function amountStep(page: Page, action: "add" | "out" | "send", amount: st
 test.describe("Shielded", () => {
   test("shows Shielded in the header and Transfer in the shortcuts", async ({ page }) => {
     const errors = await open(page, "funded");
+    await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
     await expect(page.getByTestId("shielded-card")).toHaveCount(0);
     await expect(page.getByTestId("shortcut-transfer")).toBeEnabled();
-    await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
     await shot(page, "light-home-shielded-card");
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
@@ -1055,8 +1055,8 @@ test.describe("Shielded", () => {
   for (const theme of THEMES) {
     test(`while Shielded syncs its actions wait, say why, and stay readable (${theme})`, async ({ page }) => {
       const errors = await open(page, "shielded-syncing", theme);
-      await expect(page.getByTestId("shielded-card")).toHaveCount(0);
       await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
+      await expect(page.getByTestId("shielded-card")).toHaveCount(0);
       const waits = async (ids: string[]) => {
         for (const id of ids) {
           const b = page.getByTestId(id);
@@ -1107,9 +1107,9 @@ test.describe("Shielded", () => {
 
   test("shows an unavailable Shielded header balance with no Home card", async ({ page }) => {
     const errors = await open(page, "shielded-inactive");
+    await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
     await expect(page.getByTestId("shielded-card")).toHaveCount(0);
     await expect(page.getByTestId("shielded-card-transfer")).toHaveCount(0);
-    await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
     await shot(page, "light-shielded-inactive");
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);

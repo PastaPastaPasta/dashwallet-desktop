@@ -192,6 +192,8 @@ test.describe("Transfer quotes", () => {
 
   test("Home offers Transfer from its shortcut without duplicate pool cards", async ({ page }) => {
     await open(page, "funded");
+    await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
     for (const card of ["shielded-card", "platform-card"]) await expect(page.getByTestId(card)).toHaveCount(0);
     await openTransfer(page, "shieldedToCore");
     await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "shieldedToCore");

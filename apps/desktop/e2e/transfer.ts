@@ -517,6 +517,7 @@ export const TRANSFER_STATES: TransferState[] = [
     id: "home-without-shielded-card",
     scenario: "funded",
     go: async (page) => {
+      await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
       await expect(page.getByTestId("shielded-card")).toHaveCount(0);
     },
   },
@@ -524,6 +525,7 @@ export const TRANSFER_STATES: TransferState[] = [
     id: "home-without-platform-card",
     scenario: "funded",
     go: async (page) => {
+      await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
       await expect(page.getByTestId("platform-card-transfer")).toHaveCount(0);
       await expect(page.getByTestId("platform-card")).toHaveCount(0);
     },
