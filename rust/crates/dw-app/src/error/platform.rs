@@ -137,6 +137,7 @@ codes! {
         PoolTooSmall = "shielded.pool_too_small",
         TooManyInputs = "shielded.too_many_inputs",
         UnrecordedSpend = "shielded.unrecorded_spend",
+        SpendRefused = "shielded.spend_refused",
         MixingActive = "shielded.mixing_active",
         NothingToMove = "shielded.nothing_to_move",
         CoinsUnconfirmed = "shielded.coins_unconfirmed",
@@ -198,6 +199,7 @@ impl From<ShieldedError> for AppError {
                 Some(ErrorData::Number { value: inputs }),
             ),
             S::UnrecordedSpend => (ShieldedCode::UnrecordedSpend, None),
+            S::SpendRefused => (ShieldedCode::SpendRefused, None),
             S::MixingActive => (ShieldedCode::MixingActive, None),
             S::NothingToMove => (ShieldedCode::NothingToMove, None),
             S::CoinsUnconfirmed { coins } => (
@@ -706,6 +708,7 @@ mod tests {
                 max: 50,
             },
             ShieldedError::UnrecordedSpend,
+            ShieldedError::SpendRefused,
             ShieldedError::MixingActive,
             ShieldedError::NothingToMove,
             ShieldedError::CoinsUnconfirmed { coins: 2 },

@@ -3934,6 +3934,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "shielded.pool_too_small",
   "shielded.too_many_inputs",
   "shielded.unrecorded_spend",
+  "shielded.spend_refused",
   "shielded.mixing_active",
   "shielded.nothing_to_move",
   "shielded.coins_unconfirmed",

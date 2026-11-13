@@ -1486,6 +1486,40 @@ impl LeaseTable {
             .map_err(|e| e.to_string())?
     }
 
+    /// Records the shielded spend `artifact` of `wallet` the engine accepted
+    /// before the library sends it (schema 11), in dispatch.sqlite
+    /// (`synchronous=FULL`): written when this returns `Ok`. `false` when
+    /// its activity already had a row, which stands. On the blocking pool.
+    pub(crate) async fn record_shielded_artifact(
+        &self,
+        wallet: WalletId,
+        artifact: dw_appdb::dispatch::NewShieldedArtifact,
+    ) -> Result<bool, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        #[cfg(test)]
+        crate::coins::pause_at(&self.hold_artifact_write).await;
+        (self.rt)
+            .spawn_blocking(move || backend.record_shielded_artifact(&wallet.0, &artifact))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// The shielded artifact of `wallet`'s spend `activity` (schema 11),
+    /// archived or not; an error while the journal is not open or cannot
+    /// be read. On the blocking pool.
+    pub(crate) async fn shielded_artifact(
+        &self,
+        wallet: WalletId,
+        activity: [u8; 32],
+    ) -> Result<Option<dw_appdb::dispatch::ShieldedArtifact>, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        let artifacts = (self.rt)
+            .spawn_blocking(move || backend.shielded_artifacts(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())??;
+        Ok(artifacts.into_iter().find(|a| a.activity == activity))
+    }
+
     /// Marks the shielded spend `activity` of `wallet`, of unknown result
     /// and with no record of the library's, built on `anchor` and spending
     /// `nullifiers` (schema 10, DEC-1057), in dispatch.sqlite

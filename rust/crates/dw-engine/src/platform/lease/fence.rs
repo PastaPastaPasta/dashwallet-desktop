@@ -35,8 +35,8 @@ use super::{ArtifactId, DispatchScope, FlowOutcome, LeaseError, LeaseId, Origin}
 use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved, DispatchState};
 use crate::{EngineEvent, NoticeCode, WalletId};
 use dw_appdb::dispatch::{
-    CallRows, Resolution, SelfSpendConflict, SelfSpendProvenance, StoredFundingKey, StoredOutPoint,
-    TopUpSettled, UnrecordedSpend,
+    CallRows, NewShieldedArtifact, Resolution, SelfSpendConflict, SelfSpendProvenance,
+    ShieldedArtifact, StoredFundingKey, StoredOutPoint, TopUpSettled, UnrecordedSpend,
 };
 
 /// A shielded spend on record: `(activity, transition)`, the library's
@@ -192,6 +192,21 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
         _nullifiers: &[[u8; 32]],
     ) -> Result<Vec<[u8; 32]>, String> {
         Ok(Vec::new())
+    }
+    /// Records the shielded spend `artifact` of `wallet` (schema 11), with
+    /// its nullifiers, durably; `false` when its activity already had a
+    /// row, which stands.
+    fn record_shielded_artifact(
+        &self,
+        _wallet: &[u8; 32],
+        _artifact: &NewShieldedArtifact,
+    ) -> Result<bool, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
+    /// Every shielded artifact of `wallet` (schema 11), archived ones
+    /// included.
+    fn shielded_artifacts(&self, _wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>, String> {
+        Err("this journal keeps no shielded artifacts".into())
     }
     /// The journal connection's `synchronous` pragma (2 = FULL).
     #[cfg(test)]
@@ -401,6 +416,19 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
         nullifiers: &[[u8; 32]],
     ) -> Result<Vec<[u8; 32]>, String> {
         (self.note_spent_nullifiers(wallet, nullifiers)).map_err(|e| e.to_string())
+    }
+
+    fn record_shielded_artifact(
+        &self,
+        wallet: &[u8; 32],
+        artifact: &NewShieldedArtifact,
+    ) -> Result<bool, String> {
+        (self.record_shielded_artifact(wallet, artifact, crate::events::unix_now()))
+            .map_err(|e| e.to_string())
+    }
+
+    fn shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>, String> {
+        (self.all_shielded_artifacts(wallet)).map_err(|e| e.to_string())
     }
 
     #[cfg(test)]
