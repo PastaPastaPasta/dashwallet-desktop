@@ -3577,13 +3577,13 @@ fn a_failed_send_the_library_still_holds_armed_is_pending_and_recorded() {
     let old_unresolved = lib.unresolved.lock().unwrap().clone();
     let old_reserved = lib.reserved.lock().unwrap().clone();
     let old_recorded = lib.recorded.lock().unwrap().clone();
-    let refusal = PlatformWalletError::ShieldedDispatchRefused {
+    let refusal = || PlatformWalletError::ShieldedDispatchRefused {
         reason: "the plan check failed".into(),
     };
     *lib.after_failure.lock().unwrap() = AfterFailure::Free;
-    lib.fail_with(refusal.clone());
+    lib.fail_with(refusal());
     let error = send(false).expect_err("a new refusal is still an error");
-    assert_eq!(error, pool::spend_error(refusal));
+    assert_eq!(error, pool::spend_error(refusal()));
     assert_eq!(lib.unresolved.lock().unwrap().clone(), old_unresolved);
     assert_eq!(lib.reserved.lock().unwrap().clone(), old_reserved);
     assert_eq!(lib.recorded.lock().unwrap().clone(), old_recorded);
