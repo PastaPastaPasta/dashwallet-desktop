@@ -349,65 +349,66 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
   const fmt = useFormats(network);
   const whyId = useId();
   const s = status.data ?? null;
-  const sheet = <ShieldedSheet flow={flow} walletId={walletId} network={network} status={s} />;
-  if (s === null) return sheet;
   const busy = flow.running;
-  const syncing = shieldedSyncing(s);
+  const syncing = s !== null && shieldedSyncing(s);
   const finishWhy = syncing ? SHIELDED_SYNCING_TEXT : busy ? C.card.why.busy : null;
-  const whyLine = finishWhy && s.pendingShields.length > 0 ? finishWhy : null;
-  const pending = s.active && BigInt(s.pending) > 0n;
-  if (!pending && s.unrecordedSpends.length === 0 && !(s.active && s.unresolvedSpends.length > 0) && s.pendingShields.length === 0 && !flow.unseen) return sheet;
+  const whyLine = finishWhy && s !== null && s.pendingShields.length > 0 ? finishWhy : null;
+  const pending = s !== null && s.active && BigInt(s.pending) > 0n;
+  const attention = s !== null && (pending || s.unrecordedSpends.length > 0 || (s.active && s.unresolvedSpends.length > 0) || s.pendingShields.length > 0 || flow.unseen);
   const showRoute = shieldedRoute(flow.kind);
+  // The sheet keeps its slot whether or not the section shows, so an open grant prompt is not remounted.
   return (
     <>
-      <section className="shielded-card card-l1" data-testid="shielded-card" data-active={s.active} aria-label={C.card.title}>
-        <div className="shielded-card-body">
-          <h2 className="platform-card-title">{C.card.title}</h2>
-          {pending && (
-            <p className="platform-card-text" data-testid="shielded-card-pending">
-              {C.card.pending(fmt.credits(s.pending))}
-            </p>
-          )}
-          {s.unrecordedSpends.length > 0 && (
-            <p className="form-problem" role="alert" data-testid="shielded-unrecorded">
-              {C.card.unrecorded}
-            </p>
-          )}
-          {s.active && s.unresolvedSpends.length > 0 && (
-            <p className="platform-card-text" data-testid="shielded-unresolved">
-              {C.card.unresolved}
-            </p>
-          )}
-          {s.pendingShields.map((p) => (
-            <p key={p.txid} className="platform-card-text" data-testid={p.consumptionUnknown ? "shielded-checking" : "shielded-unfinished"}>
-              {p.consumptionUnknown ? (
-                <>
-                  <strong>{C.done.checking.title}.</strong> {C.done.checking.text}
-                </>
-              ) : (
-                C.card.unfinished(fmt.duffs(p.duffs))
-              )}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={syncing || busy} why={finishWhy} whyId={whyLine ? whyId : undefined} onClick={() => void flow.resume(p.txid)}>
-                {p.consumptionUnknown ? C.card.checkAgain : C.card.finish}
-              </DashButton>
-            </p>
-          ))}
-          {whyLine && (
-            <p id={whyId} className="field-hint" data-testid="shielded-card-why">
-              {whyLine}
-            </p>
-          )}
-          {flow.unseen && (
-            <p className="platform-card-text" data-testid="shielded-unseen">
-              {C.unseen}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="shielded-show" onClick={() => (showRoute === "send" ? flow.begin("send") : transfer.start(showRoute))}>
-                {C.show}
-              </DashButton>
-            </p>
-          )}
-        </div>
-      </section>
-      {sheet}
+      {s !== null && attention && (
+        <section className="shielded-card card-l1" data-testid="shielded-card" data-active={s.active} aria-label={C.card.title}>
+          <div className="shielded-card-body">
+            <h2 className="platform-card-title">{C.card.title}</h2>
+            {pending && (
+              <p className="platform-card-text" data-testid="shielded-card-pending">
+                {C.card.pending(fmt.credits(s.pending))}
+              </p>
+            )}
+            {s.unrecordedSpends.length > 0 && (
+              <p className="form-problem" role="alert" data-testid="shielded-unrecorded">
+                {C.card.unrecorded}
+              </p>
+            )}
+            {s.active && s.unresolvedSpends.length > 0 && (
+              <p className="platform-card-text" data-testid="shielded-unresolved">
+                {C.card.unresolved}
+              </p>
+            )}
+            {s.pendingShields.map((p) => (
+              <p key={p.txid} className="platform-card-text" data-testid={p.consumptionUnknown ? "shielded-checking" : "shielded-unfinished"}>
+                {p.consumptionUnknown ? (
+                  <>
+                    <strong>{C.done.checking.title}.</strong> {C.done.checking.text}
+                  </>
+                ) : (
+                  C.card.unfinished(fmt.duffs(p.duffs))
+                )}{" "}
+                <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={syncing || busy} why={finishWhy} whyId={whyLine ? whyId : undefined} onClick={() => void flow.resume(p.txid)}>
+                  {p.consumptionUnknown ? C.card.checkAgain : C.card.finish}
+                </DashButton>
+              </p>
+            ))}
+            {whyLine && (
+              <p id={whyId} className="field-hint" data-testid="shielded-card-why">
+                {whyLine}
+              </p>
+            )}
+            {flow.unseen && (
+              <p className="platform-card-text" data-testid="shielded-unseen">
+                {C.unseen}{" "}
+                <DashButton variant="plainBlue" size="small" data-testid="shielded-show" onClick={() => (showRoute === "send" ? flow.begin("send") : transfer.start(showRoute))}>
+                  {C.show}
+                </DashButton>
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+      <ShieldedSheet flow={flow} walletId={walletId} network={network} status={s} />
     </>
   );
 }

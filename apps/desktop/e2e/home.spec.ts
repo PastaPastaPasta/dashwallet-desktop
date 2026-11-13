@@ -59,3 +59,36 @@ for (const theme of THEMES) {
     });
   }
 }
+
+test("An open Shielded passphrase prompt survives the Home section appearing and going", async ({ page }) => {
+  await page.goto(fixtureUrl("funded", THEMES[0]));
+  await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
+  await expect(page.getByTestId("shielded-card")).toHaveCount(0);
+  await openTransfer(page, "coreToShielded");
+  await page.getByTestId("transfer-amount").fill("0.001");
+  await page.getByTestId("transfer-continue").click();
+  await page.getByTestId("shielded-go").click();
+  const input = page.getByTestId("grant-sheet").locator("input[type=password]");
+  await input.fill("de");
+  await input.evaluate((el) => el.setAttribute("data-kept", "1"));
+  const setShields = (n: number) =>
+    page.evaluate((n) => {
+      const f = window.__dwFixture!;
+      f.world.pending.shielded!.pendingShields = n ? [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false, consumptionUnknown: false }] : [];
+      f.emit({ kind: "eventsOverflowed" });
+    }, n);
+  await setShields(1);
+  await expect(page.getByTestId("shielded-unfinished")).toHaveCount(1);
+  await expect(input).toHaveAttribute("data-kept", "1");
+  await expect(input).toHaveValue("de");
+  await expect(input).toBeFocused();
+  await setShields(0);
+  await expect(page.getByTestId("shielded-card")).toHaveCount(0);
+  await expect(input).toHaveAttribute("data-kept", "1");
+  await expect(input).toHaveValue("de");
+  await expect(input).toBeFocused();
+  await input.pressSequentially("mo");
+  await input.press("Enter");
+  await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
+  await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
+});
