@@ -4248,8 +4248,9 @@ renames or reshapes them takes the next version bump:
     spend was refused before anything was sent (by the hook, or for a key set that is not the account's). A new
     `shielded.*` code and no existing one: `platform.unavailable` says "Platform did not answer, retry", and the
     other shielded refusals name a cause the user acts on, while this one says only that nothing left the wallet.
-    A first send that fails after the library stored the spend returns `pending` (`unresolved: null`), not an
-    error; without the hook a spend is `platform.unavailable` and no pass runs. `platform.cancelled` ("cancelled
+    A first send that fails after the library stored the spend returns `pending`, with `unresolved` naming the
+    retained armed transition and `unresolved: null` only when an unresolved disposition alone holds the notes; without
+    the hook a spend is `platform.unavailable` and no pass runs. `platform.cancelled` ("cancelled
     before anything was sent") is not reused either: it is the outcome of a lock that won the permit or an approval
     that ended, and hosts group it with the ended-approval codes, while a refusal here is neither.
 
