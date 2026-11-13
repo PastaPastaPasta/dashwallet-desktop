@@ -20,7 +20,6 @@ export type PlatformMoveApi = Pick<Backend, "platformMoveToCore" | "authorize" |
 export const MOVE_COPY = {
   card: {
     title: "Platform addresses",
-    text: "Your Platform balance is not in your Dash wallet yet. Move it there to spend it as Dash.",
     /** What one move cannot take (below the minimum input, beyond the inputs one transition takes, or the fee reserve): it stays on Platform. */
     dust: (amount: string) => `${amount} on your Platform addresses cannot be moved to your Dash wallet right now.`,
   },

@@ -1,8 +1,5 @@
-// Shielded funds (shielded/flow.ts): Home's card, whose title opens Transfer from Shielded; the steps of
-// a Shielded move (amount → quote → confirm → progress → outcome), which Transfer shows for Add to
-// Shielded and Move to Dash wallet and Pay's Send from Shielded sheet shows for a send; and the
-// address with its QR that Receive shows. The card says "not active on this network yet" while the
-// network does not take shielded transitions, and is not there while dw-app has no such commands.
+// Shielded funds (shielded/flow.ts): Home's attention rows; the steps Transfer shows for moves
+// between balances and Pay shows for a send; and the address with its QR that Receive shows.
 
 import { useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -20,7 +17,6 @@ import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { SHIELDED_SYNCING_TEXT, shieldedSyncing } from "../shielded/syncing";
-import { CardHead } from "./CardHead";
 import { Qr } from "./Receive";
 import { shieldedRoute, transferFor } from "../transfer/model";
 import { GrantSheet } from "./tools/common";
@@ -343,8 +339,7 @@ export function ShieldedReceiveBody({ walletId, network }: { walletId: string; n
   return <>{content.text}<div className="receive-body" data-testid="shielded-receive">{content.before}{content.after}</div></>;
 }
 
-/** Home's Shielded card: its title opens Transfer from Shielded; the locks to finish and the payments
- * still settling are listed under it. Not there while dw-app has no such commands. */
+/** Home's Shielded attention rows, with the send and grant sheets kept mounted. */
 export function ShieldedCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const backend = useBackend();
   const status = useShieldedStatus(walletId);
@@ -354,65 +349,66 @@ export function ShieldedCard({ walletId, network }: { walletId: string; network:
   const fmt = useFormats(network);
   const whyId = useId();
   const s = status.data ?? null;
-  const sheet = <ShieldedSheet flow={flow} walletId={walletId} network={network} status={s} />;
-  if (s === null) return sheet;
-  const balance = shieldedDuffs(s);
   const busy = flow.running;
-  const syncing = shieldedSyncing(s);
+  const syncing = s !== null && shieldedSyncing(s);
   const finishWhy = syncing ? SHIELDED_SYNCING_TEXT : busy ? C.card.why.busy : null;
-  const whyLine = finishWhy && s.pendingShields.length > 0 ? finishWhy : null;
-  const text = !s.active ? C.card.inactive : balance === null ? C.card.syncing : C.card.text;
+  const whyLine = finishWhy && s !== null && s.pendingShields.length > 0 ? finishWhy : null;
+  const pending = s !== null && s.active && BigInt(s.pending) > 0n;
+  const attention = s !== null && (pending || s.unrecordedSpends.length > 0 || (s.active && s.unresolvedSpends.length > 0) || s.pendingShields.length > 0 || flow.unseen);
   const showRoute = shieldedRoute(flow.kind);
+  // The sheet keeps its slot whether or not the section shows, so an open grant prompt is not remounted.
   return (
     <>
-      <section className="shielded-card card-l1" data-testid="shielded-card" data-active={s.active} aria-label={C.card.title}>
-        <div className="shielded-card-body">
-          <CardHead title={C.card.title} text={text} textTestId="shielded-card-text" buttonTestId="shielded-card-transfer" onTransfer={s.active ? () => transfer.start("shieldedToCore") : null} />
-          {s.active && BigInt(s.pending) > 0n && (
-            <p className="platform-card-text" data-testid="shielded-card-pending">
-              {C.card.pending(fmt.credits(s.pending))}
-            </p>
-          )}
-          {s.unrecordedSpends.length > 0 && (
-            <p className="form-problem" role="alert" data-testid="shielded-unrecorded">
-              {C.card.unrecorded}
-            </p>
-          )}
-          {s.active && s.unresolvedSpends.length > 0 && (
-            <p className="platform-card-text" data-testid="shielded-unresolved">
-              {C.card.unresolved}
-            </p>
-          )}
-          {s.pendingShields.map((p) => (
-            <p key={p.txid} className="platform-card-text" data-testid={p.consumptionUnknown ? "shielded-checking" : "shielded-unfinished"}>
-              {p.consumptionUnknown ? (
-                <>
-                  <strong>{C.done.checking.title}.</strong> {C.done.checking.text}
-                </>
-              ) : (
-                C.card.unfinished(fmt.duffs(p.duffs))
-              )}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={syncing || busy} why={finishWhy} whyId={whyLine ? whyId : undefined} onClick={() => void flow.resume(p.txid)}>
-                {p.consumptionUnknown ? C.card.checkAgain : C.card.finish}
-              </DashButton>
-            </p>
-          ))}
-          {whyLine && (
-            <p id={whyId} className="field-hint" data-testid="shielded-card-why">
-              {whyLine}
-            </p>
-          )}
-          {flow.unseen && (
-            <p className="platform-card-text" data-testid="shielded-unseen">
-              {C.unseen}{" "}
-              <DashButton variant="plainBlue" size="small" data-testid="shielded-show" onClick={() => (showRoute === "send" ? flow.begin("send") : transfer.start(showRoute))}>
-                {C.show}
-              </DashButton>
-            </p>
-          )}
-        </div>
-      </section>
-      {sheet}
+      {s !== null && attention && (
+        <section className="shielded-card card-l1" data-testid="shielded-card" data-active={s.active} aria-label={C.card.title}>
+          <div className="shielded-card-body">
+            <h2 className="platform-card-title">{C.card.title}</h2>
+            {pending && (
+              <p className="platform-card-text" data-testid="shielded-card-pending">
+                {C.card.pending(fmt.credits(s.pending))}
+              </p>
+            )}
+            {s.unrecordedSpends.length > 0 && (
+              <p className="form-problem" role="alert" data-testid="shielded-unrecorded">
+                {C.card.unrecorded}
+              </p>
+            )}
+            {s.active && s.unresolvedSpends.length > 0 && (
+              <p className="platform-card-text" data-testid="shielded-unresolved">
+                {C.card.unresolved}
+              </p>
+            )}
+            {s.pendingShields.map((p) => (
+              <p key={p.txid} className="platform-card-text" data-testid={p.consumptionUnknown ? "shielded-checking" : "shielded-unfinished"}>
+                {p.consumptionUnknown ? (
+                  <>
+                    <strong>{C.done.checking.title}.</strong> {C.done.checking.text}
+                  </>
+                ) : (
+                  C.card.unfinished(fmt.duffs(p.duffs))
+                )}{" "}
+                <DashButton variant="plainBlue" size="small" data-testid="shielded-finish" disabled={syncing || busy} why={finishWhy} whyId={whyLine ? whyId : undefined} onClick={() => void flow.resume(p.txid)}>
+                  {p.consumptionUnknown ? C.card.checkAgain : C.card.finish}
+                </DashButton>
+              </p>
+            ))}
+            {whyLine && (
+              <p id={whyId} className="field-hint" data-testid="shielded-card-why">
+                {whyLine}
+              </p>
+            )}
+            {flow.unseen && (
+              <p className="platform-card-text" data-testid="shielded-unseen">
+                {C.unseen}{" "}
+                <DashButton variant="plainBlue" size="small" data-testid="shielded-show" onClick={() => (showRoute === "send" ? flow.begin("send") : transfer.start(showRoute))}>
+                  {C.show}
+                </DashButton>
+              </p>
+            )}
+          </div>
+        </section>
+      )}
+      <ShieldedSheet flow={flow} walletId={walletId} network={network} status={s} />
     </>
   );
 }

@@ -190,12 +190,12 @@ test.describe("Transfer quotes", () => {
     await expect.poll(focused).toBe("transfer-to");
   });
 
-  test("the Shielded heading opens Transfer; the Platform card only shows its balance", async ({ page }) => {
+  test("Home offers Transfer from its shortcut without duplicate pool cards", async ({ page }) => {
     await open(page, "funded");
-    for (const card of ["shielded-card", "platform-card"]) await expect(page.getByTestId(card).getByRole("heading", { level: 2 })).toHaveCount(1);
-    await expect(page.getByTestId("platform-card").locator(".card-head button")).toHaveCount(0);
-    const box = (await page.getByTestId("shielded-card").locator(".card-head").boundingBox())!;
-    await page.mouse.click(box.x + box.width - 3, box.y + box.height - 3);
+    await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
+    for (const card of ["shielded-card", "platform-card"]) await expect(page.getByTestId(card)).toHaveCount(0);
+    await openTransfer(page, "shieldedToCore");
     await expect(page.getByTestId("transfer-body")).toHaveAttribute("data-route", "shieldedToCore");
   });
 

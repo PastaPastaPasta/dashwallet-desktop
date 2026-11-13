@@ -755,7 +755,7 @@ async function expectFundOpens(page: Page) {
 test.describe("Move to Dash wallet", () => {
   test("quotes, asks for approval, moves everything and shows it in Activity", async ({ page }) => {
     const errors = await open(page, "funded");
-    await expect(page.getByTestId("platform-card-amount")).toContainText("0.4");
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
     await shot(page, "light-home-platform-card");
     await moveFromPlatform(page);
     await expect(page.getByTestId("platform-move-quote")).toBeVisible();
@@ -910,10 +910,11 @@ async function amountStep(page: Page, action: "add" | "out" | "send", amount: st
 }
 
 test.describe("Shielded", () => {
-  test("shows the card with its balance and actions", async ({ page }) => {
+  test("shows Shielded in the header and Transfer in the shortcuts", async ({ page }) => {
     const errors = await open(page, "funded");
-    await expect(page.getByTestId("shielded-card")).toBeVisible();
-    for (const id of ["shielded-card-transfer", "shortcut-transfer"]) await expect(page.getByTestId(id)).toBeEnabled();
+    await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
+    await expect(page.getByTestId("shielded-card")).toHaveCount(0);
+    await expect(page.getByTestId("shortcut-transfer")).toBeEnabled();
     await shot(page, "light-home-shielded-card");
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
@@ -1054,8 +1055,8 @@ test.describe("Shielded", () => {
   for (const theme of THEMES) {
     test(`while Shielded syncs its actions wait, say why, and stay readable (${theme})`, async ({ page }) => {
       const errors = await open(page, "shielded-syncing", theme);
-      const card = page.getByTestId("shielded-card");
-      await expect(card).toContainText("Shielded is syncing. Its balance shows when it has.");
+      await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
+      await expect(page.getByTestId("shielded-card")).toHaveCount(0);
       const waits = async (ids: string[]) => {
         for (const id of ids) {
           const b = page.getByTestId(id);
@@ -1066,12 +1067,12 @@ test.describe("Shielded", () => {
         }
       };
       // Both of its Transfer routes wait and say why.
-      for (const open of ["shortcut-transfer", "shielded-card-transfer"]) {
-        await page.getByTestId(open).click();
+      for (const route of ["coreToShielded", "shieldedToCore"] as const) {
+        await openTransfer(page, route);
         await expect(page.getByTestId("transfer-unavailable")).toHaveText("Shielded is still syncing; try again when it finishes.");
         await expect(page.getByTestId("transfer-amount")).toBeDisabled();
         await waits(["transfer-max", "transfer-continue"]);
-        if (open === "shielded-card-transfer") await shot(page, `${theme}-shielded-syncing-disabled`);
+        if (route === "shieldedToCore") await shot(page, `${theme}-shielded-syncing-disabled`);
         await page.getByTestId("transfer-cancel").click();
       }
       await page.getByTestId("sidebar-receive").click();
@@ -1104,11 +1105,11 @@ test.describe("Shielded", () => {
     await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(0);
   });
 
-  test("says Shielded is not active on this network yet, with no actions", async ({ page }) => {
+  test("shows an unavailable Shielded header balance with no Home card", async ({ page }) => {
     const errors = await open(page, "shielded-inactive");
-    await expect(page.getByTestId("shielded-card-text")).toHaveText("Shielded is not active on this network yet.");
-    await expect(page.getByTestId("shielded-card-transfer")).toHaveCount(0);
     await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
+    await expect(page.getByTestId("shielded-card")).toHaveCount(0);
+    await expect(page.getByTestId("shielded-card-transfer")).toHaveCount(0);
     await shot(page, "light-shielded-inactive");
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);

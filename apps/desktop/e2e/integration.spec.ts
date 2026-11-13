@@ -75,16 +75,16 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
   test("Platform addresses holding only dust: Home counts nothing, and no Move is offered", async ({ page }) => {
     await open(page, "platform-dust");
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
-    await expect(page.getByTestId("platform-card")).not.toContainText("cannot be moved to your Dash wallet right now");
+    await expect(page.getByTestId("platform-card-dust")).toContainText("cannot be moved to your Dash wallet right now");
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
     expect(await platformMoveWhy(page)).toContain("cannot be moved to your Dash wallet right now");
   });
 
-  test("an unmovable remainder is not counted or prompted on Home", async ({ page }) => {
+  test("an unmovable remainder is shown without repeating the balance on Home", async ({ page }) => {
     await open(page, "platform-partly-dust");
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
-    await expect(page.getByTestId("platform-card-amount")).toContainText("0.4");
-    await expect(page.getByTestId("platform-card-dust")).toHaveCount(0);
+    await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
+    await expect(page.getByTestId("platform-card-dust")).toContainText("cannot be moved to your Dash wallet right now");
     await moveFromPlatform(page);
     await expect(page.getByTestId("platform-move-go")).toBeEnabled();
   });

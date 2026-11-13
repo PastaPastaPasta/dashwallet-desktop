@@ -97,26 +97,23 @@ export async function lateFrames(page: Page, ms = 500) {
 
 export type TransferRoute = "coreToShielded" | "coreToPlatform" | "shieldedToCore" | "platformToCore";
 
-/** Home's Transfer sheet at `route`, opened the way Home offers it: the shortcut for the Dash wallet's
- * routes (picking Platform when it is not the default), a card's balance for its pool's. */
+/** Home's Transfer shortcut, choosing the requested source and destination pools. */
 export async function openTransfer(page: Page, route: TransferRoute) {
   const body = page.getByTestId("transfer-body");
-  if (route === "shieldedToCore") await page.getByTestId("shielded-card-transfer").click();
-  else {
-    await page.getByTestId("shortcut-transfer").click();
-    await body.waitFor();
-    if ((await body.getAttribute("data-view")) === "steps" && (await body.getAttribute("data-route")) !== route) await page.getByTestId("transfer-choose-route").click();
-    if (route === "platformToCore") {
-      if (!(await page.getByTestId("transfer-picker-platform").isVisible())) await page.getByTestId("transfer-from").click();
-      await page.getByTestId("transfer-picker-platform").click();
-      if ((await body.getAttribute("data-route")) !== route) {
-        await page.getByTestId("transfer-to").click();
-        await page.getByTestId("transfer-picker-core").click();
-      }
-    } else if ((await body.getAttribute("data-route")) !== route) {
+  await page.getByTestId("shortcut-transfer").click();
+  await body.waitFor();
+  if ((await body.getAttribute("data-view")) === "steps" && (await body.getAttribute("data-route")) !== route) await page.getByTestId("transfer-choose-route").click();
+  if (route === "platformToCore" || route === "shieldedToCore") {
+    const pool = route === "platformToCore" ? "platform" : "shielded";
+    if (!(await page.getByTestId(`transfer-picker-${pool}`).isVisible())) await page.getByTestId("transfer-from").click();
+    await page.getByTestId(`transfer-picker-${pool}`).click();
+    if ((await body.getAttribute("data-route")) !== route) {
       await page.getByTestId("transfer-to").click();
-      await page.getByTestId(route === "coreToShielded" ? "transfer-picker-shielded" : "transfer-picker-platform").click();
+      await page.getByTestId("transfer-picker-core").click();
     }
+  } else if ((await body.getAttribute("data-route")) !== route) {
+    await page.getByTestId("transfer-to").click();
+    await page.getByTestId(route === "coreToShielded" ? "transfer-picker-shielded" : "transfer-picker-platform").click();
   }
   await expect(body).toHaveAttribute("data-route", route);
 }

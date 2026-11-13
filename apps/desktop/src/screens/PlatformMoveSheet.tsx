@@ -1,5 +1,5 @@
 // "Move to Dash wallet" (platform/move.ts): the steps Transfer shows for it (the quote, Confirm & move,
-// progress and outcome), and Home's Platform card, whose title opens Transfer from Platform.
+// progress and outcome), and Home's Platform attention rows.
 
 import { useEffect } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
@@ -13,7 +13,6 @@ import { useModel } from "../onboarding/model";
 import { hasUnansweredOp, moveBlock, sendHolds, moveCanRetry, moveErrorText, plannedWithdrawalCredits, moveFor, MOVE_COPY as C, type MoveBlock, type PlatformMoveFlow } from "../platform/move";
 import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
 import { transferFor } from "../transfer/model";
-import { CardHead } from "./CardHead";
 
 function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: PlatformMoveFlow; walletId: string; credits: (c: string) => string; amount: (duffs: number) => string; block: MoveBlock | null }) {
   const quote = usePlatformMoveQuote(walletId, true);
@@ -175,9 +174,7 @@ export function usePlatformHold(walletId: string, flow: PlatformMoveFlow) {
   return { activity, waiting, sendHeld, block: moveBlock(waiting, activity), waitingText: sendHeld ? C.waiting.sendHeld : C.waiting.text };
 }
 
-/** Home's Platform card: shown while the Platform addresses are known (`platform` is their balance in
- * duffs; `null`/`undefined`: not known, no card). It
- * carries a move's hold, the locks an add left unapplied, and the results not seen yet. */
+/** Home's Platform attention rows: move holds, unapplied locks and results not seen yet. */
 export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0" }: { walletId: string; network: NetworkInfo; platform: number | null | undefined; dustCredits?: string }) {
   const backend = useBackend();
   const flow = moveFor(backend, walletId);
@@ -192,21 +189,25 @@ export function PlatformMoveCard({ walletId, network, platform, dustCredits = "0
   // Activity settles a retained `pending` result: when it changes, when a move turns pending (the
   // rows read may already have shown it settled) and when the sheet closes.
   useEffect(() => flow.settle(activity.data), [flow, activity.data, flow.pending, flow.open]);
-  const funded = platform != null && platform > 0;
   const dust = BigInt(dustCredits) > 0n;
   const holdReason = flow.running ? C.running.text : block === "checking" ? C.check.loading : block === "failed" ? C.check.failed : null;
   if (platform == null && !flow.open && !flow.running && !flow.unseen && !waiting && !dust && !fund.open && !fund.running && !fund.unseen && unfinished.length === 0) return null;
+  if (!waiting && !sendHeld && !dust && !holdReason && !flow.unseen && !fund.unseen && unfinished.length === 0) return null;
   const amountText = (duffs: number) => (discreet ? shown.masked() : `${shown.compact(duffs)} ${shown.name}`);
-  const line = (
-    <>
-      {funded && <span data-testid="platform-card-amount">{discreet ? shown.masked() : shown.withUnit(platform)}. </span>}
-      {waiting ? (sendHeld ? C.waiting.sendHeld : C.waiting.text) : !funded ? F.card.empty : null}
-    </>
-  );
   return (
     <section className="platform-card card-l1" data-testid="platform-card" aria-label={C.card.title}>
       <div className="platform-card-body">
-        <CardHead title={C.card.title} text={line} buttonTestId="platform-card-transfer" onTransfer={null} />
+        <h2 className="platform-card-title">{C.card.title}</h2>
+        {waiting && (
+          <p className="platform-card-text" data-testid="platform-card-waiting">
+            {sendHeld ? C.waiting.sendHeld : C.waiting.text}
+          </p>
+        )}
+        {dust && (
+          <p className="platform-card-text" data-testid="platform-card-dust">
+            {C.card.dust(amountText(creditsToDuffs(dustCredits)))}
+          </p>
+        )}
         {sendHeld && !waiting && (
           <p className="platform-card-text" data-testid="platform-card-send-held">
             {C.waiting.sendHeld}

@@ -25,7 +25,6 @@ export type FundRequest = { kind: "add"; duffs: number } | { kind: "resume"; txi
 
 export const FUND_COPY = {
   card: {
-    empty: "Nothing on your Platform addresses yet. Add Dash from your wallet to use it on Dash Platform.",
     unfinished: (amount: string) => `${amount} was locked to add to Platform and is not applied yet.`,
     stuck: {
       tooSmall: (amount: string) => `${amount} was locked to add to Platform, but it's worth less than the Platform fee, so it can't be added.`,

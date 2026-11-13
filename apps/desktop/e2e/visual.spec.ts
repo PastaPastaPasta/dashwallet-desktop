@@ -122,7 +122,7 @@ async function shoot(page: Page, name: string, theme: Theme) {
   await expect(page).toHaveScreenshot(`${theme}-${name}.png`, {
     animations: "disabled",
     caret: "hide",
-    mask: [page.locator(".verify-slots, .verify-chips")],
+    mask: [page.locator(".verify-slots, .verify-chips, [data-testid=recovery-words]")],
   });
 }
 
