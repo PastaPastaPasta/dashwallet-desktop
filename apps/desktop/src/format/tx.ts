@@ -243,7 +243,8 @@ export function isMixing(type: TxTypeName): boolean {
   return MIXING.includes(type);
 }
 
-/** Collapses adjacent CoinJoin rows in a day card; callers keep table/CSV rows unchanged. */
+/** Collapses adjacent CoinJoin rows in a day card; callers keep table/CSV rows unchanged. A
+ * conflicted, abandoned or refused row stays on its own so its warning is never folded away. */
 export function groupConsecutiveMixing(rows: TxRow[]): (TxRow | MixingGroup)[] {
   const grouped: (TxRow | MixingGroup)[] = [];
   let run: TxRow[] = [];
@@ -253,7 +254,7 @@ export function groupConsecutiveMixing(rows: TxRow[]): (TxRow | MixingGroup)[] {
     run = [];
   };
   for (const row of rows) {
-    if (isMixing(row.txType)) run.push(row);
+    if (isMixing(row.txType) && !isProblem(row.status)) run.push(row);
     else {
       flush();
       grouped.push(row);

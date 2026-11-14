@@ -101,6 +101,16 @@ describe("chips and icons", () => {
     expect(grouped[2]).toMatchObject({ txid: "d" });
     expect("kind" in grouped[2]).toBe(false);
   });
+
+  it("keeps a conflicted or abandoned mixing row out of a group", () => {
+    const row = (txid: string, kind: TxStatusInfo["kind"]): any => ({ txid, recordIndex: 0, txType: "coinJoinMixing", category: "coinJoin", amount: -1000, status: status({ kind }), timestamp: 1, blockHeight: 1, fee: 0, address: null, label: null, countsTowardBalance: true, involvesWatchOnly: false });
+    const grouped = groupConsecutiveMixing([row("a", "confirmed"), row("b", "confirmed"), row("c", "conflicted"), row("d", "confirmed"), row("e", "abandoned")]);
+    expect(grouped).toHaveLength(4);
+    expect("kind" in grouped[0] && grouped[0].rows.map((r) => r.txid)).toEqual(["a", "b"]);
+    expect(grouped[1]).toMatchObject({ txid: "c" });
+    expect(grouped[2]).toMatchObject({ txid: "d" });
+    expect(grouped[3]).toMatchObject({ txid: "e" });
+  });
 });
 
 describe("days and addresses", () => {
