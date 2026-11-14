@@ -26,8 +26,6 @@ import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
 import { buyCredits } from "./dashpay/MyProfile";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
-import { PlatformMoveCard } from "./PlatformMoveSheet";
-import { ShieldedCard } from "./ShieldedSheet";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 import { defaultRoute, transferFor, TRANSFER_COPY } from "../transfer/model";
@@ -234,8 +232,6 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
       <div className="page-column">
         <RatesConsentCard network={network} />
         <HomeDashPayCard walletId={walletId} network={network} />
-        <ShieldedCard walletId={walletId} network={network} />
-        <PlatformMoveCard walletId={walletId} network={network} platform={pools.platform} dustCredits={pools.platformDust} />
         <UnfinishedTransfersCard walletId={walletId} network={network} />
         <TransferSheet walletId={walletId} network={network} />
         <CoinJoinCard walletId={walletId} network={network} />

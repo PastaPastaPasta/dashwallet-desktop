@@ -106,7 +106,7 @@ describe("unfinished transfers card", () => {
     expect(view(list([]), all)).toMatchObject({ kind: "failed", actions: ["retry", "dismiss"] });
   });
 
-  it("leaves out a lock the Shielded card already shows as a pending shield", () => {
+  it("leaves out a lock the card already shows as a pending shield", () => {
     const data = list([lock(1, "ready"), lock(2, "ready")]);
     const kept = withoutPendingShields(data, [{ txid: lock(1, "ready").txid }]);
     expect(kept?.locks.map((l) => l.txid[0])).toEqual(["2"]);

@@ -66,15 +66,15 @@ export const FUND_COPY = {
   },
   done: {
     applied: { title: "Added to Platform", text: (amount: string) => `About ${amount} was added to your Platform balance.` },
-    waiting: { title: "Locked, not applied yet", text: "Your Dash is locked and waiting for the network's confirmation. Finish it from the Platform card: nothing is lost." },
+    waiting: { title: "Locked, not applied yet", text: "Your Dash is locked and waiting for the network's confirmation. Finish it from Unfinished transfers on Home: nothing is lost." },
     checking: { title: "Checking", text: "This amount may already be on your Platform addresses; we can't confirm it yet." },
-    notApplied: { title: "Locked, not applied", text: (why: string) => `Your Dash is locked but Dash Platform did not add it yet (${why}). Finish it from the Platform card: nothing is lost.` },
+    notApplied: { title: "Locked, not applied", text: (why: string) => `Your Dash is locked but Dash Platform did not add it yet (${why}). Finish it from Unfinished transfers on Home: nothing is lost.` },
   },
   approvalEnded: {
     pending: (amount: string) =>
       `Your ${amount} is locked, but adding it to Platform stopped before it was applied. Choose Finish: it adds the same locked Dash, not more.`,
     checking: "Checking that add stopped before Platform answered. Choose Check again: it checks the same lock and adds no more Dash.",
-    unknown: "Adding to Platform stopped before it finished. If the Platform card shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.",
+    unknown: "Adding to Platform stopped before it finished. If Unfinished transfers on Home shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.",
     finish: "Finish",
     checkAgain: "Check again",
   },
@@ -96,8 +96,9 @@ export interface FundRowView {
   action: "finish" | "checkAgain" | null;
 }
 
-/** The Platform card's row for an add that is not applied: Finish for one that can be finished, Check
- * again for one that may already be applied, and only the reason for one that can't be finished. */
+/** Home's Unfinished transfers row for an add that is not applied: Finish for one that can be finished, Check
+ * again for one that may already be applied, and only the reason (Transfer's Add to Platform shows it) for one that
+ * can't be finished. */
 export function fundRowView(p: Pick<PendingPlatformFund, "duffs" | "state" | "consumptionUnknown">, amount: (duffs: number) => string): FundRowView {
   if (p.state === "tooSmall" || p.state === "unsupported") return { kind: "stuck", text: FUND_COPY.card.stuck[p.state](amount(p.duffs)), action: null };
   if (p.consumptionUnknown) return { kind: "checking", text: FUND_COPY.done.checking.text, action: "checkAgain" };
@@ -154,7 +155,7 @@ export function fundErrorText(e: unknown, credits: (c: string) => string, duffs:
     case "credits.too_many_inputs":
       return "That takes too many separate coins at once. Consolidate your coins first, then try again.";
     case "credits.fund_pending":
-      return "An earlier add to Platform is not finished. Finish it from the Platform card first.";
+      return "An earlier add to Platform is not finished. Finish it from Unfinished transfers on Home first.";
     case "platform.feature_off":
       return "Platform addresses are not active on this network yet.";
     case "platform.broadcast_unknown":

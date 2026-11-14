@@ -4072,17 +4072,6 @@ button.bell-row-open:focus-visible {
   border-radius: var(--dw-radius-card);
 }
 
-.shielded-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--dw-space-m);
-  margin-bottom: var(--dw-layout-section-gap);
-  padding: var(--dw-layout-card-padding);
-  border-radius: var(--dw-radius-card);
-}
-
-.shielded-card-body,
 .platform-card-body {
   display: flex;
   flex-direction: column;
@@ -4111,12 +4100,12 @@ button.bell-row-open:focus-visible {
   line-height: var(--dw-type-footnote-line);
 }
 
-/* A pool card's head (CardHead.tsx): the title is the button that opens Transfer from the pool, and
-   its hit area, hover and focus ring cover the whole head, title and text. */
-.shielded-card > .shielded-card-body,
 .platform-card > .platform-card-body {
   flex: 1 1 auto;
 }
+
+/* A pool card's head (CardHead.tsx): the title is the button that opens Transfer from the pool, and
+   its hit area, hover and focus ring cover the whole head, title and text. */
 
 .card-head {
   position: relative;

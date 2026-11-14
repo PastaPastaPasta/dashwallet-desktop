@@ -632,6 +632,14 @@ const SCENARIOS = {
     w.pending.platform!.dust = "1500000";
     return w;
   },
+  /** A testnet wallet's Platform addresses: 0.004005 tDASH (400500 duffs), none of it movable, and
+   * nothing pending. */
+  "platform-dust-small": (t) => {
+    const w = base(t);
+    w.pending.platform!.addresses = [];
+    w.pending.platform!.dust = "400500000";
+    return w;
+  },
   /** The next send to a Platform address gets no answer from Platform: it stays pending. */
   "platform-send-pending": (t) => {
     const w = base(t);

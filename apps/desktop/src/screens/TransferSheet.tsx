@@ -9,12 +9,12 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { CREDITS_PER_DUFF, creditsToDuffs } from "../api/pending";
 import { keys, shieldedDuffs, useBackend, usePendingPlatformFunds, usePlatformActivity, usePlatformMoveQuote, usePoolBalances, useShieldedStatus, useUtxos } from "../api/queries";
-import { useUi } from "../app/ui";
+import { navigate, useUi } from "../app/ui";
 import { DashButton, Icon, VisuallyHidden } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
 import { useModel } from "../onboarding/model";
-import { FUND_COPY, fundErrorText } from "../platform/fund";
+import { FUND_COPY, fundErrorText, fundRowView } from "../platform/fund";
 import { MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
 import { SHIELDED_COPY, shieldedErrorText } from "../shielded/flow";
 import { shieldedSyncing } from "../shielded/syncing";
@@ -198,6 +198,8 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
   const refusedHere = line.state.kind === "refused" && line.state.amount === amount;
   const ready = !blocked && amount != null && amountProblem === null && !refusedHere;
   const continueWhy = why ?? amountProblem ?? refusal ?? (amount == null ? T.why.amount : null);
+  // Adds locked earlier that this version can't finish: said here, where Add to Platform is offered.
+  const stuck = route === "coreToPlatform" ? (pending ?? []).map((p) => ({ p, row: fundRowView(p, fmt) })).filter(({ row }) => row.kind === "stuck") : [];
   return (
     <form
       className="topup-form"
@@ -217,6 +219,11 @@ function AmountForm({ t, route, pools, why, network, walletId, status }: { t: Tr
           {why}
         </p>
       )}
+      {stuck.map(({ p, row }) => (
+        <p key={p.txid} className="field-hint" data-testid="platform-fund-stuck" data-state={p.state}>
+          {row.text}
+        </p>
+      ))}
       <div className="transfer-amount-row">
         <label className="form-field">
           {T.amount} ({shown.name})
@@ -283,6 +290,9 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
   const movable = pools.platform?.duffs ?? null;
   const refusal = quote.isError ? moveErrorText(quote.error, credits, activity.data) : null;
   const ready = !blocked && !!q && !quote.isError;
+  const p = pools.platform;
+  // A move Platform has not confirmed holds this route: Activity shows it.
+  const waiting = why !== null && (move.pending || p?.block === "pending");
   return (
     <form
       className="topup-form"
@@ -295,6 +305,25 @@ function WholeBalanceForm({ t, pools, why, network, walletId }: { t: TransferMod
       {why && (
         <p className="field-hint" role="status" id={`${id}-why`} data-testid="transfer-unavailable">
           {why}
+        </p>
+      )}
+      {waiting && (
+        <div className="card-actions">
+          <DashButton
+            variant="plainBlue"
+            data-testid="platform-move-view"
+            onClick={() => {
+              t.close();
+              navigate("activity");
+            }}
+          >
+            {MOVE_COPY.waiting.action}
+          </DashButton>
+        </div>
+      )}
+      {p?.dust && why !== p.dustText && (
+        <p className="field-hint" data-testid="transfer-dust">
+          {p.dustText}
         </p>
       )}
       <div className="transfer-amount-row">

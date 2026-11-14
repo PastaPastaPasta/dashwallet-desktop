@@ -155,7 +155,7 @@ describe("the Add from Dash wallet flow", () => {
     const ctx = { request: flow.request, pending: [pendingFund({ txid: "other", duffs: 70_000_000 })] };
     expect(finishAfter(flow.error, ctx)).toBeNull();
     expect(fundErrorText(flow.error, credits, duffs, ctx)).toBe(
-      "Adding to Platform stopped before it finished. If the Platform card shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.",
+      "Adding to Platform stopped before it finished. If Unfinished transfers on Home shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.",
     );
   });
 
@@ -176,14 +176,14 @@ describe("the Add from Dash wallet error texts", () => {
 
   it("has words for the too-many-coins and unfinished-add refusals", () => {
     expect(text(appError("credits.too_many_inputs", { kind: "number", value: 700 }))).toBe("That takes too many separate coins at once. Consolidate your coins first, then try again.");
-    expect(text(appError("credits.fund_pending", { kind: "txid", txid: "ab" }))).toBe("An earlier add to Platform is not finished. Finish it from the Platform card first.");
+    expect(text(appError("credits.fund_pending", { kind: "txid", txid: "ab" }))).toBe("An earlier add to Platform is not finished. Finish it from Unfinished transfers on Home first.");
     expect(text(appError("platform.feature_off", { kind: "feature", feature: "platform" }))).toBe("Platform addresses are not active on this network yet.");
   });
 
   it("a refused Finish names its own lock only while it can still be finished", () => {
     const ended = ["platform.needs_grant", "platform.lease_revoked", "platform.lease_expired"] as const;
     const resume = { kind: "resume", txid: "lock1" } as const;
-    const unknown = "Adding to Platform stopped before it finished. If the Platform card shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.";
+    const unknown = "Adding to Platform stopped before it finished. If Unfinished transfers on Home shows an add waiting, choose Finish there: it adds the same locked Dash, not more. Otherwise, try again.";
     for (const code of ended) {
       const e = appError(code);
       expect(finishAfter(e, { request: resume, pending: [pendingFund({ txid: "lock1" })] })?.action).toBe("finish");
@@ -224,7 +224,7 @@ describe("the Add from Dash wallet error texts", () => {
   });
 });
 
-describe("the Platform card's rows for adds that are not applied", () => {
+describe("Home's Unfinished transfers rows for adds that are not applied", () => {
   const row = (state: PendingPlatformFund["state"], consumptionUnknown = false) => fundRowView({ duffs: 5_000, state, consumptionUnknown }, duffs);
 
   it("a lock that can be finished has Finish", () => {

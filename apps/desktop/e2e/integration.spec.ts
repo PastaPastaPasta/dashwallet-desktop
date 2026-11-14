@@ -31,22 +31,29 @@ test.describe("item 2: Move waits for Activity's check", () => {
     await page.getByTestId("lock-field").fill("demo");
     await page.keyboard.press("Enter");
     await page.getByTestId("hero").waitFor();
-    await expect(page.getByTestId("platform-card")).toBeVisible();
-    // Read now, not retried: the card says why, and Transfer from Platform waits with the same reason.
-    expect(await page.getByTestId("platform-move-why").textContent()).toContain("Checking for an unfinished move");
+    // Read now, not retried: Home shows no Platform card, and Transfer from Platform waits and says why.
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
+    await expect(page.getByTestId("platform-move-why")).toHaveCount(0);
     await openTransfer(page, "platformToCore");
     expect(await page.getByTestId("transfer-continue").isDisabled()).toBe(true);
     expect(await page.getByTestId("transfer-unavailable").textContent()).toContain("Checking for an unfinished move");
     await page.getByTestId("transfer-cancel").click();
     await page.evaluate(`window.__dwFixture.release("platform_activity")`);
-    await expect(page.getByTestId("platform-card")).toContainText("Do not move again");
     expect(await platformMoveWhy(page)).toContain("Do not move again");
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
   });
 
   test("a failed Activity read holds Move back and can be tried again", async ({ page }) => {
     await open(page, "funded", "&fail=platform_activity:none");
-    await expect(page.getByTestId("platform-move-why")).toContainText("Could not check for an unfinished move.");
-    await expect(page.getByTestId("platform-move-check-again")).toBeVisible();
+    // The retry is an action: Unfinished transfers offers it, with no Platform card.
+    const card = page.getByTestId("unfinished-card");
+    await expect(card.getByTestId("platform-move-why")).toContainText("Could not check for an unfinished move.");
+    await expect(card.getByTestId("platform-move-check-again")).toBeVisible();
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
+    const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_activity").length);
+    const before = await reads();
+    await card.getByTestId("platform-move-check-again").click();
+    await expect.poll(reads).toBeGreaterThan(before);
     await openTransfer(page, "platformToCore");
     // The form's new Activity observer can start another read after the first one failed.
     await expect(page.getByTestId("transfer-unavailable")).toContainText("Could not check for an unfinished move.");
@@ -72,19 +79,29 @@ test.describe("item 2: Move waits for Activity's check", () => {
 });
 
 test.describe("item 3: movable and dust, the fee actually taken", () => {
-  test("Platform addresses holding only dust: Home counts nothing, and no Move is offered", async ({ page }) => {
-    await open(page, "platform-dust");
-    await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
-    await expect(page.getByTestId("platform-card-dust")).toContainText("cannot be moved to your Dash wallet right now");
-    await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
-    expect(await platformMoveWhy(page)).toContain("cannot be moved to your Dash wallet right now");
-  });
+  /** Home has no pool card and says nothing of the dust: Transfer from Platform does. */
+  const noPoolCards = async (page: Page) => {
+    for (const id of ["platform-card", "shielded-card", "platform-card-dust", "unfinished-card"]) await expect(page.getByTestId(id)).toHaveCount(0);
+    await expect(page.getByTestId("page-home")).not.toContainText("cannot be moved");
+  };
 
-  test("an unmovable remainder is shown without repeating the balance on Home", async ({ page }) => {
+  for (const scenario of ["platform-dust", "platform-dust-small"]) {
+    test(`${scenario}: Platform addresses holding only dust: Home counts nothing and has no card, and no Move is offered`, async ({ page }) => {
+      await open(page, scenario);
+      await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
+      await noPoolCards(page);
+      expect(await platformMoveWhy(page)).toContain("cannot be moved to your Dash wallet right now");
+    });
+  }
+
+  test("an unmovable remainder is said in Transfer, not on Home", async ({ page }) => {
     await open(page, "platform-partly-dust");
     await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
-    await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
-    await expect(page.getByTestId("platform-card-dust")).toContainText("cannot be moved to your Dash wallet right now");
+    await noPoolCards(page);
+    await openTransfer(page, "platformToCore");
+    await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
+    await expect(page.getByTestId("transfer-dust")).toContainText("cannot be moved to your Dash wallet right now");
+    await page.getByTestId("transfer-cancel").click();
     await moveFromPlatform(page);
     await expect(page.getByTestId("platform-move-go")).toBeEnabled();
   });
@@ -201,11 +218,14 @@ test.describe("item 10: a wallet with an unrecorded spend asks before it sends (
     await page.getByTestId("shielded-go").click();
   };
 
-  test("the card warns, and a send needs the dialog's Send anyway, which the engine receives", async ({ page }) => {
+  test("Home has no card for it, and a send needs the dialog's Send anyway, which the engine receives", async ({ page }) => {
     await open(page, "shielded-unrecorded");
-    await expect(page.getByTestId("shielded-unrecorded")).toContainText("may still go through");
+    await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
+    await expect(page.getByTestId("shielded-unrecorded")).toHaveCount(0);
+    await expect(page.getByTestId("shielded-card")).toHaveCount(0);
     await toConfirm(page, "send");
     await expect(page.getByTestId("shielded-unrecorded-dialog")).toBeVisible();
+    await expect(page.getByTestId("shielded-unrecorded-text")).toContainText("may still go through");
     // Going back sends nothing.
     await page.getByTestId("shielded-unrecorded-back").click();
     await expect(page.getByTestId("shielded-unrecorded-dialog")).toHaveCount(0);
