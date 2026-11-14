@@ -86,7 +86,7 @@ export function GeneralTab() {
           </div>
         </div>
         {launch.theme !== null && (
-          <Hint>{launch.theme[0].toUpperCase() + launch.theme.slice(1)} is in use for this session. Your choice below applies from the next start.</Hint>
+          <Hint>{launch.theme[0].toUpperCase() + launch.theme.slice(1)} is in use for this session. Your choice below applies the next time Dash Wallet starts normally.</Hint>
         )}
         <div className="settings-row">
           <span className="settings-row-title" id={`${id}-unit`}>

@@ -27,8 +27,8 @@ export const NetworkText = {
   /** A window started with `--network regtest` or `devnet-<name>` is not on either choice. */
   pinned: (current: string, next: ChosenNetwork | null) =>
     next
-      ? `${networkName(current)} is in use for this session. ${networkName(next)} will be used from the next start.`
-      : `${networkName(current)} is in use for this session and will be used from the next start too.`,
+      ? `${networkName(current)} is in use for this session. ${networkName(next)} will be used the next time Dash Wallet starts normally.`
+      : `${networkName(current)} is in use for this session and will also be used the next time Dash Wallet starts normally.`,
   /** The blocking card while the switch runs. */
   opening: (choice: ChosenNetwork) => `Opening ${networkName(choice)}…`,
   confirmTitle: (choice: ChosenNetwork) => `Switch to ${networkName(choice)}?`,

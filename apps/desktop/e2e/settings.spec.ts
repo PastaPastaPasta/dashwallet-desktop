@@ -75,7 +75,7 @@ test.describe("General", () => {
     await expect(page.locator("html")).not.toHaveAttribute("data-theme", /./);
     // A launch theme wins and says so.
     await settings(page, "general", "funded", "light");
-    await expect(page.getByTestId("settings-display")).toContainText("Light is in use for this session. Your choice below applies from the next start.");
+    await expect(page.getByTestId("settings-display")).toContainText("Light is in use for this session. Your choice below applies the next time Dash Wallet starts normally.");
   });
 
   test("QT141_resetOptionsAsksFirst", async ({ page }) => {
