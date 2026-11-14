@@ -74,7 +74,7 @@ export const SEND_COPY = {
   /** `credits.move_pending` from the quote or the send, by what holds: a payment, which Retry that
    * payment re-sends; a move, which only Move to Dash wallet follows; or one Activity does not show. */
   held: "An earlier payment from Platform may still go through. Wait for it to finish, or press Retry that payment: only that same payment can go now.",
-  heldMove: "A move to your Dash wallet may still go through. Wait for it to finish, or move again from the Platform card on Home.",
+  heldMove: "A move to your Dash wallet may still go through. Wait for it to finish, or move again from Transfer on Home.",
   heldOther: "An earlier payment or move from Platform may still go through. Wait for it to finish.",
   /** `invalid_argument` from the send: its operation is unknown or used. */
   expired: "This payment's details expired. Review it again.",

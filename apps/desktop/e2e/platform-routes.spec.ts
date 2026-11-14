@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
-import { authorize, fixtureUrl, moveFromPlatform, openTransfer, platformMoveWhy, trackPageErrors } from "./helpers";
+import { authorize, fixtureUrl, openTransfer, platformMoveWhy, trackPageErrors } from "./helpers";
 
 // 0.2 X1b slice 1 on the fixture backend: Receive on Platform, and Pay ▸ To an address paying a
 // Platform address from the Platform balance (quote with the fee bound, Max, confirm, outcomes,
@@ -151,11 +151,14 @@ test.describe("Pay from Platform", () => {
     await expect(page.getByTestId("pay-problem")).toContainText("not confirmed yet");
     await expect(page.getByTestId("pay-continue")).toBeDisabled();
     await page.getByTestId("sidebar-home").click();
-    await expect(page.getByTestId("platform-move-view")).toBeVisible();
-    // Transfer from Platform waits, with the card's own words.
-    const why = await platformMoveWhy(page);
-    expect(why).toBeTruthy();
-    await expect(page.getByTestId("platform-card")).toContainText(why!);
+    await page.getByTestId("hero").waitFor();
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
+    // Transfer from Platform waits, says why, and links to Activity.
+    expect(await platformMoveWhy(page)).toBeTruthy();
+    await openTransfer(page, "platformToCore");
+    await page.getByTestId("platform-move-view").click();
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
+    await page.getByTestId("tx-list").waitFor();
   });
 
   test("a send that did not go through in time says it may still go through, keeps the form, and shows in Activity", async ({ page }) => {
@@ -336,16 +339,19 @@ test.describe("Pay from Platform", () => {
 
   test("a held move leaves Move offered, and moving again goes through", async ({ page }) => {
     await open(page, "platform-move-failed-may-land");
+    await openTransfer(page, "platformToCore");
+    await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
     await expect(page.getByTestId("platform-move-view")).toHaveCount(0);
-    await moveFromPlatform(page);
+    await page.getByTestId("transfer-continue").click();
     await page.getByTestId("platform-move-go").click();
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Moved");
   });
 
-  test("a held send says so on the card, and the move's quote refuses before any passphrase", async ({ page }) => {
+  test("a held send has no Home card, and the move's quote refuses before any passphrase", async ({ page }) => {
     await open(page, "platform-send-failed-may-land");
-    await expect(page.getByTestId("platform-card-send-held")).toHaveText("A payment from Platform may still go through. Moving waits until it settles.");
+    await expect(page.getByTestId("platform-card-send-held")).toHaveCount(0);
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
     // Transfer reads the move's quote when the route opens: the refusal shows on its fee line.
     await openTransfer(page, "platformToCore");
     await expect(page.getByTestId("transfer-fee")).toHaveText(
@@ -360,7 +366,7 @@ test.describe("Pay from Platform", () => {
     await open(page, "platform-move-failed-may-land");
     await payTo(page, PAYEE);
     await page.getByTestId("pay-amount").fill("0.01");
-    await expect(page.getByTestId("pay-problem")).toHaveText("A move to your Dash wallet may still go through. Wait for it to finish, or move again from the Platform card on Home.");
+    await expect(page.getByTestId("pay-problem")).toHaveText("A move to your Dash wallet may still go through. Wait for it to finish, or move again from Transfer on Home.");
     await expect(page.getByTestId("platform-send-earlier")).toHaveCount(0);
   });
 
@@ -477,12 +483,12 @@ test.describe("Home", () => {
 
   test("a lock below the Platform fee says why, has no Finish, and Add from Dash wallet still opens and quotes", async ({ page }) => {
     const errors = await open(page, "paddr-fund-too-small");
+    // Nothing to do on Home: Add from Dash wallet names the lock.
+    for (const id of ["platform-fund-stuck", "platform-fund-finish", "platform-fund-unfinished", "unfinished-card", "platform-card"]) await expect(page.getByTestId(id)).toHaveCount(0);
+    await openTransfer(page, "coreToPlatform");
     const row = page.getByTestId("platform-fund-stuck");
     await expect(row).toHaveText("0.00005 tDASH was locked to add to Platform, but it's worth less than the Platform fee, so it can't be added.");
-    await expect(page.getByTestId("platform-fund-finish")).toHaveCount(0);
-    await expect(page.getByTestId("platform-fund-unfinished")).toHaveCount(0);
     expect(await seriousAxeViolations(page)).toEqual([]);
-    await openTransfer(page, "coreToPlatform");
     await expect(page.getByTestId("transfer-unavailable")).toHaveCount(0);
     await page.getByTestId("transfer-amount").fill("0.5");
     await page.getByTestId("transfer-continue").click();

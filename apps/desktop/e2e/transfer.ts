@@ -145,7 +145,7 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "transfer-shield-pending",
     go: async (page) => {
       await openTransfer(page, "coreToShielded");
-      await maxRefused(page, "An earlier add to Shielded is not finished. Finish it from the Shielded card first.");
+      await maxRefused(page, "An earlier add to Shielded is not finished. Finish it from Unfinished transfers on Home first.");
       expect(await callsOf(page, "shield_quote")).toBe(1);
     },
   },
@@ -213,7 +213,7 @@ export const TRANSFER_STATES: TransferState[] = [
       await typed(page, "coreToPlatform", "0.5");
       await expect(page.getByTestId("transfer-fee")).toHaveText(FEE_ON_NEXT_STEP);
       await page.getByTestId("transfer-continue").click();
-      await expect(page.getByTestId("platform-fund-quote-error")).toHaveText("An earlier add to Platform is not finished. Finish it from the Platform card first.");
+      await expect(page.getByTestId("platform-fund-quote-error")).toHaveText("An earlier add to Platform is not finished. Finish it from Unfinished transfers on Home first.");
       await expect(page.getByTestId("platform-fund-go")).toBeDisabled();
     },
   },
@@ -233,7 +233,7 @@ export const TRANSFER_STATES: TransferState[] = [
     scenario: "paddr-fund-proof-waiting",
     go: async (page) => {
       await openTransfer(page, "coreToPlatform");
-      await maxRefused(page, "An earlier add to Platform is not finished. Finish it from the Platform card first.");
+      await maxRefused(page, "An earlier add to Platform is not finished. Finish it from Unfinished transfers on Home first.");
       expect(await callsOf(page, "platform_fund_quote")).toBe(1);
     },
   },

@@ -41,17 +41,11 @@ export type ShieldedResult = { kind: "shield"; outcome: ShieldOutcome } | { kind
 
 export const SHIELDED_COPY = {
   card: {
-    title: "Shielded",
     inactive: "Shielded is not active on this network yet.",
-    pending: (amount: string) => `${amount} is on its way.`,
-    /** A spend whose result is not confirmed: the wallet re-sends it itself, so it is never offered again. */
-    unresolved: "A payment is still being confirmed. Do not send it again: the wallet checks it itself.",
     finish: "Finish",
     /** A lock that may already be applied: the same outpoint is read again, never a new lock. */
     checkAgain: "Check again",
     why: { empty: "Nothing in Shielded to send yet.", busy: "Another Shielded move is running." },
-    /** DEC-1057: a spend of unknown result whose record was lost. Shields are not held back. */
-    unrecorded: "A shielded payment from before a restart may still go through, and its record was lost. Sending or moving from Shielded asks you to confirm first.",
     unfinished: (amount: string) => `${amount} was locked to add to Shielded and is not applied yet.`,
   },
   titles: { add: "Add to Shielded", send: "Send from Shielded", receive: "Receive in Shielded" },
@@ -95,9 +89,9 @@ export const SHIELDED_COPY = {
   },
   done: {
     add: { title: "Added to Shielded", text: (balance: string) => `Your Shielded balance is now ${balance}.` },
-    waiting: { title: "Locked, not applied yet", text: "Your Dash is locked and waiting for the network's confirmation. Finish it from the Shielded card: nothing is lost." },
+    waiting: { title: "Locked, not applied yet", text: "Your Dash is locked and waiting for the network's confirmation. Finish it from Unfinished transfers on Home: nothing is lost." },
     checking: { title: "Checking", text: "This amount may already be in your shielded balance; we can't confirm it yet." },
-    notApplied: { title: "Locked, not applied", text: (why: string) => `Your Dash is locked but Dash Platform did not add it yet (${why}). Finish it from the Shielded card: nothing is lost.` },
+    notApplied: { title: "Locked, not applied", text: (why: string) => `Your Dash is locked but Dash Platform did not add it yet (${why}). Finish it from Unfinished transfers on Home: nothing is lost.` },
     send: { title: "Sent", text: (amount: string) => `${amount} was sent privately.` },
     /** The spend went out and its result is not confirmed: pending, never failed, never offered for a resend. */
     unconfirmed: { title: "Not confirmed yet", text: "Your payment went out and Dash Platform has not confirmed it yet. Activity shows it as pending until it does. Do not send it again: the wallet checks it itself." },
@@ -119,7 +113,7 @@ export const SHIELDED_COPY = {
   show: "Show",
   unseen: "Your Shielded move has an update.",
   receive: {
-    text: "Share this address to be paid privately. It does not change what the network sees of your wallet.",
+    text: "Money sent to this address stays private. Anyone with a Shielded balance can pay it.",
     copy: "Copy address",
     notSynced: SHIELDED_SYNCING_TEXT,
     loading: "Getting your Shielded address…",
@@ -164,7 +158,7 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
     case SHIELDED_CODES.tooManyInputs:
       return "That takes too many separate amounts at once. Consolidate your coins first, then try again.";
     case SHIELDED_CODES.shieldPending:
-      return "An earlier add to Shielded is not finished. Finish it from the Shielded card first.";
+      return "An earlier add to Shielded is not finished. Finish it from Unfinished transfers on Home first.";
     case "platform.context_unavailable":
       return "Waiting for the network to sync before Shielded can be used. Try again shortly.";
     case "rescan_interrupted":

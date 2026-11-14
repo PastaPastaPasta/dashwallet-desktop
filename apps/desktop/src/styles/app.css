@@ -2179,7 +2179,24 @@ button {
   border-radius: var(--dw-radius-card);
 }
 
-.receive-card[hidden] { display: none; }
+/* The request column keeps one size on every tab: the form and the Platform or Shielded panel share
+   one cell, the form kept (inert and unseen) while another tab shows. */
+.receive-request {
+  display: grid;
+  align-self: start;
+}
+
+.receive-request > * {
+  grid-area: 1 / 1;
+}
+
+.request-form[inert] {
+  visibility: hidden;
+}
+
+.request-unavailable p {
+  margin: 0;
+}
 
 .receive-card .qr,
 .receive-card .qr-placeholder,
@@ -4072,17 +4089,6 @@ button.bell-row-open:focus-visible {
   border-radius: var(--dw-radius-card);
 }
 
-.shielded-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--dw-space-m);
-  margin-bottom: var(--dw-layout-section-gap);
-  padding: var(--dw-layout-card-padding);
-  border-radius: var(--dw-radius-card);
-}
-
-.shielded-card-body,
 .platform-card-body {
   display: flex;
   flex-direction: column;
@@ -4111,12 +4117,12 @@ button.bell-row-open:focus-visible {
   line-height: var(--dw-type-footnote-line);
 }
 
-/* A pool card's head (CardHead.tsx): the title is the button that opens Transfer from the pool, and
-   its hit area, hover and focus ring cover the whole head, title and text. */
-.shielded-card > .shielded-card-body,
 .platform-card > .platform-card-body {
   flex: 1 1 auto;
 }
+
+/* A pool card's head (CardHead.tsx): the title is the button that opens Transfer from the pool, and
+   its hit area, hover and focus ring cover the whole head, title and text. */
 
 .card-head {
   position: relative;
@@ -5876,7 +5882,11 @@ button.bell-row-open:focus-visible {
   border-radius: var(--dw-radius-small);
 }
 
-.receive-selector { align-self: center; width: 100%; }
+/* The tabs switch the whole page's address, above both columns. */
+.receive-selector {
+  width: fit-content;
+  margin-bottom: var(--dw-space-l);
+}
 
 @media (max-width: 979px) {
   .shortcut-card {

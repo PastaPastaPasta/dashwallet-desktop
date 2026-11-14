@@ -1,6 +1,6 @@
 // "Add from Dash wallet" (platform/fund.ts): the quote's confirmation, progress and outcome, which
-// Transfer shows after its form (TransferSheet.tsx). Home's Platform card (PlatformMoveSheet.tsx)
-// lists the locks that were not applied yet.
+// Transfer shows after its form (TransferSheet.tsx). Home's Unfinished transfers card
+// (UnfinishedTransfersCard.tsx) lists the locks that were not applied yet.
 
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";

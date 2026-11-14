@@ -104,7 +104,7 @@ export const lockKey = (l: Pick<UnfinishedLock, "kind" | "txid" | "vout">) => `$
 
 export const restoredOf = (data: UnfinishedTransfers | null | undefined): UnfinishedLock[] => data?.locks.filter((l) => l.origin === "restored") ?? [];
 
-/** `data` without the locks the Shielded card already shows as pending shields. */
+/** `data` without the locks the card already shows as this install's pending shields. */
 export function withoutPendingShields(data: UnfinishedTransfers | null | undefined, pending: readonly { txid: string }[] | null | undefined): UnfinishedTransfers | null | undefined {
   if (!data || !pending || pending.length === 0) return data;
   return { ...data, locks: data.locks.filter((l) => !pending.some((p) => p.txid === l.txid)) };

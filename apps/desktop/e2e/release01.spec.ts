@@ -796,10 +796,10 @@ test.describe("Move to Dash wallet", () => {
     await authorize(page);
     await expect(page.getByTestId("platform-move-outcome-title")).toHaveText("Not confirmed yet");
     await expect(page.getByTestId("platform-move-outcome-text")).toContainText("Do not move again");
-    // Dismissed, it stays: the warning, and "View in Activity" in place of "Move".
+    // Dismissed, it stays in Transfer: the warning, and "View in Activity" in place of "Move". Home has no card.
     await page.getByTestId("platform-move-done").click();
     await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
-    await expect(page.getByTestId("platform-card")).toContainText("Do not move again");
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
     expect(await platformMoveWhy(page)).toContain("Do not move again");
     await shot(page, "light-platform-move-pending-card");
     // After a restart the card follows Activity's record.
@@ -807,9 +807,11 @@ test.describe("Move to Dash wallet", () => {
     await page.getByTestId("lock-field").fill("demo");
     await page.keyboard.press("Enter");
     await page.getByTestId("hero").waitFor();
-    await expect(page.getByTestId("platform-card")).toContainText("Do not move again");
+    await expect(page.getByTestId("platform-card")).toHaveCount(0);
     expect(await platformMoveWhy(page)).toContain("Do not move again");
+    await openTransfer(page, "platformToCore");
     await page.getByTestId("platform-move-view").click();
+    await expect(page.getByTestId("transfer-sheet")).toHaveCount(0);
     await page.getByTestId("tx-list").waitFor();
     // The move settles; Home no longer holds anything back.
     await page.evaluate(() => {
@@ -1096,8 +1098,10 @@ test.describe("Shielded", () => {
     await expect(page.getByTestId("shielded-outcome-text")).toContainText("Do not send it again");
     await expect(page.getByTestId("shielded-refused-back")).toHaveCount(0);
     await page.getByTestId("shielded-done").click();
-    // The card keeps saying so while the engine lists the spend, and Activity shows it pending.
-    await expect(page.getByTestId("shielded-unresolved")).toContainText("Do not send it again");
+    // Home has no card for it while the engine lists the spend: Activity shows it pending.
+    await expect(page.getByTestId("hero")).toBeVisible();
+    await expect(page.getByTestId("shielded-unresolved")).toHaveCount(0);
+    await expect(page.getByTestId("shielded-card")).toHaveCount(0);
     await page.getByTestId("sidebar-activity").click();
     const row = page.locator('[data-txid^="shielded:withdrawal:"]').first();
     await expect(row).toContainText("Pending");
