@@ -113,7 +113,7 @@ export const SHIELDED_COPY = {
   show: "Show",
   unseen: "Your Shielded move has an update.",
   receive: {
-    text: "Share this address to be paid privately. It does not change what the network sees of your wallet.",
+    text: "Money sent to this address stays private. Anyone with a Shielded balance can pay it.",
     copy: "Copy address",
     notSynced: SHIELDED_SYNCING_TEXT,
     loading: "Getting your Shielded address…",

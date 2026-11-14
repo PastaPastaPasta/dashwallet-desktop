@@ -1,6 +1,8 @@
 // Receive (U-03 D11, UX-SPEC §4.8): the receiving address as a QR code and text, copy and new
 // address; Request payment stores a request on a fresh address and shows it; the requested
-// payments list keeps them (dash-qt's Receive tab, QT-081…085).
+// payments list keeps them (dash-qt's Receive tab, QT-081…085). The Dash, Platform and Shielded
+// tabs above both columns switch the address; payment requests are for Dash addresses only, so on
+// the other tabs the request column says what the address is for instead.
 
 import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
@@ -27,6 +29,7 @@ import { receivedText } from "./notifications/Received";
 import { shortAddress } from "../format/tx";
 import { shieldedSyncing, SHIELDED_SYNCING_TEXT } from "../shielded/syncing";
 import { Page } from "./Routes";
+import { SHIELDED_COPY } from "../shielded/flow";
 import { useShieldedReceiveContent } from "./ShieldedSheet";
 
 const QR_SIDE = 200;
@@ -149,9 +152,8 @@ function useDashReceiveContent(walletId: string, network: NetworkInfo) {
 }
 
 export const PLATFORM_RECEIVE_COPY = {
-  title: "Receive on Platform",
-  text: "A Dash Platform address. Platform funds are spent from Platform: send them to another Platform address or move them to your Dash wallet.",
-  warning: "Most Dash wallets and exchanges cannot pay this address. Give it only to someone paying from Dash Platform.",
+  text: "This address holds Dash on Dash Platform. Anyone with a Platform address can pay it.",
+  warning: "Most Dash wallets and exchanges cannot pay this address.",
   loading: "Loading Platform address",
   copy: "Copy address",
   failed: "Could not load the Platform address:",
@@ -203,12 +205,33 @@ function usePlatformReceiveContent(walletId: string, enabled: boolean) {
           </div>
         </>
       )}
-      <p className="field-hint" data-testid="platform-receive-warning">{C.warning}</p>
     </>,
   };
 }
 
-function RequestForm({ walletId, network, onCreated, hidden }: { walletId: string; network: NetworkInfo; onCreated: (r: ReceiveRequest) => void; hidden: boolean }) {
+const ABOUT_COPY = { title: "About this address", dashOnly: "Payment requests are for Dash addresses only." } as const;
+
+/** The request column on Platform and Shielded: no payment URI carries those addresses (`build_payment_uri`
+ * is Core's), so it says what the address is for and who can pay it. */
+function RequestUnavailable({ pool }: { pool: "platform" | "shielded" }) {
+  return (
+    <section className="receive-card card-l1 request-unavailable" aria-labelledby="request-unavailable-title" data-testid="receive-request-unavailable" data-pool={pool}>
+      <h2 id="request-unavailable-title" className="card-title">
+        {ABOUT_COPY.title}
+      </h2>
+      <p>{pool === "platform" ? PLATFORM_RECEIVE_COPY.text : SHIELDED_COPY.receive.text}</p>
+      {pool === "platform" && (
+        <p className="field-hint" data-testid="platform-receive-warning">
+          {PLATFORM_RECEIVE_COPY.warning}
+        </p>
+      )}
+      <p className="placeholder-note">{ABOUT_COPY.dashOnly}</p>
+    </section>
+  );
+}
+
+/** `inactive`: another tab is shown; the form keeps what was typed and its place, out of sight and reach. */
+function RequestForm({ walletId, network, onCreated, inactive }: { walletId: string; network: NetworkInfo; onCreated: (r: ReceiveRequest) => void; inactive: boolean }) {
   const b = useBackend();
   const client = useQueryClient();
   const id = useId();
@@ -263,7 +286,7 @@ function RequestForm({ walletId, network, onCreated, hidden }: { walletId: strin
   };
   return (
     <form
-      hidden={hidden}
+      inert={inactive}
       className="receive-card card-l1 request-form"
       aria-labelledby={`${id}-title`}
       data-testid="request-form"
@@ -476,19 +499,22 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
   const content = pool === "dash" ? dashContent : pool === "platform" ? platformContent : {
     before: <>
       <h2 id="receive-address-title" className="card-title">Your Shielded address</h2>
-      {syncing ? <p className="field-hint" data-testid="shielded-receive-why">{SHIELDED_SYNCING_TEXT}</p> : <>{shieldedContent.text}{shieldedContent.before}</>}
+      {syncing ? <p className="field-hint" data-testid="shielded-receive-why">{SHIELDED_SYNCING_TEXT}</p> : shieldedContent.before}
     </>,
     after: syncing ? null : shieldedContent.after,
   };
   return (
     <Page route="receive">
+      {selector}
       <div className="receive-columns">
         <section className="receive-card card-l1" aria-labelledby="receive-address-title" data-testid={pool === "dash" ? "receive-card" : pool === "platform" ? "platform-receive" : "shielded-receive-section"}>
           {content.before}
-          {selector}
           {content.after}
         </section>
-        <RequestForm walletId={walletId} network={network} onCreated={setShown} hidden={pool !== "dash"} />
+        <div className="receive-request" data-testid="receive-request-column">
+          <RequestForm walletId={walletId} network={network} onCreated={setShown} inactive={pool !== "dash"} />
+          {pool !== "dash" && <RequestUnavailable pool={pool} />}
+        </div>
       </div>
       <RequestList walletId={walletId} network={network} onShow={setShown} />
       {shown && <RequestSheet walletId={walletId} request={shown} network={network} onClose={() => setShown(null)} />}
