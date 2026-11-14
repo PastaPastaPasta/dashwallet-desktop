@@ -22,7 +22,7 @@ export const SecurityText = {
   passphraseChanged: "Wallet passphrase was successfully changed.",
   sameAsOld: "The new passphrase is the same as the current one.",
   quickUnlockUnavailable: "Not available on this computer",
-  quickUnlockWhy: "Quick unlock is coming soon.",
+  quickUnlockWhy: "Touch ID and Windows Hello are coming soon.",
   requireAuthentication: "Require authentication for every payment",
   requireAuthenticationHint: "Ask for the passphrase before each payment, even while the wallet is unlocked.",
   encryptFirst: "Encrypt the wallet first.",

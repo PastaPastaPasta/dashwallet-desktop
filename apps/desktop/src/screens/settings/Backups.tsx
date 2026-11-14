@@ -148,7 +148,7 @@ function AutomaticBackupsCard({ names }: { names: Map<string, string> }) {
           {directory.data ? <CopyValue value={directory.data} label="backup folder" mono /> : pendingText(directory)}
         </DetailRow>
       </dl>
-      <NotYetRow testId="settings-show-folder" title="Show folder" why="the app cannot open folders yet (a native file chooser is a follow-up). Copy the path instead." />
+      <NotYetRow testId="settings-show-folder" title="Show folder" why="Dash Wallet cannot open folders yet. Copy the path instead." />
       {backups.data && backups.data.length === 0 && <Hint>No automatic backup yet.</Hint>}
       {backups.data && backups.data.length > 0 && (
         <ul className="settings-backup-list" data-testid="settings-backup-list">
