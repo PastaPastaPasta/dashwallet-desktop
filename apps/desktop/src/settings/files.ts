@@ -26,7 +26,7 @@ export const FilesText = {
   berkeleyDBUnavailable:
     "This wallet.dat uses Berkeley DB, which Dash Wallet cannot read. In Dash Core, run dumpwallet and import that file instead.",
   /** QT-078. */
-  psbtFile: "This is a partially signed transaction. Open it in Tools ▸ PSBT, which comes with U-05.",
+  psbtFile: "This is a partially signed transaction. Open it in Tools ▸ PSBT.",
   unknownFile: "Dash Wallet does not recognise this file. It reads Dash Wallet backups, dumpwallet files and wallet.dat files.",
   otherNetwork: (name: string) => `This file is for ${name}, not for the network this window uses.`,
   restored: (n: number) => (n === 1 ? "The wallet was restored." : `${n} wallets were restored.`),

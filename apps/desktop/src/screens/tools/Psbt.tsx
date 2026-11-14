@@ -132,8 +132,8 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
           </div>
         </ToolCard>
       )}
-      <NotYet title="External signer" owner="M6" testId="psbt-external-signer-not-yet">
-        Signing with a hardware wallet through HWI.
+      <NotYet title="External signer" testId="psbt-external-signer-not-yet">
+        Signing with a hardware wallet is coming soon.
       </NotYet>
     </div>
   );

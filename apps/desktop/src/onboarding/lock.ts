@@ -34,7 +34,7 @@ export const LockoutPolicy = {
 
 export const LockText = {
   title: "Unlock wallet",
-  prompt: "This operation needs your wallet passphrase to unlock the wallet.",
+  prompt: "Enter your passphrase to unlock your wallet.",
   disabled: "Too many incorrect attempts. Restore the wallet with your recovery phrase to set a new passphrase.",
   attemptsRemaining: (n: number) => (n === 1 ? "1 attempt remaining" : `${n} attempts remaining`),
 };

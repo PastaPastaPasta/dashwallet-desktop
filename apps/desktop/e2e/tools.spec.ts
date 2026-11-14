@@ -89,7 +89,7 @@ test.describe("Information", () => {
     await expect(page.getByTestId("tools-information")).toContainText("Requires full-node data source");
     // The DashPay card is DP6-03's (e2e/dashpay-info.spec.ts).
     await expect(page.getByTestId("information-dashpay")).toBeVisible();
-    await expect(page.getByTestId("information-traffic-not-yet")).toContainText("Not yet (M6).");
+    await expect(page.getByTestId("information-traffic-not-yet")).toContainText("Coming soon.");
     expect(errors).toEqual([]);
   });
 });
@@ -213,7 +213,7 @@ test.describe("Repair", () => {
     await page.getByTestId("repair-confirm-ok").click();
     await authorize(page);
     await expect(page.getByTestId("repair-outcome")).toBeVisible();
-    await expect(page.getByTestId("repair-asset-locks-not-yet")).toContainText("Not yet (DP1-02).");
+    await expect(page.getByTestId("repair-asset-locks-not-yet")).toContainText("Coming soon.");
   });
 
   test("DP109_D10: Finish transfers resumes stranded asset locks under a platformOp grant and reports them", async ({ page }) => {
@@ -428,7 +428,7 @@ test.describe("PSBT", () => {
     const saved = await world(page, (w) => w.tools.files.saved.at(-1)!);
     expect(saved).toMatchObject({ purpose: "psbt", data: FOREIGN });
     expect(saved.path).toMatch(/\.psbt$/);
-    await expect(page.getByTestId("psbt-external-signer-not-yet")).toContainText("Not yet (M6).");
+    await expect(page.getByTestId("psbt-external-signer-not-yet")).toContainText("Coming soon.");
   });
 
   test("QT076_QT077_D18: Pay's Create Unsigned copies the PSBT and opens it here", async ({ page }) => {

@@ -229,8 +229,8 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
           </DashButton>
         </div>
       </ToolCard>
-      <NotYet title="Asset locks" owner="DP1-02" testId="repair-asset-locks-not-yet">
-        Sending or cancelling unrecorded asset locks.
+      <NotYet title="Asset locks" testId="repair-asset-locks-not-yet">
+        Sending or cancelling unfinished transfers is coming soon.
       </NotYet>
       {question && (
         <Sheet title={question.title} width="small" testId="repair-confirm" onClose={() => model.dismiss()}>

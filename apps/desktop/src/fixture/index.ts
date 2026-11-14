@@ -13,6 +13,7 @@ import { COMMANDS, ENGINE_EVENT, SHELL_EVENT, type AppError, type AppEvent, type
 import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
+import type { NetworkKind } from "../api/generated/NetworkKind";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
 import { landSend, PENDING_HANDLERS, switchedWorld } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
@@ -27,6 +28,7 @@ export const FIXTURE_SENTINEL = "dw-fixture-backend:U-07";
 export interface FixtureOptions {
   scenario: ScenarioName;
   theme?: ThemeName | null;
+  network?: NetworkKind;
   /** Commands that reject with a sample of the error class instead of running. */
   failures?: Partial<Record<CommandName, ErrorClass>>;
   /** Every engine command answers after this many ms (loading states). `launch_info` does not
@@ -97,6 +99,11 @@ function relaunchedWorld(): World | null {
 
 export function installFixture(opts: FixtureOptions): FixtureHandle {
   const world = relaunchedWorld() ?? switchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
+  if (opts.network) {
+    world.launch.network = { kind: opts.network, dirName: opts.network, unitName: opts.network === "mainnet" ? "DASH" : "tDASH" };
+    world.pending.networkChoice = { chosen: opts.network === "testnet" ? "mainnet" : "testnet", saved: true };
+    world.networkForced = true;
+  }
   const failures = new Map(Object.entries(opts.failures ?? {}) as [CommandName, ErrorClass][]);
   const calls: string[] = [];
   const held = new Map<string, Promise<void>>();
@@ -165,13 +172,15 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   };
 }
 
-/** `?scenario=<name>&theme=light|dark&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
+/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
  * `error-<class>` scenario is `funded` with `list_wallets` failing with that class. Unknown
  * names throw, so a typo in a test URL fails loudly instead of showing the default. */
 export function fixtureOptionsFromUrl(search: string): FixtureOptions {
   const p = new URLSearchParams(search);
   const t = p.get("theme");
   const theme: ThemeName | null = t === "light" || t === "dark" ? t : null;
+  const n = p.get("network");
+  const network: NetworkKind | undefined = n === "mainnet" || n === "testnet" || n === "regtest" ? n : undefined;
   const failures: Partial<Record<CommandName, ErrorClass>> = {};
   let scenario: ScenarioName = DEFAULT_SCENARIO;
   const name = p.get("scenario");
@@ -194,5 +203,5 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
     holds.push(c as CommandName);
   }
   const delay = Number(p.get("delay") ?? 0);
-  return { scenario, theme, failures, holds, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
+  return { scenario, theme, network, failures, holds, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
 }

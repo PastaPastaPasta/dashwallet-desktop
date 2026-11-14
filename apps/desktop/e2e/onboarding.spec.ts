@@ -54,6 +54,9 @@ test("create: passphrase first, the phrase, verify with a wrong word, then the w
   await page.getByTestId("onboarding-create").click();
   await expect(page.getByTestId("onboarding-choosePassphrase")).toBeVisible();
   await expect(page.getByTestId("onboarding-passphrase-new")).toBeFocused();
+  await page.getByTestId("onboarding-passphrase-submit").click();
+  await expect(page.getByTestId("onboarding-passphrase-error")).toHaveText("Enter a passphrase.");
+  await expect(page.getByTestId("passphrase-strength")).toHaveAttribute("data-strength", "none");
   await page.getByTestId("onboarding-passphrase-new").fill("short");
   await expect(page.getByTestId("passphrase-strength")).toHaveAttribute("data-strength", "weak");
   await choosePassphrase(page, "Fixture pass 42!", "something else");
@@ -261,6 +264,11 @@ test("lock screen: a wait and the count survive a restart, eight failures leave 
   );
   await expect(page.getByTestId("lock-field")).toBeDisabled();
   await expect(page.getByTestId("lock-forgot")).toBeVisible();
+});
+
+test("the lock screen explains how to unlock in plain words", async ({ page }) => {
+  await open(page, "locked");
+  await expect(page.locator(".lock-prompt")).toHaveText("Enter your passphrase to unlock your wallet.");
 });
 
 test("For mixing only, then the unlock sheet unlocks fully (QT-112, D12)", async ({ page }) => {

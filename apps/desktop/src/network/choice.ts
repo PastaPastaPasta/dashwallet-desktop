@@ -11,7 +11,8 @@ export const NETWORK_CHOICES: { choice: ChosenNetwork; label: string }[] = [
   { choice: "testnet", label: "Testnet" },
 ];
 
-const networkName = (choice: ChosenNetwork) => (choice === "mainnet" ? "Mainnet" : "Testnet");
+export const networkName = (choice: string) =>
+  choice === "mainnet" ? "Mainnet" : choice === "testnet" ? "Testnet" : choice[0]?.toUpperCase() + choice.slice(1);
 
 /** "a", "a and b", "a, b and c". */
 const listed = (items: string[]) => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
@@ -19,12 +20,15 @@ const listed = (items: string[]) => (items.length < 2 ? items.join("") : `${item
 export const NetworkText = {
   title: "Network",
   hint: "Mainnet is the real Dash network. Testnet uses test coins with no value.",
-  unavailable: "Choosing the network is not available in this build yet.",
+  unavailable: "Network selection is unavailable right now.",
   notSwitched: "Dash Wallet could not switch networks.",
   /** After a switch that went through but whose choice was not written: the next start opens the old network. */
   notSaved: "The network choice could not be saved.",
   /** A window started with `--network regtest` or `devnet-<name>` is not on either choice. */
-  pinned: (current: string) => `This window was started with --network ${current}, which wins until the next start without it.`,
+  pinned: (current: string, next: ChosenNetwork | null) =>
+    next
+      ? `${networkName(current)} is in use for this session. ${networkName(next)} will be used from the next start.`
+      : `${networkName(current)} is in use for this session and will be used from the next start too.`,
   /** The blocking card while the switch runs. */
   opening: (choice: ChosenNetwork) => `Opening ${networkName(choice)}…`,
   confirmTitle: (choice: ChosenNetwork) => `Switch to ${networkName(choice)}?`,

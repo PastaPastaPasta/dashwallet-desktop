@@ -7,9 +7,7 @@ export const PassphraseText = {
   /** dash-qt `AskPassphraseDialog`. */
   mismatch: "The supplied passphrases do not match.",
   tooLong: "The passphrase is longer than 1024 characters.",
-  /** dash-qt's encryption warning, with the recovery phrase added. */
-  warning:
-    "Warning: If you encrypt your wallet and lose your passphrase, you will LOSE ALL OF YOUR DASH! Your recovery phrase still restores the wallet.",
+  warning: "If you forget this passphrase, you can still restore the wallet with your recovery phrase.",
 };
 
 /** Why `text` cannot be the new passphrase, or `null` when it can. Characters are counted as
