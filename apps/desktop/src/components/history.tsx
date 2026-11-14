@@ -2,7 +2,7 @@
 // and Activity's table mode (dash-qt's columns). With a price shown (MP-01), each amount has its value now
 // under it, and the table a value column; discreet mode leaves them out.
 
-import { useId, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { useBackend } from "../api/queries";
@@ -17,6 +17,7 @@ import {
   dayTitle,
   detailDate,
   groupByDay,
+  groupConsecutiveMixing,
   isProblem,
   rowDate,
   rowParty,
@@ -29,6 +30,7 @@ import {
   txTitle,
   weekday,
   type TxIcon,
+  type MixingGroup,
 } from "../format/tx";
 import { AmountText, Chip, Icon, VisuallyHidden } from "./basics";
 import type { UsedIcon } from "./icons";
@@ -125,6 +127,40 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
   );
 }
 
+function MixingGroupView({ group, ctx, onOpen, decorate }: { group: MixingGroup; ctx: RowContext; onOpen: (row: TxRow) => void; decorate?: (row: TxRow) => RowDecor }) {
+  const [expanded, setExpanded] = useState(false);
+  const first = group.rows[0];
+  const amount = group.rows.reduce((sum, row) => sum + row.amount, 0);
+  const shown = shownAmount(amount, "coinJoinMixing");
+  const text = ctx.display.compact(shown.duffs, shown.signed);
+  const testId = `tx-mixing-group-${first.txid.slice(0, 10)}-${first.recordIndex}`;
+  const date = rowDate(first);
+  return (
+    <>
+      <li className="tx-row-item">
+        <button
+          type="button"
+          className="tx-row tx-mixing-group"
+          data-testid={testId}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <Icon id={TX_ICON.mixing} size={30} className="tx-row-icon" />
+          <span className="tx-row-text">
+            <span className="tx-row-title">Mixing · {group.rows.length} transactions</span>
+            <span className="tx-row-subtitle">{date && <span className="tx-row-time">{timeOfDay(date, ctx.locale)}</span>}</span>
+          </span>
+          <span className="tx-row-trailing">
+            <AmountText className="tx-row-amount" text={text} unitName={ctx.display.name} />
+            <FiatLine fiat={ctx.fiat} duffs={shown.duffs} hidden={ctx.discreet} className="tx-row-fiat" testId={`${testId}-fiat`} />
+          </span>
+        </button>
+      </li>
+      {expanded && group.rows.map((row) => <TxRowView key={`${row.txid}:${row.recordIndex}`} row={row} ctx={ctx} onOpen={onOpen} decorate={decorate} />)}
+    </>
+  );
+}
+
 export function TxGroups({
   rows,
   ctx,
@@ -175,6 +211,7 @@ function TxGroup({
 }) {
   const titleId = useId();
   const title = day ? dayTitle(day, ctx.now, ctx.locale) : "Undated";
+  const grouped = groupConsecutiveMixing(rows);
   return (
     <div className="tx-group card-l1" role="group" aria-labelledby={titleId} data-testid={testId}>
       <header className="tx-group-header">
@@ -184,9 +221,13 @@ function TxGroup({
         {day && <span className="tx-group-weekday">{weekday(day, ctx.locale)}</span>}
       </header>
       <ul className="tx-group-rows" role="list">
-        {rows.map((row) => (
-          <TxRowView key={`${row.txid}:${row.recordIndex}`} row={row} ctx={ctx} onOpen={onOpen} decorate={decorate} />
-        ))}
+        {grouped.map((item) =>
+          "kind" in item ? (
+            <MixingGroupView key={`mixing:${item.rows[0].txid}:${item.rows[0].recordIndex}`} group={item} ctx={ctx} onOpen={onOpen} decorate={decorate} />
+          ) : (
+            <TxRowView key={`${item.txid}:${item.recordIndex}`} row={item} ctx={ctx} onOpen={onOpen} decorate={decorate} />
+          ),
+        )}
       </ul>
     </div>
   );

@@ -154,7 +154,7 @@ const unlocked = (walletIds: string[]): LockStatus => ({
   walletsWithSecrets: walletIds,
 });
 
-function wallet(variant: HistoryVariant): FixtureWallet {
+function wallet(variant: HistoryVariant, plainWords: boolean): FixtureWallet {
   return {
     summary: {
       walletId: FIXTURE_WALLET_ID,
@@ -166,7 +166,7 @@ function wallet(variant: HistoryVariant): FixtureWallet {
       createdAt: null,
       balances: variant === "empty" ? ZERO_BALANCES : FUNDED_BALANCES,
     },
-    rows: buildRows(variant),
+    rows: buildRows(variant, plainWords),
     coins: buildCoins(variant),
     receive: newReceiveWorld(),
   };
@@ -174,7 +174,7 @@ function wallet(variant: HistoryVariant): FixtureWallet {
 
 /** A wallet `import_wallet` adds: no history yet, and its birth height the tip's. */
 export function emptyWallet(walletId: string, name: string): FixtureWallet {
-  const w = wallet("empty");
+  const w = wallet("empty", false);
   w.summary = { ...w.summary, walletId, name };
   return w;
 }
@@ -186,8 +186,8 @@ function lockedAfter(w: World, failedAttempts: number): World {
   return w;
 }
 
-function base(theme: ThemeName | null, variant: HistoryVariant = "default"): World {
-  const main = wallet(variant);
+function base(theme: ThemeName | null, variant: HistoryVariant = "default", plainWords = false): World {
+  const main = wallet(variant, plainWords);
   return {
     launch: {
       selftest: false,
@@ -568,7 +568,7 @@ function withInvitation(w: World, status?: InvitationStatus): World {
 
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
-  funded: (t) => base(t),
+  funded: (t) => base(t, "default", true),
   /** The first run: the pre-release notice is up (the other scenarios start past it). */
   "pre-release-notice": (t) => {
     const w = base(t);

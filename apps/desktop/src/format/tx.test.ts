@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { contactAside, contactLetters, contactName, dateRange, dayTitle, groupByDay, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
+import { contactAside, contactLetters, contactName, dateRange, dayTitle, groupByDay, groupConsecutiveMixing, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -62,6 +62,12 @@ describe("titles", () => {
     expect(typeTitle("recvWithAddress", "reward", 5)).toBe("Masternode reward");
     expect(typeTitle("generated", "reward", 5)).toBe("Mined");
     expect(typeTitle("other", "other", -1)).toBe("Sent");
+    expect(typeTitle("assetLock", "platform", -1)).toBe("Dash Platform funding");
+    const lock = { txType: "assetLock", category: "platform", amount: -1, label: null } as const;
+    expect(txTitle({ ...lock, purpose: { kind: "usernameRegistration", username: "alice" } })).toBe("Username @alice");
+    expect(txTitle({ ...lock, purpose: { kind: "usernameRegistration", username: "@alice" } })).toBe("Username @alice");
+    expect(txTitle({ ...lock, label: "Rent", purpose: { kind: "usernameRegistration", username: "alice" } })).toBe("Rent");
+    expect(txTitle(lock)).toBe("Dash Platform funding");
   });
 });
 
@@ -80,9 +86,20 @@ describe("chips and icons", () => {
     expect(txIcon("recvWithAddress", status(), 5)).toBe("received");
   });
 
-  it("shows internal moves without a sign", () => {
-    expect(shownAmount(-429, "sendToSelf")).toEqual({ duffs: 429, signed: false });
+  it("shows a self-send fee as money that left", () => {
+    expect(shownAmount(-429, "sendToSelf")).toEqual({ duffs: -429, signed: true });
+    expect(shownAmount(-429, "platformTransfer")).toEqual({ duffs: 429, signed: false });
     expect(shownAmount(-429, "sendToAddress")).toEqual({ duffs: -429, signed: true });
+  });
+
+  it("groups adjacent mixing rows for list mode", () => {
+    const row = (txid: string, txType: "coinJoinMixing" | "sendToAddress"): any => ({ txid, recordIndex: 0, txType, category: txType === "coinJoinMixing" ? "coinJoin" : "sent", amount: -1000, status: status(), timestamp: 1, blockHeight: 1, fee: 0, address: null, label: null, countsTowardBalance: true, involvesWatchOnly: false });
+    const grouped = groupConsecutiveMixing([row("a", "coinJoinMixing"), row("b", "coinJoinMixing"), row("c", "sendToAddress"), row("d", "coinJoinMixing")]);
+    expect(grouped).toHaveLength(3);
+    expect("kind" in grouped[0] && grouped[0].rows).toHaveLength(2);
+    expect(grouped[1]).toMatchObject({ txid: "c" });
+    expect(grouped[2]).toMatchObject({ txid: "d" });
+    expect("kind" in grouped[2]).toBe(false);
   });
 });
 
