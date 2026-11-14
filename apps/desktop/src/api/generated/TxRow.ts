@@ -2,6 +2,7 @@
 import type { TxCategoryName } from "./TxCategoryName";
 import type { TxCounterparty } from "./TxCounterparty";
 import type { TxFiat } from "./TxFiat";
+import type { TxPurpose } from "./TxPurpose";
 import type { TxStatusInfo } from "./TxStatusInfo";
 import type { TxTypeName } from "./TxTypeName";
 
@@ -30,4 +31,9 @@ counterparty?: TxCounterparty,
  * The price the transaction was first seen at, in the currency chosen
  * then (MP-01); absent when it was not stamped (no back-fill).
  */
-fiatThen?: TxFiat, };
+fiatThen?: TxFiat,
+/**
+ * What an asset lock was for, when the wallet's registration records
+ * say; absent for every other transaction.
+ */
+purpose?: TxPurpose, };

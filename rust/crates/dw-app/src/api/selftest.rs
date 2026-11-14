@@ -184,6 +184,7 @@ fn bench_rows(rows: u32) -> HistoryRows {
                     involves_watch_only: false,
                     counterparty: None,
                     fiat_then: None,
+                    purpose: None,
                 }
             })
             .collect(),
