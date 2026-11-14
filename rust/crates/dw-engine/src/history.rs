@@ -1086,9 +1086,7 @@ pub(crate) struct Labels {
 /// The asset-lock txids of registrations that took a username, by txid.
 /// Only flows whose name step was asked for and did not fail count: a lock
 /// of a failed or nameless flow stays the generic Platform funding.
-pub(crate) fn username_purposes(
-    rows: &[dw_appdb::RegistrationRow],
-) -> HashMap<String, TxPurpose> {
+pub(crate) fn username_purposes(rows: &[dw_appdb::RegistrationRow]) -> HashMap<String, TxPurpose> {
     use crate::platform::registration_rows::Phase;
     rows.iter()
         .filter(|r| {
@@ -2045,7 +2043,7 @@ mod tests {
         let txid = format!("{:064x}", 7);
         let outpoint = format!("{txid}:0");
         let named = registration("alice", "done", Some(&outpoint));
-        let purposes = username_purposes(&[named.clone()]);
+        let purposes = username_purposes(std::slice::from_ref(&named));
         assert_eq!(
             purposes.get(&txid),
             Some(&TxPurpose::UsernameRegistration {
