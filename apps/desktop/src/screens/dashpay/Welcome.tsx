@@ -24,12 +24,14 @@ export function WelcomeSteps({
       <ol className="welcome-steps" role="list">
         {WELCOME_STEPS.map((s, i) => (
           <li key={s.kind}>
-            <button type="button" className="welcome-step" data-testid={`welcome-${s.kind}`} disabled={disabled || waiting(s.kind)} aria-describedby={`welcome-${s.kind}-detail`} onClick={() => onStep(s.kind)}>
+            <button type="button" className="welcome-step" data-testid={`welcome-${s.kind}`} disabled={disabled || waiting(s.kind)} aria-labelledby={`welcome-${s.kind}-title`} aria-describedby={`welcome-${s.kind}-detail`} onClick={() => onStep(s.kind)}>
               <span className="welcome-step-number" aria-hidden="true">
                 {i + 1}
               </span>
               <span className="welcome-step-text">
-                <span className="welcome-step-title">{s.title}</span>
+                <span className="welcome-step-title" id={`welcome-${s.kind}-title`}>
+                  {s.title}
+                </span>
                 <span className="welcome-step-detail" id={`welcome-${s.kind}-detail`}>{s.text}</span>
               </span>
               <span className="welcome-step-chevron" aria-hidden="true">

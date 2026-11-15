@@ -45,6 +45,8 @@ for (const theme of THEMES)
       /Find friends/,
       /Share my username/,
     ]);
+    for (const name of ["Add a photo and name", "Find friends", "Share my username"])
+      await expect(page.getByTestId("welcome-steps").getByRole("button", { name, exact: true })).toBeVisible();
     await expect(page.getByTestId("registration-wallet")).toHaveText("Go to wallet");
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);

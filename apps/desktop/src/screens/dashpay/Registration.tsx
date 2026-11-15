@@ -273,13 +273,18 @@ export function RegistrationScreen({
   const [sharing, setSharing] = useState(false);
   const { step } = model;
   const welcome = model.kind === "done";
+  const section = useRef<HTMLElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
-  // The progress screen's focus is gone once it turns into the welcome; start keyboard users there.
+  // The progress screen's controls go when it turns into the welcome, and focus with them; start
+  // keyboard users at the title then, but leave focus that is still somewhere else alone.
   useEffect(() => {
-    if (welcome) title.current?.focus();
+    if (!welcome) return;
+    const active = document.activeElement;
+    if (active === null || active === document.body || section.current?.contains(active)) title.current?.focus();
   }, [welcome]);
   return (
     <section
+      ref={section}
       className={welcome ? "registration registration-welcome card-l1" : "registration card-l1"}
       data-testid="registration-screen"
       data-kind={model.kind}
@@ -287,9 +292,16 @@ export function RegistrationScreen({
       data-waiting={waiting ?? undefined}
       aria-labelledby={`${id}-title`}
     >
-      {/* Changes as the run moves on, announced politely, as the Home card (DP1-08 D25). */}
-      <div role="status" className="registration-live">
-        <h2 className="registration-title" id={`${id}-title`} ref={title} tabIndex={welcome ? -1 : undefined}>
+      {/* Changes as the run moves on, announced politely, as the Home card (DP1-08 D25). The
+          welcome is announced by its focused title instead, so it is not read twice. */}
+      <div role={welcome ? undefined : "status"} className="registration-live">
+        <h2
+          className="registration-title"
+          id={`${id}-title`}
+          ref={title}
+          tabIndex={welcome ? -1 : undefined}
+          aria-describedby={welcome ? `${id}-lines` : undefined}
+        >
           {model.title}
           {model.busy && <span className="spinner registration-spinner" aria-hidden="true" />}
         </h2>
@@ -301,7 +313,7 @@ export function RegistrationScreen({
             <progress className="dashpay-card-progress" max={3} value={step.n} aria-label="Registration progress" />
           </div>
         )}
-        <div data-testid="registration-lines">
+        <div data-testid="registration-lines" id={`${id}-lines`}>
           {model.lines.map((line) => (
             <p key={line} className="registration-line">
               {line}
