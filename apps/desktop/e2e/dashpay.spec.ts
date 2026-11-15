@@ -112,7 +112,7 @@ test("D23: a names pass that ends with no name asks for one at once", async ({ p
 test("D24 (Sol r1 #2): a refetch that fails after a read shows the error, hides the chip and offers no Join", async ({ page }) => {
   const errors = await open(page, "dashpay-no-identity");
   await expect(card(page)).toHaveAttribute("data-state", "join");
-  await expect(chip(page)).toHaveText("Join DashPay");
+  await expect(chip(page)).toHaveCount(0);
   const invalidate = () =>
     page.evaluate((walletId) => {
       const f = window.__dwFixture!;
@@ -132,7 +132,7 @@ test("D24 (Sol r1 #2): a refetch that fails after a read shows the error, hides 
   await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", null));
   await page.getByTestId("join-readiness").getByTestId("dashpay-card-action").click();
   await expect(page.getByTestId("join-create")).toBeEnabled();
-  await expect(chip(page)).toHaveText("Join DashPay");
+  await expect(chip(page)).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 
@@ -198,7 +198,7 @@ test("a Platform{Startup} signal moves the card from looking to Join", async ({ 
     f.emit({ kind: "platform", network: "testnet", walletId, change: { domain: "startup" } });
   }, FIXTURE_WALLET_ID);
   await expect(card(page)).toHaveAttribute("data-state", "join");
-  await expect(chip(page)).toHaveText("Join DashPay");
+  await expect(chip(page)).toHaveCount(0);
 });
 
 test("AND-069–071 / IOS-134 What is username voting? opens the voting info and closes with Escape", async ({ page }) => {

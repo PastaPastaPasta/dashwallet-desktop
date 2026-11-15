@@ -608,7 +608,7 @@ const SCENARIOS = {
     w.pending.networkChoice = { chosen: "mainnet", saved: false };
     return w;
   },
-  /** The funded wallet when dw-app has no shielded or Platform command: Home shows "—" for both. */
+  /** The funded wallet when dw-app has no shielded or Platform command: Home has neither row, and no breakdown. */
   "pools-absent": (t) => {
     const w = base(t);
     w.pending.shielded = null;

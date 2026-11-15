@@ -788,7 +788,9 @@ test.describe("Move to Dash wallet", () => {
     await expect(page.getByTestId("platform-card-amount")).toHaveCount(0);
     expect(await platformMoveWhy(page)).toBe("Nothing on your Platform addresses to move yet.");
     await expectFundOpens(page);
-    await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
+    // Nothing movable on Platform: Home has no Platform row.
+    await expect(page.getByTestId("hero-amount")).toBeVisible();
+    await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-list").waitFor();
     await expect(page.getByText("Moved to Dash wallet")).toBeVisible();
@@ -1073,7 +1075,8 @@ test.describe("Shielded", () => {
   for (const theme of THEMES) {
     test(`while Shielded syncs its actions wait, say why, and stay readable (${theme})`, async ({ page }) => {
       const errors = await open(page, "shielded-syncing", theme);
-      await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
+      // Not ready is not empty: the row waits, and the hero counts no Shielded yet.
+      await expect(page.getByTestId("breakdown-shielded")).toContainText("loading");
       await expect(page.getByTestId("shielded-card")).toHaveCount(0);
       const waits = async (ids: string[]) => {
         for (const id of ids) {
@@ -1125,9 +1128,9 @@ test.describe("Shielded", () => {
     await expect(page.locator('button[data-txid^="shielded:"]')).toHaveCount(0);
   });
 
-  test("shows an unavailable Shielded header balance with no Home card", async ({ page }) => {
+  test("leaves an unavailable Shielded balance off Home, with no Home card", async ({ page }) => {
     const errors = await open(page, "shielded-inactive");
-    await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
+    await expect(page.getByTestId("breakdown-shielded")).toHaveCount(0);
     await expect(page.getByTestId("shielded-card")).toHaveCount(0);
     await expect(page.getByTestId("shielded-card-transfer")).toHaveCount(0);
     await shot(page, "light-shielded-inactive");
@@ -1170,12 +1173,12 @@ test.describe("Home balance", () => {
     });
   }
 
-  test("shows — for a pool without a command, and leaves it out of the hero", async ({ page }) => {
+  test("leaves a pool without a command out of the hero and the breakdown", async ({ page }) => {
     await open(page, "pools-absent");
-    await expect(page.getByTestId("breakdown-shielded")).toContainText("—");
-    await expect(page.getByTestId("breakdown-platform")).toContainText("—");
-    await expect(page.getByTestId("breakdown-platform")).toBeVisible();
     await expect(page.getByTestId("hero-amount")).toContainText("30.39698287");
+    // Core alone would repeat the hero: no breakdown, and what is pending under the hero.
+    await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
+    await expect(page.getByTestId("hero-core-note")).toHaveText("0.20 pending");
     await shot(page, "light-home-pools-absent");
   });
 

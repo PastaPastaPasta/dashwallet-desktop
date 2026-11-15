@@ -335,7 +335,7 @@ test.describe("disabled reasons are visible and described", () => {
   test("Shielded's actions, Finish included, are described by the syncing text", async ({ page }) => {
     const syncing = "Shielded is still syncing; try again when it finishes.";
     await page.goto(fixtureUrl("shielded-syncing-pending", "light"));
-    await page.getByTestId("breakdown-shielded").waitFor();
+    await page.getByTestId("hero-amount").waitFor();
     expect(await reasonOf(page, "shielded-finish")).toContain(syncing);
     for (const route of ["coreToShielded", "shieldedToCore"] as const) {
       await openTransfer(page, route);
@@ -351,7 +351,7 @@ test.describe("disabled reasons are visible and described", () => {
 
   test("Send and Move from Shielded say why they wait with nothing in Shielded", async ({ page }) => {
     await page.goto(fixtureUrl("shielded-empty", "light"));
-    await page.getByTestId("breakdown-shielded").waitFor();
+    await page.getByTestId("hero-amount").waitFor();
     await openTransfer(page, "shieldedToCore");
     expect(await reasonOf(page, "transfer-continue")).toContain("Nothing in Shielded to send yet.");
     await page.getByTestId("transfer-cancel").click();
@@ -377,7 +377,8 @@ test.describe("disabled reasons are visible and described", () => {
 
   test("inactive Shielded has no Home card or action reason lines", async ({ page }) => {
     await page.goto(fixtureUrl("shielded-inactive", "light"));
-    await page.getByTestId("breakdown-shielded").waitFor();
+    await page.getByTestId("hero-amount").waitFor();
+    await expect(page.getByTestId("breakdown-shielded")).toHaveCount(0);
     await expect(page.getByTestId("shielded-card")).toHaveCount(0);
     await expect(page.getByTestId("shielded-card-transfer")).toHaveCount(0);
     await expect(page.getByTestId("shielded-card-why")).toHaveCount(0);

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { authorize, fixtureUrl, openTransfer, platformMoveWhy, THEMES } from "./helpers";
 
 /** The Home pool sections and their rows that only repeated what the sheets say. */
@@ -16,7 +16,9 @@ for (const theme of THEMES) {
 
   test(`Home has no pool card with only Platform dust, and Transfer says why (${theme})`, async ({ page }) => {
     await page.goto(fixtureUrl("platform-dust-small", theme));
-    await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
+    // Nothing movable on Platform: Home has no Platform row.
+    await expect(page.getByTestId("hero-amount")).toBeVisible();
+    await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
     for (const id of POOL_CARDS) await expect(page.getByTestId(id)).toHaveCount(0);
     await expect(page.getByTestId("page-home")).not.toContainText("cannot be moved");
     expect(await platformMoveWhy(page)).toBe("0.004005 tDASH on your Platform addresses cannot be moved to your Dash wallet right now.");
@@ -101,4 +103,134 @@ test("An open Shielded passphrase prompt survives the Home section appearing and
   await input.press("Enter");
   await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
   await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
+});
+
+for (const theme of THEMES) {
+  test(`Home asks to join DashPay once, and the hero balance reads like the mobile wallets (${theme})`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-no-identity", theme));
+    const home = page.getByTestId("page-home");
+    await expect(page.getByTestId("dashpay-card")).toHaveAttribute("data-state", "join");
+    // One button on Home, the card's; the sidebar entry stays as navigation; the toolbar has none.
+    await expect(home.getByRole("button", { name: "Join DashPay" })).toHaveCount(1);
+    await expect(home.getByText("Join DashPay", { exact: true })).toHaveCount(1);
+    await expect(page.getByTestId("toolbar-chip")).toHaveCount(0);
+    await expect(page.getByTestId("sidebar-joinDashPay")).toHaveText("Join DashPay");
+    await home.getByRole("button", { name: "Join DashPay" }).click();
+    await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
+    await page.getByTestId("sidebar-home").click();
+
+    // The exact amount, with the decimals past the second drawn smaller.
+    const number = page.getByTestId("hero-amount").locator(".amount-number");
+    await expect(number).toHaveText("32.04698287");
+    const minor = number.locator(".amount-minor");
+    await expect(minor).toHaveText("698287");
+    const size = (l: typeof number) => l.evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
+    expect(await size(minor)).toBeLessThan(await size(number));
+    await expect(page.getByTestId("hero-amount").locator(".amount")).toHaveAttribute("title", "32.04698287 tDASH");
+    // The split digits are still one spoken number.
+    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("32.04698287 tDASH");
+  });
+}
+
+/** Core's balances, replaced in the world and announced as the engine would. */
+const setCore = (page: Page, over: Record<string, number>) =>
+  page.evaluate((over) => {
+    const f = window.__dwFixture!;
+    const w = f.world.wallets[0];
+    w.summary = { ...w.summary, balances: { ...w.summary.balances!, ...over } };
+    f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId: w.summary.walletId, balances: w.summary.balances });
+  }, over);
+
+const bandHeight = async (page: Page) => (await page.getByTestId("hero-band").boundingBox())!.height;
+
+test("Home's hero shows a round balance without a smaller tail, and no breakdown that repeats it", async ({ page }) => {
+  await page.goto(fixtureUrl("pools-absent", "light"));
+  await expect(page.getByTestId("hero-amount")).toContainText("30.39698287");
+  // Only Core, with something pending: a line under the hero says so instead of a lone Core row.
+  await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
+  await expect(page.getByTestId("hero-core-note")).toHaveText("0.20 pending");
+  // Discreet mode masks the hero, so the line naming what is pending goes too.
+  await page.getByTestId("toolbar-discreet").click();
+  await expect(page.getByTestId("hero-amount")).toContainText("#.##");
+  await expect(page.getByTestId("hero-core-note")).toHaveCount(0);
+  await page.getByTestId("toolbar-discreet").click();
+  await expect(page.getByTestId("hero-core-note")).toHaveText("0.20 pending");
+  await setCore(page, { confirmed: 125_000_000, unconfirmed: 0, immature: 0, locked: 0, total: 125_000_000 });
+  await expect(page.getByTestId("hero-amount").locator(".amount-number")).toHaveText("1.25");
+  await expect(page.getByTestId("hero-amount").locator(".amount-minor")).toHaveCount(0);
+  await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
+  await expect(page.getByTestId("hero-core-note")).toHaveCount(0);
+});
+
+for (const theme of THEMES) {
+  test(`Home's band is shorter with no breakdown under the balance (${theme})`, async ({ page }) => {
+    await page.goto(fixtureUrl("funded", theme));
+    await expect(page.getByTestId("hero-breakdown")).toBeVisible();
+    const tall = await bandHeight(page);
+    await page.goto(fixtureUrl("pools-absent", theme));
+    await setCore(page, { unconfirmed: 0 });
+    await expect(page.getByTestId("hero-core-note")).toHaveCount(0);
+    await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
+    await expect.poll(() => bandHeight(page)).toBeLessThan(tall - 40);
+    // The shortcut card still clears the amount.
+    const amount = (await page.getByTestId("hero-amount").boundingBox())!;
+    const shortcuts = (await page.locator(".shortcut-card").boundingBox())!;
+    expect(shortcuts.y).toBeGreaterThan(amount.y + amount.height);
+  });
+
+  test(`a failed Platform read keeps its row with "—" and says so (${theme})`, async ({ page }) => {
+    await page.goto(fixtureUrl("funded", theme, "&fail=platform_addresses:none"));
+    const row = page.getByTestId("breakdown-platform");
+    await expect(row).toContainText("—");
+    await expect(row).toContainText("not available");
+    await expect(page.getByTestId("breakdown-platform-fiat")).toHaveCount(0);
+    // The hero counts what is known: Core 30.39698287 + Shielded 1.25.
+    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("31.64698287 tDASH");
+    await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
+  });
+
+  test(`a pool still being read keeps a placeholder row (${theme})`, async ({ page }) => {
+    await page.goto(fixtureUrl("funded", theme, "&hold=shielded_status"));
+    await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
+    const row = page.getByTestId("breakdown-shielded");
+    await expect(row).toContainText("…");
+    await expect(row).toContainText("loading");
+    await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("30.79698287 tDASH");
+  });
+
+  test(`discreet mode shows the same rows whatever the pools hold (${theme})`, async ({ page }) => {
+    await page.goto(fixtureUrl("funded", theme));
+    await expect(page.getByTestId("breakdown-shielded")).toContainText("1.25");
+    // Shielded and Platform empty: no rows to show while the balance is visible...
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.world.pending.shielded!.balance = "0";
+      f.world.pending.platform!.addresses = [];
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } });
+    });
+    await expect(page.getByTestId("breakdown-shielded")).toHaveCount(0);
+    await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
+    // ...and in discreet mode the three rows, masked, as with money in both, and nothing pending named.
+    await page.getByTestId("toolbar-discreet").click();
+    for (const pool of ["core", "shielded", "platform"]) await expect(page.getByTestId(`breakdown-${pool}`)).toContainText("#.##");
+    await expect(page.getByTestId("breakdown-core")).toContainText("Dash wallet");
+    await expect(page.getByTestId("hero-core-note")).toHaveCount(0);
+  });
+}
+
+test("a failed Platform refetch after a good read keeps the last balance", async ({ page }) => {
+  await page.goto(fixtureUrl("funded", "light"));
+  await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
+  await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("32.04698287 tDASH");
+  const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "platform_addresses").length);
+  const before = await reads();
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.fail("platform_addresses", "none");
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "platformAddresses" } });
+  });
+  await expect.poll(reads).toBeGreaterThan(before);
+  await expect(page.getByTestId("breakdown-platform")).toContainText("0.40");
+  await expect(page.getByTestId("breakdown-platform")).not.toContainText("not available");
+  await expect(page.getByTestId("hero-amount")).toHaveAccessibleName("32.04698287 tDASH");
 });

@@ -11,6 +11,7 @@ import { DashButton } from "../components/basics";
 import { CopyValue } from "../components/detail";
 import { Sheet } from "../components/sheet";
 import { shortId } from "../dashpay/identities";
+import { known } from "../format/homeBalance";
 import { unreadText } from "../dashpay/registration";
 import { useModel } from "../onboarding/model";
 import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
@@ -57,7 +58,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
   // Activity settles a retained `pending` move: when it changes, when a move turns pending (the rows
   // read may already have shown it settled) and when the sheet closes.
   useEffect(() => move.settle(activity.data), [move, activity.data, move.pending, move.open]);
-  const platformKnown = usePoolBalances(walletId).platform != null;
+  const platformKnown = known(usePoolBalances(walletId).platform);
   const s = status.data ?? null;
   const shields = s?.pendingShields ?? [];
   const shieldSyncing = s !== null && shieldedSyncing(s);

@@ -1002,6 +1002,13 @@ button {
   cursor: default;
 }
 
+/* The decimals past the second, smaller, as the mobile wallets draw them; still exact. */
+.hero-amount .amount-minor {
+  font-size: var(--dw-type-title2-size);
+  line-height: var(--dw-type-title2-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
 .hero-unknown {
   display: flex;
   flex-direction: column;
@@ -1018,6 +1025,29 @@ button {
 /* MP-01: the fiat row under the hero amount; the band grows by its line only while it shows. */
 .hero-band:has(.hero-fiat) {
   height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line));
+}
+
+/* No breakdown under the amount: the shorter band the balance alone needs, plus a line for each of
+   the fiat row and the note of what Core has pending. */
+@media (min-width: 980px) {
+  .hero-band:has(.hero[data-breakdown="none"]) {
+    height: var(--dw-layout-hero-height-hidden);
+  }
+  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat),
+  .hero-band:has(.hero[data-breakdown="none"] .hero-note) {
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line));
+  }
+  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat):has(.hero-note) {
+    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line));
+  }
+}
+
+.hero-note {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
 }
 
 .hero-fiat {

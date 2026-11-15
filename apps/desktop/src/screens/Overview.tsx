@@ -19,7 +19,7 @@ import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
-import { coreSubtitle, homeBalance, POOL_ROWS } from "../format/homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, homeBalance, known, POOL_ROWS, type PoolReading } from "../format/homeBalance";
 import { isSyncing, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
@@ -34,8 +34,8 @@ import { defaultRoute, transferFor, TRANSFER_COPY } from "../transfer/model";
 const RECENT_COUNT = 5;
 const RECENT_FILTER: HistoryFilter = { categories: [], text: null, sort: "newestFirst" };
 
-/** `amount` null: not known, shown as "—" with no unit; `undefined`: still being read. */
-function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { title: string; subtitle: string; amount: string | null | undefined; unitName: string; testId: string; fiat?: ReactNode }) {
+/** `amount` null: the read failed, shown as "—" with no unit; `undefined`: still being read. */
+function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { title: string; subtitle: string; amount: string | null | undefined; unitName: string; testId: string; fiat: ReactNode }) {
   return (
     <div className="breakdown-cell" data-testid={testId}>
       <span className="breakdown-text">
@@ -47,19 +47,17 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
           <span aria-hidden="true">{amount === null ? "—" : "…"}</span>
           <VisuallyHidden>{amount === null ? "not available" : "loading"}</VisuallyHidden>
         </span>
-      ) : fiat ? (
+      ) : (
         <span className="breakdown-amounts">
           <AmountText className="breakdown-amount" text={amount} unitName={unitName} />
           {fiat}
         </span>
-      ) : (
-        <AmountText className="breakdown-amount" text={amount} unitName={unitName} />
       )}
     </div>
   );
 }
 
-function BalanceHero({ balances, shielded, platform, network, syncing }: { balances: Balances | null; shielded: number | null | undefined; platform: number | null | undefined; network: NetworkInfo; syncing: boolean }) {
+function BalanceHero({ balances, shielded, platform, network, syncing }: { balances: Balances | null; shielded: PoolReading; platform: PoolReading; network: NetworkInfo; syncing: boolean }) {
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
   const fmt = (duffs: number) => (discreet ? shown.masked() : shown.compact(duffs));
@@ -67,16 +65,18 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
   const full = (duffs: number) => (discreet ? undefined : shown.withUnit(duffs));
   const unit = shown.name;
   const home = balances && homeBalance(balances, shielded, platform);
-  // Still being read, as against not known: the row waits instead of saying "—".
-  const reading = { core: false, shielded: shielded === undefined, platform: platform === undefined };
+  const rows = home ? breakdownRows(home.pools, discreet) : [];
+  // Without a breakdown, what Core still has arriving or held goes under the hero (not in discreet mode).
+  const coreNote = balances && rows.length === 0 && !discreet ? coreSubtitle(balances, fmt, "") : "";
+  const digits = home ? heroDigits(fmt(home.total)) : null;
   const fiat = useFiat();
   return (
-    <section className="hero" data-testid="hero" aria-label="Balance">
+    <section className="hero" data-testid="hero" aria-label="Balance" data-breakdown={home && rows.length === 0 ? "none" : undefined}>
       {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}
       <span className="hero-caption" aria-hidden={!syncing}>
         {syncing ? "Syncing Balance" : " "}
       </span>
-      {home ? (
+      {home && digits ? (
         <button
           type="button"
           className="hero-amount"
@@ -84,7 +84,7 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
           title={discreet ? "Click to show balance" : "Click to hide balance"}
           onClick={() => ui.set({ discreet: !discreet })}
         >
-          <AmountText text={fmt(home.total)} unitName={unit} title={full(home.total)} />
+          <AmountText text={digits.major} minor={digits.minor} unitName={unit} title={full(home.total)} />
         </button>
       ) : (
         <div className="hero-amount hero-unknown" data-testid="hero-amount" title="Not available until sync completes">
@@ -93,22 +93,27 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
         </div>
       )}
       {home && <HeroFiat fiat={fiat} duffs={home.total} hidden={discreet} />}
-      {home && balances && (
+      {coreNote && (
+        <p className="hero-note" data-testid="hero-core-note">
+          {coreNote}
+        </p>
+      )}
+      {home && balances && rows.length > 0 && (
         <div className="hero-breakdown" data-testid="hero-breakdown">
-          {POOL_ROWS.map((row, i) => {
-            const duffs = home.pools[row.pool];
-            // Core: what is still arriving shows under it; the others say when they are not known.
-            const subtitle = row.pool === "core" ? coreSubtitle(balances, fmt, row.subtitle) : row.subtitle;
+          {POOL_ROWS.filter((row) => rows.includes(row.pool)).map((row, i) => {
+            const reading = home.pools[row.pool];
+            // Core names what is still arriving or held; discreet mode keeps that to itself.
+            const subtitle = row.pool === "core" && !discreet ? coreSubtitle(balances, fmt, row.subtitle) : row.subtitle;
             return (
               <Fragment key={row.pool}>
                 {i > 0 && <span className="breakdown-divider" aria-hidden="true" />}
                 <BreakdownCell
                   title={row.title}
                   subtitle={subtitle}
-                  amount={duffs !== null ? fmt(duffs) : reading[row.pool] ? undefined : null}
+                  amount={known(reading) ? fmt(reading) : reading === "failed" ? null : undefined}
                   unitName={unit}
                   testId={`breakdown-${row.pool}`}
-                  fiat={duffs !== null && <FiatLine fiat={fiat} duffs={duffs} hidden={discreet} className="breakdown-fiat" testId={`breakdown-${row.pool}-fiat`} />}
+                  fiat={known(reading) && <FiatLine fiat={fiat} duffs={reading} hidden={discreet} className="breakdown-fiat" testId={`breakdown-${row.pool}-fiat`} />}
                 />
               </Fragment>
             );

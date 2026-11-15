@@ -322,6 +322,14 @@ for (const theme of THEMES) {
     await page.keyboard.press("Escape");
     await page.getByTestId("request-sheet").waitFor({ state: "detached" });
     await page.locator("[data-testid^=request-fiat-]").first().waitFor();
+    // The form resets once the sheet closes and focus comes back: wait for the reset form to settle
+    // (empty fields, and Create request enabled again once the amount check catches up), then blur,
+    // so the shot has no focus ring.
+    await expect(page.getByTestId("request-label")).toHaveValue("");
+    await expect(page.getByTestId("request-amount")).toHaveValue("");
+    await expect(page.getByTestId("request-create")).toBeEnabled();
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.mouse.move(0, 0);
     await shoot(page, "receive-requests-fiat", theme);
   });
