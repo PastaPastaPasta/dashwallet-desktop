@@ -60,8 +60,12 @@ export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "star
 /** The tab Pay opens on when nothing named one: To a contact only when there is someone to pay
  * there (a contact or a request), else To an address; `null` while that is still being read
  * (`owner` is `undefined` until DashPay's status is read). */
-export function defaultPayTab(owner: (ContactsOwner & { failed?: boolean }) | undefined, list: { data: ContactList | undefined; failed: boolean }): PayTab | null {
-  if (owner === undefined) return null;
+export function defaultPayTab(
+  owner: (ContactsOwner & { failed?: boolean; fetching?: boolean }) | undefined,
+  list: { data: ContactList | undefined; failed: boolean; fetching?: boolean },
+): PayTab | null {
+  // The tab is chosen once, so not from a cached answer that a running read may yet overturn.
+  if (owner === undefined || owner.fetching || list.fetching) return null;
   // A failed read keeps the last good answer, which may be stale: To an address, not that list.
   if (owner.kind !== "identity" || owner.failed || list.failed) return "address";
   if (list.data === undefined) return null;
@@ -137,7 +141,8 @@ export function pickerListing(list: { data: ContactList | undefined; placeholder
  * answered for the text shown and the picker's list for that text is read (`listReady`): before,
  * its hits cannot be told apart from the picker's rows. */
 export function pickerNetworkState(i: { listReady: boolean; caughtUp: boolean; pending: boolean; failed: boolean; fetching: boolean }): "loading" | "error" | "done" {
-  if (!i.listReady || !i.caughtUp || i.pending || (i.failed && i.fetching)) return "loading";
+  // A re-read (after a contact request, say) may change a hit's relation: not the old one meanwhile.
+  if (!i.listReady || !i.caughtUp || i.pending || i.fetching) return "loading";
   return i.failed ? "error" : "done";
 }
 

@@ -123,11 +123,13 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
       // `delay` is a slow engine; the launch reads are dw-app's own, before any engine (U-04 D29).
       if (opts.delayMs && !UNDELAYED.has(cmd)) await new Promise((r) => setTimeout(r, opts.delayMs));
       const cls = failures.get(cmd as CommandName);
-      if (cls) throw sampleError(cls);
+      // A held call that is set to fail fails late, as it answers.
+      if (cls && !held.has(cmd)) throw sampleError(cls);
       const handler = (HANDLERS[cmd as CommandName] ?? PENDING_HANDLERS[cmd]) as ((args: unknown, ctx: Ctx) => unknown) | undefined;
       if (!handler) throw notImplemented(cmd);
       let answer: { result: unknown } | { error: unknown };
       try {
+        if (cls) throw sampleError(cls);
         answer = { result: handler(payload ?? {}, ctx) };
       } catch (error) {
         answer = { error };

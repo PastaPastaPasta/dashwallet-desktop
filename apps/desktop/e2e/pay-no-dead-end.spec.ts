@@ -147,6 +147,49 @@ test("PAY-6 Pay opens on To an address when DashPay's state could not be read ag
   expect(errors.filter((e) => !/rpc/i.test(e))).toEqual([]);
 });
 
+/** Makes the next call of `command` fail, and holds it until `release(page)`. */
+const failHeld = (page: Page, command: "dashpay_status" | "dashpay_contacts") =>
+  page.evaluate((command) => {
+    const f = window.__dwFixture!;
+    f.fail(command, "rpc");
+    (window as unknown as { __release: () => void }).__release = f.hold(command);
+  }, command);
+const release = (page: Page) => page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+
+test("PAY-6 Pay waits for a re-read of DashPay's state that is still out, and opens on To an address when it fails", async ({ page }) => {
+  const errors = await openPay(page, "dashpay-registered");
+  await selected(page, "contact");
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
+  const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "dashpay_status").length);
+  const before = await reads();
+  await failHeld(page, "dashpay_status");
+  await dashpayChanged(page);
+  await expect.poll(reads).toBeGreaterThan(before);
+  // The cached status still names the identity, but the re-read may overturn it: no tab yet.
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await expect(page.getByTestId("pay-tab-loading")).toBeVisible();
+  await release(page);
+  await selected(page, "address");
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", null));
+  expect(errors.filter((e) => !/rpc/i.test(e))).toEqual([]);
+});
+
+test("PAY-6 Pay waits for a re-read of the contact list that is still out, and opens on To an address when it fails", async ({ page }) => {
+  const errors = await openPay(page, "dashpay-registered");
+  await selected(page, "contact");
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
+  // The change marks Pay's cached list stale; Pay reads it again as it opens.
+  await dashpayChanged(page);
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await failHeld(page, "dashpay_contacts");
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await expect(page.getByTestId("pay-tab-loading")).toBeVisible();
+  await release(page);
+  await selected(page, "address");
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_contacts", null));
+  expect(errors.filter((e) => !/rpc/i.test(e))).toEqual([]);
+});
+
 test("PAY-6 a request sent from the card turns into Pay once they accept", async ({ page }) => {
   const errors = await openPay(page, "dashpay-contacts-empty");
   await page.getByTestId("pay-tabs-contact").click();

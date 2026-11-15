@@ -68,6 +68,12 @@ describe("the tab Pay opens on", () => {
     expect(defaultPayTab({ ...identity, failed: true }, { data: list([summary()]), failed: false })).toBe("address");
     expect(defaultPayTab({ ...identity, failed: false }, { data: list([summary()]), failed: false })).toBe("contact");
   });
+
+  it("waits for a re-read running over a cached answer: it may still fail or change", () => {
+    expect(defaultPayTab({ ...identity, fetching: true }, { data: list([summary()]), failed: false })).toBeNull();
+    expect(defaultPayTab(identity, { data: list([summary()]), failed: false, fetching: true })).toBeNull();
+    expect(defaultPayTab({ kind: "join", reason: null, fetching: true }, { data: undefined, failed: false })).toBeNull();
+  });
 });
 
 describe("the picker under a search", () => {
@@ -162,6 +168,8 @@ describe("the username search under the picker", () => {
     expect(state({ caughtUp: false })).toBe("loading");
     expect(state({ failed: true })).toBe("error");
     expect(state({ failed: true, fetching: true })).toBe("loading");
+    // A re-read of an answered search: its relations may have changed.
+    expect(state({ fetching: true })).toBe("loading");
     const networkState = state({ listReady: false });
     expect(pickerView({ text: "zzz", groups: 0, anyContacts: true, network: true, networkState, hits: 0 })).toEqual({ network: true, none: null });
   });
