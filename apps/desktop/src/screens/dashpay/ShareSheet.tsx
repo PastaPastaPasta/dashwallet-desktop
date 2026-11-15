@@ -41,7 +41,7 @@ export function ShareSheet({
           </span>
         </div>
       )}
-      <MyQrTab walletId={walletId} identity={identity} qrSize={SHARE_QR_SIZE} />
+      <MyQrTab walletId={walletId} identity={identity} qrSize={SHARE_QR_SIZE} username={who?.username ?? null} />
     </Sheet>
   );
 }

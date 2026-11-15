@@ -57,6 +57,7 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
   const h = headerModel(main, contest);
   const [sharing, setSharing] = useState(false);
   const share = useRef<HTMLButtonElement>(null);
+  const edit = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!h.shareable) setSharing(false);
   }, [h.shareable]);
@@ -78,7 +79,7 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
         )}
       </div>
       <div className="profile-edit">
-        <DashButton variant="tintedBlue" size="small" data-testid="profile-edit" onClick={onEdit}>
+        <DashButton variant="tintedBlue" size="small" data-testid="profile-edit" ref={edit} onClick={onEdit}>
           {PROFILE_COPY.editProfile}
         </DashButton>
         {h.shareable && (
@@ -93,7 +94,7 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
           identity={main.identity}
           who={{ name: main.profile?.displayName?.trim() || null, username: main.mainName! }}
           testId="profile-share-sheet"
-          returnFocus={() => share.current}
+          returnFocus={() => share.current ?? edit.current}
           onClose={() => setSharing(false)}
         />
       )}

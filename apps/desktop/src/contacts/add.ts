@@ -193,6 +193,12 @@ export function claimLine(line: CardLine | undefined, claim: Candidate["claim"],
 }
 
 /** The text of a `dashpay://user` link (D13), in `DashPayUserLink::to_uri`'s form. */
+/** The `username` a `dashpay://user` link names, or `null`. */
+export function linkUsername(link: string): string | null {
+  const q = link.indexOf("?");
+  return q < 0 ? null : new URLSearchParams(link.slice(q + 1)).get("username");
+}
+
 export function userLinkText(identity: string, username: string): string {
   return `dashpay://user?id=${encodeURIComponent(identity)}&username=${encodeURIComponent(username)}`;
 }
@@ -241,9 +247,12 @@ const message = (e: unknown) => (isAppError(e) || e instanceof Error ? e.message
 /** My QR (D12): the link, or why there is none. */
 export type MyQr = { kind: "loading" } | { kind: "link"; link: string } | { kind: "noUsername" } | { kind: "updating" } | { kind: "failed"; text: string };
 
-export function myQr(q: { data: string | undefined; error: unknown; isError: boolean }): MyQr {
-  if (q.data !== undefined) return { kind: "link", link: q.data };
-  if (!q.isError) return { kind: "loading" };
+/** `username`: the name shown as the one shared. A link read for another name (before the main
+ * name changed) is not shown: loading while it is read again, else updating. */
+export function myQr(q: { data: string | undefined; error: unknown; isError: boolean; isFetching?: boolean }, username?: string | null): MyQr {
+  const other = q.data !== undefined && username != null && linkUsername(q.data)?.toLowerCase() !== username.toLowerCase();
+  if (q.data !== undefined && !other) return { kind: "link", link: q.data };
+  if (!q.isError) return other && !q.isFetching ? { kind: "updating" } : { kind: "loading" };
   if (hasCode(q.error, "contact.no_username")) return { kind: "noUsername" };
   if (isNetwork(q.error)) return { kind: "updating" };
   return { kind: "failed", text: message(q.error) };

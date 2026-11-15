@@ -13,7 +13,7 @@ import { RegistrationScreen } from "./Registration";
 import { ShareSheet } from "./ShareSheet";
 import { WelcomeSteps } from "./Welcome";
 
-const LINK = "dashpay://user?du=alice-77";
+const LINK = "dashpay://user?username=alice";
 vi.mock("../../onboarding/model", async (original) => ({
   ...(await original<typeof import("../../onboarding/model")>()),
   useModel: (model: unknown) => model,

@@ -464,9 +464,10 @@ function ScanTab({ model }: { model: AddContactModel }) {
 
 /** My QR (D12): the identity's plain `dashpay://user` link. */
 /** `qrSize`: the code's side in CSS px; a share sheet shows it larger, to scan across a table. */
-export function MyQrTab({ walletId, identity, qrSize = 220 }: { walletId: string; identity: string; qrSize?: number }) {
+/** `username`: the name a share sheet says it shares; a link for another is not shown. */
+export function MyQrTab({ walletId, identity, qrSize = 220, username = null }: { walletId: string; identity: string; qrSize?: number; username?: string | null }) {
   const link = useMyUserLink(walletId, identity);
-  const state = myQr(link);
+  const state = myQr(link, username);
   const matrix = useQrMatrix(state.kind === "link" ? state.link : undefined);
   let body;
   switch (state.kind) {

@@ -7,7 +7,7 @@ import { BackendContext } from "../../api/queries";
 import { ProfileHeader } from "./MyProfile";
 import { SHARE_QR_SIZE, ShareSheet } from "./ShareSheet";
 
-const LINK = "dashpay://user?du=alice";
+const LINK = "dashpay://user?username=alice";
 vi.mock("../../contacts/queries", async (original) => ({
   ...(await original<typeof import("../../contacts/queries")>()),
   useMyUserLink: () => ({ data: LINK, error: null, isError: false, refetch: () => undefined }),
@@ -61,5 +61,11 @@ describe("Share username on My Profile (PRODUCT #12)", () => {
     expect(SHARE_QR_SIZE).toBeGreaterThanOrEqual(240);
     expect(html).toContain(LINK);
     expect(html).toContain("Copy Link");
+  });
+
+  it("shows no link read for another name than the one the sheet names", () => {
+    const html = renderToStaticMarkup(createElement(ShareSheet, { walletId: "w", identity: "ID", who: { name: null, username: "alice2" }, testId: "profile-share-sheet", onClose: () => undefined }));
+    expect(html).not.toContain(LINK);
+    expect(html).not.toContain('data-testid="add-contact-qr"');
   });
 });

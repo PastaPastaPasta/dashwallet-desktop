@@ -129,11 +129,33 @@ test("a username being refreshed has no link yet: Share username hides, and an o
   await names(true);
   await expect(shareSheet).toHaveCount(0);
   await expect(share).toHaveCount(0);
+  // The button that opened the sheet is gone: focus lands on Edit Profile beside it.
+  await expect(page.getByTestId("profile-edit")).toBeFocused();
   await expect(page.getByTestId("profile-username")).toHaveText("@alice");
   await names(false);
   await expect(share).toBeVisible();
   // The sheet waits for another click rather than reopening by itself.
   await expect(shareSheet).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("a new main name while the sheet is open shows no link for the old one", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-registered");
+  await page.getByTestId("profile-share").click();
+  const shareSheet = page.getByTestId("profile-share-sheet");
+  const linkText = shareSheet.getByTestId("add-contact-qr-link");
+  await expect(linkText).toHaveText(`dashpay://user?id=${IDENTITY.alice}&username=alice`);
+  // Alice makes another name she owns her main one; its link is read again, slowly.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    (window as unknown as { __release: () => void }).__release = f.hold("dashpay_my_user_link");
+    f.world.dashpay.identities = f.world.dashpay.identities.map((i, n) => (n === 0 ? { ...i, names: [...i.names, "alice2"], mainName: "alice2" } : i));
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+  });
+  await expect(shareSheet.getByTestId("share-who").locator(".share-who-username")).toHaveText("@alice2");
+  await expect(linkText).toHaveCount(0);
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(linkText).toHaveText(`dashpay://user?id=${IDENTITY.alice}&username=alice2`);
   expect(errors).toEqual([]);
 });
 
