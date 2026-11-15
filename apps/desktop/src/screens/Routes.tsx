@@ -4,9 +4,11 @@
 // route (Pay's prefill, Add contact's prefill, a Tools tab) is shown here already, so links
 // route end to end.
 
-import { useId, type ReactNode } from "react";
+import { useEffect, useId, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { ui, useUi, type PayTab, type Route } from "../app/ui";
+import { LoadingState } from "../components/history";
+import { useDefaultPayTab } from "./pay/contactQueries";
 import { PayToAddress } from "./pay/PayToAddress";
 import { PayToContact } from "./pay/PayToContact";
 import { ShieldedSendLink } from "./ShieldedSheet";
@@ -131,20 +133,30 @@ const PAY_TABS: Tab<PayTab>[] = [
 ];
 
 export function PayPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
-  const tab = useUi((s) => s.payTab);
+  const chosen = useUi((s) => s.payTab);
   const prefill = useUi((s) => s.payPrefill);
   const links = useUi((s) => s.payLinks);
   const coins = useUi((s) => s.payCoins);
+  const auto = useDefaultPayTab(walletId);
+  const tab = chosen ?? auto;
+  // The tab picked for the user stays while Pay is open: contacts arriving later do not move it.
+  useEffect(() => {
+    if (chosen === null && auto !== null) ui.set({ payTab: auto });
+  }, [chosen, auto]);
   return (
     <Page route="pay">
-      <Tabs label="Pay" tabs={PAY_TABS} current={tab} onSelect={(payTab) => ui.set({ payTab })} testId="pay-tabs">
-        {tab === "address" ? (
-          // Keyed by the links that opened Pay and the wallet, so each one starts a fresh form.
-          <PayToAddress key={`${links}:${walletId}`} prefill={prefill} coins={coins} walletId={walletId} network={network} />
-        ) : (
-          <PayToContact walletId={walletId} network={network} />
-        )}
-      </Tabs>
+      {tab === null ? (
+        <LoadingState testId="pay-tab-loading" text="Loading…" />
+      ) : (
+        <Tabs label="Pay" tabs={PAY_TABS} current={tab} onSelect={(payTab) => ui.set({ payTab })} testId="pay-tabs">
+          {tab === "address" ? (
+            // Keyed by the links that opened Pay and the wallet, so each one starts a fresh form.
+            <PayToAddress key={`${links}:${walletId}`} prefill={prefill} coins={coins} walletId={walletId} network={network} />
+          ) : (
+            <PayToContact walletId={walletId} network={network} />
+          )}
+        </Tabs>
+      )}
       <ShieldedSendLink walletId={walletId} network={network} />
     </Page>
   );

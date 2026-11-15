@@ -9,9 +9,13 @@ import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { ContactList } from "../../api/generated/ContactList";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
+import type { EligibilityName } from "../../api/generated/EligibilityName";
 import type { LockResolutionName } from "../../api/generated/LockResolutionName";
 import type { LockStateName } from "../../api/generated/LockStateName";
+import type { UserRelation } from "../../api/generated/UserRelation";
+import type { PayTab } from "../../app/ui";
 import { actionError } from "../../contacts/actions";
+import { cardLine } from "../../contacts/add";
 import { avatarLetters, shownName, subtitle, type ContactsOwner } from "../../contacts/model";
 import { BROKEN, ENABLE_FIRST, payNote } from "../../contacts/pane";
 
@@ -52,6 +56,14 @@ export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "star
   }
 }
 
+/** The tab Pay opens on when nothing named one: To a contact only when there is someone to pay
+ * there (a contact or a request), else To an address; `null` while that is still being read. */
+export function defaultPayTab(owner: ContactsOwner, list: { data: ContactList | undefined; failed: boolean }): PayTab | null {
+  if (owner.kind !== "identity") return "address";
+  if (list.data === undefined) return list.failed ? "address" : null;
+  return pickerGroups(list.data).length > 0 ? "contact" : "address";
+}
+
 // ---------------------------------------------------------------- the picker (D4)
 
 export interface PickerRow extends Payee {
@@ -78,9 +90,60 @@ export function pickerGroups(list: ContactList | undefined): PickerGroup[] {
   return groups;
 }
 
+/** What the picker shows under the search field: the contact groups, the username search's
+ * section (while it runs, failed, or found someone), and which "nothing matches" it says:
+ * `contacts` before the username search can run (under two characters), `anyone` once neither
+ * found anyone. */
+export function pickerView(i: {
+  text: string;
+  groups: number;
+  /** Whether the username search runs for the text (two characters or more). */
+  network: boolean;
+  networkState: "loading" | "error" | "done";
+  hits: number;
+}): { network: boolean; none: "contacts" | "anyone" | null } {
+  const network = i.network && (i.networkState !== "done" || i.hits > 0);
+  if (i.text === "" || i.groups > 0) return { network, none: null };
+  if (!i.network) return { network, none: "contacts" };
+  return { network, none: i.networkState === "done" && i.hits === 0 ? "anyone" : null };
+}
+
 function rowReason(c: Pick<ContactSummaryInfo, "relation" | "channel">): string | null {
   if (c.relation === "pendingIncoming") return "Accept and pay";
   return c.channel === "broken" ? "Payments cannot be sent right now" : null;
+}
+
+// ---------------------------------------------------------------- a user found by username
+
+/** What the card of a user the search found offers: send them a contact request, pay them
+ * (already a contact), accept and pay their request, enable DashPay's keys, or check again. */
+export type FoundNext = "send" | "pay" | "acceptAndPay" | "enable" | "retry" | null;
+
+export interface FoundLine {
+  text: string | null;
+  next: FoundNext;
+}
+
+/** Add contact's card line (`cardLine`) in Pay's words; `undefined` while the check runs. A
+ * DashPay payment needs the payee's request, so a request sent is paid once they accept. */
+export function foundLine(name: string, relation: UserRelation, eligibility: { data: EligibilityName | undefined; failed: boolean }): FoundLine | undefined {
+  const line = cardLine(relation, eligibility);
+  if (!line) return undefined;
+  switch (line.next) {
+    case "send":
+      return { text: `You can pay ${name} once they accept your contact request.`, next: "send" };
+    case "showContact":
+      return { text: line.text, next: "pay" };
+    case "showRequest":
+      return eligibility.data === "pendingIncoming"
+        ? { text: line.text, next: "acceptAndPay" }
+        : { text: `Contact request sent. You can pay ${name} once they accept.`, next: null };
+    case "enable":
+    case "retry":
+      return { text: line.text, next: line.next };
+    default:
+      return { text: line.text, next: null };
+  }
 }
 
 // ---------------------------------------------------------------- the banner (D6)

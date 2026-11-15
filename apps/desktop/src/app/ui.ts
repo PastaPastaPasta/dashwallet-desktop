@@ -54,7 +54,8 @@ export type Dialog = "openUri" | "about" | "recoveryPhrase" | "unlock" | "savedL
 
 export interface UiState {
   route: Route;
-  payTab: PayTab;
+  /** Pay's tab; `null` until Pay picks one by whether the wallet has contacts. */
+  payTab: PayTab | null;
   payPrefill: PayPrefill | null;
   /** Counts the links that opened Pay: each one starts a fresh form, the same link again too. */
   payLinks: number;
@@ -130,7 +131,7 @@ export const DEFAULT_PREFS: UiSettings = {
 
 let state: UiState = {
   route: "home",
-  payTab: "contact",
+  payTab: null,
   payPrefill: null,
   payLinks: 0,
   contactPrefill: null,
@@ -188,7 +189,8 @@ export function setLeaveGuard(guard: LeaveGuard): () => void {
 
 /** Opens `route`, closing the detail sheet. */
 export function navigate(route: Route, patch: Partial<UiState> = {}) {
-  const go = () => ui.set({ route, detail: null, ...patch });
+  // Coming to Pay from elsewhere chooses its tab afresh, unless the caller names one.
+  const go = () => ui.set({ route, detail: null, ...(route === "pay" && ui.get().route !== "pay" ? { payTab: null } : {}), ...patch });
   if (!leaveGuard?.(route, go)) go();
 }
 

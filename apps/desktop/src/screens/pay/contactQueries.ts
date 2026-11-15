@@ -5,7 +5,9 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { keys, useBackend } from "../../api/queries";
-import { refreshAfter } from "../../contacts/queries";
+import type { PayTab } from "../../app/ui";
+import { refreshAfter, useContactsOwner } from "../../contacts/queries";
+import { defaultPayTab } from "./contact";
 
 /** The frequent strip's length (D3; the engine clamps to 1–20). */
 const FREQUENT_LIMIT = 8;
@@ -20,13 +22,21 @@ export function useFrequentContacts(walletId: string, identity: string) {
 
 /** My Contacts and Contact Requests, by name, the search done by the engine. The last answer
  * stays on screen while a new search loads. */
-export function usePayPicker(walletId: string, identity: string, text: string) {
+export function usePayPicker(walletId: string, identity: string | null, text: string) {
   const b = useBackend();
   return useQuery({
     queryKey: [...keys.contactsAll(walletId), "payPicker", identity, text] as const,
-    queryFn: () => b.dashpayContacts(walletId, identity, { sections: ["contacts", "requests"], sort: "displayName", text: text || null }),
+    queryFn: () => b.dashpayContacts(walletId, identity!, { sections: ["contacts", "requests"], sort: "displayName", text: text || null }),
+    enabled: identity !== null,
     placeholderData: (prev) => prev,
   });
+}
+
+/** The tab Pay opens on (`defaultPayTab`), from the picker's unfiltered read. */
+export function useDefaultPayTab(walletId: string): PayTab | null {
+  const { owner } = useContactsOwner(walletId);
+  const list = usePayPicker(walletId, owner.kind === "identity" ? owner.identity : null, "");
+  return defaultPayTab(owner, { data: list.isPlaceholderData ? undefined : list.data, failed: list.isError });
 }
 
 /** Check again (D7): the engine looks for the locked payment's outcome; the contact is read again
