@@ -1038,6 +1038,7 @@ mod tests {
             involves_watch_only: false,
             counterparty: None,
             fiat_then: None,
+            purpose: None,
         }
     }
 

@@ -60,6 +60,7 @@ export function AmountText({
   glyphFactor = 0.7,
   className,
   title,
+  testId,
 }: {
   text: string;
   unitName: string;
@@ -67,9 +68,10 @@ export function AmountText({
   glyphFactor?: number;
   className?: string;
   title?: string;
+  testId?: string;
 }) {
   return (
-    <span className={`amount ${className ?? ""}`} title={title}>
+    <span className={`amount ${className ?? ""}`} title={title} data-testid={testId}>
       <span className="amount-number">{text}</span>
       {glyph ? (
         <>
