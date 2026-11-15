@@ -1703,6 +1703,23 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-xs);
 }
 
+.tx-detail-who {
+  margin: 0;
+  max-width: 100%;
+  text-align: center;
+  font-size: var(--dw-type-title3-size);
+  font-weight: var(--dw-type-title3-weight);
+  line-height: var(--dw-type-title3-line);
+  overflow-wrap: anywhere;
+}
+
+.tx-detail-who-user {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
 .tx-detail-title {
   font-size: var(--dw-type-title3-size);
   font-weight: var(--dw-type-title3-weight);
@@ -1726,13 +1743,41 @@ input[type="radio"]:disabled {
 
 .tx-detail-status {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: var(--dw-space-s);
+}
+
+.tx-detail-date,
+.tx-detail-state {
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
 }
 
 .tx-detail-date {
   color: var(--dw-role-text-secondary);
-  font-size: var(--dw-type-footnote-size);
+}
+
+.tx-detail-state.is-problem {
+  color: var(--dw-role-danger);
+}
+
+.tx-detail-explorer {
+  color: var(--dw-role-text-link);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.io-heading {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-layout-card-padding) 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
   line-height: var(--dw-type-footnote-line);
 }
 

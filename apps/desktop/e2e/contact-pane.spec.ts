@@ -167,6 +167,7 @@ test("AND-093 lists a contact's payments 50 at a time, filters them and opens on
   expect(real).toBeTruthy();
   await page.locator(`[data-testid="contact-activity-row"][data-txid="${real}"]`).click();
   await expect(page.getByTestId("tx-detail")).toBeVisible();
+  await page.getByTestId("tx-detail-technical").locator("summary").click();
   await expect(page.getByTestId("tx-detail-txid")).toContainText(real.slice(0, 8));
 });
 

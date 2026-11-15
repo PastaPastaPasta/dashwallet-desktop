@@ -203,7 +203,7 @@ test.describe("Pay", () => {
 
     await page.getByTestId("pay-result-show").click();
     await expect(page.getByTestId("page-activity")).toBeVisible();
-    await expect(page.getByTestId("tx-detail-facts")).toContainText(txid);
+    await expect(page.getByTestId("tx-detail-explorer")).toHaveAttribute("href", `https://insight.testnet.networks.dash.org:3002/insight/tx/${txid}`);
     await page.keyboard.press("Escape");
     // The form starts over for the next payment, and the balance moved.
     await page.getByTestId("sidebar-pay").click();

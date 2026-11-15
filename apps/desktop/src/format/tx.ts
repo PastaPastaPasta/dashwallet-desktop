@@ -96,6 +96,19 @@ export function txTitle(row: Pick<TxRow, "txType" | "category" | "amount" | "lab
   return row.label || contactName(row.counterparty) || purposeTitle(row.purpose) || typeTitle(row.txType, row.category, row.amount);
 }
 
+/** Who a payment is with, in the activity row's words: the DashPay contact (`contactName`),
+ * else the address label, else a shortened address. */
+export function detailWho(row: Pick<TxRow, "label" | "address" | "counterparty">): string | null {
+  const label = row.label?.trim() || null;
+  return contactName(row.counterparty) ?? label ?? (row.address ? shortAddress(row.address) : null);
+}
+
+/** What happened, in the activity row's words: a username registration's purpose, else the type
+ * title (`Sent`, `Received`, `Mixing`, …). */
+export function detailWhat(row: Pick<TxRow, "txType" | "category" | "amount" | "purpose">): string {
+  return purposeTitle(row.purpose) ?? typeTitle(row.txType, row.category, row.amount);
+}
+
 /** What a row says aloud about its contact when the title is something else, a label
  * (DP3-07 D13): the avatar is decoration, so "from Bob Builder" / "to Bob Builder"; `null` when the
  * title already names the contact or the row has no named contact. */
