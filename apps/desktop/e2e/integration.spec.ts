@@ -88,7 +88,9 @@ test.describe("item 3: movable and dust, the fee actually taken", () => {
   for (const scenario of ["platform-dust", "platform-dust-small"]) {
     test(`${scenario}: Platform addresses holding only dust: Home counts nothing and has no card, and no Move is offered`, async ({ page }) => {
       await open(page, scenario);
-      await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
+      // Nothing movable on Platform: Home has no Platform row.
+      await expect(page.getByTestId("hero-amount")).toBeVisible();
+      await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
       await noPoolCards(page);
       expect(await platformMoveWhy(page)).toContain("cannot be moved to your Dash wallet right now");
     });

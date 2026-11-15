@@ -133,6 +133,28 @@ pub struct TxRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub fiat_then: Option<crate::api::rates::TxFiat>,
+    /// What an asset lock was for, when the wallet's registration records
+    /// say; absent for every other transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub purpose: Option<TxPurpose>,
+}
+
+/// What a Dash Platform funding transaction paid for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TxPurpose {
+    UsernameRegistration { username: String },
+}
+
+impl From<dw_engine::history::TxPurpose> for TxPurpose {
+    fn from(p: dw_engine::history::TxPurpose) -> Self {
+        match p {
+            dw_engine::history::TxPurpose::UsernameRegistration { username } => {
+                TxPurpose::UsernameRegistration { username }
+            }
+        }
+    }
 }
 
 /// The DashPay identity on the other side of a history record (DP3-02).
@@ -181,6 +203,7 @@ impl From<TxRecord> for TxRow {
             involves_watch_only,
             counterparty,
             fiat_then,
+            purpose,
         } = r;
         TxRow {
             txid,
@@ -198,6 +221,7 @@ impl From<TxRecord> for TxRow {
             involves_watch_only,
             counterparty: counterparty.map(Into::into),
             fiat_then: fiat_then.map(Into::into),
+            purpose: purpose.map(Into::into),
         }
     }
 }

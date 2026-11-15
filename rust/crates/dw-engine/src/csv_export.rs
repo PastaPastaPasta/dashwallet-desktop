@@ -215,6 +215,7 @@ mod tests {
             involves_watch_only: v["watch_only"].as_bool().unwrap_or(false),
             counterparty: None,
             fiat_then: None,
+            purpose: None,
         }
     }
 

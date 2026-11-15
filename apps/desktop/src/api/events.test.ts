@@ -56,7 +56,13 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "masternodes", network: "testnet" })).toEqual([]);
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);
-    expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "names" } })).toEqual([keys.dashpayAll, keys.receiveAll("w")]);
+    expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "names" } })).toEqual([keys.dashpayAll, keys.historyAll("w"), keys.txDetailAll("w"), keys.receiveAll("w")]);
+    // The lock's "Username @name" title follows the registration (PRODUCT #2).
+    expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "registration", draft: "d" } })).toEqual([
+      keys.dashpayAll,
+      keys.historyAll("w"),
+      keys.txDetailAll("w"),
+    ]);
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "identities" } })).toEqual([
       keys.dashpayAll,
       keys.historyAll("w"),

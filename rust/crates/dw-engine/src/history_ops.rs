@@ -19,7 +19,7 @@ use platform_wallet::changeset::PlatformWalletPersistence;
 
 use crate::history::{
     AddressChain, ChainView, HistoryPage, HistoryQuery, Labels, Owned, TxDetail, TxEntry,
-    detail_of, page, records_of, validate_query,
+    detail_of, page, records_of, username_purposes, validate_query,
 };
 use crate::platform::attribution::Payees;
 use crate::session::{Manager, WALLET_DB_FILE};
@@ -400,6 +400,7 @@ impl NetworkSession {
                         ))
                     })
                     .collect(),
+                purpose: username_purposes(&appdb.registration_rows(&w)?),
             })
         })
         .await?

@@ -1066,6 +1066,13 @@ input[type="radio"]:disabled {
   cursor: default;
 }
 
+/* The decimals past the second, smaller, as the mobile wallets draw them; still exact. */
+.hero-amount .amount-minor {
+  font-size: var(--dw-type-title2-size);
+  line-height: var(--dw-type-title2-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
 .hero-unknown {
   display: flex;
   flex-direction: column;
@@ -1082,6 +1089,29 @@ input[type="radio"]:disabled {
 /* MP-01: the fiat row under the hero amount; the band grows by its line only while it shows. */
 .hero-band:has(.hero-fiat) {
   height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line));
+}
+
+/* No breakdown under the amount: the shorter band the balance alone needs, plus a line for each of
+   the fiat row and the note of what Core has pending. */
+@media (min-width: 980px) {
+  .hero-band:has(.hero[data-breakdown="none"]) {
+    height: var(--dw-layout-hero-height-hidden);
+  }
+  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat),
+  .hero-band:has(.hero[data-breakdown="none"] .hero-note) {
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line));
+  }
+  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat):has(.hero-note) {
+    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line));
+  }
+}
+
+.hero-note {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
 }
 
 .hero-fiat {
@@ -1336,6 +1366,12 @@ input[type="radio"]:disabled {
 .tx-group-rows {
   margin: 0;
   padding: 0 var(--dw-space-xs) var(--dw-space-xs);
+  list-style: none;
+}
+
+.tx-mixing-members-list {
+  margin: 0;
+  padding: 0;
   list-style: none;
 }
 
@@ -4068,6 +4104,112 @@ button.bell-row-open:focus-visible {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--dw-space-s);
+}
+
+/* R9, the welcome moment (PRODUCT #4): the greeting, then three next steps as rows. */
+.registration-welcome .registration-title {
+  font-size: var(--dw-type-title2-size);
+  font-weight: var(--dw-type-title2-weight);
+  line-height: var(--dw-type-title2-line);
+}
+
+.registration-welcome .registration-line {
+  font-size: var(--dw-type-callout-size);
+  line-height: var(--dw-type-callout-line);
+}
+
+.welcome-next {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.welcome-next-title {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.welcome-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.welcome-step {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  width: 100%;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 0;
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-neutral-tint);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  transition: background-color var(--dw-motion-hover);
+}
+
+.welcome-step:hover:not(:disabled) {
+  background: var(--dw-role-accent-tint);
+}
+
+.welcome-step:disabled {
+  color: var(--dw-role-text-secondary);
+}
+
+.welcome-step:disabled .welcome-step-number {
+  background: var(--dw-role-neutral-tint);
+  color: var(--dw-role-text-secondary);
+}
+
+.registration-title[tabindex="-1"]:focus {
+  outline: none;
+}
+
+.welcome-step-number {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.welcome-step-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.welcome-step-title {
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.welcome-step-detail {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.welcome-step-chevron {
+  flex: none;
+  color: var(--dw-role-text-tertiary);
+  font-size: var(--dw-type-title3-size);
 }
 
 /* DP5-03: the invitation claim screen. */

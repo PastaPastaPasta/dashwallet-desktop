@@ -72,6 +72,12 @@ const SETTINGS: SidebarItem = {
 const EXPLORE_ENABLED = false;
 const EXPLORE: SidebarItem = { route: "explore", title: "Explore", icon: <path d="M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14Zm3 4-2 4-4 2 2-4 4-2Z" /> };
 
+/** The sidebar's Contacts entry is Join DashPay until the wallet has an identity; a contested
+ * username still has its identity, so it has Contacts (D11). */
+export function sidebarJoins(status: DashPayStatus | undefined): boolean {
+  return status?.kind === "noIdentity" || status?.kind === "registering";
+}
+
 /** Home, Pay, Receive, Contacts (Join DashPay while there is no identity; a badge for requests
  * waiting), Activity, CoinJoin and Explore when enabled (DASHPAY §4). */
 const badgeText = (n: number) => (n > 99 ? "99+" : String(n));
@@ -153,12 +159,12 @@ function BellIcon() {
   );
 }
 
-/** What the identity chip shows (DASHPAY §4): the way into DashPay, its progress, or the main
- * identity, which opens My Profile. `null` hides it (DashPay still starting, unavailable, or a
- * watch-only wallet, which cannot join: DP1-08 D3), as does a status read that failed (D24).
+/** What the identity chip shows (DASHPAY §4): a registration's progress, or the main identity,
+ * which opens My Profile. `null` hides it: with no identity (Home's card and the sidebar lead to
+ * Join DashPay; a watch-only wallet cannot join, DP1-08 D3), while DashPay starts or is
+ * unavailable, or after a status read that failed (D24).
  * `names`: what the main identity's names say (DP1-08 D23). */
 export type ChipState =
-  | { kind: "join" }
   /** `label`: the registration's username once its row is read (DP1-08 S11). */
   | { kind: "registering"; label: string | null }
   | { kind: "contest"; label: string }
@@ -171,8 +177,6 @@ export function chipState(
   registration?: RegistrationStatus,
 ): ChipState {
   switch (status?.kind) {
-    case "noIdentity":
-      return status.reason === "watchOnly" ? null : { kind: "join" };
     case "registering":
       return { kind: "registering", label: registration?.draft === status.draft ? registration.label : null };
     case "contestPending":
@@ -198,8 +202,6 @@ function chipLabel(name: string | null, names: NamesState): string {
 
 function chipText(chip: Exclude<ChipState, { kind: "identity" } | null>): string {
   switch (chip.kind) {
-    case "join":
-      return "Join DashPay";
     case "contest":
       return `@${chip.label} · Pending`;
     case "registering":
@@ -211,7 +213,7 @@ function IdentityChip({ chip }: { chip: ChipState }) {
   if (chip === null) return null;
   if (chip.kind !== "identity") {
     return (
-      // A contested name's identity has My Profile (DP1-10 D21); the others join or register.
+      // A contested name's identity has My Profile (DP1-10 D21); a registration shows its progress.
       <button type="button" className="identity-chip" data-testid="toolbar-chip" onClick={() => navigate(chip.kind === "contest" ? "profile" : "joinDashPay")}>
         {chipText(chip)}
       </button>

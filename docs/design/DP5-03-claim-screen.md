@@ -40,7 +40,7 @@ page (`page-joinDashPay`), width `formMaxWidth`, a `card-l1` section `claim` wit
 | # | Input | State | Shows | Actions |
 |---|---|---|---|---|
 | C1 | A registration row of the wallet whose `invitation.linkId` is this link, not done | `inProgress` | DP1-09's progress screens (R1–R8) for the row, with the claim's steps: "(1/3) Checking the invitation", "(2/3) Creating identity", "(3/3) Registering username" (D10) | the row's (Continue, Unlock, …) |
-| C2 | That row, done | `done` | "Hello @x, your account is ready" + the request line: "A contact request was sent to your inviter." / "The contact request to your inviter could not be sent. You can add them from Contacts." (F2, D8) / none (no inviter, or opted out) | Done |
+| C2 | That row, done | `done` | DP1-09's welcome (R9) + the request line: "A contact request was sent to your inviter." / "The contact request to your inviter could not be sent. You can add them from Contacts." (F2, D8) / none (no inviter, or opted out) | Go to wallet, plus R9's next steps |
 | C3 | The wallet has an identity (no such row) | `hasIdentity` | "This wallet already has a DashPay identity. An invitation creates a first identity; it can be used with another wallet." | Dismiss invitation, Not now |
 | C4 | `invitation_status` loading | `checking` | "Checking the invitation…" (busy) | Not now |
 | C5 | The read failed (`platform.*`) | `checkFailed` | "Could not check the invitation. Your wallet works as usual." + reason | Try again, Not now |

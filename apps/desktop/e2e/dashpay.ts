@@ -8,8 +8,9 @@ export const CARDS: Record<string, { scenario: string; extra?: string; title: st
   notStarted: { scenario: "dashpay-not-started", title: "DashPay has not started", chip: null },
   unlockToLook: { scenario: "dashpay-identity-unsettled", title: "Unlock to look for your DashPay identity", chip: null },
   lookFailed: { scenario: "dashpay-look-failed", title: "Could not finish looking for your DashPay identity", chip: null },
-  join: { scenario: "dashpay-no-identity", title: "Join DashPay", chip: "Join DashPay" },
-  joinWaiting: { scenario: "dashpay-waiting-for-sync", title: "Join DashPay", chip: "Join DashPay" },
+  // No chip: Home's card and the sidebar are the ways in.
+  join: { scenario: "dashpay-no-identity", title: "Get a DashPay username", chip: null },
+  joinWaiting: { scenario: "dashpay-waiting-for-sync", title: "Get a DashPay username", chip: null },
   watchOnly: { scenario: "dashpay-watch-only", title: "DashPay needs this wallet's keys", chip: null },
   registering: { scenario: "dashpay-registering-unread", title: "Creating your username", chip: "Registering…" },
   creating: { scenario: "dashpay-registering", title: "Creating – @alice", chip: "@alice · Registering" },
@@ -26,7 +27,6 @@ export const CARDS: Record<string, { scenario: string; extra?: string; title: st
 
 /** Each identity chip (DASHPAY §4, DP1-08 S9–S18) and a scenario that shows it. */
 export const CHIPS: Record<string, string> = {
-  join: "dashpay-no-identity",
   registering: "dashpay-registering-unread",
   registeringLabel: "dashpay-registering",
   contest: "dashpay-contest-pending",

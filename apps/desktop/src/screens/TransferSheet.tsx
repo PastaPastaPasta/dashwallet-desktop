@@ -13,6 +13,7 @@ import { navigate, useUi } from "../app/ui";
 import { DashButton, Icon, VisuallyHidden } from "../components/basics";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
+import { known } from "../format/homeBalance";
 import { useModel } from "../onboarding/model";
 import { FUND_COPY, fundErrorText, fundRowView } from "../platform/fund";
 import { MOVE_COPY, moveErrorText, plannedWithdrawalCredits, type MoveBlock } from "../platform/move";
@@ -59,8 +60,10 @@ export function useTransferPools(walletId: string, network: NetworkInfo): Pools 
     mixing: (mixing?.balances.coinjoinAccount ?? 0) + (mixing && mixing.state !== "idle" ? reserved : 0),
     shielded: status ? { active: status.active, syncing: shieldedSyncing(status), duffs: shieldedDuffs(status) } : status,
     platform:
-      pools.platform == null
-        ? pools.platform
+      !known(pools.platform)
+        ? pools.platform === "loading"
+          ? undefined
+          : null
         : { duffs: pools.platform, dust: BigInt(pools.platformDust) > 0n, dustText: MOVE_COPY.card.dust(fmt(creditsToDuffs(pools.platformDust))), block: hold.block, waitingText: hold.waitingText },
   };
 }

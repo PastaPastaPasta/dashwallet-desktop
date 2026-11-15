@@ -14,6 +14,7 @@ import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxRow } from "../api/generated/TxRow";
+import type { TxPurpose } from "../api/generated/TxPurpose";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { TxStatusKindName } from "../api/generated/TxStatusKindName";
 import type { TxTypeName } from "../api/generated/TxTypeName";
@@ -73,9 +74,12 @@ interface Spec {
   status: TxStatusInfo;
   label?: string | null;
   fee?: number | null;
+  purpose?: TxPurpose;
 }
 
-export function buildRows(variant: HistoryVariant): TxRow[] {
+/** `plainWords` adds the rows the plain-words history shows: a username's asset lock, a send to
+ * yourself and a run of mixing rows (the `funded` scenario). */
+export function buildRows(variant: HistoryVariant, plainWords = false): TxRow[] {
   if (variant === "empty") return [];
   const rand = prng(variant === "large" ? 1010 : 20261006);
   const { hex, address } = makeIds(rand);
@@ -97,6 +101,37 @@ export function buildRows(variant: HistoryVariant): TxRow[] {
     },
     { when: at(1, 5, 46), type: "sendToAddress", category: "sent", amount: -50_000_226, fee: 226, label: "Alice", status: settled(150) },
   ];
+  if (plainWords) {
+    specs.push(
+      {
+        when: at(0, 0, 55),
+        type: "assetLock",
+        category: "platform",
+        amount: -100_000_000,
+        fee: 226,
+        purpose: { kind: "usernameRegistration", username: "dwdemo2611" },
+        status: settled(150),
+      },
+      {
+        when: at(0, 0, 50),
+        type: "sendToSelf",
+        category: "internalTransfer",
+        amount: -226,
+        fee: 226,
+        status: settled(150),
+      },
+    );
+    for (let i = 0; i < 12; i++) {
+      specs.push({
+        when: at(1, 2, 20 + i),
+        type: "coinJoinMixing",
+        category: "coinJoin",
+        amount: -1_000,
+        fee: 0,
+        status: settled(150),
+      });
+    }
+  }
   const count = variant === "large" ? 10_000 : 40;
   const kinds: [TxTypeName, TxCategoryName, number][] = [
     ["recvWithAddress", "received", 1],
@@ -142,7 +177,7 @@ export function buildRows(variant: HistoryVariant): TxRow[] {
     specs[0].label = XSS_PAYLOADS.label;
     specs[2].label = XSS_PAYLOADS.contact;
   }
-  const rows = specs.map((s) => {
+  const rows: TxRow[] = specs.map((s) => {
     const confirmations = s.status.confirmations;
     return {
       txid: hex(64),
@@ -158,6 +193,7 @@ export function buildRows(variant: HistoryVariant): TxRow[] {
       label: s.label ?? null,
       countsTowardBalance: s.status.kind !== "abandoned",
       involvesWatchOnly: false,
+      purpose: s.purpose,
     } satisfies TxRow;
   });
   return rows.sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
@@ -303,7 +339,12 @@ function matches(r: TxRow, f: Filter, needle: string | null): boolean {
   if (f.watchOnly === "yes" && !r.involvesWatchOnly) return false;
   if (f.watchOnly === "no" && r.involvesWatchOnly) return false;
   if (needle != null)
-    return r.txid.includes(needle) || !!r.address?.toLowerCase().includes(needle) || !!r.label?.toLowerCase().includes(needle);
+    return (
+      r.txid.includes(needle) ||
+      !!r.address?.toLowerCase().includes(needle) ||
+      !!r.label?.toLowerCase().includes(needle) ||
+      !!r.purpose?.username.toLowerCase().includes(needle)
+    );
   return true;
 }
 
