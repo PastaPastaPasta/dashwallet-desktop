@@ -283,7 +283,7 @@ export function RegistrationScreen({
     if (!welcome) return setAnnounced("");
     const active = document.activeElement;
     if (active === null || active === document.body || section.current?.contains(active)) title.current?.focus();
-    else setAnnounced([model.title, ...model.lines].join(". "));
+    else setAnnounced(`${model.title}. ${model.lines.join(" ")}`);
     // Only the switch to the welcome moves focus or speaks, not a later change of its text.
   }, [welcome]);
   return (
