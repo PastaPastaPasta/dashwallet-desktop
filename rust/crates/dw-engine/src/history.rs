@@ -1091,20 +1091,12 @@ pub(crate) struct Labels {
 /// registration records no outcome of, and its temporary name may not have
 /// been taken either, so neither is named.
 pub(crate) fn username_purposes(rows: &[dw_appdb::RegistrationRow]) -> HashMap<String, TxPurpose> {
-    use crate::platform::registration_rows::Phase;
+    use crate::platform::registration_flow::{name_taken, outpoint_of};
     use dash_sdk::platform::dpns_usernames::is_contested_username;
     rows.iter()
-        .filter(|r| {
-            r.name_error.is_none()
-                && !r.label.is_empty()
-                && !is_contested_username(&r.label)
-                && matches!(
-                    Phase::parse(&r.phase),
-                    Some(Phase::NameRegistered | Phase::ProfileCreated | Phase::Done)
-                )
-        })
+        .filter(|r| !r.label.is_empty() && !is_contested_username(&r.label) && name_taken(r))
         .filter_map(|r| {
-            let outpoint: dashcore::OutPoint = r.asset_lock_outpoint.as_deref()?.parse().ok()?;
+            let outpoint = outpoint_of(r)?;
             Some((
                 outpoint.txid.to_string(),
                 TxPurpose::UsernameRegistration {
@@ -2073,6 +2065,8 @@ mod tests {
         let nameless = registration("", "done", Some(&outpoint));
         let early = registration("alice2611", "funding_sent", Some(&outpoint));
         let unfunded = registration("alice2611", "done", None);
+        let unknown_phase = registration("alice2611", "verified_on_mars", Some(&outpoint));
+        let malformed = registration("alice2611", "done", Some("not-an-outpoint"));
         for row in [
             contested,
             with_temporary,
@@ -2081,6 +2075,8 @@ mod tests {
             nameless,
             early,
             unfunded,
+            unknown_phase,
+            malformed,
         ] {
             assert!(username_purposes(&[row]).is_empty());
         }
