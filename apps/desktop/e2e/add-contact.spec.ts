@@ -150,7 +150,7 @@ test("D3 a network failure says so with Try again; Close returns focus to Add co
 
 test("IOS-073 a Contacts search's network row opens its hit; Show more carries the search", async ({ page }) => {
   await openContacts(page);
-  await page.getByRole("searchbox", { name: "Search for a contact" }).fill("ma");
+  await page.getByRole("searchbox", { name: "Search contacts or a username" }).fill("ma");
   await page.getByTestId("contacts-network-more").click();
   await expect(field(page)).toHaveValue("ma");
   await expect(hit(page, "Mayumi")).toBeVisible();

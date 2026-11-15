@@ -5,7 +5,7 @@ import { useId, useRef, type ButtonHTMLAttributes, type KeyboardEvent, type Reac
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { UserHit } from "../../api/generated/UserHit";
 import { Chip, DashButton } from "../../components/basics";
-import { avatarLetters, initials, moveFocus, rowChips, rowNote, shownName, subtitle, type Group, type RowChip } from "../../contacts/model";
+import { avatarLetters, initials, moveFocus, relationTitle, rowChips, rowNote, shownName, subtitle, type Group, type RowChip } from "../../contacts/model";
 import { Avatar } from "./Avatar";
 
 /** A row's chips, each with what it means as its tooltip. */
@@ -137,7 +137,7 @@ function ContactGroup({
   );
 }
 
-/** "On the Dash network": the strangers the network search found (D6). */
+/** "Others on DashPay": the users the network search found who are not in the lists above (D6). */
 export function NetworkResults({
   state,
   shown,
@@ -157,7 +157,7 @@ export function NetworkResults({
   return (
     <section className="tx-group card-l1" aria-labelledby={titleId} aria-busy={state === "loading"} data-testid="contacts-network">
       <h2 className="contacts-group-title" id={titleId}>
-        On the Dash network
+        Others on DashPay
       </h2>
       {state === "loading" && (
         <p className="contacts-network-note" role="status">
@@ -188,7 +188,12 @@ export function NetworkResults({
                 identity={h.identity}
                 name={displayName || h.username}
                 sub={displayName ? `@${h.username}` : null}
-                trailing={h.unverified && <Chip tone="warning">Unverified</Chip>}
+                trailing={
+                  <>
+                    {h.relation !== "stranger" && <span className="contact-row-note">{relationTitle(h.relation)}</span>}
+                    {h.unverified && <Chip tone="warning">Unverified</Chip>}
+                  </>
+                }
                 data-testid="network-row"
                 data-identity={h.identity}
                 onClick={() => onPick(h)}

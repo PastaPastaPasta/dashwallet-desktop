@@ -46,6 +46,7 @@ describe("ContactActions", () => {
     expect(actions.isRunning("send", GRACE)).toBe(true);
     await authorize();
     expect(await done).toEqual({ kind: "send", contact: GRACE, ok: true, text: "Contact request sent to Grace Hopper." });
+    expect((await done)?.established).toBeUndefined();
     expect(api.grantRequest).toHaveBeenCalledWith(WALLET_A, ME, { kind: "sendRequest" });
     expect(calls.authorize[0].purpose).toEqual({ kind: "platformOp", maxDuffs: 0, maxCredits: "300000000" });
     expect(api.dashpaySendRequest).toHaveBeenCalledWith(WALLET_A, ME, GRACE, "scan-1", "grant-1");
@@ -57,7 +58,8 @@ describe("ContactActions", () => {
     const { actions, authorize } = setup({ dashpaySendRequest: vi.fn(async () => ({ kind: "established" as const, request: "2" })) });
     const done = actions.send(GRACE, "Grace", null);
     await authorize();
-    expect(await done).toMatchObject({ ok: true, text: "You and Grace are now contacts." });
+    // Marked, so a screen can show them as contacts rather than waiting on a request.
+    expect(await done).toMatchObject({ ok: true, text: "You and Grace are now contacts.", established: true });
   });
 
   it("DP2-08 D5 says the send's refusals in the user's words", async () => {

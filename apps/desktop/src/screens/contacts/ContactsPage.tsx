@@ -260,8 +260,8 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
           <input
             type="search"
             value={search}
-            placeholder="Search for a contact"
-            aria-label="Search for a contact"
+            placeholder="Search contacts or a username"
+            aria-label="Search contacts or a username"
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape" && search !== "") {
