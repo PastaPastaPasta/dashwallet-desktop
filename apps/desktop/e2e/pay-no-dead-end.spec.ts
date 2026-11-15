@@ -147,6 +147,26 @@ test("PAY-6 Pay opens on To an address when DashPay's state could not be read ag
   expect(errors.filter((e) => !/rpc/i.test(e))).toEqual([]);
 });
 
+test("PAY-6 a request sent from the card turns into Pay once they accept", async ({ page }) => {
+  const errors = await openPay(page, "dashpay-contacts-empty");
+  await page.getByTestId("pay-tabs-contact").click();
+  await searchFor(page, "mar");
+  await networkRow(page, "Marta").click();
+  await page.getByTestId("pay-found-send").click();
+  await authorize(page);
+  await expect(page.getByTestId("pay-found-line")).toHaveText("Contact request sent. You can pay Marta once they accept.");
+  await expect(page.getByTestId("pay-found-pay")).toHaveCount(0);
+  // Marta accepts on her device.
+  await page.evaluate(() => {
+    const w = window.__dwFixture!.world;
+    const marta = w.dashpay.contacts.find((c) => c.summary.username === "marta")!;
+    marta.summary.relation = "contact";
+  });
+  await dashpayChanged(page);
+  await expect(page.getByTestId("pay-found-pay")).toHaveText("Pay Marta");
+  expect(errors).toEqual([]);
+});
+
 test("PAY-6 a refused Enable on the found user's card says why", async ({ page }) => {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl("dashpay-no-keys", "light", "&fail=dashpay_enable_keys:none"));

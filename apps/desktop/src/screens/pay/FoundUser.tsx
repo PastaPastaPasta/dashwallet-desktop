@@ -33,11 +33,13 @@ export function FoundUser({
   const eligibility = useEligibility(walletId, identity, hit.identity);
   const toast = useActionToast(walletId);
   const payee = payeeOf({ contact: hit.identity, alias: null, displayName: hit.displayName?.trim() || null, username: hit.username });
-  // A request sent here is pending at once (or, answering theirs, made them a contact), before the
-  // eligibility read catches up. A failed read's kept answer may be stale: it shows Try again.
-  const [requested, setRequested] = useState<EligibilityName | null>(null);
+  // A request sent here is pending at once (or, answering theirs, made them a contact), until an
+  // eligibility read after it answers: they may accept meanwhile. A failed read's kept answer may
+  // be stale: it shows Try again.
+  const [requested, setRequested] = useState<{ answer: EligibilityName; at: number } | null>(null);
+  const readSince = requested !== null && !eligibility.isError && eligibility.dataUpdatedAt > requested.at;
   const line = foundLine(payee.name, hit.relation, {
-    data: requested ?? (eligibility.isError ? undefined : eligibility.data),
+    data: requested && !readSince ? requested.answer : eligibility.isError ? undefined : eligibility.data,
     failed: !requested && eligibility.isError && !eligibility.isFetching,
   });
   // A request sent shows as the line; a refusal says why under it.
@@ -52,7 +54,7 @@ export function FoundUser({
   const sent = (o: ActionOutcome | null) => {
     toast(o, true);
     if (!o?.ok) return;
-    setRequested(o.established ? "alreadyContact" : "pendingOutgoing");
+    setRequested({ answer: o.established ? "alreadyContact" : "pendingOutgoing", at: Date.now() });
     arm("send");
   };
 
