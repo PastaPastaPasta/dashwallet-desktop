@@ -86,12 +86,20 @@ test("Share my username shows the DashPay QR and link over the welcome", async (
   await page.getByTestId("welcome-share").click();
   const sheet = page.getByTestId("welcome-share-sheet");
   await expect(sheet).toBeVisible();
+  await expect(sheet.getByTestId("share-who").locator(".share-who-text")).toHaveText("@alice-77");
   await expect(sheet.getByTestId("add-contact-qr")).toBeVisible();
   await expect(sheet.getByTestId("add-contact-qr-link")).toContainText("dashpay://");
   await expect(sheet.getByTestId("add-contact-copy-link")).toBeVisible();
   await sheet.getByRole("button", { name: "Close" }).click();
   await expect(sheet).toHaveCount(0);
   await page.getByTestId("welcome-share").click();
+  await expect(sheet).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+  await expect(page.getByTestId("welcome-share")).toBeFocused();
+  // WebKit on macOS does not focus a button it clicks: focus still comes back to it.
+  await page.getByTestId("welcome-share").blur();
+  await page.getByTestId("welcome-share").dispatchEvent("click");
   await expect(sheet).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(sheet).toHaveCount(0);

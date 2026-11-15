@@ -26,13 +26,17 @@ vi.mock("../../api/queries", async (original) => ({
   ...(await original<typeof import("../../api/queries")>()),
   useQrMatrix: () => ({ data: undefined }),
 }));
+vi.mock("../../dashpay/profileQueries", async (original) => ({
+  ...(await original<typeof import("../../dashpay/profileQueries")>()),
+  useAvatar: () => null,
+}));
 
 const api = {} as EditProfileApi;
 const wiz = { running: null, finished: null, error: null, mode: { kind: "core" }, grants: new GrantModel(api as never) } as unknown as RegistrationWizard;
 const inputs = { amount: () => "", discreet: false, date: () => "" } as unknown as StatusInputs;
 const done = namedModel("alice-77", { kind: "registered" }, () => "");
 
-const welcome = (share: { walletId: string; identity: string } | null = { walletId: "w", identity: "ID" }, onAction: (k: ScreenActionKind) => void = () => undefined) =>
+const welcome = (share: { walletId: string; identity: string; username: string | null } | null = { walletId: "w", identity: "ID", username: "alice-77" }, onAction: (k: ScreenActionKind) => void = () => undefined) =>
   renderToStaticMarkup(createElement(RegistrationScreen, { wiz, model: done, onAction, inputs, share }));
 
 /** The element with `testId` in a tree of plain elements (no component is rendered). */
@@ -93,9 +97,12 @@ describe("the welcome moment (R9)", () => {
   });
 
   it("Share my username shows Add contact's My QR with the link", () => {
-    const html = renderToStaticMarkup(createElement(ShareSheet, { walletId: "w", identity: "ID", testId: "welcome-share-sheet", onClose: () => undefined }));
+    const html = renderToStaticMarkup(createElement(ShareSheet, { walletId: "w", identity: "ID", who: { name: null, username: "alice" }, testId: "welcome-share-sheet", onClose: () => undefined }));
     expect(html).toContain('data-testid="welcome-share-sheet"');
     expect(html).toContain("Share my username");
+    // Whose code it is, readable at a glance; without a display name, the username alone.
+    expect(html).toMatch(/class="share-who-name">@alice</);
+    expect(html).not.toContain("share-who-username");
     expect(html).toContain('data-testid="add-contact-my-qr"');
     expect(html).toContain(LINK);
     expect(html).toContain("Copy Link");

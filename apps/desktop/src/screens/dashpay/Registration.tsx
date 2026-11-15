@@ -266,7 +266,7 @@ export function RegistrationScreen({
   onAction: (kind: ScreenActionKind) => void;
   inputs: StatusInputs;
   /** Whose username the welcome's Share my username shows, once known. */
-  share?: { walletId: string; identity: string } | null;
+  share?: { walletId: string; identity: string; username: string | null } | null;
 }) {
   useModel(wiz);
   const id = useId();
@@ -359,7 +359,16 @@ export function RegistrationScreen({
       </div>
       <GrantSheet grants={wiz.grants} />
       {votingInfo && <VotingInfoSheet onClose={() => setVotingInfo(false)} />}
-      {sharing && share && <ShareSheet walletId={share.walletId} identity={share.identity} testId="welcome-share-sheet" onClose={() => setSharing(false)} />}
+      {sharing && share && (
+        <ShareSheet
+          walletId={share.walletId}
+          identity={share.identity}
+          who={share.username ? { name: null, username: share.username } : null}
+          testId="welcome-share-sheet"
+          returnFocus={() => document.getElementById("welcome-share")}
+          onClose={() => setSharing(false)}
+        />
+      )}
     </section>
   );
 }

@@ -534,6 +534,34 @@ input[type="radio"]:disabled {
   overflow-wrap: anywhere;
 }
 
+.share-who {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dw-space-s);
+  margin-bottom: var(--dw-space-s);
+}
+
+.share-who-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.share-who-name {
+  font-size: var(--dw-type-body-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-body-line);
+  overflow-wrap: anywhere;
+}
+
+.share-who-username {
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  color: var(--dw-role-text-secondary);
+  overflow-wrap: anywhere;
+}
+
 .add-contact-meta {
   display: flex;
   flex-wrap: wrap;

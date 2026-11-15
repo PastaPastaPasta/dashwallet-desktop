@@ -84,7 +84,16 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
           </DashButton>
         )}
       </div>
-      {sharing && <ShareSheet walletId={walletId} identity={main.identity} testId="profile-share-sheet" returnFocus={() => share.current} onClose={() => setSharing(false)} />}
+      {sharing && h.names === "named" && (
+        <ShareSheet
+          walletId={walletId}
+          identity={main.identity}
+          who={{ name: main.profile?.displayName?.trim() || null, username: main.mainName! }}
+          testId="profile-share-sheet"
+          returnFocus={() => share.current}
+          onClose={() => setSharing(false)}
+        />
+      )}
     </section>
   );
 }

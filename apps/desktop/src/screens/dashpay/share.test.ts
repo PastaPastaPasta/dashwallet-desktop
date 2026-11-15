@@ -30,7 +30,7 @@ const header = (main: IdentitySummary, contest: string | null = null) =>
 describe("Share username on My Profile (PRODUCT #12)", () => {
   it("shows the button beside Edit Profile when the identity has a username", () => {
     const html = header(identity({ names: ["alice"], mainName: "alice" }));
-    expect(html).toMatch(/data-testid="profile-share"[^>]*>Share username</);
+    expect(html).toMatch(/data-testid="profile-share"[^>]*>Share Username</);
     expect(html).toContain('data-testid="profile-edit"');
     // The sheet waits for the button.
     expect(html).not.toContain("profile-share-sheet");
@@ -44,10 +44,17 @@ describe("Share username on My Profile (PRODUCT #12)", () => {
     expect(header(identity({}), "alice")).not.toContain("profile-share");
   });
 
+  it("keeps the button for a username held while names update", () => {
+    expect(header(identity({ names: ["alice"], mainName: "alice", namesUpdating: true }))).toContain('data-testid="profile-share"');
+  });
+
   it("the sheet shows My QR, large, with the dashpay://user link and Copy Link", () => {
-    const html = renderToStaticMarkup(createElement(ShareSheet, { walletId: "w", identity: "ID", testId: "profile-share-sheet", onClose: () => undefined }));
+    const html = renderToStaticMarkup(createElement(ShareSheet, { walletId: "w", identity: "ID", who: { name: "Alice Liddell", username: "alice" }, testId: "profile-share-sheet", onClose: () => undefined }));
     expect(html).toContain('data-testid="profile-share-sheet"');
     expect(html).toContain("Share my username");
+    // Whose code it is: the display name, with the username under it.
+    expect(html).toMatch(/class="share-who-name">Alice Liddell</);
+    expect(html).toMatch(/class="share-who-username">@alice</);
     expect(html).toContain('data-testid="add-contact-my-qr"');
     expect(html).toMatch(new RegExp(`<svg[^>]*width="${SHARE_QR_SIZE}"[^>]*data-testid="add-contact-qr"`));
     expect(SHARE_QR_SIZE).toBeGreaterThanOrEqual(240);

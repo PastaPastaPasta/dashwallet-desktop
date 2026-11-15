@@ -82,11 +82,13 @@ test("Share username shows a large DashPay QR and link; Copy Link copies it; Esc
   });
   const errors = await openProfile(page, "dashpay-registered");
   const share = page.getByTestId("profile-share");
-  await expect(share).toHaveText("Share username");
+  await expect(share).toHaveText("Share Username");
   await share.click();
   const shareSheet = page.getByTestId("profile-share-sheet");
   await expect(shareSheet).toBeVisible();
   await expect(shareSheet.getByRole("heading", { name: "Share my username" })).toBeVisible();
+  // Whose code it is, for the friend about to scan it.
+  await expect(shareSheet.getByTestId("share-who").locator(".share-who-text")).toHaveText("Alice Liddell@alice");
   const link = `dashpay://user?id=${IDENTITY.alice}&username=alice`;
   await expect(shareSheet.getByTestId("add-contact-qr-link")).toHaveText(link);
   const qr = shareSheet.getByTestId("add-contact-qr");
@@ -100,6 +102,13 @@ test("Share username shows a large DashPay QR and link; Copy Link copies it; Esc
   await expect(share).toBeFocused();
   await share.click();
   await shareSheet.getByRole("button", { name: "Close" }).click();
+  await expect(shareSheet).toHaveCount(0);
+  await expect(share).toBeFocused();
+  // WebKit on macOS does not focus a button it clicks: focus still comes back to it.
+  await share.blur();
+  await share.dispatchEvent("click");
+  await expect(shareSheet).toBeVisible();
+  await page.keyboard.press("Escape");
   await expect(shareSheet).toHaveCount(0);
   await expect(share).toBeFocused();
   expect(errors).toEqual([]);
