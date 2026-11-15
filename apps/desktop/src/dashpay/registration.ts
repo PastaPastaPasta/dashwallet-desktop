@@ -213,18 +213,18 @@ export type ScreenKind =
   /** R11 */
   | "voting";
 
-export type ScreenActionKind = "home" | "continue" | "unlock" | "finish" | "repair" | "another" | "done" | "wallet" | "votingInfo" | WelcomeStepKind;
+export type ScreenActionKind = "home" | "continue" | "unlock" | "finish" | "repair" | "another" | "done" | "wallet" | "votingInfo" | Exclude<WelcomeStepKind, "share">;
 
 /** R9's next steps (PRODUCT #4). */
 export type WelcomeStepKind = "editProfile" | "findFriends" | "share";
 
+export const SHARE_TITLE = "Share my username";
+
 export const WELCOME_STEPS: { kind: WelcomeStepKind; title: string; text: string }[] = [
   { kind: "editProfile", title: "Add a photo and name", text: "So friends know it's you." },
   { kind: "findFriends", title: "Find friends", text: "Search for people you know by username." },
-  { kind: "share", title: "Share my username", text: "Show your QR code or copy your link." },
+  { kind: "share", title: SHARE_TITLE, text: "Show my QR code or copy my link." },
 ];
-
-export const SHARE_TITLE = "Share my username";
 
 export interface ScreenAction {
   kind: ScreenActionKind;

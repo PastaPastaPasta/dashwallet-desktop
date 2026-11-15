@@ -93,7 +93,7 @@ describe("the welcome moment (R9)", () => {
 
   it("Share my username shows Add contact's My QR with the link", () => {
     const html = renderToStaticMarkup(createElement(ShareSheet, { walletId: "w", identity: "ID", onClose: () => undefined }));
-    expect(html).toContain('data-testid="welcome-share"');
+    expect(html).toContain('data-testid="welcome-share-sheet"');
     expect(html).toContain("Share my username");
     expect(html).toContain('data-testid="add-contact-my-qr"');
     expect(html).toContain(LINK);

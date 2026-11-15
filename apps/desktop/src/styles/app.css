@@ -4068,6 +4068,15 @@ button.bell-row-open:focus-visible {
   color: var(--dw-role-text-secondary);
 }
 
+.welcome-step:disabled .welcome-step-number {
+  background: var(--dw-role-neutral-tint);
+  color: var(--dw-role-text-secondary);
+}
+
+.registration-title[tabindex="-1"]:focus {
+  outline: none;
+}
+
 .welcome-step-number {
   display: grid;
   flex: none;

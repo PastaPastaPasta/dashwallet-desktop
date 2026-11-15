@@ -29,10 +29,17 @@ async function toWelcome(page: Page, theme: Theme = "light") {
   return errors;
 }
 
+/** A step taken closes the welcome for good: Join DashPay then says you joined. */
+async function expectJoined(page: Page) {
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
+  await expect(page.getByTestId("join-joined")).toContainText(`@${LABEL}`);
+}
+
 for (const theme of THEMES)
   test(`the welcome names the new username and offers three next steps (${theme})`, async ({ page }) => {
     const errors = await toWelcome(page, theme);
     await expect(screen(page).locator("h2")).toHaveText(`Welcome to DashPay, @${LABEL}`);
+    await expect(screen(page).locator("h2")).toBeFocused();
     await expect(page.getByTestId("welcome-steps").getByRole("button")).toHaveText([
       /Add a photo and name/,
       /Find friends/,
@@ -48,6 +55,8 @@ test("Add a photo and name opens Edit Profile on My Profile", async ({ page }) =
   await page.getByTestId("welcome-editProfile").click();
   await expect(page.getByTestId("page-profile")).toBeVisible();
   await expect(page.getByTestId("edit-profile-sheet")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expectJoined(page);
   expect(errors).toEqual([]);
 });
 
@@ -58,19 +67,25 @@ test("Find friends opens Contacts with Add contact on Search", async ({ page }) 
   await expect(page.getByTestId("add-contact")).toBeVisible();
   await expect(page.getByTestId("add-contact-tabs-search")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByTestId("add-contact-search")).toBeVisible();
+  await expectJoined(page);
   expect(errors).toEqual([]);
 });
 
 test("Share my username shows the DashPay QR and link over the welcome", async ({ page }) => {
   const errors = await toWelcome(page);
   await page.getByTestId("welcome-share").click();
-  const sheet = page.getByTestId("welcome-share").and(page.getByRole("dialog"));
+  const sheet = page.getByTestId("welcome-share-sheet");
   await expect(sheet).toBeVisible();
   await expect(sheet.getByTestId("add-contact-qr")).toBeVisible();
   await expect(sheet.getByTestId("add-contact-qr-link")).toContainText("dashpay://");
   await expect(sheet.getByTestId("add-contact-copy-link")).toBeVisible();
   await sheet.getByRole("button", { name: "Close" }).click();
   await expect(sheet).toHaveCount(0);
+  await page.getByTestId("welcome-share").click();
+  await expect(sheet).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+  await expect(page.getByTestId("welcome-share")).toBeFocused();
   await expect(screen(page)).toHaveAttribute("data-kind", "done");
   expect(errors).toEqual([]);
 });
@@ -79,7 +94,6 @@ test("Go to wallet leaves the welcome for Home; Join DashPay then says you joine
   const errors = await toWelcome(page);
   await page.getByTestId("registration-wallet").click();
   await expect(page.getByTestId("hero")).toBeVisible();
-  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
-  await expect(page.getByTestId("join-joined")).toContainText(`@${LABEL}`);
+  await expectJoined(page);
   expect(errors).toEqual([]);
 });

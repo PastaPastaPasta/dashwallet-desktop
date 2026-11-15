@@ -24,13 +24,13 @@ export function WelcomeSteps({
       <ol className="welcome-steps" role="list">
         {WELCOME_STEPS.map((s, i) => (
           <li key={s.kind}>
-            <button type="button" className="welcome-step" data-testid={`welcome-${s.kind}`} disabled={disabled || waiting(s.kind)} onClick={() => onStep(s.kind)}>
+            <button type="button" className="welcome-step" data-testid={`welcome-${s.kind}`} disabled={disabled || waiting(s.kind)} aria-describedby={`welcome-${s.kind}-detail`} onClick={() => onStep(s.kind)}>
               <span className="welcome-step-number" aria-hidden="true">
                 {i + 1}
               </span>
               <span className="welcome-step-text">
                 <span className="welcome-step-title">{s.title}</span>
-                <span className="welcome-step-detail">{s.text}</span>
+                <span className="welcome-step-detail" id={`welcome-${s.kind}-detail`}>{s.text}</span>
               </span>
               <span className="welcome-step-chevron" aria-hidden="true">
                 ›
@@ -45,7 +45,7 @@ export function WelcomeSteps({
 
 export function ShareSheet({ walletId, identity, onClose }: { walletId: string; identity: string; onClose: () => void }) {
   return (
-    <Sheet title={SHARE_TITLE} width="small" testId="welcome-share" onClose={onClose}>
+    <Sheet title={SHARE_TITLE} width="small" testId="welcome-share-sheet" onClose={onClose}>
       <MyQrTab walletId={walletId} identity={identity} />
     </Sheet>
   );

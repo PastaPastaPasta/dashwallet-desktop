@@ -45,7 +45,7 @@ catch-up is not built; m4 §2.2 "On E0-04.P2b"). A row no run drives reports a w
 | R6 | `failure`, retryable | Paused + the failure's reason (DP1-08 D5 `failureText`) + the recovery copy when `fundsCommitted` | Continue (grant, `resume_registration`) | Choose another username (only while `!fundsCommitted`, D7) |
 | R7 | `failure`, not retryable, `!fundsCommitted` (before funding, `funding_cancelled`, `funded_elsewhere`) | "Registration failed" + the reason | Choose another username (discards the row, D7) | — |
 | R8 | `failure`, not retryable, `fundsCommitted` (`broadcast_unknown` and kin) | "Registration stopped" + the recovery copy | Open Repair | Choose another username (D27) |
-| R9 | `done`, `nameFailure` null, not contested | Done: "Hello @x, your account is ready" (Android `processing_done_*`) | Done (Home) | — |
+| R9 | `done`, `nameFailure` null, not contested | The welcome (PRODUCT #4): "Welcome to DashPay, @x" + "Your username is ready. Friends can now find you and pay you by name." + What's next: Add a photo and name (My Profile with Edit Profile open), Find friends (Contacts ▸ Add contact on Search), Share my username (Add contact's My QR in a sheet); focus starts on the title | Go to wallet (Home) | — |
 | R10 | `done` with `nameFailure` (the identity exists, the name step refused for good) | "Your identity is ready, but @x could not be registered" + the code's reason | Choose another username (credits path, D6) | — |
 | R11 | `contested` / status `contestPending` | "Voting for your username has begun" + "Results on <date>" or "We will notify you…" | Done | What is username voting? |
 | R12 | the row is gone (discarded elsewhere) or unreadable | the Join page as the status says | — | — |

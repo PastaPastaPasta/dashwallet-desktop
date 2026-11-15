@@ -3,7 +3,7 @@
 // result for its row (the design's R1–R11). The view model is dashpay/registration.ts, the flow
 // dashpay/wizard.ts; the passphrase prompt is U-05's GrantSheet.
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { RegistrationQuote } from "../../api/generated/RegistrationQuote";
 import { CLAIM_COPY, claimErrorText } from "../../dashpay/claim";
 import { DashButton } from "../../components/basics";
@@ -273,6 +273,11 @@ export function RegistrationScreen({
   const [sharing, setSharing] = useState(false);
   const { step } = model;
   const welcome = model.kind === "done";
+  const title = useRef<HTMLHeadingElement>(null);
+  // The progress screen's focus is gone once it turns into the welcome; start keyboard users there.
+  useEffect(() => {
+    if (welcome) title.current?.focus();
+  }, [welcome]);
   return (
     <section
       className={welcome ? "registration registration-welcome card-l1" : "registration card-l1"}
@@ -284,7 +289,7 @@ export function RegistrationScreen({
     >
       {/* Changes as the run moves on, announced politely, as the Home card (DP1-08 D25). */}
       <div role="status" className="registration-live">
-        <h2 className="registration-title" id={`${id}-title`}>
+        <h2 className="registration-title" id={`${id}-title`} ref={title} tabIndex={welcome ? -1 : undefined}>
           {model.title}
           {model.busy && <span className="spinner registration-spinner" aria-hidden="true" />}
         </h2>

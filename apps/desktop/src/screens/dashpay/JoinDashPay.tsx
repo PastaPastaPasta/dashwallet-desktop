@@ -113,8 +113,6 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
       case "findFriends":
         leave();
         return findFriends(walletId);
-      case "share":
-        return;
     }
   };
   const shareIdentity = row?.identity ?? (wiz.mode.kind === "credits" ? wiz.mode.identity : null) ?? inputs.main?.identity ?? null;
