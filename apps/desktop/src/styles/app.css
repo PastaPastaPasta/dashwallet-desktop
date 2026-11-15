@@ -1275,6 +1275,12 @@ button {
   list-style: none;
 }
 
+.tx-mixing-members-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
 .tx-row {
   display: grid;
   grid-template-columns: var(--dw-layout-row-icon-size) minmax(0, 1fr) auto;

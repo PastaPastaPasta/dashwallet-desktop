@@ -1084,14 +1084,16 @@ pub(crate) struct Labels {
 }
 
 /// The asset-lock txids of registrations that took a username, by txid.
-/// Only flows whose name step was asked for and did not fail count: a lock
-/// of a failed or nameless flow stays the generic Platform funding.
+/// Only flows whose name step succeeded count: a lock of a nameless flow, or
+/// of one that failed before or at its name, stays the generic Platform
+/// funding. A later step's error (the profile, the inviter's request) does not
+/// undo a name already on Platform. A contested name is not held until its
+/// vote is won, so its lock carries the temporary name the identity does hold.
 pub(crate) fn username_purposes(rows: &[dw_appdb::RegistrationRow]) -> HashMap<String, TxPurpose> {
     use crate::platform::registration_rows::Phase;
     rows.iter()
         .filter(|r| {
-            r.error.is_none()
-                && r.name_error.is_none()
+            r.name_error.is_none()
                 && !r.label.is_empty()
                 && matches!(
                     Phase::parse(&r.phase),
@@ -1108,7 +1110,7 @@ pub(crate) fn username_purposes(rows: &[dw_appdb::RegistrationRow]) -> HashMap<S
             Some((
                 outpoint.txid.to_string(),
                 TxPurpose::UsernameRegistration {
-                    username: r.label.clone(),
+                    username: r.temp_label.clone().unwrap_or_else(|| r.label.clone()),
                 },
             ))
         })
@@ -1196,7 +1198,12 @@ fn matches(r: &TxRecord, f: &HistoryFilter, text: Option<&str>) -> bool {
                 .is_some_and(|a| a.to_lowercase().contains(text))
             || r.label
                 .as_deref()
-                .is_some_and(|l| l.to_lowercase().contains(text));
+                .is_some_and(|l| l.to_lowercase().contains(text))
+            || r.purpose.as_ref().is_some_and(|p| match p {
+                TxPurpose::UsernameRegistration { username } => {
+                    username.to_lowercase().contains(text)
+                }
+            });
         if !hit {
             return false;
         }
@@ -2051,7 +2058,20 @@ mod tests {
             })
         );
 
-        let mut failed = named.clone();
+        let mut later_step_failed = named.clone();
+        later_step_failed.error = Some("profile.failed".into());
+        assert_eq!(username_purposes(&[later_step_failed]).len(), 1);
+
+        let mut contested = registration("alice", "done", Some(&outpoint));
+        contested.temp_label = Some("alice2611".into());
+        assert_eq!(
+            username_purposes(&[contested]).get(&txid),
+            Some(&TxPurpose::UsernameRegistration {
+                username: "alice2611".into()
+            })
+        );
+
+        let mut failed = registration("alice", "name_requested", Some(&outpoint));
         failed.error = Some("registration.failed".into());
         let mut name_refused = named.clone();
         name_refused.name_error = Some("names.taken".into());
@@ -2260,6 +2280,12 @@ mod tests {
             rec(2, 0, Some(200), -70, TxType::SendToAddress),
             rec(3, 0, Some(300), 20, TxType::RecvWithAddress),
             rec(4, 0, None, -5, TxType::CoinJoinMixing),
+            TxRecord {
+                purpose: Some(TxPurpose::UsernameRegistration {
+                    username: "alice".into(),
+                }),
+                ..rec(5, 0, Some(400), -30, TxType::AssetLock)
+            },
         ];
         let run = |f: HistoryFilter| {
             let mut q = query(10);
@@ -2314,6 +2340,13 @@ mod tests {
                 ..Default::default()
             }),
             vec!["02"]
+        );
+        assert_eq!(
+            run(HistoryFilter {
+                text: Some("Alice".into()),
+                ..Default::default()
+            }),
+            vec!["05"]
         );
         assert!(
             run(HistoryFilter {

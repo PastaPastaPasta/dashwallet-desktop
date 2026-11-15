@@ -21,7 +21,8 @@ test("history uses plain titles, a negative self-send fee, and expandable mixing
   const username = page.getByRole("button", { name: /Username @dwdemo2611/ }).first();
   await username.click();
   await expect(page.getByTestId("tx-detail-title")).toHaveText("Username @dwdemo2611");
-  await expect(page.getByTestId("tx-detail-status")).toContainText("Instant (InstantSend locked)");
+  await expect(page.getByTestId("tx-detail-status")).toContainText("Confirmed");
+  await expect(page.getByTestId("tx-detail-status")).not.toContainText("InstantSend");
   await page.keyboard.press("Escape");
 
   const mixing = page.locator(".tx-mixing-group").first();
@@ -29,5 +30,7 @@ test("history uses plain titles, a negative self-send fee, and expandable mixing
   await expect(mixing).toHaveAttribute("aria-expanded", "false");
   await mixing.click();
   await expect(mixing).toHaveAttribute("aria-expanded", "true");
+  const members = page.locator(`#${await mixing.getAttribute("aria-controls")}`);
+  await expect(members.locator(".tx-row")).toHaveCount(12);
   expect(await page.locator(".tx-row-title", { hasText: "Mixing" }).count()).toBeGreaterThan(13);
 });

@@ -17,6 +17,7 @@ import {
   dayTitle,
   detailDate,
   groupByDay,
+  groupChip,
   groupConsecutiveMixing,
   isProblem,
   rowDate,
@@ -129,7 +130,9 @@ function TxRowView({ row, ctx, onOpen, decorate }: { row: TxRow; ctx: RowContext
 
 function MixingGroupView({ group, ctx, onOpen, decorate }: { group: MixingGroup; ctx: RowContext; onOpen: (row: TxRow) => void; decorate?: (row: TxRow) => RowDecor }) {
   const [expanded, setExpanded] = useState(false);
+  const membersId = useId();
   const first = group.rows[0];
+  const chip = groupChip(group.rows);
   const amount = group.rows.reduce((sum, row) => sum + row.amount, 0);
   const shown = shownAmount(amount, "coinJoinMixing");
   const text = ctx.display.compact(shown.duffs, shown.signed);
@@ -143,12 +146,16 @@ function MixingGroupView({ group, ctx, onOpen, decorate }: { group: MixingGroup;
           className="tx-row tx-mixing-group"
           data-testid={testId}
           aria-expanded={expanded}
+          aria-controls={expanded ? membersId : undefined}
           onClick={() => setExpanded((value) => !value)}
         >
           <Icon id={TX_ICON.mixing} size={30} className="tx-row-icon" />
           <span className="tx-row-text">
             <span className="tx-row-title">Mixing · {group.rows.length} transactions</span>
-            <span className="tx-row-subtitle">{date && <span className="tx-row-time">{timeOfDay(date, ctx.locale)}</span>}</span>
+            <span className="tx-row-subtitle">
+              {date && <span className="tx-row-time">{timeOfDay(date, ctx.locale)}</span>}
+              {chip && <Chip tone="info">{chip}</Chip>}
+            </span>
           </span>
           <span className="tx-row-trailing">
             <AmountText className="tx-row-amount" text={text} unitName={ctx.display.name} />
@@ -156,7 +163,15 @@ function MixingGroupView({ group, ctx, onOpen, decorate }: { group: MixingGroup;
           </span>
         </button>
       </li>
-      {expanded && group.rows.map((row) => <TxRowView key={`${row.txid}:${row.recordIndex}`} row={row} ctx={ctx} onOpen={onOpen} decorate={decorate} />)}
+      {expanded && (
+        <li className="tx-mixing-members">
+          <ul id={membersId} className="tx-mixing-members-list" role="list">
+            {group.rows.map((row) => (
+              <TxRowView key={`${row.txid}:${row.recordIndex}`} row={row} ctx={ctx} onOpen={onOpen} decorate={decorate} />
+            ))}
+          </ul>
+        </li>
+      )}
     </>
   );
 }
@@ -223,7 +238,7 @@ function TxGroup({
       <ul className="tx-group-rows" role="list">
         {grouped.map((item) =>
           "kind" in item ? (
-            <MixingGroupView key={`mixing:${item.rows[0].txid}:${item.rows[0].recordIndex}`} group={item} ctx={ctx} onOpen={onOpen} decorate={decorate} />
+            <MixingGroupView key={`mixing:${item.rows[item.rows.length - 1].txid}:${item.rows[item.rows.length - 1].recordIndex}`} group={item} ctx={ctx} onOpen={onOpen} decorate={decorate} />
           ) : (
             <TxRowView key={`${item.txid}:${item.recordIndex}`} row={item} ctx={ctx} onOpen={onOpen} decorate={decorate} />
           ),

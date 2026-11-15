@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { contactAside, contactLetters, contactName, dateRange, dayTitle, groupByDay, groupConsecutiveMixing, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
+import { contactAside, contactLetters, contactName, dateRange, dayTitle, groupByDay, groupChip, groupConsecutiveMixing, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -104,12 +104,20 @@ describe("chips and icons", () => {
 
   it("keeps a conflicted or abandoned mixing row out of a group", () => {
     const row = (txid: string, kind: TxStatusInfo["kind"]): any => ({ txid, recordIndex: 0, txType: "coinJoinMixing", category: "coinJoin", amount: -1000, status: status({ kind }), timestamp: 1, blockHeight: 1, fee: 0, address: null, label: null, countsTowardBalance: true, involvesWatchOnly: false });
-    const grouped = groupConsecutiveMixing([row("a", "confirmed"), row("b", "confirmed"), row("c", "conflicted"), row("d", "confirmed"), row("e", "abandoned")]);
-    expect(grouped).toHaveLength(4);
+    const grouped = groupConsecutiveMixing([row("a", "confirmed"), row("b", "confirmed"), row("c", "conflicted"), row("d", "confirmed"), row("e", "abandoned"), row("f", "notAccepted")]);
+    expect(grouped).toHaveLength(5);
     expect("kind" in grouped[0] && grouped[0].rows.map((r) => r.txid)).toEqual(["a", "b"]);
     expect(grouped[1]).toMatchObject({ txid: "c" });
     expect(grouped[2]).toMatchObject({ txid: "d" });
     expect(grouped[3]).toMatchObject({ txid: "e" });
+    expect(grouped[4]).toMatchObject({ txid: "f" });
+  });
+
+  it("a collapsed group shows a member's Pending or InstantSend chip", () => {
+    const row = (over: Partial<TxStatusInfo>): any => ({ txid: "a", recordIndex: 0, txType: "coinJoinMixing", status: status(over) });
+    expect(groupChip([row({ kind: "confirmed" }), row({ kind: "confirmed" })])).toBeNull();
+    expect(groupChip([row({ kind: "confirmed" }), row({ kind: "unconfirmed", instantLocked: true })])).toBe(txChip(status({ kind: "unconfirmed", instantLocked: true })));
+    expect(groupChip([row({ kind: "unconfirmed", instantLocked: true }), row({ kind: "unconfirmed" })])).toBe(txChip(status({ kind: "unconfirmed" })));
   });
 });
 

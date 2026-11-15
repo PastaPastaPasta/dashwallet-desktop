@@ -25,7 +25,11 @@ import { fiatText } from "../format/fiat";
 import { Avatar } from "./contacts/Avatar";
 import { contactLetters, contactName, detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
 
-/** Plain-language status for the detail sheet; dash-qt's raw string stays in engine/CSV data. */
+const confirmationsText = (n: number) => `${n} ${n === 1 ? "confirmation" : "confirmations"}`;
+
+/** Plain-language status for the detail sheet; dash-qt's raw string stays in engine/CSV data. The
+ * engine keeps `instantLocked` set once a block confirms the transaction, so only an unconfirmed
+ * row reads as InstantSend. */
 export function statusText(s: TxStatusInfo): string {
   switch (s.kind) {
     case "abandoned":
@@ -37,13 +41,11 @@ export function statusText(s: TxStatusInfo): string {
     case "unconfirmed":
       return s.instantLocked ? "Instant (InstantSend locked)" : "Pending";
     case "immature":
-      return `Maturing · ${s.confirmations} confirmations${s.maturesIn === null ? "" : `, available in ${s.maturesIn} more blocks`}`;
+      return `Maturing · ${confirmationsText(s.confirmations)}${s.maturesIn === null ? "" : `, available in ${s.maturesIn} more blocks`}`;
     case "confirming":
-    case "confirmed": {
-      if (s.instantLocked) return "Instant (InstantSend locked)";
+    case "confirmed":
       if (s.kind === "confirmed" && s.confirmations > 6) return "Confirmed";
-      return `Confirmed · ${s.confirmations} confirmations`;
-    }
+      return `Confirmed · ${confirmationsText(s.confirmations)}`;
   }
 }
 

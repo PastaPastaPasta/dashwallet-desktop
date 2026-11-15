@@ -219,6 +219,12 @@ export function txChip(status: TxStatusInfo): string | null {
   }
 }
 
+/** A collapsed mixing group's chip: Pending if any row is, else InstantSend if any row is. */
+export function groupChip(rows: TxRow[]): string | null {
+  const chips = rows.map((row) => txChip(row.status));
+  return chips.find((chip) => chip === TxTitle.chipPending) ?? chips.find((chip) => chip !== null) ?? null;
+}
+
 /** The transaction failed: the chip is in the danger tone, the title secondary, the icon an error. */
 export function isProblem(status: TxStatusInfo): boolean {
   return status.kind === "conflicted" || status.kind === "abandoned" || status.kind === "notAccepted";
