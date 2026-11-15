@@ -571,6 +571,109 @@ fn admit_refuses_without_the_wallets_lease() {
     assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
 }
 
+/// A marked spend can let the pass scan while the vault is locked, but its
+/// re-send is refused by `admit` until the background lease exists again.
+#[test]
+fn a_pass_runs_without_the_lease_when_every_stored_spend_asks_the_hook() {
+    let h = Hooked::new();
+    assert_eq!(h.dispatch(h.staged(8, &[1])), Ok(()));
+    h.f.engine.block_on(h.f.session.lock_vault()).unwrap();
+    let manager = h.f.session.manager().unwrap();
+    let s = Arc::clone(&h.f.session);
+    h.f.engine.block_on(async move {
+        assert!(pool::admit_pass(&s, &manager).await.is_ok());
+    });
+    let refused = h.admit(SHIELDED_ACCOUNT, 8, st_hash(8)).unwrap_err();
+    assert!(refused.contains("background lease"), "{refused}");
+    // No pass runs here: this pins only that `admit` itself sends nothing.
+    assert_eq!(h.attempts(8), Some(0));
+
+    h.f.engine
+        .block_on(
+            h.f.session
+                .vault_op(|v| v.unlock(PASS, dw_vault::UnlockScope::Full)),
+        )
+        .unwrap();
+    h.lease();
+    let manager = h.f.session.manager().unwrap();
+    let s = Arc::clone(&h.f.session);
+    h.f.engine.block_on(async move {
+        assert!(pool::admit_pass(&s, &manager).await.is_ok());
+    });
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 8, st_hash(8)), Ok(()));
+}
+
+/// Any unmarked (pre-hook) record keeps the wallet-wide lease hold, including
+/// when a marked hooked record is present beside it.
+#[test]
+fn a_pass_is_held_without_the_lease_while_a_spend_predates_the_hook() {
+    let f = topup_tests::fixture(true);
+    let manager = f.session.manager().unwrap();
+    let wallet = f.wallet;
+    let s = Arc::clone(&f.session);
+    f.engine.block_on(async move {
+        manager
+            .configure_shielded(s.data_dir().join(pool::SHIELDED_DB_FILE))
+            .await
+            .unwrap();
+        let c = manager.shielded_coordinator().await.unwrap();
+        c.store()
+            .write()
+            .await
+            .arm_redrive(
+                SubwalletId::new(wallet.0, SHIELDED_ACCOUNT),
+                PendingRedrive {
+                    activity_id: [9; 32],
+                    anchor: [0xa0; 32],
+                    nullifiers: vec![[101; 32]],
+                    st_bytes: b"pre-hook".to_vec(),
+                    attempts: 0,
+                    identity_nonce_finalized: false,
+                    identity_user_abandoned: false,
+                },
+            )
+            .unwrap();
+        pool::coordinator(&s, &manager, None).await.unwrap();
+        c.store()
+            .write()
+            .await
+            .arm_unsent_redrive(
+                SubwalletId::new(wallet.0, SHIELDED_ACCOUNT),
+                PendingRedrive {
+                    activity_id: [10; 32],
+                    anchor: [0xa1; 32],
+                    nullifiers: vec![[102; 32]],
+                    st_bytes: b"hooked transition".to_vec(),
+                    attempts: 0,
+                    identity_nonce_finalized: false,
+                    identity_user_abandoned: false,
+                },
+            )
+            .unwrap();
+        s.leases
+            .record_shielded_artifact(
+                wallet,
+                NewShieldedArtifact {
+                    activity: [10; 32],
+                    origin: ArtifactOrigin::Dispatched,
+                    st_hash: Some(Sha256::digest(b"hooked transition").into()),
+                    kind: Some(ArtifactKind::Transfer),
+                    anchor: Some([0xa1; 32]),
+                    identity_id: None,
+                    selected: vec![[102; 32]],
+                    published: vec![[102; 32]],
+                },
+            )
+            .await
+            .unwrap();
+        s.lock_vault().await.unwrap();
+        assert_eq!(
+            pool::admit_pass(&s, &manager).await.err(),
+            Some(pool::PassHeld::NoLease(wallet))
+        );
+    });
+}
+
 /// Once the session's close has shut its gate the hook refuses both ways,
 /// with the wallet's lease still held: a pass in flight re-sends nothing
 /// more (the stored spend keeps its attempts) and no new spend is accepted

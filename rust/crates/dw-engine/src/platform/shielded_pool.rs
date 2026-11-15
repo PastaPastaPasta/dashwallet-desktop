@@ -56,12 +56,14 @@
 //!   the hook has its artifact written before its first send. Nothing here
 //!   resends. Every pass goes through [`guarded_pass`]: admitted only while
 //!   the session is open (the supervisor's kick, or [`on_pool`]), only with
-//!   the hook set, only while each wallet holding such a spend holds its
-//!   background lease, and only once each spend stored before any hook was
-//!   set is on record (a spend holds the passes off from its library call
+//!   the hook set, only while each wallet holding a spend stored before any
+//!   hook was set holds its background lease, and only once each such spend
+//!   is on record (a spend holds the passes off from its library call
 //!   until its call has returned and its outcome is read, so none can find a
 //!   spend stored mid-pass). A spend stored under the hook is checked by the
-//!   hook at each re-send, lease included. Inside the pass the library asks the hook before each
+//!   hook at each re-send, lease included; a locked wallet's pass still scans,
+//!   and its hooked re-sends wait for the lease at `admit`. Inside the pass
+//!   the library asks the hook before each
 //!   re-send of a spend stored under it, and the hook allows only one whose
 //!   artifact it wrote (same wallet, activity and hash, not settled or
 //!   archived), while its wallet holds its background lease and the
@@ -2622,8 +2624,9 @@ pub(crate) enum PassHeld {
     /// The coordinator has no dispatch hook: its pass would re-send without
     /// asking the engine.
     NoHook,
-    /// The wallet holds a spend the pass would re-send and not its
-    /// background lease (E0-04 §4.5: the vault is not prompt-free).
+    /// The wallet holds a spend stored before any hook was set (the library
+    /// re-sends it without asking the hook) and not its background lease
+    /// (E0-04 §4.5: the vault is not prompt-free).
     NoLease(WalletId),
     /// The library's redrive records or the journal could not be read or
     /// written.
@@ -2654,11 +2657,12 @@ fn transition_hash(st_bytes: &[u8]) -> [u8; 32] {
 /// The checks before each shielded sync pass the engine runs (E0-04 Q15,
 /// ruling (c), DEC-1032). The pass is where the library re-sends a spend it
 /// could not confirm, byte for byte (`redrive_pending_spends` from
-/// `coordinator.rs:1431`). Each wallet holding a stored spend must hold the
-/// background lease; a spend stored before any hook was set must also have
-/// its 0.1 record on the dispatch journal, while a spend stored under the
-/// hook is checked by the hook at each re-send. Not without the dispatch hook ([`EngineDispatch`]),
-/// which the library asks inside the pass before each re-send of a spend stored under it.
+/// `coordinator.rs:1431`). A spend stored before any hook was set is admitted
+/// only while its wallet holds the background lease and after its 0.1 record
+/// is on the dispatch journal; a spend stored under the hook is checked by the
+/// hook at each re-send, including the lease. Not without the dispatch hook
+/// ([`EngineDispatch`]), which the library asks inside the pass before each
+/// re-send of a spend stored under it.
 pub(crate) async fn admit_pass(
     session: &NetworkSession,
     manager: &Manager,
@@ -2679,29 +2683,21 @@ pub(crate) async fn admit_pass(
             .map(|s| s.wallet_id),
     );
     for id in wallets {
-        let (stored, unmarked) = {
+        let unmarked = {
             let store = coordinator.store().read().await;
-            let stored = store
+            store
                 .pending_redrives_for_wallet(id)
-                .map_err(|e| PassHeld::Store(e.to_string()))?;
-            let subwallet = SubwalletId::new(id, SHIELDED_ACCOUNT);
-            let unmarked = stored
-                .iter()
-                .filter(|(_, record)| {
-                    !store.redrive_armed_recording(subwallet, &record.activity_id)
-                })
+                .map_err(|e| PassHeld::Store(e.to_string()))?
+                .into_iter()
+                .filter(|(sub, record)| !store.redrive_armed_recording(*sub, &record.activity_id))
                 .map(|(_, record)| (record.activity_id, transition_hash(&record.st_bytes)))
-                .collect::<Vec<_>>();
-            (stored, unmarked)
+                .collect::<Vec<_>>()
         };
-        if stored.is_empty() {
-            continue;
-        }
-        let wallet = WalletId(id);
-        if session.leases.background(&wallet).is_none() {
-            return Err(PassHeld::NoLease(wallet));
-        }
         if !unmarked.is_empty() {
+            let wallet = WalletId(id);
+            if session.leases.background(&wallet).is_none() {
+                return Err(PassHeld::NoLease(wallet));
+            }
             (session
                 .leases
                 .record_shielded_redrives(wallet, unmarked)

@@ -673,8 +673,8 @@ an earlier send never executed, so the library counts the attempt and keeps the 
 the row (`activity_id`), Platform's hash of the transition (`transition`, SHA-256 of its bytes) and the re-sends so far.
 The facade has no resend, and a host must not offer a retry or a new send of the same payment for a pending one. The
 re-sends run only inside the session, in the engine's own sync passes (the library's loop never runs): a pass is
-admitted only while the session is open, the dispatch hook is set (below) and each wallet holding such a spend holds
-its background lease, with every spend stored before any hook was set recorded first in the dispatch journal (schema 9);
+admitted only while the session is open, the dispatch hook is set (below) and each wallet holding a spend stored before
+any hook was set holds its background lease, with every such spend recorded first in the dispatch journal (schema 9);
 a spend stored under the hook is on record by its artifact, written before its first broadcast. A spend holds the passes
 off from its library call until its call's outcome is read. Inside the pass the library asks the
 hook before each re-send of a spend stored under it (below). A lock (async, synchronous or the relock timer's) and the close
@@ -697,7 +697,8 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   archived), the wallet holds its background lease and the session is open. A spend imported from a 0.1 journal, one
   the journal does not hold and one it cannot read are refused; the stored spend stays as it was, its re-send count
   unchanged. The library does not ask about a spend stored before any hook was set (a 0.1 one): the pass's own
-  admission above holds those.
+  admission above holds the lease and the schema-9 record. A locked wallet's pass still scans; its hooked re-sends
+  wait for the lease at `admit`.
 - **Without the hook** nothing is sent: `shielded_send` and `unshield_to_core` are `platform.unavailable` before any
   quote, any address is issued, the grant or any key, no pass is admitted, and a coordinator whose hook did not set is not
   handed to any call (the next call sets it or fails the same way).
@@ -707,9 +708,10 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
 - **A first send that fails after the library stored the spend** proves nothing about whether it went out, and does
   not say the library let go of it. Whatever the failure was, the call returns `pending`, never an error, in two
   cases. The library still holds the signed transition, armed (it could not write the spend's end), so a later pass
-  may send it: `ShieldedSpendOutcome{state: pending, unresolved}` with that record. Or the library ended the spend with no verdict and holds its notes: `{state: pending,
-  unresolved: null}`. An error is returned only when the library holds neither: no new stored transition and no new
-  held notes (it freed the notes, or never stored the spend). When either cannot be read the call is
+  may send it: `ShieldedSpendOutcome{state: pending, unresolved}` with that record. Or the library ended the spend
+  with no verdict and holds its notes: `{state: pending, unresolved: null}`. An error is returned only when the
+  library holds neither: no new stored transition and no new held notes (it freed the notes, or never stored the
+  spend). When either cannot be read the call is
   `platform.broadcast_unknown{artifact: "shielded transfer"}` (or `"shielded withdraw"`): the payment may still go
   through. The engine never releases such notes by itself.
 - The marker of a spend the library kept no record of (schema 10, "Unrecorded spends" below) is still written and gates

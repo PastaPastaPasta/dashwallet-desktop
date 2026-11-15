@@ -2715,8 +2715,8 @@ fn a_pass_records_spends_stored_before_the_hook_and_leaves_hooked_ones_to_their_
     let held = engine.block_on(async move { pool::admit_pass(&s, &manager).await.err() });
     assert_eq!(held, Some(pool::PassHeld::NoLease(wallet)));
 
-    // A hooked-only wallet does not depend on the schema-9 journal; the hook
-    // gates its re-send per artifact.
+    // A hooked-only wallet does not depend on the schema-9 journal, even
+    // while its vault is locked; the hook gates its re-send per artifact.
     let g = super::topup_tests::fixture(true);
     let (engine, session, wallet) = (&g.engine, &g.session, g.wallet);
     assert!(bound_address(engine, session, wallet).0);
@@ -2768,6 +2768,11 @@ fn a_pass_records_spends_stored_before_the_hook_and_leaves_hooked_ones_to_their_
             .unwrap_err()
             .reason;
         assert!(unread.contains("could not be read"), "{unread}");
+        s.leases.journal.set(journal);
+        s.lock_vault().await.unwrap();
+        let journal = s.leases.journal.get();
+        s.leases.journal.set(None);
+        assert!(pool::admit_pass(&s, &m).await.is_ok());
         s.leases.journal.set(journal);
     });
 }
@@ -3649,9 +3654,8 @@ fn a_failed_send_is_an_error_only_when_the_library_holds_nothing_of_it() {
 /// A send that fails while the library still holds its signed transition,
 /// armed (the write that ends the spend failed too, while reads work), is
 /// pending, never an error: a later pass may send it, so the host must not
-/// offer the payment again. Its record goes to the journal as an
-/// unconfirmed spend's does, and the library keeps it to send. When the
-/// stored transitions cannot be read the payment may still go through:
+/// offer the payment again. The library keeps the transition to send. When
+/// the stored transitions cannot be read the payment may still go through:
 /// `platform.broadcast_unknown`.
 #[test]
 fn a_failed_send_the_library_still_holds_armed_is_pending() {
