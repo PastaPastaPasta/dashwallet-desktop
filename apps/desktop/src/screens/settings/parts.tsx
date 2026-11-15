@@ -17,12 +17,13 @@ export function SettingsCard({ title, testId, children }: { title: string; testI
 }
 
 /** A setting the app does not have yet: its name, and why or who brings it. */
-export function NotYetRow({ title, why, testId, label = "Not available yet" }: { title: string; why: string; testId: string; label?: string }) {
+export function NotYetRow({ title, why, testId, label }: { title: string; why: string; testId: string; label?: string }) {
   return (
     <div className="settings-row settings-not-yet" data-testid={testId}>
       <span className="settings-row-title">{title}</span>
       <span className="field-hint">
-        {label}: {why}
+        {label ? `${label}: ` : ""}
+        {why}
       </span>
     </div>
   );

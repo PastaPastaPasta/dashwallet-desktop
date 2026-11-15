@@ -40,8 +40,8 @@ export function InformationTab() {
         </ToolCard>
       ))}
       <DashPayInfoCard />
-      <NotYet title="Network traffic" owner="M6" testId="information-traffic-not-yet">
-        The SPV client reports no byte counters yet.
+      <NotYet title="Network traffic" testId="information-traffic-not-yet">
+        Network traffic details are coming soon.
       </NotYet>
     </div>
   );

@@ -62,6 +62,7 @@ export const AVATAR_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAEklEQ
 
 /** What the fixture's engine knows. Handlers mutate it, like the engine's own state. */
 export interface World {
+  networkForced?: boolean;
   /** Row 74: what the next `switch_network` to the other network does instead of switching: refuse
    * (`busy`, or close's own refusal `closeRefused`), or fail after the close (`fail`; when it did
    * not roll back, the next `open_network` fails once too, `reopenFails`). */

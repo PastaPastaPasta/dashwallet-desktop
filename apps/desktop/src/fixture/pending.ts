@@ -184,7 +184,7 @@ const forced = (kind: string) => kind !== "mainnet" && kind !== "testnet";
 function networkView(world: Ctx["world"]): NetworkChoiceView {
   const saved = world.pending.networkChoice!;
   const active = world.launch.network;
-  return { chosen: saved.chosen, saved: saved.saved, active, forcedByFlag: forced(active.kind) };
+  return { chosen: saved.chosen, saved: saved.saved, active, forcedByFlag: world.networkForced ?? forced(active.kind) };
 }
 
 const networkInfo = (choice: ChosenNetwork): NetworkInfo => ({ kind: choice, dirName: choice, unitName: choice === "mainnet" ? "DASH" : "tDASH" });

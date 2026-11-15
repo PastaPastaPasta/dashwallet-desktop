@@ -8,6 +8,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
 import type { ChosenNetwork } from "../api/generated/ChosenNetwork";
+import type { NetworkChoiceView } from "../api/generated/NetworkChoiceView";
 import { keys, useBackend, useLockStatus, useNetworkChoice, useWallets } from "../api/queries";
 import { ui, useUi } from "../app/ui";
 import { NETWORK_CHOICES, NetworkText } from "../network/choice";
@@ -16,6 +17,16 @@ import { DashButton } from "./basics";
 import { Sheet } from "./sheet";
 
 const chosenOf = (kind: string): ChosenNetwork | null => (kind === "mainnet" || kind === "testnet" ? kind : null);
+
+/** The segment that describes the network currently shown by the window. */
+export function selectedNetwork(view: Pick<NetworkChoiceView, "active">): ChosenNetwork | null {
+  return chosenOf(view.active.kind);
+}
+
+/** The network the next start uses, when this pinned window's differs from the saved choice. */
+export function nextStartNetwork(view: Pick<NetworkChoiceView, "active" | "chosen" | "forcedByFlag">): ChosenNetwork | null {
+  return view.forcedByFlag && view.chosen !== selectedNetwork(view) ? view.chosen : null;
+}
 
 export function useNetworkPicker() {
   const backend = useBackend();
@@ -31,8 +42,9 @@ export function useNetworkPicker() {
   const switching = useUi((s) => s.switching);
   const view = query.data ?? null;
   const pinned = view?.forcedByFlag ?? false;
-  // A pinned window shows what the next start opens; any other, the network it is on.
-  const current = view ? (pinned ? view.chosen : chosenOf(view.active.kind)) : null;
+  // The segment shown pressed is always the network this window runs; a pinned window says what the next start opens.
+  const current = view ? selectedNetwork(view) : null;
+  const nextStart = view ? nextStartNetwork(view) : null;
   const walletIds = wallets.data?.map((w) => w.walletId) ?? [];
   // Asks unless the network is known to have no wallet (the list may still be loading, or failed).
   const noWallet = wallets.isSuccess && walletIds.length === 0;
@@ -68,8 +80,11 @@ export function useNetworkPicker() {
     },
   });
   const choose = (to: ChosenNetwork) => {
-    if (to === current || switching) return;
-    if (pinned || noWallet) return run.mutate(to);
+    if (switching) return;
+    // A pinned window cannot switch, but the next start's choice can still be saved.
+    if (pinned) return to === view?.chosen ? undefined : run.mutate(to);
+    if (to === current) return;
+    if (noWallet) return run.mutate(to);
     setAttempt((n) => n + 1);
     setConfirming(to);
   };
@@ -85,6 +100,7 @@ export function useNetworkPicker() {
     confirming: confirming && { to: confirming, checking, pending },
     /** The window was started with `--network` (or a flag of one network): it only saves the choice. */
     pinned: view?.forcedByFlag ? view.active.kind : null,
+    nextStart,
     problem,
     choose,
     confirm: () => {
@@ -145,7 +161,7 @@ export function NetworkPicker({ state, testId }: { state: NetworkPickerState; te
       )}
       {state.pinned && (
         <p className="field-hint settings-hint" data-testid={`${testId}-pinned`}>
-          {NetworkText.pinned(state.pinned)}
+          {NetworkText.pinned(state.pinned, state.nextStart)}
         </p>
       )}
       {state.problem && (

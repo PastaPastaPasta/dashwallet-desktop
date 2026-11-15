@@ -36,8 +36,8 @@ export function AboutTab() {
         </dl>
       </SettingsCard>
       <SettingsCard title="More" testId="settings-about-more">
-        <NotYetRow testId="settings-command-line" title="Command-line options" why="run Dash Wallet with --help to list them; the app cannot show them yet." />
-        <NotYetRow testId="settings-support" title="Support, source code and log export" why="they come with Tools (U-05)." />
+        <NotYetRow testId="settings-command-line" title="Command-line options" why="These options are not available here yet." />
+        <NotYetRow testId="settings-support" title="Support, source code and log export" why="Support and log export are coming soon." />
       </SettingsCard>
     </>
   );

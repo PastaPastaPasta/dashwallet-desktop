@@ -54,12 +54,12 @@ export function ToolCard({ title, testId, actions, children }: { title: string; 
 }
 
 /** A row whose engine call or data source comes with a later task: said, not stubbed. */
-export function NotYet({ title, owner, children, testId }: { title: string; owner: string; children: ReactNode; testId: string }) {
+export function NotYet({ title, children, testId }: { title: string; children: ReactNode; testId: string }) {
   return (
     <section className="tool-card tool-not-yet card-l1" data-testid={testId} aria-label={title}>
       <h2 className="card-title">{title}</h2>
       <p className="placeholder-note">
-        {children} <span className="tool-owner">Not yet ({owner}).</span>
+        {children} <span className="tool-owner">Coming soon.</span>
       </p>
     </section>
   );

@@ -85,7 +85,9 @@ export function GeneralTab() {
             ))}
           </div>
         </div>
-        {launch.theme !== null && <Hint>This window was started with --theme {launch.theme}, which wins until the next start without it.</Hint>}
+        {launch.theme !== null && (
+          <Hint>{launch.theme[0].toUpperCase() + launch.theme.slice(1)} is in use for this session. Your choice below applies the next time Dash Wallet starts normally.</Hint>
+        )}
         <div className="settings-row">
           <span className="settings-row-title" id={`${id}-unit`}>
             Unit to show amounts in
@@ -121,11 +123,11 @@ export function GeneralTab() {
       <PrivacyCard />
       <NetworkCard />
       <SettingsDashPayCard />
-      <SettingsCard title="Coming later" testId="settings-not-yet">
-        <NotYetRow testId="settings-language" title="User interface language" why="Dash Wallet is in English only until the translations (MP-14)." />
-        <NotYetRow testId="settings-notifications" title="Notifications" why="DashPay notifications come with DP2-09, Windows notifications with W-02." />
-        <NotYetRow testId="settings-start-on-login" title="Start Dash Wallet on system login" why="it comes with the installers (W-02, PK)." />
-        <NotYetRow testId="settings-proxy" title="Connect through a SOCKS5 proxy or Tor" why="the engine has no proxy setting yet." />
+      <SettingsCard title="Coming soon" testId="settings-not-yet">
+        <NotYetRow testId="settings-language" title="User interface language" why="Translations are coming soon." />
+        <NotYetRow testId="settings-notifications" title="Notifications" why="System and DashPay notifications are coming soon." />
+        <NotYetRow testId="settings-start-on-login" title="Start Dash Wallet on system login" why="Starting on login is coming soon." />
+        <NotYetRow testId="settings-proxy" title="Connect through a SOCKS5 proxy or Tor" why="Tor and SOCKS5 proxy support are coming soon." />
       </SettingsCard>
       <SettingsCard title="Reset" testId="settings-reset-card">
         <Done text={resetDone ? OptionsText.resetDone : null} testId="settings-reset-done" />

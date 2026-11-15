@@ -75,7 +75,7 @@ test.describe("General", () => {
     await expect(page.locator("html")).not.toHaveAttribute("data-theme", /./);
     // A launch theme wins and says so.
     await settings(page, "general", "funded", "light");
-    await expect(page.getByTestId("settings-display")).toContainText("--theme light");
+    await expect(page.getByTestId("settings-display")).toContainText("Light is in use for this session. Your choice below applies the next time Dash Wallet starts normally.");
   });
 
   test("QT141_resetOptionsAsksFirst", async ({ page }) => {
@@ -120,7 +120,7 @@ test.describe("General", () => {
     // MP-01 brought the local currency: a 0.1 install has not seen the disclosure, so it is off.
     await expect(page.getByTestId("settings-currency-on")).not.toBeChecked();
     await expect(page.getByTestId("settings-currency")).toContainText("rates.ctx.com");
-    await expect(page.getByTestId("settings-proxy")).toContainText("Not available yet");
+    await expect(page.getByTestId("settings-proxy")).toContainText("Tor and SOCKS5 proxy support are coming soon.");
     await expect(page.getByTestId("settings-data-dir")).toContainText("/home/user/.local/share/dashwallet");
   });
 });

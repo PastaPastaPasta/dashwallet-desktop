@@ -316,6 +316,21 @@ test.describe("network choice", () => {
     await shot(page, "light-onboarding-welcome");
   });
 
+  test("a testnet launch selects the network in use and explains the next start", async ({ page }) => {
+    await page.goto(fixtureUrl("no-wallet", "light", "&network=testnet"));
+    await page.getByTestId("onboarding-welcome").waitFor();
+    await expect(page.getByTestId("onboarding-network-testnet")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("onboarding-network-mainnet")).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByTestId("onboarding-network-pinned")).toHaveText("Testnet is in use for this session. Mainnet will be used the next time Dash Wallet starts normally.");
+
+    await page.goto(fixtureUrl("funded", "light", "&network=testnet"));
+    await page.getByTestId("hero").waitFor();
+    await toSettings(page);
+    await expect(page.getByTestId("settings-network-choice-testnet")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("settings-network-choice-mainnet")).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByTestId("settings-network-choice-pinned")).toHaveText("Testnet is in use for this session. Mainnet will be used the next time Dash Wallet starts normally.");
+  });
+
   test("Welcome on a first run: choosing Testnet switches the window at once, and Create goes on", async ({ page }, info) => {
     await open(page, "no-wallet-mainnet");
     await expect(page.getByTestId("onboarding-network-mainnet")).toHaveAttribute("aria-pressed", "true");
@@ -607,11 +622,12 @@ test.describe("network choice", () => {
   test("a window started with --network only saves the choice", async ({ page }) => {
     await open(page, "network-pinned");
     await toSettings(page);
-    await expect(page.getByTestId("settings-network-choice-pinned")).toContainText("--network regtest");
-    await expect(page.getByTestId("settings-network-choice-mainnet")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("settings-network-choice-pinned")).toContainText("Regtest is in use for this session. Mainnet will be used the next time Dash Wallet starts normally.");
+    await expect(page.getByTestId("settings-network-choice-mainnet")).toHaveAttribute("aria-pressed", "false");
+    await expect(page.getByTestId("settings-network-choice-testnet")).toHaveAttribute("aria-pressed", "false");
     await page.getByTestId("settings-network-choice-testnet").click();
     // Saved for the next start, no confirmation and no switch.
-    await expect(page.getByTestId("settings-network-choice-testnet")).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByTestId("settings-network-choice-testnet")).toHaveAttribute("aria-pressed", "false");
     await expect(page.getByTestId("network-switch-sheet")).toHaveCount(0);
     expect(await world(page, (w) => w.pending.networkChoice)).toEqual({ chosen: "testnet", saved: true });
     expect(await activeNetwork(page)).toBe("regtest");
