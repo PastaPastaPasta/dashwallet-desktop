@@ -339,7 +339,12 @@ function matches(r: TxRow, f: Filter, needle: string | null): boolean {
   if (f.watchOnly === "yes" && !r.involvesWatchOnly) return false;
   if (f.watchOnly === "no" && r.involvesWatchOnly) return false;
   if (needle != null)
-    return r.txid.includes(needle) || !!r.address?.toLowerCase().includes(needle) || !!r.label?.toLowerCase().includes(needle);
+    return (
+      r.txid.includes(needle) ||
+      !!r.address?.toLowerCase().includes(needle) ||
+      !!r.label?.toLowerCase().includes(needle) ||
+      !!r.purpose?.username.toLowerCase().includes(needle)
+    );
   return true;
 }
 

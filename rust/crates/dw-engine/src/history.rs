@@ -1087,22 +1087,20 @@ pub(crate) struct Labels {
 /// Only flows whose name step succeeded count: a lock of a nameless flow, or
 /// of one that failed before or at its name, stays the generic Platform
 /// funding. A later step's error (the profile, the inviter's request) does not
-/// undo a name already on Platform. A contested name is not held until its
-/// vote is won, so its lock carries the temporary name the identity does hold.
+/// undo a name already on Platform. A contested name goes to a vote the
+/// registration records no outcome of, and its temporary name may not have
+/// been taken either, so neither is named.
 pub(crate) fn username_purposes(rows: &[dw_appdb::RegistrationRow]) -> HashMap<String, TxPurpose> {
     use crate::platform::registration_rows::Phase;
+    use dash_sdk::platform::dpns_usernames::is_contested_username;
     rows.iter()
         .filter(|r| {
             r.name_error.is_none()
                 && !r.label.is_empty()
+                && !is_contested_username(&r.label)
                 && matches!(
                     Phase::parse(&r.phase),
-                    Some(
-                        Phase::NameRegistered
-                            | Phase::Contested
-                            | Phase::ProfileCreated
-                            | Phase::Done
-                    )
+                    Some(Phase::NameRegistered | Phase::ProfileCreated | Phase::Done)
                 )
         })
         .filter_map(|r| {
@@ -1110,7 +1108,7 @@ pub(crate) fn username_purposes(rows: &[dw_appdb::RegistrationRow]) -> HashMap<S
             Some((
                 outpoint.txid.to_string(),
                 TxPurpose::UsernameRegistration {
-                    username: r.temp_label.clone().unwrap_or_else(|| r.label.clone()),
+                    username: r.label.clone(),
                 },
             ))
         })
@@ -2049,12 +2047,12 @@ mod tests {
     fn a_registration_lock_is_labelled_with_its_username() {
         let txid = format!("{:064x}", 7);
         let outpoint = format!("{txid}:0");
-        let named = registration("alice", "done", Some(&outpoint));
+        let named = registration("alice2611", "done", Some(&outpoint));
         let purposes = username_purposes(std::slice::from_ref(&named));
         assert_eq!(
             purposes.get(&txid),
             Some(&TxPurpose::UsernameRegistration {
-                username: "alice".into()
+                username: "alice2611".into()
             })
         );
 
@@ -2062,23 +2060,28 @@ mod tests {
         later_step_failed.error = Some("profile.failed".into());
         assert_eq!(username_purposes(&[later_step_failed]).len(), 1);
 
-        let mut contested = registration("alice", "done", Some(&outpoint));
-        contested.temp_label = Some("alice2611".into());
-        assert_eq!(
-            username_purposes(&[contested]).get(&txid),
-            Some(&TxPurpose::UsernameRegistration {
-                username: "alice2611".into()
-            })
-        );
+        // "alice" is contested: whether with a temporary name or not, the lock
+        // stays generic, during the vote and after it.
+        let contested = registration("alice", "done", Some(&outpoint));
+        let mut with_temporary = registration("alice", "contested", Some(&outpoint));
+        with_temporary.temp_label = Some("alice2".into());
 
-        let mut failed = registration("alice", "name_requested", Some(&outpoint));
+        let mut failed = registration("alice2611", "name_requested", Some(&outpoint));
         failed.error = Some("registration.failed".into());
         let mut name_refused = named.clone();
         name_refused.name_error = Some("names.taken".into());
         let nameless = registration("", "done", Some(&outpoint));
-        let early = registration("alice", "funding_sent", Some(&outpoint));
-        let unfunded = registration("alice", "done", None);
-        for row in [failed, name_refused, nameless, early, unfunded] {
+        let early = registration("alice2611", "funding_sent", Some(&outpoint));
+        let unfunded = registration("alice2611", "done", None);
+        for row in [
+            contested,
+            with_temporary,
+            failed,
+            name_refused,
+            nameless,
+            early,
+            unfunded,
+        ] {
             assert!(username_purposes(&[row]).is_empty());
         }
     }
