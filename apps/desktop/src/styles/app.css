@@ -1027,6 +1027,29 @@ button {
   height: calc(var(--dw-layout-hero-height) + var(--dw-type-footnote-line));
 }
 
+/* No breakdown under the amount: the shorter band the balance alone needs, plus a line for each of
+   the fiat row and the note of what Core has pending. */
+@media (min-width: 980px) {
+  .hero-band:has(.hero[data-breakdown="none"]) {
+    height: var(--dw-layout-hero-height-hidden);
+  }
+  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat),
+  .hero-band:has(.hero[data-breakdown="none"] .hero-note) {
+    height: calc(var(--dw-layout-hero-height-hidden) + var(--dw-type-footnote-line));
+  }
+  .hero-band:has(.hero[data-breakdown="none"] .hero-fiat):has(.hero-note) {
+    height: calc(var(--dw-layout-hero-height-hidden) + 2 * var(--dw-type-footnote-line));
+  }
+}
+
+.hero-note {
+  margin: 0;
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
 .hero-fiat {
   display: flex;
   gap: var(--dw-space-s);
@@ -1080,11 +1103,6 @@ button {
   margin-top: var(--dw-space-l);
   border-radius: var(--dw-radius-standard);
   background: color-mix(in srgb, var(--dw-role-hero-card) calc(var(--dw-opacity-hero-card) * 100%), transparent);
-}
-
-.hero-breakdown:not(:has(> :nth-child(2))) {
-  grid-template-columns: 1fr;
-  width: auto;
 }
 
 .hero-breakdown:has(> :nth-child(5)) {

@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { World } from "../src/fixture/scenarios";
 import { fiatText } from "../src/format/fiat";
 import { homeBalance } from "../src/format/homeBalance";
-import { shieldedDuffs } from "../src/api/queries";
+import { shieldedReading } from "../src/api/queries";
 import type { ShieldedStatus } from "../src/api/generated/ShieldedStatus";
 import { MAIN_PHRASE } from "../src/fixture/vault";
 import { seriousAxeViolations } from "./axe";
@@ -33,7 +33,7 @@ async function totals(page: Page) {
     const invoke = (window as unknown as { __TAURI_INTERNALS__: { invoke(c: string, a: unknown): Promise<unknown> } }).__TAURI_INTERNALS__.invoke;
     return [w.wallets[0].summary.balances!, await invoke("shielded_status", { walletId }), await invoke("platform_addresses", { walletId })] as const;
   });
-  return homeBalance(core, shieldedDuffs(shielded as ShieldedStatus | null), (platform as { duffs: number | null } | null)?.duffs ?? null);
+  return homeBalance(core, shieldedReading(shielded as ShieldedStatus | null), (platform as { duffs: number } | null)?.duffs ?? "absent");
 }
 
 test("fresh USD: the hero and each breakdown row show their value, from the exact integer", async ({ page }) => {

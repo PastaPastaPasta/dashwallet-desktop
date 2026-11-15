@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Balances } from "../api/generated/Balances";
 import { compact, masked } from "./amount";
-import { breakdownRows, coreSubtitle, heroDigits, homeBalance, POOL_ROWS } from "./homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, homeBalance, POOL_ROWS, type PoolReading } from "./homeBalance";
 
 const COIN = 100_000_000;
 const core: Balances = { confirmed: 3 * COIN, unconfirmed: COIN, immature: 0, locked: 0, total: 4 * COIN, coinjoin: 2 * COIN };
@@ -14,11 +14,14 @@ describe("Home's balance", () => {
     expect(b.pools).toEqual({ core: 4 * COIN, shielded: 5 * COIN, platform: COIN / 2 });
   });
 
-  it("leaves out a pool that is not known, and says so in its row", () => {
-    const b = homeBalance(core, null, undefined);
-    expect(b.total).toBe(4 * COIN);
-    expect(b.pools).toEqual({ core: 4 * COIN, shielded: null, platform: null });
+  it("counts only known pools in the hero, and keeps why the others have no number", () => {
+    for (const [shielded, platform] of [["loading", "failed"], ["absent", "loading"], ["failed", "absent"]] as const) {
+      const b = homeBalance(core, shielded, platform);
+      expect(b.total).toBe(4 * COIN);
+      expect(b.pools).toEqual({ core: 4 * COIN, shielded, platform });
+    }
     expect(homeBalance(core, 0, 0).pools).toMatchObject({ shielded: 0, platform: 0 });
+    expect(homeBalance(core, 5 * COIN, "failed").total).toBe(9 * COIN);
   });
 
   it("counts only what can be spent: immature and locked funds stay out of the hero and the Core row", () => {
@@ -40,23 +43,34 @@ describe("Home's balance", () => {
 });
 
 describe("Home's breakdown rows", () => {
-  const settled: Balances = { ...core, unconfirmed: 0 };
+  const rows = (shielded: PoolReading, platform: PoolReading, discreet = false) => breakdownRows(homeBalance(core, shielded, platform).pools, discreet);
 
-  it("hides an empty or unknown Shielded or Platform row", () => {
-    expect(breakdownRows(core, homeBalance(core, 5 * COIN, COIN / 2).pools)).toEqual(["core", "shielded", "platform"]);
-    expect(breakdownRows(core, homeBalance(core, 0, COIN / 2).pools)).toEqual(["core", "platform"]);
-    expect(breakdownRows(core, homeBalance(core, null, 0).pools)).toEqual(["core"]);
-    expect(breakdownRows(settled, homeBalance(settled, 1, undefined).pools)).toEqual(["core", "shielded"]);
+  it("hides a pool only when the wallet has none or it is known to be empty", () => {
+    expect(rows(5 * COIN, COIN / 2)).toEqual(["core", "shielded", "platform"]);
+    expect(rows(0, COIN / 2)).toEqual(["core", "platform"]);
+    expect(rows("absent", COIN / 2)).toEqual(["core", "platform"]);
+    expect(rows(1, 0)).toEqual(["core", "shielded"]);
   });
 
-  it("drops the breakdown when Core alone would repeat the hero", () => {
-    expect(breakdownRows(settled, homeBalance(settled, 0, 0).pools)).toEqual([]);
-    expect(breakdownRows(settled, homeBalance(settled, null, null).pools)).toEqual([]);
-    // Something pending, immature or locked is worth a line under the hero.
-    for (const news of [{ unconfirmed: 1 }, { immature: 1 }, { locked: 1 }]) {
-      const b = { ...settled, ...news };
-      expect(breakdownRows(b, homeBalance(b, 0, null).pools)).toEqual(["core"]);
-    }
+  it("keeps the row of a pool still being read or whose read failed", () => {
+    expect(rows("loading", 0)).toEqual(["core", "shielded"]);
+    expect(rows(0, "failed")).toEqual(["core", "platform"]);
+    expect(rows("loading", "failed")).toEqual(["core", "shielded", "platform"]);
+    expect(rows("absent", "loading")).toEqual(["core", "platform"]);
+  });
+
+  it("has no breakdown when Core alone would repeat the hero", () => {
+    expect(rows(0, 0)).toEqual([]);
+    expect(rows("absent", "absent")).toEqual([]);
+    expect(rows("absent", 0)).toEqual([]);
+  });
+
+  it("in discreet mode, shows Core and every pool the wallet has, whatever they hold", () => {
+    expect(rows(0, 0, true)).toEqual(["core", "shielded", "platform"]);
+    expect(rows(5 * COIN, 0, true)).toEqual(["core", "shielded", "platform"]);
+    expect(rows("absent", 0, true)).toEqual(["core", "platform"]);
+    expect(rows("absent", COIN, true)).toEqual(["core", "platform"]);
+    expect(rows("absent", "absent", true)).toEqual([]);
   });
 });
 

@@ -18,6 +18,7 @@ import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockProgress } from "./generated/LockProgress";
 import { hasPendingMove } from "../platform/move";
+import type { PoolReading } from "../format/homeBalance";
 import { reconcileLockReport } from "./lockReport";
 import { isChangingUsernameInRequests } from "./username";
 
@@ -269,15 +270,24 @@ export function useShieldedQuote(walletId: string, request: ShieldedRequest | nu
   });
 }
 
-/** The shielded and Platform balances in duffs; `null` while dw-app has no command for one
- * (api/pending.ts) or it failed, `undefined` while it is being read. */
+/** A pool query as Home reads it: a failed refetch keeps the last reading it had. */
+export function poolReading<T>(q: { data: T | undefined; isError: boolean }, read: (data: T) => PoolReading): PoolReading {
+  if (q.data !== undefined) return read(q.data);
+  return q.isError ? "failed" : "loading";
+}
+
+/** Shielded as Home counts it: none when the command is absent or the network does not take it;
+ * not ready (the account not scanned yet) is still loading. */
+export const shieldedReading = (s: ShieldedStatus | null): PoolReading => (s === null || !s.active ? "absent" : s.ready ? creditsToDuffs(s.balance) : "loading");
+
+/** The shielded and Platform balances in duffs, or why there is none (`PoolReading`). */
 export function usePoolBalances(walletId: string) {
   const shielded = useShieldedStatus(walletId);
   const platform = usePlatformAddresses(walletId);
   return {
-    shielded: shielded.isError ? null : shielded.data === undefined ? undefined : shieldedDuffs(shielded.data),
+    shielded: poolReading(shielded, shieldedReading),
     // What a move of everything would take (`movableCredits`): Home counts that, not a remainder too small to move.
-    platform: platform.isError ? null : platform.data === undefined ? undefined : (platform.data?.duffs ?? null),
+    platform: poolReading(platform, (p) => p?.duffs ?? "absent"),
     /** Credits on the Platform addresses that are too small to move (`credits - movableCredits`). */
     platformDust: platform.data ? String(BigInt(platform.data.credits) - BigInt(platform.data.movableCredits)) : "0",
   };

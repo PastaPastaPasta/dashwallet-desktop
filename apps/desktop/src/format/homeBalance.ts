@@ -1,23 +1,31 @@
 // Home's balance (0.1 release plan, the iOS model): the hero is everything the wallet can spend,
 // the Core balance that can be spent (confirmed + unconfirmed, mixed coins included; immature and
-// locked funds are not) plus the shielded one plus the Platform addresses'; the
-// breakdown names those that hold something. A pool whose balance is not known (dw-app has no
-// command for it yet, or the read failed) is left out of the hero and of the breakdown.
+// locked funds are not) plus the shielded one plus the Platform addresses'; the breakdown names the
+// pools. Only a pool's known balance counts in the hero: one still being read or whose read failed
+// keeps its row ("…" or "—"), so the hero is never lower than it looks without saying why.
 
 import type { Balances } from "../api/generated/Balances";
 
 export type Pool = "core" | "shielded" | "platform";
 
+/**
+ * What Home knows of a Shielded or Platform balance: its duffs, or why there is no number.
+ * `absent`: dw-app has no command for it or the network does not take it; `loading`: being read,
+ * or not ready yet (a shielded account not scanned); `failed`: the read failed with none before it.
+ */
+export type PoolReading = number | "absent" | "loading" | "failed";
+
 export interface HomeBalance {
-  /** The hero: the pools that are known, in duffs. */
+  /** The hero: Core plus the pools whose balance is known, in duffs. */
   total: number;
-  /** Each pool's balance in duffs; `null`: not known. */
-  pools: Record<Pool, number | null>;
+  pools: { core: number; shielded: PoolReading; platform: PoolReading };
 }
 
-export function homeBalance(core: Balances, shielded: number | null | undefined, platform: number | null | undefined): HomeBalance {
-  const pools = { core: core.confirmed + core.unconfirmed, shielded: shielded ?? null, platform: platform ?? null };
-  return { total: pools.core + (pools.shielded ?? 0) + (pools.platform ?? 0), pools };
+export const known = (r: PoolReading): r is number => typeof r === "number";
+
+export function homeBalance(core: Balances, shielded: PoolReading, platform: PoolReading): HomeBalance {
+  const pools = { core: core.confirmed + core.unconfirmed, shielded, platform };
+  return { total: pools.core + (known(shielded) ? shielded : 0) + (known(platform) ? platform : 0), pools };
 }
 
 /**
@@ -39,14 +47,15 @@ export const POOL_ROWS: { pool: Pool; title: string; subtitle: string }[] = [
 ];
 
 /**
- * The breakdown's rows under the hero: Shielded and Platform only while they hold something (an
- * empty pool, or one not known, says nothing a user needs). With neither, Core shows only to say
- * what is pending, immature or locked; otherwise the hero says it all and there is no breakdown.
+ * The breakdown's rows under the hero. Shielded and Platform show unless the wallet has no such
+ * pool or it is known to be empty; one still being read, or whose read failed, keeps its row. Core
+ * shows with them. Alone it would only repeat the hero, so there is no breakdown, and a line under
+ * the hero names what is pending, immature or locked instead (`coreSubtitle`). In discreet mode
+ * the rows don't depend on what holds money: Core and every pool the wallet has.
  */
-export function breakdownRows(core: Balances, pools: HomeBalance["pools"]): Pool[] {
-  const others = (["shielded", "platform"] as const).filter((p) => (pools[p] ?? 0) > 0);
-  const coreNews = core.unconfirmed > 0 || core.immature > 0 || core.locked > 0;
-  return others.length > 0 || coreNews ? ["core", ...others] : [];
+export function breakdownRows(pools: HomeBalance["pools"], discreet: boolean): Pool[] {
+  const others = (["shielded", "platform"] as const).filter((p) => pools[p] !== "absent" && (discreet || pools[p] !== 0));
+  return others.length > 0 ? ["core", ...others] : [];
 }
 
 /**

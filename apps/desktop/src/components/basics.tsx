@@ -68,15 +68,14 @@ export function AmountText({
   glyphFactor?: number;
   className?: string;
   title?: string;
-  /** The end of `text` drawn smaller (the hero's decimals past the second). */
+  /** Digits that follow `text`, drawn smaller (the hero's decimals past the second). */
   minor?: string;
 }) {
-  const major = minor && text.endsWith(minor) ? text.slice(0, text.length - minor.length) : text;
   return (
     <span className={`amount ${className ?? ""}`} title={title}>
       <span className="amount-number">
-        {major}
-        {major !== text && <span className="amount-minor">{minor}</span>}
+        {text}
+        {minor && <span className="amount-minor">{minor}</span>}
       </span>
       {glyph ? (
         <>

@@ -96,7 +96,7 @@ export const COPY = {
   lookFailed: { title: "Could not finish looking for your DashPay identity", message: "Dash Wallet looks again the next time it starts." },
   unverified: { title: "Could not confirm your DashPay identity", message: "Its keys could not be checked against this wallet's recovery phrase." },
   join: { title: "Get a DashPay username", message: "Pay friends by name instead of an address.", action: "Join DashPay" },
-  joinWaiting: { message: "Create a username, find your friends and add them to your contacts", note: "Available after sync finishes" },
+  joinWaiting: { note: "Available after sync finishes" },
   watchOnly: { title: "DashPay needs this wallet's keys", message: "A watch-only wallet cannot join DashPay." },
   registering: { title: "Creating your username", message: "Your username is being created on the Dash network. It may take some time." },
   creating: (label: string) => `Creating – @${label}`,
@@ -312,7 +312,7 @@ export function homeCard(i: StatusInputs): CardModel | null {
       if (s.reason === "watchOnly") return card("watchOnly", "quiet", COPY.watchOnly.title, [COPY.watchOnly.message]);
       if (s.reason === "waitingForSync") {
         const percent = i.syncPercent === null ? "" : ` · ${i.syncPercent.toFixed(1)}%`;
-        return card("joinWaiting", "quiet", COPY.join.title, [COPY.joinWaiting.message], {
+        return card("joinWaiting", "quiet", COPY.join.title, [COPY.join.message], {
           note: COPY.joinWaiting.note + percent,
           action: action("join", COPY.join.action, true),
         });

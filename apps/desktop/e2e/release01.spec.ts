@@ -1075,7 +1075,8 @@ test.describe("Shielded", () => {
   for (const theme of THEMES) {
     test(`while Shielded syncs its actions wait, say why, and stay readable (${theme})`, async ({ page }) => {
       const errors = await open(page, "shielded-syncing", theme);
-      await expect(page.getByTestId("breakdown-shielded")).toHaveCount(0);
+      // Not ready is not empty: the row waits, and the hero counts no Shielded yet.
+      await expect(page.getByTestId("breakdown-shielded")).toContainText("loading");
       await expect(page.getByTestId("shielded-card")).toHaveCount(0);
       const waits = async (ids: string[]) => {
         for (const id of ids) {
@@ -1175,9 +1176,9 @@ test.describe("Home balance", () => {
   test("leaves a pool without a command out of the hero and the breakdown", async ({ page }) => {
     await open(page, "pools-absent");
     await expect(page.getByTestId("hero-amount")).toContainText("30.39698287");
-    await expect(page.getByTestId("breakdown-core")).toBeVisible();
-    await expect(page.getByTestId("breakdown-shielded")).toHaveCount(0);
-    await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
+    // Core alone would repeat the hero: no breakdown, and what is pending under the hero.
+    await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
+    await expect(page.getByTestId("hero-core-note")).toHaveText("0.20 pending");
     await shot(page, "light-home-pools-absent");
   });
 

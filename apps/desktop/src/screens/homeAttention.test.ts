@@ -5,6 +5,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformActivity } from "../api/generated/PlatformActivity";
+import type { PoolReading } from "../format/homeBalance";
 import { resetShielded, shieldedFor } from "../shielded/flow";
 import { moveFor, resetPlatformMoves } from "../platform/move";
 import { fundFor, resetPlatformFunds } from "../platform/fund";
@@ -19,7 +20,7 @@ const reads = vi.hoisted(() => ({
   funds: [] as PendingPlatformFund[],
   activity: [] as PlatformActivity[],
   activityRead: { isPending: false, isError: false },
-  platform: 40_000_000 as number | null,
+  platform: 40_000_000 as PoolReading,
   platformDust: "0",
 }));
 vi.mock("../api/queries", async (original) => ({
