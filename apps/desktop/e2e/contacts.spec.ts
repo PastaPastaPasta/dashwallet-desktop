@@ -23,7 +23,7 @@ async function openContacts(page: Page, scenario = "dashpay-registered", theme: 
 const group = (page: Page, section: string) => page.getByTestId(`contacts-group-${section}`);
 const names = (page: Page, section: string) => group(page, section).locator(".contact-row-name");
 const row = (page: Page, name: string) => page.getByTestId("contact-row").filter({ has: page.locator(".contact-row-name", { hasText: name }) });
-const search = (page: Page) => page.getByRole("searchbox", { name: "Search for a contact" });
+const search = (page: Page) => page.getByRole("searchbox", { name: "Search contacts or a username" });
 const deliver = (page: Page, routes: LinkRoute[]) => page.evaluate((r) => window.__dwFixture!.deliverLinks(r), routes);
 
 test("IOS-072 groups requests, contacts, pending and a closed Hidden, with the rows' names, chips and notes", async ({ page }) => {
@@ -112,7 +112,7 @@ test("IOS-072 searches the network from two characters: three new usernames, Sho
 
   await search(page).fill("ma");
   const network = page.getByTestId("contacts-network");
-  await expect(network.getByRole("heading")).toHaveText("On the Dash network");
+  await expect(network.getByRole("heading")).toHaveText("Others on DashPay");
   await expect(network.getByTestId("network-row").locator(".contact-row-name")).toHaveText(["Mallory", "Marta", "mateo"]);
   await expect(network.getByTestId("network-row").nth(2).locator(".chip")).toHaveText("Unverified");
 
@@ -258,7 +258,7 @@ test("D11 a selection the search hides leaves the slot when another identity bec
   expect(errors).toEqual([]);
 });
 
-test("IOS-072 a network hit that becomes a request leaves On the Dash network (D21)", async ({ page }) => {
+test("IOS-072 a network hit that becomes a request leaves Others on DashPay (D21)", async ({ page }) => {
   const errors = await openContacts(page);
   await search(page).fill("ma");
   const mallory = page.locator(`[data-testid="network-row"][data-identity="${IDENTITY.mallory}"]`);

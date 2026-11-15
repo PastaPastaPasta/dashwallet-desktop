@@ -134,6 +134,12 @@ describe("Contacts view model", () => {
     expect(networkHits(undefined, undefined)).toEqual({ shown: [], more: false });
   });
 
+  it("keeps every relation the list does not hold when asked (Pay lists contacts and requests only)", () => {
+    const hits = [hit(0, "isSelf"), hit(1, "contact"), hit(2, "ignored"), hit(3, "pendingOutgoing")];
+    const listed = list({ contacts: [summary(1)] });
+    expect(networkHits(hits, listed, true)).toEqual({ shown: [hit(0, "isSelf"), hit(2, "ignored"), hit(3, "pendingOutgoing")], more: false });
+  });
+
   it("IOS-072 drops a cached stranger hit the contact list now holds (D21)", () => {
     // Hit 3 was read as a stranger; since then its request arrived and the list holds it.
     const hits = [hit(3), hit(4), hit(5), hit(7)];

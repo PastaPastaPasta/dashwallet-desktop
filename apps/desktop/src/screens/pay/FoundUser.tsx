@@ -1,15 +1,18 @@
-// Pay ▸ To a contact: a user the username search found who is not a contact yet. Their card says
+// Pay ▸ To a contact: a user the username search found who is not in the picker. Their card says
 // what paying them takes, and offers it through Contacts' own actions: send a contact request,
 // accept theirs and pay, or pay a contact the search reached first.
 
+import { useEffect, useId, useRef } from "react";
 import type { UserHit } from "../../api/generated/UserHit";
 import { ui } from "../../app/ui";
 import { Chip, DashButton } from "../../components/basics";
+import type { ActionOutcome } from "../../contacts/actions";
 import { useContactActions, useEligibility } from "../../contacts/queries";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet, Outcome } from "../tools/common";
-import { useActionToast } from "../contacts/afterAction";
+import { useActionToast, useRefocus } from "../contacts/afterAction";
 import { Avatar } from "../contacts/Avatar";
+import { EnableButton, EnableFailure, SendRequestButton } from "../contacts/RequestButton";
 import { foundLine, payeeOf, type Payee } from "./contact";
 
 export function FoundUser({
@@ -30,41 +33,39 @@ export function FoundUser({
   const toast = useActionToast(walletId);
   const payee = payeeOf({ contact: hit.identity, alias: null, displayName: hit.displayName?.trim() || null, username: hit.username });
   const line = foundLine(payee.name, hit.relation, { data: eligibility.data, failed: eligibility.isError && !eligibility.isFetching });
-  const outcome = actions.outcome?.contact === hit.identity ? actions.outcome : null;
+  // A request sent shows as the line; a refusal says why under it.
+  const failed = actions.outcome?.contact === hit.identity && !actions.outcome.ok ? actions.outcome : null;
+
+  // The card takes focus when it opens; once a request went, focus goes to the line saying so.
+  const titleId = useId();
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => heading.current?.focus({ preventScroll: true }), []);
+  const status = useRef<HTMLDivElement>(null);
+  const arm = useRefocus(() => line?.next === "send", () => status.current);
+  const sent = (o: ActionOutcome | null) => {
+    toast(o, true);
+    if (o?.ok) arm("send");
+  };
 
   let button = null;
   switch (line?.next) {
     case "send":
-      button = (
-        <DashButton
-          variant="filledBlue"
-          size="small"
-          data-testid="pay-found-send"
-          disabled={actions.busy}
-          onClick={() => void actions.send(hit.identity, payee.name, null).then((o) => toast(o, true))}
-        >
-          {actions.isRunning("send", hit.identity) ? "Sending…" : "Send Contact Request"}
-        </DashButton>
-      );
+      button = <SendRequestButton key="send" actions={actions} contact={hit.identity} name={payee.name} size="small" testId="pay-found-send" onDone={sent} />;
       break;
     case "pay":
     case "acceptAndPay":
       button = (
-        <DashButton variant="filledBlue" size="small" data-testid="pay-found-pay" onClick={() => onPay(payee)}>
+        <DashButton key="pay" variant="filledBlue" size="small" data-testid="pay-found-pay" onClick={() => onPay(payee)}>
           {line.next === "pay" ? `Pay ${payee.name}` : "Accept and pay"}
         </DashButton>
       );
       break;
     case "enable":
-      button = (
-        <DashButton variant="tintedBlue" size="small" data-testid="pay-found-enable" disabled={actions.busy} onClick={() => void actions.enable().then((o) => toast(o, true))}>
-          {actions.isRunning("enable", null) ? "Enabling…" : "Enable"}
-        </DashButton>
-      );
+      button = <EnableButton key="enable" actions={actions} size="small" testId="pay-found-enable" onDone={(o) => toast(o, true)} />;
       break;
     case "retry":
       button = (
-        <DashButton variant="plainBlue" size="small" onClick={() => void eligibility.refetch()}>
+        <DashButton key="retry" variant="plainBlue" size="small" onClick={() => void eligibility.refetch()}>
           Try again
         </DashButton>
       );
@@ -72,14 +73,14 @@ export function FoundUser({
   }
 
   return (
-    <div className="pay-form" data-testid="pay-found">
-      <section className="pay-card card-l1 pay-payee-card" data-testid="pay-found-card">
+    <div className="pay-form pay-found" data-testid="pay-found">
+      <section className="pay-card card-l1 pay-payee-card" aria-labelledby={titleId} data-testid="pay-found-card">
         <span className="pay-payee">
           <Avatar letters={payee.letters} size="pane" identity={payee.contact} />
           <span className="pay-payee-names">
-            <span className="pay-payee-name" data-testid="pay-found-name">
+            <h2 className="pay-payee-name pay-found-name" id={titleId} tabIndex={-1} ref={heading} data-testid="pay-found-name">
               {payee.name}
-            </span>
+            </h2>
             {payee.sub && <span className="contact-row-username">{payee.sub}</span>}
           </span>
           {hit.unverified && <Chip tone="warning">Unverified</Chip>}
@@ -88,12 +89,13 @@ export function FoundUser({
           Change
         </DashButton>
       </section>
-      <div className="contacts-hint card-l1 pay-banner" role="status" data-testid="pay-found-status">
+      <div className="contacts-hint card-l1 pay-banner" role="status" ref={status} data-testid="pay-found-status">
         <span data-testid="pay-found-line">{line === undefined ? "Checking…" : line.text}</span>
         {button}
       </div>
-      <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="pay-found-outcome" />
-      <p className="placeholder-note">
+      <Outcome ok={false} text={failed?.text ?? null} testId="pay-found-outcome" />
+      <EnableFailure actions={actions} testId="pay-found-enable-outcome" />
+      <p className="placeholder-note pay-found-address">
         <DashButton variant="plainBlue" size="small" data-testid="pay-contact-to-address" onClick={() => ui.set({ payTab: "address" })}>
           Pay to an address instead
         </DashButton>

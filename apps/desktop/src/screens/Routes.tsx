@@ -4,7 +4,7 @@
 // route (Pay's prefill, Add contact's prefill, a Tools tab) is shown here already, so links
 // route end to end.
 
-import { useEffect, useId, type ReactNode } from "react";
+import { useEffect, useId, useRef, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { ui, useUi, type PayTab, type Route } from "../app/ui";
 import { LoadingState } from "../components/history";
@@ -138,7 +138,15 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
   const links = useUi((s) => s.payLinks);
   const coins = useUi((s) => s.payCoins);
   const auto = useDefaultPayTab(walletId);
-  const tab = chosen ?? auto;
+  // Another wallet chooses its tab afresh, by its own contacts.
+  const shownWallet = useRef(walletId);
+  const switched = shownWallet.current !== walletId;
+  useEffect(() => {
+    if (!switched) return;
+    shownWallet.current = walletId;
+    ui.set({ payTab: null });
+  }, [switched, walletId]);
+  const tab = switched ? null : (chosen ?? auto);
   // The tab picked for the user stays while Pay is open: contacts arriving later do not move it.
   useEffect(() => {
     if (chosen === null && auto !== null) ui.set({ payTab: auto });

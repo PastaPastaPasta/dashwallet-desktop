@@ -4,7 +4,7 @@
 // subtract fee, note, coin control. Review opens U-03's confirm sheet with the contact, which can
 // accept their request and pay in one step; U-03's result follows.
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { ContactRecipient } from "../../api/generated/ContactRecipient";
@@ -13,7 +13,7 @@ import type { UserHit } from "../../api/generated/UserHit";
 import { useLockStatus, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
-import { DashButton, Icon } from "../../components/basics";
+import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
 import { useDisplay } from "../../format/display";
 import { NETWORK_DEBOUNCE_MS, networkHits, networkPrefix, SEARCH_DEBOUNCE_MS } from "../../contacts/model";
@@ -25,7 +25,7 @@ import { CoinControl } from "./CoinControl";
 import { FoundUser } from "./FoundUser";
 import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerView, resolveText, type Banner, type Payee } from "./contact";
+import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
 import { confirmedOf, DEFAULT_ADVANCED, type Advanced } from "./model";
@@ -103,16 +103,49 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
   const typed = networkPrefix(search);
   const debounced = useDebounced(typed, NETWORK_DEBOUNCE_MS);
   const prefix = typed === null ? null : debounced;
+  // The prefix the shown text searches for: until the search catches up with it, it is running.
+  const wanted = networkPrefix(text);
   const frequent = useFrequentContacts(walletId, identity);
   const list = usePayPicker(walletId, identity, text);
   const all = usePayPicker(walletId, identity, "");
   const net = useNetworkSearch(walletId, identity, prefix);
   const groups = pickerGroups(list.data);
-  const hits = networkHits(net.data, all.data);
-  const networkState = net.isPending || (net.isError && net.isFetching) ? "loading" : net.isError ? "error" : "done";
-  const view = pickerView({ text, groups: groups.length, network: prefix !== null, networkState, hits: hits.shown.length });
+  // The picker lists contacts and requests only: everyone else the search found is listed under
+  // it (a request sent, an ignored sender, oneself), not only strangers.
+  const hits = networkHits(net.data, all.data, true);
+  const networkState = prefix !== wanted || net.isPending || (net.isError && net.isFetching) ? "loading" : net.isError ? "error" : "done";
+  const view = pickerView({
+    text,
+    groups: groups.length,
+    anyContacts: pickerGroups(all.data).length > 0,
+    network: wanted !== null,
+    networkState,
+    hits: hits.shown.length,
+    found: net.data?.length ?? 0,
+  });
+  const announce = searchAnnouncement({ network: wanted !== null, networkState, hits: hits.shown.length, none: view.none });
   const toAddress = () => ui.set({ payTab: "address" });
-  if (found) return <FoundUser walletId={walletId} identity={identity} hit={found} onPay={onPick} onBack={() => setFound(null)} />;
+  // Change comes back to the search field.
+  const field = useRef<HTMLInputElement>(null);
+  const back = useRef(false);
+  useEffect(() => {
+    if (found || !back.current) return;
+    back.current = false;
+    field.current?.focus();
+  }, [found]);
+  if (found)
+    return (
+      <FoundUser
+        walletId={walletId}
+        identity={identity}
+        hit={found}
+        onPay={onPick}
+        onBack={() => {
+          back.current = true;
+          setFound(null);
+        }}
+      />
+    );
   let body;
   if (list.data === undefined && list.isError)
     body = (
@@ -138,6 +171,8 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
       />
     );
   else if (view.none === "contacts") body = <EmptyState testId="pay-picker-none" title="No contacts match" message="Search by name or username." />;
+  else if (view.none === "short")
+    body = <EmptyState testId="pay-picker-empty" title={list.data.updating ? "Your contacts are being updated" : "No contacts yet"} message="Keep typing to search DashPay usernames." />;
   else if (groups.length === 0 && text === "")
     body = (
       <EmptyState
@@ -176,6 +211,7 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
       <label className="search-field" data-testid="pay-contact-search">
         <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
         <input
+          ref={field}
           type="search"
           value={search}
           placeholder="Search contacts or a username"
@@ -195,14 +231,19 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
         </p>
       )}
       {body}
-      {view.network && prefix !== null && (
+      <VisuallyHidden>
+        <span role="status" data-testid="pay-search-announce">
+          {announce}
+        </span>
+      </VisuallyHidden>
+      {view.network && wanted !== null && (
         <NetworkResults
           state={networkState}
           shown={hits.shown}
           more={hits.more}
           onRetry={() => void net.refetch()}
           onPick={setFound}
-          onMore={() => navigate("contacts", { addContact: { walletId, query: prefix, hit: null }, contact: null, contactPrefill: null })}
+          onMore={() => navigate("contacts", { addContact: { walletId, query: wanted, hit: null }, contact: null, contactPrefill: null })}
         />
       )}
       {view.none !== "anyone" && (

@@ -18,11 +18,12 @@ import { enableBanner, type EnableBanner } from "./pane";
 
 /** Whose contacts show (D2): the DashPay status, the shell's query; `retry` reads it again (the
  * page shows "starting" while it runs). */
-export function useContactsOwner(walletId: string): { owner: ContactsOwner; retry: () => void } {
+export function useContactsOwner(walletId: string): { owner: ContactsOwner; read: boolean; retry: () => void } {
   const b = useBackend();
   const status = useQuery({ queryKey: keys.dashpayStatus(walletId), queryFn: () => b.dashpayStatus(walletId) });
   const owner: ContactsOwner = status.isError && status.data === undefined ? { kind: "error" } : contactsOwner(status.data);
-  return { owner, retry: () => void status.refetch() };
+  // `read`: the status answered or its read failed (`owner` says more than "starting").
+  return { owner, read: status.data !== undefined || status.isError, retry: () => void status.refetch() };
 }
 
 /** Every section of `identity`'s contacts, sorted and filtered by the engine, with the `nextRead`

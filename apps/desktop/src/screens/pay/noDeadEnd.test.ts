@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import type { ContactList } from "../../api/generated/ContactList";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
-import { defaultPayTab, foundLine, pickerView } from "./contact";
+import { defaultPayTab, foundLine, pickerView, searchAnnouncement } from "./contact";
 
 const ME = "8tvHgfq4BLx3bRBcxSs7ZsjaTnAZDSmLhNpAgXyNomeR";
 const BOB = "8GopLQQPjKr2gXjNEt9G8k2PzRZrdbBqQBNTCXV2DYiN";
@@ -50,6 +50,10 @@ describe("the tab Pay opens on", () => {
     expect(defaultPayTab({ kind: "error" }, { data: undefined, failed: false })).toBe("address");
   });
 
+  it("waits while DashPay's status is still being read", () => {
+    expect(defaultPayTab(undefined, { data: undefined, failed: false })).toBeNull();
+  });
+
   it("waits for the contacts, and pays to an address when they cannot be read", () => {
     expect(defaultPayTab(identity, { data: undefined, failed: false })).toBeNull();
     expect(defaultPayTab(identity, { data: undefined, failed: true })).toBe("address");
@@ -58,14 +62,14 @@ describe("the tab Pay opens on", () => {
 
 describe("the picker under a search", () => {
   const view = (over: Partial<Parameters<typeof pickerView>[0]>) =>
-    pickerView({ text: "ma", groups: 0, network: true, networkState: "done", hits: 0, ...over });
+    pickerView({ text: "ma", groups: 0, anyContacts: true, network: true, networkState: "done", hits: 0, found: 0, ...over });
 
   it("shows no username search and no 'nothing matches' without a search", () => {
     expect(view({ text: "", network: false })).toEqual({ network: false, none: null });
   });
 
   it("shows the users found when no contact matches", () => {
-    expect(view({ hits: 2 })).toEqual({ network: true, none: null });
+    expect(view({ hits: 2, found: 2 })).toEqual({ network: true, none: null });
   });
 
   it("shows the search running or failed, and says nothing matches only once it is done", () => {
@@ -76,11 +80,30 @@ describe("the picker under a search", () => {
 
   it("keeps matching contacts, without an empty username section", () => {
     expect(view({ groups: 1 })).toEqual({ network: false, none: null });
-    expect(view({ groups: 1, hits: 1 })).toEqual({ network: true, none: null });
+    expect(view({ groups: 1, hits: 1, found: 2 })).toEqual({ network: true, none: null });
+  });
+
+  it("says no one was found only when the search itself found no one", () => {
+    expect(view({ found: 1 })).toEqual({ network: false, none: null });
   });
 
   it("under two characters says only that no contact matches", () => {
     expect(view({ text: "m", network: false })).toEqual({ network: false, none: "contacts" });
+  });
+
+  it("under two characters without any contact asks to keep typing", () => {
+    expect(view({ text: "m", network: false, anyContacts: false })).toEqual({ network: false, none: "short" });
+  });
+
+  it("announces what the username search found", () => {
+    const say = (over: Partial<Parameters<typeof searchAnnouncement>[0]>) => searchAnnouncement({ network: true, networkState: "done", hits: 0, none: null, ...over });
+    expect(say({ none: "anyone" })).toBe("No one found");
+    expect(say({ hits: 1 })).toBe("1 person found on DashPay");
+    expect(say({ hits: 3 })).toBe("3 people found on DashPay");
+    expect(say({ networkState: "error" })).toBe("Could not search");
+    expect(say({ networkState: "loading" })).toBeNull();
+    expect(say({ network: false })).toBeNull();
+    expect(say({})).toBeNull();
   });
 });
 

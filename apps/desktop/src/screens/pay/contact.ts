@@ -57,8 +57,10 @@ export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "star
 }
 
 /** The tab Pay opens on when nothing named one: To a contact only when there is someone to pay
- * there (a contact or a request), else To an address; `null` while that is still being read. */
-export function defaultPayTab(owner: ContactsOwner, list: { data: ContactList | undefined; failed: boolean }): PayTab | null {
+ * there (a contact or a request), else To an address; `null` while that is still being read
+ * (`owner` is `undefined` until DashPay's status is read). */
+export function defaultPayTab(owner: ContactsOwner | undefined, list: { data: ContactList | undefined; failed: boolean }): PayTab | null {
+  if (owner === undefined) return null;
   if (owner.kind !== "identity") return "address";
   if (list.data === undefined) return list.failed ? "address" : null;
   return pickerGroups(list.data).length > 0 ? "contact" : "address";
@@ -92,20 +94,34 @@ export function pickerGroups(list: ContactList | undefined): PickerGroup[] {
 
 /** What the picker shows under the search field: the contact groups, the username search's
  * section (while it runs, failed, or found someone), and which "nothing matches" it says:
- * `contacts` before the username search can run (under two characters), `anyone` once neither
- * found anyone. */
+ * `contacts` before the username search can run (under two characters) while there are contacts,
+ * `short` then without any, `anyone` once neither found anyone. */
 export function pickerView(i: {
   text: string;
   groups: number;
+  /** Whether the identity has any contact or request, whatever the text. */
+  anyContacts: boolean;
   /** Whether the username search runs for the text (two characters or more). */
   network: boolean;
   networkState: "loading" | "error" | "done";
+  /** The hits the section lists. */
   hits: number;
-}): { network: boolean; none: "contacts" | "anyone" | null } {
+  /** Every hit the search returned, those the groups list too. */
+  found: number;
+}): { network: boolean; none: "contacts" | "short" | "anyone" | null } {
   const network = i.network && (i.networkState !== "done" || i.hits > 0);
   if (i.text === "" || i.groups > 0) return { network, none: null };
-  if (!i.network) return { network, none: "contacts" };
-  return { network, none: i.networkState === "done" && i.hits === 0 ? "anyone" : null };
+  if (!i.network) return { network, none: i.anyContacts ? "contacts" : "short" };
+  return { network, none: i.networkState === "done" && i.found === 0 ? "anyone" : null };
+}
+
+/** What the picker's live region says once the username search answered; `null` before. */
+export function searchAnnouncement(i: { network: boolean; networkState: "loading" | "error" | "done"; hits: number; none: ReturnType<typeof pickerView>["none"] }): string | null {
+  if (i.none === "anyone") return "No one found";
+  if (!i.network || i.networkState === "loading") return null;
+  if (i.networkState === "error") return "Could not search";
+  if (i.hits === 0) return null;
+  return i.hits === 1 ? "1 person found on DashPay" : `${i.hits} people found on DashPay`;
 }
 
 function rowReason(c: Pick<ContactSummaryInfo, "relation" | "channel">): string | null {
