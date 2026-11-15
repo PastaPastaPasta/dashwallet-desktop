@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { ContactList } from "../../api/generated/ContactList";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { UserHit } from "../../api/generated/UserHit";
-import { defaultPayTab, foundLine, pickerGroups, pickerHits, pickerNetworkState, pickerView, searchAnnouncement } from "./contact";
+import { defaultPayTab, foundLine, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, searchAnnouncement } from "./contact";
 
 const ME = "8tvHgfq4BLx3bRBcxSs7ZsjaTnAZDSmLhNpAgXyNomeR";
 const BOB = "8GopLQQPjKr2gXjNEt9G8k2PzRZrdbBqQBNTCXV2DYiN";
@@ -152,6 +152,22 @@ describe("the username search under the picker", () => {
     expect(state({ failed: true, fetching: true })).toBe("loading");
     const networkState = state({ listReady: false });
     expect(pickerView({ text: "zzz", groups: 0, anyContacts: true, network: true, networkState, hits: 0 })).toEqual({ network: true, none: null });
+  });
+});
+
+describe("the list the username search's hits are matched against", () => {
+  const read: ContactList = { sections: [], updating: false };
+
+  it("is the picker's list once read, and none while the previous text's is kept", () => {
+    expect(pickerListing({ data: read, placeholder: false, failed: false })).toBe(read);
+    expect(pickerListing({ data: read, placeholder: true, failed: false })).toBeNull();
+    expect(pickerListing({ data: undefined, placeholder: false, failed: false })).toBeNull();
+  });
+
+  it("lists no one when the read failed with nothing kept, so the search still answers", () => {
+    expect(pickerListing({ data: undefined, placeholder: false, failed: true })).toEqual({ sections: [], updating: false });
+    // A failed refetch keeps the list the picker still shows.
+    expect(pickerListing({ data: read, placeholder: false, failed: true })).toBe(read);
   });
 });
 

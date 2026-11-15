@@ -125,6 +125,14 @@ export function pickerHits(hits: UserHit[] | undefined, shown: ContactList): { s
   return networkHits(hits, { ...shown, sections: shown.sections.filter((s) => s.section === "contacts" || s.section === "requests") }, true);
 }
 
+/** The list the username search's hits are matched against: the picker's list for the text once
+ * read (not the previous text's, kept while it loads); an empty one when that read failed with
+ * nothing kept, as the picker then lists no one; `null` while it is still being read. */
+export function pickerListing(list: { data: ContactList | undefined; placeholder: boolean; failed: boolean }): ContactList | null {
+  if (list.data !== undefined) return list.placeholder ? null : list.data;
+  return list.failed ? { sections: [], updating: false } : null;
+}
+
 /** Where the username search under the picker stands. It is still running until the search has
  * answered for the text shown and the picker's list for that text is read (`listReady`): before,
  * its hits cannot be told apart from the picker's rows. */

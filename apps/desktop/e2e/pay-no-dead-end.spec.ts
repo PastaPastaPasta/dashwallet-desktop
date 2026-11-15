@@ -213,6 +213,16 @@ test("PAY-6 a contact or request that matches stays in the picker; strangers sho
   await expect(page.getByTestId("pay-found-send")).toHaveText("Send Contact Request");
 });
 
+test("PAY-6 the username search still answers when the picker's own contacts cannot be read", async ({ page }) => {
+  await page.goto(fixtureUrl("dashpay-registered", "light", "&fail=dashpay_contacts:none"));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await page.getByTestId("pay-tabs-contact").click();
+  await searchFor(page, "ma");
+  await expect(networkRow(page, "Mallory")).toBeVisible();
+  await expect(page.getByTestId("pay-search-announce")).toContainText("found on DashPay");
+});
+
 test("PAY-6 nothing found says so and offers To an address", async ({ page }) => {
   const errors = await openPay(page, "dashpay-registered");
   await searchFor(page, "zzz");

@@ -25,7 +25,7 @@ import { CoinControl } from "./CoinControl";
 import { FoundUser } from "./FoundUser";
 import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
+import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
 import { confirmedOf, DEFAULT_ADVANCED, type Advanced } from "./model";
@@ -112,8 +112,9 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
   const groups = pickerGroups(list.data);
   // Everyone the search found that the picker does not list for the text is listed under it (a
   // request sent, an ignored sender, oneself, a contact the filter missed), not only strangers.
-  const listReady = list.data !== undefined && !list.isPlaceholderData;
-  const hits = listReady ? pickerHits(net.data, list.data) : { shown: [], more: false };
+  const listing = pickerListing({ data: list.data, placeholder: list.isPlaceholderData, failed: list.isError });
+  const listReady = listing !== null;
+  const hits = listing ? pickerHits(net.data, listing) : { shown: [], more: false };
   const networkState = pickerNetworkState({ listReady, caughtUp: prefix === wanted, pending: net.isPending, failed: net.isError, fetching: net.isFetching });
   const view = pickerView({
     text,
