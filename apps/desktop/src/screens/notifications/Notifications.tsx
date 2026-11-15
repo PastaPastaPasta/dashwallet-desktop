@@ -193,25 +193,22 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
   return (
     <div className="notifications" data-testid="notifications" ref={root}>
       <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="notifications-outcome" />
-      {!hasPayments && shown.pending.length === 0 && shown.fresh.length === 0 && shown.earlier.length === 0 && (
-        <>
-          <EmptyState
-            testId="contact-requests-empty"
-            art={EMPTY.contactRequests.art}
-            title={EMPTY.contactRequests.title}
-            message={EMPTY.contactRequests.message}
-            action={
-              <DashButton
-                variant="filledBlue"
-                data-testid={EMPTY.contactRequests.action.testId}
-                onClick={() => navigate("contacts", { addContact: { walletId, query: "", hit: null }, contact: null, contactPrefill: null })}
-              >
-                {EMPTY.contactRequests.action.label}
-              </DashButton>
-            }
-          />
-          <EmptyState testId="notifications-empty" art={EMPTY.notifications.art} title={EMPTY.notifications.title} message={EMPTY.notifications.message} />
-        </>
+      {!hasPayments && shown.pending.length === 0 && shown.fresh.length === 0 && shown.earlier.length === 0 && EMPTY.notifications.action && (
+        <EmptyState
+          testId="notifications-empty"
+          art={EMPTY.notifications.art}
+          title={EMPTY.notifications.title}
+          message={EMPTY.notifications.message}
+          action={
+            <DashButton
+              variant="filledBlue"
+              data-testid={EMPTY.notifications.action.testId}
+              onClick={() => navigate("contacts", { addContact: { walletId, query: "", hit: null }, contact: null, contactPrefill: null })}
+            >
+              {EMPTY.notifications.action.label}
+            </DashButton>
+          }
+        />
       )}
       {shown.pending.length > 0 && <Requests contacts={shown.pending} more={0} actions={actions} hasKeys={hasKeys} onOpen={openContact} onDone={onDone} testId="notifications-requests" />}
       {shown.fresh.length > 0 && <Events title="New" events={shown.fresh} fresh more={0} nameOf={nameOf} onOpen={openEvent} testId="notifications-new" />}

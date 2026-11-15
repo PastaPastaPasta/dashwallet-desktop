@@ -49,17 +49,7 @@ export function PeersTab() {
         {model.peers === null ? (
           !model.error && <LoadingState testId="peers-loading" text="Reading the peers" />
         ) : rows.length === 0 ? (
-          <EmptyState
-            testId="peers-none"
-            art={EMPTY.peers.art}
-            title={EMPTY.peers.title}
-            message={EMPTY.peers.message}
-            action={
-              <DashButton variant="filledBlue" data-testid={EMPTY.peers.action.testId} disabled={model.rotating} onClick={() => void model.rotate()}>
-                {model.rotating ? "Changing peers…" : EMPTY.peers.action.label}
-              </DashButton>
-            }
-          />
+          <EmptyState testId="peers-none" plain art={EMPTY.peers.art} title={EMPTY.peers.title} message={EMPTY.peers.message} />
         ) : (
           <div className="table-card">
             <table className="data-table peers-table" data-testid="peers-table">

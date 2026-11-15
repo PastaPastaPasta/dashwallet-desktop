@@ -15,7 +15,7 @@ import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
 import { EMPTY } from "../../components/emptyStates";
-import { EmptyState, LoadingState } from "../../components/history";
+import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import { useDisplay } from "../../format/display";
 import { NETWORK_DEBOUNCE_MS, networkPrefix, SEARCH_DEBOUNCE_MS } from "../../contacts/model";
 import { refreshAfter, useContactDetail, useContactsOwner, useHasKeys, useNetworkSearch } from "../../contacts/queries";
@@ -174,7 +174,27 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
         }
       />
     );
-  else if (view.none === "contacts") body = <EmptyState testId="pay-picker-none" art="search" title="No contacts match" message="Search by name or username." />;
+  else if (view.none === "contacts")
+    body = (
+      <EmptyState
+        testId="pay-picker-none"
+        art="search"
+        title="No contacts match"
+        message="Search by name or username."
+        action={
+          <DashButton
+            variant="filledBlue"
+            data-testid="pay-picker-clear"
+            onClick={() => {
+              setSearch("");
+              focusWhenIdle(field);
+            }}
+          >
+            Clear search
+          </DashButton>
+        }
+      />
+    );
   else if (view.none === "short")
     body = (
       <EmptyState

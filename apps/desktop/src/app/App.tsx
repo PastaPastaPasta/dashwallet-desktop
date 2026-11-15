@@ -5,7 +5,7 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
-import { EMPTY } from "../components/emptyStates";
+import { EMPTY, walletListGate } from "../components/emptyStates";
 import { EmptyState, LoadingState } from "../components/history";
 import { SwitchingCard } from "../components/networkPicker";
 import { SheetLayer, useLayeredSheet } from "../components/sheet";
@@ -168,7 +168,18 @@ function Shell() {
   // Onboarding (U-02 D1): a network without a wallet opens it, and it stays open until its
   // Done. The lock screen replaces it, and drops what it held: Add Wallet… closes, the first
   // wallet's flow starts again at Welcome once unlocked.
-  const noWallet = wallets.isSuccess && wallets.data.length === 0;
+  const gate = walletListGate(wallets.isPending ? "pending" : wallets.isError ? "error" : "success", wallets.data?.length ?? 0);
+  const noWallet = gate === "empty";
+  const walletsBlocked =
+    gate === "loading" ? (
+      <LoadingState testId="wallets-loading" text="Loading wallet…" />
+    ) : gate === "error" ? (
+      <main className="page" data-testid="page-wallets-error">
+        <div className="page-column">
+          <EmptyState testId="wallets-error" title="Could not load the wallets" message={errorMessage(wallets.error)} />
+        </div>
+      </main>
+    ) : null;
   // A wipe in progress holds it back until the vault is gone or its failure was seen (U-04 D33).
   const onboarding = !locked && !wiping && (addWallet || noWallet);
   useEffect(() => {
@@ -191,30 +202,12 @@ function Shell() {
 
   let content;
   if (route === "home" || route === "activity" || route === "pay" || route === "receive" || route === "contacts" || route === "notifications" || route === "joinDashPay" || route === "profile" || route === "coinJoin" || route === "masternodes") {
-    if (wallets.isPending) content = <LoadingState testId="wallets-loading" text="Loading wallet…" />;
-    else if (wallets.isError)
-      content = (
-        <main className="page" data-testid="page-wallets-error">
-          <div className="page-column">
-            <EmptyState testId="wallets-error" title="Could not load the wallets" message={errorMessage(wallets.error)} />
-          </div>
-        </main>
-      );
+    if (walletsBlocked) content = walletsBlocked;
     else if (!wallet)
       content = (
         <main className="page" data-testid="page-no-wallet">
           <div className="page-column">
-            <EmptyState
-              testId="no-wallet"
-              art={EMPTY.wallet.art}
-              title={EMPTY.wallet.title}
-              message={EMPTY.wallet.message}
-              action={
-                <DashButton variant="filledBlue" data-testid={EMPTY.wallet.action.testId} onClick={() => ui.set({ onboarding: true })}>
-                  {EMPTY.wallet.action.label}
-                </DashButton>
-              }
-            />
+            <EmptyState testId="no-wallet" art={EMPTY.wallet.art} title={EMPTY.wallet.title} message={EMPTY.wallet.message} />
           </div>
         </main>
       );
@@ -233,7 +226,7 @@ function Shell() {
     else if (route === "masternodes" && masternodesItem.shown) content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
     else if (route === "masternodes") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
-  } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
+  } else if (route === "tools") content = walletsBlocked ?? <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
   else if (route === "settings") content = <SettingsPage network={network} />;
   else content = <Placeholder route={route} />;
 

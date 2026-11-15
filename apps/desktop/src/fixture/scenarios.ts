@@ -859,6 +859,12 @@ const SCENARIOS = {
   },
   /** A new wallet: no history, zero balance. */
   empty: (t) => base(t, "empty"),
+  /** That wallet while the chain is still syncing: history must not offer Receive yet. */
+  "empty-syncing": (t) => {
+    const w = base(t, "empty");
+    w.sync = syncing();
+    return w;
+  },
   /** No wallet on the network yet, and no vault. */
   "no-wallet": (t) => {
     const w = base(t);
@@ -1204,6 +1210,12 @@ const SCENARIOS = {
   },
   /** Coin Selection: CoinJoin denominations beside the plain coins, hidden by default (QT-071). */
   "tools-coinjoin": (t) => withCoinJoinCoins(base(t)),
+  /** Every coin is mixed, so Coin Selection's default list is empty until Show all coins. */
+  "coins-all-mixed": (t) => {
+    const w = base(t);
+    w.wallets[0].coins = w.wallets[0].coins.map((c) => ({ ...c, coinjoinDenominated: true, coinjoinRounds: 4 }));
+    return w;
+  },
   /** "alice" before her first contact: the Contacts empty state (DP2-07). */
   "dashpay-contacts-empty": (t) => {
     const w = base(t);

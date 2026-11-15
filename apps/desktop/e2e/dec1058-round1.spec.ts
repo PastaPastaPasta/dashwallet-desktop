@@ -398,20 +398,20 @@ test.describe("disabled reasons are visible and described", () => {
     await expect(page.getByTestId("pay-incomplete")).toHaveText("Checking the payment…");
   });
 
-  test("Activity's Export CSV reason sits under the header, not inside its action row", async ({ page }) => {
-    await page.goto(fixtureUrl("empty", "light"));
+  test("Activity with no transactions hides the export hint and the zero footer", async ({ page }) => {
+    await page.goto(fixtureUrl("empty", "light", "&fail=platform_activity:none&fail=shielded_history:none"));
     await page.getByTestId("toolbar").waitFor();
     await page.getByTestId("sidebar-activity").click();
-    await expect(page.getByTestId("tx-export-why")).toBeVisible();
-    await expect(page.locator('.tx-intro-actions [data-testid="tx-export-why"]')).toHaveCount(0);
-    await expect(page.locator('.tx-intro-actions .dash-button-why')).toHaveCount(0);
+    await expect(page.getByTestId("tx-empty")).toBeVisible();
+    await expect(page.getByTestId("tx-export-why")).toHaveCount(0);
+    await expect(page.getByTestId("tx-footer")).toHaveCount(0);
+    await expect(page.getByTestId("tx-export-csv")).toBeDisabled();
+    await expect(page.locator(".tx-intro-actions .dash-button-why")).toHaveCount(0);
   });
 
-  test("Export CSV and Pay's Review say why, beside the control", async ({ page }) => {
+  test("Pay's Review says why, beside the control", async ({ page }) => {
     await page.goto(fixtureUrl("empty", "light"));
     await page.getByTestId("toolbar").waitFor();
-    await page.getByTestId("sidebar-activity").click();
-    expect(await reasonOf(page, "tx-export-csv")).toBe("There are no transactions to export yet.");
     await page.getByTestId("sidebar-pay").click();
     await page.getByTestId("pay-tabs-address").click();
     expect(await reasonOf(page, "pay-continue")).toBe("Enter an address and an amount first.");

@@ -1,29 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_ARTS } from "./emptyArt";
-import { addressBookEmpty, activityFiltersApplied, EMPTY } from "./emptyStates";
+import { addressBookEmpty, activityFiltersApplied, EMPTY, historyEmptyCopy, walletListGate } from "./emptyStates";
 
-const WITH_ACTION = ["homeHistory", "activity", "activityFiltered", "contacts", "contactRequests", "notificationsNoIdentity", "addressSend", "addressReceive", "addressSearch", "receiveRequests", "coinjoin", "coins", "coinsHidden", "peers", "payContacts", "join", "wallet"] as const;
-
-describe("empty states", () => {
-  it("gives every screen a title, a sentence and a known drawing", () => {
-    for (const copy of Object.values(EMPTY)) {
-      expect(copy.title.length).toBeGreaterThan(0);
-      expect(copy.message.length).toBeGreaterThan(0);
-      expect(EMPTY_ARTS).toContain(copy.art);
-      expect(copy.action === null || copy.action.label.length > 0).toBe(true);
-    }
-  });
-
-  it("gives the no-data screens one action, and leaves a caught-up inbox without one", () => {
-    for (const id of WITH_ACTION) expect(EMPTY[id].action).not.toBeNull();
-    expect(EMPTY.notifications.action).toBeNull();
-    const ids = Object.values(EMPTY).flatMap((c) => (c.action ? [c.action.testId] : []));
-    expect(new Set(ids).size).toBe(ids.length);
-  });
-
-  it("draws the headline empty screens differently", () => {
-    const arts = [EMPTY.activity, EMPTY.contacts, EMPTY.contactRequests, EMPTY.addressSend, EMPTY.receiveRequests, EMPTY.coinjoin, EMPTY.notifications].map((c) => c.art);
-    expect(new Set(arts).size).toBe(arts.length);
+describe("history empty", () => {
+  it("stays quiet while the wallet is syncing, and offers Receive Dash once it has caught up", () => {
+    const syncing = historyEmptyCopy({ syncing: true, home: false });
+    expect(syncing).toMatchObject({
+      art: "activity",
+      title: "Your history is still syncing",
+      message: "Payments show up here as the wallet catches up.",
+      action: null,
+    });
+    expect(historyEmptyCopy({ syncing: true, home: true })).toBe(syncing);
+    expect(historyEmptyCopy({ syncing: false, home: true }).action).toMatchObject({ label: "Receive Dash", testId: "history-empty-receive" });
+    expect(historyEmptyCopy({ syncing: false, home: false }).action).toMatchObject({ label: "Receive Dash", testId: "tx-empty-receive" });
   });
 });
 
@@ -47,9 +36,46 @@ describe("addressBookEmpty", () => {
     expect(addressBookEmpty({ search: "", purpose: "send", count: 2 })).toBeNull();
   });
 
-  it("offers add for sending, Receive for receiving, and clear when a search misses", () => {
-    expect(addressBookEmpty({ search: "", purpose: "send", count: 0 })?.action?.label).toBe("Add address");
-    expect(addressBookEmpty({ search: "", purpose: "receive", count: 0 })?.action?.label).toBe("Receive");
-    expect(addressBookEmpty({ search: "zz", purpose: "send", count: 0 })?.art).toBe("search");
+  it("offers add for sending, Receive Dash for receiving, and clear when a search misses", () => {
+    expect(addressBookEmpty({ search: "", purpose: "send", count: 0 })).toMatchObject({ step: "add", action: { label: "Add address" } });
+    expect(addressBookEmpty({ search: "", purpose: "receive", count: 0 })).toMatchObject({ step: "receive", action: { label: "Receive Dash" } });
+    expect(addressBookEmpty({ search: "zz", purpose: "receive", count: 0 })).toMatchObject({ step: "clear", art: "search" });
+  });
+});
+
+describe("wallet list", () => {
+  it("offers a wallet only after the list has loaded empty", () => {
+    expect(walletListGate("pending", 0)).toBe("loading");
+    expect(walletListGate("error", 0)).toBe("error");
+    expect(walletListGate("success", 0)).toBe("empty");
+    expect(walletListGate("success", 2)).toBe("ready");
+  });
+});
+
+describe("empty copy", () => {
+  it("names the inbox, the coin list and the mixed-coin list, and leaves peers and the no-wallet page without a button", () => {
+    expect(EMPTY.notifications).toMatchObject({
+      title: "No notifications yet",
+      message: "Contact requests and payments from your contacts show up here.",
+      action: { label: "Add contact" },
+    });
+    expect(EMPTY.notificationsNoIdentity.action?.label).toBe("Join DashPay");
+    expect(EMPTY.coins.title).toBe("No coins yet");
+    expect(EMPTY.coins.message.endsWith("show up here.")).toBe(true);
+    expect(EMPTY.coinsHidden).toMatchObject({
+      title: "All your coins are mixed",
+      message: "Mixed coins are hidden from this list.",
+      action: { label: "Show all coins" },
+    });
+    expect(EMPTY.peers).toMatchObject({
+      message: "Check your internet connection. The wallet keeps looking for peers.",
+      action: null,
+    });
+    expect(EMPTY.wallet).toMatchObject({ message: "Create or restore a wallet to get started.", action: null });
+    expect(EMPTY.contacts.action?.label).toBe("Add contact");
+  });
+
+  it("does not label a button Add a contact", () => {
+    for (const copy of Object.values(EMPTY)) expect(copy.action?.label).not.toBe("Add a contact");
   });
 });

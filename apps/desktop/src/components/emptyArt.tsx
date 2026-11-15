@@ -18,8 +18,12 @@ export function EmptyArt({ id, size = 64 }: { id: EmptyArtId; size?: number }) {
 const DRAW: Record<EmptyArtId, ReactNode> = {
   activity: (
     <>
-      <rect x="16" y="10" width="32" height="44" rx="4" />
-      <path d="M24 22h16M24 30h16M24 38h10" />
+      <path d="M14 20h20" />
+      <path d="M40 15l8 5-8 5" />
+      <path d="M30 32h20" />
+      <path d="M24 27l-8 5 8 5" />
+      <path d="M14 44h18" />
+      <path d="M40 39l8 5-8 5" />
     </>
   ),
   contacts: (
@@ -36,9 +40,10 @@ const DRAW: Record<EmptyArtId, ReactNode> = {
   ),
   address: (
     <>
-      <rect x="16" y="12" width="32" height="40" rx="4" />
-      <circle cx="32" cy="28" r="6" />
-      <path d="M32 34v8" />
+      <path d="M24 14h22a3 3 0 0 1 3 3v30a3 3 0 0 1-3 3H24" />
+      <path d="M24 14c-5 1.5-8 3-8 7v22c0 4 3 5.5 8 7" />
+      <path d="M24 14v36" />
+      <path d="M30 26h12M30 34h12M30 42h8" />
     </>
   ),
   payment: (
@@ -76,9 +81,10 @@ const DRAW: Record<EmptyArtId, ReactNode> = {
   ),
   peers: (
     <>
-      <circle cx="18" cy="32" r="7" />
-      <circle cx="46" cy="32" r="7" />
-      <path d="M25 32h14" />
+      <circle cx="16" cy="22" r="8" />
+      <circle cx="48" cy="22" r="8" />
+      <circle cx="32" cy="48" r="8" />
+      <path d="M23 26 28 41M41 26 36 41M24 22h16" />
     </>
   ),
   wallet: (

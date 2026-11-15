@@ -651,7 +651,7 @@ test.describe("Receive", () => {
   test("creates, shows and removes payment requests", async ({ page }) => {
     await open(page);
     await page.getByTestId("sidebar-receive").click();
-    await expect(page.getByTestId("requests-empty")).toContainText("No payment requests yet");
+    await expect(page.getByTestId("requests-empty")).toHaveText("Requests you create show up here.");
     await page.getByTestId("request-label").fill("Rent");
     await page.getByTestId("request-amount").fill("0.25");
     await page.getByTestId("request-create").click();

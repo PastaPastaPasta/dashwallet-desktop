@@ -2,7 +2,7 @@
 // dash-qt's columns, list or tree, sorting, CoinJoin coins hidden by default, locks, copy and the
 // selection's summary. "Pay with these coins" opens Pay with the selection (QT-068).
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { errorMessage, type Backend } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -12,7 +12,7 @@ import { navigate, openPayForm } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CoinSummary, CoinTable } from "../../components/coins";
 import { EMPTY } from "../../components/emptyStates";
-import { EmptyState, LoadingState } from "../../components/history";
+import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import type { Unit } from "../../format/amount";
 import { useDisplay } from "../../format/display";
 import { useModel } from "../../onboarding/model";
@@ -54,6 +54,7 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
     if (utxos.data) model.setCoins(utxos.data);
   }, [model, utxos.data]);
 
+  const filterRef = useRef<HTMLButtonElement>(null);
   if (utxos.isPending) return <LoadingState testId="coins-loading" text="Loading coins" />;
   if (utxos.isError) return <Outcome ok={false} text={`Could not load the coins: ${errorMessage(utxos.error)}`} testId="coins-error" />;
   const selected = new Set(model.selected);
@@ -62,7 +63,7 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
       <div className="tool-actions">
         <div className="segmented" role="group" aria-label="View" data-testid="coins-mode">
           {(["list", "tree"] as const).map((m) => (
-            <button key={m} type="button" className="segment" aria-pressed={model.mode === m} data-testid={`coins-mode-${m}`} onClick={() => model.setMode(m)}>
+            <button key={m} ref={m === "list" ? filterRef : undefined} type="button" className="segment" aria-pressed={model.mode === m} data-testid={`coins-mode-${m}`} onClick={() => model.setMode(m)}>
               {m === "list" ? "List mode" : "Tree mode"}
             </button>
           ))}
@@ -108,7 +109,14 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
             title={EMPTY.coinsHidden.title}
             message={EMPTY.coinsHidden.message}
             action={
-              <DashButton variant="filledBlue" data-testid={EMPTY.coinsHidden.action.testId} onClick={() => model.setShowCoinJoin(true)}>
+              <DashButton
+                variant="filledBlue"
+                data-testid={EMPTY.coinsHidden.action.testId}
+                onClick={() => {
+                  model.setShowCoinJoin(true);
+                  focusWhenIdle(filterRef);
+                }}
+              >
                 {EMPTY.coinsHidden.action.label}
               </DashButton>
             }

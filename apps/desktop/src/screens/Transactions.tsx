@@ -9,14 +9,15 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
-import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, type HistoryFilter } from "../api/queries";
+import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, useSyncStatus, type HistoryFilter } from "../api/queries";
 import { fileErrorText } from "../app/files";
 import { navigate } from "../app/ui";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
-import { activityFiltersApplied, EMPTY } from "../components/emptyStates";
-import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
+import { activityFiltersApplied, EMPTY, historyEmptyCopy } from "../components/emptyStates";
+import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
+import { isSyncing } from "../format/sync";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
 import { filterExtra, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
@@ -90,13 +91,18 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   );
   const rows = useMemo(() => mergeActivity(coreRows, !!history.hasNextPage, extraShown), [coreRows, history.hasNextPage, extraShown]);
   const filtered = activityFiltersApplied({ categoryId: category.id, text, date, minAmount });
+  const searchRef = useRef<HTMLInputElement>(null);
   const clearFilters = () => {
     setCategory(CATEGORIES[0]);
     setSearch("");
     setDate("all");
     setMinText("");
+    focusWhenIdle(searchRef);
   };
-  const empty = filtered ? EMPTY.activityFiltered : EMPTY.activity;
+  // Receive only once sync has caught up. Until then the list is still arriving, not empty.
+  const sync = useSyncStatus();
+  const syncing = !sync.data || isSyncing(sync.data);
+  const empty = filtered ? EMPTY.activityFiltered : historyEmptyCopy({ syncing, home: false });
   const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
   // Every extra row the filters keep counts, loaded or not; Export is the Core history only.
   const total = coreTotal === null ? null : coreTotal + extraShown.length;
@@ -133,7 +139,10 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     return () => io.disconnect();
   }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
 
-  const exportWhy = exporting ? "Exporting…" : !coreTotal ? "There are no transactions to export yet." : null;
+  // A wallet with no transactions yet already says so in the empty card. A filter that matches
+  // nothing still explains why Export is off, and still counts the zero.
+  const unfilteredEmpty = !filtered && rows.length === 0 && !history.isPending && !(history.isError && coreRows.length === 0);
+  const exportWhy = exporting ? "Exporting…" : !coreTotal && !unfilteredEmpty ? "There are no transactions to export yet." : null;
   return (
     <main className={`page page-transactions ${mode === "table" ? "is-table" : ""}`} data-testid="page-activity">
       <div className="page-column">
@@ -167,6 +176,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
             <label className="search-field" data-testid="tx-search">
               <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
               <input
+                ref={searchRef}
                 type="search"
                 value={search}
                 placeholder="Search address, transaction id or label"
@@ -224,18 +234,16 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
           <EmptyState testId="tx-error" title="Could not load transactions" message={errorMessage(history.error)} />
         ) : rows.length === 0 ? (
           <EmptyState
-            testId="tx-empty"
+            testId={empty.action ? "tx-empty" : "tx-syncing"}
             art={empty.art}
             title={empty.title}
             message={empty.message}
             action={
-              <DashButton
-                variant="filledBlue"
-                data-testid={empty.action.testId}
-                onClick={() => (filtered ? clearFilters() : navigate("receive"))}
-              >
-                {empty.action.label}
-              </DashButton>
+              empty.action && (
+                <DashButton variant="filledBlue" data-testid={empty.action.testId} onClick={() => (filtered ? clearFilters() : navigate("receive"))}>
+                  {empty.action.label}
+                </DashButton>
+              )
             }
           />
         ) : mode === "list" ? (
@@ -256,7 +264,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
             </p>
           )}
         </div>
-        {total !== null && (
+        {total !== null && !unfilteredEmpty && (
           <footer className="tx-footer" data-testid="tx-footer">
             {total === 1 ? "1 transaction" : `${total.toLocaleString(backend.locale)} transactions`}
           </footer>

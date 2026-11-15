@@ -648,6 +648,10 @@ input[type="radio"]:disabled {
   gap: var(--dw-space-l);
 }
 
+.contacts-split.is-solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .contacts-list {
   display: flex;
   flex-direction: column;
@@ -1541,6 +1545,17 @@ input[type="radio"]:disabled {
 .empty-state-art {
   color: var(--dw-role-accent);
   flex: none;
+}
+
+/* The accent used for text on light cards is too dim on a dark card. The link blue clears 4.5:1 there. */
+:root[data-theme="dark"] .empty-state-art {
+  color: var(--dw-role-text-link);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .empty-state-art {
+    color: var(--dw-role-text-link);
+  }
 }
 
 .empty-state-title {

@@ -11,7 +11,7 @@ import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
-import { EMPTY } from "../components/emptyStates";
+import { historyEmptyCopy } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
@@ -210,6 +210,26 @@ function HomeFrequentOf({ walletId, identity }: { walletId: string; identity: st
   );
 }
 
+/** Recent history with nothing in it yet. Syncing names that; a caught-up wallet offers Receive. */
+function HistoryEmpty({ syncing }: { syncing: boolean }) {
+  const copy = historyEmptyCopy({ syncing, home: true });
+  return (
+    <EmptyState
+      testId={copy.action ? "history-empty" : "history-syncing"}
+      art={copy.art}
+      title={copy.title}
+      message={copy.message}
+      action={
+        copy.action && (
+          <DashButton variant="filledBlue" data-testid={copy.action.testId} onClick={() => navigate("receive")}>
+            {copy.action.label}
+          </DashButton>
+        )
+      }
+    />
+  );
+}
+
 export function Overview({ walletId, network, onOpen }: { walletId: string; network: NetworkInfo; onOpen: (row: TxRow) => void }) {
   const balance = useBalance(walletId);
   const pools = usePoolBalances(walletId);
@@ -257,17 +277,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         ) : recent.isPending ? (
           <LoadingState testId="history-loading" text="Loading transactions" />
         ) : rows.length === 0 ? (
-          <EmptyState
-            testId="history-empty"
-            art={EMPTY.homeHistory.art}
-            title={EMPTY.homeHistory.title}
-            message={EMPTY.homeHistory.message}
-            action={
-              <DashButton variant="filledBlue" data-testid={EMPTY.homeHistory.action.testId} onClick={() => navigate("receive")}>
-                {EMPTY.homeHistory.action.label}
-              </DashButton>
-            }
-          />
+          <HistoryEmpty syncing={!sync.data || syncing} />
         ) : (
           <>
             <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="overview" />
