@@ -149,6 +149,12 @@ test("Home's hero shows a round balance without a smaller tail, and no breakdown
   // Only Core, with something pending: a line under the hero says so instead of a lone Core row.
   await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
   await expect(page.getByTestId("hero-core-note")).toHaveText("0.20 pending");
+  // Discreet mode masks the hero, so the line naming what is pending goes too.
+  await page.getByTestId("toolbar-discreet").click();
+  await expect(page.getByTestId("hero-amount")).toContainText("#.##");
+  await expect(page.getByTestId("hero-core-note")).toHaveCount(0);
+  await page.getByTestId("toolbar-discreet").click();
+  await expect(page.getByTestId("hero-core-note")).toHaveText("0.20 pending");
   await setCore(page, { confirmed: 125_000_000, unconfirmed: 0, immature: 0, locked: 0, total: 125_000_000 });
   await expect(page.getByTestId("hero-amount").locator(".amount-number")).toHaveText("1.25");
   await expect(page.getByTestId("hero-amount").locator(".amount-minor")).toHaveCount(0);
