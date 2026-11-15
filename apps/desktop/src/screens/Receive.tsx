@@ -15,7 +15,8 @@ import { withoutUsername } from "../api/username";
 import { useDebounced } from "../app/useDebounced";
 import { AmountText, DashButton } from "../components/basics";
 import { CopyValue, DetailRow } from "../components/detail";
-import { LoadingState } from "../components/history";
+import { EMPTY } from "../components/emptyStates";
+import { EmptyState, LoadingState } from "../components/history";
 import { QrCode } from "../components/qr";
 import { Sheet } from "../components/sheet";
 import { CopyDashButton } from "../components/copy";
@@ -412,9 +413,27 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
       {requests.isError ? (
         <p className="form-problem">Could not load the requests: {errorMessage(requests.error)}</p>
       ) : rows.length === 0 ? (
-        <p className="placeholder-note" data-testid="requests-empty">
-          {requests.isPending ? "Loading requests…" : "No payment requests yet."}
-        </p>
+        requests.isPending ? (
+          <p className="placeholder-note" data-testid="requests-empty">
+            Loading requests…
+          </p>
+        ) : (
+          <EmptyState
+            testId="requests-empty"
+            art={EMPTY.receiveRequests.art}
+            title={EMPTY.receiveRequests.title}
+            message={EMPTY.receiveRequests.message}
+            action={
+              <DashButton
+                variant="filledBlue"
+                data-testid={EMPTY.receiveRequests.action.testId}
+                onClick={() => document.querySelector<HTMLInputElement>("[data-testid=request-label]")?.focus()}
+              >
+                {EMPTY.receiveRequests.action.label}
+              </DashButton>
+            }
+          />
+        )
       ) : (
         <div className="card-l1 table-card">
           <table className="data-table" data-testid="requests-table">

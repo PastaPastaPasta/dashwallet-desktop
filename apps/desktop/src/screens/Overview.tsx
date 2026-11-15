@@ -11,6 +11,7 @@ import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
+import { EMPTY } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
@@ -258,10 +259,12 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         ) : rows.length === 0 ? (
           <EmptyState
             testId="history-empty"
-            title="There are no transactions to display"
+            art={EMPTY.homeHistory.art}
+            title={EMPTY.homeHistory.title}
+            message={EMPTY.homeHistory.message}
             action={
-              <DashButton variant="filledBlue" data-testid="history-empty-receive" onClick={() => navigate("receive")}>
-                Receive Dash
+              <DashButton variant="filledBlue" data-testid={EMPTY.homeHistory.action.testId} onClick={() => navigate("receive")}>
+                {EMPTY.homeHistory.action.label}
               </DashButton>
             }
           />

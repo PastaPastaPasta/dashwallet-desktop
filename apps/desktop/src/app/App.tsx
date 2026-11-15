@@ -5,6 +5,7 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
+import { EMPTY } from "../components/emptyStates";
 import { EmptyState, LoadingState } from "../components/history";
 import { SwitchingCard } from "../components/networkPicker";
 import { SheetLayer, useLayeredSheet } from "../components/sheet";
@@ -203,7 +204,17 @@ function Shell() {
       content = (
         <main className="page" data-testid="page-no-wallet">
           <div className="page-column">
-            <EmptyState testId="no-wallet" title="No wallet on this network yet" />
+            <EmptyState
+              testId="no-wallet"
+              art={EMPTY.wallet.art}
+              title={EMPTY.wallet.title}
+              message={EMPTY.wallet.message}
+              action={
+                <DashButton variant="filledBlue" data-testid={EMPTY.wallet.action.testId} onClick={() => ui.set({ onboarding: true })}>
+                  {EMPTY.wallet.action.label}
+                </DashButton>
+              }
+            />
           </div>
         </main>
       );

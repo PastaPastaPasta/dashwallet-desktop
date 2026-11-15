@@ -10,9 +10,11 @@ import type { AddressPurposeName } from "../../api/generated/AddressPurposeName"
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend, useQrMatrix } from "../../api/queries";
 import { fileErrorText, saveText } from "../../app/files";
+import { navigate } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue } from "../../components/detail";
-import { LoadingState } from "../../components/history";
+import { addressBookEmpty } from "../../components/emptyStates";
+import { EmptyState, LoadingState } from "../../components/history";
 import { QrCode } from "../../components/qr";
 import { Sheet } from "../../components/sheet";
 import { useModel } from "../../onboarding/model";
@@ -24,8 +26,40 @@ const PURPOSES: { id: AddressPurposeName; title: string }[] = [
   { id: "receive", title: "Receiving addresses" },
 ];
 
+function AddressBookEmpty({ model, onAdd }: { model: AddressBookModel; onAdd?: () => void }) {
+  const copy = addressBookEmpty({ search: model.search, purpose: model.purpose, count: 0 });
+  if (!copy) return null;
+  const go = copy.action?.testId === "address-book-empty-clear" ? () => model.setSearch("") : copy.action?.testId === "address-book-empty-add" ? onAdd : copy.action?.testId === "address-book-empty-receive" ? () => navigate("receive") : undefined;
+  return (
+    <EmptyState
+      testId="address-book-none"
+      art={copy.art}
+      title={copy.title}
+      message={copy.message}
+      action={
+        copy.action && go ? (
+          <DashButton variant="filledBlue" data-testid={copy.action.testId} onClick={go}>
+            {copy.action.label}
+          </DashButton>
+        ) : undefined
+      }
+    />
+  );
+}
+
 /** The search field and the purpose's entries, each with `actions`. */
-function AddressList({ model, actions, onOpen }: { model: AddressBookModel; actions: (e: AddressBookEntry) => ReactNode; onOpen?: (e: AddressBookEntry) => void }) {
+function AddressList({
+  model,
+  actions,
+  onOpen,
+  onAdd,
+}: {
+  model: AddressBookModel;
+  actions: (e: AddressBookEntry) => ReactNode;
+  onOpen?: (e: AddressBookEntry) => void;
+  /** Opens a new sending address. Absent in the picker and for receiving addresses. */
+  onAdd?: () => void;
+}) {
   const id = useId();
   const entries = model.entries;
   return (
@@ -45,9 +79,7 @@ function AddressList({ model, actions, onOpen }: { model: AddressBookModel; acti
       {model.all === null ? (
         !model.error && <LoadingState testId="address-book-loading" text="Reading the address book" />
       ) : entries.length === 0 ? (
-        <p className="placeholder-note" data-testid="address-book-none">
-          {model.search ? "No entry matches the search." : "No entries yet."}
-        </p>
+        <AddressBookEmpty model={model} onAdd={onAdd} />
       ) : (
         <div className="table-card">
           <table className="data-table address-book-table" data-testid="address-book-table">
@@ -204,6 +236,7 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
       {model.error && editing === undefined && <Outcome ok={false} text={model.error} testId="address-book-problem" />}
       <AddressList
         model={model}
+        onAdd={model.canCreate ? () => edit(null) : undefined}
         actions={(e) => (
           <span className="tool-row-actions">
             <RowMenu

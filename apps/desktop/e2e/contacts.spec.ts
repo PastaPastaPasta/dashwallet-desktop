@@ -298,7 +298,7 @@ test("Add contact opens in the slot, in place of a dashpay: link's card; a row r
   await expect(add).toHaveCount(0);
 });
 
-test("IOS-072 no contacts: the empty state offers Search for a User; a pass before any snapshot says updating", async ({ page }) => {
+test("IOS-072 no contacts: the empty state offers Add contact; a pass before any snapshot says updating", async ({ page }) => {
   await openContacts(page, "dashpay-contacts-empty");
   await expect(page.getByTestId("contacts-empty")).toContainText("No contacts yet");
   await page.getByTestId("contacts-empty-search").click();

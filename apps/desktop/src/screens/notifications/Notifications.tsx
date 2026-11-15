@@ -9,6 +9,8 @@ import type { DashPayEventInfo } from "../../api/generated/DashPayEventInfo";
 import { errorMessage } from "../../api/backend";
 import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
+import { EmptyArt } from "../../components/emptyArt";
+import { EMPTY } from "../../components/emptyStates";
 import { EmptyState, LoadingState } from "../../components/history";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import { avatarLetters, initials, shownName, subtitle } from "../../contacts/model";
@@ -114,9 +116,10 @@ export function NotificationsPopover({ walletId, identity, network, id, close }:
         </p>
       )}
       {empty && (
-        <p className="placeholder-note" data-testid="bell-empty">
-          No new notifications
-        </p>
+        <div className="bell-empty" data-testid="bell-empty">
+          <EmptyArt id={EMPTY.notifications.art} size={40} />
+          <p>No new notifications</p>
+        </div>
       )}
       <ReceivedSection walletId={walletId} network={network} limit={5} onOpen={(txid) => go(() => ui.set({ detail: txid }))} />
       {cut.pending.length > 0 && (
@@ -140,7 +143,22 @@ export function NotificationsPage({ walletId, network }: { walletId: string; net
   // Another main identity starts the view over: its own feed, read and marked afresh.
   if (owner.kind === "identity") body = <NotificationsView key={owner.identity} walletId={walletId} identity={owner.identity} />;
   else if (owner.kind === "starting") body = <LoadingState testId="notifications-starting" text="Starting DashPay…" />;
-  else if (received.length === 0) body = <EmptyState testId="notifications-no-identity" title="No notifications" message="Create a username to get contact requests and payments from contacts." />;
+  else if (received.length === 0)
+    body = (
+      <EmptyState
+        testId="notifications-no-identity"
+        art={EMPTY.notificationsNoIdentity.art}
+        title={EMPTY.notificationsNoIdentity.title}
+        message={EMPTY.notificationsNoIdentity.message}
+        action={
+          owner.kind === "join" && owner.reason === null && (
+            <DashButton variant="filledBlue" data-testid={EMPTY.notificationsNoIdentity.action.testId} onClick={() => navigate("joinDashPay")}>
+              {EMPTY.notificationsNoIdentity.action.label}
+            </DashButton>
+          )
+        }
+      />
+    );
   else body = null;
   return (
     <Page route="notifications">
@@ -176,7 +194,24 @@ function NotificationsView({ walletId, identity }: { walletId: string; identity:
     <div className="notifications" data-testid="notifications" ref={root}>
       <Outcome ok={actions.outcome?.ok ?? true} text={actions.outcome?.text ?? null} testId="notifications-outcome" />
       {!hasPayments && shown.pending.length === 0 && shown.fresh.length === 0 && shown.earlier.length === 0 && (
-        <EmptyState testId="notifications-empty" title="No notifications yet" message="Contact requests and payments from your contacts show here." />
+        <>
+          <EmptyState
+            testId="contact-requests-empty"
+            art={EMPTY.contactRequests.art}
+            title={EMPTY.contactRequests.title}
+            message={EMPTY.contactRequests.message}
+            action={
+              <DashButton
+                variant="filledBlue"
+                data-testid={EMPTY.contactRequests.action.testId}
+                onClick={() => navigate("contacts", { addContact: { walletId, query: "", hit: null }, contact: null, contactPrefill: null })}
+              >
+                {EMPTY.contactRequests.action.label}
+              </DashButton>
+            }
+          />
+          <EmptyState testId="notifications-empty" art={EMPTY.notifications.art} title={EMPTY.notifications.title} message={EMPTY.notifications.message} />
+        </>
       )}
       {shown.pending.length > 0 && <Requests contacts={shown.pending} more={0} actions={actions} hasKeys={hasKeys} onOpen={openContact} onDone={onDone} testId="notifications-requests" />}
       {shown.fresh.length > 0 && <Events title="New" events={shown.fresh} fresh more={0} nameOf={nameOf} onOpen={openEvent} testId="notifications-new" />}

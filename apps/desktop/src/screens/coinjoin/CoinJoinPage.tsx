@@ -10,6 +10,7 @@ import { useBackend, useLockStatus, useShieldedStatus } from "../../api/queries"
 import { MOVE_COPY, moveMixedFor, showsMoveCard } from "../../coinjoin/move";
 import { navigate, useUi } from "../../app/ui";
 import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
+import { EmptyArt } from "../../components/emptyArt";
 import { DetailRow } from "../../components/detail";
 import { CoinJoinText, LEVELS, levelOf, lockLine, poolMessageText, POOL_STATE_TEXT, settingsFailureText } from "../../coinjoin/model";
 import { useCoinJoinAmount, useCoinJoinSettings, useCoinJoinView, useMaskedAmount, useSaveCoinJoinSettings } from "../../coinjoin/queries";
@@ -33,7 +34,7 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
     <Page route="coinJoin" badge={<ExperimentalBadge testId="coinjoin-experimental" />}>
       <p className="coinjoin-subtitle">{CoinJoinText.subtitle}</p>
       <section className="coinjoin-status card-l1" data-testid="coinjoin-status" data-state={view.state} aria-labelledby={`${id}-title`}>
-        <Icon id="coinjoin" size={56} className="coinjoin-status-icon" />
+        {view.state === "off" && view.title === CoinJoinText.notStarted ? <EmptyArt id="coinjoin" size={56} /> : <Icon id="coinjoin" size={56} className="coinjoin-status-icon" />}
         <div className="coinjoin-card-body">
           <div className="coinjoin-card-live">
             <h2 className="coinjoin-status-title" id={`${id}-title`} data-testid="coinjoin-status-title">

@@ -35,6 +35,7 @@ import {
   type MixingGroup,
 } from "../format/tx";
 import { AmountText, Chip, Icon, VisuallyHidden } from "./basics";
+import { EmptyArt, type EmptyArtId } from "./emptyArt";
 import type { UsedIcon } from "./icons";
 
 const TX_ICON: Record<TxIcon, UsedIcon> = {
@@ -348,10 +349,10 @@ export function TxTable({
   );
 }
 
-export function EmptyState({ title, message, action, testId }: { title: string; message?: string; action?: ReactNode; testId: string }) {
+export function EmptyState({ title, message, action, testId, art }: { title: string; message?: string; action?: ReactNode; testId: string; art?: EmptyArtId }) {
   return (
-    <div className="empty-state card-l1" data-testid={testId}>
-      <Icon id="txAll" size={60} className="empty-state-icon" />
+    <div className="empty-state card-l1" data-testid={testId} data-art={art}>
+      {art ? <EmptyArt id={art} /> : <Icon id="txAll" size={60} className="empty-state-icon" />}
       <h3 className="empty-state-title">{title}</h3>
       {message && <p className="empty-state-message">{message}</p>}
       {action}

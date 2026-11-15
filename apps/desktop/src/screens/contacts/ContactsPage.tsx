@@ -12,6 +12,7 @@ import { useBackend, useLockStatus } from "../../api/queries";
 import { navigate, ui, useUi, type AddContactIntent } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
+import { EMPTY } from "../../components/emptyStates";
 import { EmptyState, LoadingState } from "../../components/history";
 import {
   findContact,
@@ -113,6 +114,7 @@ function NoContacts({ walletId, owner, retry }: { walletId: string; owner: Exclu
       body = (
         <EmptyState
           testId="contacts-join"
+          art={EMPTY.join.art}
           title="Join DashPay"
           message={JOIN_MESSAGES[owner.reason ?? "none"]}
           action={
@@ -218,16 +220,30 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
       />
     );
   else if (groups.length === 0 && updating) body = <LoadingState testId="contacts-updating" text="Updating contacts…" />;
-  else if (groups.length === 0 && text !== "") body = <EmptyState testId="contacts-no-match" title={`There are no contacts that match “${text}”`} />;
+  else if (groups.length === 0 && text !== "")
+    body = (
+      <EmptyState
+        testId="contacts-no-match"
+        art="search"
+        title={`There are no contacts that match “${text}”`}
+        message="Try another name."
+        action={
+          <DashButton variant="filledBlue" data-testid="contacts-no-match-clear" onClick={() => setSearch("")}>
+            Clear search
+          </DashButton>
+        }
+      />
+    );
   else if (groups.length === 0)
     body = (
       <EmptyState
         testId="contacts-empty"
-        title="No contacts yet"
-        message="Search for a user by their username to send them a contact request."
+        art={EMPTY.contacts.art}
+        title={EMPTY.contacts.title}
+        message={EMPTY.contacts.message}
         action={
-          <DashButton variant="filledBlue" data-testid="contacts-empty-search" onClick={() => openAdd({ walletId, query: "", hit: null })}>
-            Search for a User
+          <DashButton variant="filledBlue" data-testid={EMPTY.contacts.action.testId} onClick={() => openAdd({ walletId, query: "", hit: null })}>
+            {EMPTY.contacts.action.label}
           </DashButton>
         }
       />

@@ -11,9 +11,11 @@ import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
 import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, type HistoryFilter } from "../api/queries";
 import { fileErrorText } from "../app/files";
+import { navigate } from "../app/ui";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
+import { activityFiltersApplied, EMPTY } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
@@ -87,6 +89,14 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     [withExtra, extra, range.dateFrom, range.dateTo, minAmount],
   );
   const rows = useMemo(() => mergeActivity(coreRows, !!history.hasNextPage, extraShown), [coreRows, history.hasNextPage, extraShown]);
+  const filtered = activityFiltersApplied({ categoryId: category.id, text, date, minAmount });
+  const clearFilters = () => {
+    setCategory(CATEGORIES[0]);
+    setSearch("");
+    setDate("all");
+    setMinText("");
+  };
+  const empty = filtered ? EMPTY.activityFiltered : EMPTY.activity;
   const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
   // Every extra row the filters keep counts, loaded or not; Export is the Core history only.
   const total = coreTotal === null ? null : coreTotal + extraShown.length;
@@ -213,7 +223,21 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
         ) : history.isError && coreRows.length === 0 ? (
           <EmptyState testId="tx-error" title="Could not load transactions" message={errorMessage(history.error)} />
         ) : rows.length === 0 ? (
-          <EmptyState testId="tx-empty" title="There are no transactions to display" />
+          <EmptyState
+            testId="tx-empty"
+            art={empty.art}
+            title={empty.title}
+            message={empty.message}
+            action={
+              <DashButton
+                variant="filledBlue"
+                data-testid={empty.action.testId}
+                onClick={() => (filtered ? clearFilters() : navigate("receive"))}
+              >
+                {empty.action.label}
+              </DashButton>
+            }
+          />
         ) : mode === "list" ? (
           <div data-testid="tx-list">
             <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" decorate={decorateSource} />

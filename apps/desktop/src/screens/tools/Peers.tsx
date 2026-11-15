@@ -6,9 +6,10 @@ import { useState } from "react";
 import { useBackend } from "../../api/queries";
 import { DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
-import { LoadingState } from "../../components/history";
+import { EMPTY } from "../../components/emptyStates";
+import { EmptyState, LoadingState } from "../../components/history";
 import { useModel } from "../../onboarding/model";
-import { peerRow, PeersModel, PeersText, type PeerRow } from "../../tools/peers";
+import { peerRow, PeersModel, type PeerRow } from "../../tools/peers";
 import { Outcome, ToolCard, useReloadOnSync } from "./common";
 
 const COLUMNS: [keyof PeerRow, string, boolean][] = [
@@ -48,9 +49,17 @@ export function PeersTab() {
         {model.peers === null ? (
           !model.error && <LoadingState testId="peers-loading" text="Reading the peers" />
         ) : rows.length === 0 ? (
-          <p className="placeholder-note" data-testid="peers-none">
-            {PeersText.none}
-          </p>
+          <EmptyState
+            testId="peers-none"
+            art={EMPTY.peers.art}
+            title={EMPTY.peers.title}
+            message={EMPTY.peers.message}
+            action={
+              <DashButton variant="filledBlue" data-testid={EMPTY.peers.action.testId} disabled={model.rotating} onClick={() => void model.rotate()}>
+                {model.rotating ? "Changing peers…" : EMPTY.peers.action.label}
+              </DashButton>
+            }
+          />
         ) : (
           <div className="table-card">
             <table className="data-table peers-table" data-testid="peers-table">

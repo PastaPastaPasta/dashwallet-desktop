@@ -8,10 +8,11 @@ import { errorMessage, type Backend } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { Utxo } from "../../api/generated/Utxo";
 import { keys, useUtxos } from "../../api/queries";
-import { openPayForm } from "../../app/ui";
+import { navigate, openPayForm } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CoinSummary, CoinTable } from "../../components/coins";
-import { LoadingState } from "../../components/history";
+import { EMPTY } from "../../components/emptyStates";
+import { EmptyState, LoadingState } from "../../components/history";
 import type { Unit } from "../../format/amount";
 import { useDisplay } from "../../format/display";
 import { useModel } from "../../onboarding/model";
@@ -88,9 +89,31 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
         </p>
       )}
       {model.visible.length === 0 ? (
-        <p className="placeholder-note" data-testid="coins-none">
-          {utxos.data.length === 0 ? "This wallet has no coins yet." : "Every coin of this wallet is a CoinJoin coin; Show all coins lists them."}
-        </p>
+        utxos.data.length === 0 ? (
+          <EmptyState
+            testId="coins-none"
+            art={EMPTY.coins.art}
+            title={EMPTY.coins.title}
+            message={EMPTY.coins.message}
+            action={
+              <DashButton variant="filledBlue" data-testid={EMPTY.coins.action.testId} onClick={() => navigate("receive")}>
+                {EMPTY.coins.action.label}
+              </DashButton>
+            }
+          />
+        ) : (
+          <EmptyState
+            testId="coins-none"
+            art={EMPTY.coinsHidden.art}
+            title={EMPTY.coinsHidden.title}
+            message={EMPTY.coinsHidden.message}
+            action={
+              <DashButton variant="filledBlue" data-testid={EMPTY.coinsHidden.action.testId} onClick={() => model.setShowCoinJoin(true)}>
+                {EMPTY.coinsHidden.action.label}
+              </DashButton>
+            }
+          />
+        )
       ) : (
         <div className="table-card">
           <CoinTable
