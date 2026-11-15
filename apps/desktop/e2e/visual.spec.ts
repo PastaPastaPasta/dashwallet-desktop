@@ -322,6 +322,10 @@ for (const theme of THEMES) {
     await page.keyboard.press("Escape");
     await page.getByTestId("request-sheet").waitFor({ state: "detached" });
     await page.locator("[data-testid^=request-fiat-]").first().waitFor();
+    // The form resets once the sheet closes and focus comes back: wait for it, then blur, so the shot has no focus ring.
+    await expect(page.getByTestId("request-create")).toBeDisabled();
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.mouse.move(0, 0);
     await shoot(page, "receive-requests-fiat", theme);
   });
