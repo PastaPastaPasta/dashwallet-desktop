@@ -199,7 +199,7 @@ export function navigate(route: Route, patch: Partial<UiState> = {}) {
 /** Opens a fresh Pay ▸ To an address form (each call starts a new one), with what a link or a
  * tool put in it. */
 export function openPayForm(patch: Pick<Partial<UiState>, "payPrefill" | "payCoins"> = {}) {
-  navigate("pay", { payTab: "address", payPrefill: null, payCoins: null, payLinks: ui.get().payLinks + 1, ...patch });
+  navigate("pay", { payTab: "address", payPrefill: null, payCoins: null, payContact: null, payLinks: ui.get().payLinks + 1, ...patch });
 }
 
 export function useUi<T>(select: (s: UiState) => T): T {

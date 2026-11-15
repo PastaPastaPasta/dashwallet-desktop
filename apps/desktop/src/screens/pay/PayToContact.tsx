@@ -16,7 +16,7 @@ import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
 import { useDisplay } from "../../format/display";
-import { NETWORK_DEBOUNCE_MS, networkHits, networkPrefix, SEARCH_DEBOUNCE_MS } from "../../contacts/model";
+import { NETWORK_DEBOUNCE_MS, networkPrefix, SEARCH_DEBOUNCE_MS } from "../../contacts/model";
 import { refreshAfter, useContactDetail, useContactsOwner, useHasKeys, useNetworkSearch } from "../../contacts/queries";
 import { Outcome as ActionLine } from "../tools/common";
 import { Avatar } from "../contacts/Avatar";
@@ -25,7 +25,7 @@ import { CoinControl } from "./CoinControl";
 import { FoundUser } from "./FoundUser";
 import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
+import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
 import { confirmedOf, DEFAULT_ADVANCED, type Advanced } from "./model";
@@ -110,10 +110,11 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
   const all = usePayPicker(walletId, identity, "");
   const net = useNetworkSearch(walletId, identity, prefix);
   const groups = pickerGroups(list.data);
-  // The picker lists contacts and requests only: everyone else the search found is listed under
-  // it (a request sent, an ignored sender, oneself), not only strangers.
-  const hits = networkHits(net.data, all.data, true);
-  const networkState = prefix !== wanted || net.isPending || (net.isError && net.isFetching) ? "loading" : net.isError ? "error" : "done";
+  // Everyone the search found that the picker does not list for the text is listed under it (a
+  // request sent, an ignored sender, oneself, a contact the filter missed), not only strangers.
+  const listReady = list.data !== undefined && !list.isPlaceholderData;
+  const hits = listReady ? pickerHits(net.data, list.data) : { shown: [], more: false };
+  const networkState = pickerNetworkState({ listReady, caughtUp: prefix === wanted, pending: net.isPending, failed: net.isError, fetching: net.isFetching });
   const view = pickerView({
     text,
     groups: groups.length,

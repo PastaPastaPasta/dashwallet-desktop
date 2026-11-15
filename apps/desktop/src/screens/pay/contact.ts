@@ -12,11 +12,12 @@ import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { EligibilityName } from "../../api/generated/EligibilityName";
 import type { LockResolutionName } from "../../api/generated/LockResolutionName";
 import type { LockStateName } from "../../api/generated/LockStateName";
+import type { UserHit } from "../../api/generated/UserHit";
 import type { UserRelation } from "../../api/generated/UserRelation";
 import type { PayTab } from "../../app/ui";
 import { actionError } from "../../contacts/actions";
 import { cardLine } from "../../contacts/add";
-import { avatarLetters, shownName, subtitle, type ContactsOwner } from "../../contacts/model";
+import { avatarLetters, networkHits, shownName, subtitle, type ContactsOwner } from "../../contacts/model";
 import { BROKEN, ENABLE_FIRST, payNote } from "../../contacts/pane";
 
 type Named = Pick<ContactSummaryInfo, "contact" | "alias" | "displayName" | "username">;
@@ -61,8 +62,9 @@ export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "star
  * (`owner` is `undefined` until DashPay's status is read). */
 export function defaultPayTab(owner: ContactsOwner | undefined, list: { data: ContactList | undefined; failed: boolean }): PayTab | null {
   if (owner === undefined) return null;
-  if (owner.kind !== "identity") return "address";
-  if (list.data === undefined) return list.failed ? "address" : null;
+  // A failed read keeps the last good list, which may be stale: To an address, not that list.
+  if (owner.kind !== "identity" || list.failed) return "address";
+  if (list.data === undefined) return null;
   return pickerGroups(list.data).length > 0 ? "contact" : "address";
 }
 
@@ -113,6 +115,22 @@ export function pickerView(i: {
   // No group and no hit lists nothing, even when the search matched contacts the picker's own
   // filter did not (it folds homographs, the filter does not).
   return { network, none: i.networkState === "done" && i.hits === 0 ? "anyone" : null };
+}
+
+/** The username search's hits under the picker: everyone the picker itself does not list for the
+ * text, whatever their relation. Matched against the filtered list the picker shows, not the
+ * identity's whole list: the search folds homographs, the filter does not, so a contact the
+ * filter missed is found here. */
+export function pickerHits(hits: UserHit[] | undefined, shown: ContactList): { shown: UserHit[]; more: boolean } {
+  return networkHits(hits, { ...shown, sections: shown.sections.filter((s) => s.section === "contacts" || s.section === "requests") }, true);
+}
+
+/** Where the username search under the picker stands. It is still running until the search has
+ * answered for the text shown and the picker's list for that text is read (`listReady`): before,
+ * its hits cannot be told apart from the picker's rows. */
+export function pickerNetworkState(i: { listReady: boolean; caughtUp: boolean; pending: boolean; failed: boolean; fetching: boolean }): "loading" | "error" | "done" {
+  if (!i.listReady || !i.caughtUp || i.pending || (i.failed && i.fetching)) return "loading";
+  return i.failed ? "error" : "done";
 }
 
 /** What the picker's live region says once the username search answered; `null` before. */

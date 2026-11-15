@@ -2,7 +2,7 @@
 // what paying them takes, and offers it through Contacts' own actions: send a contact request,
 // accept theirs and pay, or pay a contact the search reached first.
 
-import { useEffect, useId, useRef } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { UserHit } from "../../api/generated/UserHit";
 import { ui } from "../../app/ui";
 import { Chip, DashButton } from "../../components/basics";
@@ -32,7 +32,12 @@ export function FoundUser({
   const eligibility = useEligibility(walletId, identity, hit.identity);
   const toast = useActionToast(walletId);
   const payee = payeeOf({ contact: hit.identity, alias: null, displayName: hit.displayName?.trim() || null, username: hit.username });
-  const line = foundLine(payee.name, hit.relation, { data: eligibility.data, failed: eligibility.isError && !eligibility.isFetching });
+  // A request sent here is pending at once, before the eligibility read catches up.
+  const [requested, setRequested] = useState(false);
+  const line = foundLine(payee.name, hit.relation, {
+    data: requested ? "pendingOutgoing" : eligibility.data,
+    failed: !requested && eligibility.isError && !eligibility.isFetching,
+  });
   // A request sent shows as the line; a refusal says why under it.
   const failed = actions.outcome?.contact === hit.identity && !actions.outcome.ok ? actions.outcome : null;
 
@@ -44,7 +49,9 @@ export function FoundUser({
   const arm = useRefocus(() => line?.next === "send", () => status.current);
   const sent = (o: ActionOutcome | null) => {
     toast(o, true);
-    if (o?.ok) arm("send");
+    if (!o?.ok) return;
+    setRequested(true);
+    arm("send");
   };
 
   let button = null;

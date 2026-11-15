@@ -4,7 +4,8 @@
 import { describe, expect, it } from "vitest";
 import type { ContactList } from "../../api/generated/ContactList";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
-import { defaultPayTab, foundLine, pickerView, searchAnnouncement } from "./contact";
+import type { UserHit } from "../../api/generated/UserHit";
+import { defaultPayTab, foundLine, pickerGroups, pickerHits, pickerNetworkState, pickerView, searchAnnouncement } from "./contact";
 
 const ME = "8tvHgfq4BLx3bRBcxSs7ZsjaTnAZDSmLhNpAgXyNomeR";
 const BOB = "8GopLQQPjKr2gXjNEt9G8k2PzRZrdbBqQBNTCXV2DYiN";
@@ -58,6 +59,10 @@ describe("the tab Pay opens on", () => {
     expect(defaultPayTab(identity, { data: undefined, failed: false })).toBeNull();
     expect(defaultPayTab(identity, { data: undefined, failed: true })).toBe("address");
   });
+
+  it("pays to an address when the contacts' last read failed, even with an older list kept", () => {
+    expect(defaultPayTab(identity, { data: list([summary()]), failed: true })).toBe("address");
+  });
 });
 
 describe("the picker under a search", () => {
@@ -104,6 +109,49 @@ describe("the picker under a search", () => {
     expect(say({ networkState: "loading" })).toBeNull();
     expect(say({ network: false })).toBeNull();
     expect(say({})).toBeNull();
+  });
+});
+
+describe("the username search under the picker", () => {
+  const MARTA = "6ce1fd5DbkBSu5PvJp1jR3P5LxcAuFFRtnLsmKnzDNDM";
+  const hit = (over: Partial<UserHit> = {}): UserHit => ({
+    identity: BOB,
+    username: "b0b",
+    displayName: "Bob Builder",
+    avatarUrl: null,
+    relation: "contact",
+    unverified: false,
+    ...over,
+  });
+
+  it("lists a contact the picker's filter missed, and says it found someone", () => {
+    // "b0b" finds Bob (the search folds 0 and o); the picker's filter lists no one for it.
+    const filtered = list([]);
+    const hits = pickerHits([hit()], filtered);
+    expect(hits.shown.map((h) => h.identity)).toEqual([BOB]);
+    const view = pickerView({ text: "b0b", groups: pickerGroups(filtered).length, anyContacts: true, network: true, networkState: "done", hits: hits.shown.length });
+    expect(view).toEqual({ network: true, none: null });
+  });
+
+  it("leaves out only who the picker lists for the text, in its contacts and requests", () => {
+    const filtered = list([summary()]);
+    const sent = summary({ contact: MARTA, username: "marta", relation: "pendingOutgoing" });
+    const withSent: ContactList = { ...filtered, sections: [...filtered.sections, { section: "pending", contacts: [sent] }] };
+    const hits = pickerHits([hit({ username: "bob" }), hit({ identity: MARTA, username: "marta", relation: "pendingOutgoing" })], withSent);
+    expect(hits.shown.map((h) => h.identity)).toEqual([MARTA]);
+  });
+
+  it("runs until the picker's list for the text is read, and is no 'No one found' meanwhile", () => {
+    const state = (over: Partial<Parameters<typeof pickerNetworkState>[0]> = {}) =>
+      pickerNetworkState({ listReady: true, caughtUp: true, pending: false, failed: false, fetching: false, ...over });
+    expect(state()).toBe("done");
+    expect(state({ listReady: false })).toBe("loading");
+    expect(state({ listReady: false, failed: true })).toBe("loading");
+    expect(state({ caughtUp: false })).toBe("loading");
+    expect(state({ failed: true })).toBe("error");
+    expect(state({ failed: true, fetching: true })).toBe("loading");
+    const networkState = state({ listReady: false });
+    expect(pickerView({ text: "zzz", groups: 0, anyContacts: true, network: true, networkState, hits: 0 })).toEqual({ network: true, none: null });
   });
 });
 

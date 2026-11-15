@@ -64,11 +64,15 @@ test("PAY-6 a username that is no contact finds the user, who gets a contact req
   // The card's heading takes focus.
   await expect(page.getByTestId("pay-found-card").getByRole("heading", { name: "Marta" })).toBeFocused();
   await expect(page.getByTestId("pay-found-line")).toHaveText("You can pay Marta once they accept your contact request.");
+  // The eligibility reads after the send fail, which keeps the last answer: the card says the
+  // request went without them.
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_eligibility", "none"));
   await page.getByTestId("pay-found-send").click();
   await authorize(page);
   // The line says the request went, and takes focus; no second line repeats it.
   await expect(page.getByTestId("pay-found-line")).toHaveText("Contact request sent. You can pay Marta once they accept.");
   await expect(page.getByTestId("pay-found-send")).toHaveCount(0);
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_eligibility", null));
   await expect(page.getByTestId("pay-found-status")).toBeFocused();
   await expect(page.getByTestId("pay-found-outcome")).toHaveCount(0);
   // Change goes back to the search as it was, focused; Marta is still found, as a request sent.
@@ -178,6 +182,21 @@ test("PAY-6 a contact picked on Pay is gone once Pay is left; the next visit ope
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
   await selected(page, "contact");
+  await expect(page.getByTestId("pay-contact-search")).toBeVisible();
+  await expect(page.getByTestId("pay-payee-change")).toHaveCount(0);
+});
+
+test("PAY-6 a payment link that arrives while Pay is open drops the contact picked", async ({ page }) => {
+  await openPay(page, "dashpay-registered");
+  await page.getByTestId("pay-picker-row").first().click();
+  await expect(page.getByTestId("pay-payee-change")).toBeVisible();
+  await page.evaluate(() =>
+    window.__dwFixture!.deliverLinks([
+      { kind: "pay", uri: { address: "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf", amount: null, label: null, message: null }, username: null },
+    ]),
+  );
+  await selected(page, "address");
+  await page.getByTestId("pay-tabs-contact").click();
   await expect(page.getByTestId("pay-contact-search")).toBeVisible();
   await expect(page.getByTestId("pay-payee-change")).toHaveCount(0);
 });
