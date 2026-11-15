@@ -275,12 +275,16 @@ export function RegistrationScreen({
   const welcome = model.kind === "done";
   const section = useRef<HTMLElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
+  const [announced, setAnnounced] = useState("");
   // The progress screen's controls go when it turns into the welcome, and focus with them; start
-  // keyboard users at the title then, but leave focus that is still somewhere else alone.
+  // keyboard users at the title then. Focus still somewhere else stays, and the welcome is
+  // announced instead.
   useEffect(() => {
-    if (!welcome) return;
+    if (!welcome) return setAnnounced("");
     const active = document.activeElement;
     if (active === null || active === document.body || section.current?.contains(active)) title.current?.focus();
+    else setAnnounced([model.title, ...model.lines].join(". "));
+    // Only the switch to the welcome moves focus or speaks, not a later change of its text.
   }, [welcome]);
   return (
     <section
@@ -290,8 +294,11 @@ export function RegistrationScreen({
       data-kind={model.kind}
       data-phase={phase}
       data-waiting={waiting ?? undefined}
-      aria-labelledby={`${id}-title`}
+      aria-labelledby={welcome ? undefined : `${id}-title`}
     >
+      <p role="status" className="sr-only" data-testid="registration-announced">
+        {announced}
+      </p>
       {/* Changes as the run moves on, announced politely, as the Home card (DP1-08 D25). The
           welcome is announced by its focused title instead, so it is not read twice. */}
       <div role={welcome ? undefined : "status"} className="registration-live">

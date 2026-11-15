@@ -9,7 +9,7 @@ const LABEL = "alice-77";
 const screen = (page: Page) => page.getByTestId("registration-screen");
 
 /** A new username from the Join page, run to its end: the welcome. */
-async function toWelcome(page: Page, theme: Theme = "light") {
+async function toWelcome(page: Page, theme: Theme = "light", whileRunning?: () => Promise<void>) {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl("dashpay-no-identity", theme));
   await page.getByTestId("toolbar").waitFor();
@@ -21,6 +21,7 @@ async function toWelcome(page: Page, theme: Theme = "light") {
   await page.getByTestId("registration-pay").click();
   await authorize(page);
   await expect(screen(page)).toHaveAttribute("data-kind", "progress");
+  await whileRunning?.();
   await page.evaluate(() => {
     const d = window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft;
     while (window.__dwFixture!.advanceRegistration(d));
@@ -51,6 +52,13 @@ for (const theme of THEMES)
     expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
   });
+
+test("with focus elsewhere when the run ends, the welcome is announced and focus stays", async ({ page }) => {
+  const errors = await toWelcome(page, "light", () => page.getByTestId("sidebar-home").focus());
+  await expect(page.getByTestId("sidebar-home")).toBeFocused();
+  await expect(page.getByTestId("registration-announced")).toHaveText(`Welcome to DashPay, @${LABEL}. Your username is ready. Friends can now find you and pay you by name.`);
+  expect(errors).toEqual([]);
+});
 
 test("Add a photo and name opens Edit Profile on My Profile", async ({ page }) => {
   const errors = await toWelcome(page);
