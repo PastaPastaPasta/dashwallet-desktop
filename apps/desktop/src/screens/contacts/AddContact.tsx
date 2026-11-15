@@ -477,7 +477,7 @@ function ScanTab({ model }: { model: AddContactModel }) {
 }
 
 /** My QR (D12): the identity's plain `dashpay://user` link. */
-function MyQrTab({ walletId, identity }: { walletId: string; identity: string }) {
+export function MyQrTab({ walletId, identity }: { walletId: string; identity: string }) {
   const link = useMyUserLink(walletId, identity);
   const state = myQr(link);
   const matrix = useQrMatrix(state.kind === "link" ? state.link : undefined);

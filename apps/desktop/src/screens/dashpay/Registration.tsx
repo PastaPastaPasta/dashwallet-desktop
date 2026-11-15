@@ -3,7 +3,7 @@
 // result for its row (the design's R1–R11). The view model is dashpay/registration.ts, the flow
 // dashpay/wizard.ts; the passphrase prompt is U-05's GrantSheet.
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { RegistrationQuote } from "../../api/generated/RegistrationQuote";
 import { CLAIM_COPY, claimErrorText } from "../../dashpay/claim";
 import { DashButton } from "../../components/basics";
@@ -25,6 +25,7 @@ import type { RegistrationWizard } from "../../dashpay/wizard";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 import { VotingInfoSheet } from "./AboutDashPay";
+import { ShareSheet, WelcomeSteps } from "./Welcome";
 
 export function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; title: string; id: string }) {
   return (
@@ -253,6 +254,7 @@ export function RegistrationScreen({
   claim = false,
   onAction,
   inputs,
+  share = null,
 }: {
   wiz: RegistrationWizard;
   model: ScreenModel;
@@ -262,23 +264,51 @@ export function RegistrationScreen({
   claim?: boolean;
   onAction: (kind: ScreenActionKind) => void;
   inputs: StatusInputs;
+  /** Whose username the welcome's Share my username shows, once known. */
+  share?: { walletId: string; identity: string } | null;
 }) {
   useModel(wiz);
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const { step } = model;
+  const welcome = model.kind === "done";
+  const section = useRef<HTMLElement>(null);
+  const title = useRef<HTMLHeadingElement>(null);
+  const [announced, setAnnounced] = useState("");
+  // The progress screen's controls go when it turns into the welcome, and focus with them; start
+  // keyboard users at the title then. Focus still somewhere else stays, and the welcome is
+  // announced instead.
+  useEffect(() => {
+    if (!welcome) return setAnnounced("");
+    const active = document.activeElement;
+    if (active === null || active === document.body || section.current?.contains(active)) title.current?.focus();
+    else setAnnounced(`${model.title}. ${model.lines.join(" ")}`);
+    // Only the switch to the welcome moves focus or speaks, not a later change of its text.
+  }, [welcome]);
   return (
     <section
-      className="registration card-l1"
+      ref={section}
+      className={welcome ? "registration registration-welcome card-l1" : "registration card-l1"}
       data-testid="registration-screen"
       data-kind={model.kind}
       data-phase={phase}
       data-waiting={waiting ?? undefined}
-      aria-labelledby={`${id}-title`}
+      aria-labelledby={welcome ? undefined : `${id}-title`}
     >
-      {/* Changes as the run moves on, announced politely, as the Home card (DP1-08 D25). */}
-      <div role="status" className="registration-live">
-        <h2 className="registration-title" id={`${id}-title`}>
+      <p role="status" className="sr-only" data-testid="registration-announced">
+        {announced}
+      </p>
+      {/* Changes as the run moves on, announced politely, as the Home card (DP1-08 D25). The
+          welcome is announced by its focused title instead, so it is not read twice. */}
+      <div role={welcome ? undefined : "status"} className="registration-live">
+        <h2
+          className="registration-title"
+          id={`${id}-title`}
+          ref={title}
+          tabIndex={welcome ? -1 : undefined}
+          aria-describedby={welcome ? `${id}-lines` : undefined}
+        >
           {model.title}
           {model.busy && <span className="spinner registration-spinner" aria-hidden="true" />}
         </h2>
@@ -290,7 +320,7 @@ export function RegistrationScreen({
             <progress className="dashpay-card-progress" max={3} value={step.n} aria-label="Registration progress" />
           </div>
         )}
-        <div data-testid="registration-lines">
+        <div data-testid="registration-lines" id={`${id}-lines`}>
           {model.lines.map((line) => (
             <p key={line} className="registration-line">
               {line}
@@ -304,11 +334,19 @@ export function RegistrationScreen({
         </p>
       )}
       <ErrorLine wiz={wiz} inputs={inputs} claim={claim} />
+      {welcome && (
+        <WelcomeSteps
+          disabled={wiz.running !== null}
+          canEdit={inputs.main !== undefined}
+          canShare={share !== null}
+          onStep={(kind) => (kind === "share" ? setSharing(true) : onAction(kind))}
+        />
+      )}
       <div className="registration-actions">
         {model.actions.map((a, i) => (
           <DashButton
             key={a.kind}
-            variant={i === 0 ? "filledBlue" : "plainBlue"}
+            variant={i === 0 && !welcome ? "filledBlue" : "plainBlue"}
             data-testid={`registration-${a.kind}`}
             disabled={wiz.running !== null}
             onClick={() => (a.kind === "votingInfo" ? setVotingInfo(true) : onAction(a.kind))}
@@ -320,6 +358,7 @@ export function RegistrationScreen({
       </div>
       <GrantSheet grants={wiz.grants} />
       {votingInfo && <VotingInfoSheet onClose={() => setVotingInfo(false)} />}
+      {sharing && share && <ShareSheet walletId={share.walletId} identity={share.identity} onClose={() => setSharing(false)} />}
     </section>
   );
 }

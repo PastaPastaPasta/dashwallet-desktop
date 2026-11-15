@@ -95,7 +95,7 @@ test("IOS-066: the checklist as typed, availability once valid, the contested ex
   expect(errors).toEqual([]);
 });
 
-test("IOS-067 / IOS-068: Confirm & pay, the progress through its steps on the page and the Home card, then Hello @name", async ({ page }) => {
+test("IOS-067 / IOS-068: Confirm & pay, the progress through its steps on the page and the Home card, then the welcome", async ({ page }) => {
   const errors = await open(page, "dashpay-no-identity");
   await toJoin(page);
   await page.getByTestId("join-create").click();
@@ -125,9 +125,11 @@ test("IOS-067 / IOS-068: Confirm & pay, the progress through its steps on the pa
   await expect(page.getByTestId("registration-progress-step")).toHaveText("(3/3) Registering username");
   await complete(page, draft);
   await expect(screen(page)).toHaveAttribute("data-kind", "done");
-  await expect(screen(page).locator("h2")).toHaveText(`Hello @${LABEL},`);
+  await expect(screen(page).locator("h2")).toHaveText(`Welcome to DashPay, @${LABEL}`);
   await expect(page.getByTestId("toolbar-chip")).toContainText(`@${LABEL}`);
-  await page.getByTestId("registration-done").click();
+  await page.getByTestId("registration-wallet").click();
+  await expect(page.getByTestId("hero")).toBeVisible();
+  await toJoin(page);
   await expect(page.getByTestId("join-joined")).toHaveText(`You have joined DashPay as @${LABEL}.`);
   expect(await assetLocks(page)).toBe(1);
   expect(errors).toEqual([]);
@@ -234,7 +236,7 @@ test("IOS-068 failures: a retryable stop continues the same registration; a refu
   await page.getByTestId("registration-pay").click();
   await authorize(page);
   await expect(screen(page)).toHaveAttribute("data-kind", "done");
-  await expect(screen(page).locator("h2")).toHaveText("Hello @alice-78,");
+  await expect(screen(page).locator("h2")).toHaveText("Welcome to DashPay, @alice-78");
   expect(await assetLocks(page)).toBe(1);
 });
 

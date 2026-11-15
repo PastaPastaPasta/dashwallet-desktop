@@ -4009,6 +4009,112 @@ button.bell-row-open:focus-visible {
   gap: var(--dw-space-s);
 }
 
+/* R9, the welcome moment (PRODUCT #4): the greeting, then three next steps as rows. */
+.registration-welcome .registration-title {
+  font-size: var(--dw-type-title2-size);
+  font-weight: var(--dw-type-title2-weight);
+  line-height: var(--dw-type-title2-line);
+}
+
+.registration-welcome .registration-line {
+  font-size: var(--dw-type-callout-size);
+  line-height: var(--dw-type-callout-line);
+}
+
+.welcome-next {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-s);
+}
+
+.welcome-next-title {
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+}
+
+.welcome-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xs);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.welcome-step {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  width: 100%;
+  padding: var(--dw-space-sm) var(--dw-space-m);
+  border: 0;
+  border-radius: var(--dw-radius-standard);
+  background: var(--dw-role-neutral-tint);
+  color: var(--dw-role-text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  transition: background-color var(--dw-motion-hover);
+}
+
+.welcome-step:hover:not(:disabled) {
+  background: var(--dw-role-accent-tint);
+}
+
+.welcome-step:disabled {
+  color: var(--dw-role-text-secondary);
+}
+
+.welcome-step:disabled .welcome-step-number {
+  background: var(--dw-role-neutral-tint);
+  color: var(--dw-role-text-secondary);
+}
+
+.registration-title[tabindex="-1"]:focus {
+  outline: none;
+}
+
+.welcome-step-number {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--dw-radius-capsule);
+  background: var(--dw-role-accent);
+  color: var(--dw-role-text-on-hero);
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+}
+
+.welcome-step-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.welcome-step-title {
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+}
+
+.welcome-step-detail {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.welcome-step-chevron {
+  flex: none;
+  color: var(--dw-role-text-tertiary);
+  font-size: var(--dw-type-title3-size);
+}
+
 /* DP5-03: the invitation claim screen. */
 .claim-inviter,
 .claim-recipient {

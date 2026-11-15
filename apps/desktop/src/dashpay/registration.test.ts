@@ -182,7 +182,14 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
 
   it("R9, R10, R11: done greets the name; a refused name keeps the identity; a contested one shows the vote", () => {
     const done = screenModel(row({ phase: "done", waiting: null, identity: "A" }), I);
-    expect(done).toMatchObject({ kind: "done", title: "Hello @alice,", lines: ["Your account is ready"], step: null, busy: false });
+    expect(done).toMatchObject({
+      kind: "done",
+      title: "Welcome to DashPay, @alice",
+      lines: ["Your username is ready. Friends can now find you and pay you by name."],
+      step: null,
+      busy: false,
+      actions: [{ kind: "wallet", label: "Go to wallet" }],
+    });
     const taken = screenModel(row({ phase: "done", waiting: null, identity: "A", nameFailure: "name.taken" }), I);
     expect(taken).toMatchObject({ kind: "nameFailed", title: "Your identity is ready", lines: ["@alice could not be registered. Username was taken by another user."] });
     expect(taken.actions.map((a) => a.kind)).toEqual(["another"]);
@@ -192,7 +199,7 @@ describe("IOS-068 the progress and result screens (R1–R11)", () => {
   });
 
   it("D6: a name from credits ends registered or with its contest", () => {
-    expect(namedModel("bob", { kind: "registered" }, I.date)).toMatchObject({ kind: "done", title: "Hello @bob," });
+    expect(namedModel("bob", { kind: "registered" }, I.date)).toMatchObject({ kind: "done", title: "Welcome to DashPay, @bob" });
     expect(namedModel("bob", { kind: "contestStarted", endsAt: 5 }, I.date)).toMatchObject({ kind: "voting", lines: [REG_COPY.voting.message("bob"), "Results on day 5."] });
     expect(namedModel("bob", { kind: "contestStarted", endsAt: null }, I.date).lines[1]).toBe(COPY.voting.notify);
   });
