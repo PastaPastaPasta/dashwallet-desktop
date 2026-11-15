@@ -163,6 +163,8 @@ test("IOS-073 a dashpay: link opens Add Contact verified; a link that does not v
   const errors = await openContacts(page);
   await deliver(page, [{ kind: "addContact", identity: IDENTITY.mallory, username: "Mallory" }]);
   await expect(page.getByTestId("add-contact-name")).toHaveText("Mallory");
+  // The section the link opened is Add contact's, so the header button reports it open.
+  await expect(page.getByTestId("contacts-add")).toHaveAttribute("aria-expanded", "true");
   // Platform's spelling, not the link's.
   await expect(page.getByTestId("add-contact-username")).toHaveText("@mallory");
   await expect(page.getByTestId("add-contact-verified")).toContainText("From a link");
