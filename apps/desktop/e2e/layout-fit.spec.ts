@@ -6,6 +6,23 @@ import { fixtureUrl, fontsReady, THEMES, type Theme } from "./helpers";
 // both appearances: nothing scrolls sideways, and nothing pokes out of the main pane. Checkboxes
 // and radios are drawn from tokens, so an unchecked one reads as empty on every engine.
 
+/** A colour token as the page resolves it. */
+const tokenColor = (page: Page, token: string) =>
+  page.evaluate((t) => {
+    const probe = document.createElement("span");
+    probe.style.color = `var(${t})`;
+    document.body.append(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  }, token);
+
+/** The mark a checked control draws: its `::before` content, the tick's stroke and the dot's fill. */
+const mark = (el: Element) => {
+  const s = getComputedStyle(el, "::before");
+  return { content: s.content, stroke: s.borderLeftColor, strokeWidth: s.borderLeftWidth, fill: s.backgroundColor };
+};
+
 const ROUTES: Route[] = [
   "home",
   "pay",
@@ -153,9 +170,38 @@ for (const theme of THEMES) {
     expect(unchecked.background).toBe("rgba(0, 0, 0, 0)");
     expect(unchecked.border).not.toBe("rgba(0, 0, 0, 0)");
     expect(parseFloat(unchecked.borderWidth)).toBeGreaterThan(0);
+    expect((await box.evaluate(mark)).content).toBe("none");
     await box.check();
     const checked = await look();
     expect(checked.background).toBe(checked.accent);
+    // The tick is drawn in the text-on-accent colour.
+    const tick = await box.evaluate(mark);
+    expect(tick.content).toBe('""');
+    expect(tick.stroke).toBe(await tokenColor(page, "--dw-role-text-on-hero"));
+    expect(parseFloat(tick.strokeWidth)).toBeGreaterThan(0);
+  });
+
+  test(`a checked radio fills and draws its dot, an unchecked one stays an outline, ${theme}`, async ({ page }) => {
+    await open(page, "pay", theme);
+    await page.getByTestId("pay-tabs-address").click();
+    await page.locator("summary", { hasText: "Advanced" }).first().click();
+    const radios = page.locator('input[type="radio"]');
+    await expect(radios.first()).toBeVisible();
+    const looks = await radios.evaluateAll((els) =>
+      els.map((el) => {
+        const s = getComputedStyle(el);
+        const dot = getComputedStyle(el, "::before");
+        return { checked: (el as HTMLInputElement).checked, fill: s.backgroundColor, radius: s.borderTopLeftRadius, content: dot.content, dot: dot.backgroundColor };
+      }),
+    );
+    const accent = await tokenColor(page, "--dw-role-accent");
+    const white = await tokenColor(page, "--dw-role-text-on-hero");
+    const on = looks.filter((l) => l.checked);
+    const off = looks.filter((l) => !l.checked);
+    expect(on.length).toBeGreaterThan(0);
+    expect(off.length).toBeGreaterThan(0);
+    for (const l of on) expect(l).toMatchObject({ fill: accent, radius: "50%", content: '""', dot: white });
+    for (const l of off) expect(l).toMatchObject({ fill: "rgba(0, 0, 0, 0)", radius: "50%", content: "none" });
   });
 
   test(`every checkbox and radio on Settings is drawn from tokens, ${theme}`, async ({ page }) => {
@@ -191,5 +237,9 @@ for (const theme of THEMES) {
     await box.check();
     const checked = await look();
     expect(checked.background).toBe(checked.white);
+    // The tick is hero blue on the white box.
+    const tick = await box.evaluate(mark);
+    expect(tick.content).toBe('""');
+    expect(tick.stroke).toBe(await tokenColor(page, "--dw-role-hero"));
   });
 }
