@@ -415,6 +415,7 @@ fn records() -> Vec<TxRecord> {
                 involves_watch_only: s.watch,
                 counterparty: None,
                 fiat_then: None,
+                purpose: None,
             }
         })
         .collect();

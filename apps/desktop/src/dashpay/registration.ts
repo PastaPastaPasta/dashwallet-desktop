@@ -87,9 +87,10 @@ export const REG_COPY = {
   failed: { title: "Registration failed", another: "Choose another username" },
   stopped: { title: "Registration stopped" },
   done: {
-    title: (label: string) => `Hello @${label},`,
-    message: "Your account is ready",
-    action: "Done",
+    title: (label: string) => `Welcome to DashPay, @${label}`,
+    message: "Your username is ready. Friends can now find you and pay you by name.",
+    next: "What's next",
+    action: "Go to wallet",
     // An invitation's request to its inviter (DP5-03 C2, F2).
     requestSent: "A contact request was sent to your inviter.",
     requestRefused: "The contact request to your inviter could not be sent. You can add them from Contacts.",
@@ -212,7 +213,18 @@ export type ScreenKind =
   /** R11 */
   | "voting";
 
-export type ScreenActionKind = "home" | "continue" | "unlock" | "finish" | "repair" | "another" | "done" | "votingInfo";
+export type ScreenActionKind = "home" | "continue" | "unlock" | "finish" | "repair" | "another" | "done" | "wallet" | "votingInfo" | Exclude<WelcomeStepKind, "share">;
+
+/** R9's next steps (PRODUCT #4). */
+export type WelcomeStepKind = "editProfile" | "findFriends" | "share";
+
+export const SHARE_TITLE = "Share my username";
+
+export const WELCOME_STEPS: { kind: WelcomeStepKind; title: string; text: string }[] = [
+  { kind: "editProfile", title: "Add a photo and name", text: "So friends know it's you." },
+  { kind: "findFriends", title: "Find friends", text: "Search for people you know by username." },
+  { kind: "share", title: SHARE_TITLE, text: "Show my QR code or copy my link." },
+];
 
 export interface ScreenAction {
   kind: ScreenActionKind;
@@ -364,9 +376,9 @@ export function requestNote(row: RegistrationStatus): string | null {
   return inv.requestFailure ? REG_COPY.done.requestRefused : REG_COPY.done.requestSent;
 }
 
-/** R9: Hello @label. */
+/** R9: the welcome; its next steps are WELCOME_STEPS. */
 function doneScreen(label: string): ScreenModel {
-  return { kind: "done", label, title: REG_COPY.done.title(label), lines: [REG_COPY.done.message], step: null, busy: false, actions: [act("done", REG_COPY.done.action)] };
+  return { kind: "done", label, title: REG_COPY.done.title(label), lines: [REG_COPY.done.message], step: null, busy: false, actions: [act("wallet", REG_COPY.done.action)] };
 }
 
 /** A row a run drives: the progress screen re-reads it on a timer (D15). */

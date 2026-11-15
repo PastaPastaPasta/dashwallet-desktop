@@ -1109,6 +1109,16 @@ pub(crate) fn broadcast_unknown() -> &'static str {
     .code()
 }
 
+/// Whether the row's name step succeeded: no name error, and a phase this
+/// build knows that comes after the name was registered.
+pub(crate) fn name_taken(row: &RegistrationRow) -> bool {
+    row.name_error.is_none()
+        && matches!(
+            Phase::parse(&row.phase),
+            Some(Phase::NameRegistered | Phase::ProfileCreated | Phase::Done)
+        )
+}
+
 pub(crate) fn outpoint_of(row: &RegistrationRow) -> Option<OutPoint> {
     row.asset_lock_outpoint.as_deref()?.parse().ok()
 }

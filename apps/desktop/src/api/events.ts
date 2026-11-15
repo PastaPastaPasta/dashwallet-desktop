@@ -89,8 +89,11 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
         // Contacts' cached profiles (display names, D4) change with the identities.
         case "identities":
           return [keys.dashpayAll, keys.historyAll(event.walletId), keys.txDetailAll(event.walletId), keys.receiveAll(event.walletId)];
+        // A registration's lock is titled by its username once the name step lands.
         case "names":
-          return [keys.dashpayAll, keys.receiveAll(event.walletId)];
+          return [keys.dashpayAll, keys.historyAll(event.walletId), keys.txDetailAll(event.walletId), keys.receiveAll(event.walletId)];
+        case "registration":
+          return [keys.dashpayAll, keys.historyAll(event.walletId), keys.txDetailAll(event.walletId)];
         default:
           return [keys.dashpayAll];
       }

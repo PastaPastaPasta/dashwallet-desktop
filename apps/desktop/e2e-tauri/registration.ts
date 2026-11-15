@@ -4,7 +4,7 @@
 // username. Once the row has its asset lock's txid (fundingSent or proofWaiting: before the
 // identity is confirmed) the app is closed. The relaunch opens locked; Home says the registration
 // is paused (nothing resumes alone, D12); Continue under the passphrase resumes the same row and
-// the same lock, and the run ends on Hello @name. The engine's rows say one registration, one
+// the same lock, and the run ends on Welcome to DashPay, @name. The engine's rows say one registration, one
 // txid; E's balance fell by one lock, not two. Writes: one payment A→E, one asset lock, one
 // identity and its name.
 //
@@ -294,7 +294,7 @@ async function registerAndClose(wd: WebDriver, a: App, walletId: string, passphr
   if (kind !== "progress" || !row.running) throw new Error(`the running registration showed ${kind} (running ${row.running}, waiting ${row.waiting}); a rerun goes on from closed without this check, so fix this first`);
 }
 
-/** The relaunch: locked, Home's card paused, Continue under the passphrase, Hello @name. */
+/** The relaunch: locked, Home's card paused, Continue under the passphrase, Welcome to DashPay, @name. */
 async function resume(wd: WebDriver, a: App, walletId: string, passphrase: string) {
   const { draft, lockTxid, label } = ledger!;
   await unlock(wd, a, passphrase);
@@ -331,12 +331,12 @@ async function resume(wd: WebDriver, a: App, walletId: string, passphrase: strin
   const rows = await rowsOf(a, walletId);
   if (end !== "done") throw new Error(`the registration ended on ${end}: ${JSON.stringify(rows.map((r) => ({ phase: r.phase, failure: r.failure, nameFailure: r.nameFailure })))}`);
   const title = await wd.text(await wd.waitFor(`${tid("registration-screen")} h2`));
-  if (title !== `Hello @${label},`) throw new Error(`the done screen says ${title}`);
+  if (title !== `Welcome to DashPay, @${label}`) throw new Error(`the done screen says ${title}`);
   if (rows.length !== 1 || rows[0]!.draft !== draft || rows[0]!.txid !== lockTxid) throw new Error("the finished row is not the one closed");
   const status = await a.invoke<DashPayStatus>("dashpay_status", { walletId });
   if (status.kind !== "ready") throw new Error(`DashPay status after the run: ${status.kind}`);
   save({ identity: status.main });
-  step(`done: Hello @${label}, identity ${status.main}, one row, lock ${lockTxid}`);
+  step(`done: Welcome to DashPay, @${label}, identity ${status.main}, one row, lock ${lockTxid}`);
 }
 
 async function main() {

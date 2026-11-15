@@ -61,6 +61,7 @@ export function AmountText({
   className,
   title,
   minor = "",
+  testId,
 }: {
   text: string;
   unitName: string;
@@ -70,9 +71,10 @@ export function AmountText({
   title?: string;
   /** Digits that follow `text`, drawn smaller (the hero's decimals past the second). */
   minor?: string;
+  testId?: string;
 }) {
   return (
-    <span className={`amount ${className ?? ""}`} title={title}>
+    <span className={`amount ${className ?? ""}`} title={title} data-testid={testId}>
       <span className="amount-number">
         {text}
         {minor && <span className="amount-minor">{minor}</span>}

@@ -55,6 +55,12 @@ describe("fixture history_page matches the engine", () => {
     expect(rows).toEqual(vectors.rows);
   });
 
+  it("finds a registration's lock by its username, as the engine does", () => {
+    const rows = vectors.rows.slice(0, 2).map((r, i) => (i === 0 ? { ...r, label: null, purpose: { kind: "usernameRegistration" as const, username: "dwdemo2611" } } : r));
+    const page = historyPage(rows, { categories: [], text: "DWDemo", sort: "amountAscending", cursor: null, limit: 5 });
+    expect(page.rows.map((r) => r.txid)).toEqual([rows[0].txid]);
+  });
+
   it("pages the large scenario quickly", () => {
     const rows = buildRows("large");
     const started = performance.now();

@@ -156,6 +156,17 @@ pub struct TxRecord {
     /// The price the transaction was first seen at (MP-01); `None` when it
     /// was not stamped (no back-fill).
     pub fiat_then: Option<crate::rates::TxFiat>,
+    /// What an asset lock of the wallet was for, from the registration
+    /// flows it keeps; `None` for every other transaction.
+    pub purpose: Option<TxPurpose>,
+}
+
+/// What a Dash Platform funding transaction paid for, read from the
+/// wallet's registration records (never from the chain).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TxPurpose {
+    /// The lock funded the registration of this username.
+    UsernameRegistration { username: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1069,6 +1080,31 @@ pub(crate) struct Labels {
     pub tx: HashMap<String, String>,
     pub address: HashMap<String, String>,
     pub fiat: HashMap<String, crate::rates::TxFiat>,
+    pub purpose: HashMap<String, TxPurpose>,
+}
+
+/// The asset-lock txids of registrations that took a username, by txid.
+/// Only flows whose name step succeeded count: a lock of a nameless flow, or
+/// of one that failed before or at its name, stays the generic Platform
+/// funding. A later step's error (the profile, the inviter's request) does not
+/// undo a name already on Platform. A contested name goes to a vote the
+/// registration records no outcome of, and its temporary name may not have
+/// been taken either, so neither is named.
+pub(crate) fn username_purposes(rows: &[dw_appdb::RegistrationRow]) -> HashMap<String, TxPurpose> {
+    use crate::platform::registration_flow::{name_taken, outpoint_of};
+    use dash_sdk::platform::dpns_usernames::is_contested_username;
+    rows.iter()
+        .filter(|r| !r.label.is_empty() && !is_contested_username(&r.label) && name_taken(r))
+        .filter_map(|r| {
+            let outpoint = outpoint_of(r)?;
+            Some((
+                outpoint.txid.to_string(),
+                TxPurpose::UsernameRegistration {
+                    username: r.label.clone(),
+                },
+            ))
+        })
+        .collect()
 }
 
 /// Every record of one transaction.
@@ -1108,6 +1144,7 @@ pub(crate) fn records_of(
             involves_watch_only: false,
             counterparty: side.and_then(|s| view.payees.counterparty(&s.contact)),
             fiat_then: labels.fiat.get(&txid_s).cloned(),
+            purpose: labels.purpose.get(&txid_s).cloned(),
         })
         .collect();
     (records, d, status)
@@ -1151,7 +1188,12 @@ fn matches(r: &TxRecord, f: &HistoryFilter, text: Option<&str>) -> bool {
                 .is_some_and(|a| a.to_lowercase().contains(text))
             || r.label
                 .as_deref()
-                .is_some_and(|l| l.to_lowercase().contains(text));
+                .is_some_and(|l| l.to_lowercase().contains(text))
+            || r.purpose.as_ref().is_some_and(|p| match p {
+                TxPurpose::UsernameRegistration { username } => {
+                    username.to_lowercase().contains(text)
+                }
+            });
         if !hit {
             return false;
         }
@@ -1972,6 +2014,93 @@ mod tests {
         assert!(records.iter().all(|r| r.fiat_then.is_none()));
     }
 
+    fn registration(label: &str, phase: &str, outpoint: Option<&str>) -> dw_appdb::RegistrationRow {
+        dw_appdb::RegistrationRow {
+            id: 1,
+            identity_index: Some(0),
+            identity: None,
+            label: label.into(),
+            temp_label: None,
+            funding: String::new(),
+            initial_profile: None,
+            asset_lock_outpoint: outpoint.map(Into::into),
+            phase: phase.into(),
+            error: None,
+            retryable: false,
+            name_error: None,
+            profile_error: None,
+            owner: 0,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_registration_lock_is_labelled_with_its_username() {
+        let txid = format!("{:064x}", 7);
+        let outpoint = format!("{txid}:0");
+        let named = registration("alice2611", "done", Some(&outpoint));
+        let purposes = username_purposes(std::slice::from_ref(&named));
+        assert_eq!(
+            purposes.get(&txid),
+            Some(&TxPurpose::UsernameRegistration {
+                username: "alice2611".into()
+            })
+        );
+
+        let mut later_step_failed = named.clone();
+        later_step_failed.error = Some("profile.failed".into());
+        assert_eq!(username_purposes(&[later_step_failed]).len(), 1);
+
+        // "alice" is contested: whether with a temporary name or not, the lock
+        // stays generic, during the vote and after it.
+        let contested = registration("alice", "done", Some(&outpoint));
+        let mut with_temporary = registration("alice", "contested", Some(&outpoint));
+        with_temporary.temp_label = Some("alice2".into());
+
+        let mut failed = registration("alice2611", "name_requested", Some(&outpoint));
+        failed.error = Some("registration.failed".into());
+        let mut name_refused = named.clone();
+        name_refused.name_error = Some("names.taken".into());
+        let nameless = registration("", "done", Some(&outpoint));
+        let early = registration("alice2611", "funding_sent", Some(&outpoint));
+        let unfunded = registration("alice2611", "done", None);
+        let unknown_phase = registration("alice2611", "verified_on_mars", Some(&outpoint));
+        let malformed = registration("alice2611", "done", Some("not-an-outpoint"));
+        for row in [
+            contested,
+            with_temporary,
+            failed,
+            name_refused,
+            nameless,
+            early,
+            unfunded,
+            unknown_phase,
+            malformed,
+        ] {
+            assert!(username_purposes(&[row]).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_stored_purpose_reaches_the_record_of_its_transaction() {
+        let mut f = Fixture::new();
+        let locked = f.add(entry(
+            tx(vec![foreign_input(8)], vec![out(3_000, &hash_addr(1))]),
+            TransactionContext::Mempool,
+        ));
+        let purpose = TxPurpose::UsernameRegistration {
+            username: "alice".into(),
+        };
+        let labels = Labels {
+            purpose: HashMap::from([(locked.to_string(), purpose.clone())]),
+            ..Labels::default()
+        };
+        let (records, ..) = records_of(&locked, &f.history[&locked], &f.view(5), &labels);
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|r| r.purpose.as_ref() == Some(&purpose)));
+    }
+
     #[test]
     fn chainlock_confirms_at_once_and_instantsend_counts() {
         let mut f = Fixture::new();
@@ -2072,6 +2201,7 @@ mod tests {
             involves_watch_only: false,
             counterparty: None,
             fiat_then: None,
+            purpose: None,
         }
     }
 
@@ -2149,6 +2279,12 @@ mod tests {
             rec(2, 0, Some(200), -70, TxType::SendToAddress),
             rec(3, 0, Some(300), 20, TxType::RecvWithAddress),
             rec(4, 0, None, -5, TxType::CoinJoinMixing),
+            TxRecord {
+                purpose: Some(TxPurpose::UsernameRegistration {
+                    username: "alice".into(),
+                }),
+                ..rec(5, 0, Some(400), -30, TxType::AssetLock)
+            },
         ];
         let run = |f: HistoryFilter| {
             let mut q = query(10);
@@ -2203,6 +2339,13 @@ mod tests {
                 ..Default::default()
             }),
             vec!["02"]
+        );
+        assert_eq!(
+            run(HistoryFilter {
+                text: Some("Alice".into()),
+                ..Default::default()
+            }),
+            vec!["05"]
         );
         assert!(
             run(HistoryFilter {

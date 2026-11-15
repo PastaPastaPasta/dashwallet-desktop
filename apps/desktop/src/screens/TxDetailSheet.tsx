@@ -25,8 +25,12 @@ import { fiatText } from "../format/fiat";
 import { Avatar } from "./contacts/Avatar";
 import { contactLetters, contactName, detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
 
-/** dash-qt `TransactionDesc::FormatTxStatus`, for the states the engine reports. */
-function statusText(s: TxStatusInfo): string {
+const confirmationsText = (n: number) => `${n} ${n === 1 ? "confirmation" : "confirmations"}`;
+
+/** Plain-language status for the detail sheet; dash-qt's raw string stays in engine/CSV data. The
+ * engine keeps `instantLocked` set once a block confirms the transaction, so only an unconfirmed
+ * row reads as InstantSend. */
+export function statusText(s: TxStatusInfo): string {
   switch (s.kind) {
     case "abandoned":
       return "Abandoned";
@@ -35,14 +39,13 @@ function statusText(s: TxStatusInfo): string {
     case "notAccepted":
       return "Not accepted";
     case "unconfirmed":
-      return s.instantLocked ? "0/unconfirmed, verified via InstantSend" : "0/unconfirmed, in memory pool";
+      return s.instantLocked ? "Instant (InstantSend locked)" : "Pending";
     case "immature":
-      return `${s.confirmations} confirmations, matures in ${s.maturesIn ?? "?"} more blocks`;
+      return `Maturing · ${confirmationsText(s.confirmations)}${s.maturesIn === null ? "" : `, available in ${s.maturesIn} more blocks`}`;
     case "confirming":
-    case "confirmed": {
-      const base = s.kind === "confirming" ? `${s.confirmations}/unconfirmed` : `${s.confirmations} confirmations`;
-      return s.chainLocked ? `${base}, locked via ChainLocks` : s.instantLocked ? `${base}, verified via InstantSend` : base;
-    }
+    case "confirmed":
+      if (s.kind === "confirmed" && s.confirmations > 6) return "Confirmed";
+      return `Confirmed · ${confirmationsText(s.confirmations)}`;
   }
 }
 
@@ -270,8 +273,8 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
     <>
       <div className="tx-detail-summary" data-testid="tx-detail-summary">
         <Icon id={headerIcon} size={50} />
-        <h3 className="tx-detail-title">{row ? txTitle({ ...row, amount }) : "Transaction"}</h3>
-        <AmountText className="tx-detail-amount" text={display.full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />
+        <h3 className="tx-detail-title" data-testid="tx-detail-title">{row ? txTitle({ ...row, amount }) : "Transaction"}</h3>
+        <AmountText className="tx-detail-amount" testId="tx-detail-amount" text={display.full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />
         {stamp && <FiatThen stamp={stamp} duffs={shown.duffs} sent={amount < 0} internal={!shown.signed} locale={backend.locale} />}
         <div className="tx-detail-status">
           {chip && <Chip tone={isProblem(d.status) ? "danger" : "info"}>{chip}</Chip>}
@@ -296,7 +299,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             <FiatLine fiat={fiat} duffs={shown.duffs} testId="tx-detail-value-now-text" />
           </DetailRow>
         )}
-        <DetailRow label="Status">{statusText(d.status)}</DetailRow>
+        <DetailRow label="Status" testId="tx-detail-status">{statusText(d.status)}</DetailRow>
         {d.blockHeight !== null && <DetailRow label="Block">{d.blockHeight.toLocaleString(backend.locale)}</DetailRow>}
         <DetailRow label="Transaction ID" testId="tx-detail-txid">
           <CopyValue value={d.txid} label="transaction ID" mono />

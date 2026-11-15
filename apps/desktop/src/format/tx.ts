@@ -4,6 +4,7 @@
 
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
+import type { TxPurpose } from "../api/generated/TxPurpose";
 import type { TxRow } from "../api/generated/TxRow";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { TxTypeName } from "../api/generated/TxTypeName";
@@ -19,7 +20,7 @@ export const TxTitle = {
   masternodeReward: "Masternode reward",
   mined: "Mined",
   providerTransaction: "Provider transaction (ProTx)",
-  assetLock: "Asset lock",
+  assetLock: "Dash Platform funding",
   chipPending: "Pending",
   chipInstantSend: "InstantSend",
   chipConflicted: "Conflicted",
@@ -29,6 +30,8 @@ export const TxTitle = {
   today: "Today",
   yesterday: "Yesterday",
 } as const;
+
+export type MixingGroup = { kind: "mixingGroup"; rows: TxRow[] };
 
 const MIXING: TxTypeName[] = [
   "recvWithCoinJoin",
@@ -66,6 +69,11 @@ export function typeTitle(type: TxTypeName, category: TxCategoryName | null, amo
   }
 }
 
+/** What a Platform funding paid for, when the engine's registration records say. */
+export function purposeTitle(purpose: TxPurpose | undefined): string | null {
+  return purpose ? `Username @${purpose.username.replace(/^@/, "")}` : null;
+}
+
 /** How a DashPay counterparty (DP3-02) is named: its display name (trimmed; the contact chose
  * it), else `@username`; `null` while neither is known (the username lands later), never the
  * identity id. */
@@ -84,8 +92,8 @@ export function contactLetters(c: TxCounterparty | undefined): string | null {
 
 /** Label first, then the DashPay contact's name (DP3-02), then the type title. Never the raw
  * address. A row's title comes only from here (U-03 D14). */
-export function txTitle(row: Pick<TxRow, "txType" | "category" | "amount" | "label" | "counterparty">): string {
-  return row.label || contactName(row.counterparty) || typeTitle(row.txType, row.category, row.amount);
+export function txTitle(row: Pick<TxRow, "txType" | "category" | "amount" | "label" | "counterparty" | "purpose">): string {
+  return row.label || contactName(row.counterparty) || purposeTitle(row.purpose) || typeTitle(row.txType, row.category, row.amount);
 }
 
 /** What a row says aloud about its contact when the title is something else, a label
@@ -211,6 +219,21 @@ export function txChip(status: TxStatusInfo): string | null {
   }
 }
 
+/** A collapsed mixing group's chip: Pending if any row is, else InstantSend if any row is. */
+export function groupChip(rows: TxRow[]): string | null {
+  const chips = rows.map((row) => txChip(row.status));
+  return chips.find((chip) => chip === TxTitle.chipPending) ?? chips.find((chip) => chip !== null) ?? null;
+}
+
+/** A group's total in duffs, added exactly; `null` when a member or the total is past what a
+ * number holds exactly, so the group shows no total rather than a rounded one. */
+export function groupAmount(rows: TxRow[]): number | null {
+  if (!rows.every((row) => Number.isSafeInteger(row.amount))) return null;
+  const sum = rows.reduce((total, row) => total + BigInt(row.amount), 0n);
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  return sum <= max && sum >= -max ? Number(sum) : null;
+}
+
 /** The transaction failed: the chip is in the danger tone, the title secondary, the icon an error. */
 export function isProblem(status: TxStatusInfo): boolean {
   return status.kind === "conflicted" || status.kind === "abandoned" || status.kind === "notAccepted";
@@ -220,15 +243,40 @@ export function trailingStatus(status: TxStatusInfo): string | null {
   return status.kind === "immature" ? TxTitle.locked : null;
 }
 
-/** A payment to yourself or an internal move: no sign on the amount (UX-SPEC §5.3). */
+/** A payment to yourself or an internal move (the icon and chip). */
 export function isInternal(type: TxTypeName): boolean {
   return type === "sendToSelf" || type === "platformTransfer";
 }
 
-/** The amount a row or detail shows, and whether it carries a sign: internal moves show the
- * fee they cost without a minus. */
+/** The amount a row or detail shows. A self-send shows its fee as money that left; only a pool move
+ * between the wallet's own pools is shown unsigned. */
 export function shownAmount(amount: number, type: TxTypeName): { duffs: number; signed: boolean } {
-  return isInternal(type) ? { duffs: Math.abs(amount), signed: false } : { duffs: amount, signed: true };
+  return type === "platformTransfer" ? { duffs: Math.abs(amount), signed: false } : { duffs: amount, signed: true };
+}
+
+export function isMixing(type: TxTypeName): boolean {
+  return MIXING.includes(type);
+}
+
+/** Collapses adjacent CoinJoin rows in a day card; callers keep table/CSV rows unchanged. A
+ * conflicted, abandoned or refused row stays on its own so its warning is never folded away. */
+export function groupConsecutiveMixing(rows: TxRow[]): (TxRow | MixingGroup)[] {
+  const grouped: (TxRow | MixingGroup)[] = [];
+  let run: TxRow[] = [];
+  const flush = () => {
+    if (run.length === 1) grouped.push(run[0]);
+    else if (run.length > 1) grouped.push({ kind: "mixingGroup", rows: run });
+    run = [];
+  };
+  for (const row of rows) {
+    if (isMixing(row.txType) && !isProblem(row.status)) run.push(row);
+    else {
+      flush();
+      grouped.push(row);
+    }
+  }
+  flush();
+  return grouped;
 }
 
 /** First and last twelve characters around an ellipsis when longer than 24 characters. */
