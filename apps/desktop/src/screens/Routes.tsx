@@ -138,15 +138,16 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
   const links = useUi((s) => s.payLinks);
   const coins = useUi((s) => s.payCoins);
   const auto = useDefaultPayTab(walletId);
-  // Another wallet chooses its tab afresh, by its own contacts.
+  // Another wallet chooses its tab afresh, by its own contacts; a form a link or a tool filled
+  // stays on its tab, so choosing the wallet that pays it keeps the payment in view.
   const shownWallet = useRef(walletId);
-  const switched = shownWallet.current !== walletId;
+  const filled = prefill !== null || coins !== null;
+  const rechoose = shownWallet.current !== walletId && !filled;
   useEffect(() => {
-    if (!switched) return;
     shownWallet.current = walletId;
-    ui.set({ payTab: null });
-  }, [switched, walletId]);
-  const tab = switched ? null : (chosen ?? auto);
+    if (rechoose) ui.set({ payTab: null });
+  }, [rechoose, walletId]);
+  const tab = rechoose ? null : (chosen ?? auto);
   // The tab picked for the user stays while Pay is open: contacts arriving later do not move it.
   useEffect(() => {
     if (chosen === null && auto !== null) ui.set({ payTab: auto });

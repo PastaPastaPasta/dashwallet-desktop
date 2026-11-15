@@ -106,13 +106,13 @@ export function pickerView(i: {
   networkState: "loading" | "error" | "done";
   /** The hits the section lists. */
   hits: number;
-  /** Every hit the search returned, those the groups list too. */
-  found: number;
 }): { network: boolean; none: "contacts" | "short" | "anyone" | null } {
   const network = i.network && (i.networkState !== "done" || i.hits > 0);
   if (i.text === "" || i.groups > 0) return { network, none: null };
   if (!i.network) return { network, none: i.anyContacts ? "contacts" : "short" };
-  return { network, none: i.networkState === "done" && i.found === 0 ? "anyone" : null };
+  // No group and no hit lists nothing, even when the search matched contacts the picker's own
+  // filter did not (it folds homographs, the filter does not).
+  return { network, none: i.networkState === "done" && i.hits === 0 ? "anyone" : null };
 }
 
 /** What the picker's live region says once the username search answered; `null` before. */

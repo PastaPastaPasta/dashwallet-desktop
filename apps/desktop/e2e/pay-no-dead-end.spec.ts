@@ -146,6 +146,18 @@ test("PAY-6 a wallet switch on Pay chooses the tab again for that wallet", async
   await page.getByTestId("pay-frequent").waitFor();
 });
 
+test("PAY-6 a wallet switch after a payment link keeps the link's form on To an address", async ({ page }) => {
+  await openPay(page, "dashpay-two-wallets");
+  await selected(page, "contact");
+  const address = "yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf";
+  await page.evaluate((a) => window.__dwFixture!.deliverLinks([{ kind: "pay", uri: { address: a, amount: null, label: null, message: null }, username: null }]), address);
+  await selected(page, "address");
+  await expect(page.getByTestId("pay-address")).toHaveValue(address);
+  await page.getByTestId("toolbar-wallet-picker").selectOption({ index: 1 });
+  await selected(page, "address");
+  await expect(page.getByTestId("pay-address")).toHaveValue(address);
+});
+
 test("PAY-6 a contact or request that matches stays in the picker; strangers show under it", async ({ page }) => {
   // Grace's request is in Contact Requests: the search finds her there, not on the network.
   await openPay(page, "dashpay-registered");

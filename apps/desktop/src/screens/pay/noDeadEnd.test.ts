@@ -62,14 +62,14 @@ describe("the tab Pay opens on", () => {
 
 describe("the picker under a search", () => {
   const view = (over: Partial<Parameters<typeof pickerView>[0]>) =>
-    pickerView({ text: "ma", groups: 0, anyContacts: true, network: true, networkState: "done", hits: 0, found: 0, ...over });
+    pickerView({ text: "ma", groups: 0, anyContacts: true, network: true, networkState: "done", hits: 0, ...over });
 
   it("shows no username search and no 'nothing matches' without a search", () => {
     expect(view({ text: "", network: false })).toEqual({ network: false, none: null });
   });
 
   it("shows the users found when no contact matches", () => {
-    expect(view({ hits: 2, found: 2 })).toEqual({ network: true, none: null });
+    expect(view({ hits: 2 })).toEqual({ network: true, none: null });
   });
 
   it("shows the search running or failed, and says nothing matches only once it is done", () => {
@@ -78,13 +78,13 @@ describe("the picker under a search", () => {
     expect(view({})).toEqual({ network: false, none: "anyone" });
   });
 
-  it("keeps matching contacts, without an empty username section", () => {
-    expect(view({ groups: 1 })).toEqual({ network: false, none: null });
-    expect(view({ groups: 1, hits: 1, found: 2 })).toEqual({ network: true, none: null });
+  it("says nothing matches when the search found only contacts the picker's filter missed", () => {
+    expect(view({ hits: 0 })).toEqual({ network: false, none: "anyone" });
   });
 
-  it("says no one was found only when the search itself found no one", () => {
-    expect(view({ found: 1 })).toEqual({ network: false, none: null });
+  it("keeps matching contacts, without an empty username section", () => {
+    expect(view({ groups: 1 })).toEqual({ network: false, none: null });
+    expect(view({ groups: 1, hits: 1 })).toEqual({ network: true, none: null });
   });
 
   it("under two characters says only that no contact matches", () => {

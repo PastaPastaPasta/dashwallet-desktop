@@ -121,7 +121,6 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
     network: wanted !== null,
     networkState,
     hits: hits.shown.length,
-    found: net.data?.length ?? 0,
   });
   const announce = searchAnnouncement({ network: wanted !== null, networkState, hits: hits.shown.length, none: view.none });
   const toAddress = () => ui.set({ payTab: "address" });
