@@ -44,8 +44,9 @@ describe("Share username on My Profile (PRODUCT #12)", () => {
     expect(header(identity({}), "alice")).not.toContain("profile-share");
   });
 
-  it("keeps the button for a username held while names update", () => {
-    expect(header(identity({ names: ["alice"], mainName: "alice", namesUpdating: true }))).toContain('data-testid="profile-share"');
+  it("hides the button while a held username updates or is rechecked: the engine gives no link then", () => {
+    expect(header(identity({ names: ["alice"], mainName: "alice", namesUpdating: true }))).not.toContain('data-testid="profile-share"');
+    expect(header(identity({ names: ["alice"], mainName: "alice", namesCheck: "pending" }))).not.toContain('data-testid="profile-share"');
   });
 
   it("the sheet shows My QR, large, with the dashpay://user link and Copy Link", () => {

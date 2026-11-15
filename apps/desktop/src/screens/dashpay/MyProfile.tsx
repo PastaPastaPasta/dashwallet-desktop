@@ -57,6 +57,9 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
   const h = headerModel(main, contest);
   const [sharing, setSharing] = useState(false);
   const share = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!h.shareable) setSharing(false);
+  }, [h.shareable]);
   return (
     <section className="profile-header card-l1" data-testid="profile-header">
       <Avatar letters={h.initials} size="pane" identity={main.identity} own />
@@ -78,13 +81,13 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
         <DashButton variant="tintedBlue" size="small" data-testid="profile-edit" onClick={onEdit}>
           {PROFILE_COPY.editProfile}
         </DashButton>
-        {h.names === "named" && (
+        {h.shareable && (
           <DashButton variant="tintedBlue" size="small" data-testid="profile-share" ref={share} onClick={() => setSharing(true)}>
             {PROFILE_COPY.share}
           </DashButton>
         )}
       </div>
-      {sharing && h.names === "named" && (
+      {sharing && h.shareable && (
         <ShareSheet
           walletId={walletId}
           identity={main.identity}

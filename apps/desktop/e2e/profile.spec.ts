@@ -114,6 +114,29 @@ test("Share username shows a large DashPay QR and link; Copy Link copies it; Esc
   expect(errors).toEqual([]);
 });
 
+test("a username being refreshed has no link yet: Share username hides, and an open sheet closes", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-registered");
+  const share = page.getByTestId("profile-share");
+  const shareSheet = page.getByTestId("profile-share-sheet");
+  const names = (updating: boolean) =>
+    page.evaluate((updating) => {
+      const f = window.__dwFixture!;
+      f.world.dashpay.identities = f.world.dashpay.identities.map((i) => ({ ...i, namesUpdating: updating }));
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+    }, updating);
+  await share.click();
+  await expect(shareSheet.getByTestId("add-contact-qr")).toBeVisible();
+  await names(true);
+  await expect(shareSheet).toHaveCount(0);
+  await expect(share).toHaveCount(0);
+  await expect(page.getByTestId("profile-username")).toHaveText("@alice");
+  await names(false);
+  await expect(share).toBeVisible();
+  // The sheet waits for another click rather than reopening by itself.
+  await expect(shareSheet).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("without a username there is no Share username: Choose a username instead", async ({ page }) => {
   await openProfile(page, "dashpay-no-username");
   await expect(page.getByTestId("profile-choose-name")).toBeVisible();
