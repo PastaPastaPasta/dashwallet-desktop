@@ -2112,6 +2112,17 @@ button {
   font-weight: var(--dw-type-subhead-medium-weight);
 }
 
+.pay-found-name {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+/* Flush with the card's edge, as the picker's line under the search. */
+.pay-found-address > .dash-button-plainBlue {
+  padding-left: 0;
+  padding-right: 0;
+}
+
 .pay-banner {
   margin-bottom: 0;
 }

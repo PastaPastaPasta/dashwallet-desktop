@@ -40,6 +40,7 @@ import { Tabs } from "../Routes";
 import { useActionToast, useRefocus } from "./afterAction";
 import { Avatar } from "./Avatar";
 import { Row } from "./ContactList";
+import { EnableButton, EnableFailure, SendRequestButton } from "./RequestButton";
 
 /** What Add Contact acts for: the wallet, whose contacts (BL-153's status), the identity's actions
  * (`null` without one) and its unfiltered contacts (D14; `undefined` while unread). */
@@ -189,17 +190,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
   let button = null;
   switch (line?.next) {
     case "send":
-      button = (
-        <DashButton
-          key="send"
-          variant="filledBlue"
-          data-testid="add-contact-send"
-          disabled={!actions || actions.busy}
-          onClick={() => void actions?.send(c.identity, name, c.claim?.scan ?? null).then(sent)}
-        >
-          {actions?.isRunning("send", c.identity) ? "Sending…" : "Send Contact Request"}
-        </DashButton>
-      );
+      button = <SendRequestButton key="send" actions={actions} contact={c.identity} name={name} scan={c.claim?.scan ?? null} testId="add-contact-send" onDone={sent} />;
       break;
     case "showContact":
     case "showRequest":
@@ -211,11 +202,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
       );
       break;
     case "enable":
-      button = (
-        <DashButton key="enable" variant="tintedBlue" data-testid="add-contact-enable" disabled={!actions || actions.busy} onClick={() => void actions?.enable().then((o) => toast(o, true))}>
-          {actions?.isRunning("enable", null) ? "Enabling…" : "Enable"}
-        </DashButton>
-      );
+      button = <EnableButton key="enable" actions={actions} testId="add-contact-enable" onDone={(o) => toast(o, true)} />;
       break;
     case "join":
       button = (
@@ -232,7 +219,6 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
       );
       break;
   }
-  const enableOutcome = actions?.outcome?.kind === "enable" ? actions.outcome : null;
   const note = claimNote(c.claim, now);
   return (
     <div className="add-contact-candidate" data-testid="add-contact-candidate">
@@ -273,7 +259,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
         )}
         {button && <span className="add-contact-actions">{button}</span>}
         <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="add-contact-outcome" />
-        {enableOutcome && !enableOutcome.ok && <Outcome ok={false} text={enableOutcome.text} testId="add-contact-enable-outcome" />}
+        <EnableFailure actions={actions} testId="add-contact-enable-outcome" />
       </div>
     </div>
   );

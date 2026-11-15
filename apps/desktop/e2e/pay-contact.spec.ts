@@ -13,11 +13,15 @@ const world = <T>(page: Page, fn: (w: NonNullable<Window["__dwFixture"]>["world"
 
 const GRACE = "Grace Hopper";
 
+const contactless = ["dashpay-no-identity"];
+
 async function openPay(page: Page, scenario = "dashpay-registered", theme: Theme = "light") {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
   await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  // Pay opens on To an address without contacts (e2e/pay-no-dead-end.spec.ts).
+  if (contactless.includes(scenario)) await page.getByTestId("pay-tabs-contact").click();
   await expect(page.getByTestId("pay-tabs-contact")).toHaveAttribute("aria-selected", "true");
   return errors;
 }
@@ -300,11 +304,10 @@ test("IOS-050 unlocked for mixing only: the banner offers the full unlock", asyn
   await expect(page.getByTestId("unlock-sheet")).toBeVisible();
 });
 
-test("IOS-050 without an identity the tab says why and offers Join and To an address", async ({ page }) => {
+test("IOS-050 without an identity the tab is one Join DashPay line", async ({ page }) => {
   await openPay(page, "dashpay-no-identity");
   await expect(page.getByTestId("pay-contact-none")).toContainText("Join DashPay");
-  await page.getByTestId("pay-contact-to-address").click();
-  await expect(page.getByTestId("pay-tabs-address")).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("pay-contact-join")).toBeVisible();
 });
 
 test("IOS-074 the pane's Pay and Accept and pay open the tab on that contact", async ({ page }) => {

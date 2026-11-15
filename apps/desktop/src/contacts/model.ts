@@ -176,10 +176,12 @@ export function networkPrefix(text: string): string | null {
  * relates to are in the groups already, whatever the local filter matched), at most three; `more`
  * when others remain (iOS `networkResultsSection`). `listed` is everyone the current contact list
  * holds: a cached hit read before its request or contact arrived still says `stranger` (D21). */
-export function networkHits(hits: UserHit[] | undefined, listed: ContactList | undefined): { shown: UserHit[]; more: boolean } {
+/** `anyRelation` keeps every hit `listed` does not hold, whatever its relation: for a surface whose
+ * list holds only some sections (Pay's contacts and requests), the rest are found here. */
+export function networkHits(hits: UserHit[] | undefined, listed: ContactList | undefined, anyRelation = false): { shown: UserHit[]; more: boolean; count: number } {
   const known = new Set(listed?.sections.flatMap((s) => s.contacts.map((c) => c.contact)));
-  const fresh = (hits ?? []).filter((h) => h.relation === "stranger" && !known.has(h.identity));
-  return { shown: fresh.slice(0, NETWORK_SHOWN), more: fresh.length > NETWORK_SHOWN };
+  const fresh = (hits ?? []).filter((h) => (anyRelation || h.relation === "stranger") && !known.has(h.identity));
+  return { shown: fresh.slice(0, NETWORK_SHOWN), more: fresh.length > NETWORK_SHOWN, count: fresh.length };
 }
 
 /** A relation as the detail slot names it. */
