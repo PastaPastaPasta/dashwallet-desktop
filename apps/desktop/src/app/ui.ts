@@ -189,8 +189,10 @@ export function setLeaveGuard(guard: LeaveGuard): () => void {
 
 /** Opens `route`, closing the detail sheet. */
 export function navigate(route: Route, patch: Partial<UiState> = {}) {
-  // Coming to Pay from elsewhere chooses its tab afresh, unless the caller names one.
-  const go = () => ui.set({ route, detail: null, ...(route === "pay" && ui.get().route !== "pay" ? { payTab: null } : {}), ...patch });
+  // Coming to Pay from elsewhere chooses its tab afresh and starts an empty form, unless the
+  // caller names a tab or fills the form (openPayForm).
+  const fresh = (): Partial<UiState> => (route === "pay" && ui.get().route !== "pay" ? { payTab: null, payPrefill: null, payCoins: null } : {});
+  const go = () => ui.set({ route, detail: null, ...fresh(), ...patch });
   if (!leaveGuard?.(route, go)) go();
 }
 
