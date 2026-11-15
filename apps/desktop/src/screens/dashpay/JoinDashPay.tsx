@@ -15,6 +15,7 @@ import { CLAIM_COPY, claimHasIdentity, claimRow } from "../../dashpay/claim";
 import { useRegistrations, useStatusInputs, useUsernameQuote } from "../../dashpay/queries";
 import { namedModel, pendingModel, screenModel, type ScreenActionKind } from "../../dashpay/registration";
 import { JOIN_COPY, joinModel, type CardActionKind } from "../../dashpay/status";
+import { findFriends, openEditProfile } from "../../dashpay/welcome";
 import { wizardFor } from "../../dashpay/wizard";
 import { useModel } from "../../onboarding/model";
 import { Page } from "../Routes";
@@ -83,6 +84,11 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     if (kind === "chooseName" && inputs.main) return wiz.begin({ kind: "credits", identity: inputs.main.identity });
     return defaultCardAction(kind, retry);
   };
+  // A claim seen through leaves the claim screen too.
+  const leave = () => {
+    if (row?.invitation) ui.set({ invitation: null });
+    wiz.close();
+  };
   const onScreenAction = (kind: ScreenActionKind) => {
     switch (kind) {
       case "home":
@@ -97,11 +103,22 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
       case "another":
         return void wiz.another(row ?? null);
       case "done":
-        // A claim seen through leaves the claim screen too.
-        if (row?.invitation) ui.set({ invitation: null });
-        return wiz.close();
+        return leave();
+      case "wallet":
+        leave();
+        return navigate("home");
+      case "editProfile":
+        leave();
+        return openEditProfile(b, walletId, inputs.main);
+      case "findFriends":
+        leave();
+        return findFriends(walletId);
+      case "share":
+        return;
     }
   };
+  const shareIdentity = row?.identity ?? (wiz.mode.kind === "credits" ? wiz.mode.identity : null) ?? inputs.main?.identity ?? null;
+  const share = shareIdentity === null ? null : { walletId, identity: shareIdentity };
 
   if (wiz.step !== null)
     return (
@@ -116,7 +133,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
   if (wiz.named)
     return (
       <Page route="joinDashPay">
-        <RegistrationScreen wiz={wiz} model={namedModel(wiz.named.label, wiz.named.result, inputs.date)} onAction={onScreenAction} inputs={inputs} />
+        <RegistrationScreen wiz={wiz} model={namedModel(wiz.named.label, wiz.named.result, inputs.date)} onAction={onScreenAction} inputs={inputs} share={share} />
       </Page>
     );
   // Started this session, its row not read yet (D23): never the Join page, which offers Create.
@@ -131,7 +148,7 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     const screen = screenModel(row, { contestPending: contest !== null, contestEndsAt: contest?.endsAt ?? null, date: inputs.date, amount: inputs.amount, discreet: inputs.discreet });
     return (
       <Page route="joinDashPay">
-        <RegistrationScreen wiz={wiz} model={screen} phase={row.phase} waiting={row.waiting} claim={row.invitation !== null} onAction={onScreenAction} inputs={inputs} />
+        <RegistrationScreen wiz={wiz} model={screen} phase={row.phase} waiting={row.waiting} claim={row.invitation !== null} onAction={onScreenAction} inputs={inputs} share={share} />
       </Page>
     );
   }

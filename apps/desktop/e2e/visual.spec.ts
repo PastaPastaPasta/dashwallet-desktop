@@ -429,6 +429,25 @@ const REGISTRATION: Record<string, { scenario: string; reach: (page: Page) => Pr
   retry: { scenario: "dashpay-registering-paused", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=retry]").waitFor() },
   repair: { scenario: "dashpay-registration-needs-finish", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=repair]").waitFor() },
   stopped: { scenario: "dashpay-registration-stopped", reach: (page) => page.locator("[data-testid=registration-screen][data-kind=stopped]").waitFor() },
+  // PRODUCT #4: the welcome, after a new username's run to its end.
+  welcome: {
+    scenario: "dashpay-no-identity",
+    reach: async (page) => {
+      await page.getByTestId("join-create").click();
+      await page.getByTestId("registration-name-field").fill("alice-77");
+      await expect(page.getByTestId("registration-next")).toBeEnabled();
+      await page.getByTestId("registration-next").click();
+      await page.getByTestId("registration-pay").click();
+      await authorize(page);
+      await page.evaluate(() => {
+        const d = window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft;
+        while (window.__dwFixture!.advanceRegistration(d));
+      });
+      await page.locator("[data-testid=registration-screen][data-kind=done]").waitFor();
+      // No step under the pointer.
+      await page.mouse.move(0, 0);
+    },
+  },
 };
 
 async function openJoin(page: Page, scenario: string, theme: Theme) {

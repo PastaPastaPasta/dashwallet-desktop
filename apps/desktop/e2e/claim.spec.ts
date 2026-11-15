@@ -114,7 +114,9 @@ test("Join entry: valid → name → recipient → Claim → progress → Done, 
   await expect(screen(page)).toHaveAttribute("data-kind", "done");
   await expect(page.getByTestId("registration-lines")).toContainText("A contact request was sent to your inviter.");
   await axe(page);
-  await page.getByTestId("registration-done").click();
+  await page.getByTestId("registration-wallet").click();
+  await expect(page.getByTestId("hero")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "joinDashPay" }));
   await expect(claim(page)).toHaveCount(0);
   await expect(page.getByTestId("join-joined")).toBeVisible();
   expect(errors).toEqual([]);

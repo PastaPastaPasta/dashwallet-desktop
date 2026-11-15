@@ -25,6 +25,7 @@ import type { RegistrationWizard } from "../../dashpay/wizard";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 import { VotingInfoSheet } from "./AboutDashPay";
+import { ShareSheet, WelcomeSteps } from "./Welcome";
 
 export function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; title: string; id: string }) {
   return (
@@ -253,6 +254,7 @@ export function RegistrationScreen({
   claim = false,
   onAction,
   inputs,
+  share = null,
 }: {
   wiz: RegistrationWizard;
   model: ScreenModel;
@@ -262,14 +264,18 @@ export function RegistrationScreen({
   claim?: boolean;
   onAction: (kind: ScreenActionKind) => void;
   inputs: StatusInputs;
+  /** Whose username the welcome's Share my username shows, once known. */
+  share?: { walletId: string; identity: string } | null;
 }) {
   useModel(wiz);
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const { step } = model;
+  const welcome = model.kind === "done";
   return (
     <section
-      className="registration card-l1"
+      className={welcome ? "registration registration-welcome card-l1" : "registration card-l1"}
       data-testid="registration-screen"
       data-kind={model.kind}
       data-phase={phase}
@@ -304,11 +310,18 @@ export function RegistrationScreen({
         </p>
       )}
       <ErrorLine wiz={wiz} inputs={inputs} claim={claim} />
+      {welcome && (
+        <WelcomeSteps
+          disabled={wiz.running !== null}
+          canShare={share !== null}
+          onStep={(kind) => (kind === "share" ? setSharing(true) : onAction(kind))}
+        />
+      )}
       <div className="registration-actions">
         {model.actions.map((a, i) => (
           <DashButton
             key={a.kind}
-            variant={i === 0 ? "filledBlue" : "plainBlue"}
+            variant={i === 0 && !welcome ? "filledBlue" : "plainBlue"}
             data-testid={`registration-${a.kind}`}
             disabled={wiz.running !== null}
             onClick={() => (a.kind === "votingInfo" ? setVotingInfo(true) : onAction(a.kind))}
@@ -320,6 +333,7 @@ export function RegistrationScreen({
       </div>
       <GrantSheet grants={wiz.grants} />
       {votingInfo && <VotingInfoSheet onClose={() => setVotingInfo(false)} />}
+      {sharing && share && <ShareSheet walletId={share.walletId} identity={share.identity} onClose={() => setSharing(false)} />}
     </section>
   );
 }

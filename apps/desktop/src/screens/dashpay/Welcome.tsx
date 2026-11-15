@@ -1,0 +1,41 @@
+// R9, the welcome moment (PRODUCT #4): a registration's success, with its three next steps under
+// the greeting. Share my username opens Add contact's My QR in a sheet.
+
+import { Sheet } from "../../components/sheet";
+import { REG_COPY, SHARE_TITLE, WELCOME_STEPS, type WelcomeStepKind } from "../../dashpay/registration";
+import { MyQrTab } from "../contacts/AddContact";
+
+/** `canShare`: whose username to share is known. */
+export function WelcomeSteps({ onStep, disabled, canShare }: { onStep: (kind: WelcomeStepKind) => void; disabled: boolean; canShare: boolean }) {
+  return (
+    <div className="welcome-next" data-testid="welcome-steps">
+      <h3 className="welcome-next-title">{REG_COPY.done.next}</h3>
+      <ol className="welcome-steps" role="list">
+        {WELCOME_STEPS.map((s, i) => (
+          <li key={s.kind}>
+            <button type="button" className="welcome-step" data-testid={`welcome-${s.kind}`} disabled={disabled || (s.kind === "share" && !canShare)} onClick={() => onStep(s.kind)}>
+              <span className="welcome-step-number" aria-hidden="true">
+                {i + 1}
+              </span>
+              <span className="welcome-step-text">
+                <span className="welcome-step-title">{s.title}</span>
+                <span className="welcome-step-detail">{s.text}</span>
+              </span>
+              <span className="welcome-step-chevron" aria-hidden="true">
+                ›
+              </span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+export function ShareSheet({ walletId, identity, onClose }: { walletId: string; identity: string; onClose: () => void }) {
+  return (
+    <Sheet title={SHARE_TITLE} width="small" testId="welcome-share" onClose={onClose}>
+      <MyQrTab walletId={walletId} identity={identity} />
+    </Sheet>
+  );
+}
