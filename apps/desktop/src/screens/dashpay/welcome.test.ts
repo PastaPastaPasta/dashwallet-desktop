@@ -72,16 +72,23 @@ describe("the welcome moment (R9)", () => {
 
   it("each step reports its own kind", () => {
     const steps: string[] = [];
-    const tree = WelcomeSteps({ onStep: (k) => steps.push(k), disabled: false, canShare: true });
+    const tree = WelcomeSteps({ onStep: (k) => steps.push(k), disabled: false, canEdit: true, canShare: true });
     for (const id of ["welcome-editProfile", "welcome-findFriends", "welcome-share"]) find(tree, id)!.props.onClick();
     expect(steps).toEqual(["editProfile", "findFriends", "share"]);
   });
 
   it("Share waits for the identity; a running step holds them all", () => {
-    expect(find(WelcomeSteps({ onStep: () => undefined, disabled: false, canShare: false }), "welcome-share")!.props.disabled).toBe(true);
-    expect(find(WelcomeSteps({ onStep: () => undefined, disabled: false, canShare: false }), "welcome-findFriends")!.props.disabled).toBe(false);
-    const busy = WelcomeSteps({ onStep: () => undefined, disabled: true, canShare: true });
+    expect(find(WelcomeSteps({ onStep: () => undefined, disabled: false, canEdit: true, canShare: false }), "welcome-share")!.props.disabled).toBe(true);
+    expect(find(WelcomeSteps({ onStep: () => undefined, disabled: false, canEdit: true, canShare: false }), "welcome-findFriends")!.props.disabled).toBe(false);
+    const busy = WelcomeSteps({ onStep: () => undefined, disabled: true, canEdit: true, canShare: true });
     for (const id of ["welcome-editProfile", "welcome-findFriends", "welcome-share"]) expect(find(busy, id)!.props.disabled).toBe(true);
+  });
+
+  it("Add a photo and name waits for the main identity", () => {
+    const unread = WelcomeSteps({ onStep: () => undefined, disabled: false, canEdit: false, canShare: true });
+    expect(find(unread, "welcome-editProfile")!.props.disabled).toBe(true);
+    expect(find(unread, "welcome-share")!.props.disabled).toBe(false);
+    expect(find(unread, "welcome-findFriends")!.props.disabled).toBe(false);
   });
 
   it("Share my username shows Add contact's My QR with the link", () => {

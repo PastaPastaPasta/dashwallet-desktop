@@ -5,15 +5,26 @@ import { Sheet } from "../../components/sheet";
 import { REG_COPY, SHARE_TITLE, WELCOME_STEPS, type WelcomeStepKind } from "../../dashpay/registration";
 import { MyQrTab } from "../contacts/AddContact";
 
-/** `canShare`: whose username to share is known. */
-export function WelcomeSteps({ onStep, disabled, canShare }: { onStep: (kind: WelcomeStepKind) => void; disabled: boolean; canShare: boolean }) {
+/** `canEdit`: the main identity and its profile are read. `canShare`: whose username to share is known. */
+export function WelcomeSteps({
+  onStep,
+  disabled,
+  canEdit,
+  canShare,
+}: {
+  onStep: (kind: WelcomeStepKind) => void;
+  disabled: boolean;
+  canEdit: boolean;
+  canShare: boolean;
+}) {
+  const waiting = (kind: WelcomeStepKind) => (kind === "editProfile" && !canEdit) || (kind === "share" && !canShare);
   return (
     <div className="welcome-next" data-testid="welcome-steps">
       <h3 className="welcome-next-title">{REG_COPY.done.next}</h3>
       <ol className="welcome-steps" role="list">
         {WELCOME_STEPS.map((s, i) => (
           <li key={s.kind}>
-            <button type="button" className="welcome-step" data-testid={`welcome-${s.kind}`} disabled={disabled || (s.kind === "share" && !canShare)} onClick={() => onStep(s.kind)}>
+            <button type="button" className="welcome-step" data-testid={`welcome-${s.kind}`} disabled={disabled || waiting(s.kind)} onClick={() => onStep(s.kind)}>
               <span className="welcome-step-number" aria-hidden="true">
                 {i + 1}
               </span>

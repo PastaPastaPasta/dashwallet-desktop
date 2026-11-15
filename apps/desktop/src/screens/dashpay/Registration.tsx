@@ -313,6 +313,7 @@ export function RegistrationScreen({
       {welcome && (
         <WelcomeSteps
           disabled={wiz.running !== null}
+          canEdit={inputs.main !== undefined}
           canShare={share !== null}
           onStep={(kind) => (kind === "share" ? setSharing(true) : onAction(kind))}
         />
