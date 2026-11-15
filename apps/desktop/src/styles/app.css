@@ -1764,12 +1764,18 @@ input[type="radio"]:disabled {
 }
 
 .tx-detail-explorer {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--dw-role-text-link);
+  font-family: inherit;
   font-size: var(--dw-type-subhead-medium-size);
   font-weight: var(--dw-type-subhead-medium-weight);
   line-height: var(--dw-type-subhead-medium-line);
   text-decoration: underline;
   text-underline-offset: 0.15em;
+  cursor: pointer;
 }
 
 .io-heading {

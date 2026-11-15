@@ -1,7 +1,7 @@
 //! Transaction history, the detail sheet and the actions on a transaction
-//! (abandon, resend, drop, CSV export, notification rows).
+//! (abandon, resend, drop, CSV export, notification rows, the explorer).
 
-use dw_engine::{TxDetailExtras, TxNotice};
+use dw_engine::{DashNetwork, TxDetailExtras, TxNotice};
 use dw_units::Unit;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -10,6 +10,7 @@ use crate::dto::history::{
     HistoryFilterRequest, HistoryRequest, HistoryRows, HistorySortName, TxDetails, TxTypeName,
 };
 use crate::dto::{OutPoint, mirror_enum, parse_txid};
+use crate::error::{AppCode, AppError};
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
 
@@ -233,6 +234,39 @@ commands! {
     fn is_coinjoin_internal(state, tx_type: TxTypeName) -> bool {
         Ok(dw_engine::is_coinjoin_internal(tx_type.into()))
     }
+
+    /// Opens this transaction on Insight in the system browser. The network
+    /// is the window's own, never an argument, and the only URL opened is
+    /// the one built here from that network and a 64-character hex txid.
+    /// Regtest and devnet have no Insight page (`invalid_argument`).
+    #[facade()]
+    fn open_tx_in_explorer(state, txid: String) -> () {
+        let url = insight_tx_url(&state.window_network(), &txid)?;
+        // Detached: xdg-open can wait on the browser, and this command must not.
+        tauri::async_runtime::spawn_blocking(move || open::that_detached(&url))
+            .await
+            .map_err(|e| AppError::app(AppCode::ExplorerOpen, e.to_string()))?
+            .map_err(|e| AppError::app(AppCode::ExplorerOpen, e.to_string()))?;
+        Ok(())
+    }
+}
+
+/// Insight's transaction page, the same URLs as `explorerUrl`
+/// (`apps/desktop/src/format/explorer.ts`). A txid is 64 hex characters
+/// (either case). Regtest and devnet are not on Insight.
+pub(crate) fn insight_tx_url(network: &DashNetwork, txid: &str) -> Result<String, AppError> {
+    let hex = txid.len() == 64 && txid.bytes().all(|b| b.is_ascii_hexdigit());
+    if !hex {
+        return Err(AppError::invalid_argument("txid is not 64 hex characters"));
+    }
+    let base = match network {
+        DashNetwork::Mainnet => "https://insight.dash.org/insight/tx/",
+        DashNetwork::Testnet => "https://insight.testnet.networks.dash.org:3002/insight/tx/",
+        DashNetwork::Regtest | DashNetwork::Devnet { .. } => {
+            return Err(AppError::invalid_argument("this network has no block explorer"));
+        }
+    };
+    Ok(format!("{base}{txid}"))
 }
 
 #[cfg(test)]
@@ -271,5 +305,45 @@ mod tests {
         assert_eq!(json["txType"], "coinJoinMixing");
         assert_eq!(json["coinjoinInternal"], true);
         assert_eq!(json["recordIndex"], 1);
+    }
+
+    /// The same strings as `explorerUrl` in `apps/desktop/src/format/explorer.ts`
+    /// (`explorer.test.ts` uses this txid).
+    #[test]
+    fn insight_urls_match_the_renderer() {
+        let txid = "ab".repeat(32);
+        assert_eq!(
+            insight_tx_url(&DashNetwork::Mainnet, &txid).unwrap(),
+            format!("https://insight.dash.org/insight/tx/{txid}")
+        );
+        assert_eq!(
+            insight_tx_url(&DashNetwork::Testnet, &txid).unwrap(),
+            format!("https://insight.testnet.networks.dash.org:3002/insight/tx/{txid}")
+        );
+        let upper = txid.to_ascii_uppercase();
+        assert_eq!(
+            insight_tx_url(&DashNetwork::Mainnet, &upper).unwrap(),
+            format!("https://insight.dash.org/insight/tx/{upper}")
+        );
+        for network in [
+            DashNetwork::Regtest,
+            DashNetwork::Devnet {
+                name: "paloma".into(),
+            },
+        ] {
+            let err = insight_tx_url(&network, &txid).unwrap_err();
+            assert_eq!(err.code_str(), "invalid_argument", "{network}");
+        }
+    }
+
+    #[test]
+    fn insight_url_refuses_a_txid_that_is_not_64_hex() {
+        let txid = "ab".repeat(32);
+        let too_long = format!("{txid}ff");
+        let bad_char = format!("{}g", &txid[..63]);
+        for bad in [txid[..63].to_string(), too_long, bad_char, String::new()] {
+            let err = insight_tx_url(&DashNetwork::Mainnet, &bad).unwrap_err();
+            assert_eq!(err.code_str(), "invalid_argument", "{bad:?}");
+        }
     }
 }

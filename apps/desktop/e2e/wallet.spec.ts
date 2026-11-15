@@ -203,7 +203,9 @@ test.describe("Pay", () => {
 
     await page.getByTestId("pay-result-show").click();
     await expect(page.getByTestId("page-activity")).toBeVisible();
-    await expect(page.getByTestId("tx-detail-explorer")).toHaveAttribute("href", `https://insight.testnet.networks.dash.org:3002/insight/tx/${txid}`);
+    await page.getByTestId("tx-detail-explorer").click();
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "open_tx_in_explorer"))).toEqual(["open_tx_in_explorer"]);
+    expect(await page.evaluate(() => window.__dwFixture!.world.explorerOpened)).toEqual([txid]);
     await page.keyboard.press("Escape");
     // The form starts over for the next payment, and the balance moved.
     await page.getByTestId("sidebar-pay").click();

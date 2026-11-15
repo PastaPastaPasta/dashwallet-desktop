@@ -5,6 +5,7 @@
 import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../api/backend";
+import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { TxDetails } from "../api/generated/TxDetails";
@@ -12,7 +13,7 @@ import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { TxFiat } from "../api/generated/TxFiat";
 import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
 import { navigate, ui, useUi } from "../app/ui";
-import { AmountText, DashButton, Icon, VisuallyHidden } from "../components/basics";
+import { AmountText, DashButton, Icon } from "../components/basics";
 import type { UsedIcon } from "../components/icons";
 import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
@@ -48,6 +49,34 @@ export function statusText(s: TxStatusInfo): string {
     case "confirmed":
       return "Confirmed";
   }
+}
+
+/** Opens the transaction on Insight in the system browser. The app builds the URL from its own
+ * network; this only asks, and only when this network has a page. A failure stays on the sheet. */
+function ExplorerButton({ txid, kind }: { txid: string; kind: NetworkKind }) {
+  const backend = useBackend();
+  const [problem, setProblem] = useState<string | null>(null);
+  if (!explorerUrl(kind, txid)) return null;
+  return (
+    <>
+      <button
+        type="button"
+        className="tx-detail-explorer"
+        data-testid="tx-detail-explorer"
+        onClick={() => {
+          setProblem(null);
+          void backend.openTxInExplorer(txid).catch(() => setProblem("Could not open the explorer."));
+        }}
+      >
+        View in explorer
+      </button>
+      {problem && (
+        <p className="field-error" role="alert" data-testid="tx-detail-explorer-error">
+          {problem}
+        </p>
+      )}
+    </>
+  );
 }
 
 /** The confirmation count, for the folded details. Nothing while there are none, so the sheet
@@ -283,7 +312,6 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
   const now = discreet ? null : fiat.text(shown.duffs);
   // A stamp is history, shown while prices are on, today's price or not; off hides every value.
   const stamp = !discreet && fiat.view && fiat.view.state.kind !== "off" ? row?.fiatThen : undefined;
-  const explore = explorerUrl(network.kind, d.txid);
   const confirmations = confirmationDetail(d.status);
   return (
     <>
@@ -308,13 +336,7 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             {statusText(d.status)}
           </span>
         </div>
-        {/* A normal link. The webview refuses remote navigation, and the app has no opener permission. */}
-        {explore && (
-          <a className="tx-detail-explorer" data-testid="tx-detail-explorer" href={explore} target="_blank" rel="noopener noreferrer">
-            View in explorer
-            <VisuallyHidden> (opens in a new window)</VisuallyHidden>
-          </a>
-        )}
+        <ExplorerButton txid={d.txid} kind={network.kind} />
       </div>
       <dl className="detail-list card-l1" data-testid="tx-detail-facts">
         {contact && row?.counterparty && <ContactFact walletId={walletId} counterparty={row.counterparty} name={contact} sent={amount < 0} onView={onViewContact} />}

@@ -4,8 +4,8 @@ import { shortAddress } from "../src/format/tx";
 import { seriousAxeViolations } from "./axe";
 import { fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
 
-// A transaction's sheet says who, what, how much and when in the activity row's words, links to
-// Insight on mainnet and testnet, and keeps the txid, fee and inputs folded until asked.
+// A transaction's sheet says who, what, how much and when in the activity row's words, opens
+// Insight on mainnet and testnet through the app, and keeps the txid, fee and inputs folded until asked.
 
 type Kind = "sent" | "received" | "contact" | "unconfirmed";
 
@@ -36,10 +36,8 @@ async function openKind(page: Page, kind: Kind, theme: Theme, network?: NetworkK
   return row!;
 }
 
-const EXPLORER: Record<"mainnet" | "testnet", string> = {
-  mainnet: "https://insight.dash.org/insight/tx/",
-  testnet: "https://insight.testnet.networks.dash.org:3002/insight/tx/",
-};
+const explorerCalls = (page: Page) => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "open_tx_in_explorer"));
+const explorerOpened = (page: Page) => page.evaluate(() => window.__dwFixture!.world.explorerOpened ?? []);
 
 for (const theme of THEMES) {
   test(`plain words for a sent, a received, a contact and an unconfirmed payment, ${theme}`, async ({ page }) => {
@@ -52,8 +50,16 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("tx-detail-when")).toContainText(" at ");
     await expect(page.getByTestId("tx-detail-status")).toHaveText("Confirmed");
     await expect(page.getByTestId("tx-detail")).not.toContainText("0/unconfirmed");
-    await expect(page.getByTestId("tx-detail-explorer")).toHaveAttribute("href", `${EXPLORER.testnet}${sent.txid}`);
-    await expect(page.getByTestId("tx-detail-explorer")).toHaveAttribute("target", "_blank");
+    const explorer = page.getByTestId("tx-detail-explorer");
+    await expect(explorer).toHaveRole("button");
+    await expect(explorer).toHaveText("View in explorer");
+    await explorer.click();
+    await expect.poll(() => explorerCalls(page)).toEqual(["open_tx_in_explorer"]);
+    expect(await explorerOpened(page)).toEqual([sent.txid]);
+    await expect(page.getByTestId("tx-detail-explorer-error")).toHaveCount(0);
+    await page.evaluate(() => window.__dwFixture!.fail("open_tx_in_explorer", "none"));
+    await explorer.click();
+    await expect(page.getByTestId("tx-detail-explorer-error")).toHaveText("Could not open the explorer.");
     const folded = page.getByTestId("tx-detail-technical");
     await expect(folded).not.toHaveAttribute("open");
     await expect(page.getByTestId("tx-detail-txid")).toBeHidden();
@@ -104,12 +110,17 @@ for (const theme of THEMES) {
   });
 }
 
-test("the explorer link follows the network and is absent on regtest", async ({ page }) => {
+test("the explorer button follows the network and is absent on regtest", async ({ page }) => {
   const main = await openKind(page, "sent", "light", "mainnet");
-  await expect(page.getByTestId("tx-detail-explorer")).toHaveAttribute("href", `${EXPLORER.mainnet}${main.txid}`);
+  await page.getByTestId("tx-detail-explorer").click();
+  await expect.poll(() => explorerCalls(page)).toEqual(["open_tx_in_explorer"]);
+  expect(await explorerOpened(page)).toEqual([main.txid]);
+  expect(await page.evaluate(() => window.__dwFixture!.world.launch.network.kind)).toBe("mainnet");
 
   const testnet = await openKind(page, "received", "light", "testnet");
-  await expect(page.getByTestId("tx-detail-explorer")).toHaveAttribute("href", `${EXPLORER.testnet}${testnet.txid}`);
+  await page.getByTestId("tx-detail-explorer").click();
+  await expect.poll(() => explorerCalls(page)).toEqual(["open_tx_in_explorer"]);
+  expect(await explorerOpened(page)).toEqual([testnet.txid]);
 
   await openKind(page, "sent", "light", "regtest");
   await expect(page.getByTestId("tx-detail-explorer")).toHaveCount(0);
