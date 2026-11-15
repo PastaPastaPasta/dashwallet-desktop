@@ -10,7 +10,8 @@ import { findFriends, openEditProfile } from "../../dashpay/welcome";
 import type { RegistrationWizard } from "../../dashpay/wizard";
 import { GrantModel } from "../../tools/grant";
 import { RegistrationScreen } from "./Registration";
-import { ShareSheet, WelcomeSteps } from "./Welcome";
+import { ShareSheet } from "./ShareSheet";
+import { WelcomeSteps } from "./Welcome";
 
 const LINK = "dashpay://user?du=alice-77";
 vi.mock("../../onboarding/model", async (original) => ({
@@ -92,7 +93,7 @@ describe("the welcome moment (R9)", () => {
   });
 
   it("Share my username shows Add contact's My QR with the link", () => {
-    const html = renderToStaticMarkup(createElement(ShareSheet, { walletId: "w", identity: "ID", onClose: () => undefined }));
+    const html = renderToStaticMarkup(createElement(ShareSheet, { walletId: "w", identity: "ID", testId: "welcome-share-sheet", onClose: () => undefined }));
     expect(html).toContain('data-testid="welcome-share-sheet"');
     expect(html).toContain("Share my username");
     expect(html).toContain('data-testid="add-contact-my-qr"');

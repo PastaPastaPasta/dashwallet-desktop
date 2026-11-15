@@ -5,7 +5,7 @@
 // dashpay/profile.ts, dashpay/topup.ts and dashpay/withdraw.ts;
 // the Settings card (D20) is here too. Edit Profile (DP4-03) is a sheet over the page.
 
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { Backend } from "../../api/backend";
 import type { IdentitySummary } from "../../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../../api/generated/PendingTopUp";
@@ -32,6 +32,7 @@ import { EditProfileSheet } from "./EditProfileSheet";
 import { VotingInfoSheet } from "./AboutDashPay";
 import { DashPayCard, defaultCardAction } from "./DashPayCard";
 import { TopUpSheet } from "./TopUpSheet";
+import { ShareSheet } from "./ShareSheet";
 import { RecentWithdrawals, WithdrawButton, WithdrawSheet } from "./WithdrawSheet";
 
 /** Opens DP1-09's credits path for `identity` on the Join page; `instant` refuses a contested
@@ -51,9 +52,11 @@ export function buyCredits(b: Backend, walletId: string, main: IdentitySummary) 
   }, open);
 }
 
-function Header({ main, contest, walletId, onEdit }: { main: IdentitySummary; contest: string | null; walletId: string; onEdit: () => void }) {
+export function ProfileHeader({ main, contest, walletId, onEdit }: { main: IdentitySummary; contest: string | null; walletId: string; onEdit: () => void }) {
   const b = useBackend();
   const h = headerModel(main, contest);
+  const [sharing, setSharing] = useState(false);
+  const share = useRef<HTMLButtonElement>(null);
   return (
     <section className="profile-header card-l1" data-testid="profile-header">
       <Avatar letters={h.initials} size="pane" identity={main.identity} own />
@@ -75,7 +78,13 @@ function Header({ main, contest, walletId, onEdit }: { main: IdentitySummary; co
         <DashButton variant="tintedBlue" size="small" data-testid="profile-edit" onClick={onEdit}>
           {PROFILE_COPY.editProfile}
         </DashButton>
+        {h.names === "named" && (
+          <DashButton variant="tintedBlue" size="small" data-testid="profile-share" ref={share} onClick={() => setSharing(true)}>
+            {PROFILE_COPY.share}
+          </DashButton>
+        )}
       </div>
+      {sharing && <ShareSheet walletId={walletId} identity={main.identity} testId="profile-share-sheet" returnFocus={() => share.current} onClose={() => setSharing(false)} />}
     </section>
   );
 }
@@ -304,7 +313,7 @@ function Ready({ walletId, network, main, contest, inputs }: { walletId: string;
   const editor = useEditor(walletId);
   return (
     <>
-      <Header main={main} contest={contest?.label ?? null} walletId={walletId} onEdit={() => editor.begin(main.identity, main.profile)} />
+      <ProfileHeader main={main} contest={contest?.label ?? null} walletId={walletId} onEdit={() => editor.begin(main.identity, main.profile)} />
       <Details main={main} contest={contest?.label ?? null} />
       {contest && <RequestCard walletId={walletId} main={main} contest={contest} inputs={inputs} />}
       <Credits

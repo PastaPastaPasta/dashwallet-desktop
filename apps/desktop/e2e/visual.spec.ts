@@ -774,6 +774,16 @@ for (const theme of THEMES) {
     });
   }
 
+  // PRODUCT #12: Share username's sheet over My Profile.
+  test(`visual profile-share ${theme}`, async ({ page }) => {
+    await openProfile(page, "dashpay-registered", theme);
+    await page.getByTestId("profile-outcomes").waitFor();
+    await page.getByTestId("profile-share").click();
+    await page.getByTestId("profile-share-sheet").getByTestId("add-contact-qr").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-share", theme);
+  });
+
   test(`visual profile-top-up ${theme}`, async ({ page }) => {
     await openProfile(page, "dashpay-registered", theme);
     await page.getByTestId("profile-top-up").click();

@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
+import { IDENTITY } from "../src/fixture/dashpay";
 import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // DP1-10: My Profile, the username request card, the credits block and the top-up sheet on the
@@ -72,6 +73,46 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 }
+
+// PRODUCT #12: Share username opens the welcome's sheet, My QR with the dashpay://user link.
+test("Share username shows a large DashPay QR and link; Copy Link copies it; Escape returns focus", async ({ page }) => {
+  // The clipboard as a variable: headless engines refuse writes (tools.spec.ts).
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) } });
+  });
+  const errors = await openProfile(page, "dashpay-registered");
+  const share = page.getByTestId("profile-share");
+  await expect(share).toHaveText("Share username");
+  await share.click();
+  const shareSheet = page.getByTestId("profile-share-sheet");
+  await expect(shareSheet).toBeVisible();
+  await expect(shareSheet.getByRole("heading", { name: "Share my username" })).toBeVisible();
+  const link = `dashpay://user?id=${IDENTITY.alice}&username=alice`;
+  await expect(shareSheet.getByTestId("add-contact-qr-link")).toHaveText(link);
+  const qr = shareSheet.getByTestId("add-contact-qr");
+  await expect(qr).toBeVisible();
+  expect((await qr.boundingBox())!.width).toBeGreaterThanOrEqual(240);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  await shareSheet.getByTestId("add-contact-copy-link").click();
+  expect(await page.evaluate(() => (window as unknown as { __copied?: string }).__copied)).toBe(link);
+  await page.keyboard.press("Escape");
+  await expect(shareSheet).toHaveCount(0);
+  await expect(share).toBeFocused();
+  await share.click();
+  await shareSheet.getByRole("button", { name: "Close" }).click();
+  await expect(shareSheet).toHaveCount(0);
+  await expect(share).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("without a username there is no Share username: Choose a username instead", async ({ page }) => {
+  await openProfile(page, "dashpay-no-username");
+  await expect(page.getByTestId("profile-choose-name")).toBeVisible();
+  await expect(page.getByTestId("profile-share")).toHaveCount(0);
+  await openProfile(page, "dashpay-no-identity");
+  await expect(body(page)).toHaveAttribute("data-state", "noProfile");
+  await expect(page.getByTestId("profile-share")).toHaveCount(0);
+});
 
 test("IOS-069 P4: header, usernames, identity id with copy, credits and the contest outcome rows", async ({ page }) => {
   await openProfile(page, "dashpay-registered");

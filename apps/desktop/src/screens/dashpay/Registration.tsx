@@ -25,7 +25,8 @@ import type { RegistrationWizard } from "../../dashpay/wizard";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 import { VotingInfoSheet } from "./AboutDashPay";
-import { ShareSheet, WelcomeSteps } from "./Welcome";
+import { ShareSheet } from "./ShareSheet";
+import { WelcomeSteps } from "./Welcome";
 
 export function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; title: string; id: string }) {
   return (
@@ -358,7 +359,7 @@ export function RegistrationScreen({
       </div>
       <GrantSheet grants={wiz.grants} />
       {votingInfo && <VotingInfoSheet onClose={() => setVotingInfo(false)} />}
-      {sharing && share && <ShareSheet walletId={share.walletId} identity={share.identity} onClose={() => setSharing(false)} />}
+      {sharing && share && <ShareSheet walletId={share.walletId} identity={share.identity} testId="welcome-share-sheet" onClose={() => setSharing(false)} />}
     </section>
   );
 }

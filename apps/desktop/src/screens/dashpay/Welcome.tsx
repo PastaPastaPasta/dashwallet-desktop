@@ -1,9 +1,7 @@
 // R9, the welcome moment (PRODUCT #4): a registration's success, with its three next steps under
-// the greeting. Share my username opens Add contact's My QR in a sheet.
+// the greeting. Share my username opens ShareSheet.
 
-import { Sheet } from "../../components/sheet";
-import { REG_COPY, SHARE_TITLE, WELCOME_STEPS, type WelcomeStepKind } from "../../dashpay/registration";
-import { MyQrTab } from "../contacts/AddContact";
+import { REG_COPY, WELCOME_STEPS, type WelcomeStepKind } from "../../dashpay/registration";
 
 /** `canEdit`: the main identity and its profile are read. `canShare`: whose username to share is known. */
 export function WelcomeSteps({
@@ -42,13 +40,5 @@ export function WelcomeSteps({
         ))}
       </ol>
     </div>
-  );
-}
-
-export function ShareSheet({ walletId, identity, onClose }: { walletId: string; identity: string; onClose: () => void }) {
-  return (
-    <Sheet title={SHARE_TITLE} width="small" testId="welcome-share-sheet" onClose={onClose}>
-      <MyQrTab walletId={walletId} identity={identity} />
-    </Sheet>
   );
 }

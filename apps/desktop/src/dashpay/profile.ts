@@ -20,6 +20,7 @@ export const PROFILE_COPY = {
   loading: "Loading your profile…",
   noProfile: "You have no DashPay profile yet",
   editProfile: "Edit Profile",
+  share: "Share username",
   usernames: "Usernames",
   identity: "Identity",
   noUsername: "No username",
