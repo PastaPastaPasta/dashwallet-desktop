@@ -16,6 +16,7 @@ import {
   contactLetters,
   dayTitle,
   detailDate,
+  groupAmount,
   groupByDay,
   groupChip,
   groupConsecutiveMixing,
@@ -133,9 +134,8 @@ function MixingGroupView({ group, ctx, onOpen, decorate }: { group: MixingGroup;
   const membersId = useId();
   const first = group.rows[0];
   const chip = groupChip(group.rows);
-  const amount = group.rows.reduce((sum, row) => sum + row.amount, 0);
-  const shown = shownAmount(amount, "coinJoinMixing");
-  const text = ctx.display.compact(shown.duffs, shown.signed);
+  const amount = groupAmount(group.rows);
+  const shown = amount === null ? null : shownAmount(amount, "coinJoinMixing");
   const testId = `tx-mixing-group-${first.txid.slice(0, 10)}-${first.recordIndex}`;
   const date = rowDate(first);
   return (
@@ -157,10 +157,12 @@ function MixingGroupView({ group, ctx, onOpen, decorate }: { group: MixingGroup;
               {chip && <Chip tone="info">{chip}</Chip>}
             </span>
           </span>
-          <span className="tx-row-trailing">
-            <AmountText className="tx-row-amount" text={text} unitName={ctx.display.name} />
-            <FiatLine fiat={ctx.fiat} duffs={shown.duffs} hidden={ctx.discreet} className="tx-row-fiat" testId={`${testId}-fiat`} />
-          </span>
+          {shown && (
+            <span className="tx-row-trailing">
+              <AmountText className="tx-row-amount" text={ctx.display.compact(shown.duffs, shown.signed)} unitName={ctx.display.name} />
+              <FiatLine fiat={ctx.fiat} duffs={shown.duffs} hidden={ctx.discreet} className="tx-row-fiat" testId={`${testId}-fiat`} />
+            </span>
+          )}
         </button>
       </li>
       {expanded && (

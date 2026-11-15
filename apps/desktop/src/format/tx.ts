@@ -225,6 +225,15 @@ export function groupChip(rows: TxRow[]): string | null {
   return chips.find((chip) => chip === TxTitle.chipPending) ?? chips.find((chip) => chip !== null) ?? null;
 }
 
+/** A group's total in duffs, added exactly; `null` when a member or the total is past what a
+ * number holds exactly, so the group shows no total rather than a rounded one. */
+export function groupAmount(rows: TxRow[]): number | null {
+  if (!rows.every((row) => Number.isSafeInteger(row.amount))) return null;
+  const sum = rows.reduce((total, row) => total + BigInt(row.amount), 0n);
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  return sum <= max && sum >= -max ? Number(sum) : null;
+}
+
 /** The transaction failed: the chip is in the danger tone, the title secondary, the icon an error. */
 export function isProblem(status: TxStatusInfo): boolean {
   return status.kind === "conflicted" || status.kind === "abandoned" || status.kind === "notAccepted";

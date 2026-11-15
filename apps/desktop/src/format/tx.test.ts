@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { contactAside, contactLetters, contactName, dateRange, dayTitle, groupByDay, groupChip, groupConsecutiveMixing, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
+import { contactAside, contactLetters, contactName, dateRange, dayTitle, groupAmount, groupByDay, groupChip, groupConsecutiveMixing, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -100,6 +100,16 @@ describe("chips and icons", () => {
     expect(grouped[1]).toMatchObject({ txid: "c" });
     expect(grouped[2]).toMatchObject({ txid: "d" });
     expect("kind" in grouped[2]).toBe(false);
+  });
+
+  it("adds a group's amounts exactly, and gives no total past what a number holds exactly", () => {
+    const row = (amount: number): any => ({ txid: "a", recordIndex: 0, txType: "recvWithCoinJoin", amount });
+    expect(groupAmount([row(-1000), row(250), row(-1)])).toBe(-751);
+    const big = 2 ** 52;
+    expect(groupAmount([row(big), row(big - 1)])).toBe(Number.MAX_SAFE_INTEGER);
+    expect(groupAmount([row(big), row(big)])).toBeNull();
+    expect(groupAmount([row(-big), row(-big)])).toBeNull();
+    expect(groupAmount([row(2 ** 53), row(-1)])).toBeNull();
   });
 
   it("keeps a conflicted or abandoned mixing row out of a group", () => {
