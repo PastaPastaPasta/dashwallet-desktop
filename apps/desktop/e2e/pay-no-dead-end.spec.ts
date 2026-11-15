@@ -18,6 +18,12 @@ async function openPay(page: Page, scenario: string, theme: Theme = "light") {
 const selected = (page: Page, tab: "contact" | "address") => expect(page.getByTestId(`pay-tabs-${tab}`)).toHaveAttribute("aria-selected", "true");
 const searchField = (page: Page) => page.getByTestId("pay-contact-search").locator("input");
 const searchFor = (page: Page, text: string) => searchField(page).fill(text);
+/** The engine's signal that DashPay's state changed: every DashPay read is read again. */
+const dashpayChanged = (page: Page) =>
+  page.evaluate(() => {
+    const w = window.__dwFixture!.world;
+    window.__dwFixture!.emit({ kind: "platform", network: w.launch.network.dirName, walletId: w.wallets[0].summary.walletId, change: { domain: "names" } } as never);
+  });
 const networkRow = (page: Page, name: string) => page.getByTestId("network-row").filter({ has: page.locator(".contact-row-name", { hasText: name }) });
 
 test("PAY-6 Pay opens on To a contact with contacts, and on To an address without", async ({ page }) => {
@@ -105,6 +111,40 @@ test("PAY-6 a request sent, an ignored sender and oneself are found, not 'No one
     await page.getByTestId("pay-found-back").click();
   }
   expect(errors).toEqual([]);
+});
+
+test("PAY-6 a found user's check that fails on a re-read offers Try again, not the answer before it", async ({ page }) => {
+  const errors = await openPay(page, "dashpay-contacts-empty");
+  await page.getByTestId("pay-tabs-contact").click();
+  await searchFor(page, "mar");
+  await networkRow(page, "Marta").click();
+  await expect(page.getByTestId("pay-found-send")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_eligibility", "rpc"));
+  await dashpayChanged(page);
+  const card = page.getByTestId("pay-found-status");
+  await expect(card.getByRole("button", { name: "Try again" })).toBeVisible();
+  await expect(page.getByTestId("pay-found-send")).toHaveCount(0);
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_eligibility", null));
+  await card.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByTestId("pay-found-send")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("PAY-6 Pay opens on To an address when DashPay's state could not be read again", async ({ page }) => {
+  const errors = await openPay(page, "dashpay-registered");
+  await selected(page, "contact");
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
+  const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "dashpay_status").length);
+  const before = await reads();
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", "rpc"));
+  await dashpayChanged(page);
+  await expect.poll(reads).toBeGreaterThan(before);
+  // The failed read settles in the next frames.
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await selected(page, "address");
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_status", null));
+  expect(errors.filter((e) => !/rpc/i.test(e))).toEqual([]);
 });
 
 test("PAY-6 a refused Enable on the found user's card says why", async ({ page }) => {

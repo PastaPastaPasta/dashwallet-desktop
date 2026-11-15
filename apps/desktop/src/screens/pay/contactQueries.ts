@@ -34,9 +34,9 @@ export function usePayPicker(walletId: string, identity: string | null, text: st
 
 /** The tab Pay opens on (`defaultPayTab`), from the picker's unfiltered read. */
 export function useDefaultPayTab(walletId: string): PayTab | null {
-  const { owner, read } = useContactsOwner(walletId);
+  const { owner, read, failed } = useContactsOwner(walletId);
   const list = usePayPicker(walletId, owner.kind === "identity" ? owner.identity : null, "");
-  return defaultPayTab(read ? owner : undefined, { data: list.isPlaceholderData ? undefined : list.data, failed: list.isError });
+  return defaultPayTab(read ? { ...owner, failed } : undefined, { data: list.isPlaceholderData ? undefined : list.data, failed: list.isError });
 }
 
 /** Check again (D7): the engine looks for the locked payment's outcome; the contact is read again

@@ -114,7 +114,7 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
   // request sent, an ignored sender, oneself, a contact the filter missed), not only strangers.
   const listing = pickerListing({ data: list.data, placeholder: list.isPlaceholderData, failed: list.isError });
   const listReady = listing !== null;
-  const hits = listing ? pickerHits(net.data, listing) : { shown: [], more: false };
+  const hits = listing ? pickerHits(net.data, listing) : { shown: [], more: false, count: 0 };
   const networkState = pickerNetworkState({ listReady, caughtUp: prefix === wanted, pending: net.isPending, failed: net.isError, fetching: net.isFetching });
   const view = pickerView({
     text,
@@ -124,7 +124,7 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
     networkState,
     hits: hits.shown.length,
   });
-  const announce = searchAnnouncement({ network: wanted !== null, networkState, hits: hits.shown.length, none: view.none });
+  const announce = searchAnnouncement({ network: wanted !== null, networkState, hits: hits.count, none: view.none });
   const toAddress = () => ui.set({ payTab: "address" });
   // Change comes back to the search field.
   const field = useRef<HTMLInputElement>(null);

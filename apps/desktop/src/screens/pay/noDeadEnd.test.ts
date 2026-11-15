@@ -63,6 +63,11 @@ describe("the tab Pay opens on", () => {
   it("pays to an address when the contacts' last read failed, even with an older list kept", () => {
     expect(defaultPayTab(identity, { data: list([summary()]), failed: true })).toBe("address");
   });
+
+  it("pays to an address when DashPay's status last read failed, even with an older identity kept", () => {
+    expect(defaultPayTab({ ...identity, failed: true }, { data: list([summary()]), failed: false })).toBe("address");
+    expect(defaultPayTab({ ...identity, failed: false }, { data: list([summary()]), failed: false })).toBe("contact");
+  });
 });
 
 describe("the picker under a search", () => {
@@ -131,6 +136,13 @@ describe("the username search under the picker", () => {
     expect(hits.shown.map((h) => h.identity)).toEqual([BOB]);
     const view = pickerView({ text: "b0b", groups: pickerGroups(filtered).length, anyContacts: true, network: true, networkState: "done", hits: hits.shown.length });
     expect(view).toEqual({ network: true, none: null });
+  });
+
+  it("shows three users found and counts them all, for the announcement", () => {
+    const found = ["a1", "a2", "a3", "a4", "a5"].map((u, i) => hit({ identity: `${BOB.slice(0, -1)}${i}`, username: u, relation: "stranger" }));
+    const hits = pickerHits(found, list([]));
+    expect(hits.shown).toHaveLength(3);
+    expect(hits).toMatchObject({ more: true, count: 5 });
   });
 
   it("leaves out only who the picker lists for the text, in its contacts and requests", () => {

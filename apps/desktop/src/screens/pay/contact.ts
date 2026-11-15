@@ -60,10 +60,10 @@ export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "star
 /** The tab Pay opens on when nothing named one: To a contact only when there is someone to pay
  * there (a contact or a request), else To an address; `null` while that is still being read
  * (`owner` is `undefined` until DashPay's status is read). */
-export function defaultPayTab(owner: ContactsOwner | undefined, list: { data: ContactList | undefined; failed: boolean }): PayTab | null {
+export function defaultPayTab(owner: (ContactsOwner & { failed?: boolean }) | undefined, list: { data: ContactList | undefined; failed: boolean }): PayTab | null {
   if (owner === undefined) return null;
-  // A failed read keeps the last good list, which may be stale: To an address, not that list.
-  if (owner.kind !== "identity" || list.failed) return "address";
+  // A failed read keeps the last good answer, which may be stale: To an address, not that list.
+  if (owner.kind !== "identity" || owner.failed || list.failed) return "address";
   if (list.data === undefined) return null;
   return pickerGroups(list.data).length > 0 ? "contact" : "address";
 }
@@ -121,7 +121,7 @@ export function pickerView(i: {
  * text, whatever their relation. Matched against the filtered list the picker shows, not the
  * identity's whole list: the search folds homographs, the filter does not, so a contact the
  * filter missed is found here. */
-export function pickerHits(hits: UserHit[] | undefined, shown: ContactList): { shown: UserHit[]; more: boolean } {
+export function pickerHits(hits: UserHit[] | undefined, shown: ContactList): { shown: UserHit[]; more: boolean; count: number } {
   return networkHits(hits, { ...shown, sections: shown.sections.filter((s) => s.section === "contacts" || s.section === "requests") }, true);
 }
 

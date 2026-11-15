@@ -3,6 +3,7 @@
 // accept theirs and pay, or pay a contact the search reached first.
 
 import { useEffect, useId, useRef, useState } from "react";
+import type { EligibilityName } from "../../api/generated/EligibilityName";
 import type { UserHit } from "../../api/generated/UserHit";
 import { ui } from "../../app/ui";
 import { Chip, DashButton } from "../../components/basics";
@@ -32,10 +33,11 @@ export function FoundUser({
   const eligibility = useEligibility(walletId, identity, hit.identity);
   const toast = useActionToast(walletId);
   const payee = payeeOf({ contact: hit.identity, alias: null, displayName: hit.displayName?.trim() || null, username: hit.username });
-  // A request sent here is pending at once, before the eligibility read catches up.
-  const [requested, setRequested] = useState(false);
+  // A request sent here is pending at once (or, answering theirs, made them a contact), before the
+  // eligibility read catches up. A failed read's kept answer may be stale: it shows Try again.
+  const [requested, setRequested] = useState<EligibilityName | null>(null);
   const line = foundLine(payee.name, hit.relation, {
-    data: requested ? "pendingOutgoing" : eligibility.data,
+    data: requested ?? (eligibility.isError ? undefined : eligibility.data),
     failed: !requested && eligibility.isError && !eligibility.isFetching,
   });
   // A request sent shows as the line; a refusal says why under it.
@@ -50,7 +52,7 @@ export function FoundUser({
   const sent = (o: ActionOutcome | null) => {
     toast(o, true);
     if (!o?.ok) return;
-    setRequested(true);
+    setRequested(o.established ? "alreadyContact" : "pendingOutgoing");
     arm("send");
   };
 
