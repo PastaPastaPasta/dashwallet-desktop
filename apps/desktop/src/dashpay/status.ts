@@ -95,7 +95,7 @@ export const COPY = {
   unlockToLook: { title: "Unlock to look for your DashPay identity", message: "DashPay looks for your identity once the wallet is fully unlocked." },
   lookFailed: { title: "Could not finish looking for your DashPay identity", message: "Dash Wallet looks again the next time it starts." },
   unverified: { title: "Could not confirm your DashPay identity", message: "Its keys could not be checked against this wallet's recovery phrase." },
-  join: { title: "Join DashPay", message: "Request your username", action: "Join DashPay" },
+  join: { title: "Get a DashPay username", message: "Pay friends by name instead of an address.", action: "Join DashPay" },
   joinWaiting: { message: "Create a username, find your friends and add them to your contacts", note: "Available after sync finishes" },
   watchOnly: { title: "DashPay needs this wallet's keys", message: "A watch-only wallet cannot join DashPay." },
   registering: { title: "Creating your username", message: "Your username is being created on the Dash network. It may take some time." },

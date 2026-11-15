@@ -8,7 +8,7 @@ import { DashButton, DashLogo } from "../components/basics";
 import { EmptyState, LoadingState } from "../components/history";
 import { SwitchingCard } from "../components/networkPicker";
 import { SheetLayer, useLayeredSheet } from "../components/sheet";
-import { chipState, Sidebar, StatusBar, Toolbar } from "../components/shell";
+import { chipState, Sidebar, sidebarJoins, StatusBar, Toolbar } from "../components/shell";
 import { showToast, ToastHost } from "../components/toast";
 import { takeSwitchNote } from "../network/switch";
 import { ForgotPassphraseSheet } from "../screens/ForgotPassphrase";
@@ -236,8 +236,7 @@ function Shell() {
     wallet && main
       ? (id: string, close: () => void) => <NotificationsPopover key={bellOwner} walletId={wallet.walletId} identity={main} network={network} id={id} close={close} />
       : undefined;
-  // A contested username still has its identity: Contacts, not Join DashPay (D11).
-  const joined = !(dashpay.status?.kind === "noIdentity" || dashpay.status?.kind === "registering");
+  const joined = !sidebarJoins(dashpay.status);
   const sheet = !!(detail && wallet && !locked);
   const layered = useLayeredSheet();
   const savedLinks = useSavedLinksOffer(backend, {

@@ -291,9 +291,9 @@ test("toolbar: identity chip, bell and Contacts badge follow DashPay", async ({ 
   await expect(page.getByTestId("page-notifications")).toBeVisible();
 });
 
-test("toolbar: without an identity the chip and the sidebar lead to Join DashPay", async ({ page }) => {
+test("toolbar: without an identity there is no chip; the sidebar leads to Join DashPay", async ({ page }) => {
   await open(page, "dashpay-no-identity");
-  await expect(page.getByTestId("toolbar-chip")).toHaveText("Join DashPay");
+  await expect(page.getByTestId("toolbar-chip")).toHaveCount(0);
   await expect(page.getByTestId("sidebar-contacts")).toHaveCount(0);
   await page.getByTestId("sidebar-joinDashPay").click();
   await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
