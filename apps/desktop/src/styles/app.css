@@ -49,6 +49,70 @@ button {
   color: inherit;
 }
 
+/* Checkboxes and radios are drawn from tokens, not by the engine: WebKitGTK paints a native
+   unchecked box solid white in dark appearance, where it reads as checked. Unchecked is an
+   outline on the surface behind it; checked fills with the accent and draws the mark. */
+input[type="checkbox"],
+input[type="radio"] {
+  --check-fill: var(--dw-role-accent);
+  --check-mark: var(--dw-role-text-on-hero);
+  -webkit-appearance: none; /* WebKitGTK before 2.36 knows only the prefixed property */
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  flex: none;
+  width: 16px; /* the box: a touch over the 13 px native one, for the drawn tick */
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid var(--dw-role-text-tertiary);
+  border-radius: var(--dw-space-xxs); /* no radius token is this small */
+  background: transparent;
+  vertical-align: middle;
+}
+
+input[type="radio"] {
+  border-radius: 50%;
+}
+
+input[type="checkbox"]:checked,
+input[type="radio"]:checked {
+  border-color: var(--check-fill);
+  background: var(--check-fill);
+}
+
+input[type="checkbox"]:checked::before {
+  content: "";
+  width: 9px; /* the tick's long arm, 16 px box */
+  height: 5px;
+  margin-top: -2px; /* centres the rotated tick */
+  border: solid var(--check-mark);
+  border-width: 0 0 2px 2px;
+  transform: rotate(-45deg);
+}
+
+input[type="radio"]:checked::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--check-mark);
+}
+
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled {
+  opacity: var(--dw-opacity-disabled);
+}
+
+/* High contrast replaces backgrounds, which would hide the fill and the radio's dot: the
+   engine's own control follows the system colours there. */
+@media (forced-colors: active) {
+  input[type="checkbox"],
+  input[type="radio"] {
+    -webkit-appearance: auto;
+    appearance: auto;
+  }
+}
+
 :focus-visible {
   outline: 2px solid var(--dw-role-accent);
   outline-offset: 2px;
@@ -1761,12 +1825,6 @@ button {
   line-height: var(--dw-type-subhead-line);
 }
 
-.checkbox-row input,
-.radio-row input {
-  margin: 0;
-  accent-color: var(--dw-role-accent);
-}
-
 .radio-group {
   display: flex;
   flex-direction: column;
@@ -1788,7 +1846,7 @@ button {
 .inline-field-column {
   display: flex;
   gap: var(--dw-space-s);
-  margin-left: calc(13px + var(--dw-space-s)); /* under the radio's label */
+  margin-left: calc(16px + var(--dw-space-s)); /* under the radio's label */
   font-size: var(--dw-type-footnote-size);
   line-height: var(--dw-type-footnote-line);
 }
@@ -2259,6 +2317,12 @@ button {
   gap: var(--dw-space-m);
 }
 
+/* A header's action keeps its label on one line beside the title. */
+.top-intro-row > .dash-button {
+  flex: none;
+  white-space: nowrap;
+}
+
 .tx-intro-actions {
   display: flex;
   align-items: center;
@@ -2659,11 +2723,6 @@ button {
   line-height: var(--dw-type-subhead-line);
 }
 
-.check-row input {
-  flex: none;
-  accent-color: var(--dw-role-accent);
-}
-
 .secret-form {
   display: flex;
   flex-direction: column;
@@ -2863,7 +2922,7 @@ button {
 }
 
 .scan-input {
-  margin-left: calc(13px + var(--dw-space-s)); /* under the radio's label */
+  margin-left: calc(16px + var(--dw-space-s)); /* under the radio's label */
   padding: var(--dw-space-xs) var(--dw-space-m);
   border: 1px solid var(--dw-role-field-stroke);
   border-radius: var(--dw-radius-text-field);
@@ -3137,9 +3196,11 @@ button {
   gap: var(--dw-space-s);
 }
 
-/* After `.check-row input`, which it overrides on hero blue. */
+/* On hero blue the box and its fill are white, and the tick takes the hero's blue. */
 .lock-check input {
-  accent-color: var(--dw-c-white);
+  --check-fill: var(--dw-role-text-on-hero);
+  --check-mark: var(--dw-role-hero);
+  border-color: var(--dw-role-text-on-hero);
 }
 
 .status-button {
@@ -4555,7 +4616,6 @@ button.bell-row-open:focus-visible {
 
 .coinjoin-level input {
   margin: var(--dw-space-xxs) 0 0;
-  accent-color: var(--dw-role-accent);
 }
 
 .coinjoin-level-icon {
@@ -5521,11 +5581,6 @@ button.bell-row-open:focus-visible {
 
 .mg-node + .mg-node {
   border-top: 1px solid var(--dw-role-separator);
-}
-
-.mg-node input {
-  margin: 0;
-  accent-color: var(--dw-role-accent);
 }
 
 .mg-node[aria-disabled="true"] .mg-node-name {

@@ -53,7 +53,15 @@ export function ContactsPage({ walletId, network }: { walletId: string; network:
         <header className="top-intro top-intro-row">
           <h1 className="top-intro-title">Contacts</h1>
           {owner.kind === "identity" && (
-            <DashButton variant="filledBlue" size="small" data-testid="contacts-add" disabled={addOpen} why="Add a New Contact is already open." onClick={() => openAdd({ walletId, query: "", hit: null })}>
+            <DashButton
+              variant="filledBlue"
+              size="small"
+              data-testid="contacts-add"
+              disabled={addOpen}
+              aria-expanded={addOpen}
+              why="Add a New Contact is already open."
+              whyId="add-contact-title"
+              onClick={() => openAdd({ walletId, query: "", hit: null })}>
               Add contact
             </DashButton>
           )}
