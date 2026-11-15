@@ -171,6 +171,17 @@ test("PAY-6 a link's form is gone once Pay is left; a later wallet switch choose
   await selected(page, "contact");
 });
 
+test("PAY-6 a contact picked on Pay is gone once Pay is left; the next visit opens the chooser", async ({ page }) => {
+  await openPay(page, "dashpay-registered");
+  await page.getByTestId("pay-picker-row").first().click();
+  await expect(page.getByTestId("pay-payee-change")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "pay" }));
+  await selected(page, "contact");
+  await expect(page.getByTestId("pay-contact-search")).toBeVisible();
+  await expect(page.getByTestId("pay-payee-change")).toHaveCount(0);
+});
+
 test("PAY-6 a contact or request that matches stays in the picker; strangers show under it", async ({ page }) => {
   // Grace's request is in Contact Requests: the search finds her there, not on the network.
   await openPay(page, "dashpay-registered");
