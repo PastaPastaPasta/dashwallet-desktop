@@ -1,8 +1,8 @@
 // Home's balance (0.1 release plan, the iOS model): the hero is everything the wallet can spend,
 // the Core balance that can be spent (confirmed + unconfirmed, mixed coins included; immature and
 // locked funds are not) plus the shielded one plus the Platform addresses'; the
-// breakdown names the three. A pool whose balance is not known (dw-app has no command for it yet,
-// or the read failed) is left out of the hero and shows "—" in its row.
+// breakdown names those that hold something. A pool whose balance is not known (dw-app has no
+// command for it yet, or the read failed) is left out of the hero and of the breakdown.
 
 import type { Balances } from "../api/generated/Balances";
 
@@ -37,3 +37,24 @@ export const POOL_ROWS: { pool: Pool; title: string; subtitle: string }[] = [
   { pool: "shielded", title: "Shielded", subtitle: "Private balance" },
   { pool: "platform", title: "Platform", subtitle: "Platform addresses" },
 ];
+
+/**
+ * The breakdown's rows under the hero: Shielded and Platform only while they hold something (an
+ * empty pool, or one not known, says nothing a user needs). With neither, Core shows only to say
+ * what is pending, immature or locked; otherwise the hero says it all and there is no breakdown.
+ */
+export function breakdownRows(core: Balances, pools: HomeBalance["pools"]): Pool[] {
+  const others = (["shielded", "platform"] as const).filter((p) => (pools[p] ?? 0) > 0);
+  const coreNews = core.unconfirmed > 0 || core.immature > 0 || core.locked > 0;
+  return others.length > 0 || coreNews ? ["core", ...others] : [];
+}
+
+/**
+ * The hero amount as the mobile wallets draw it: the whole part and the first two decimals at full
+ * size, the remaining decimals smaller. Nothing is rounded; the text is split, not changed.
+ */
+export function heroDigits(text: string, major = 2): { major: string; minor: string } {
+  const dot = text.indexOf(".");
+  if (dot < 0) return { major: text, minor: "" };
+  return { major: text.slice(0, dot + 1 + major), minor: text.slice(dot + 1 + major) };
+}

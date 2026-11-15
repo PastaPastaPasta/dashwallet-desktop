@@ -1002,6 +1002,13 @@ button {
   cursor: default;
 }
 
+/* The decimals past the second, smaller, as the mobile wallets draw them; still exact. */
+.hero-amount .amount-minor {
+  font-size: var(--dw-type-title2-size);
+  line-height: var(--dw-type-title2-line);
+  opacity: var(--dw-opacity-hero-secondary-text);
+}
+
 .hero-unknown {
   display: flex;
   flex-direction: column;
@@ -1073,6 +1080,11 @@ button {
   margin-top: var(--dw-space-l);
   border-radius: var(--dw-radius-standard);
   background: color-mix(in srgb, var(--dw-role-hero-card) calc(var(--dw-opacity-hero-card) * 100%), transparent);
+}
+
+.hero-breakdown:not(:has(> :nth-child(2))) {
+  grid-template-columns: 1fr;
+  width: auto;
 }
 
 .hero-breakdown:has(> :nth-child(5)) {

@@ -16,7 +16,9 @@ for (const theme of THEMES) {
 
   test(`Home has no pool card with only Platform dust, and Transfer says why (${theme})`, async ({ page }) => {
     await page.goto(fixtureUrl("platform-dust-small", theme));
-    await expect(page.getByTestId("breakdown-platform")).toContainText("0.00");
+    // Nothing movable on Platform: Home has no Platform row.
+    await expect(page.getByTestId("hero-amount")).toBeVisible();
+    await expect(page.getByTestId("breakdown-platform")).toHaveCount(0);
     for (const id of POOL_CARDS) await expect(page.getByTestId(id)).toHaveCount(0);
     await expect(page.getByTestId("page-home")).not.toContainText("cannot be moved");
     expect(await platformMoveWhy(page)).toBe("0.004005 tDASH on your Platform addresses cannot be moved to your Dash wallet right now.");
@@ -101,4 +103,43 @@ test("An open Shielded passphrase prompt survives the Home section appearing and
   await input.press("Enter");
   await expect(page.getByTestId("grant-sheet")).toHaveCount(0);
   await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Added to Shielded");
+});
+
+for (const theme of THEMES) {
+  test(`Home asks to join DashPay once, and the hero balance reads like the mobile wallets (${theme})`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-no-identity", theme));
+    const home = page.getByTestId("page-home");
+    await expect(page.getByTestId("dashpay-card")).toHaveAttribute("data-state", "join");
+    // One button on Home, the card's; the sidebar entry stays as navigation; the toolbar has none.
+    await expect(home.getByRole("button", { name: "Join DashPay" })).toHaveCount(1);
+    await expect(home.getByText("Join DashPay", { exact: true })).toHaveCount(1);
+    await expect(page.getByTestId("toolbar-chip")).toHaveCount(0);
+    await expect(page.getByTestId("sidebar-joinDashPay")).toHaveText("Join DashPay");
+    await home.getByRole("button", { name: "Join DashPay" }).click();
+    await expect(page.getByTestId("page-joinDashPay")).toBeVisible();
+    await page.getByTestId("sidebar-home").click();
+
+    // The exact amount, with the decimals past the second drawn smaller.
+    const number = page.getByTestId("hero-amount").locator(".amount-number");
+    await expect(number).toHaveText("32.04698287");
+    const minor = number.locator(".amount-minor");
+    await expect(minor).toHaveText("698287");
+    const size = (l: typeof number) => l.evaluate((e) => parseFloat(getComputedStyle(e).fontSize));
+    expect(await size(minor)).toBeLessThan(await size(number));
+    await expect(page.getByTestId("hero-amount").locator(".amount")).toHaveAttribute("title", "32.04698287 tDASH");
+  });
+}
+
+test("Home's hero shows a round balance without a smaller tail, and no breakdown that repeats it", async ({ page }) => {
+  await page.goto(fixtureUrl("pools-absent", "light"));
+  await expect(page.getByTestId("hero-amount")).toContainText("30.39698287");
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    const w = f.world.wallets[0];
+    w.summary = { ...w.summary, balances: { ...w.summary.balances!, confirmed: 125_000_000, unconfirmed: 0, immature: 0, locked: 0, total: 125_000_000 } };
+    f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId: w.summary.walletId, balances: w.summary.balances });
+  });
+  await expect(page.getByTestId("hero-amount").locator(".amount-number")).toHaveText("1.25");
+  await expect(page.getByTestId("hero-amount").locator(".amount-minor")).toHaveCount(0);
+  await expect(page.getByTestId("hero-breakdown")).toHaveCount(0);
 });

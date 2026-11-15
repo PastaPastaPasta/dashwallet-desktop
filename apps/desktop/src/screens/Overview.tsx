@@ -10,7 +10,7 @@ import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, type HistoryFilter } from "../api/queries";
-import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
+import { AmountText, DashButton, Icon, NetworkCapsule } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
@@ -19,7 +19,7 @@ import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
-import { coreSubtitle, homeBalance, POOL_ROWS } from "../format/homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, homeBalance, POOL_ROWS } from "../format/homeBalance";
 import { isSyncing, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
@@ -34,27 +34,17 @@ import { defaultRoute, transferFor, TRANSFER_COPY } from "../transfer/model";
 const RECENT_COUNT = 5;
 const RECENT_FILTER: HistoryFilter = { categories: [], text: null, sort: "newestFirst" };
 
-/** `amount` null: not known, shown as "—" with no unit; `undefined`: still being read. */
-function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { title: string; subtitle: string; amount: string | null | undefined; unitName: string; testId: string; fiat?: ReactNode }) {
+function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { title: string; subtitle: string; amount: string; unitName: string; testId: string; fiat: ReactNode }) {
   return (
     <div className="breakdown-cell" data-testid={testId}>
       <span className="breakdown-text">
         <span className="breakdown-title">{title}</span>
         <span className="breakdown-subtitle">{subtitle}</span>
       </span>
-      {amount === null || amount === undefined ? (
-        <span className="breakdown-amount">
-          <span aria-hidden="true">{amount === null ? "—" : "…"}</span>
-          <VisuallyHidden>{amount === null ? "not available" : "loading"}</VisuallyHidden>
-        </span>
-      ) : fiat ? (
-        <span className="breakdown-amounts">
-          <AmountText className="breakdown-amount" text={amount} unitName={unitName} />
-          {fiat}
-        </span>
-      ) : (
+      <span className="breakdown-amounts">
         <AmountText className="breakdown-amount" text={amount} unitName={unitName} />
-      )}
+        {fiat}
+      </span>
     </div>
   );
 }
@@ -67,8 +57,7 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
   const full = (duffs: number) => (discreet ? undefined : shown.withUnit(duffs));
   const unit = shown.name;
   const home = balances && homeBalance(balances, shielded, platform);
-  // Still being read, as against not known: the row waits instead of saying "—".
-  const reading = { core: false, shielded: shielded === undefined, platform: platform === undefined };
+  const rows = home && balances ? breakdownRows(balances, home.pools) : [];
   const fiat = useFiat();
   return (
     <section className="hero" data-testid="hero" aria-label="Balance">
@@ -84,7 +73,7 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
           title={discreet ? "Click to show balance" : "Click to hide balance"}
           onClick={() => ui.set({ discreet: !discreet })}
         >
-          <AmountText text={fmt(home.total)} unitName={unit} title={full(home.total)} />
+          <AmountText text={fmt(home.total)} minor={heroDigits(fmt(home.total)).minor} unitName={unit} title={full(home.total)} />
         </button>
       ) : (
         <div className="hero-amount hero-unknown" data-testid="hero-amount" title="Not available until sync completes">
@@ -93,10 +82,10 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
         </div>
       )}
       {home && <HeroFiat fiat={fiat} duffs={home.total} hidden={discreet} />}
-      {home && balances && (
+      {home && balances && rows.length > 0 && (
         <div className="hero-breakdown" data-testid="hero-breakdown">
-          {POOL_ROWS.map((row, i) => {
-            const duffs = home.pools[row.pool];
+          {POOL_ROWS.filter((row) => rows.includes(row.pool)).map((row, i) => {
+            const duffs = home.pools[row.pool] ?? 0;
             // Core: what is still arriving shows under it; the others say when they are not known.
             const subtitle = row.pool === "core" ? coreSubtitle(balances, fmt, row.subtitle) : row.subtitle;
             return (
@@ -105,10 +94,10 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
                 <BreakdownCell
                   title={row.title}
                   subtitle={subtitle}
-                  amount={duffs !== null ? fmt(duffs) : reading[row.pool] ? undefined : null}
+                  amount={fmt(duffs)}
                   unitName={unit}
                   testId={`breakdown-${row.pool}`}
-                  fiat={duffs !== null && <FiatLine fiat={fiat} duffs={duffs} hidden={discreet} className="breakdown-fiat" testId={`breakdown-${row.pool}-fiat`} />}
+                  fiat={<FiatLine fiat={fiat} duffs={duffs} hidden={discreet} className="breakdown-fiat" testId={`breakdown-${row.pool}-fiat`} />}
                 />
               </Fragment>
             );

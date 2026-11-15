@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Balances } from "../api/generated/Balances";
-import { coreSubtitle, homeBalance, POOL_ROWS } from "./homeBalance";
+import { compact, masked } from "./amount";
+import { breakdownRows, coreSubtitle, heroDigits, homeBalance, POOL_ROWS } from "./homeBalance";
 
 const COIN = 100_000_000;
 const core: Balances = { confirmed: 3 * COIN, unconfirmed: COIN, immature: 0, locked: 0, total: 4 * COIN, coinjoin: 2 * COIN };
@@ -35,5 +36,45 @@ describe("Home's balance", () => {
 
   it("always lists Core, Shielded and Platform, in that order", () => {
     expect(POOL_ROWS.map((r) => r.pool)).toEqual(["core", "shielded", "platform"]);
+  });
+});
+
+describe("Home's breakdown rows", () => {
+  const settled: Balances = { ...core, unconfirmed: 0 };
+
+  it("hides an empty or unknown Shielded or Platform row", () => {
+    expect(breakdownRows(core, homeBalance(core, 5 * COIN, COIN / 2).pools)).toEqual(["core", "shielded", "platform"]);
+    expect(breakdownRows(core, homeBalance(core, 0, COIN / 2).pools)).toEqual(["core", "platform"]);
+    expect(breakdownRows(core, homeBalance(core, null, 0).pools)).toEqual(["core"]);
+    expect(breakdownRows(settled, homeBalance(settled, 1, undefined).pools)).toEqual(["core", "shielded"]);
+  });
+
+  it("drops the breakdown when Core alone would repeat the hero", () => {
+    expect(breakdownRows(settled, homeBalance(settled, 0, 0).pools)).toEqual([]);
+    expect(breakdownRows(settled, homeBalance(settled, null, null).pools)).toEqual([]);
+    // Something pending, immature or locked is worth a line under the hero.
+    for (const news of [{ unconfirmed: 1 }, { immature: 1 }, { locked: 1 }]) {
+      const b = { ...settled, ...news };
+      expect(breakdownRows(b, homeBalance(b, 0, null).pools)).toEqual(["core"]);
+    }
+  });
+});
+
+describe("the hero's digits", () => {
+  it("keeps two decimals at full size and the rest smaller, without rounding", () => {
+    expect(heroDigits(compact(3_204_698_287, false))).toEqual({ major: "32.04", minor: "698287" });
+    expect(heroDigits(compact(125_000_000, false))).toEqual({ major: "1.25", minor: "" });
+    expect(heroDigits(compact(100_000_001, false))).toEqual({ major: "1.00", minor: "000001" });
+    expect(heroDigits(compact(0, false))).toEqual({ major: "0.00", minor: "" });
+  });
+
+  it("joins back into the exact amount in every unit, and leaves discreet and duffs alone", () => {
+    for (const unit of ["DASH", "mDASH", "uDASH", "duffs"] as const) {
+      const text = compact(123_456_789_012, false, unit);
+      const { major, minor } = heroDigits(text);
+      expect(major + minor).toBe(text);
+    }
+    expect(heroDigits(compact(123_456_789_012, false, "duffs")).minor).toBe("");
+    expect(heroDigits(masked())).toEqual({ major: masked(), minor: "" });
   });
 });
