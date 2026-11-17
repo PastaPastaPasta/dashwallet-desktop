@@ -252,13 +252,11 @@ commands! {
 }
 
 /// Insight's transaction page, the same URLs as `explorerUrl`
-/// (`apps/desktop/src/format/explorer.ts`). A txid is 64 hex characters
-/// (either case). Regtest and devnet are not on Insight.
+/// (`apps/desktop/src/format/explorer.ts`). The txid is checked by
+/// `parse_txid`, like every other txid the API takes. Regtest and devnet are
+/// not on Insight.
 pub(crate) fn insight_tx_url(network: &DashNetwork, txid: &str) -> Result<String, AppError> {
-    let hex = txid.len() == 64 && txid.bytes().all(|b| b.is_ascii_hexdigit());
-    if !hex {
-        return Err(AppError::invalid_argument("txid is not 64 hex characters"));
-    }
+    let txid = parse_txid(txid)?;
     let base = match network {
         DashNetwork::Mainnet => "https://insight.dash.org/insight/tx/",
         DashNetwork::Testnet => "https://insight.testnet.networks.dash.org:3002/insight/tx/",
@@ -320,11 +318,6 @@ mod tests {
             insight_tx_url(&DashNetwork::Testnet, &txid).unwrap(),
             format!("https://insight.testnet.networks.dash.org:3002/insight/tx/{txid}")
         );
-        let upper = txid.to_ascii_uppercase();
-        assert_eq!(
-            insight_tx_url(&DashNetwork::Mainnet, &upper).unwrap(),
-            format!("https://insight.dash.org/insight/tx/{upper}")
-        );
         for network in [
             DashNetwork::Regtest,
             DashNetwork::Devnet {
@@ -337,11 +330,12 @@ mod tests {
     }
 
     #[test]
-    fn insight_url_refuses_a_txid_that_is_not_64_hex() {
+    fn insight_url_refuses_a_txid_that_is_not_64_lowercase_hex() {
         let txid = "ab".repeat(32);
         let too_long = format!("{txid}ff");
         let bad_char = format!("{}g", &txid[..63]);
-        for bad in [txid[..63].to_string(), too_long, bad_char, String::new()] {
+        let upper = txid.to_ascii_uppercase();
+        for bad in [txid[..63].to_string(), too_long, bad_char, upper, String::new()] {
             let err = insight_tx_url(&DashNetwork::Mainnet, &bad).unwrap_err();
             assert_eq!(err.code_str(), "invalid_argument", "{bad:?}");
         }

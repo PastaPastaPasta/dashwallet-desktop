@@ -34,6 +34,10 @@ describe("transaction detail status", () => {
     expect(confirmationDetail(status({ kind: "confirmed", confirmations: 6 }))).toBe("6 confirmations");
     expect(confirmationDetail(status({ kind: "immature", confirmations: 1, maturesIn: 99 }))).toBe("1 confirmation, available in 99 more blocks");
     expect(confirmationDetail(status({ kind: "immature", confirmations: 40, maturesIn: null }))).toBe("40 confirmations");
+    // No "0 confirmations", whatever the status says.
+    expect(confirmationDetail(status({ kind: "confirming", confirmations: 0 }))).toBeNull();
+    expect(confirmationDetail(status({ kind: "confirmed", confirmations: 0 }))).toBeNull();
+    expect(confirmationDetail(status({ kind: "immature", confirmations: 0, maturesIn: 100 }))).toBe("Available in 100 more blocks");
   });
 
   it("keeps the problem states readable", () => {

@@ -906,7 +906,7 @@ export const HANDLERS: Handlers = {
   open_tx_in_explorer: ({ txid }, { world }) => {
     const kind = world.launch.network.kind;
     if (kind === "regtest" || kind === "devnet") throw fail("invalid_argument", "this network has no block explorer");
-    if (!/^[0-9a-fA-F]{64}$/.test(txid)) throw fail("invalid_argument", "txid is not 64 hex characters");
+    if (!/^[0-9a-f]{64}$/.test(txid)) throw fail("invalid_argument", "txid is not 64 lowercase hex");
     world.explorerOpened = [...(world.explorerOpened ?? []), txid];
     return null;
   },

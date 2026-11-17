@@ -126,3 +126,18 @@ test("the explorer button follows the network and is absent on regtest", async (
   await expect(page.getByTestId("tx-detail-explorer")).toHaveCount(0);
   await expect(page.getByTestId("tx-detail-title")).toHaveText("Sent");
 });
+
+test("View in explorer asks once while the browser is opening", async ({ page }) => {
+  const sent = await openKind(page, "sent", "light", "mainnet");
+  const explorer = page.getByTestId("tx-detail-explorer");
+  await page.evaluate(() => {
+    (window as unknown as { __release: () => void }).__release = window.__dwFixture!.hold("open_tx_in_explorer");
+  });
+  await explorer.click();
+  await expect(explorer).toBeDisabled();
+  await explorer.click({ force: true });
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(explorer).toBeEnabled();
+  expect(await explorerCalls(page)).toEqual(["open_tx_in_explorer"]);
+  expect(await explorerOpened(page)).toEqual([sent.txid]);
+});

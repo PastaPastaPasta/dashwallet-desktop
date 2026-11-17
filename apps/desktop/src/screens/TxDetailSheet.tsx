@@ -56,6 +56,7 @@ export function statusText(s: TxStatusInfo): string {
 function ExplorerButton({ txid, kind }: { txid: string; kind: NetworkKind }) {
   const backend = useBackend();
   const [problem, setProblem] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
   if (!explorerUrl(kind, txid)) return null;
   return (
     <>
@@ -63,9 +64,14 @@ function ExplorerButton({ txid, kind }: { txid: string; kind: NetworkKind }) {
         type="button"
         className="tx-detail-explorer"
         data-testid="tx-detail-explorer"
+        disabled={opening}
         onClick={() => {
           setProblem(null);
-          void backend.openTxInExplorer(txid).catch(() => setProblem("Could not open the explorer."));
+          setOpening(true);
+          void backend
+            .openTxInExplorer(txid)
+            .catch(() => setProblem("Could not open the explorer."))
+            .finally(() => setOpening(false));
         }}
       >
         View in explorer
@@ -83,6 +89,7 @@ function ExplorerButton({ txid, kind }: { txid: string; kind: NetworkKind }) {
  * never says "0" or "unconfirmed". */
 export function confirmationDetail(s: TxStatusInfo): string | null {
   if (s.kind !== "confirming" && s.kind !== "confirmed" && s.kind !== "immature") return null;
+  if (s.confirmations === 0) return s.kind === "immature" && s.maturesIn !== null ? `Available in ${s.maturesIn} more blocks` : null;
   const conf = confirmationsText(s.confirmations);
   return s.kind === "immature" && s.maturesIn !== null ? `${conf}, available in ${s.maturesIn} more blocks` : conf;
 }
