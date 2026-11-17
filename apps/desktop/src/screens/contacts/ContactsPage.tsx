@@ -42,6 +42,8 @@ const openAdd = (addContact: AddContactIntent) => ui.set({ addContact, contact: 
 export function ContactsPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const backend = useBackend();
   const addOpen = useUi((s) => s.addContact?.walletId === walletId);
+  // A `dashpay://user` link shows the same Add contact section, though the button stays enabled.
+  const linkOpen = useUi((s) => s.contactPrefill !== null);
   const { owner, retry } = useContactsOwner(walletId);
   // Opening Contacts asks for a DashPay pass soon (D9); a refused ask leaves the engine's schedule.
   useEffect(() => {
@@ -53,7 +55,15 @@ export function ContactsPage({ walletId, network }: { walletId: string; network:
         <header className="top-intro top-intro-row">
           <h1 className="top-intro-title">Contacts</h1>
           {owner.kind === "identity" && (
-            <DashButton variant="filledBlue" size="small" data-testid="contacts-add" disabled={addOpen} why="Add a New Contact is already open." onClick={() => openAdd({ walletId, query: "", hit: null })}>
+            <DashButton
+              variant="filledBlue"
+              size="small"
+              data-testid="contacts-add"
+              disabled={addOpen}
+              aria-expanded={addOpen || linkOpen}
+              why="Add a New Contact is already open."
+              whyId="add-contact-title"
+              onClick={() => openAdd({ walletId, query: "", hit: null })}>
               Add contact
             </DashButton>
           )}
