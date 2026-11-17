@@ -168,12 +168,13 @@ export function useEligibility(walletId: string, identity: string | null, contac
 
 /** The identity's `dashpay://user` link for My QR (DP2-08 D12); under `["dashpay"]`, so a new
  * main name re-reads it. */
-export function useMyUserLink(walletId: string, identity: string) {
+export function useMyUserLink(walletId: string, identity: string, enabled = true) {
   const b = useBackend();
   return useQuery({
     queryKey: ["dashpay", "myUserLink", walletId, identity] as const,
     queryFn: () => b.dashpayMyUserLink(walletId, identity),
     retry: false,
+    enabled,
   });
 }
 

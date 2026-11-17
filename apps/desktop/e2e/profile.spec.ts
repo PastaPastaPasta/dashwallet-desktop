@@ -139,6 +139,34 @@ test("a username being refreshed has no link yet: Share username hides, and an o
   expect(errors).toEqual([]);
 });
 
+test("Share username follows the engine's link, not the identity list: hidden while the link is refused", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-registered");
+  const share = page.getByTestId("profile-share");
+  await expect(share).toBeVisible();
+  const reread = (refuse: boolean) =>
+    page.evaluate((refuse) => {
+      const f = window.__dwFixture!;
+      f.fail("dashpay_my_user_link", refuse ? "rpc" : null);
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+    }, refuse);
+  // The identity list still says the name is settled, but the engine refuses a link for it.
+  await reread(true);
+  await expect(share).toHaveCount(0);
+  await expect(page.getByTestId("profile-username")).toHaveText("@alice");
+  await reread(false);
+  await expect(share).toBeVisible();
+  // A slow re-read of the same name keeps the button: the cached link is still right.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    (window as unknown as { __release: () => void }).__release = f.hold("dashpay_my_user_link");
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+  });
+  await expect(share).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(share).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("a new main name while the sheet is open shows no link for the old one", async ({ page }) => {
   const errors = await openProfile(page, "dashpay-registered");
   await page.getByTestId("profile-share").click();

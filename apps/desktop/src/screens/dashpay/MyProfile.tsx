@@ -18,6 +18,8 @@ import { creditsModel, headerModel, holdsTopUp, outcomeRows, pageModel, PROFILE_
 import { editProfileFor, type EditProfileModel } from "../../dashpay/editProfile";
 import { useAvatarUploadAvailable, useContactPictures, useContest, useCostTable, useOutcomeEvents, usePendingTopUps, useProfileLimits, useRefreshBalanceOnVisit, useStuckTopUps } from "../../dashpay/profileQueries";
 import { useStatusInputs } from "../../dashpay/queries";
+import { myQr } from "../../contacts/add";
+import { useMyUserLink } from "../../contacts/queries";
 import type { CardActionKind, StatusInputs } from "../../dashpay/status";
 import { outcomeText, topUpErrorText, topUpFor, type TopUpFlow } from "../../dashpay/topup";
 import { withdrawFor } from "../../dashpay/withdraw";
@@ -58,6 +60,8 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
   const [sharing, setSharing] = useState(false);
   const share = useRef<HTMLButtonElement>(null);
   const edit = useRef<HTMLButtonElement>(null);
+  const link = useMyUserLink(walletId, main.identity, h.shareable);
+  const canShare = h.shareable && !link.isError && myQr(link, main.mainName).kind === "link";
   useEffect(() => {
     if (!h.shareable) setSharing(false);
   }, [h.shareable]);
@@ -82,7 +86,7 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
         <DashButton variant="tintedBlue" size="small" data-testid="profile-edit" ref={edit} onClick={onEdit}>
           {PROFILE_COPY.editProfile}
         </DashButton>
-        {h.shareable && (
+        {canShare && (
           <DashButton variant="tintedBlue" size="small" data-testid="profile-share" ref={share} onClick={() => setSharing(true)}>
             {PROFILE_COPY.share}
           </DashButton>

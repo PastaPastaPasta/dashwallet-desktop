@@ -8,9 +8,10 @@ import { ProfileHeader } from "./MyProfile";
 import { SHARE_QR_SIZE, ShareSheet } from "./ShareSheet";
 
 const LINK = "dashpay://user?username=alice";
+const linkQuery = vi.hoisted(() => ({ current: null as null | { data: string | undefined; error: unknown; isError: boolean; isFetching: boolean } }));
 vi.mock("../../contacts/queries", async (original) => ({
   ...(await original<typeof import("../../contacts/queries")>()),
-  useMyUserLink: () => ({ data: LINK, error: null, isError: false, refetch: () => undefined }),
+  useMyUserLink: () => ({ ...(linkQuery.current ?? { data: LINK, error: null, isError: false, isFetching: false }), refetch: () => undefined }),
 }));
 vi.mock("../../api/queries", async (original) => ({
   ...(await original<typeof import("../../api/queries")>()),
@@ -47,6 +48,26 @@ describe("Share username on My Profile (PRODUCT #12)", () => {
   it("hides the button while a held username updates or is rechecked: the engine gives no link then", () => {
     expect(header(identity({ names: ["alice"], mainName: "alice", namesUpdating: true }))).not.toContain('data-testid="profile-share"');
     expect(header(identity({ names: ["alice"], mainName: "alice", namesCheck: "pending" }))).not.toContain('data-testid="profile-share"');
+  });
+
+  it("hides the button until the engine gives a link for the username shown", () => {
+    const named = identity({ names: ["alice"], mainName: "alice" });
+    try {
+      linkQuery.current = { data: undefined, error: null, isError: false, isFetching: true };
+      expect(header(named)).not.toContain('data-testid="profile-share"');
+      linkQuery.current = { data: undefined, error: { code: "platform.unavailable" }, isError: true, isFetching: false };
+      expect(header(named)).not.toContain('data-testid="profile-share"');
+      // A cached link refused on its re-read, or one for another name, is not shown.
+      linkQuery.current = { data: LINK, error: { code: "platform.unavailable" }, isError: true, isFetching: false };
+      expect(header(named)).not.toContain('data-testid="profile-share"');
+      linkQuery.current = { data: "dashpay://user?username=bob", error: null, isError: false, isFetching: true };
+      expect(header(named)).not.toContain('data-testid="profile-share"');
+      // A cached link for the same name stays usable while it is re-read.
+      linkQuery.current = { data: LINK, error: null, isError: false, isFetching: true };
+      expect(header(named)).toContain('data-testid="profile-share"');
+    } finally {
+      linkQuery.current = null;
+    }
   });
 
   it("the sheet shows My QR, large, with the dashpay://user link and Copy Link", () => {
