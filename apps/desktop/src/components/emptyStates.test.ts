@@ -45,10 +45,15 @@ describe("addressBookEmpty", () => {
 
 describe("wallet list", () => {
   it("offers a wallet only after the list has loaded empty", () => {
-    expect(walletListGate("pending", 0)).toBe("loading");
-    expect(walletListGate("error", 0)).toBe("error");
-    expect(walletListGate("success", 0)).toBe("empty");
-    expect(walletListGate("success", 2)).toBe("ready");
+    expect(walletListGate({ isPending: true, isError: false })).toBe("loading");
+    expect(walletListGate({ isPending: false, isError: true })).toBe("error");
+    expect(walletListGate({ isPending: false, isError: false, data: [] })).toBe("empty");
+    expect(walletListGate({ isPending: false, isError: false, data: [1, 2] })).toBe("ready");
+  });
+
+  it("keeps the wallets it had when a refetch fails", () => {
+    expect(walletListGate({ isPending: false, isError: true, data: [1] })).toBe("ready");
+    expect(walletListGate({ isPending: false, isError: true, data: [] })).toBe("empty");
   });
 });
 

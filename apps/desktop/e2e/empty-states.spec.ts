@@ -303,6 +303,25 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("wallets-error")).toHaveCount(0);
   });
 
+  test(`a failed refetch of the wallet list keeps the page and what was typed (${theme})`, async ({ page }) => {
+    const errors = await open(page, "funded", theme);
+    await page.getByTestId("sidebar-pay").click();
+    await page.getByTestId("pay-tabs-address").click();
+    const amount = page.getByTestId("pay-amount");
+    await amount.fill("0.5");
+    const before = await page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "list_wallets").length);
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.fail("list_wallets", "none");
+      const w = f.world.wallets[0].summary;
+      f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId: w.walletId, balances: w.balances });
+    });
+    await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "list_wallets").length)).toBeGreaterThan(before);
+    await expect(page.getByTestId("page-wallets-error")).toHaveCount(0);
+    await expect(amount).toHaveValue("0.5");
+    expect(errors).toEqual([]);
+  });
+
   test(`an empty wallet list offers to create a wallet on a tool (${theme})`, async ({ page }) => {
     await open(page, "no-wallet", theme);
     await expect(page.getByTestId("no-wallet")).toContainText("Create or restore a wallet to get started.");

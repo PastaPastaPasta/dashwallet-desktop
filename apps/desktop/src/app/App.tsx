@@ -168,7 +168,7 @@ function Shell() {
   // Onboarding (U-02 D1): a network without a wallet opens it, and it stays open until its
   // Done. The lock screen replaces it, and drops what it held: Add Wallet… closes, the first
   // wallet's flow starts again at Welcome once unlocked.
-  const gate = walletListGate(wallets.isPending ? "pending" : wallets.isError ? "error" : "success", wallets.data?.length ?? 0);
+  const gate = walletListGate(wallets);
   const noWallet = gate === "empty";
   const walletsError = gate === "error" ? <EmptyState testId="wallets-error" title="Could not load the wallets" message={errorMessage(wallets.error)} /> : null;
   const walletsLoading = gate === "loading" ? <LoadingState testId="wallets-loading" text="Loading wallet…" /> : null;

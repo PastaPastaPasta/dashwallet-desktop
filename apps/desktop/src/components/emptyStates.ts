@@ -135,9 +135,10 @@ export function addressBookEmpty(input: { search: string; purpose: "send" | "rec
   return input.purpose === "send" ? { ...EMPTY.addressSend, step: "add" } : { ...EMPTY.addressReceive, step: "receive" };
 }
 
-/** How far the wallet list got. Tools offers a new wallet only once that list has loaded and is empty. */
-export function walletListGate(state: "pending" | "error" | "success", count: number): "loading" | "error" | "empty" | "ready" {
-  if (state === "pending") return "loading";
-  if (state === "error") return "error";
-  return count === 0 ? "empty" : "ready";
+/** How far the wallet list got. Tools offers a new wallet only once that list has loaded and is empty.
+ * A failed refetch keeps the list it had: only a list never read is an error. */
+export function walletListGate(q: { isPending: boolean; isError: boolean; data?: readonly unknown[] }): "loading" | "error" | "empty" | "ready" {
+  if (q.isPending) return "loading";
+  if (q.data === undefined) return q.isError ? "error" : "loading";
+  return q.data.length === 0 ? "empty" : "ready";
 }
