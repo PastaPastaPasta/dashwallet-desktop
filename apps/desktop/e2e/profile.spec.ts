@@ -188,6 +188,25 @@ test("an open sheet drops its code once the engine refuses the link, though the 
   expect(errors).toEqual([]);
 });
 
+test("an open sheet drops its code once the engine says the username is gone", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-registered");
+  await page.getByTestId("profile-share").click();
+  const shareSheet = page.getByTestId("profile-share-sheet");
+  await expect(shareSheet.getByTestId("add-contact-qr")).toBeVisible();
+  // The engine has no username for the identity any more; the identity list's re-read is still out.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    (window as unknown as { __release: () => void }).__release = f.hold("identities");
+    f.world.dashpay.identities = f.world.dashpay.identities.map((i, n) => (n === 0 ? { ...i, names: [], mainName: null } : i));
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+  });
+  await expect(shareSheet.getByTestId("add-contact-qr-no-username")).toBeVisible();
+  await expect(shareSheet.getByTestId("add-contact-qr")).toHaveCount(0);
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(shareSheet).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("a new main name while the sheet is open shows no link for the old one", async ({ page }) => {
   const errors = await openProfile(page, "dashpay-registered");
   await page.getByTestId("profile-share").click();

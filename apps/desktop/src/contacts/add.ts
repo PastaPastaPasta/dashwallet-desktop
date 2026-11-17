@@ -249,10 +249,11 @@ export type MyQr = { kind: "loading" } | { kind: "link"; link: string } | { kind
 
 /** `username`: the name shown as the one shared. A link read for another name (before the main
  * name changed) is not shown: loading while it is read again, else updating. Nor is a cached link
- * once the engine refuses one (`platform.unavailable`: names held or rechecked); another failure
- * of a re-read keeps it. */
+ * once the engine refuses one (`platform.unavailable`: names held or rechecked; `contact.no_username`:
+ * the name is gone); another failure of a re-read keeps it. */
 export function myQr(q: { data: string | undefined; error: unknown; isError: boolean; isFetching?: boolean }, username?: string | null): MyQr {
   if (q.isError && hasCode(q.error, "platform.unavailable")) return { kind: "updating" };
+  if (q.isError && hasCode(q.error, "contact.no_username")) return { kind: "noUsername" };
   const other = q.data !== undefined && username != null && linkUsername(q.data)?.toLowerCase() !== username.toLowerCase();
   if (q.data !== undefined && !other) return { kind: "link", link: q.data };
   if (!q.isError) return other && !q.isFetching ? { kind: "updating" } : { kind: "loading" };
