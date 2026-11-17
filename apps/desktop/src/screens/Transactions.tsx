@@ -104,7 +104,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   const syncing = !sync.data || isSyncing(sync.data);
   // Platform and Shielded rows are part of this list too: it is not empty until they have answered.
   const extraPending = withExtra && (platform.isPending || shielded.isPending);
-  const empty = filtered ? EMPTY.activityFiltered : historyEmptyCopy({ syncing: syncing || extraPending, home: false });
+  const empty = filtered && !extraPending ? EMPTY.activityFiltered : historyEmptyCopy({ syncing: syncing || extraPending, home: false });
   const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
   // Every extra row the filters keep counts, loaded or not; Export is the Core history only.
   const total = coreTotal === null ? null : coreTotal + extraShown.length;

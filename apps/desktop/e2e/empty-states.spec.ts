@@ -60,6 +60,17 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
+  test(`a filtered activity waits for Platform history before it says nothing matches (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty", theme, "&fail=shielded_history:none&fail=platform_activity:none&hold=platform_activity");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-date").selectOption("today");
+    await expect(page.getByTestId("tx-syncing")).toContainText("Your history is still syncing");
+    await expect(page.getByTestId("tx-empty-clear")).toHaveCount(0);
+    await page.evaluate(() => window.__dwFixture!.release("platform_activity"));
+    await expect(page.getByTestId("tx-empty")).toContainText("Nothing matches these filters");
+    expect(errors).toEqual([]);
+  });
+
   test(`activity filters that match nothing can be cleared (${theme})`, async ({ page }) => {
     const errors = await open(page, "empty", theme);
     await page.getByTestId("sidebar-activity").click();
