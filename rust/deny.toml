@@ -36,10 +36,11 @@ ignore = [
     { id = "RUSTSEC-2026-0459", reason = "bundled SQLite via rusqlite 0.38 (ours and the platform pin's); wallet.dat import opens immutable (no WAL read); remove at the rusqlite 0.41 re-pin" },
     # chrono, chrono-tz and chrono-tz-build are unmaintained (added 2026-11-17; no safe upgrade).
     # None of our crates uses them. chrono comes in through the platform pin (dpp, dash-sdk,
-    # platform-wallet-storage, rs-dapi-client), tenderdash-proto and the rust-dashcore pin
-    # (dash-spv); chrono-tz and chrono-tz-build only through dpp, chrono-tz-build at build time.
+    # platform-wallet-storage, rs-dapi-client), tenderdash-proto, the rust-dashcore pin (dash-spv,
+    # and dashcore-rpc-json through serde_with) and tauri-utils (through serde_with); chrono-tz
+    # and chrono-tz-build only through dpp, chrono-tz-build at build time.
     # Unmaintained notices, no security issue reported. Drop each when no path above uses it.
-    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no safe upgrade; through the platform, tenderdash and rust-dashcore pins" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no safe upgrade; through the platform, tenderdash and rust-dashcore pins and tauri-utils" },
     { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained, no safe upgrade; only through dpp in the platform pin" },
     { id = "RUSTSEC-2026-0559", reason = "chrono-tz-build unmaintained, no safe upgrade; build-time only, through dpp in the platform pin" },
 ]
