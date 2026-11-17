@@ -81,6 +81,8 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("tx-syncing")).toContainText("Your history is still syncing");
     await expect(page.getByTestId("tx-empty")).toHaveCount(0);
     await expect(page.getByTestId("tx-empty-clear")).toHaveCount(0);
+    await expect(page.getByTestId("tx-export-why")).toHaveCount(0);
+    await expect(page.getByTestId("tx-footer")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 

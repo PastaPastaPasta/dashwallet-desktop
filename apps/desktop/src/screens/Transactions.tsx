@@ -142,9 +142,11 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
 
   // A wallet with no transactions yet already says so in the empty card. A filter that matches
-  // nothing still explains why Export is off, and still counts the zero.
+  // nothing still explains why Export is off, and still counts the zero, but only once every
+  // source has answered: until then the list is still arriving.
   const unfilteredEmpty = !filtered && rows.length === 0 && !history.isPending && !(history.isError && coreRows.length === 0);
-  const exportWhy = exporting ? "Exporting…" : !coreTotal && !unfilteredEmpty ? "There are no transactions to export yet." : null;
+  const noZeroYet = unfilteredEmpty || (rows.length === 0 && (history.isPending || syncing || extraPending));
+  const exportWhy = exporting ? "Exporting…" : !coreTotal && !noZeroYet ? "There are no transactions to export yet." : null;
   return (
     <main className={`page page-transactions ${mode === "table" ? "is-table" : ""}`} data-testid="page-activity">
       <div className="page-column">
@@ -266,7 +268,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
             </p>
           )}
         </div>
-        {total !== null && !unfilteredEmpty && (
+        {total !== null && !noZeroYet && (
           <footer className="tx-footer" data-testid="tx-footer">
             {total === 1 ? "1 transaction" : `${total.toLocaleString(backend.locale)} transactions`}
           </footer>
