@@ -12,3 +12,9 @@ Shared setup:
 - The no-wallet page and the empty-list tool tab are covered by onboarding, which cannot be cancelled. Onboarding is hidden in those two shots so the page underneath is visible.
 - The failed wallet list is `funded` with `list_wallets` returning no data, then Tools → Address Book.
 - Receive shows the empty wallet's fixture address.
+
+## r2 (review fixes)
+
+- Before: `c4cd6e59` (main, the PR's base after the main merge). After: `d1f4f360` (PR head).
+- Fixture build (`pnpm build:fixture`), served with `vite preview --mode fixture`, Chromium at 1280×820, light and dark.
+- States: Tools with a failed wallet list (`fail=list_wallets:none`), Activity while Platform history is still out (`hold=platform_activity`), Coin Selection with only CoinJoin coins, and the Sign/Verify address picker with no receiving addresses.
