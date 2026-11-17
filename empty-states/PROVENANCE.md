@@ -18,3 +18,8 @@ Shared setup:
 - Before: `c4cd6e59` (main, the PR's base after the main merge). After: `d1f4f360` (PR head).
 - Fixture build (`pnpm build:fixture`), served with `vite preview --mode fixture`, Chromium at 1280×820, light and dark.
 - States: Tools with a failed wallet list (`fail=list_wallets:none`), Activity while Platform history is still out (`hold=platform_activity`), Coin Selection with only CoinJoin coins, and the Sign/Verify address picker with no receiving addresses.
+
+## r3
+
+- Before: `c4cd6e59` (main, the PR base). After: `0b8c29cc` (PR head). Same build and viewport as r2.
+- States: Pay with 0.5 typed after a failed `list_wallets` refetch, and Activity filtered to Today while Platform history is still out (`hold=platform_activity`).
