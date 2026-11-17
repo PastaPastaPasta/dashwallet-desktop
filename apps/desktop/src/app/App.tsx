@@ -170,16 +170,15 @@ function Shell() {
   // wallet's flow starts again at Welcome once unlocked.
   const gate = walletListGate(wallets.isPending ? "pending" : wallets.isError ? "error" : "success", wallets.data?.length ?? 0);
   const noWallet = gate === "empty";
+  const walletsError = gate === "error" ? <EmptyState testId="wallets-error" title="Could not load the wallets" message={errorMessage(wallets.error)} /> : null;
+  const walletsLoading = gate === "loading" ? <LoadingState testId="wallets-loading" text="Loading wallet…" /> : null;
   const walletsBlocked =
-    gate === "loading" ? (
-      <LoadingState testId="wallets-loading" text="Loading wallet…" />
-    ) : gate === "error" ? (
+    walletsLoading ??
+    (walletsError && (
       <main className="page" data-testid="page-wallets-error">
-        <div className="page-column">
-          <EmptyState testId="wallets-error" title="Could not load the wallets" message={errorMessage(wallets.error)} />
-        </div>
+        <div className="page-column">{walletsError}</div>
       </main>
-    ) : null;
+    ));
   // A wipe in progress holds it back until the vault is gone or its failure was seen (U-04 D33).
   const onboarding = !locked && !wiping && (addWallet || noWallet);
   useEffect(() => {
@@ -226,7 +225,7 @@ function Shell() {
     else if (route === "masternodes" && masternodesItem.shown) content = <MasternodesPage key={wallet.walletId} wallet={wallet} network={network} />;
     else if (route === "masternodes") content = <Overview key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
     else content = <Transactions key={wallet.walletId} walletId={wallet.walletId} network={network} onOpen={open} />;
-  } else if (route === "tools") content = walletsBlocked ?? <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} />;
+  } else if (route === "tools") content = <ToolsPage wallet={wallet ?? null} wallets={wallets.data ?? []} network={network} noWallet={walletsLoading ?? walletsError} />;
   else if (route === "settings") content = <SettingsPage network={network} />;
   else content = <Placeholder route={route} />;
 

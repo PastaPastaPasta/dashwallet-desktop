@@ -85,8 +85,8 @@ export const EMPTY = {
   },
   coinsHidden: {
     art: "coins",
-    title: "All your coins are mixed",
-    message: "Mixed coins are hidden from this list.",
+    title: "Every coin here is a CoinJoin coin",
+    message: "CoinJoin coins are hidden from this list.",
     action: { testId: "coins-empty-show", label: "Show all coins" },
   },
   peers: {

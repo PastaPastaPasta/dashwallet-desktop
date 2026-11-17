@@ -63,8 +63,8 @@ describe("empty copy", () => {
     expect(EMPTY.coins.title).toBe("No coins yet");
     expect(EMPTY.coins.message.endsWith("show up here.")).toBe(true);
     expect(EMPTY.coinsHidden).toMatchObject({
-      title: "All your coins are mixed",
-      message: "Mixed coins are hidden from this list.",
+      title: "Every coin here is a CoinJoin coin",
+      message: "CoinJoin coins are hidden from this list.",
       action: { label: "Show all coins" },
     });
     expect(EMPTY.peers).toMatchObject({

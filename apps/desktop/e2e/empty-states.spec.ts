@@ -50,6 +50,16 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("page-receive")).toBeVisible();
   });
 
+  test(`activity is not empty until Platform history has answered (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty", theme, "&fail=shielded_history:none&fail=platform_activity:none&hold=platform_activity");
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId("tx-syncing")).toContainText("Your history is still syncing");
+    await expect(page.getByTestId("tx-empty-receive")).toHaveCount(0);
+    await page.evaluate(() => window.__dwFixture!.release("platform_activity"));
+    await expect(page.getByTestId("tx-empty-receive")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
   test(`activity filters that match nothing can be cleared (${theme})`, async ({ page }) => {
     const errors = await open(page, "empty", theme);
     await page.getByTestId("sidebar-activity").click();
@@ -269,12 +279,12 @@ for (const theme of THEMES) {
     await expect(picker.getByRole("button", { name: "Receive Dash" })).toHaveCount(0);
   });
 
-  test(`showing every mixed coin focuses the first filter (${theme})`, async ({ page }) => {
+  test(`showing hidden CoinJoin coins focuses the first filter (${theme})`, async ({ page }) => {
     await open(page, "coins-all-mixed", theme);
     await tools(page, "coinSelection");
     const empty = page.getByTestId("coins-none");
-    await expect(empty).toContainText("All your coins are mixed");
-    await expect(empty).toContainText("Mixed coins are hidden from this list.");
+    await expect(empty).toContainText("Every coin here is a CoinJoin coin");
+    await expect(empty).toContainText("CoinJoin coins are hidden from this list.");
     await page.getByTestId("coins-empty-show").click();
     await expect(page.getByTestId("coins-mode-list")).toBeFocused();
     await expect(page.getByTestId("coin-table")).toBeVisible();
@@ -283,9 +293,14 @@ for (const theme of THEMES) {
   test(`a failed wallet list does not offer to create a wallet (${theme})`, async ({ page }) => {
     await open(page, "funded", theme, "&fail=list_wallets:none");
     await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "tools", tab: "addressBook" }));
-    await expect(page.getByTestId("page-wallets-error")).toBeVisible();
+    await expect(page.getByTestId("wallets-error")).toBeVisible();
     await expect(page.getByTestId("tools-addressBook-no-wallet")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Create a wallet" })).toHaveCount(0);
+    // The tools that need no wallet stay open.
+    await tools(page, "information");
+    await expect(page.getByTestId("tools-information")).toBeVisible();
+    await tools(page, "psbt");
+    await expect(page.getByTestId("wallets-error")).toHaveCount(0);
   });
 
   test(`an empty wallet list offers to create a wallet on a tool (${theme})`, async ({ page }) => {
