@@ -61,7 +61,7 @@ export function ProfileHeader({ main, contest, walletId, onEdit }: { main: Ident
   const share = useRef<HTMLButtonElement>(null);
   const edit = useRef<HTMLButtonElement>(null);
   const link = useMyUserLink(walletId, main.identity, h.shareable);
-  const canShare = h.shareable && !link.isError && myQr(link, main.mainName).kind === "link";
+  const canShare = h.shareable && myQr(link, main.mainName).kind === "link";
   useEffect(() => {
     if (!h.shareable) setSharing(false);
   }, [h.shareable]);

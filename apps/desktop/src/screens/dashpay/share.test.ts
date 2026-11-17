@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { Backend } from "../../api/backend";
 import type { IdentitySummary } from "../../api/generated/IdentitySummary";
 import { BackendContext } from "../../api/queries";
+import { appError } from "../../onboarding/testWorld";
 import { ProfileHeader } from "./MyProfile";
 import { SHARE_QR_SIZE, ShareSheet } from "./ShareSheet";
 
@@ -55,15 +56,23 @@ describe("Share username on My Profile (PRODUCT #12)", () => {
     try {
       linkQuery.current = { data: undefined, error: null, isError: false, isFetching: true };
       expect(header(named)).not.toContain('data-testid="profile-share"');
-      linkQuery.current = { data: undefined, error: { code: "platform.unavailable" }, isError: true, isFetching: false };
+      linkQuery.current = { data: undefined, error: appError("platform.unavailable"), isError: true, isFetching: false };
       expect(header(named)).not.toContain('data-testid="profile-share"');
       // A cached link refused on its re-read, or one for another name, is not shown.
-      linkQuery.current = { data: LINK, error: { code: "platform.unavailable" }, isError: true, isFetching: false };
+      linkQuery.current = { data: LINK, error: appError("platform.unavailable"), isError: true, isFetching: false };
       expect(header(named)).not.toContain('data-testid="profile-share"');
       linkQuery.current = { data: "dashpay://user?username=bob", error: null, isError: false, isFetching: true };
       expect(header(named)).not.toContain('data-testid="profile-share"');
       // A cached link for the same name stays usable while it is re-read.
       linkQuery.current = { data: LINK, error: null, isError: false, isFetching: true };
+      expect(header(named)).toContain('data-testid="profile-share"');
+      // The engine saying the name is gone hides a cached link; any other failed re-read keeps it,
+      // as Add contact and an open sheet do.
+      linkQuery.current = { data: LINK, error: appError("contact.no_username"), isError: true, isFetching: false };
+      expect(header(named)).not.toContain('data-testid="profile-share"');
+      linkQuery.current = { data: undefined, error: appError("platform.timeout"), isError: true, isFetching: false };
+      expect(header(named)).not.toContain('data-testid="profile-share"');
+      linkQuery.current = { data: LINK, error: appError("platform.timeout"), isError: true, isFetching: false };
       expect(header(named)).toContain('data-testid="profile-share"');
     } finally {
       linkQuery.current = null;
