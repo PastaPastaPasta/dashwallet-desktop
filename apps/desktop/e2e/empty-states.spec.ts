@@ -71,6 +71,19 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
+  test(`a filtered activity waits for Core history while the wallet is syncing (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty-syncing", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    await page.getByTestId("sidebar-activity").click();
+    await page.getByTestId("tx-category-sent").click();
+    await expect(page.getByTestId("tx-syncing")).toContainText("Your history is still syncing");
+    await page.getByTestId("tx-category-all").click();
+    await page.getByTestId("tx-date").selectOption("today");
+    await expect(page.getByTestId("tx-syncing")).toContainText("Your history is still syncing");
+    await expect(page.getByTestId("tx-empty")).toHaveCount(0);
+    await expect(page.getByTestId("tx-empty-clear")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
   test(`activity filters that match nothing can be cleared (${theme})`, async ({ page }) => {
     const errors = await open(page, "empty", theme);
     await page.getByTestId("sidebar-activity").click();
