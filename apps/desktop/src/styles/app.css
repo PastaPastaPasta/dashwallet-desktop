@@ -1778,6 +1778,12 @@ input[type="radio"]:disabled {
   cursor: pointer;
 }
 
+.tx-detail-explorer:disabled {
+  color: var(--dw-role-plain-content-disabled);
+  text-decoration: none;
+  cursor: progress;
+}
+
 .io-heading {
   margin: 0;
   padding: var(--dw-space-s) var(--dw-layout-card-padding) 0;

@@ -135,9 +135,11 @@ test("View in explorer asks once while the browser is opening", async ({ page })
   });
   await explorer.click();
   await expect(explorer).toBeDisabled();
+  await expect(explorer).toHaveText("Opening the explorer…");
   await explorer.click({ force: true });
   await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
   await expect(explorer).toBeEnabled();
+  await expect(explorer).toHaveText("View in explorer");
   expect(await explorerCalls(page)).toEqual(["open_tx_in_explorer"]);
   expect(await explorerOpened(page)).toEqual([sent.txid]);
 });

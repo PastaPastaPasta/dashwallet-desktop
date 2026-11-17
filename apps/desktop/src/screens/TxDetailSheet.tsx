@@ -74,7 +74,7 @@ function ExplorerButton({ txid, kind }: { txid: string; kind: NetworkKind }) {
             .finally(() => setOpening(false));
         }}
       >
-        View in explorer
+        {opening ? "Opening the explorer…" : "View in explorer"}
       </button>
       {problem && (
         <p className="field-error" role="alert" data-testid="tx-detail-explorer-error">
