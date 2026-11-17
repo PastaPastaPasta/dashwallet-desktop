@@ -198,6 +198,12 @@ describe("copy (D6, D7, D9, D12)", () => {
     expect(myQr({ data: link, error: null, isError: false, isFetching: false }, "grace2")).toEqual({ kind: "updating" });
     expect(myQr({ data: link, error: appError("platform.unavailable"), isError: true }, "grace2")).toEqual({ kind: "updating" });
     expect(myQr({ data: link, error: appError("internal", null, "boom"), isError: true }, "grace2")).toEqual({ kind: "failed", text: "boom" });
+  });
+
+  it("D12 My QR drops a cached link once the engine refuses one, and keeps it through other failures", () => {
+    const link = userLinkText(GRACE, "grace");
+    expect(myQr({ data: link, error: appError("platform.unavailable"), isError: true }, "grace")).toEqual({ kind: "updating" });
+    expect(myQr({ data: link, error: appError("platform.timeout"), isError: true }, "grace")).toEqual({ kind: "link", link });
     // A failed re-read for the same name keeps the link: it is still right.
     expect(myQr({ data: link, error: appError("internal", null, "boom"), isError: true }, "grace")).toEqual({ kind: "link", link });
   });
