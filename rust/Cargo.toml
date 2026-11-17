@@ -165,11 +165,11 @@ tempfile = "3"
 
 # The platform pin asks for rs-tenderdash-abci v1.8.0, whose proto compiler builds with zip 8
 # (RUSTSEC-2026-0545..0548 and earlier). v1.8.1 is v1.8.0 with only the zip 9 bump. Drop this
-# when the platform pin moves to v1.8.1 or later.
+# when the platform pin moves to v1.8.1 or later. eebfc46c is the v1.8.1 tag.
 [patch."https://github.com/dashpay/rs-tenderdash-abci"]
-tenderdash-abci = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", tag = "v1.8.1" }
-tenderdash-proto = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", tag = "v1.8.1" }
-tenderdash-proto-compiler = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", tag = "v1.8.1" }
+tenderdash-abci = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", rev = "eebfc46cc64b27022ccbbb3924604dd87a10c340" }
+tenderdash-proto = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", rev = "eebfc46cc64b27022ccbbb3924604dd87a10c340" }
+tenderdash-proto-compiler = { git = "https://www.github.com/dashpay/rs-tenderdash-abci", rev = "eebfc46cc64b27022ccbbb3924604dd87a10c340" }
 
 [profile.dev]
 debug = "line-tables-only"
