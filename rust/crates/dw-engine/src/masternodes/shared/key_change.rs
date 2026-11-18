@@ -33,7 +33,7 @@ use dw_protx::shared::key_change::{self, Checked, Keys, Refusal};
 use dw_protx::shared::rules::{self as shared_rules, SharedMn};
 use dw_protx::shared::{
     CollateralShare, CompactSignature, ProUpShareTx, ProUpSharedRegTx, SpecialTx,
-    TRANSACTION_PROVIDER_UPDATE_SHARE, payload_bytes,
+    TRANSACTION_PROVIDER_UPDATE_SHARE, TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR, payload_bytes,
 };
 use platform_wallet::masternode::MasternodeListSummary;
 use serde::{Deserialize, Serialize};
@@ -56,8 +56,8 @@ use super::flow::signer_refusal;
 use super::send::typed;
 use super::standby::{in_history, p2pkh_address};
 use super::store::{
-    ChainView, decode_outpoints, encode_outpoints, json, message_refusal, reserved_of, role_name,
-    role_of, stage_refusal,
+    ChainView, copy_rank, decode_outpoints, encode_outpoints, json, message_refusal, reserved_of,
+    role_name, role_of, stage_refusal,
 };
 use super::together::{TogetherView, absorb, known_mn, unsigned};
 use crate::coins::now_secs;
@@ -329,6 +329,31 @@ fn shares_now(
     shares
 }
 
+/// A confirmed ProUpSharedRegTx whose payload is the one this wallet
+/// sent, under another txid. Best copy first, as a registration's copies
+/// (`copy_rank`).
+fn payload_copy_height(
+    chain: &ChainView,
+    signed: Option<&[u8]>,
+    sent: Option<&Txid>,
+) -> Option<u32> {
+    let signed = SpecialTx::from_bytes(signed?).ok()?;
+    if signed.tx_type != TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR {
+        return None;
+    }
+    chain
+        .history
+        .iter()
+        .filter(|(id, entry)| {
+            Some(*id) != sent
+                && entry.context.block_info().is_some()
+                && special_of(&entry.tx)
+                    .is_some_and(|tx| tx.tx_type == signed.tx_type && tx.payload == signed.payload)
+        })
+        .min_by_key(|(id, entry)| copy_rank(id, &entry.context, sent))
+        .and_then(|(_, entry)| entry.context.block_info().map(|b| b.height()))
+}
+
 /// The synced list's keys for the masternode now: `None` while the list
 /// isn't synced or doesn't hold it.
 fn current_keys(list: Option<&ListView>, hash: &[u8; 32]) -> Option<Keys> {
@@ -341,9 +366,10 @@ fn same_keys(k: Keys, base: &KeyBase, network: dashcore::Network) -> bool {
 }
 
 /// The stage (D103), first match. The funder: abandoned before its send;
-/// its sent transaction in a block (`confirmed`); out, a fee input spent in
-/// a block by another transaction (`conflicted`); not out, a fee input
-/// spent (`dead{inputs_spent}`). Then for every wallet: the masternode out
+/// its sent transaction in a block, or a mined copy with the same payload
+/// (`confirmed`); out, a fee input spent in a block by another transaction
+/// (`conflicted`); not out, a fee input spent (`dead{inputs_spent}`). Then
+/// for every wallet: the masternode out
 /// of the synced list once the wallet has scanned to its height
 /// (`dead{delisted}`, D81's guard); for an approver, the list's keys the
 /// requested ones (`confirmed` at the list's height, D27); the list's keys
@@ -367,6 +393,14 @@ fn derive_stage(
         }
         let txid = k.row.txid.as_deref().and_then(|t| Txid::from_str(t).ok());
         if let Some(height) = txid.as_ref().and_then(|t| v.chain.confirmed_height(t)) {
+            return SharedStage::Confirmed { height };
+        }
+        // A scriptSig-malleated copy has another txid and the same payload.
+        // Matching it the way `ChainView::registration` ranks copies keeps
+        // the spend from reading `conflicted`.
+        if let Some(height) =
+            payload_copy_height(&v.chain, k.row.signed_tx.as_deref(), txid.as_ref())
+        {
             return SharedStage::Confirmed { height };
         }
         let own = f.inputs();

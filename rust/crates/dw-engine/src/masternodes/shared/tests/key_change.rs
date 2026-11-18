@@ -994,3 +994,32 @@ fn test_QT_127_a_key_change_reads_the_shares_current_scripts() {
     let reused_old = start(&f, 0, voting_of(txid, old_id), 0).unwrap();
     assert_eq!(reused_old.session.stage, SharedStage::Signing);
 }
+
+/// D103 residual: a scriptSig-malleated copy of the funder's key change,
+/// mined instead of the txid it sent, reads `confirmed`. The locks are
+/// released once it is buried, not held as a `conflicted` spend.
+#[test]
+fn test_QT_127_a_malleated_key_change_confirms_by_payload() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    let fee = f.session_of(0, &id).fee.unwrap();
+    send(&f, 0, &id, fee).unwrap();
+    let reserved = reserved_of(&f.row(0, &id));
+    let mut malleated = f.net.sent().pop().unwrap();
+    let original = malleated.txid();
+    let mut script = malleated.input[0].script_sig.as_bytes().to_vec();
+    script.push(0);
+    malleated.input[0].script_sig = dashcore::ScriptBuf::from_bytes(script);
+    assert_ne!(malleated.txid(), original);
+    f.mine(malleated, 101);
+    assert_eq!(
+        f.session_of(0, &id).stage,
+        SharedStage::Confirmed { height: 101 }
+    );
+    f.tip(200);
+    f.follow();
+    assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
+    f.follow();
+    assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
+}
