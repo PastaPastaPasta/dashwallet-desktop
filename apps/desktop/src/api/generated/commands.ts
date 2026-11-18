@@ -1016,6 +1016,16 @@ export function isCoinjoinInternal(txType: TxTypeName): Promise<boolean> {
 }
 
 /**
+ * Opens this transaction on Insight in the system browser. The network
+ * is the window's own, never an argument, and the only URL opened is
+ * the one built here from that network and a 64-character hex txid.
+ * Regtest and devnet have no Insight page (`invalid_argument`).
+ */
+export function openTxInExplorer(txid: string): Promise<null> {
+  return invoke<null>("open_tx_in_explorer", { txid });
+}
+
+/**
  * dash-qt "Backup Wallet" (QT-110): writes a `.dwbackup` of the wallet
  * to `destPath` (never over an existing file). Encrypted vault: the
  * file is wrapped with the vault's passphrase slot and needs the vault
@@ -2847,6 +2857,7 @@ export type CommandArgs = {
   export_history_csv: { walletId: string; filter: HistoryFilterRequest; sort: HistorySortName; unit: CsvUnitName; typeNames: Array<string>; utcOffsetSecs: number };
   tx_notices: { walletId: string; txids: Array<string> };
   is_coinjoin_internal: { txType: TxTypeName };
+  open_tx_in_explorer: { txid: string };
   backup_wallet: { walletId: string; destPath: string; backupPassphrase: string | null };
   restore_backup: { path: string; passphrase: string | null };
   automatic_backups: { walletId: string | null };
@@ -3160,6 +3171,7 @@ export type CommandResults = {
   export_history_csv: string;
   tx_notices: Array<TxNoticeRow>;
   is_coinjoin_internal: boolean;
+  open_tx_in_explorer: null;
   backup_wallet: BackupSummary;
   restore_backup: Array<string>;
   automatic_backups: Array<BackupSummary>;
@@ -3475,6 +3487,7 @@ export const COMMANDS: Record<CommandName, string> = {
   export_history_csv: "history",
   tx_notices: "history",
   is_coinjoin_internal: "history",
+  open_tx_in_explorer: "history",
   backup_wallet: "backup",
   restore_backup: "backup",
   automatic_backups: "backup",
@@ -3711,6 +3724,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.screen_capture",
   "app.network_busy",
   "app.network_switch_failed",
+  "app.explorer_open",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

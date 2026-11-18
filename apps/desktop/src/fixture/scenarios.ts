@@ -109,6 +109,8 @@ export interface World {
   invitations?: Record<string, InvitationStatus>;
   /** The last `shell_sync`: what the native menus would show. */
   shellSync: ShellSync | null;
+  /** Txids `open_tx_in_explorer` accepted, in call order. The command takes no network. */
+  explorerOpened?: string[];
   /** "Require authentication for every payment" (E0-13 D11; on by default). */
   paymentAuth: boolean;
   /** "Load contact pictures" (DP4-02 D17); absent: on. */

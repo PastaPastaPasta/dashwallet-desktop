@@ -161,6 +161,9 @@ codes! {
         /// network it left, or, when that reopen failed too, on none (the
         /// splash's Retry opens it). The choice was not saved.
         NetworkSwitchFailed = "app.network_switch_failed",
+        /// The system browser could not be opened for an Insight transaction
+        /// (`open_tx_in_explorer`).
+        ExplorerOpen = "app.explorer_open",
     }
 }
 

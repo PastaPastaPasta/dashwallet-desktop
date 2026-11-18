@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { statusText } from "./TxDetailSheet";
+import { confirmationDetail, statusText } from "./TxDetailSheet";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -12,28 +12,38 @@ const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
 });
 
 describe("transaction detail status", () => {
-  it("uses plain words for pending, InstantSend and confirmations", () => {
-    expect(statusText(status({ kind: "unconfirmed" }))).toBe("Pending");
-    expect(statusText(status({ kind: "unconfirmed", instantLocked: true }))).toBe("Instant (InstantSend locked)");
-    expect(statusText(status({ kind: "confirming", confirmations: 3 }))).toBe("Confirmed · 3 confirmations");
-    expect(statusText(status({ kind: "confirmed", confirmations: 6 }))).toBe("Confirmed · 6 confirmations");
+  it("says confirmed or waiting, never a raw confirmation count", () => {
+    expect(statusText(status({ kind: "unconfirmed", confirmations: 0 }))).toBe("Waiting for confirmation");
+    expect(statusText(status({ kind: "unconfirmed", instantLocked: true, confirmations: 0 }))).toBe("InstantSend");
+    expect(statusText(status({ kind: "confirming", confirmations: 3 }))).toBe("Confirmed");
+    expect(statusText(status({ kind: "confirmed", confirmations: 6 }))).toBe("Confirmed");
     expect(statusText(status({ kind: "confirmed", confirmations: 7 }))).toBe("Confirmed");
+    expect(statusText(status({ kind: "confirmed", confirmations: 1 }))).not.toContain("0/");
+    expect(statusText(status({ kind: "unconfirmed" }))).not.toMatch(/unconfirmed/i);
   });
 
   it("an InstantSend-locked row that a block confirmed reads as confirmed", () => {
     expect(statusText(status({ kind: "confirmed", confirmations: 150, instantLocked: true }))).toBe("Confirmed");
-    expect(statusText(status({ kind: "confirming", confirmations: 2, instantLocked: true }))).toBe("Confirmed · 2 confirmations");
-    expect(statusText(status({ kind: "confirmed", confirmations: 1, chainLocked: true }))).toBe("Confirmed · 1 confirmation");
+    expect(statusText(status({ kind: "confirming", confirmations: 2, instantLocked: true }))).toBe("Confirmed");
+    expect(statusText(status({ kind: "confirmed", confirmations: 1, chainLocked: true }))).toBe("Confirmed");
   });
 
-  it("counts one confirmation in the singular", () => {
-    expect(statusText(status({ kind: "confirming", confirmations: 1 }))).toBe("Confirmed · 1 confirmation");
-    expect(statusText(status({ kind: "immature", confirmations: 1, maturesIn: 99 }))).toBe("Maturing · 1 confirmation, available in 99 more blocks");
+  it("keeps the confirmation count for the folded details", () => {
+    expect(confirmationDetail(status({ kind: "unconfirmed", confirmations: 0 }))).toBeNull();
+    expect(confirmationDetail(status({ kind: "confirming", confirmations: 1 }))).toBe("1 confirmation");
+    expect(confirmationDetail(status({ kind: "confirmed", confirmations: 6 }))).toBe("6 confirmations");
+    expect(confirmationDetail(status({ kind: "immature", confirmations: 1, maturesIn: 99 }))).toBe("1 confirmation, available in 99 more blocks");
+    expect(confirmationDetail(status({ kind: "immature", confirmations: 40, maturesIn: null }))).toBe("40 confirmations");
+    // No "0 confirmations", whatever the status says.
+    expect(confirmationDetail(status({ kind: "confirming", confirmations: 0 }))).toBeNull();
+    expect(confirmationDetail(status({ kind: "confirmed", confirmations: 0 }))).toBeNull();
+    expect(confirmationDetail(status({ kind: "immature", confirmations: 0, maturesIn: 100 }))).toBe("Available in 100 more blocks");
   });
 
   it("keeps the problem states readable", () => {
     expect(statusText(status({ kind: "conflicted" }))).toBe("Conflicted");
     expect(statusText(status({ kind: "abandoned" }))).toBe("Abandoned");
     expect(statusText(status({ kind: "notAccepted" }))).toBe("Not accepted");
+    expect(statusText(status({ kind: "immature", confirmations: 1, maturesIn: 99 }))).toBe("Maturing");
   });
 });

@@ -289,6 +289,8 @@ export interface Backend {
   setTxLabel(walletId: string, txid: string, label: string | null): Promise<null>;
   abandonTransaction(walletId: string, txid: string): Promise<null>;
   resendTransaction(walletId: string, txid: string): Promise<null>;
+  /** Opens this transaction on Insight in the system browser. The app picks the network. */
+  openTxInExplorer(txid: string): Promise<null>;
   // Receive (U-03 D11).
   currentReceiveAddress(walletId: string): Promise<AddressInfo>;
   nextReceiveAddress(walletId: string, label: string | null): Promise<AddressInfo>;

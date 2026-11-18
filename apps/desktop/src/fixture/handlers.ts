@@ -902,6 +902,14 @@ export const HANDLERS: Handlers = {
     if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);
     return txDetails(row);
   },
+  // The app's window network, never an argument. Regtest and devnet have no Insight page.
+  open_tx_in_explorer: ({ txid }, { world }) => {
+    const kind = world.launch.network.kind;
+    if (kind === "regtest" || kind === "devnet") throw fail("invalid_argument", "this network has no block explorer");
+    if (!/^[0-9a-f]{64}$/.test(txid)) throw fail("invalid_argument", "txid is not 64 lowercase hex");
+    world.explorerOpened = [...(world.explorerOpened ?? []), txid];
+    return null;
+  },
 
   // DashPay: identities and registration
   dashpay_status: ({ walletId }, { world }) => dashpay(world, walletId).status,

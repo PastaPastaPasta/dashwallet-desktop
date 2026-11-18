@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
-import { contactAside, contactLetters, contactName, dateRange, dayTitle, groupAmount, groupByDay, groupChip, groupConsecutiveMixing, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
+import { contactAside, contactLetters, contactName, dateRange, dayTitle, detailWhat, detailWho, groupAmount, groupByDay, groupChip, groupConsecutiveMixing, rowParty, shortAddress, shownAmount, tableTypeTitle, txChip, txIcon, txTitle, typeTitle } from "./tx";
 
 const status = (over: Partial<TxStatusInfo> = {}): TxStatusInfo => ({
   kind: "confirmed",
@@ -55,6 +55,22 @@ describe("titles", () => {
     expect(contactAside({ amount: 5, counterparty: bob }, "Bob Builder")).toBeNull();
     expect(contactAside({ amount: 5, counterparty: { ...bob, displayName: null, username: null } }, "Received")).toBeNull();
     expect(contactAside({ amount: 5, counterparty: undefined }, "Coffee refund")).toBeNull();
+  });
+
+  it("names who and what happened with the activity row's words", () => {
+    const bob = { identity: "8GopL", username: "bob", displayName: "Bob Builder", avatarUrl: null };
+    const recv = { txType: "recvWithAddress", category: "received", amount: 1, label: null, address: "y" + "a".repeat(33) } as const;
+    expect(detailWhat(recv)).toBe("Received");
+    expect(detailWho(recv)).toBe(shortAddress(recv.address));
+    expect(detailWho({ ...recv, counterparty: bob })).toBe("Bob Builder");
+    expect(detailWhat(recv)).toBe("Received");
+    expect(detailWho({ ...recv, label: "Alice" })).toBe("Alice");
+    expect(detailWhat({ txType: "sendToAddress", category: "sent", amount: -1 })).toBe("Sent");
+    expect(detailWhat({ txType: "coinJoinMixing", category: "coinJoin", amount: 0 })).toBe("Mixing");
+    expect(detailWhat({ txType: "sendToSelf", category: "internalTransfer", amount: -226 })).toBe("Sent to yourself");
+    const lock = { txType: "assetLock", category: "platform", amount: -1, purpose: { kind: "usernameRegistration", username: "dwdemo2611" } } as const;
+    expect(detailWhat(lock)).toBe("Username @dwdemo2611");
+    expect(detailWho({ label: "  ", address: null, counterparty: undefined })).toBeNull();
   });
 
   it("maps dash-qt types to iOS titles", () => {
