@@ -9,13 +9,13 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
-import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, useSyncStatus, type HistoryFilter } from "../api/queries";
+import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, useSyncStatus, useWalletScanHeight, type HistoryFilter } from "../api/queries";
 import { fileErrorText } from "../app/files";
 import { navigate } from "../app/ui";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
-import { activityFiltersApplied, EMPTY, historyEmptyCopy, listArrival } from "../components/emptyStates";
+import { activityFiltersApplied, catchUpArrival, EMPTY, historyEmptyCopy, listDisplay, listShowsCount } from "../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
@@ -98,14 +98,27 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     setMinText("");
     focusWhenIdle(searchRef);
   };
-  // An empty list is settled only once Core has caught up. Until then it is still arriving.
+  // The engine's own reading, not the display's hold, plus this wallet's filter checkpoint.
   const sync = useSyncStatus();
-  const arrival = listArrival({ status: sync.data, failed: sync.isError });
+  const scan = useWalletScanHeight(walletId);
+  const arrival = catchUpArrival({
+    status: sync.raw,
+    failed: sync.isError,
+    scanPending: scan.isPending,
+    scanFailed: scan.isError,
+    scanHeight: scan.data,
+  });
   // Platform and Shielded rows are part of this list too: it is not empty until they have answered.
-  // Once Core is caught up and those reads are still out, the same card as a sync in progress.
   const extraPending = withExtra && (platform.isPending || shielded.isPending);
-  const shownArrival = extraPending && arrival === "settled" ? "syncing" : arrival;
-  const empty = filtered && shownArrival === "settled" ? EMPTY.activityFiltered : historyEmptyCopy({ arrival: shownArrival, home: false });
+  const historyList = listDisplay({
+    rowCount: rows.length,
+    pending: history.isPending,
+    failed: history.isError,
+    hasSnapshot: history.data !== undefined,
+    arrival,
+    extraPending,
+  });
+  const empty = historyList.kind === "empty" && filtered ? EMPTY.activityFiltered : historyEmptyCopy({ arrival: historyList.kind === "arriving" && historyList.why !== "pending" ? historyList.why : "settled", home: false });
   const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
   // Every extra row the filters keep counts, loaded or not; Export is the Core history only.
   const total = coreTotal === null ? null : coreTotal + extraShown.length;
@@ -145,9 +158,8 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   // A wallet with no transactions yet already says so in the empty card. A filter that matches
   // nothing still explains why Export is off, and still counts the zero, but only once every
   // source has answered: until then the list is still arriving.
-  const unfilteredEmpty = !filtered && rows.length === 0 && !history.isPending && !(history.isError && coreRows.length === 0);
-  const noZeroYet = unfilteredEmpty || (rows.length === 0 && (history.isPending || shownArrival !== "settled"));
-  const exportWhy = exporting ? "Exporting…" : !coreTotal && !noZeroYet ? "There are no transactions to export yet." : null;
+  const counted = listShowsCount(historyList, filtered);
+  const exportWhy = exporting ? "Exporting…" : counted && !coreTotal ? "There are no transactions to export yet." : null;
   return (
     <main className={`page page-transactions ${mode === "table" ? "is-table" : ""}`} data-testid="page-activity">
       <div className="page-column">
@@ -233,11 +245,26 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
             ))}
           </div>
         </div>
-        {history.isPending ? (
+        {historyList.kind === "failed" ? (
+          <EmptyState
+            testId="tx-error"
+            title="Could not load transactions"
+            message={errorMessage(history.error)}
+            action={
+              <DashButton variant="plainBlue" data-testid="tx-retry" onClick={() => void history.refetch()}>
+                Try again
+              </DashButton>
+            }
+          />
+        ) : historyList.kind === "arriving" && historyList.why === "pending" ? (
           <LoadingState testId="tx-loading" text="Loading transactions" />
-        ) : history.isError && coreRows.length === 0 ? (
-          <EmptyState testId="tx-error" title="Could not load transactions" message={errorMessage(history.error)} />
-        ) : rows.length === 0 ? (
+        ) : historyList.kind === "rows" && mode === "list" ? (
+          <div data-testid="tx-list">
+            <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" decorate={decorateSource} />
+          </div>
+        ) : historyList.kind === "rows" ? (
+          <TxTable rows={rows} ctx={ctx} onOpen={onOpen} sort={sort} onSort={setSort} />
+        ) : (
           <EmptyState
             testId={empty.action ? "tx-empty" : "tx-syncing"}
             art={empty.art}
@@ -251,12 +278,6 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
               )
             }
           />
-        ) : mode === "list" ? (
-          <div data-testid="tx-list">
-            <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="tx" decorate={decorateSource} />
-          </div>
-        ) : (
-          <TxTable rows={rows} ctx={ctx} onOpen={onOpen} sort={sort} onSort={setSort} />
         )}
         <div ref={sentinel} className="tx-sentinel">
           {isFetchingNextPage && <LoadingState testId="tx-loading-more" text="Loading more transactions…" />}
@@ -269,7 +290,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
             </p>
           )}
         </div>
-        {total !== null && !noZeroYet && (
+        {total !== null && counted && (
           <footer className="tx-footer" data-testid="tx-footer">
             {total === 1 ? "1 transaction" : `${total.toLocaleString(backend.locale)} transactions`}
           </footer>

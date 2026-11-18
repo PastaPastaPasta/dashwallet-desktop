@@ -417,6 +417,52 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
+  test(`a failed history read is not an empty wallet (${theme})`, async ({ page }) => {
+    const errors = await open(page, "funded", theme, "&fail=history_page:none");
+    const failed = page.getByTestId("history-error");
+    await expect(failed).toContainText("Could not load transactions");
+    await expect(failed.getByRole("button", { name: "Try again" })).toBeVisible();
+    await expect(page.getByTestId("history-empty-receive")).toHaveCount(0);
+    await page.evaluate(() => window.__dwFixture!.fail("history_page", null));
+    await failed.getByRole("button", { name: "Try again" }).click();
+    await expect(page.getByTestId("overview-group-0")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`an empty list follows the engine, not a display that still says caught up (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    await expect(page.getByTestId("history-empty-receive")).toBeVisible();
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      const s = f.world.sync;
+      // One block behind a caught-up wallet: the status bar holds "up to date", the engine does not.
+      f.world.sync = {
+        ...s,
+        running: true,
+        caughtUp: false,
+        activePhase: "filters",
+        phases: s.phases.map((p) => ({ ...p, currentHeight: (p.targetHeight ?? 1) - 1, done: false })),
+      };
+      f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync });
+    });
+    await expect(page.getByTestId("history-syncing")).toContainText("Your history is still syncing");
+    await expect(page.getByTestId("history-empty-receive")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test(`a wallet whose scan is behind the tip is not an empty wallet (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    await expect(page.getByTestId("history-empty-receive")).toBeVisible();
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      (f.world.wallets[0] as { scanHeight?: number | null }).scanHeight = 1;
+      f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync });
+    });
+    await expect(page.getByTestId("history-syncing")).toContainText("Your history is still syncing");
+    await expect(page.getByTestId("history-empty-receive")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
   test(`home, activity and coin selection wait while Core is scanning (${theme})`, async ({ page }) => {
     const errors = await open(page, "empty-syncing", theme, "&fail=platform_activity:none&fail=shielded_history:none");
     await expectUnsettled(page, "Your history is still syncing", "Coins are still syncing");

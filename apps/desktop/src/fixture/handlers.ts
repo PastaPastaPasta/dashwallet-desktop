@@ -879,6 +879,11 @@ export const HANDLERS: Handlers = {
   list_wallets: (_, { world }) => world.wallets.filter((x) => !isClosed(world, x.summary.walletId)).map((x) => x.summary),
   wallet_info: ({ walletId }, { world }) => wallet(world, walletId).summary,
   balance: ({ walletId }, { world }) => wallet(world, walletId).summary.balances,
+  wallet_scan_height: ({ walletId }, { world }) => {
+    const w = wallet(world, walletId);
+    if (w.scanHeight !== undefined) return w.scanHeight;
+    return world.sync.caughtUp ? world.sync.tipHeight : null;
+  },
   import_wallet: ({ mnemonic, options }, ctx) => importWallet(ctx, mnemonic, options.name),
   sync_status: (_, { world }) => world.sync,
   history_page: ({ walletId, request }, { world }) => historyPage(wallet(world, walletId).rows, request),

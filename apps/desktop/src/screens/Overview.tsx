@@ -9,9 +9,10 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
-import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, type HistoryFilter } from "../api/queries";
+import { errorMessage } from "../api/backend";
+import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, useWalletScanHeight, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
-import { historyEmptyCopy, listArrival, type ListArrival } from "../components/emptyStates";
+import { catchUpArrival, historyEmptyCopy, listDisplay, type ListArrival } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
@@ -234,11 +235,25 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   const balance = useBalance(walletId);
   const pools = usePoolBalances(walletId);
   const sync = useSyncStatus();
+  const scan = useWalletScanHeight(walletId);
   const recent = useHistory(walletId, RECENT_FILTER, RECENT_COUNT);
   const discreet = useUi((s) => s.discreet);
   const rows = recent.data?.pages[0]?.rows ?? [];
   const ctx = useRowContext(network);
-  const arrival = listArrival({ status: sync.data, failed: sync.isError });
+  const arrival = catchUpArrival({
+    status: sync.raw,
+    failed: sync.isError,
+    scanPending: scan.isPending,
+    scanFailed: scan.isError,
+    scanHeight: scan.data,
+  });
+  const historyList = listDisplay({
+    rowCount: rows.length,
+    pending: recent.isPending,
+    failed: recent.isError,
+    hasSnapshot: recent.data !== undefined,
+    arrival,
+  });
   const syncing = !!sync.data && isSyncing(sync.data);
   const percent = sync.data ? syncPercent(sync.data) : null;
   const b = useBackend();
@@ -275,10 +290,23 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         </div>
         {discreet ? (
           <EmptyState testId="history-hidden" title="Recent transactions are hidden in discreet mode" />
-        ) : recent.isPending ? (
+        ) : historyList.kind === "failed" ? (
+          <EmptyState
+            testId="history-error"
+            title="Could not load transactions"
+            message={errorMessage(recent.error)}
+            action={
+              <DashButton variant="plainBlue" data-testid="history-retry" onClick={() => void recent.refetch()}>
+                Try again
+              </DashButton>
+            }
+          />
+        ) : historyList.kind === "arriving" && historyList.why === "pending" ? (
           <LoadingState testId="history-loading" text="Loading transactions" />
-        ) : rows.length === 0 ? (
-          <HistoryEmpty arrival={arrival} />
+        ) : historyList.kind === "arriving" && historyList.why !== "pending" ? (
+          <HistoryEmpty arrival={historyList.why} />
+        ) : historyList.kind === "empty" ? (
+          <HistoryEmpty arrival="settled" />
         ) : (
           <>
             <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="overview" />

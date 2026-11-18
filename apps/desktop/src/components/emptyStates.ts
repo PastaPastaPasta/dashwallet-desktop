@@ -170,6 +170,84 @@ export function listArrival(input: {
   return status.tipHeight == null ? "starting" : "stopped";
 }
 
+/** The network's raw catch-up, then this wallet's own filter checkpoint.
+ * `scanHeight` is `undefined` while that read is still out, `null` when the wallet has no scan state. */
+export function catchUpArrival(input: {
+  status?: { running: boolean; caughtUp: boolean; tipHeight: number | null } | null;
+  failed: boolean;
+  scanPending: boolean;
+  scanFailed: boolean;
+  scanHeight: number | null | undefined;
+}): ListArrival {
+  const network = listArrival({ status: input.status, failed: input.failed });
+  if (network !== "settled") return network;
+  if (input.scanPending) return "starting";
+  if (input.scanFailed) return "unreadable";
+  const height = input.scanHeight ?? null;
+  const tip = input.status?.tipHeight ?? null;
+  if (height == null) return "starting";
+  if (tip != null && height < tip) return "syncing";
+  return "settled";
+}
+
+/** One list, decided once, for the body and every control that depends on it. */
+export type ListDisplay =
+  | { kind: "rows" }
+  | { kind: "arriving"; why: "pending" | ListArrival }
+  | { kind: "failed" }
+  | { kind: "empty" };
+
+/** Rows already in hand stay, including after a refetch fails. A confirmed empty result is the
+ * only kind that may offer the empty card's action. Pending, a sync that has not caught up, and
+ * an optional source still out are still arriving. A failed read with no snapshot says so. */
+export function listDisplay(input: {
+  rowCount: number;
+  pending: boolean;
+  failed: boolean;
+  hasSnapshot: boolean;
+  arrival: ListArrival;
+  extraPending?: boolean;
+}): ListDisplay {
+  if (input.rowCount > 0) return { kind: "rows" };
+  if (input.pending) return { kind: "arriving", why: "pending" };
+  if (input.failed && !input.hasSnapshot) return { kind: "failed" };
+  if (input.arrival !== "settled" || input.extraPending) {
+    const why = input.extraPending && input.arrival === "settled" ? "syncing" : input.arrival;
+    return { kind: "arriving", why: why === "settled" ? "syncing" : why };
+  }
+  return { kind: "empty" };
+}
+
+/** The zero count and the "nothing to export" line are real only for rows, or for a filter that
+ * matched nothing after the list was confirmed empty. An unfiltered empty card already says so. */
+export function listShowsCount(display: ListDisplay, filtered: boolean): boolean {
+  return display.kind === "rows" || (display.kind === "empty" && filtered);
+}
+
+/** Contacts. `empty` is the card that carries Add contact: the header button hides only then. */
+export type ContactsDisplay = { kind: "rows" | "arriving" | "failed" | "empty" | "search" };
+
+export function contactsDisplay(input: {
+  pending: boolean;
+  failed: boolean;
+  hasSnapshot: boolean;
+  rowCount: number;
+  updating: boolean;
+  searching: boolean;
+}): ContactsDisplay {
+  if (input.pending) return { kind: "arriving" };
+  if (input.failed && !input.hasSnapshot) return { kind: "failed" };
+  if (input.rowCount > 0) return { kind: "rows" };
+  if (input.updating) return { kind: "arriving" };
+  if (input.searching) return { kind: "search" };
+  return { kind: "empty" };
+}
+
+/** The header's Add contact stays until the empty card that replaces it is what the page renders. */
+export function contactsHeaderAdd(display: ContactsDisplay): boolean {
+  return display.kind !== "empty";
+}
+
 const HISTORY_WAITING = {
   starting: EMPTY.historyStarting,
   syncing: EMPTY.historySyncing,

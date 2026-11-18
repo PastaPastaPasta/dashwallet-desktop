@@ -6,6 +6,7 @@ import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-quer
 import type { Backend } from "./backend";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { SyncStatus } from "./generated/SyncStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import { creditsToDuffs } from "./pending";
@@ -63,6 +64,8 @@ export const keys = {
   platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
+  scanHeightAll: ["scanHeight"] as const,
+  scanHeight: (walletId: string) => ["scanHeight", walletId] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
   history: (walletId: string, filter: HistoryFilter, limit: number) => ["history", walletId, filter, limit] as const,
   txDetailAll: (walletId: string) => ["txDetail", walletId] as const,
@@ -322,8 +325,17 @@ export function useSyncStatus() {
     },
   });
   const shown = useShownSync(b);
-  // The query's own state, with `data` the shown status once there is one.
-  return query.data === undefined ? query : { ...query, data: shown ?? query.data };
+  const raw = query.data;
+  // `data` is the smoothed display. `raw` is the engine's own reading: an empty list follows that,
+  // not a hold that keeps `caughtUp` true for a new block.
+  if (raw === undefined) return { ...query, raw: undefined as SyncStatus | undefined };
+  return { ...query, data: shown ?? raw, raw };
+}
+
+/** This wallet's filter checkpoint. A sync event reads it again. */
+export function useWalletScanHeight(walletId: string) {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.scanHeight(walletId), queryFn: () => b.walletScanHeight(walletId), retry: false });
 }
 
 /** Pages of `limit` records; `fetchNextPage` follows the engine's keyset cursor. */

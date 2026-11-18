@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addressBookEmpty, activityFiltersApplied, coinsEmptyCopy, EMPTY, historyEmptyCopy, listArrival, walletListGate, walletReadyToOpen, type ListArrival } from "./emptyStates";
+import { addressBookEmpty, activityFiltersApplied, catchUpArrival, coinsEmptyCopy, contactsDisplay, contactsHeaderAdd, EMPTY, historyEmptyCopy, listArrival, listDisplay, listShowsCount, walletListGate, walletReadyToOpen, type ListArrival } from "./emptyStates";
 
 const reading = (over: Partial<{ running: boolean; caughtUp: boolean; tipHeight: number | null }> = {}) => ({
   running: false,
@@ -21,6 +21,66 @@ describe("list arrival", () => {
     expect(listArrival({ status: reading({ running: true, caughtUp: true, tipHeight: 10 }), failed: false })).toBe("settled");
     // A later failed read keeps the caught-up reading it already had.
     expect(listArrival({ status: reading({ caughtUp: true, tipHeight: 10 }), failed: true })).toBe("settled");
+  });
+});
+
+describe("catch-up for one wallet", () => {
+  const settled = { status: reading({ running: true, caughtUp: true, tipHeight: 100 }), failed: false };
+
+  it("uses the raw network reading, then this wallet's scan height", () => {
+    expect(catchUpArrival({ ...settled, scanPending: false, scanFailed: false, scanHeight: 100 })).toBe("settled");
+    expect(catchUpArrival({ ...settled, scanPending: false, scanFailed: false, scanHeight: 101 })).toBe("settled");
+    expect(catchUpArrival({ ...settled, scanPending: false, scanFailed: false, scanHeight: 99 })).toBe("syncing");
+    expect(catchUpArrival({ ...settled, scanPending: false, scanFailed: false, scanHeight: null })).toBe("starting");
+    expect(catchUpArrival({ ...settled, scanPending: true, scanFailed: false, scanHeight: undefined })).toBe("starting");
+    expect(catchUpArrival({ ...settled, scanPending: false, scanFailed: true, scanHeight: undefined })).toBe("unreadable");
+    // The network not being caught up wins, even when the scan height looks finished.
+    expect(catchUpArrival({ status: reading({ running: true, tipHeight: 100 }), failed: false, scanPending: false, scanFailed: false, scanHeight: 100 })).toBe("syncing");
+    expect(catchUpArrival({ status: reading({ tipHeight: 100 }), failed: false, scanPending: false, scanFailed: false, scanHeight: 100 })).toBe("stopped");
+  });
+});
+
+describe("list display", () => {
+  const base = { rowCount: 0, pending: false, failed: false, hasSnapshot: true, arrival: "settled" as ListArrival };
+
+  it("keeps rows, waits while anything is still out, and confirms empty only then", () => {
+    expect(listDisplay({ ...base, rowCount: 3, failed: true })).toEqual({ kind: "rows" });
+    expect(listDisplay({ ...base, pending: true, hasSnapshot: false })).toEqual({ kind: "arriving", why: "pending" });
+    expect(listDisplay({ ...base, failed: true, hasSnapshot: false })).toEqual({ kind: "failed" });
+    expect(listDisplay({ ...base, arrival: "syncing" })).toEqual({ kind: "arriving", why: "syncing" });
+    expect(listDisplay({ ...base, arrival: "starting" })).toEqual({ kind: "arriving", why: "starting" });
+    expect(listDisplay({ ...base, arrival: "stopped" })).toEqual({ kind: "arriving", why: "stopped" });
+    expect(listDisplay({ ...base, arrival: "unreadable" })).toEqual({ kind: "arriving", why: "unreadable" });
+    expect(listDisplay({ ...base, extraPending: true })).toEqual({ kind: "arriving", why: "syncing" });
+    expect(listDisplay({ ...base, arrival: "stopped", extraPending: true })).toEqual({ kind: "arriving", why: "stopped" });
+    expect(listDisplay(base)).toEqual({ kind: "empty" });
+    // A failed refetch of a confirmed empty snapshot is still that snapshot.
+    expect(listDisplay({ ...base, failed: true })).toEqual({ kind: "empty" });
+  });
+
+  it("counts zero only for rows, or a filter on a confirmed empty list", () => {
+    expect(listShowsCount({ kind: "rows" }, false)).toBe(true);
+    expect(listShowsCount({ kind: "empty" }, true)).toBe(true);
+    expect(listShowsCount({ kind: "empty" }, false)).toBe(false);
+    expect(listShowsCount({ kind: "arriving", why: "syncing" }, true)).toBe(false);
+    expect(listShowsCount({ kind: "failed" }, true)).toBe(false);
+  });
+});
+
+describe("contacts display", () => {
+  const base = { pending: false, failed: false, hasSnapshot: true, rowCount: 0, updating: false, searching: false };
+
+  it("hides Add contact only when the empty card that replaces it is showing", () => {
+    const empty = contactsDisplay(base);
+    expect(empty).toEqual({ kind: "empty" });
+    expect(contactsHeaderAdd(empty)).toBe(false);
+    const updating = contactsDisplay({ ...base, updating: true });
+    expect(updating).toEqual({ kind: "arriving" });
+    expect(contactsHeaderAdd(updating)).toBe(true);
+    expect(contactsHeaderAdd(contactsDisplay({ ...base, rowCount: 2, updating: true }))).toBe(true);
+    expect(contactsHeaderAdd(contactsDisplay({ ...base, searching: true }))).toBe(true);
+    expect(contactsHeaderAdd(contactsDisplay({ ...base, pending: true, hasSnapshot: false }))).toBe(true);
+    expect(contactsHeaderAdd(contactsDisplay({ ...base, failed: true, hasSnapshot: false }))).toBe(true);
   });
 });
 

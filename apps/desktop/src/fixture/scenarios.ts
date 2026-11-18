@@ -55,6 +55,8 @@ export interface FixtureWallet {
   rows: TxRow[];
   coins: Utxo[];
   receive: ReceiveWorld;
+  /** Filter checkpoint. Omitted: the tip once Core is caught up, otherwise no scan state. */
+  scanHeight?: number | null;
 }
 
 /** A 4 x 4 PNG in the DashPay blue: the fixture's avatar thumbnail (DP4-02). */

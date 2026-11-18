@@ -7,11 +7,11 @@ import type { QueryClient } from "@tanstack/react-query";
 import { errorMessage, type Backend } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { Utxo } from "../../api/generated/Utxo";
-import { keys, useSyncStatus, useUtxos } from "../../api/queries";
+import { keys, useSyncStatus, useUtxos, useWalletScanHeight } from "../../api/queries";
 import { navigate, openPayForm } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CoinSummary, CoinTable } from "../../components/coins";
-import { coinsEmptyCopy, EMPTY, listArrival } from "../../components/emptyStates";
+import { catchUpArrival, coinsEmptyCopy, EMPTY, listDisplay } from "../../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import type { Unit } from "../../format/amount";
 import { useDisplay } from "../../format/display";
@@ -49,7 +49,21 @@ export function newCoinSelection(b: Backend, client: QueryClient, walletId: stri
 export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
   const utxos = useUtxos(walletId, true);
   const sync = useSyncStatus();
-  const arrival = listArrival({ status: sync.data, failed: sync.isError });
+  const scan = useWalletScanHeight(walletId);
+  const arrival = catchUpArrival({
+    status: sync.raw,
+    failed: sync.isError,
+    scanPending: scan.isPending,
+    scanFailed: scan.isError,
+    scanHeight: scan.data,
+  });
+  const coins = listDisplay({
+    rowCount: utxos.data?.length ?? 0,
+    pending: utxos.isPending,
+    failed: utxos.isError,
+    hasSnapshot: utxos.data !== undefined,
+    arrival,
+  });
   const shown = useDisplay(network);
   useModel(model);
   useEffect(() => {
@@ -57,9 +71,17 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
   }, [model, utxos.data]);
 
   const filterRef = useRef<HTMLButtonElement>(null);
-  if (utxos.isPending) return <LoadingState testId="coins-loading" text="Loading coins" />;
-  if (utxos.isError) return <Outcome ok={false} text={`Could not load the coins: ${errorMessage(utxos.error)}`} testId="coins-error" />;
-  const coinCopy = coinsEmptyCopy(arrival);
+  if (coins.kind === "arriving" && coins.why === "pending") return <LoadingState testId="coins-loading" text="Loading coins" />;
+  if (coins.kind === "failed")
+    return (
+      <>
+        <Outcome ok={false} text={`Could not load the coins: ${errorMessage(utxos.error)}`} testId="coins-error" />
+        <DashButton variant="plainBlue" data-testid="coins-retry" onClick={() => void utxos.refetch()}>
+          Try again
+        </DashButton>
+      </>
+    );
+  const coinCopy = coinsEmptyCopy(coins.kind === "arriving" && coins.why !== "pending" ? coins.why : "settled");
   const selected = new Set(model.selected);
   return (
     <div className="tool-stack" data-testid="tools-coinSelection">
@@ -93,7 +115,7 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
         </p>
       )}
       {model.visible.length === 0 ? (
-        utxos.data.length === 0 ? (
+        (utxos.data?.length ?? 0) === 0 ? (
           <EmptyState
             testId="coins-none"
             art={coinCopy.art}

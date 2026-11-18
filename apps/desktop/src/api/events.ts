@@ -46,7 +46,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // The Platform loops start and stop with SPV, also without one (DP6-03 D6).
     case "spvStateChanged":
     case "sync":
-      return [keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll];
+      return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
       // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).

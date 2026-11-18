@@ -307,6 +307,10 @@ test("IOS-072 no contacts: the empty state offers Add contact; a pass before any
   await openContacts(page, "dashpay-contacts-updating");
   await expect(page.getByTestId("contacts-updating")).toHaveText("Updating contacts…");
   await expect(page.getByTestId("contacts-empty")).toHaveCount(0);
+  // The header's Add contact stays: the updating line is not the card that replaces it.
+  await expect(page.getByTestId("contacts-add")).toBeVisible();
+  await page.getByTestId("contacts-add").click();
+  await expect(page.getByTestId("add-contact")).toBeVisible();
 
   // After a snapshot, the rows stay, under the line.
   await openContacts(page, "dashpay-contacts-refreshing");
