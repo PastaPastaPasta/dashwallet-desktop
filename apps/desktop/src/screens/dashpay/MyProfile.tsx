@@ -5,7 +5,7 @@
 // dashpay/profile.ts, dashpay/topup.ts and dashpay/withdraw.ts;
 // the Settings card (D20) is here too. Edit Profile (DP4-03) is a sheet over the page.
 
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { Backend } from "../../api/backend";
 import type { IdentitySummary } from "../../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../../api/generated/PendingTopUp";
@@ -18,6 +18,8 @@ import { creditsModel, headerModel, holdsTopUp, outcomeRows, pageModel, PROFILE_
 import { editProfileFor, type EditProfileModel } from "../../dashpay/editProfile";
 import { useAvatarUploadAvailable, useContactPictures, useContest, useCostTable, useOutcomeEvents, usePendingTopUps, useProfileLimits, useRefreshBalanceOnVisit, useStuckTopUps } from "../../dashpay/profileQueries";
 import { useStatusInputs } from "../../dashpay/queries";
+import { myQr } from "../../contacts/add";
+import { useMyUserLink } from "../../contacts/queries";
 import type { CardActionKind, StatusInputs } from "../../dashpay/status";
 import { outcomeText, topUpErrorText, topUpFor, type TopUpFlow } from "../../dashpay/topup";
 import { withdrawFor } from "../../dashpay/withdraw";
@@ -32,6 +34,7 @@ import { EditProfileSheet } from "./EditProfileSheet";
 import { VotingInfoSheet } from "./AboutDashPay";
 import { DashPayCard, defaultCardAction } from "./DashPayCard";
 import { TopUpSheet } from "./TopUpSheet";
+import { ShareSheet } from "./ShareSheet";
 import { RecentWithdrawals, WithdrawButton, WithdrawSheet } from "./WithdrawSheet";
 
 /** Opens DP1-09's credits path for `identity` on the Join page; `instant` refuses a contested
@@ -51,9 +54,17 @@ export function buyCredits(b: Backend, walletId: string, main: IdentitySummary) 
   }, open);
 }
 
-function Header({ main, contest, walletId, onEdit }: { main: IdentitySummary; contest: string | null; walletId: string; onEdit: () => void }) {
+export function ProfileHeader({ main, contest, walletId, onEdit }: { main: IdentitySummary; contest: string | null; walletId: string; onEdit: () => void }) {
   const b = useBackend();
   const h = headerModel(main, contest);
+  const [sharing, setSharing] = useState(false);
+  const share = useRef<HTMLButtonElement>(null);
+  const edit = useRef<HTMLButtonElement>(null);
+  const link = useMyUserLink(walletId, main.identity, h.shareable);
+  const canShare = h.shareable && myQr(link, main.mainName).kind === "link";
+  useEffect(() => {
+    if (!h.shareable) setSharing(false);
+  }, [h.shareable]);
   return (
     <section className="profile-header card-l1" data-testid="profile-header">
       <Avatar letters={h.initials} size="pane" identity={main.identity} own />
@@ -72,10 +83,25 @@ function Header({ main, contest, walletId, onEdit }: { main: IdentitySummary; co
         )}
       </div>
       <div className="profile-edit">
-        <DashButton variant="tintedBlue" size="small" data-testid="profile-edit" onClick={onEdit}>
+        <DashButton variant="tintedBlue" size="small" data-testid="profile-edit" ref={edit} onClick={onEdit}>
           {PROFILE_COPY.editProfile}
         </DashButton>
+        {canShare && (
+          <DashButton variant="tintedBlue" size="small" data-testid="profile-share" ref={share} onClick={() => setSharing(true)}>
+            {PROFILE_COPY.share}
+          </DashButton>
+        )}
       </div>
+      {sharing && h.shareable && (
+        <ShareSheet
+          walletId={walletId}
+          identity={main.identity}
+          who={{ name: main.profile?.displayName?.trim() || null, username: main.mainName! }}
+          testId="profile-share-sheet"
+          returnFocus={() => share.current ?? edit.current}
+          onClose={() => setSharing(false)}
+        />
+      )}
     </section>
   );
 }
@@ -304,7 +330,7 @@ function Ready({ walletId, network, main, contest, inputs }: { walletId: string;
   const editor = useEditor(walletId);
   return (
     <>
-      <Header main={main} contest={contest?.label ?? null} walletId={walletId} onEdit={() => editor.begin(main.identity, main.profile)} />
+      <ProfileHeader main={main} contest={contest?.label ?? null} walletId={walletId} onEdit={() => editor.begin(main.identity, main.profile)} />
       <Details main={main} contest={contest?.label ?? null} />
       {contest && <RequestCard walletId={walletId} main={main} contest={contest} inputs={inputs} />}
       <Credits

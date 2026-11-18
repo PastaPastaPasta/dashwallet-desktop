@@ -5,6 +5,8 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { RegistrationQuote } from "../../api/generated/RegistrationQuote";
+import { myQr } from "../../contacts/add";
+import { useMyUserLink } from "../../contacts/queries";
 import { CLAIM_COPY, claimErrorText } from "../../dashpay/claim";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
@@ -25,7 +27,8 @@ import type { RegistrationWizard } from "../../dashpay/wizard";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 import { VotingInfoSheet } from "./AboutDashPay";
-import { ShareSheet, WelcomeSteps } from "./Welcome";
+import { ShareSheet } from "./ShareSheet";
+import { WelcomeSteps } from "./Welcome";
 
 export function StepHeader({ n, step, title, id }: { n: 1 | 2; step: string; title: string; id: string }) {
   return (
@@ -265,12 +268,20 @@ export function RegistrationScreen({
   onAction: (kind: ScreenActionKind) => void;
   inputs: StatusInputs;
   /** Whose username the welcome's Share my username shows, once known. */
-  share?: { walletId: string; identity: string } | null;
+  share?: { walletId: string; identity: string; username: string | null } | null;
 }) {
   useModel(wiz);
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
   const [sharing, setSharing] = useState(false);
+  // As on My Profile, sharing follows the engine's link for the name shown. An open sheet closes
+  // once that link is refused or the name is gone, and waits for another click.
+  const link = useMyUserLink(share?.walletId ?? "", share?.identity ?? "", share !== null);
+  const linkKind = share ? myQr(link, share.username).kind : null;
+  const sheetOpen = linkKind === "link" || linkKind === "loading";
+  useEffect(() => {
+    if (!sheetOpen) setSharing(false);
+  }, [sheetOpen]);
   const { step } = model;
   const welcome = model.kind === "done";
   const section = useRef<HTMLElement>(null);
@@ -338,7 +349,7 @@ export function RegistrationScreen({
         <WelcomeSteps
           disabled={wiz.running !== null}
           canEdit={inputs.main !== undefined}
-          canShare={share !== null}
+          canShare={linkKind === "link"}
           onStep={(kind) => (kind === "share" ? setSharing(true) : onAction(kind))}
         />
       )}
@@ -358,7 +369,19 @@ export function RegistrationScreen({
       </div>
       <GrantSheet grants={wiz.grants} />
       {votingInfo && <VotingInfoSheet onClose={() => setVotingInfo(false)} />}
-      {sharing && share && <ShareSheet walletId={share.walletId} identity={share.identity} onClose={() => setSharing(false)} />}
+      {sharing && share && sheetOpen && (
+        <ShareSheet
+          walletId={share.walletId}
+          identity={share.identity}
+          who={share.username ? { name: null, username: share.username } : null}
+          testId="welcome-share-sheet"
+          returnFocus={() => {
+            const button = document.getElementById("welcome-share");
+            return button instanceof HTMLButtonElement && !button.disabled ? button : title.current;
+          }}
+          onClose={() => setSharing(false)}
+        />
+      )}
     </section>
   );
 }

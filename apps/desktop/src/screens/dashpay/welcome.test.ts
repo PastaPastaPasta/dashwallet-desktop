@@ -9,21 +9,29 @@ import type { StatusInputs } from "../../dashpay/status";
 import { findFriends, openEditProfile } from "../../dashpay/welcome";
 import type { RegistrationWizard } from "../../dashpay/wizard";
 import { GrantModel } from "../../tools/grant";
+import { appError } from "../../onboarding/testWorld";
 import { RegistrationScreen } from "./Registration";
-import { ShareSheet, WelcomeSteps } from "./Welcome";
+import { ShareSheet } from "./ShareSheet";
+import { WelcomeSteps } from "./Welcome";
 
-const LINK = "dashpay://user?du=alice-77";
+const LINK = "dashpay://user?username=alice";
+const WELCOME_LINK = "dashpay://user?username=alice-77";
+const linkQuery = vi.hoisted(() => ({ current: null as null | { data: string | undefined; error: unknown; isError: boolean; isFetching: boolean } }));
 vi.mock("../../onboarding/model", async (original) => ({
   ...(await original<typeof import("../../onboarding/model")>()),
   useModel: (model: unknown) => model,
 }));
 vi.mock("../../contacts/queries", async (original) => ({
   ...(await original<typeof import("../../contacts/queries")>()),
-  useMyUserLink: () => ({ data: LINK, error: null, isError: false, refetch: () => undefined }),
+  useMyUserLink: () => linkQuery.current ?? { data: LINK, error: null, isError: false, refetch: () => undefined },
 }));
 vi.mock("../../api/queries", async (original) => ({
   ...(await original<typeof import("../../api/queries")>()),
   useQrMatrix: () => ({ data: undefined }),
+}));
+vi.mock("../../dashpay/profileQueries", async (original) => ({
+  ...(await original<typeof import("../../dashpay/profileQueries")>()),
+  useAvatar: () => null,
 }));
 
 const api = {} as EditProfileApi;
@@ -31,7 +39,7 @@ const wiz = { running: null, finished: null, error: null, mode: { kind: "core" }
 const inputs = { amount: () => "", discreet: false, date: () => "" } as unknown as StatusInputs;
 const done = namedModel("alice-77", { kind: "registered" }, () => "");
 
-const welcome = (share: { walletId: string; identity: string } | null = { walletId: "w", identity: "ID" }, onAction: (k: ScreenActionKind) => void = () => undefined) =>
+const welcome = (share: { walletId: string; identity: string; username: string | null } | null = { walletId: "w", identity: "ID", username: "alice-77" }, onAction: (k: ScreenActionKind) => void = () => undefined) =>
   renderToStaticMarkup(createElement(RegistrationScreen, { wiz, model: done, onAction, inputs, share }));
 
 /** The element with `testId` in a tree of plain elements (no component is rendered). */
@@ -70,6 +78,25 @@ describe("the welcome moment (R9)", () => {
     expect(html).not.toContain("add-contact-my-qr");
   });
 
+  it("Share my username follows the engine's link for the name shown", () => {
+    const shareStep = (q: NonNullable<typeof linkQuery.current>) => {
+      linkQuery.current = q;
+      try {
+        return welcome().match(/<button[^>]*data-testid="welcome-share"[^>]*>/)![0];
+      } finally {
+        linkQuery.current = null;
+      }
+    };
+    expect(shareStep({ data: WELCOME_LINK, error: null, isError: false, isFetching: false })).not.toContain("disabled");
+    // A failed re-read keeps a cached link that still names @alice-77.
+    expect(shareStep({ data: WELCOME_LINK, error: appError("platform.timeout"), isError: true, isFetching: false })).not.toContain("disabled");
+    // Still being read, refused while the names are refreshed, gone, or a link for another name.
+    expect(shareStep({ data: undefined, error: null, isError: false, isFetching: true })).toContain("disabled");
+    expect(shareStep({ data: WELCOME_LINK, error: appError("platform.unavailable"), isError: true, isFetching: false })).toContain("disabled");
+    expect(shareStep({ data: WELCOME_LINK, error: appError("contact.no_username"), isError: true, isFetching: false })).toContain("disabled");
+    expect(shareStep({ data: LINK, error: null, isError: false, isFetching: false })).toContain("disabled");
+  });
+
   it("each step reports its own kind", () => {
     const steps: string[] = [];
     const tree = WelcomeSteps({ onStep: (k) => steps.push(k), disabled: false, canEdit: true, canShare: true });
@@ -92,9 +119,12 @@ describe("the welcome moment (R9)", () => {
   });
 
   it("Share my username shows Add contact's My QR with the link", () => {
-    const html = renderToStaticMarkup(createElement(ShareSheet, { walletId: "w", identity: "ID", onClose: () => undefined }));
+    const html = renderToStaticMarkup(createElement(ShareSheet, { walletId: "w", identity: "ID", who: { name: null, username: "alice" }, testId: "welcome-share-sheet", onClose: () => undefined }));
     expect(html).toContain('data-testid="welcome-share-sheet"');
     expect(html).toContain("Share my username");
+    // Whose code it is, readable at a glance; without a display name, the username alone.
+    expect(html).toMatch(/class="share-who-name">@alice</);
+    expect(html).not.toContain("share-who-username");
     expect(html).toContain('data-testid="add-contact-my-qr"');
     expect(html).toContain(LINK);
     expect(html).toContain("Copy Link");

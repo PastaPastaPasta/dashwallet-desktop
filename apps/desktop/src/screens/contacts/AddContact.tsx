@@ -463,9 +463,11 @@ function ScanTab({ model }: { model: AddContactModel }) {
 }
 
 /** My QR (D12): the identity's plain `dashpay://user` link. */
-export function MyQrTab({ walletId, identity }: { walletId: string; identity: string }) {
+/** `qrSize`: the code's side in CSS px; a share sheet shows it larger, to scan across a table. */
+/** `username`: the name a share sheet says it shares; a link for another is not shown. */
+export function MyQrTab({ walletId, identity, qrSize = 220, username = null }: { walletId: string; identity: string; qrSize?: number; username?: string | null }) {
   const link = useMyUserLink(walletId, identity);
-  const state = myQr(link);
+  const state = myQr(link, username);
   const matrix = useQrMatrix(state.kind === "link" ? state.link : undefined);
   let body;
   switch (state.kind) {
@@ -500,9 +502,9 @@ export function MyQrTab({ walletId, identity }: { walletId: string; identity: st
       body = (
         <>
           {matrix.data ? (
-            <QrCode matrix={matrix.data} size={220} label="Your DashPay QR code" testId="add-contact-qr" />
+            <QrCode matrix={matrix.data} size={qrSize} label="Your DashPay QR code" testId="add-contact-qr" />
           ) : (
-            <div className="qr-placeholder" style={{ width: 220, height: 220 }} aria-hidden="true" />
+            <div className="qr-placeholder" style={{ width: qrSize, height: qrSize }} aria-hidden="true" />
           )}
           <p className="mono add-contact-link-text" data-testid="add-contact-qr-link">
             {state.link}

@@ -20,6 +20,7 @@ export const PROFILE_COPY = {
   loading: "Loading your profile…",
   noProfile: "You have no DashPay profile yet",
   editProfile: "Edit Profile",
+  share: "Share Username",
   usernames: "Usernames",
   identity: "Identity",
   noUsername: "No username",
@@ -130,6 +131,8 @@ export interface HeaderModel {
   message: string | null;
   /** The initials avatar's letters. */
   initials: string;
+  /** The engine gives a `dashpay://user` link: a main name, and names neither updating nor unchecked. */
+  shareable: boolean;
 }
 
 export function headerModel(main: IdentitySummary, contest: string | null = null): HeaderModel {
@@ -139,7 +142,8 @@ export function headerModel(main: IdentitySummary, contest: string | null = null
   const display = main.profile?.displayName?.trim() || null;
   const title = display ?? (main.mainName || username);
   const initials = (Array.from(display ?? main.mainName ?? "?")[0] ?? "?").toUpperCase();
-  return { title, username, names, message: main.profile?.publicMessage?.trim() || null, initials };
+  const shareable = names === "named" && !main.namesUpdating && main.namesCheck === null;
+  return { title, username, names, message: main.profile?.publicMessage?.trim() || null, initials, shareable };
 }
 
 /** Credits as duffs (D6): what they would buy back, rounded down. */

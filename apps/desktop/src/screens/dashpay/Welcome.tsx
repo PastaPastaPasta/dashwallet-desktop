@@ -1,11 +1,9 @@
 // R9, the welcome moment (PRODUCT #4): a registration's success, with its three next steps under
-// the greeting. Share my username opens Add contact's My QR in a sheet.
+// the greeting. Share my username opens ShareSheet.
 
-import { Sheet } from "../../components/sheet";
-import { REG_COPY, SHARE_TITLE, WELCOME_STEPS, type WelcomeStepKind } from "../../dashpay/registration";
-import { MyQrTab } from "../contacts/AddContact";
+import { REG_COPY, WELCOME_STEPS, type WelcomeStepKind } from "../../dashpay/registration";
 
-/** `canEdit`: the main identity and its profile are read. `canShare`: whose username to share is known. */
+/** `canEdit`: the main identity and its profile are read. `canShare`: the engine has the link for the username shown. */
 export function WelcomeSteps({
   onStep,
   disabled,
@@ -24,7 +22,7 @@ export function WelcomeSteps({
       <ol className="welcome-steps" role="list">
         {WELCOME_STEPS.map((s, i) => (
           <li key={s.kind}>
-            <button type="button" className="welcome-step" data-testid={`welcome-${s.kind}`} disabled={disabled || waiting(s.kind)} aria-labelledby={`welcome-${s.kind}-title`} aria-describedby={`welcome-${s.kind}-detail`} onClick={() => onStep(s.kind)}>
+            <button type="button" className="welcome-step" id={`welcome-${s.kind}`} data-testid={`welcome-${s.kind}`} disabled={disabled || waiting(s.kind)} aria-labelledby={`welcome-${s.kind}-title`} aria-describedby={`welcome-${s.kind}-detail`} onClick={() => onStep(s.kind)}>
               <span className="welcome-step-number" aria-hidden="true">
                 {i + 1}
               </span>
@@ -42,13 +40,5 @@ export function WelcomeSteps({
         ))}
       </ol>
     </div>
-  );
-}
-
-export function ShareSheet({ walletId, identity, onClose }: { walletId: string; identity: string; onClose: () => void }) {
-  return (
-    <Sheet title={SHARE_TITLE} width="small" testId="welcome-share-sheet" onClose={onClose}>
-      <MyQrTab walletId={walletId} identity={identity} />
-    </Sheet>
   );
 }
