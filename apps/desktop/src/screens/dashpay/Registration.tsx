@@ -5,6 +5,8 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import type { RegistrationQuote } from "../../api/generated/RegistrationQuote";
+import { myQr } from "../../contacts/add";
+import { useMyUserLink } from "../../contacts/queries";
 import { CLAIM_COPY, claimErrorText } from "../../dashpay/claim";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
@@ -272,6 +274,14 @@ export function RegistrationScreen({
   const id = useId();
   const [votingInfo, setVotingInfo] = useState(false);
   const [sharing, setSharing] = useState(false);
+  // As on My Profile, sharing follows the engine's link for the name shown. An open sheet closes
+  // once that link is refused or the name is gone, and waits for another click.
+  const link = useMyUserLink(share?.walletId ?? "", share?.identity ?? "", share !== null);
+  const linkKind = share ? myQr(link, share.username).kind : null;
+  const sheetOpen = linkKind === "link" || linkKind === "loading";
+  useEffect(() => {
+    if (!sheetOpen) setSharing(false);
+  }, [sheetOpen]);
   const { step } = model;
   const welcome = model.kind === "done";
   const section = useRef<HTMLElement>(null);
@@ -339,7 +349,7 @@ export function RegistrationScreen({
         <WelcomeSteps
           disabled={wiz.running !== null}
           canEdit={inputs.main !== undefined}
-          canShare={share !== null}
+          canShare={linkKind === "link"}
           onStep={(kind) => (kind === "share" ? setSharing(true) : onAction(kind))}
         />
       )}
@@ -359,13 +369,16 @@ export function RegistrationScreen({
       </div>
       <GrantSheet grants={wiz.grants} />
       {votingInfo && <VotingInfoSheet onClose={() => setVotingInfo(false)} />}
-      {sharing && share && (
+      {sharing && share && sheetOpen && (
         <ShareSheet
           walletId={share.walletId}
           identity={share.identity}
           who={share.username ? { name: null, username: share.username } : null}
           testId="welcome-share-sheet"
-          returnFocus={() => document.getElementById("welcome-share")}
+          returnFocus={() => {
+            const button = document.getElementById("welcome-share");
+            return button instanceof HTMLButtonElement && !button.disabled ? button : title.current;
+          }}
           onClose={() => setSharing(false)}
         />
       )}

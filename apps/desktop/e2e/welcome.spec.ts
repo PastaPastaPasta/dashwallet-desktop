@@ -108,6 +108,33 @@ test("Share my username shows the DashPay QR and link over the welcome", async (
   expect(errors).toEqual([]);
 });
 
+test("the welcome's share sheet closes once the engine refuses the link, and waits for another click", async ({ page }) => {
+  const errors = await toWelcome(page);
+  const share = page.getByTestId("welcome-share");
+  await share.click();
+  const sheet = page.getByTestId("welcome-share-sheet");
+  await expect(sheet.getByTestId("add-contact-qr")).toBeVisible();
+  const updating = (on: boolean) =>
+    page.evaluate((on) => {
+      const f = window.__dwFixture!;
+      f.world.dashpay.identities = f.world.dashpay.identities.map((i) => ({ ...i, namesUpdating: on }));
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+    }, on);
+  // The engine's names pass is out: it has no link to give, so the sheet closes and Share waits.
+  await updating(true);
+  await expect(sheet).toHaveCount(0);
+  await expect(share).toBeDisabled();
+  await expect(page.locator(".registration-title")).toBeFocused();
+  // The link comes back: Share is offered again, and the sheet waits for a click.
+  await updating(false);
+  await expect(share).toBeEnabled();
+  await expect(sheet).toHaveCount(0);
+  await share.click();
+  await expect(sheet.getByTestId("add-contact-qr")).toBeVisible();
+  await expect(screen(page)).toHaveAttribute("data-kind", "done");
+  expect(errors).toEqual([]);
+});
+
 test("Go to wallet leaves the welcome for Home; Join DashPay then says you joined", async ({ page }) => {
   const errors = await toWelcome(page);
   await page.getByTestId("registration-wallet").click();

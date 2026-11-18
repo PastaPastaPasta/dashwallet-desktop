@@ -3,7 +3,7 @@
 
 import { REG_COPY, WELCOME_STEPS, type WelcomeStepKind } from "../../dashpay/registration";
 
-/** `canEdit`: the main identity and its profile are read. `canShare`: whose username to share is known. */
+/** `canEdit`: the main identity and its profile are read. `canShare`: the engine has the link for the username shown. */
 export function WelcomeSteps({
   onStep,
   disabled,
