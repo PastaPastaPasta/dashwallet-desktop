@@ -144,6 +144,8 @@ enum MnCommand {
     },
     /// An evonode's claimable credits (a proved Platform read).
     Credits { pro_tx_hash: String },
+    /// The header-checked collateral outpoint of a listed masternode.
+    ResolveCollateral { pro_tx_hash: String },
     /// What the wallet can withdraw from the evonode's Platform identity
     /// and where to, each destination `fixed` or `checking` (MG-13); signs
     /// nothing.
@@ -183,6 +185,14 @@ enum MnCommand {
         /// `received` or `not-received`.
         #[arg(long, value_parser = parse_mark)]
         mark: WithdrawalMark,
+    },
+    /// The keychain keys a registration would use by default (public keys
+    /// and addresses only).
+    RegistrationKeys {
+        #[arg(long)]
+        evonode: bool,
+        #[arg(long)]
+        wallet: Option<String>,
     },
     /// Register a masternode (a version-2 ProRegTx). With
     /// `--external-address`, only prepares it: the result's `sign_request`
@@ -868,8 +878,8 @@ fn standby_debit(
 
 /// A failed command: the facade's code and message.
 pub struct Failure {
-    code: String,
-    message: String,
+    pub(crate) code: String,
+    pub(crate) message: String,
 }
 
 impl From<MasternodesError> for Failure {
@@ -880,15 +890,21 @@ impl From<MasternodesError> for Failure {
             Some(dw_engine::EngineError::Send(f)) => format!("send.{}", snake(&format!("{f:?}"))),
             _ => e.code().into(),
         };
-        Self {
-            code,
-            message: e.to_string(),
-        }
+        let message = match &e {
+            MasternodesError::Engine(EngineError::WalletNotFound(_)) => {
+                "wallet not found: the requested wallet".into()
+            }
+            MasternodesError::Engine(EngineError::Send(
+                dw_engine::SendFailure::OutpointUnavailable(_),
+            )) => "send: an outpoint is unavailable".into(),
+            _ => e.to_string(),
+        };
+        Self { code, message }
     }
 }
 
 /// `GrantExceeded { … }` → `grant_exceeded`: the leading identifier only.
-fn snake(debug: &str) -> String {
+pub(crate) fn snake(debug: &str) -> String {
     let mut out = String::new();
     for (i, c) in debug
         .chars()
@@ -1066,14 +1082,17 @@ impl From<dw_engine::EngineError> for Failure {
     }
 }
 
-fn value(v: impl Serialize) -> Result<Value, Failure> {
+pub(crate) fn value(v: impl Serialize) -> Result<Value, Failure> {
     serde_json::to_value(v).map_err(|e| Failure {
         code: "internal".into(),
         message: e.to_string(),
     })
 }
 
-fn wallet(session: &Arc<NetworkSession>, arg: Option<String>) -> Result<WalletId, Failure> {
+pub(crate) fn wallet(
+    session: &Arc<NetworkSession>,
+    arg: Option<String>,
+) -> Result<WalletId, Failure> {
     match arg {
         Some(w) => Ok(w.parse()?),
         None => Ok(crate::first_wallet(session)?),
@@ -1082,7 +1101,7 @@ fn wallet(session: &Arc<NetworkSession>, arg: Option<String>) -> Result<WalletId
 
 /// Starts SPV, then waits until the list is synced and every loaded wallet
 /// scanned `height`.
-fn wait_for_list(
+pub(crate) fn wait_for_list(
     engine: &Engine,
     session: &Arc<NetworkSession>,
     mn: &Masternodes,
@@ -1199,6 +1218,9 @@ fn command(
         MnCommand::Credits { pro_tx_hash } => {
             value(engine.block_on(mn.evonode_credits(pro_tx_hash))?)
         }
+        MnCommand::ResolveCollateral { pro_tx_hash } => {
+            value(engine.block_on(mn.resolve_collateral(pro_tx_hash))?)
+        }
         MnCommand::WithdrawQuote {
             pro_tx_hash,
             wallet: w,
@@ -1220,6 +1242,15 @@ fn command(
         MnCommand::RecheckWithdrawal { id } => value(engine.block_on(mn.recheck_withdrawal(id))?),
         MnCommand::MarkWithdrawal { id, mark } => {
             value(engine.block_on(mn.mark_withdrawal(id, mark))?)
+        }
+        MnCommand::RegistrationKeys { evonode, wallet: w } => {
+            let w = wallet(session, w)?;
+            let kind = if evonode {
+                MasternodeType::Evonode
+            } else {
+                MasternodeType::Regular
+            };
+            value(engine.block_on(mn.registration_keys(w, kind))?)
         }
         MnCommand::Register(a) => {
             let w = wallet(session, a.wallet.clone())?;
@@ -2242,5 +2273,32 @@ mod tests {
         let f = Failure::from(GovernanceError::Engine(invalid));
         assert_eq!(f.code, "invalid_argument");
         assert!(!f.message.contains("abab"), "{}", f.message);
+    }
+
+    #[test]
+    fn registration_keys_and_resolve_collateral_parse_and_refuse() {
+        use clap::error::ErrorKind as K;
+        assert!(matches!(
+            mn(&["registration-keys"]),
+            Ok(MnCommand::RegistrationKeys {
+                evonode: false,
+                wallet: None
+            })
+        ));
+        assert!(matches!(
+            mn(&["registration-keys", "--evonode", "--wallet", "w"]),
+            Ok(MnCommand::RegistrationKeys {
+                evonode: true,
+                wallet: Some(ref w)
+            }) if w == "w"
+        ));
+        assert!(matches!(
+            mn(&["resolve-collateral", HASH]),
+            Ok(MnCommand::ResolveCollateral { ref pro_tx_hash }) if pro_tx_hash == HASH
+        ));
+        assert_eq!(
+            mn(&["resolve-collateral"]).err(),
+            Some(K::MissingRequiredArgument)
+        );
     }
 }
