@@ -7,11 +7,11 @@ import type { QueryClient } from "@tanstack/react-query";
 import { errorMessage, type Backend } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { Utxo } from "../../api/generated/Utxo";
-import { keys, useUtxos } from "../../api/queries";
+import { keys, useSyncStatus, useUtxos } from "../../api/queries";
 import { navigate, openPayForm } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CoinSummary, CoinTable } from "../../components/coins";
-import { EMPTY } from "../../components/emptyStates";
+import { coinsEmptyCopy, EMPTY, listArrival } from "../../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import type { Unit } from "../../format/amount";
 import { useDisplay } from "../../format/display";
@@ -48,6 +48,8 @@ export function newCoinSelection(b: Backend, client: QueryClient, walletId: stri
 
 export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
   const utxos = useUtxos(walletId, true);
+  const sync = useSyncStatus();
+  const arrival = listArrival({ status: sync.data, failed: sync.isError });
   const shown = useDisplay(network);
   useModel(model);
   useEffect(() => {
@@ -57,6 +59,7 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
   const filterRef = useRef<HTMLButtonElement>(null);
   if (utxos.isPending) return <LoadingState testId="coins-loading" text="Loading coins" />;
   if (utxos.isError) return <Outcome ok={false} text={`Could not load the coins: ${errorMessage(utxos.error)}`} testId="coins-error" />;
+  const coinCopy = coinsEmptyCopy(arrival);
   const selected = new Set(model.selected);
   return (
     <div className="tool-stack" data-testid="tools-coinSelection">
@@ -93,13 +96,15 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
         utxos.data.length === 0 ? (
           <EmptyState
             testId="coins-none"
-            art={EMPTY.coins.art}
-            title={EMPTY.coins.title}
-            message={EMPTY.coins.message}
+            art={coinCopy.art}
+            title={coinCopy.title}
+            message={coinCopy.message}
             action={
-              <DashButton variant="filledBlue" data-testid={EMPTY.coins.action.testId} onClick={() => navigate("receive")}>
-                {EMPTY.coins.action.label}
-              </DashButton>
+              coinCopy.action && (
+                <DashButton variant="filledBlue" data-testid={coinCopy.action.testId} onClick={() => navigate("receive")}>
+                  {coinCopy.action.label}
+                </DashButton>
+              )
             }
           />
         ) : (

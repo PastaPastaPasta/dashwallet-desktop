@@ -15,9 +15,8 @@ import { navigate } from "../app/ui";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
-import { activityFiltersApplied, EMPTY, historyEmptyCopy } from "../components/emptyStates";
+import { activityFiltersApplied, EMPTY, historyEmptyCopy, listArrival } from "../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
-import { isSyncing } from "../format/sync";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
 import { filterExtra, isMayLandRow, isReplacedRow, mergeActivity, platformRow, rowSource, shieldedRow, SOURCE_TAG, SourceRowText, sourceRowTitle } from "../history/sourceRows";
@@ -99,12 +98,14 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     setMinText("");
     focusWhenIdle(searchRef);
   };
-  // Receive only once sync has caught up. Until then the list is still arriving, not empty.
+  // An empty list is settled only once Core has caught up. Until then it is still arriving.
   const sync = useSyncStatus();
-  const syncing = !sync.data || isSyncing(sync.data);
+  const arrival = listArrival({ status: sync.data, failed: sync.isError });
   // Platform and Shielded rows are part of this list too: it is not empty until they have answered.
+  // Once Core is caught up and those reads are still out, the same card as a sync in progress.
   const extraPending = withExtra && (platform.isPending || shielded.isPending);
-  const empty = filtered && !syncing && !extraPending ? EMPTY.activityFiltered : historyEmptyCopy({ syncing: syncing || extraPending, home: false });
+  const shownArrival = extraPending && arrival === "settled" ? "syncing" : arrival;
+  const empty = filtered && shownArrival === "settled" ? EMPTY.activityFiltered : historyEmptyCopy({ arrival: shownArrival, home: false });
   const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
   // Every extra row the filters keep counts, loaded or not; Export is the Core history only.
   const total = coreTotal === null ? null : coreTotal + extraShown.length;
@@ -145,7 +146,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   // nothing still explains why Export is off, and still counts the zero, but only once every
   // source has answered: until then the list is still arriving.
   const unfilteredEmpty = !filtered && rows.length === 0 && !history.isPending && !(history.isError && coreRows.length === 0);
-  const noZeroYet = unfilteredEmpty || (rows.length === 0 && (history.isPending || syncing || extraPending));
+  const noZeroYet = unfilteredEmpty || (rows.length === 0 && (history.isPending || shownArrival !== "settled"));
   const exportWhy = exporting ? "Exporting…" : !coreTotal && !noZeroYet ? "There are no transactions to export yet." : null;
   return (
     <main className={`page page-transactions ${mode === "table" ? "is-table" : ""}`} data-testid="page-activity">

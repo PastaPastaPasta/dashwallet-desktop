@@ -11,7 +11,7 @@ import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
-import { historyEmptyCopy } from "../components/emptyStates";
+import { historyEmptyCopy, listArrival, type ListArrival } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
@@ -210,9 +210,9 @@ function HomeFrequentOf({ walletId, identity }: { walletId: string; identity: st
   );
 }
 
-/** Recent history with nothing in it yet. Syncing names that; a caught-up wallet offers Receive. */
-function HistoryEmpty({ syncing }: { syncing: boolean }) {
-  const copy = historyEmptyCopy({ syncing, home: true });
+/** Recent history with nothing in it yet. Only a caught-up wallet offers Receive. */
+function HistoryEmpty({ arrival }: { arrival: ListArrival }) {
+  const copy = historyEmptyCopy({ arrival, home: true });
   return (
     <EmptyState
       testId={copy.action ? "history-empty" : "history-syncing"}
@@ -238,6 +238,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   const discreet = useUi((s) => s.discreet);
   const rows = recent.data?.pages[0]?.rows ?? [];
   const ctx = useRowContext(network);
+  const arrival = listArrival({ status: sync.data, failed: sync.isError });
   const syncing = !!sync.data && isSyncing(sync.data);
   const percent = sync.data ? syncPercent(sync.data) : null;
   const b = useBackend();
@@ -277,7 +278,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         ) : recent.isPending ? (
           <LoadingState testId="history-loading" text="Loading transactions" />
         ) : rows.length === 0 ? (
-          <HistoryEmpty syncing={!sync.data || syncing} />
+          <HistoryEmpty arrival={arrival} />
         ) : (
           <>
             <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="overview" />

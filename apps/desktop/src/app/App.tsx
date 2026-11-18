@@ -5,7 +5,7 @@ import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
-import { EMPTY, walletListGate } from "../components/emptyStates";
+import { EMPTY, walletListGate, walletReadyToOpen } from "../components/emptyStates";
 import { EmptyState, LoadingState } from "../components/history";
 import { SwitchingCard } from "../components/networkPicker";
 import { SheetLayer, useLayeredSheet } from "../components/sheet";
@@ -186,9 +186,11 @@ function Shell() {
     else if (locked && addWallet) ui.set({ onboarding: false });
   }, [noWallet, locked, addWallet]);
   // The new wallet is listed before onboarding closes: a list still empty would open it again
-  // (review r1 #5).
+  // (review r1 #5). A failed read that only still has the empty list from before the save stays
+  // on the ready step; the screen reports it and tries the read again.
   const finishOnboarding = async (id: string | null) => {
-    await wallets.refetch();
+    const result = await wallets.refetch();
+    if (!walletReadyToOpen(id, result.data)) return;
     ui.set({ onboarding: false, ...(id ? { walletId: id } : {}) });
     navigate("home");
     savedLinks.trigger();

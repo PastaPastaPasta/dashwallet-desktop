@@ -35,6 +35,24 @@ export const EMPTY = {
     message: "Payments show up here as the wallet catches up.",
     action: null,
   },
+  historyStarting: {
+    art: "activity",
+    title: "The wallet is still starting",
+    message: "Payments show up here once it has caught up.",
+    action: null,
+  },
+  historyStopped: {
+    art: "activity",
+    title: "Syncing has stopped",
+    message: "Payments show up here once the wallet is syncing again.",
+    action: null,
+  },
+  historyUnreadable: {
+    art: "activity",
+    title: "Could not tell whether the wallet has caught up",
+    message: "Payments show up here once that can be checked.",
+    action: null,
+  },
   activityFiltered: {
     art: "search",
     title: "Nothing matches these filters",
@@ -83,6 +101,30 @@ export const EMPTY = {
     message: "Coins you receive show up here.",
     action: { testId: "coins-empty-receive", label: "Receive Dash" },
   },
+  coinsStarting: {
+    art: "coins",
+    title: "The wallet is still starting",
+    message: "Coins show up here once it has caught up.",
+    action: null,
+  },
+  coinsSyncing: {
+    art: "coins",
+    title: "Coins are still syncing",
+    message: "Coins you already have show up here as the wallet catches up.",
+    action: null,
+  },
+  coinsStopped: {
+    art: "coins",
+    title: "Syncing has stopped",
+    message: "Coins show up here once the wallet is syncing again.",
+    action: null,
+  },
+  coinsUnreadable: {
+    art: "coins",
+    title: "Could not tell whether the wallet has caught up",
+    message: "Coins show up here once that can be checked.",
+    action: null,
+  },
   coinsHidden: {
     art: "coins",
     title: "Every coin here is a CoinJoin coin",
@@ -111,10 +153,47 @@ export const EMPTY = {
 
 export type EmptyId = keyof typeof EMPTY;
 
-/** Home or Activity with nothing in history yet. Syncing has no button; a caught-up wallet offers Receive. */
-export function historyEmptyCopy(input: { syncing: boolean; home: boolean }): EmptyCopy {
-  if (input.syncing) return EMPTY.historySyncing;
+/** Whether an empty history or coin list is final. Settled only when the engine says caught up.
+ * Starting: no reading yet, or Core is not running and has not seen a block. Syncing: Core is
+ * running and not caught up. Stopped: Core is not running after it had seen the chain. Unreadable:
+ * the sync status was asked for and never arrived. */
+export type ListArrival = "starting" | "syncing" | "stopped" | "unreadable" | "settled";
+
+export function listArrival(input: {
+  status?: { running: boolean; caughtUp: boolean; tipHeight: number | null } | null;
+  failed: boolean;
+}): ListArrival {
+  const status = input.status ?? null;
+  if (!status) return input.failed ? "unreadable" : "starting";
+  if (status.caughtUp) return "settled";
+  if (status.running) return "syncing";
+  return status.tipHeight == null ? "starting" : "stopped";
+}
+
+const HISTORY_WAITING = {
+  starting: EMPTY.historyStarting,
+  syncing: EMPTY.historySyncing,
+  stopped: EMPTY.historyStopped,
+  unreadable: EMPTY.historyUnreadable,
+} as const satisfies Record<Exclude<ListArrival, "settled">, EmptyCopy>;
+
+const COINS_WAITING = {
+  starting: EMPTY.coinsStarting,
+  syncing: EMPTY.coinsSyncing,
+  stopped: EMPTY.coinsStopped,
+  unreadable: EMPTY.coinsUnreadable,
+} as const satisfies Record<Exclude<ListArrival, "settled">, EmptyCopy>;
+
+/** Home or Activity with nothing in history yet. Only a caught-up wallet offers Receive. */
+export function historyEmptyCopy(input: { arrival: ListArrival; home: boolean }): EmptyCopy {
+  if (input.arrival !== "settled") return HISTORY_WAITING[input.arrival];
   return input.home ? EMPTY.homeHistory : EMPTY.activity;
+}
+
+/** Coin Selection with no coins in the snapshot. The CoinJoin visibility filter is separate. */
+export function coinsEmptyCopy(arrival: ListArrival): EmptyCopy {
+  if (arrival !== "settled") return COINS_WAITING[arrival];
+  return EMPTY.coins;
 }
 
 /** What Activity applied: a category, search, date range or minimum amount. An untouched list is not filtered. */
@@ -141,4 +220,13 @@ export function walletListGate(q: { isPending: boolean; isError: boolean; data?:
   if (q.isPending) return "loading";
   if (q.data === undefined) return q.isError ? "error" : "loading";
   return q.data.length === 0 ? "empty" : "ready";
+}
+
+/** After a wallet is saved, onboarding may close only once `savedId` is in the list it read.
+ * A failed refetch keeps the list it had, so a list that already contains the wallet still counts.
+ * The empty list from before the save does not: that read has to be reported and tried again. */
+export function walletReadyToOpen(savedId: string | null, list: readonly { walletId: string }[] | undefined): boolean {
+  if (!list) return false;
+  if (savedId) return list.some((w) => w.walletId === savedId);
+  return list.length > 0;
 }

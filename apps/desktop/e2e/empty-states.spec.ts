@@ -2,6 +2,7 @@
 
 import { expect, test, type Page } from "@playwright/test";
 import type { ToolsTab } from "../src/api/generated/ToolsTab";
+import { CREATED_12 } from "../src/fixture/vault";
 import { seriousAxeViolations } from "./axe";
 import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
@@ -26,6 +27,34 @@ async function checked(page: Page, errors: string[]) {
   await fontsReady(page);
   expect(await seriousAxeViolations(page)).toEqual([]);
   expect(errors).toEqual([]);
+}
+
+/** Picks the asked words of `phrase` in order on the verify step. */
+async function verifyPhrase(page: Page, phrase: string) {
+  const words = phrase.split(" ");
+  const labels = await page.getByTestId("verify-slot").locator(".verify-slot-label").allTextContents();
+  for (const label of labels) {
+    const position = Number(label.replace("Word ", "")) - 1;
+    await page.getByTestId("verify-chip").filter({ hasText: new RegExp(`^${words[position]}$`) }).click();
+  }
+}
+
+/** Home, Activity (plain and filtered) and Coin Selection must not treat an empty list as final. */
+async function expectUnsettled(page: Page, historyTitle: string, coinsTitle: string) {
+  await expect(page.getByTestId("history-syncing")).toContainText(historyTitle);
+  await expect(page.getByTestId("history-empty-receive")).toHaveCount(0);
+  await page.getByTestId("sidebar-activity").click();
+  await expect(page.getByTestId("tx-syncing")).toContainText(historyTitle);
+  await expect(page.getByTestId("tx-empty-receive")).toHaveCount(0);
+  await page.getByTestId("tx-category-sent").click();
+  await expect(page.getByTestId("tx-syncing")).toContainText(historyTitle);
+  await expect(page.getByText("Nothing matches these filters")).toHaveCount(0);
+  await expect(page.getByTestId("tx-empty-clear")).toHaveCount(0);
+  await expect(page.getByTestId("tx-export-why")).toHaveCount(0);
+  await expect(page.getByTestId("tx-footer")).toHaveCount(0);
+  await tools(page, "coinSelection");
+  await expect(page.getByTestId("coins-none")).toContainText(coinsTitle);
+  await expect(page.getByTestId("coins-empty-receive")).toHaveCount(0);
 }
 
 for (const theme of THEMES) {
@@ -345,6 +374,52 @@ for (const theme of THEMES) {
     await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "list_wallets").length)).toBeGreaterThan(before);
     await expect(page.getByTestId("page-wallets-error")).toHaveCount(0);
     await expect(amount).toHaveValue("0.5");
+    expect(errors).toEqual([]);
+  });
+
+  test(`a saved first wallet whose list cannot be read stays on the ready step and retries (${theme})`, async ({ page }) => {
+    const errors = await open(page, "no-wallet-mainnet", theme);
+    await expect(page.getByTestId("onboarding-create")).toBeEnabled();
+    // The first list read succeeded and was empty. The refresh after the save fails.
+    await page.evaluate(() => window.__dwFixture!.fail("list_wallets", "none"));
+    await page.getByTestId("onboarding-create").click();
+    await page.locator(".onboarding-advanced summary").click();
+    await page.getByTestId("onboarding-skip-passphrase").click();
+    await page.getByTestId("onboarding-written-down").check();
+    await page.getByTestId("onboarding-phrase-continue").click();
+    await verifyPhrase(page, CREATED_12);
+    await expect(page.getByTestId("onboarding-done")).toBeVisible();
+    await expect(page.getByTestId("onboarding-welcome")).toHaveCount(0);
+    await expect(page.getByTestId("onboarding-rates")).toBeVisible();
+    await expect(page.getByTestId("onboarding-list-error")).toContainText("could not be read");
+    const retry = page.getByTestId("onboarding-list-retry");
+    await expect(retry).toBeEnabled();
+    // The price disclosure's Open path must not leave the button disabled when the read fails again.
+    await retry.click();
+    await expect(page.getByTestId("onboarding-done")).toBeVisible();
+    await expect(retry).toBeEnabled();
+    await page.evaluate(() => window.__dwFixture!.fail("list_wallets", null));
+    await retry.click();
+    await expect(page.getByTestId("onboarding")).toHaveCount(0);
+    await expect(page.getByTestId("hero")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`home, activity and coin selection wait while Core has not caught up (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      const s = f.world.sync;
+      f.world.sync = { ...s, running: false, caughtUp: false, activePhase: null, connectedPeers: 0 };
+      f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync });
+    });
+    await expectUnsettled(page, "Syncing has stopped", "Syncing has stopped");
+    expect(errors).toEqual([]);
+  });
+
+  test(`home, activity and coin selection wait while Core is scanning (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty-syncing", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    await expectUnsettled(page, "Your history is still syncing", "Coins are still syncing");
     expect(errors).toEqual([]);
   });
 

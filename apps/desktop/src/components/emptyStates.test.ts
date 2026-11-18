@@ -1,18 +1,67 @@
 import { describe, expect, it } from "vitest";
-import { addressBookEmpty, activityFiltersApplied, EMPTY, historyEmptyCopy, walletListGate } from "./emptyStates";
+import { addressBookEmpty, activityFiltersApplied, coinsEmptyCopy, EMPTY, historyEmptyCopy, listArrival, walletListGate, walletReadyToOpen, type ListArrival } from "./emptyStates";
+
+const reading = (over: Partial<{ running: boolean; caughtUp: boolean; tipHeight: number | null }> = {}) => ({
+  running: false,
+  caughtUp: false,
+  tipHeight: null as number | null,
+  ...over,
+});
+
+describe("list arrival", () => {
+  it("names every sync state, and treats an empty list as settled only once caught up", () => {
+    expect(listArrival({ failed: false })).toBe("starting");
+    expect(listArrival({ status: null, failed: false })).toBe("starting");
+    expect(listArrival({ status: reading(), failed: false })).toBe("starting");
+    expect(listArrival({ status: reading({ running: true }), failed: false })).toBe("syncing");
+    expect(listArrival({ status: reading({ running: true, tipHeight: 10 }), failed: false })).toBe("syncing");
+    expect(listArrival({ status: reading({ tipHeight: 10 }), failed: false })).toBe("stopped");
+    expect(listArrival({ failed: true })).toBe("unreadable");
+    expect(listArrival({ status: null, failed: true })).toBe("unreadable");
+    expect(listArrival({ status: reading({ running: true, caughtUp: true, tipHeight: 10 }), failed: false })).toBe("settled");
+    // A later failed read keeps the caught-up reading it already had.
+    expect(listArrival({ status: reading({ caughtUp: true, tipHeight: 10 }), failed: true })).toBe("settled");
+  });
+});
 
 describe("history empty", () => {
-  it("stays quiet while the wallet is syncing, and offers Receive Dash once it has caught up", () => {
-    const syncing = historyEmptyCopy({ syncing: true, home: false });
+  it("stays quiet until the wallet has caught up, and offers Receive Dash only then", () => {
+    const syncing = historyEmptyCopy({ arrival: "syncing", home: false });
     expect(syncing).toMatchObject({
       art: "activity",
       title: "Your history is still syncing",
       message: "Payments show up here as the wallet catches up.",
       action: null,
     });
-    expect(historyEmptyCopy({ syncing: true, home: true })).toBe(syncing);
-    expect(historyEmptyCopy({ syncing: false, home: true }).action).toMatchObject({ label: "Receive Dash", testId: "history-empty-receive" });
-    expect(historyEmptyCopy({ syncing: false, home: false }).action).toMatchObject({ label: "Receive Dash", testId: "tx-empty-receive" });
+    expect(historyEmptyCopy({ arrival: "syncing", home: true })).toBe(syncing);
+    const waiting: ListArrival[] = ["starting", "syncing", "stopped", "unreadable"];
+    for (const arrival of waiting) {
+      expect(historyEmptyCopy({ arrival, home: true }).action).toBeNull();
+      expect(historyEmptyCopy({ arrival, home: false }).action).toBeNull();
+    }
+    expect(new Set(waiting.map((arrival) => historyEmptyCopy({ arrival, home: false }).title)).size).toBe(waiting.length);
+    expect(historyEmptyCopy({ arrival: "starting", home: true }).title).toBe("The wallet is still starting");
+    expect(historyEmptyCopy({ arrival: "stopped", home: false }).title).toBe("Syncing has stopped");
+    expect(historyEmptyCopy({ arrival: "unreadable", home: false }).title).toBe("Could not tell whether the wallet has caught up");
+    expect(historyEmptyCopy({ arrival: "settled", home: true }).action).toMatchObject({ label: "Receive Dash", testId: "history-empty-receive" });
+    expect(historyEmptyCopy({ arrival: "settled", home: false }).action).toMatchObject({ label: "Receive Dash", testId: "tx-empty-receive" });
+  });
+});
+
+describe("coins empty", () => {
+  it("offers Receive Dash only once caught up, and names each earlier state", () => {
+    const waiting: ListArrival[] = ["starting", "syncing", "stopped", "unreadable"];
+    for (const arrival of waiting) expect(coinsEmptyCopy(arrival).action).toBeNull();
+    expect(new Set(waiting.map((arrival) => coinsEmptyCopy(arrival).title)).size).toBe(waiting.length);
+    expect(coinsEmptyCopy("syncing")).toMatchObject({
+      title: "Coins are still syncing",
+      message: "Coins you already have show up here as the wallet catches up.",
+      action: null,
+    });
+    expect(coinsEmptyCopy("starting").title).toBe("The wallet is still starting");
+    expect(coinsEmptyCopy("stopped").title).toBe("Syncing has stopped");
+    expect(coinsEmptyCopy("unreadable").title).toBe("Could not tell whether the wallet has caught up");
+    expect(coinsEmptyCopy("settled").action).toMatchObject({ label: "Receive Dash", testId: "coins-empty-receive" });
   });
 });
 
@@ -54,6 +103,17 @@ describe("wallet list", () => {
   it("keeps the wallets it had when a refetch fails", () => {
     expect(walletListGate({ isPending: false, isError: true, data: [1] })).toBe("ready");
     expect(walletListGate({ isPending: false, isError: true, data: [] })).toBe("empty");
+  });
+
+  it("opens after a save only once the list it read contains that wallet", () => {
+    const saved = "aa";
+    expect(walletReadyToOpen(saved, undefined)).toBe(false);
+    expect(walletReadyToOpen(saved, [])).toBe(false);
+    expect(walletReadyToOpen(saved, [{ walletId: "bb" }])).toBe(false);
+    expect(walletReadyToOpen(saved, [{ walletId: "bb" }, { walletId: saved }])).toBe(true);
+    expect(walletReadyToOpen(null, undefined)).toBe(false);
+    expect(walletReadyToOpen(null, [])).toBe(false);
+    expect(walletReadyToOpen(null, [{ walletId: "bb" }])).toBe(true);
   });
 });
 
