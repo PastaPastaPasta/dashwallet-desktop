@@ -102,9 +102,18 @@ fn engine_wallet() -> (tempfile::TempDir, Engine, Arc<NetworkSession>, WalletId)
 /// The CoinJoin account's external address at `index`, derived on a copy of
 /// its pool (the wallet's own pool is left as it is).
 fn coinjoin_address(wallet: &Wallet, info: &ManagedWalletInfo, index: u32) -> Address {
+    coinjoin_pool_address(wallet, info, 0, index)
+}
+
+fn coinjoin_pool_address(
+    wallet: &Wallet,
+    info: &ManagedWalletInfo,
+    pool_index: usize,
+    index: u32,
+) -> Address {
     let mut pool = (info.accounts.funds_account(&cj()).unwrap())
         .managed_account_type()
-        .address_pools()[0]
+        .address_pools()[pool_index]
         .clone();
     let have = pool.highest_generated.unwrap_or(0);
     if index > have {
@@ -295,6 +304,48 @@ fn a_reopened_session_restores_a_coinjoin_coin_past_99_and_a_replay_counts_it_on
     assert_coins(&engine, &session, id, &coin, cj(), VALUE);
     replay(&engine, &session, id, &[deep]);
     assert_coins(&engine, &session, id, &coin, cj(), VALUE);
+}
+
+/// A rescan of a restored wallet finds CoinJoin coins at index 100 and past
+/// it, on both chains. The default gap derives only through index 99, so
+/// those keys are outside it until restore and rescan widen the account.
+#[test]
+fn a_rescan_finds_coinjoin_coins_at_index_100_and_beyond() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let external = coinjoin_addresses(&engine, &session, id, &[100, 240]);
+    let internal = engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let wallet = wm.get_wallet(&id.0).unwrap();
+        let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        coinjoin_pool_address(wallet, info, 1, 100)
+    });
+    let txs = [
+        pays(1, &external[0]),
+        pays(2, &external[1]),
+        pays(3, &internal),
+    ];
+    replay(&engine, &session, id, &txs);
+    let coins = [
+        (OutPoint::new(txs[0].txid(), 0), external[0].clone()),
+        (OutPoint::new(txs[1].txid(), 0), external[1].clone()),
+        (OutPoint::new(txs[2].txid(), 0), internal.clone()),
+    ];
+    assert_coins(&engine, &session, id, &coins, cj(), 3 * VALUE);
+
+    let session = reopen(&engine, session);
+    let further = coinjoin_addresses(&engine, &session, id, &[400]).remove(0);
+    let later = pays(4, &further);
+    replay(&engine, &session, id, std::slice::from_ref(&later));
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[(OutPoint::new(later.txid(), 0), further)],
+        cj(),
+        VALUE,
+    );
 }
 
 /// The same through `unload_wallet` and `load_wallet`.

@@ -65,6 +65,12 @@ pub(crate) fn registration_refused(_: &std::path::Path) -> bool {
 /// restores scan 1000 keys ahead (QT-105), which also finds funds Core mixed
 /// on its BIP44 chains (DESIGN.md R2).
 pub const CORE_COMPAT_LOOKAHEAD: u32 = 1000;
+/// CoinJoin scan window on restore and rescan. The account's default gap
+/// derives indexes 0 through 99 only, so a key used at index 100 or beyond
+/// is invisible to a filter scan until an earlier address is marked used.
+/// This is the largest gap key-wallet will keep, applied to the CoinJoin
+/// account alone.
+pub(crate) const COINJOIN_SCAN_GAP: u32 = MAX_LOOKAHEAD;
 /// Largest lookahead key-wallet supports (`MAX_GAP_LIMIT`).
 pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// dw-appdb setting (wallet scope) holding a raised lookahead, applied again
@@ -209,6 +215,57 @@ pub(crate) async fn apply_lookahead(
     let mut first_error = None;
     for (account, index) in accounts {
         if let Err(e) = wallet.core().set_gap_limit(account, index, gap).await {
+            first_error.get_or_insert(e);
+        }
+    }
+    first_error.map_or(Ok(()), |e| Err(e.into()))
+}
+
+/// Raises each CoinJoin account's gap to [`COINJOIN_SCAN_GAP`] when it is
+/// narrower, so a restore or rescan derives index 100 and beyond. A wider
+/// gap is left as it is. BIP44 is untouched.
+pub(crate) async fn ensure_coinjoin_scan_gap(
+    wallet: &platform_wallet::wallet::platform_wallet::PlatformWallet,
+) -> Result<(), EngineError> {
+    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+    let indexes: Vec<u32> = {
+        let state = wallet.state().await;
+        state
+            .core_wallet
+            .accounts
+            .coinjoin_accounts
+            .keys()
+            .copied()
+            .collect()
+    };
+    let mut first_error = None;
+    for index in indexes {
+        let current = {
+            let state = wallet.state().await;
+            state
+                .core_wallet
+                .accounts
+                .coinjoin_accounts
+                .get(&index)
+                .map(|account| {
+                    account
+                        .managed_account_type()
+                        .address_pools()
+                        .iter()
+                        .map(|pool| pool.gap_limit)
+                        .min()
+                        .unwrap_or(0)
+                })
+                .unwrap_or(0)
+        };
+        if current >= COINJOIN_SCAN_GAP {
+            continue;
+        }
+        if let Err(e) = wallet
+            .core()
+            .set_gap_limit(AccountTypePreference::CoinJoin, index, COINJOIN_SCAN_GAP)
+            .await
+        {
             first_error.get_or_insert(e);
         }
     }
@@ -632,6 +689,9 @@ impl NetworkSession {
             }
             self.store_lookahead(wallet_id, gap).await;
         }
+        if let Err(e) = ensure_coinjoin_scan_gap(&wallet).await {
+            tracing::warn!(%wallet_id, error = %e, "could not widen the CoinJoin scan gap");
+        }
         self.refresh_wallet_state(&manager, wallet_id).await;
         // The wallet is registered; a failed name write leaves it with
         // the computed default name and is reported in the log only.
@@ -707,6 +767,11 @@ impl NetworkSession {
         };
         if let Err(e) = restored {
             tracing::warn!(wallet_id = %id, error = %e, "could not restore the loaded wallet's lookahead or coins");
+        }
+        if let Some(wallet) = manager.get_wallet(&id.0).await
+            && let Err(e) = ensure_coinjoin_scan_gap(&wallet).await
+        {
+            tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap");
         }
     }
 

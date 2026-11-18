@@ -562,6 +562,12 @@ impl crate::NetworkSession {
                 .into_iter()
                 .map(crate::WalletId)
                 .collect();
+            for id in &ids {
+                let Some(wallet) = manager.get_wallet(&id.0).await else {
+                    continue;
+                };
+                crate::keys::ensure_coinjoin_scan_gap(&wallet).await?;
+            }
             let from_height = match from {
                 RescanFrom::WalletBirth => ids
                     .iter()

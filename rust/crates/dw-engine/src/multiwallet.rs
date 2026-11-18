@@ -555,6 +555,9 @@ impl NetworkSession {
                 // Raised again at every load, as a seed import's.
                 this.store_lookahead(id, lookahead).await;
             }
+            if let Err(e) = crate::keys::ensure_coinjoin_scan_gap(&wallet).await {
+                tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap");
+            }
             this.refresh_wallet_state(&live.manager, id).await;
             let default_name = this.next_default_name();
             if let Err(e) = this
