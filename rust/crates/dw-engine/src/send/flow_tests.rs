@@ -4777,6 +4777,259 @@ mod normal_payment_beside_mixing {
         // The CoinJoin account's coins are where they were.
         assert_eq!(max(&f, CoinSource::FullyMixedOnly), MIXED);
     }
+
+    /// Dash Core mixes on BIP44 external and internal chains. A wallet
+    /// restored from one must report the same denominated coins, rounds and
+    /// fully mixed balance (`GetRealOutpointCoinJoinRounds`, `IsFullyMixed`).
+    #[test]
+    fn core_mixed_bip44_coins_report_dash_core_rounds_and_balance() {
+        use std::str::FromStr;
+
+        use dashcore::{Address, Transaction, TxIn, TxOut, Txid};
+        use dw_coinjoin::denoms::{COLLATERAL_AMOUNT, DENOMINATIONS};
+        use dw_coinjoin::rounds::{is_fully_mixed, salt_to_display_hex};
+
+        use crate::EngineError;
+        use crate::coins::CoinFilter;
+
+        let f = super::fixture(false);
+        let session = Arc::clone(&f.session);
+        let id = f.wallet;
+        let receive = || -> Address {
+            let info = f
+                .engine
+                .block_on(f.session.next_receive_address(id, None))
+                .unwrap();
+            Address::from_str(&info.address).unwrap().assume_checked()
+        };
+        let change = || -> Address {
+            f.engine
+                .block_on(session.on_runtime({
+                    let session = Arc::clone(&session);
+                    async move {
+                        let wallet = session.wallet(&id).await?;
+                        Ok::<_, EngineError>(
+                            wallet.core().next_change_address_for_account(0).await?,
+                        )
+                    }
+                }))
+                .unwrap()
+        };
+        let fund_addr = receive();
+        let fresh_addr = receive();
+        let partial_addr = receive();
+        let yes_addr = receive();
+        let no_addr = receive();
+        let deep_addr = receive();
+        let small_addr = receive();
+        let rebalance_addr = receive();
+        let collateral_addr = change();
+        let change_addr = change();
+
+        let foreign_script = Address::from_str(FOREIGN)
+            .unwrap()
+            .assume_checked()
+            .script_pubkey();
+        let pay_to = |addr: &Address, value| TxOut {
+            value,
+            script_pubkey: addr.script_pubkey(),
+        };
+        let spend = |previous_output| TxIn {
+            previous_output,
+            ..Default::default()
+        };
+
+        let unmixed_val = 50_000_000u64;
+        let change_val = 25_000_000u64;
+        let d = DENOMINATIONS[2];
+        let d_small = DENOMINATIONS[3];
+        let collateral_val = 2 * COLLATERAL_AMOUNT;
+        let denom_count = 6u64;
+        let funding_val = unmixed_val + change_val + collateral_val + denom_count * d;
+
+        let mut height = 10u32;
+        let fund_tx = Transaction {
+            version: 2,
+            lock_time: 1,
+            input: vec![spend(OutPoint::new(Txid::from_byte_array([0x11; 32]), 0))],
+            output: vec![pay_to(&fund_addr, funding_val)],
+            special_transaction_payload: None,
+        };
+        f.see_in(&fund_tx, super::mined_at(height));
+        height += 1;
+
+        // CreateDenominated on BIP44: denominations beside non-denominated
+        // change, so each fresh denomination is round 0. Ten small
+        // denominations later combine 10:1 into `d` (a V24 rebalance).
+        let mut denom_outputs = vec![
+            pay_to(&fund_addr, unmixed_val),
+            pay_to(&fresh_addr, d),
+            pay_to(&partial_addr, d),
+            pay_to(&yes_addr, d),
+            pay_to(&no_addr, d),
+            pay_to(&deep_addr, d),
+        ];
+        for _ in 0..10 {
+            denom_outputs.push(pay_to(&small_addr, d_small));
+        }
+        denom_outputs.push(pay_to(&collateral_addr, collateral_val));
+        denom_outputs.push(pay_to(&change_addr, change_val));
+        let denom_tx = Transaction {
+            version: 2,
+            lock_time: 2,
+            input: vec![spend(OutPoint::new(fund_tx.txid(), 0))],
+            output: denom_outputs,
+            special_transaction_payload: None,
+        };
+        let out_sum: u64 = denom_tx.output.iter().map(|o| o.value).sum();
+        assert_eq!(out_sum, funding_val, "denomination transaction pays no fee");
+        f.see_in(&denom_tx, super::mined_at(height));
+        height += 1;
+
+        let mut mix =
+            |start: OutPoint, to: &Address, value: u64, rounds: u32, tag: u8| -> OutPoint {
+                let mut prev = start;
+                for r in 0..rounds {
+                    let tx = Transaction {
+                        version: 2,
+                        lock_time: u32::from(tag) * 100 + r,
+                        input: vec![
+                            spend(prev),
+                            spend(OutPoint::new(
+                                Txid::from_byte_array([tag.wrapping_add(r as u8); 32]),
+                                1,
+                            )),
+                        ],
+                        output: vec![
+                            pay_to(to, value),
+                            TxOut {
+                                value,
+                                script_pubkey: foreign_script.clone(),
+                            },
+                        ],
+                        special_transaction_payload: None,
+                    };
+                    f.see_in(&tx, super::mined_at(height));
+                    height += 1;
+                    prev = OutPoint::new(tx.txid(), 0);
+                }
+                prev
+            };
+
+        let op_fresh = OutPoint::new(denom_tx.txid(), 1);
+        let op_partial = mix(OutPoint::new(denom_tx.txid(), 2), &partial_addr, d, 2, 0x21);
+        let op_four_a = mix(OutPoint::new(denom_tx.txid(), 3), &yes_addr, d, 4, 0x31);
+        let op_four_b = mix(OutPoint::new(denom_tx.txid(), 4), &no_addr, d, 4, 0x41);
+        let op_deep = mix(OutPoint::new(denom_tx.txid(), 5), &deep_addr, d, 7, 0x51);
+
+        let rebalance_tx = Transaction {
+            version: 2,
+            lock_time: 900,
+            input: (0..10)
+                .map(|i| spend(OutPoint::new(denom_tx.txid(), 6 + i)))
+                .collect(),
+            output: vec![pay_to(&rebalance_addr, d)],
+            special_transaction_payload: None,
+        };
+        f.see_in(&rebalance_tx, super::mined_at(height));
+        let op_rebalanced = OutPoint::new(rebalance_tx.txid(), 0);
+        f.quietly_at(height + 5);
+
+        let salt = (0u8..=255)
+            .map(|s| [s; 32])
+            .find(|salt| {
+                is_fully_mixed(4, 4, &op_four_a, salt) != is_fully_mixed(4, 4, &op_four_b, salt)
+            })
+            .expect("two outpoints disagree on some salt");
+        let (op_yes, op_no) = if is_fully_mixed(4, 4, &op_four_a, &salt) {
+            (op_four_a, op_four_b)
+        } else {
+            (op_four_b, op_four_a)
+        };
+        f.engine
+            .block_on(f.session.set_coinjoin_salt(id, salt_to_display_hex(&salt)))
+            .unwrap();
+
+        let status = f.session.coinjoin_status(id).unwrap();
+        assert_eq!(status.balances.denominated, denom_count * d);
+        assert_eq!(status.balances.fully_mixed, 2 * d);
+        assert_eq!(status.balances.normalized_anonymized, d * 14 / 4);
+        assert_eq!(status.progress.average_rounds, f64::from(14_f32 / 6_f32));
+        assert_eq!(status.balances.coinjoin_account, 0);
+        assert_eq!(
+            status.balances.anonymizable,
+            unmixed_val + change_val + 4 * d
+        );
+        assert_eq!(
+            f.session.wallet_infos().unwrap()[0]
+                .balances
+                .unwrap()
+                .coinjoin,
+            2 * d
+        );
+
+        let rounds_of = |op: OutPoint| {
+            let row = f
+                .engine
+                .block_on(f.session.utxos(id, CoinFilter::default()))
+                .unwrap()
+                .into_iter()
+                .find(|u| u.outpoint == op)
+                .unwrap_or_else(|| panic!("missing {op}"));
+            (row.coinjoin_denominated, row.coinjoin_rounds)
+        };
+        assert_eq!(rounds_of(op_fresh), (true, Some(0)));
+        assert_eq!(rounds_of(op_partial), (true, Some(2)));
+        assert_eq!(rounds_of(op_yes), (true, Some(4)));
+        assert_eq!(rounds_of(op_no), (true, Some(4)));
+        assert_eq!(rounds_of(op_deep), (true, Some(7)));
+        assert_eq!(rounds_of(op_rebalanced), (true, Some(0)));
+        assert_eq!(rounds_of(OutPoint::new(denom_tx.txid(), 0)), (false, None));
+        assert_eq!(
+            rounds_of(OutPoint::new(denom_tx.txid(), 16)),
+            (false, None),
+            "collateral is not a denomination"
+        );
+        assert_eq!(rounds_of(OutPoint::new(denom_tx.txid(), 17)), (false, None));
+
+        let mut mixed: Vec<_> = f
+            .engine
+            .block_on(f.session.utxos(
+                id,
+                CoinFilter {
+                    fully_mixed_only: true,
+                    ..Default::default()
+                },
+            ))
+            .unwrap()
+            .into_iter()
+            .map(|u| u.outpoint)
+            .collect();
+        mixed.sort();
+        let mut expected = vec![op_yes, op_deep];
+        expected.sort();
+        assert_eq!(mixed, expected);
+
+        let spendable = |source| {
+            f.engine
+                .block_on(f.session.max_spendable(id, source, RECOMMENDED))
+                .unwrap()
+        };
+        assert_eq!(
+            spendable(CoinSource::Any),
+            unmixed_val + change_val + collateral_val
+        );
+        assert_eq!(spendable(CoinSource::FullyMixedOnly), 2 * d);
+
+        let view = f.engine.block_on(f.session.read_mix_view(id)).unwrap();
+        let funding = view.funding_inputs(dashcore::Network::Regtest, true);
+        for op in [op_fresh, op_partial, op_yes, op_no, op_deep, op_rebalanced] {
+            assert!(
+                !funding.contains(&op),
+                "a BIP44 denomination must not be spent to create new ones"
+            );
+        }
+    }
 }
 
 // ---- rows 59 and 65: a fork truncation no event announces -------------------

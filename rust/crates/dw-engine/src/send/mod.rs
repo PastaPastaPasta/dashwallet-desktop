@@ -831,7 +831,17 @@ impl NetworkSession {
         }
         let wallet = self.wallet(&fence.wallet_id()).await?;
         let snapshot = self.coin_snapshot(fence, &wallet).await?;
-        let coins = candidates(&snapshot, source, exempt, coinjoin_exempt)?;
+        let mut coins = candidates(&snapshot, source, exempt, coinjoin_exempt)?;
+        if *source == CoinSource::Any {
+            let state = wallet.state().await;
+            let denominated: HashSet<OutPoint> = snapshot
+                .coins
+                .iter()
+                .filter(|c| crate::coinjoin::counted_as_denominated(&state.core_wallet, c))
+                .map(|c| c.utxo.outpoint)
+                .collect();
+            coins.retain(|u| !denominated.contains(&u.outpoint));
+        }
         Ok((coins, snapshot.height))
     }
 

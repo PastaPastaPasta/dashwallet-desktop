@@ -626,9 +626,12 @@ impl MixViewCoin {
         !self.coin.user_locked && !self.coin.reserved
     }
 
-    /// A denomination in the CoinJoin account.
+    /// A denomination Dash Core would count: one in the CoinJoin account, or
+    /// on a BIP44 external or internal address, which is where dash-qt mixes.
     pub(crate) fn denominated(&self) -> bool {
-        self.coin.coinjoin_account && is_denominated(self.value())
+        is_denominated(self.value())
+            && (self.coin.coinjoin_account
+                || self.path.as_ref().is_some_and(bip44_external_or_internal))
     }
 
     fn collateral(&self) -> bool {
@@ -692,13 +695,16 @@ impl MixView {
     }
 
     /// Mixing inputs of `amount`: denominated, not fully mixed, final,
-    /// free, shuffled (`ONLY_READY_TO_MIX`).
+    /// free, shuffled (`ONLY_READY_TO_MIX`). The mixing signer covers the
+    /// CoinJoin account only, so a dash-qt denomination on BIP44 is counted
+    /// and kept out of new denomination transactions, but not offered here.
     fn ready_to_mix(&self, amount: u64) -> Vec<MixCoin> {
         let mut coins: Vec<MixCoin> = self
             .coins
             .iter()
             .filter(|c| {
                 c.denominated()
+                    && c.coin.coinjoin_account
                     && c.value() == amount
                     && c.rounds >= 0
                     && !c.fully_mixed
@@ -860,6 +866,29 @@ fn compute_balances(
         },
         average,
     )
+}
+
+/// A BIP44 receive or change address, `m/44'/coin'/account'/{0,1}/index`.
+/// Coin type 5 is Dash mainnet and 1 is every other network this wallet
+/// derives (`dw_vault::paths`). dash-qt keeps CoinJoin outputs on these chains.
+fn bip44_external_or_internal(path: &DerivationPath) -> bool {
+    use key_wallet::bip32::ChildNumber;
+    let steps: &[ChildNumber] = path.as_ref();
+    steps.len() == 5
+        && matches!(steps[0], ChildNumber::Hardened { index: 44 })
+        && matches!(steps[1], ChildNumber::Hardened { index: 1 | 5 })
+        && matches!(steps[2], ChildNumber::Hardened { index } if index < 1 << 31)
+        && matches!(steps[3], ChildNumber::Normal { index: 0 | 1 })
+        && matches!(steps[4], ChildNumber::Normal { index } if index < 1 << 31)
+}
+
+/// Whether a normal payment should leave `coin` alone: it is a denomination
+/// on the CoinJoin account or on a BIP44 chain, so dash-qt counts it as mixed
+/// or still mixing.
+pub(crate) fn counted_as_denominated(info: &ManagedWalletInfo, coin: &WalletCoin) -> bool {
+    is_denominated(coin.utxo.value())
+        && (coin.coinjoin_account
+            || path_of(info, &coin.utxo.address).is_some_and(|p| bip44_external_or_internal(&p)))
 }
 
 /// The full derivation path of `address` in the wallet; a DashPay
@@ -1096,10 +1125,16 @@ impl NetworkSession {
                             .iter()
                             .enumerate()
                             .map(|(i, input)| {
-                                (
-                                    input.previous_output,
-                                    e.own_inputs.get(&(i as u32)).map(|(v, _)| *v),
-                                )
+                                let cached = e.own_inputs.get(&(i as u32)).map(|(v, _)| *v);
+                                let value = cached.or_else(|| {
+                                    let parent = history.get(&input.previous_output.txid)?;
+                                    let out = parent
+                                        .tx
+                                        .output
+                                        .get(input.previous_output.vout as usize)?;
+                                    owned.contains_key(&out.script_pubkey).then_some(out.value)
+                                });
+                                (input.previous_output, value)
                             })
                             .collect(),
                     },
@@ -1111,7 +1146,10 @@ impl NetworkSession {
             .coins
             .into_iter()
             .map(|coin| {
-                let denominated = coin.coinjoin_account && is_denominated(coin.utxo.value());
+                let path = paths.get(&coin.utxo.address).cloned();
+                let on_mix_chain =
+                    coin.coinjoin_account || path.as_ref().is_some_and(bip44_external_or_internal);
+                let denominated = on_mix_chain && is_denominated(coin.utxo.value());
                 let rounds = if denominated {
                     calc.rounds(&coin.utxo.outpoint)
                 } else if is_collateral_amount(coin.utxo.value()) {
@@ -1122,7 +1160,7 @@ impl NetworkSession {
                 let fully_mixed = denominated
                     && rounds::is_fully_mixed(rounds, settings.rounds, &coin.utxo.outpoint, &salt);
                 MixViewCoin {
-                    path: paths.get(&coin.utxo.address).cloned(),
+                    path,
                     coin,
                     rounds,
                     fully_mixed,

@@ -84,9 +84,6 @@ use crate::{EngineError, NetworkSession, WalletId};
 pub const DUST_PROTECTION_KEY: &str = "dust_protection_threshold";
 /// dash-qt's range for the threshold (QT-075).
 pub const DUST_PROTECTION_MAX: u64 = 1_000_000;
-/// CoinJoin denominations in duffs (Dash Core `CoinJoin::GetStandardDenominations`).
-pub const COINJOIN_DENOMINATIONS: [u64; 5] =
-    [1_000_010_000, 100_001_000, 10_000_100, 1_000_010, 100_001];
 
 /// Wall clock in UNIX seconds.
 pub(crate) fn now_secs() -> u64 {
@@ -228,10 +225,6 @@ impl WalletCoin {
     /// reservation does not hold it back.
     pub(crate) fn self_spend_selectable(&self, height: u32) -> bool {
         self.utxo.is_spendable(height) && !self.user_locked && (!self.reserved || self.lock_input)
-    }
-
-    fn denominated(&self) -> bool {
-        self.coinjoin_account && COINJOIN_DENOMINATIONS.contains(&self.utxo.value())
     }
 }
 
@@ -958,7 +951,7 @@ impl NetworkSession {
                         reserved: c.reserved,
                         is_change: c.is_change,
                         is_coinbase: u.is_coinbase,
-                        coinjoin_denominated: c.denominated(),
+                        coinjoin_denominated: m.denominated(),
                         coinjoin_rounds: (m.denominated() && m.rounds >= 0)
                             .then_some(m.rounds as u32),
                         spendable: has_keys && c.chosen_selectable(height),
