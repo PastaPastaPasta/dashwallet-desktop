@@ -144,6 +144,8 @@ export class IpcBackend implements Backend {
   coinSelectionSummary = (walletId: string, outpoints: OutPoint[], payAmounts: number[], fee: FeeMode) =>
     cmd.coinSelectionSummary(walletId, outpoints, payAmounts, fee, false);
   paymentAuthentication = () => cmd.paymentAuthentication();
+  quickUnlockPolicy = () => cmd.quickUnlockPolicy();
+  setQuickUnlockSpendLimit = cmd.setQuickUnlockSpendLimit;
   uiSettings = () => cmd.uiSettings();
   setUiSettings = cmd.setUiSettings;
   ratesStatus = () => cmd.ratesStatus();

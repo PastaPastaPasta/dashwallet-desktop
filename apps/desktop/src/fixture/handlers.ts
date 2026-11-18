@@ -195,14 +195,51 @@ function leaseKey(id: string): string | null {
   return /^lease-[0-9a-f]{32}$/i.test(id) ? id.toLowerCase() : null;
 }
 
-/** dw-vault's credential check of `authorize`. While "Require authentication for every payment"
- * is on (E0-13 D11), a `spend` grant of an encrypted vault needs a real credential: the
- * unlocked vault's own (`unencrypted`) is `vault.credential_required`. */
+const SPEND_LIMITS = [0, 10_000_000, 50_000_000, 100_000_000, 500_000_000];
+const SIGNING_WINDOW_MS = 5 * 60 * 1000;
+
+/** What a purpose counts against the spend limit. `null` for one the window never covers. */
+function quickValue(p: GrantPurposeSpec): number | null {
+  switch (p.kind) {
+    case "spend":
+    case "masternodeOp":
+      return p.maxDuffs;
+    case "platformOp":
+      return p.maxDuffs + Math.ceil(Number(p.maxCredits) / 1000);
+    case "signMessage":
+    case "governance":
+      return 0;
+    default:
+      return null;
+  }
+}
+
+function windowOpen(w: World): boolean {
+  return w.lock.state === "unlocked" && w.signingUntil !== null && Date.now() < w.signingUntil;
+}
+
+function windowCovers(w: World, purposes: GrantPurposeSpec[]): boolean {
+  if (!windowOpen(w)) return false;
+  let total = 0;
+  for (const purpose of purposes) {
+    const value = quickValue(purpose);
+    if (value === null) return false;
+    total += value;
+  }
+  return total <= w.spendLimitDuffs;
+}
+
+/** dw-vault's credential check of `authorize`. While "Ask for my passphrase for every payment"
+ * is on, a payment grant of an encrypted unlocked vault needs a real credential. While it is
+ * off, the post-unlock window covers one at or under the spend limit. A locked vault answers
+ * `vault.locked` below instead. */
 function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
-  // E0-13 D11 (`check_payment_auth`): a locked vault answers `vault.locked` below instead.
+  const sensitive = purposes.some((p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential");
+  if (credential.kind === "unencrypted" && w.lock.encrypted && sensitive)
+    throw fail("vault.credential_required", "the passphrase is required");
   const pays = purposes.some((p) => p.kind === "spend" || p.kind === "platformOp" || p.kind === "masternodeOp" || p.kind === "governance");
-  if (credential.kind === "unencrypted" && w.lock.encrypted && w.lock.state !== "locked" && w.paymentAuth && pays)
+  if (credential.kind === "unencrypted" && w.lock.encrypted && w.lock.state === "unlocked" && pays && (w.paymentAuth || !windowCovers(w, purposes)))
     throw fail("vault.credential_required", "every payment needs authentication");
   switch (credential.kind) {
     case "passphrase": {
@@ -521,6 +558,7 @@ function unlock(ctx: Ctx, passphrase: string, state: "unlocked" | "unlockedMixin
   }
   world.lock = { ...world.lock, failedAttempts: 0, retryAfterSecs: null };
   setLock(ctx, state);
+  world.signingUntil = state === "unlocked" ? Date.now() + SIGNING_WINDOW_MS : null;
   return world.lock;
 }
 
@@ -682,6 +720,7 @@ export const HANDLERS: Handlers = {
     // stays), then report what the cut did.
     for (const lease of world.leases.filter(live)) setLease(ctx, { ...lease, state: { kind: "revoked", cause: "lock" }, keyExpiresInSecs: null });
     revokeGrants(world);
+    world.signingUntil = null;
     setLock(ctx, "locked");
     const inFlight = world.leases.reduce((n, l) => n + l.inFlight, 0);
     if (inFlight > 0) emit({ kind: "lockProgress", network, progress: { kind: "draining", inFlight, deadlineInMs: 30_000 } });
@@ -766,6 +805,30 @@ export const HANDLERS: Handlers = {
     useGrant(world, grantId);
     world.paymentAuth = on;
     return null;
+  },
+  quick_unlock_policy: (_, { world }) => ({
+    enrolled: world.lock.quickUnlockEnrolled,
+    spendLimitDuffs: world.spendLimitDuffs,
+    passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
+    lastPassphraseAt: null,
+    signingWindowOpen: windowOpen(world),
+    signingWindowSecs: SIGNING_WINDOW_MS / 1000,
+  }),
+  set_quick_unlock_spend_limit: ({ grantId, spendLimitDuffs }, { world }) => {
+    if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+    if (!world.lock.encrypted) throw fail("vault.not_encrypted", "vault not encrypted");
+    if (!SPEND_LIMITS.includes(spendLimitDuffs)) throw fail("invalid_argument", "spending limit is not one of the options");
+    if (!credentialGrant(world, grantId)) throw fail("vault.grant_invalid", "grant invalid");
+    useGrant(world, grantId);
+    world.spendLimitDuffs = spendLimitDuffs;
+    return {
+      enrolled: world.lock.quickUnlockEnrolled,
+      spendLimitDuffs,
+      passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
+      lastPassphraseAt: null,
+      signingWindowOpen: windowOpen(world),
+      signingWindowSecs: SIGNING_WINDOW_MS / 1000,
+    };
   },
   destroy_vault: ({ credential }, ctx) => {
     const { world } = ctx;

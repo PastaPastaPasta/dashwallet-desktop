@@ -88,6 +88,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Duration, Instant, SystemTime};
 
 use key_wallet::Network;
 use key_wallet::bip32::DerivationPath;
@@ -108,8 +109,8 @@ use crate::signer::{SignerScope, VaultSigner};
 use crate::types::{
     AuthGrant, Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, GrantToken,
     KeyHold, KeySource, LockState, PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS,
-    QuickUnlockPolicy, RevealedMnemonic, SeedDerivation, SignerLife, UnlockScope, VaultConfig,
-    VaultStatus, WalletId, WalletSecret,
+    QuickUnlockPolicy, RevealedMnemonic, SIGNING_WINDOW_SECS, SeedDerivation, SignerLife,
+    UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
 };
 use crate::vote::VoteSigner;
 use crate::{SignerError, VaultError};
@@ -367,6 +368,48 @@ enum TokenBinding {
     EndedEpoch,
 }
 
+/// Wall and monotonic clocks at one look. A suspend moves the wall clock
+/// and leaves the monotonic clock; the difference ends the signing window.
+struct SleepSample {
+    wall: SystemTime,
+    mono: Instant,
+}
+
+/// How far the wall clock may run ahead of the monotonic clock before this
+/// process treats the gap as a sleep. Larger than a normal NTP step.
+const SLEEP_GAP: Duration = Duration::from_secs(2);
+
+fn arm_signing_window(inner: &mut Inner, now: u64) {
+    inner.signing_until = Some(now.saturating_add(SIGNING_WINDOW_SECS));
+    inner.sleep_sample = Some(SleepSample {
+        wall: SystemTime::now(),
+        mono: Instant::now(),
+    });
+}
+
+fn clear_signing_window(inner: &mut Inner) {
+    inner.signing_until = None;
+    inner.sleep_sample = None;
+}
+
+/// Ends the window when the machine slept since the last look.
+fn observe_sleep(inner: &mut Inner) {
+    let Some(sample) = &inner.sleep_sample else {
+        return;
+    };
+    let wall = SystemTime::now();
+    let mono = Instant::now();
+    let wall_dt = wall.duration_since(sample.wall).unwrap_or_default();
+    let mono_dt = mono.saturating_duration_since(sample.mono);
+    if wall_dt > mono_dt.saturating_add(SLEEP_GAP) {
+        clear_signing_window(inner);
+        return;
+    }
+    if inner.signing_until.is_some() {
+        inner.sleep_sample = Some(SleepSample { wall, mono });
+    }
+}
+
 /// A grant held in vault memory.
 struct IssuedGrant {
     grant: AuthGrant,
@@ -396,6 +439,13 @@ struct Inner {
     /// (`.dwbackup` bundle v2), derived from slot P's KEK whenever the
     /// passphrase is checked or set. Held only while `dek` is; never stored.
     backup_kek: Option<BackupKek>,
+    /// When the post-unlock signing window ends (this vault's clock, UNIX
+    /// seconds). Memory only: not written to the vault file, so a quit
+    /// ends it. Distinct from `last_passphrase_at`, which is the 7-day
+    /// quick-unlock freshness and is sealed.
+    signing_until: Option<u64>,
+    /// Clocks at the last look, for [`observe_sleep`].
+    sleep_sample: Option<SleepSample>,
     #[cfg(test)]
     gate_log: Option<Vec<GateEvent>>,
 }
@@ -406,6 +456,7 @@ impl Inner {
         self.dek = None;
         self.backup_kek = None;
         self.scope = UnlockScope::Full;
+        clear_signing_window(self);
         self.revoke(ops);
     }
 
@@ -541,6 +592,8 @@ impl Vault {
                     grants: HashMap::new(),
                     last_passphrase_at: None,
                     backup_kek: None,
+                    signing_until: None,
+                    sleep_sample: None,
                     #[cfg(test)]
                     gate_log: None,
                 }),
@@ -829,6 +882,7 @@ impl Vault {
         inner.backup_kek = backup_kek;
         if encrypted {
             inner.last_passphrase_at = Some(now);
+            arm_signing_window(&mut inner, now);
         }
         let mut status = self.status_of(&inner);
         drop(inner);
@@ -910,11 +964,17 @@ impl Vault {
         let writer = self.writer();
         let (dek, backup_kek) = self.check_passphrase(&writer, passphrase)?;
         let link_dek = Zeroizing::new(*dek);
+        let now = self.now();
         let (mut status, vault_id) = {
             let ops = self.epoch_guard();
             let mut inner = self.inner();
             inner.install_key(dek, scope, &ops);
             inner.backup_kek = Some(backup_kek);
+            if scope == UnlockScope::Full {
+                arm_signing_window(&mut inner, now);
+            } else {
+                clear_signing_window(&mut inner);
+            }
             let vault_id = inner.file.as_ref().map(|f| f.vault_id.clone());
             (self.status_of(&inner), vault_id)
         };
@@ -2636,6 +2696,64 @@ impl Vault {
         Ok(self.status())
     }
 
+    /// The post-unlock signing window is open: a passphrase unlock in this
+    /// process is still inside [`SIGNING_WINDOW_SECS`], and lock, sleep and
+    /// quit have not ended it. A fresh open is closed (the deadline is not
+    /// stored).
+    pub fn signing_window_open(&self) -> bool {
+        let now = self.now();
+        let mut inner = self.inner();
+        observe_sleep(&mut inner);
+        inner.signing_until.is_some_and(|until| now < until)
+    }
+
+    /// Ends the signing window without locking. Sleep calls this; lock
+    /// clears it too.
+    pub fn end_signing_window(&self) {
+        clear_signing_window(&mut self.inner());
+    }
+
+    /// Whether `purposes` may be issued with [`Credential::None`] during the
+    /// signing window: every purpose is one quick unlock may issue, and
+    /// their combined [`GrantPurpose::quick_unlock_value`] is within the
+    /// spend limit. A locked vault is not covered (there is no window).
+    pub fn signing_window_covers(&self, purposes: &[GrantPurpose]) -> bool {
+        let now = self.now();
+        let mut inner = self.inner();
+        observe_sleep(&mut inner);
+        let open = inner.signing_until.is_some_and(|until| now < until);
+        if !open {
+            return false;
+        }
+        let limit = inner
+            .file
+            .as_ref()
+            .and_then(|f| f.quick_unlock.as_ref())
+            .map(|s| s.spend_limit_duffs)
+            .unwrap_or(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT);
+        let mut total = 0u64;
+        for purpose in purposes {
+            let Some(value) = purpose.quick_unlock_value() else {
+                return false;
+            };
+            total = total.saturating_add(value);
+        }
+        total <= limit
+    }
+
+    /// Moves the sleep sample's wall clock back, so the next look sees a
+    /// suspend. Tests only.
+    #[cfg(test)]
+    pub(crate) fn test_backdate_sleep_sample(&self, ago: Duration) {
+        let mut inner = self.inner();
+        inner.sleep_sample = Some(SleepSample {
+            wall: SystemTime::now()
+                .checked_sub(ago)
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+            mono: Instant::now(),
+        });
+    }
+
     /// The quick-unlock rules (IOS-016). In-memory read of the plain copy,
     /// so it works while locked; `authorize` enforces the sealed copy.
     pub fn quick_unlock_policy(&self) -> QuickUnlockPolicy {
@@ -2818,6 +2936,7 @@ impl Vault {
             inner.install_key(Zeroizing::new(*dek), UnlockScope::Full, &ops);
             inner.backup_kek = Some(backup_kek);
             inner.last_passphrase_at = Some(now);
+            arm_signing_window(&mut inner, now);
         }
         drop(ops);
         let disk = file::read(&self.shared.dir)?
@@ -3018,6 +3137,23 @@ mod tests {
 
     fn step_clock() -> Arc<StepClock> {
         Arc::new(StepClock(std::sync::atomic::AtomicU64::new(1_000)))
+    }
+
+    #[test]
+    fn a_wall_clock_gap_ends_the_signing_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(
+            dir.path().join("vault"),
+            Network::Regtest,
+            "regtest",
+            test_config(step_clock()),
+        )
+        .unwrap();
+        v.create(Some(b"correct horse")).unwrap();
+        assert!(v.signing_window_open());
+        v.test_backdate_sleep_sample(Duration::from_secs(30));
+        assert!(!v.signing_window_open());
+        assert_eq!(v.status().state, LockState::Unlocked);
     }
 
     /// Opens the vault in `dir` with the shared `os_store`.

@@ -13,7 +13,7 @@ import { Sheet } from "../../components/sheet";
 import { showToast } from "../../components/toast";
 import { useModel } from "../../onboarding/model";
 import { PassphraseText } from "../../onboarding/passphrase";
-import { AUTO_LOCK_CHOICES, ChangePassphraseModel, EncryptModel, PaymentAuthModel, SecurityText, WipeModel } from "../../settings/security";
+import { AUTO_LOCK_CHOICES, ChangePassphraseModel, EncryptModel, PaymentAuthModel, SPEND_LIMITS, SecurityText, SpendLimitModel, WipeModel } from "../../settings/security";
 import { useLockTimer } from "../LockScreen";
 import { useSavePrefs } from "./General";
 import { Done, Hint, NotYetRow, Problem, SettingsCard } from "./parts";
@@ -133,27 +133,57 @@ export function SecurityTab() {
 
 function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: boolean }) {
   const backend = useBackend();
+  const id = useId();
   const [model] = useState(() => new PaymentAuthModel(backend));
+  const [limit] = useState(() => new SpendLimitModel(backend));
   useModel(model);
+  useModel(limit);
   useLockTimer(model.lock);
+  useLockTimer(limit.lock);
   useEffect(() => {
     void model.load();
-    return () => model.dispose();
-  }, [model]);
+    void limit.load();
+    return () => {
+      model.dispose();
+      limit.dispose();
+    };
+  }, [model, limit]);
+  const askEveryTime = encrypted && model.on === true;
   return (
     <SettingsCard title="Payments" testId="settings-payments">
       <label className="checkbox-row">
         <input
           type="checkbox"
           data-testid="settings-payment-auth"
-          checked={encrypted && model.on === true}
+          checked={askEveryTime}
           disabled={!known || !encrypted || model.on === null}
           onChange={(e) => model.ask(e.target.checked)}
         />
         {SecurityText.requireAuthentication}
       </label>
-      <Hint>{encrypted ? SecurityText.requireAuthenticationHint : SecurityText.encryptFirst}</Hint>
-      {model.pending === null && <Problem text={model.error} testId="settings-payment-auth-error" />}
+      <Hint>{encrypted ? (askEveryTime ? SecurityText.requireAuthenticationHint : SecurityText.signingWindowHint) : SecurityText.encryptFirst}</Hint>
+      <div className="settings-row">
+        <label className="settings-row-title" htmlFor={`${id}-spend-limit`}>
+          {SecurityText.spendLimit}
+        </label>
+        <select
+          id={`${id}-spend-limit`}
+          className="settings-select"
+          data-testid="settings-spend-limit"
+          value={limit.limit === null ? "" : String(limit.limit)}
+          disabled={!known || !encrypted || limit.limit === null || limit.busy}
+          onChange={(e) => limit.ask(Number(e.target.value))}
+        >
+          {limit.limit !== null && !SPEND_LIMITS.some((c) => c.duffs === limit.limit) && <option value={String(limit.limit)}>{limit.limit}</option>}
+          {SPEND_LIMITS.map((c) => (
+            <option key={c.duffs} value={String(c.duffs)}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      </div>
+      <Hint>{SecurityText.spendLimitHint}</Hint>
+      {model.pending === null && limit.pending === null && <Problem text={model.error ?? limit.error} testId="settings-payment-auth-error" />}
       {model.pending !== null && (
         <Sheet
           title={SecurityText.requireAuthentication}
@@ -163,7 +193,9 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
           onClose={() => model.cancel()}
         >
           <p className="sheet-text">
-            {model.pending ? "Turn on: every payment asks for the passphrase." : "Turn off: payments go through without the passphrase while the wallet is unlocked."}
+            {model.pending
+              ? "Turn on: every payment asks for the passphrase."
+              : "Turn off: for 5 minutes after you unlock, a payment at or under the limit does not ask again."}
           </p>
           <PassphrasePrompt
             testId="settings-payment-auth-passphrase"
@@ -172,6 +204,19 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
             disabled={model.lock.blocked}
             submitLabel={model.pending ? "Turn on" : "Turn off"}
             onSubmit={(p) => model.confirm(p)}
+          />
+        </Sheet>
+      )}
+      {limit.pending !== null && (
+        <Sheet title={SecurityText.spendLimit} width="small" testId="settings-spend-limit-sheet" closable={!limit.busy} onClose={() => limit.cancel()}>
+          <p className="sheet-text">Payments over this ask for the passphrase during the 5 minutes after you unlock.</p>
+          <PassphrasePrompt
+            testId="settings-spend-limit-passphrase"
+            error={limit.lock.message ?? limit.error}
+            busy={limit.busy}
+            disabled={limit.lock.blocked}
+            submitLabel="Save"
+            onSubmit={(p) => limit.confirm(p)}
           />
         </Sheet>
       )}

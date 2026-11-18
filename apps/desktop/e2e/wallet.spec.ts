@@ -285,7 +285,7 @@ test.describe("Pay", () => {
   test("with the payment setting off, the unlocked vault signs and Cancel has the focus", async ({ page }) => {
     await open(page);
     await world(page, (w) => (w.paymentAuth = false));
-    await fillPayment(page, PAYEE, "0.5");
+    await fillPayment(page, PAYEE, "0.1");
     await review(page);
     await expect(page.getByTestId("pay-confirm-cancel")).toBeFocused();
     await expect(page.getByTestId("pay-confirm-passphrase")).toHaveCount(0);
@@ -302,7 +302,7 @@ test.describe("Pay", () => {
     await open(page);
     // The page read the setting as off, but the engine has it on (it changed meanwhile).
     await world(page, (w) => (w.paymentAuth = false));
-    await fillPayment(page, PAYEE, "0.5");
+    await fillPayment(page, PAYEE, "0.1");
     await review(page);
     await world(page, (w) => (w.paymentAuth = true));
     await page.getByTestId("pay-confirm-send").click();

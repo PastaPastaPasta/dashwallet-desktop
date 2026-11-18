@@ -149,6 +149,14 @@ describe("fixture send engine", () => {
     });
     fixture.world.paymentAuth = false;
     await expect(cmd.authorize({ kind: "spend", maxDuffs: 1 }, W, { kind: "unencrypted" })).resolves.toMatchObject({ walletId: W });
+    await expect(cmd.authorize({ kind: "spend", maxDuffs: 50_000_001 }, W, { kind: "unencrypted" })).rejects.toMatchObject({
+      code: "vault.credential_required",
+    });
+    await expect(cmd.authorize({ kind: "revealSecret" }, W, { kind: "unencrypted" })).rejects.toMatchObject({ code: "vault.credential_required" });
+    fixture.world.signingUntil = null;
+    await expect(cmd.authorize({ kind: "spend", maxDuffs: 1 }, W, { kind: "unencrypted" })).rejects.toMatchObject({ code: "vault.credential_required" });
+    fixture.world.signingUntil = Date.now() + 60_000;
+    fixture.world.paymentAuth = true;
     // A locked vault answers that it is locked (`check_payment_auth` skips it).
     fixture.world.paymentAuth = true;
     fixture.world.lock = { ...fixture.world.lock, state: "locked" };

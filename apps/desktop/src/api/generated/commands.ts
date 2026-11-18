@@ -495,15 +495,16 @@ export function removeQuickUnlock(): Promise<LockStatus> {
 }
 
 /**
- * The quick-unlock rules. In-memory read; works while locked.
+ * The quick-unlock rules and the post-unlock signing window. In-memory
+ * read; works while locked (the window is then closed).
  */
 export function quickUnlockPolicy(): Promise<QuickUnlockPolicy> {
   return invoke<QuickUnlockPolicy>("quick_unlock_policy");
 }
 
 /**
- * "Require authentication for every payment" (default on), as stored
- * for this network next to its vault.
+ * "Ask for my passphrase for every payment". Off (the default) is the
+ * post-unlock signing window. Stored for this network next to its vault.
  */
 export function paymentAuthentication(): Promise<boolean> {
   return invoke<boolean>("payment_authentication");
@@ -521,8 +522,9 @@ export function setPaymentAuthentication(on: boolean, grantId: string): Promise<
 }
 
 /**
- * Sets the biometric spending limit (IOS-016) to one of 0, 0.1, 0.5, 1
- * or 5 DASH in duffs. Needs a `changeCredential` grant.
+ * Sets the spending limit (IOS-016) to one of 0, 0.1, 0.5, 1 or 5 DASH
+ * in duffs. The signing window and quick unlock both use it. Needs a
+ * `changeCredential` grant. Works whether or not quick unlock is enrolled.
  */
 export function setQuickUnlockSpendLimit(grantId: string, spendLimitDuffs: number): Promise<QuickUnlockPolicy> {
   return invoke<QuickUnlockPolicy>("set_quick_unlock_spend_limit", { grantId, spendLimitDuffs });

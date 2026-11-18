@@ -23,8 +23,11 @@ export const SecurityText = {
   sameAsOld: "The new passphrase is the same as the current one.",
   quickUnlockUnavailable: "Not available on this computer",
   quickUnlockWhy: "Touch ID and Windows Hello are coming soon.",
-  requireAuthentication: "Require authentication for every payment",
-  requireAuthenticationHint: "Ask for the passphrase before each payment, even while the wallet is unlocked.",
+  requireAuthentication: "Ask for my passphrase for every payment",
+  requireAuthenticationHint: "Every payment asks for the passphrase, even just after you unlock.",
+  signingWindowHint: "For 5 minutes after you unlock, a payment at or under the limit does not ask again. A larger one still asks. Locking, sleep and quitting end it.",
+  spendLimit: "Spending limit",
+  spendLimitHint: "Payments over this ask for the passphrase. The same limit applies to Touch ID when it is available.",
   encryptFirst: "Encrypt the wallet first.",
   autohideBalance: "Hide balances when the app starts",
   lockedAutomatically: "Locked automatically.",
@@ -49,6 +52,15 @@ export const SecurityText = {
   wipeStopped: (name: string, why: string, removed: number) =>
     `${name} could not be removed: ${why} ${removed === 0 ? "Nothing was deleted." : `${removed === 1 ? "The wallet" : `The ${removed} wallets`} before it ${removed === 1 ? "was" : "were"} removed; the others and the vault were kept.`}`,
 };
+
+/** The iOS spending-limit options, in duffs. The signing window and quick unlock share them. */
+export const SPEND_LIMITS: { duffs: number; label: string }[] = [
+  { duffs: 0, label: "0 DASH" },
+  { duffs: 10_000_000, label: "0.1 DASH" },
+  { duffs: 50_000_000, label: "0.5 DASH" },
+  { duffs: 100_000_000, label: "1 DASH" },
+  { duffs: 500_000_000, label: "5 DASH" },
+];
 
 /** The auto-lock choices (IOS-015 without "Immediately", D12): seconds, `null` = Never. */
 export const AUTO_LOCK_CHOICES: { secs: number | null; label: string }[] = [
@@ -215,6 +227,82 @@ export class PaymentAuthModel extends Model {
     try {
       await this.api.setPaymentAuthentication(on, grant);
       this.on = on;
+      this.pending = null;
+    } catch (e) {
+      this.api.revokeGrant(grant).catch(() => {});
+      this.error = failureText(e);
+    }
+    this.saving = false;
+    this.changed();
+  }
+}
+
+/** The spend limit of the signing window (and of quick unlock). A change asks for the passphrase
+ * and takes a `changeCredential` grant, the same as the payment setting. */
+export class SpendLimitModel extends Model {
+  limit: number | null = null;
+  /** The limit the prompt is asking to set; `null` while none is. */
+  pending: number | null = null;
+  error: string | null = null;
+  saving = false;
+  readonly lock: LockModel;
+  #round = 0;
+
+  constructor(
+    private readonly api: LockApi & Pick<Backend, "quickUnlockPolicy" | "setQuickUnlockSpendLimit" | "authorize" | "revokeGrant">,
+  ) {
+    super();
+    this.lock = new LockModel(api);
+  }
+
+  async load() {
+    try {
+      this.limit = (await this.api.quickUnlockPolicy()).spendLimitDuffs;
+    } catch (e) {
+      this.error = failureText(e);
+    }
+    this.changed();
+  }
+
+  ask(duffs: number) {
+    if (duffs === this.limit || this.busy) return;
+    this.#round++;
+    this.pending = duffs;
+    this.error = null;
+    this.changed();
+    void this.lock.load();
+  }
+
+  cancel() {
+    if (this.busy) return;
+    this.#round++;
+    this.pending = null;
+    this.changed();
+  }
+
+  dispose() {
+    this.#round++;
+  }
+
+  get busy(): boolean {
+    return this.lock.working || this.saving;
+  }
+
+  async confirm(p: string) {
+    const limit = this.pending;
+    if (limit === null || this.busy) return;
+    const round = this.#round;
+    let grant: string | null = null;
+    const authorized = await this.lock.attempt(p, async (pass) => {
+      grant = (await this.api.authorize({ kind: "changeCredential" }, null, passphrase(pass))).id;
+    });
+    if (!authorized || !grant) return;
+    if (round !== this.#round) return void this.api.revokeGrant(grant).catch(() => {});
+    this.saving = true;
+    this.changed();
+    try {
+      const policy = await this.api.setQuickUnlockSpendLimit(grant, limit);
+      this.limit = policy.spendLimitDuffs;
       this.pending = null;
     } catch (e) {
       this.api.revokeGrant(grant).catch(() => {});

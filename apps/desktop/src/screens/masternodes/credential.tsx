@@ -8,7 +8,7 @@ import { isAppError } from "../../api/backend";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { GrantPurposeSpec } from "../../api/generated/GrantPurposeSpec";
-import { useBackend, useLockStatus, usePaymentAuthentication } from "../../api/queries";
+import { useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy } from "../../api/queries";
 import { authRefusal, credentialPrompt } from "../pay/model";
 
 export interface Credential {
@@ -25,10 +25,11 @@ export interface Credential {
   authorize: (purpose: GrantPurposeSpec) => Promise<AuthGrant | null>;
 }
 
-export function useCredential(walletId: string, ask: string): Credential {
+export function useCredential(walletId: string, ask: string, amount = 0): Credential {
   const b = useBackend();
   const lock = useLockStatus();
   const policy = usePaymentAuthentication();
+  const quick = useQuickUnlockPolicy(policy.data === false);
   const [askAnyway, setAskAnyway] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -55,7 +56,11 @@ export function useCredential(walletId: string, ask: string): Credential {
       live = false;
     };
   }, [b]);
-  const prompt = askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined);
+  const windowNeeded = policy.data === false;
+  const cover = quick.isSuccess
+    ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.spendLimitDuffs, amount }
+    : null;
+  const prompt = askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined, windowNeeded ? cover : null);
   const waitSecs = retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
 
   const authorize = async (purpose: GrantPurposeSpec): Promise<AuthGrant | null> => {
@@ -85,7 +90,7 @@ export function useCredential(walletId: string, ask: string): Credential {
   };
 
   return {
-    ready: !policy.isPending && waitKnown && retryAt === null,
+    ready: !policy.isPending && (!windowNeeded || quick.isSuccess || quick.isError) && waitKnown && retryAt === null,
     prompt,
     passphrase,
     setPassphrase,

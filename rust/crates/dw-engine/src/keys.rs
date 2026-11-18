@@ -71,9 +71,11 @@ pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
 const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 
-/// app.sqlite setting of "require authentication for every payment", one
-/// per vault: this prefix and the vault id in hex. `"0"` is off; absent
-/// (the default) or anything else is on.
+/// app.sqlite setting of "ask for my passphrase for every payment", one
+/// per vault: this prefix and the vault id in hex. `"1"` asks every time.
+/// Absent (the default) or the legacy `"0"` is the post-unlock signing
+/// window: for five minutes after a passphrase unlock, a payment at or
+/// under the quick-unlock spend limit needs no passphrase.
 const PAYMENT_AUTH_KEY: &str = "auth.every_payment/";
 
 fn payment_auth_key(vault_id: &[u8]) -> String {
@@ -86,7 +88,7 @@ fn payment_auth_key(vault_id: &[u8]) -> String {
 pub struct PaymentAuthentication {
     pub on: bool,
     /// The vault it was read for ([`Vault::vault_id`]); `None` without a
-    /// vault (the default, on). A host that issues a grant later checks the
+    /// vault, which reads as on. A host that issues a grant later checks the
     /// vault is still this one.
     pub vault_id: Option<Vec<u8>>,
 }
@@ -264,12 +266,15 @@ impl NetworkSession {
         out
     }
 
-    /// "Require authentication for every payment" (DESIGN-opus §1.8; default
-    /// on). While on, a host issues `Spend` and `PlatformOp` grants on an
-    /// encrypted vault only against a credential, never `Credential::None`
-    /// (dw-app enforces it at its IPC boundary). Stored in this network's
-    /// app.sqlite under the vault's id, so script in a webview cannot change
-    /// it and every new vault (after `destroy`, or a recovery) starts on.
+    /// "Ask for my passphrase for every payment" (DESIGN-opus §1.8). While
+    /// on, a host issues a payment grant on an encrypted vault only against
+    /// a credential, never `Credential::None` (dw-app enforces it at its IPC
+    /// boundary). While off (the default), the same grants need no
+    /// passphrase for [`dw_vault::SIGNING_WINDOW_SECS`] after a passphrase
+    /// unlock, and only up to the quick-unlock spend limit. Stored in this
+    /// network's app.sqlite under the vault's id, so script in a webview
+    /// cannot change it. A new vault (after `destroy`, or a recovery) starts
+    /// off: the window, not a stored choice from the vault it replaced.
     pub async fn payment_authentication(
         self: &Arc<Self>,
     ) -> Result<PaymentAuthentication, EngineError> {
@@ -285,7 +290,7 @@ impl NetworkSession {
             let key = payment_auth_key(&vault_id);
             let on = this
                 .appdb_op(move |db| {
-                    Ok(db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.as_deref() != Some("0"))
+                    Ok(db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.as_deref() == Some("1"))
                 })
                 .await?;
             Ok(PaymentAuthentication {
@@ -322,10 +327,8 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let key = payment_auth_key(&vault_id);
-            this.appdb_op(move |db| {
-                db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, (!on).then_some("0"))
-            })
-            .await
+            this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, on.then_some("1")))
+                .await
         })
         .await
     }

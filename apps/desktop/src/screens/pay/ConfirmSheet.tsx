@@ -13,7 +13,7 @@ import { isAppError } from "../../api/backend";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBackend, useLockStatus, usePaymentAuthentication, useWallets } from "../../api/queries";
+import { useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy, useWallets } from "../../api/queries";
 import { navigate, useUi } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
@@ -87,6 +87,7 @@ export function ConfirmSheet({
   const { chain, amountUnit } = shown;
   const lock = useLockStatus();
   const policy = usePaymentAuthentication();
+  const quick = useQuickUnlockPolicy(policy.data === false);
   // `undefined` until the wallet list is read: neither the prompt nor Send shows before it is
   // known whether the wallet can sign.
   const wallets = useWallets();
@@ -137,9 +138,14 @@ export function ConfirmSheet({
   const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
   const toast = useActionToast(walletId);
 
-  // A failed read of the policy counts as "on" (U-03 D3): the prompt waits only while it loads.
-  const policyKnown = !policy.isPending;
-  const prompt = watchOnlyKnown !== false ? "none" : askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined);
+  // A failed read of the policy counts as "on" (U-03 D3). With the signing window, an unread
+  // window also asks: the prompt waits until that read settles.
+  const windowNeeded = policy.data === false;
+  const policyKnown = !policy.isPending && (!windowNeeded || quick.isSuccess || quick.isError);
+  const cover = quick.isSuccess
+    ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.spendLimitDuffs, amount: total }
+    : null;
+  const prompt = watchOnlyKnown !== false ? "none" : askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined, windowNeeded ? cover : null);
   // The policy loads after the sheet opened: once it asks for nothing, Cancel takes the focus,
   // so Return does not send (U-03 D4). The passphrase field focuses itself when it appears.
   const cancel = useRef<HTMLButtonElement>(null);

@@ -586,22 +586,66 @@ fn payment_authentication_is_enforced_over_ipc() {
         );
     };
 
-    // On by default: no grant for a payment without the passphrase.
-    assert_eq!(demo.ok("payment_authentication", json!({})), true);
-    refused(&demo);
+    // Default is the signing window create_vault just opened. A payment at
+    // or under the spend limit needs no passphrase; one over it does.
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    demo.ok("authorize", authorize(&spend, &wallet, &none));
+    demo.ok("authorize", authorize(&platform, &wallet, &none));
+    demo.ok("authorize", authorize(&masternode, &wallet, &none));
+    demo.ok("authorize", authorize(&governance, &wallet, &none));
+    demo.ok(
+        "authorize_set",
+        json!({ "purposes": [platform, spend], "walletId": wallet, "credential": none }),
+    );
+    let over = json!({ "kind": "spend", "maxDuffs": 50_000_001 });
+    demo.err(
+        "authorize",
+        authorize(&over, &wallet, &none),
+        "vault.credential_required",
+    );
+    // Reveal and a credential change always need the passphrase.
+    demo.err(
+        "authorize",
+        authorize(&json!({ "kind": "revealSecret" }), &wallet, &none),
+        "vault.credential_required",
+    );
+    demo.err(
+        "authorize",
+        authorize(&change, &Value::Null, &none),
+        "vault.credential_required",
+    );
+    // The passphrase still issues what the window does not.
+    demo.ok("authorize", authorize(&over, &wallet, &pw));
     demo.ok("authorize", authorize(&spend, &wallet, &pw));
     demo.ok("authorize", authorize(&platform, &wallet, &pw));
-    // MG-05 D11: masternode transactions and vote batches too.
     demo.ok("authorize", authorize(&masternode, &wallet, &pw));
     demo.ok("authorize", authorize(&governance, &wallet, &pw));
-    // Other purposes keep the vault's own rules.
+    // Sign message keeps the vault's own rule: no passphrase while unlocked.
     demo.ok(
         "authorize",
         authorize(&json!({ "kind": "signMessage" }), &wallet, &none),
     );
 
-    // Turning it off needs a credential: no changeCredential grant without
-    // one, and no other grant stands in for it.
+    // Sleep ends the window and leaves the vault unlocked.
+    {
+        use tauri::Manager;
+        let session =
+            tauri::async_runtime::block_on(demo.app.state::<crate::state::AppState>().session())
+                .unwrap();
+        session.vault().end_signing_window();
+    }
+    assert_eq!(demo.ok("lock_status", json!({}))["state"], "unlocked");
+    demo.err(
+        "authorize",
+        authorize(&spend, &wallet, &none),
+        "vault.credential_required",
+    );
+    // A passphrase unlock opens it again.
+    demo.ok("unlock", json!({ "passphrase": "pw" }));
+    demo.ok("authorize", authorize(&spend, &wallet, &none));
+
+    // Turning "ask every payment" on needs a credential: no changeCredential
+    // grant without one, and no other grant stands in for it.
     demo.err(
         "authorize",
         authorize(&change, &Value::Null, &none),
@@ -618,36 +662,31 @@ fn payment_authentication_is_enforced_over_ipc() {
         json!({ "on": false, "grantId": "made-up" }),
         "vault.grant_invalid",
     );
-    assert_eq!(demo.ok("payment_authentication", json!({})), true);
-    let grant = demo.ok("authorize", authorize(&change, &Value::Null, &pw))["id"].clone();
-    demo.ok(
-        "set_payment_authentication",
-        json!({ "on": false, "grantId": grant }),
-    );
-
-    // Off: dash-qt behaviour, an unlocked vault grants without a prompt.
-    assert_eq!(demo.ok("payment_authentication", json!({})), false);
-    demo.ok("authorize", authorize(&spend, &wallet, &none));
-    demo.ok("authorize", authorize(&platform, &wallet, &none));
-    demo.ok(
-        "authorize_set",
-        json!({ "purposes": [platform, spend], "walletId": wallet, "credential": none }),
-    );
-
-    // Turning it back on needs a credential too.
-    demo.err(
-        "set_payment_authentication",
-        json!({ "on": true, "grantId": "made-up" }),
-        "vault.grant_invalid",
-    );
     assert_eq!(demo.ok("payment_authentication", json!({})), false);
     let grant = demo.ok("authorize", authorize(&change, &Value::Null, &pw))["id"].clone();
     demo.ok(
         "set_payment_authentication",
         json!({ "on": true, "grantId": grant }),
     );
+
+    // On: every payment needs the passphrase, including one the window would cover.
     assert_eq!(demo.ok("payment_authentication", json!({})), true);
     refused(&demo);
+
+    // Turning it off needs a credential too, and the window applies again.
+    demo.err(
+        "set_payment_authentication",
+        json!({ "on": false, "grantId": "made-up" }),
+        "vault.grant_invalid",
+    );
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    let grant = demo.ok("authorize", authorize(&change, &Value::Null, &pw))["id"].clone();
+    demo.ok(
+        "set_payment_authentication",
+        json!({ "on": false, "grantId": grant }),
+    );
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    demo.ok("authorize", authorize(&spend, &wallet, &none));
 
     // Locked, the vault answers first, as without the setting.
     demo.ok("lock", json!({}));
@@ -776,7 +815,7 @@ fn payment_authentication_needs_an_encrypted_vault() {
     demo.open();
     demo.ok("create_vault", json!({ "passphrase": null }));
     let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
-    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
     demo.ok(
         "authorize",
         json!({
@@ -796,15 +835,15 @@ fn payment_authentication_needs_an_encrypted_vault() {
         .clone();
     demo.err(
         "set_payment_authentication",
-        json!({ "on": false, "grantId": grant }),
+        json!({ "on": true, "grantId": grant }),
         "vault.not_encrypted",
     );
-    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
 }
 
-/// Sol r2 F1: the setting belongs to the vault. "Off", set with the
-/// passphrase, does not carry over to a vault created after `destroyVault`,
-/// even one encrypted and unlocked the same way.
+/// Sol r2 F1: the setting belongs to the vault. "Ask every payment", set
+/// with the passphrase, does not carry over to a vault created after
+/// `destroyVault`. The new one starts on the signing window.
 #[test]
 fn payment_authentication_does_not_outlive_its_vault() {
     let demo = Demo::new();
@@ -823,9 +862,9 @@ fn payment_authentication_does_not_outlive_its_vault() {
     let grant = change(&pw("pw"));
     demo.ok(
         "set_payment_authentication",
-        json!({ "on": false, "grantId": grant }),
+        json!({ "on": true, "grantId": grant }),
     );
-    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
 
     // "Delete All": the wallet, then the vault.
     let wipe = demo.ok(
@@ -848,11 +887,10 @@ fn payment_authentication_does_not_outlive_its_vault() {
     demo.ok("lock", json!({}));
     demo.ok("unlock", json!({ "passphrase": "pw" }));
     let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
-    assert_eq!(demo.ok("payment_authentication", json!({})), true);
-    demo.err(
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    demo.ok(
         "authorize",
         json!({ "purpose": { "kind": "spend", "maxDuffs": 1000 }, "walletId": wallet, "credential": none }),
-        "vault.credential_required",
     );
 }
 

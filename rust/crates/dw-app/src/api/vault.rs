@@ -33,6 +33,18 @@ use crate::state::{AppState, parse_wallet_id};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
+        "Vault::signing_window_open",
+        "internal: `quick_unlock_policy` reports it; the host does not call it",
+    ),
+    (
+        "Vault::signing_window_covers",
+        "internal: the payment-authentication check uses it when issuing a grant",
+    ),
+    (
+        "Vault::end_signing_window",
+        "internal: a sleep in this process ends the window; lock drops it with the key",
+    ),
+    (
         "Vault::stash_link",
         "internal: the engine's `NetworkSession::stash_link` calls it after classifying the link itself (DP5-01 D3)",
     ),
@@ -423,28 +435,53 @@ impl From<CredentialSpec> for OwnedCredential {
     }
 }
 
-/// "Require authentication for every payment" at the IPC boundary: while
-/// it is on, an unlocked encrypted vault issues `spend`, `platformOp`,
-/// `masternodeOp` and `governance` grants only against the passphrase or
-/// the quick-unlock key, never `unencrypted`, so a compromised renderer
-/// cannot obtain a payment or voting grant without a prompt (MG-05 D11).
-/// The vault itself takes `Credential::None` for them once unlocked
-/// (dash-qt behaviour, the setting off); a locked vault refuses it itself
-/// (`vault.locked`).
+/// "Ask for my passphrase for every payment" at the IPC boundary.
+///
+/// While it is on, an unlocked encrypted vault issues `spend`,
+/// `platformOp`, `masternodeOp` and `governance` grants only against the
+/// passphrase or the quick-unlock key, never `unencrypted` (MG-05 D11).
+/// While it is off (the default), `unencrypted` is accepted for those
+/// purposes only when the vault's signing window covers them: still inside
+/// five minutes of a passphrase unlock, and at or under the quick-unlock
+/// spend limit, counting the same value quick unlock counts. A purpose
+/// quick unlock never issues (reveal, wipe, a credential change) is not
+/// covered. The vault itself takes `Credential::None` for a payment once
+/// unlocked; this is the extra gate. A locked vault refuses it itself
+/// (`vault.locked`). A mixing-only vault is left to the vault
+/// (`vault.mixing_only`) when the setting is off, and is
+/// `vault.credential_required` when it is on, as before.
 fn check_payment_auth(
     vault: &dw_vault::Vault,
     credential: &OwnedCredential,
     required: bool,
+    purposes: &[GrantPurpose],
 ) -> Result<(), dw_vault::VaultError> {
     let status = vault.status();
-    if required
-        && matches!(credential, OwnedCredential::None)
+    let asking = matches!(credential, OwnedCredential::None)
         && status.encrypted
-        && status.state != dw_vault::LockState::Locked
-    {
-        return Err(dw_vault::VaultError::CredentialRequired);
+        && status.state != dw_vault::LockState::Locked;
+    if !asking {
+        return Ok(());
     }
-    Ok(())
+    if status.state != dw_vault::LockState::Unlocked {
+        if required {
+            return Err(dw_vault::VaultError::CredentialRequired);
+        }
+        return Ok(());
+    }
+    if required || !pays(purposes) {
+        return if required {
+            Err(dw_vault::VaultError::CredentialRequired)
+        } else {
+            // Not a payment: the vault's own rule. Reveal, wipe and a
+            // credential change still need the passphrase there.
+            Ok(())
+        };
+    }
+    if vault.signing_window_covers(purposes) {
+        return Ok(());
+    }
+    Err(dw_vault::VaultError::CredentialRequired)
 }
 
 /// Issues grants through `issue` under "require authentication for every
@@ -479,14 +516,20 @@ async fn issue_grants(
     if policy.is_some() {
         crate::state::Seam::pass_slot(&state.payment_seam).await;
     }
+    let purposes = purposes.to_vec();
     let grants = session
         .vault_op(move |v| {
-            check_payment_auth(v, &credential, policy.as_ref().is_some_and(|p| p.on))?;
+            check_payment_auth(
+                v,
+                &credential,
+                policy.as_ref().is_some_and(|p| p.on),
+                &purposes,
+            )?;
             let grants = issue(v, credential.as_credential())?;
             if let Some(policy) = &policy
                 && (payment_policy.generation.load(Ordering::SeqCst) != read_at
                     || v.vault_id() != policy.vault_id)
-                && let Err(e) = check_payment_auth(v, &credential, true)
+                && let Err(e) = check_payment_auth(v, &credential, true, &purposes)
             {
                 for grant in &grants {
                     v.revoke_grant(&grant.id);
@@ -598,9 +641,12 @@ impl RevealedMnemonic {
     }
 }
 
-/// The biometric quick-unlock rules (IOS-011/016): a quick-unlock
-/// credential issues a grant only up to `spendLimitDuffs`, and only while
-/// the passphrase was entered within `passphraseMaxAgeSecs`.
+/// The biometric quick-unlock rules (IOS-011/016), plus the post-unlock
+/// signing window. A quick-unlock credential issues a grant only up to
+/// `spendLimitDuffs`, and only while the passphrase was entered within
+/// `passphraseMaxAgeSecs`. The signing window is the same limit for five
+/// minutes after a passphrase unlock, with no biometric key: it is open
+/// only in this process, and ends at lock, sleep or quit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct QuickUnlockPolicy {
@@ -609,21 +655,23 @@ pub struct QuickUnlockPolicy {
     pub passphrase_max_age_secs: u64,
     /// UNIX seconds of the last successful passphrase entry.
     pub last_passphrase_at: Option<u64>,
+    /// A passphrase unlock in this process still covers a payment at or
+    /// under `spendLimitDuffs`.
+    pub signing_window_open: bool,
+    /// How long that window lasts, in seconds.
+    pub signing_window_secs: u64,
 }
 
-impl From<dw_vault::QuickUnlockPolicy> for QuickUnlockPolicy {
-    fn from(p: dw_vault::QuickUnlockPolicy) -> Self {
-        let dw_vault::QuickUnlockPolicy {
-            enrolled,
-            spend_limit_duffs,
-            passphrase_max_age_secs,
-            last_passphrase_at,
-        } = p;
-        QuickUnlockPolicy {
-            enrolled,
-            spend_limit_duffs,
-            passphrase_max_age_secs,
-            last_passphrase_at,
+impl QuickUnlockPolicy {
+    fn of(vault: &dw_vault::Vault) -> Self {
+        let p = vault.quick_unlock_policy();
+        Self {
+            enrolled: p.enrolled,
+            spend_limit_duffs: p.spend_limit_duffs,
+            passphrase_max_age_secs: p.passphrase_max_age_secs,
+            last_passphrase_at: p.last_passphrase_at,
+            signing_window_open: vault.signing_window_open(),
+            signing_window_secs: dw_vault::SIGNING_WINDOW_SECS,
         }
     }
 }
@@ -1003,14 +1051,15 @@ commands! {
         Ok(status.into())
     }
 
-    /// The quick-unlock rules. In-memory read; works while locked.
+    /// The quick-unlock rules and the post-unlock signing window. In-memory
+    /// read; works while locked (the window is then closed).
     #[facade("NetworkSession::vault", "Vault::quick_unlock_policy")]
     fn quick_unlock_policy(state) -> QuickUnlockPolicy {
-        Ok(state.session().await?.vault().quick_unlock_policy().into())
+        Ok(QuickUnlockPolicy::of(state.session().await?.vault()))
     }
 
-    /// "Require authentication for every payment" (default on), as stored
-    /// for this network next to its vault.
+    /// "Ask for my passphrase for every payment". Off (the default) is the
+    /// post-unlock signing window. Stored for this network next to its vault.
     #[facade("NetworkSession::payment_authentication")]
     fn payment_authentication(state) -> bool {
         let session = state.session().await?;
@@ -1039,8 +1088,9 @@ commands! {
         Ok(())
     }
 
-    /// Sets the biometric spending limit (IOS-016) to one of 0, 0.1, 0.5, 1
-    /// or 5 DASH in duffs. Needs a `changeCredential` grant.
+    /// Sets the spending limit (IOS-016) to one of 0, 0.1, 0.5, 1 or 5 DASH
+    /// in duffs. The signing window and quick unlock both use it. Needs a
+    /// `changeCredential` grant. Works whether or not quick unlock is enrolled.
     #[facade("NetworkSession::vault_op", "Vault::set_quick_unlock_spend_limit")]
     fn set_quick_unlock_spend_limit(
         state,
@@ -1048,10 +1098,10 @@ commands! {
         spend_limit_duffs: u64
     ) -> QuickUnlockPolicy {
         let session = state.session().await?;
-        let policy = session
+        session
             .vault_op(move |v| v.set_quick_unlock_spend_limit(&grant_id, spend_limit_duffs))
             .await?;
-        Ok(policy.into())
+        Ok(QuickUnlockPolicy::of(session.vault()))
     }
 
     /// Forgot passphrase (IOS-014): checks that the phrase and BIP39

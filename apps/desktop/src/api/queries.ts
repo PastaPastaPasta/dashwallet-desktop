@@ -403,10 +403,23 @@ export function useFeePolicy() {
   return useQuery({ queryKey: keys.feePolicy, queryFn: () => b.feePolicy(), staleTime: Infinity });
 }
 
-/** "Require authentication for every payment"; read again each time the confirm sheet opens. */
+/** "Ask for my passphrase for every payment"; read again each time the confirm sheet opens. */
 export function usePaymentAuthentication() {
   const b = useBackend();
   return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), staleTime: 0, gcTime: 0, retry: false });
+}
+
+/** The spend limit and the post-unlock signing window. Read again with the confirm sheet. */
+export function useQuickUnlockPolicy(enabled = true) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: [...keys.paymentAuth, "window"] as const,
+    queryFn: () => b.quickUnlockPolicy(),
+    enabled,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
 }
 
 /** The network's last lock report (E0-13 D3); `null` until something locks the vault. */

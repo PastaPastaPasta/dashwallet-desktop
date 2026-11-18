@@ -270,12 +270,28 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
 
 // ---------------------------------------------------------------- the payment policy (E0-13 D11)
 
-/** The credential the confirm sheet asks for: the passphrase when the vault is encrypted and
- * "Require authentication for every payment" is on or unknown (U-03 D3); otherwise the
- * unlocked vault's own (`unencrypted`). The engine enforces the rule either way. */
-export function credentialPrompt(lock: LockStatus | undefined, paymentAuth: boolean | undefined): "passphrase" | "none" {
+/** What the signing window would cover for this payment. `null` when it has not been read. */
+export interface SigningCover {
+  open: boolean;
+  /** The quick-unlock spend limit, in duffs. */
+  limitDuffs: number;
+  /** What this payment counts against that limit, in duffs. */
+  amount: number;
+}
+
+/** The credential the confirm sheet asks for. An encrypted vault asks when "Ask for my passphrase
+ * for every payment" is on or not yet known, and when the post-unlock window does not cover this
+ * amount. The engine enforces the same rule. */
+export function credentialPrompt(
+  lock: LockStatus | undefined,
+  paymentAuth: boolean | undefined,
+  cover?: SigningCover | null,
+): "passphrase" | "none" {
   if (lock === undefined) return "passphrase";
-  return lock.encrypted && paymentAuth !== false ? "passphrase" : "none";
+  if (!lock.encrypted) return "none";
+  if (paymentAuth !== false) return "passphrase";
+  if (!cover || !cover.open || cover.amount > cover.limitDuffs) return "passphrase";
+  return "none";
 }
 
 /** What an `authorize` refusal means for the confirm sheet. */
