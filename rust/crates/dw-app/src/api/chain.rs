@@ -279,16 +279,13 @@ mirror_enum!(SpvState => SpvStateName { Stopped, Starting, Running });
 /// SPV as a command sees it. The engine's build has not finished: `starting`,
 /// without waiting. A failed build is that error. Otherwise the session's state.
 pub(crate) async fn spv_state_of(state: &AppState) -> Result<SpvStateName, crate::error::AppError> {
-    if !state.engine.is_ready() {
-        if state.engine.has_failed() {
-            return match state.engine.wait().await {
-                Ok(_) => Ok(state.session().await?.spv_state()?.into()),
-                Err(e) => Err(e),
-            };
-        }
-        return Ok(SpvStateName::Starting);
+    use crate::state::EngineBuildView;
+
+    match state.engine.build_view() {
+        EngineBuildView::Pending => Ok(SpvStateName::Starting),
+        EngineBuildView::Failed(err) => Err(err),
+        EngineBuildView::Ready => Ok(state.session().await?.spv_state()?.into()),
     }
-    Ok(state.session().await?.spv_state()?.into())
 }
 
 /// The outcome of a wallet's DashPay bring-up.

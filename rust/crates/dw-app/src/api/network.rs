@@ -235,6 +235,7 @@ commands! {
         network: Option<String>,
         settings: Option<SessionSettings>,
     ) -> OpenedNetwork {
+        state.retry_engine_if_failed();
         let engines = state.engine.clone();
         let engine = engines.wait().await?;
         let requested = network.as_deref().map(parse_network).transpose()?;
@@ -301,6 +302,7 @@ commands! {
                 choice: NetworkChoiceView::read(&state),
             });
         }
+        state.retry_engine_if_failed();
         let engines = state.engine.clone();
         let engine = engines.wait().await?;
         let mut slot = state.session_slot().await;
@@ -426,6 +428,7 @@ async fn open_window_network(
 ) -> Result<Arc<NetworkSession>, AppError> {
     #[cfg(test)]
     let settings = state.test_endpoints.lock().unwrap().clone().unwrap_or(settings);
+    state.retry_engine_if_failed();
     let engines = state.engine.clone();
     let s = engines
         .wait()

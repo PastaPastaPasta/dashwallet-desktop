@@ -52,6 +52,20 @@ impl Demo {
         dir: tempfile::TempDir,
         edit: impl FnOnce(&mut LaunchOptions, &std::path::Path),
     ) -> Self {
+        Self::start(dir, edit, true)
+    }
+
+    /// Like [`Self::launched_in`], without waiting for the engine. A test that
+    /// holds the build uses this so `run_iteration` can return first.
+    fn open_unready(edit: impl FnOnce(&mut LaunchOptions, &std::path::Path)) -> Self {
+        Self::start(dw_testutil::private_tempdir(), edit, false)
+    }
+
+    fn start(
+        dir: tempfile::TempDir,
+        edit: impl FnOnce(&mut LaunchOptions, &std::path::Path),
+        wait_engine: bool,
+    ) -> Self {
         let mut launch = LaunchOptions {
             data_dir: Some(dir.path().join("data")),
             network: DashNetwork::Regtest,
@@ -75,8 +89,10 @@ impl Demo {
         app.run_iteration(|_, _| {});
         // Setup returns before the engine is built. Wait, so a command and
         // the data-root drop do not race the build thread.
-        let state = app.state::<crate::state::AppState>();
-        tauri::async_runtime::block_on(state.engine.wait()).expect("the engine starts");
+        if wait_engine {
+            let state = app.state::<crate::state::AppState>();
+            tauri::async_runtime::block_on(state.engine.wait()).expect("the engine starts");
+        }
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
             .expect("webview");
@@ -146,6 +162,77 @@ pub(crate) fn assert_app_error(e: &Value) {
     assert!(codes.contains(code), "{code} is not in ErrorCode");
     assert!(e["message"].is_string(), "{e}");
     assert!(e.get("data").is_some(), "{e}");
+}
+
+/// Setup (`run_iteration` on the app `builder_with_vault` builds) returns
+/// while the engine hook is still held. The gate is released before the
+/// assertions, so a failed assert cannot leave the build thread parked.
+/// `spv_state` over IPC is `starting` for that window, and the window-ready
+/// mark is earlier than the engine.
+#[test]
+fn the_setup_hook_returns_before_the_engine_is_built() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    struct Release(Option<mpsc::Sender<()>>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    let (release_tx, release_rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (snap_tx, snap_rx) = mpsc::channel::<(bool, Value, Option<Instant>, Option<Instant>)>();
+    let (go_tx, go_rx) = mpsc::channel();
+    let gate = Release(Some(release_tx));
+    let finish = Release(Some(go_tx));
+
+    let worker = std::thread::spawn(move || {
+        crate::state::set_engine_start_hook(move || {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv();
+        });
+        let demo = Demo::open_unready(|_, _| {});
+        let (ready, window_at, engine_at) = {
+            let state = demo.app.state::<crate::state::AppState>();
+            (
+                state.engine.is_ready(),
+                state.engine.window_ready_at(),
+                state.engine.engine_ready_at(),
+            )
+        };
+        let spv = demo.ok("spv_state", json!({}));
+        let _ = snap_tx.send((ready, spv, window_at, engine_at));
+        let _ = go_rx.recv();
+        {
+            let state = demo.app.state::<crate::state::AppState>();
+            let engine = tauri::async_runtime::block_on(state.engine.wait())
+                .expect("the engine starts after the hold");
+            let window_at = state.engine.window_ready_at().expect("window mark");
+            let engine_at = state.engine.engine_ready_at().expect("engine mark");
+            assert!(window_at < engine_at);
+            let _ = engine;
+        }
+        assert_eq!(demo.open()["network"]["dirName"], "regtest");
+    });
+
+    let entered = entered_rx.recv_timeout(Duration::from_secs(20));
+    let snap = snap_rx.recv_timeout(Duration::from_secs(2));
+    drop(gate);
+    assert!(entered.is_ok(), "the build thread did not start");
+    let (ready, spv, window_at, engine_at) = snap.expect("setup waited for the engine");
+    assert!(!ready, "setup built the engine before returning");
+    assert_eq!(spv, json!("starting"));
+    assert!(window_at.is_some(), "setup did not mark the window");
+    assert!(
+        engine_at.is_none(),
+        "the engine was marked before setup returned"
+    );
+    drop(finish);
+    worker.join().expect("setup thread");
 }
 
 #[test]

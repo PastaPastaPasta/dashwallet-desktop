@@ -20,6 +20,8 @@ mod ipc;
 #[cfg(test)]
 mod ipc_tests;
 pub mod launch;
+#[cfg(target_os = "linux")]
+mod portal_stub;
 pub mod settings;
 pub mod shell;
 pub mod state;
@@ -253,6 +255,12 @@ pub fn run() {
         base = base.plugin(single_instance);
     }
     startup_phase(started, "instance");
+    // Before `build`, which registers the GTK application and would otherwise
+    // wait on a desktop portal that is not running (about 25 s, no window yet).
+    #[cfg(target_os = "linux")]
+    portal_stub::answer_if_portal_is_down();
+    #[cfg(target_os = "linux")]
+    startup_phase(started, "portal");
     if let Some(window_state) = shell::native::window_state(&launch) {
         base = base.plugin(window_state);
     }
@@ -292,16 +300,7 @@ pub fn run() {
             && let Some(state) = handle.try_state::<AppState>()
         {
             // Flush and release every wallet database before the process ends.
-            let engines = state.engine.clone();
-            if let Err(e) = tauri::async_runtime::block_on(async {
-                match engines.wait().await {
-                    Ok(engine) => engine.shutdown().await,
-                    Err(e) => {
-                        eprintln!("dash-wallet: engine did not start: {e}");
-                        Ok(())
-                    }
-                }
-            }) {
+            if let Err(e) = tauri::async_runtime::block_on(state.shutdown_engine()) {
                 eprintln!("dash-wallet: engine shutdown: {e}");
             }
         }
@@ -381,6 +380,13 @@ fn app_builder<R: Runtime>(
             }
             startup_phase(started, "window-ready");
             app.manage(state);
+            #[cfg(test)]
+            if let Some(hook) = crate::state::take_engine_start_hook() {
+                app.state::<AppState>().start_engine_after(hook);
+            } else {
+                app.state::<AppState>().start_engine();
+            }
+            #[cfg(not(test))]
             app.state::<AppState>().start_engine();
             exit_on_signal(handle);
             Ok(())
@@ -515,16 +521,14 @@ mod tests {
         .expect("the state opens under the lock run took");
     }
 
-    /// The window path returns with the engine unbuilt. An early `spv_state`
-    /// is `starting` and does not wait. Once the build is released, a command
-    /// that needs the engine succeeds. Fails if the build runs before the
-    /// window path returns: the second recv times out while the hook is held.
+    /// A panic in the build hook reaches every waiter that was already
+    /// parked, `spv_state` stops saying `starting`, and Retry builds the engine.
     #[test]
-    fn the_window_is_ready_before_the_engine_starts() {
+    fn a_panicked_engine_build_fails_then_retries() {
         use std::sync::mpsc;
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
-        use crate::api::chain::{SpvStateName, spv_state_of};
+        use crate::api::chain::spv_state_of;
 
         let app = tauri::test::mock_app();
         let dir = dw_testutil::private_tempdir();
@@ -540,93 +544,56 @@ mod tests {
             || unreachable!("--datadir given"),
         )
         .unwrap();
-        assert!(
-            state.engine.ready().is_none(),
-            "the window path built the engine"
-        );
-        assert_eq!(
-            tauri::async_runtime::block_on(spv_state_of(&state)).unwrap(),
-            SpvStateName::Starting
-        );
-
         let (entered_tx, entered_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
-        let (done_tx, done_rx) = mpsc::channel();
-        std::thread::scope(|scope| {
-            scope.spawn(|| {
-                state.start_engine_after(move || {
-                    let _ = entered_tx.send(());
-                    let _ = release_rx.recv();
-                });
-                let _ = done_tx.send(());
-            });
-            assert!(
-                entered_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
-                "the engine thread did not start"
-            );
-            assert!(
-                done_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
-                "window setup waited for the engine"
-            );
-            assert!(state.engine.ready().is_none());
-            assert_eq!(
-                tauri::async_runtime::block_on(spv_state_of(&state)).unwrap(),
-                SpvStateName::Starting
-            );
-            release_tx.send(()).unwrap();
+        let (go_tx, go_rx) = mpsc::channel();
+        state.start_engine_after(move || {
+            let _ = entered_tx.send(());
+            let _ = go_rx.recv();
+            panic!("engine build failed");
         });
+        assert!(
+            entered_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the build thread did not start"
+        );
 
-        let engines = state.engine.clone();
-        let engine = tauri::async_runtime::block_on(engines.wait()).expect("the engine starts");
-        let networks = tauri::async_runtime::block_on(engine.existing_networks()).unwrap();
-        assert!(networks.is_empty());
-        assert!(state.engine.window_ready_at().unwrap() < state.engine.engine_ready_at().unwrap());
-        tauri::async_runtime::block_on(engine.shutdown()).unwrap();
-    }
-
-    /// Several runs: preparing the window stays under two seconds and does
-    /// not include the engine build. The numbers are the spread.
-    #[test]
-    fn startup_window_returns_before_the_engine_over_several_runs() {
-        for run in 0..3 {
-            let app = tauri::test::mock_app();
-            let dir = dw_testutil::private_tempdir();
-            let opts = LaunchOptions {
-                data_dir: Some(dir.path().join("data")),
-                ..LaunchOptions::default()
-            };
-            let t0 = Instant::now();
-            let state = AppState::pending(app.handle(), opts, t0, Default::default(), || {
-                unreachable!("--datadir given")
-            })
-            .unwrap();
-            let window_us = t0.elapsed().as_micros();
-            assert!(
-                state.engine.ready().is_none(),
-                "run {run}: the window path built the engine"
-            );
-            assert!(
-                window_us < 2_000_000,
-                "run {run}: window setup took {window_us} µs"
-            );
-            state.start_engine();
-            let engines = state.engine.clone();
-            let engine = tauri::async_runtime::block_on(engines.wait()).expect("the engine starts");
-            let engine_ms = t0.elapsed().as_millis();
-            let marked = state
-                .engine
-                .engine_ready_at()
-                .unwrap()
-                .duration_since(state.engine.window_ready_at().unwrap())
-                .as_millis();
-            eprintln!(
-                "dw-app: measure run={run} window_us={window_us} engine_ms={engine_ms} engine_after_window_ms={marked}"
-            );
-            assert!(
-                state.engine.window_ready_at().unwrap() < state.engine.engine_ready_at().unwrap()
-            );
-            tauri::async_runtime::block_on(engine.shutdown()).unwrap();
+        let mut waiters = Vec::new();
+        for _ in 0..3 {
+            let engine = state.engine.clone();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let result = tauri::async_runtime::block_on(engine.wait())
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result);
+            });
+            waiters.push(rx);
         }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.engine.parked_waiters() < 3 {
+            assert!(
+                Instant::now() < deadline,
+                "waiters did not park before the failure"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The park count moves just before `await` registers. Give that poll
+        // a timeslice so `notify_waiters` cannot land in the gap.
+        std::thread::sleep(Duration::from_millis(50));
+        go_tx.send(()).unwrap();
+
+        for rx in waiters {
+            let err = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("a parked waiter did not hear the failure")
+                .expect_err("a panicked build installed an engine");
+            assert!(err.contains("stopped while starting"), "{err}");
+        }
+        let spv = tauri::async_runtime::block_on(spv_state_of(&state));
+        assert!(spv.is_err(), "spv_state still reports a build: {spv:?}");
+        assert!(tauri::async_runtime::block_on(state.shutdown_engine()).is_ok());
+        state.retry_engine_if_failed();
+        let engine = tauri::async_runtime::block_on(state.engine.wait()).expect("retried");
+        assert!(tauri::async_runtime::block_on(engine.existing_networks()).is_ok());
     }
 
     #[test]
