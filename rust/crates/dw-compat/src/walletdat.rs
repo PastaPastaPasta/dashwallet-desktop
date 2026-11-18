@@ -1107,15 +1107,19 @@ fn bounded(v: &mut Reader<'_>, what: &str) -> Result<Vec<u8>, WalletDatError> {
     Ok(bytes.to_vec())
 }
 
+/// `CHDPubKey`: version, then `CExtPubKey` as a 74-byte blob (depth,
+/// fingerprint, big-endian child, chain code, compressed pubkey), then the
+/// chain id and the account and change indexes.
 fn parse_hd_pubkey(v: &mut Reader<'_>) -> Result<Vec<u8>, WalletDatError> {
     v.i32().ok_or_else(|| corrupt("hdpubkey record"))?;
-    v.take(1).ok_or_else(|| corrupt("hdpubkey record"))?;
-    v.take(4).ok_or_else(|| corrupt("hdpubkey record"))?;
+    let ext = v.bytes().ok_or_else(|| corrupt("hdpubkey record"))?;
+    if ext.len() != 74 {
+        return Err(corrupt("hdpubkey record"));
+    }
+    v.hash256().ok_or_else(|| corrupt("hdpubkey record"))?;
     v.u32().ok_or_else(|| corrupt("hdpubkey record"))?;
-    v.take(32).ok_or_else(|| corrupt("hdpubkey record"))?;
-    Ok(v.bytes()
-        .ok_or_else(|| corrupt("hdpubkey record"))?
-        .to_vec())
+    v.u32().ok_or_else(|| corrupt("hdpubkey record"))?;
+    Ok(ext[41..74].to_vec())
 }
 
 fn plain_key_matches(pubkey: &[u8], der: &[u8]) -> bool {
@@ -1362,11 +1366,12 @@ mod tests {
     fn ser_hdpubkey(pubkey: &[u8]) -> Vec<u8> {
         let mut value = Vec::new();
         value.extend_from_slice(&1i32.to_le_bytes());
-        value.push(0);
-        value.extend_from_slice(&[0; 4]);
+        let mut ext = vec![0u8; 74];
+        ext[41..41 + pubkey.len()].copy_from_slice(pubkey);
+        ser_bytes(&mut value, &ext);
+        value.extend_from_slice(&[0u8; 32]);
         value.extend_from_slice(&0u32.to_le_bytes());
-        value.extend_from_slice(&[0; 32]);
-        ser_bytes(&mut value, pubkey);
+        value.extend_from_slice(&0u32.to_le_bytes());
         value
     }
 
@@ -1661,9 +1666,129 @@ mod tests {
         assert!(crate::bdb::read_pairs(&build::assemble(&[odd], false)).is_err());
     }
 
-    /// The committed fixtures are the wallets the builder writes. dashd is
-    /// not on this machine, so they are the documented record layout, not a
-    /// dashd file.
+    fn hex_bytes(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// Addresses Dash Core v24.0.2 reported for these regtest wallets
+    /// (`getnewaddress` / `getrawchangeaddress`, confirmed in `dumpwallet`).
+    fn core_address(phrase: &str, pass: &str, path: &str) -> String {
+        let seed = core_seed(phrase.as_bytes(), pass.as_bytes());
+        let master = ExtendedPrivKey::new_master(Network::Regtest, &seed[..]).unwrap();
+        let child = master
+            .derive_priv(&DerivationPath::from_str(path).unwrap())
+            .unwrap();
+        let pk = PublicKey::new(child.private_key.public_key());
+        Address::p2pkh(&pk, Network::Regtest).to_string()
+    }
+
+    /// `wallet.dat` files written by Dash Core v24.0.2 (`format: bdb`), not by
+    /// the test builder. Ground truth is that release's `dumphdinfo` and
+    /// `dumpwallet` on regtest.
+    #[test]
+    fn dash_core_v24_legacy_wallets_match_core() {
+        let abandon = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let zoo = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
+        let plain = read_bdb(&vector("bdb_core24_hd_plain.dat")).unwrap();
+        assert!(!plain.encrypted());
+        assert_eq!(
+            plain.legacy.as_ref().unwrap().accounts.get(&0),
+            Some(&(4, 2))
+        );
+        assert_eq!(
+            plain.legacy.as_ref().unwrap().seed.as_slice(),
+            hex_bytes("5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc19a5ac40b389cd370d086206dec8aa6c43daea6690f20ad3d8d48b2d2ce9e38e4").as_slice()
+        );
+        assert_eq!(plain.loose_keys, 0);
+        assert!(plain.address_book.iter().any(|e| e.label == "savings"));
+        assert!(plain.address_book.iter().any(|e| e.label == "checking"));
+        let root = plain.hd_root(None).unwrap();
+        let (phrase, pass) = root.mnemonic.unwrap();
+        assert_eq!(&phrase[..], abandon.as_bytes());
+        assert!(pass.is_empty());
+        assert_eq!(
+            core_address(abandon, "", "m/44'/1'/0'/0/0"),
+            "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt"
+        );
+        assert_eq!(
+            core_address(abandon, "", "m/44'/1'/0'/0/1"),
+            "yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw"
+        );
+        assert_eq!(
+            core_address(abandon, "", "m/44'/1'/0'/1/0"),
+            "yNwHG9D2rnrJRQ8j7TG6xnWfbr8D634HeM"
+        );
+
+        let with_pass = read_bdb(&vector("bdb_core24_hd_mnem.dat")).unwrap();
+        let root = with_pass.hd_root(None).unwrap();
+        let (phrase, pass) = root.mnemonic.unwrap();
+        assert_eq!(&phrase[..], zoo.as_bytes());
+        assert_eq!(&pass[..], b"TREZOR");
+        assert_eq!(
+            with_pass.legacy.as_ref().unwrap().accounts.get(&0),
+            Some(&(4, 2))
+        );
+        assert_eq!(
+            with_pass.legacy.as_ref().unwrap().seed.as_slice(),
+            hex_bytes("ac27495480225222079d7be181583751e86f571027b0497b5b5d11218e0a8a13332572917f0f8e5a589620c6f15b11c61dee327651a14c34e18231052e48c069").as_slice()
+        );
+        assert_eq!(
+            core_address(zoo, "TREZOR", "m/44'/1'/0'/0/0"),
+            "yfzF8VHskautet5pKeKo1aoK1EgkyJpeU1"
+        );
+        assert_eq!(
+            core_address(zoo, "TREZOR", "m/44'/1'/0'/1/0"),
+            "yZ1ofQ8tHvDFomU7fp7tXEBo5w9nXex95R"
+        );
+
+        let enc = read_bdb(&vector("bdb_core24_hd_encrypted.dat")).unwrap();
+        assert!(enc.encrypted());
+        assert_eq!(
+            enc.hd_root(None).unwrap_err(),
+            WalletDatError::PassphraseRequired
+        );
+        assert_eq!(
+            enc.hd_root(Some(b"nope")).unwrap_err(),
+            WalletDatError::WrongPassphrase
+        );
+        let root = enc.hd_root(Some(b"core-wallet-pass")).unwrap();
+        let (phrase, pass) = root.mnemonic.unwrap();
+        assert_eq!(&phrase[..], abandon.as_bytes());
+        assert!(pass.is_empty());
+        assert_eq!(enc.legacy.as_ref().unwrap().accounts.get(&0), Some(&(4, 3)));
+        assert_eq!(root.master_pubkey, {
+            let seed = core_seed(abandon.as_bytes(), b"");
+            ExtendedPrivKey::new_master(Network::Regtest, &seed[..])
+                .unwrap()
+                .private_key
+                .public_key()
+                .serialize()
+        });
+
+        let loose = read_bdb(&vector("bdb_core24_nonhd.dat")).unwrap();
+        assert_eq!(loose.loose_keys, 3);
+        assert_eq!(loose.hd_root(None).unwrap_err(), WalletDatError::NoHdChain);
+        let mut book: Vec<_> = loose
+            .address_book
+            .iter()
+            .map(|e| (e.label.as_str(), e.address.as_str()))
+            .collect();
+        book.sort_unstable();
+        assert_eq!(
+            book,
+            [
+                ("loose1", "yNwHG9D2rnrJRQ8j7TG6xnWfbr8D634HeM"),
+                ("loose2", "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt"),
+                ("loose3", "yTGFWr27HBYsb8tkLbGdxLxuKbspamdbnG"),
+            ]
+        );
+    }
+
+    /// Synthetic fixtures the builder writes. Real Dash Core files are the
+    /// `bdb_core24_*` fixtures.
     #[test]
     fn committed_bdb_fixtures_match_the_builder() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

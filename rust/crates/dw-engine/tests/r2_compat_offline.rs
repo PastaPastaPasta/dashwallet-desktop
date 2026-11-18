@@ -254,8 +254,9 @@ fn test_qt_106_import_wallet_dat() {
         "{xprv_only:?}"
     );
 
-    // A legacy Berkeley DB wallet (built from the record format; no dashd
-    // here) restores the same phrase, labels and loose-key count.
+    // A synthetic legacy wallet (the test builder) restores the phrase,
+    // labels and loose-key count. Real Dash Core files are
+    // `test_qt_106_import_dash_core_bdb`.
     let phrase = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
     let plain = e
         .block_on(s.import_wallet_dat(testdata("compat/walletdat/bdb_hd_plain.dat"), None, opts()))
@@ -295,6 +296,72 @@ fn test_qt_106_import_wallet_dat() {
             Err(EngineError::Vault(dw_vault::VaultError::Locked))
         ),
         "{locked:?}"
+    );
+}
+
+/// Dash Core v24.0.2 regtest wallets (`createwallet` with `descriptors=false`,
+/// `upgradetohd`, `encryptwallet`). The first receive addresses are the ones
+/// Core's `dumpwallet` recorded for `m/44'/1'/0'/0/0` and `/1`.
+#[test]
+fn test_qt_106_import_dash_core_bdb() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = open(&e, Some(b"vault pass"));
+    e.block_on(s.vault_op(|v| v.unlock(b"vault pass", UnlockScope::Full)))
+        .unwrap();
+    let opts = ImportOptions::default;
+    let zoo = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
+    let plain = e
+        .block_on(s.import_wallet_dat(
+            testdata("compat/walletdat/bdb_core24_hd_mnem.dat"),
+            None,
+            opts(),
+        ))
+        .unwrap();
+    assert_eq!(plain.wallet_id, core_id(zoo, "TREZOR"));
+    assert_eq!(plain.labels_imported, 2);
+    assert_eq!(plain.keys_not_imported, 0);
+    assert_eq!(
+        receive_addresses(&e, &s, plain.wallet_id, 2),
+        [
+            "yfzF8VHskautet5pKeKo1aoK1EgkyJpeU1",
+            "yhjzbZYPH8hXV9xMfgi1g9927o5kxfXfHa",
+        ]
+    );
+
+    let enc = testdata("compat/walletdat/bdb_core24_hd_encrypted.dat");
+    assert!(matches!(
+        e.block_on(s.import_wallet_dat(enc.clone(), None, opts())),
+        Err(EngineError::Compat(CompatFailure::PassphraseRequired))
+    ));
+    assert!(matches!(
+        e.block_on(s.import_wallet_dat(
+            enc.clone(),
+            Some(Zeroizing::new(b"nope".to_vec())),
+            opts()
+        )),
+        Err(EngineError::Compat(CompatFailure::WrongPassphrase))
+    ));
+    let opened = e
+        .block_on(s.import_wallet_dat(
+            enc,
+            Some(Zeroizing::new(b"core-wallet-pass".to_vec())),
+            opts(),
+        ))
+        .unwrap();
+    assert_eq!(
+        opened.wallet_id,
+        core_id(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            ""
+        )
+    );
+    assert_eq!(
+        receive_addresses(&e, &s, opened.wallet_id, 2),
+        [
+            "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+            "yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw",
+        ]
     );
 }
 

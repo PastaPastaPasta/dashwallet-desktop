@@ -24154,7 +24154,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_import_key_material() != 46906) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet_dat() != 60912) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet_dat() != 7980) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_console_execute() != 60587) {
