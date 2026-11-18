@@ -1,13 +1,13 @@
 # MG masternodes engine contract (`dw-engine` facade)
 
-Contract-Version: 21
+Contract-Version: 22
 
 Status: **draft**, 2026-10-17 (ROADMAP MG-03; version 2 after the Sol r1 review: D23–D28; version 3 after Sol r2: D30–D32; version 4 adds MG-04's ProTx owner flows, §2.3, citing
 [`MG-04-protx-owner.md`](../design/MG-04-protx-owner.md)'s D-rows as "MG-04 D1" and so on; version 5, after MG-04's r2 review, adds `operation` to `masternodes.protx_refused`; version 6 adds MG-04b slice 1a's shared-masternode sessions, §2.4, citing [`MG-04b-shared-masternodes.md`](../design/MG-04b-shared-masternodes.md)'s D-rows as "MG-04b D1" and so on; version 7, after the slice's validator review, binds `lock_shared_terms` to a revision and `approve_shared` to a consent hash, and adds `SharedSession.consent_hash`, MG-04b D56; version 8 adds `sign_shared_funding`'s consent-hash refusal, MG-04b D65; version 9 adds slice 1b's sending: `can_send` true, `send_shared_registration`, `abandon_shared_session`, `update_share` and `ProTxOperationKind::UpdateShare`, `SharedSession.debit`, `MasternodeRow.shares`, MG-04b D68–D75; version 10, after its review r1, puts sending behind one switch that is off until slice 1c, `can_send` false and the four sending calls refusing `unsupported`, DEC-678, MG-04b D71); version 11, after its review r2, says where `resend_operation` of an `update_share` row refuses (MG-04b D71); version 12 turns sending on (slice 1c: D39 closed by MG-04b D75, M9 by D78); version 13 adds `ShareTermsView.service_read`, Core's reading of a service written in another form (MG-04b D78); version 14 adds MG-04b slice 2a's dissolve now: `preview_dissolve`, `dissolve`, `ProTxOperationKind::Dissolve`, `DissolveRequest`, `DissolvePreview` and `ShareReturn`, a `dissolve` row's resend and state, MG-04b D79–D83; version 15 adds MG-04b slice 2b's standby: `create_standby`, `standby`, `export_standby`, `send_standby`, `Standby`, `StandbyDescription`, `StandbyFile`, `StandbySource`, `StandbyVariant`, `SharedImport::Standby` (and `SharedImport::Session`'s session boxed, its JSON unchanged), `SharedNext::CreateStandby`, a `dissolve` row of another share's standby, MG-04b D84–D91; version 16 adds MG-04b slice 2c's dissolve together: `start_dissolve_together`, `approve_maintenance`, `send_maintenance`, `masternodes.shared_actor_fee{fee}`, `SharedWarning::SkippedSignatures` and `NoApprovals`, the import of a `dissolve` sigs envelope and of a targeted bare array, a dissolve-together session's stages, and a `dissolve` row it sends, MG-04b D92–D98; version 17 adds MG-04b slice 2d's key change: `start_key_change`, `KeyChangeRequest`, `KeyChangeView` and `SharedSession.key_change`, `SharedWarning::OperatorReset` and `UsableByFunder`, `DeadReason::Abandoned`, the import of a `registrar` sigs envelope and of a bare array targeting a key change, a key-change session's stages, its abandon before `out_at`, `shared_message{reason}`'s `not_key_change`, `inputs_hash` and `stale`, and `update_pending{operation}` naming a key-change session; and it breaks `send_maintenance`, which returned a `ProTxOperation` and now returns `MaintenanceSent` (`operation` for a dissolution, `session` for a key change, each boxed, which the JSON doesn't show), MG-04b D99–D105. Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Version 18 adds MG-10 EP-a's read facts: collateral release, operation debit and advisory overdue, standby penalty,
 registrar capability, history-backed shares and reward destinations, plus the label-independent standby-file extractor.
 The `registered` and conflict-scan refactors preserve existing call behavior. Shared abandon recovery is a later slice.
-Version 19 adds MG-13's evonode credit withdrawal, §2.5, citing MG-13's plan decisions (`MG-13-evonode-withdrawal.md`) as "MG-13 P1" and so on: `withdrawal_quote`, `withdraw_credits`, `retry_withdrawal`, `withdrawals`, `recheck_withdrawal`, `mark_withdrawal`, their records (`WithdrawalQuote`, `CreditWithdrawal` and the rest), the `masternodes.withdrawal_*` codes, the records' states, the `withdrawal_ready` event, the `MasternodeWithdraw` signer, and the payout-change barriers MG-04's ProUpRegTx writes and its discard deletes (MG-13 P16); version 20, after MG-13's code review round 1 (Sol M1), gives `retry_withdrawal` the `pro_tx_hash` the user acted on, binds the `MasternodeWithdraw` grant to it (m4 item 86, version 64), and adds `masternodes.withdraw_target_mismatch`; version 21, after its code review round 2, has a final record's recheck raise the group's floor too (P5) and names `retry_withdrawal`'s two refusals of `id`.
+Version 19 adds MG-13's evonode credit withdrawal, §2.5, citing MG-13's plan decisions (`MG-13-evonode-withdrawal.md`) as "MG-13 P1" and so on: `withdrawal_quote`, `withdraw_credits`, `retry_withdrawal`, `withdrawals`, `recheck_withdrawal`, `mark_withdrawal`, their records (`WithdrawalQuote`, `CreditWithdrawal` and the rest), the `masternodes.withdrawal_*` codes, the records' states, the `withdrawal_ready` event, the `MasternodeWithdraw` signer, and the payout-change barriers MG-04's ProUpRegTx writes and its discard deletes (MG-13 P16); version 20, after MG-13's code review round 1 (Sol M1), gives `retry_withdrawal` the `pro_tx_hash` the user acted on, binds the `MasternodeWithdraw` grant to it (m4 item 86, version 64), and adds `masternodes.withdraw_target_mismatch`; version 21, after its code review round 2, has a final record's recheck raise the group's floor too (P5) and names `retry_withdrawal`'s two refusals of `id`. Version 22 adds `SharedWarning::AbandonHint` for a funder's key change that has sat at `signing` for the overdue quiet period, and records two key-change stage readings: a funder's `confirmed` includes a mined copy with the same payload, and an approver's first import of a request the list already holds records the keys that request replaced so the session reads `confirmed`.
 
 Code: `rust/crates/dw-engine/src/masternodes/` (§0). Design: [`MG-03-masternodes.md`](../design/MG-03-masternodes.md);
 its D-rows are cited as "D1" and so on. Everything in [`m1-engine.md`](m1-engine.md) §1 (conventions) applies, with
@@ -285,7 +285,7 @@ Generated by `mn_masternodes_contract.rs` from the facade's source files; `DW_BL
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: masternodes-surface -->
-<!-- surface-sha256: 61563e0fc6a884f6aca71ecec7273b4e00e5db50db2bf8c0e7b2fb49571598fc version: 21 -->
+<!-- surface-sha256: e300d25e096299ae4cc7b8c9ef3b4ba306bc5affd580889d259cf52e23fe06c6 version: 22 -->
 
 ```rust
 // src/masternodes/errors.rs
@@ -978,6 +978,7 @@ pub enum SharedWarning {
     NoApprovals,
     OperatorReset,
     UsableByFunder,
+    AbandonHint,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpdateShareRequest {
@@ -1479,12 +1480,12 @@ behind a list without its masternode (`shared_too_early`); `abandon_shared_sessi
 D95).
 
 A key-change session (`kind: key_change`, MG-04b D103) uses the same `SharedStage`, first match wins. The funder's:
-`dead{reason: abandoned}` once abandoned before `out_at`; `confirmed{height}` when its sent transaction is in a block of
+`dead{reason: abandoned}` once abandoned before `out_at`; `confirmed{height}` when its sent transaction, or another transaction in a block with the same payload, is in
 the history; with `out_at` set, `conflicted` when another transaction in a block spends one of its fee inputs;
 before `out_at`, `dead{reason: inputs_spent}` when a fee input is no longer unspent. Then every wallet's:
 `dead{reason: delisted}` as a dissolution's (the funder's request with `out_at` set too: it can't be mined once the
 masternode is gone); for an approver, `confirmed{height}` at the list's height once the synced list's keys are the
-requested ones (other than the base; an approver can't see the transaction); `stale` once the synced list's keys are
+requested ones (other than the base; an approver can't see the transaction). A first import whose list already holds the requested keys, and those differ from the keys the request replaced, records the replaced keys as the base, so this reads `confirmed`; `stale` once the synced list's keys are
 neither the base nor (for an approver, or the funder's request with `out_at` set) the requested ones (MG-04b D25: a
 request out stays valid in Core, so its resend would undo the later change); `sent` with `out_at` set; `combined` with
 every share's signature; else `signing`. Its `key_change` holds the `requested` keys, the list's `current` ones and whether
@@ -1494,7 +1495,7 @@ for the funder once combined, `wait` once sent, `abandon` for the funder once `s
 changes (Core resets the operator fields and PoSe-bans the masternode until a ProUpServTx signed by the new key, the
 key written in the basic scheme, one operator change per masternode in the mempool, MG-04b §3.3) and
 `usable_by_funder` (a complete request stays usable by the funder's keys until one of its fee inputs is spent: an
-abandon once it is out spends one; before, an abandon only releases them, MG-04b D25, D102).
+abandon once it is out spends one; before, an abandon only releases them, MG-04b D25, D102) and, for the funder at `signing` once the session has been quiet for the overdue period, `abandon_hint` (the abandon spends nothing before `out_at`; `next` stays `copy`).
 
 Evonode credit withdrawals (§2.5, MG-13 P6): `CreditWithdrawalState`, stored and moved by compare-and-set writes. A
 **nonce group** is every record of one identity at one nonce, decided together; at most one record of a group is open,

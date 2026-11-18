@@ -1059,3 +1059,33 @@ fn test_QT_127_an_approver_importing_a_mined_key_change_reads_confirmed() {
     assert_eq!(session.stage, SharedStage::Confirmed { height: 100 });
     assert_eq!(session.next, SharedNext::Nothing);
 }
+
+/// A funder's key change left at `signing` surfaces an abandon hint after
+/// the overdue quiet period. An approver's session does not, and the fee
+/// inputs stay locked.
+#[test]
+fn test_QT_127_a_quiet_key_change_hints_abandon() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let started = start(&f, 0, rotate(txid), 0).unwrap();
+    let id = started.session.id;
+    let reserved = reserved_of(&f.row(0, &id));
+    let fresh = serde_json::to_string(&f.session_of(0, &id).warnings).unwrap();
+    assert!(!fresh.contains("abandon_hint"), "{fresh}");
+    let quiet =
+        crate::coins::now_secs().saturating_sub(crate::masternodes::protx::ops::OVERDUE_SECS);
+    f.rewrite(0, &id, |u| u.updated_at = quiet);
+    let hinted = serde_json::to_string(&f.session_of(0, &id).warnings).unwrap();
+    assert!(hinted.contains("\"abandon_hint\""), "{hinted}");
+    let session = f.session_of(0, &id);
+    assert_eq!(
+        (session.stage, session.next),
+        (SharedStage::Signing, SharedNext::Copy)
+    );
+    assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
+
+    f.imported(1, &started.message.text);
+    f.rewrite(1, &id, |u| u.updated_at = quiet);
+    let approver = serde_json::to_string(&f.session_of(1, &id).warnings).unwrap();
+    assert!(!approver.contains("abandon_hint"), "{approver}");
+}

@@ -1470,6 +1470,15 @@ fn view(
         warnings.push(SharedWarning::OperatorReset);
     }
     warnings.push(SharedWarning::UsableByFunder);
+    // Before `out_at` an abandon spends nothing (D102). The hint is the
+    // overdue quiet used for a sent operation; it does not change `next`.
+    if funder
+        && matches!(stage, SharedStage::Signing)
+        && now_secs().saturating_sub(k.row.updated_at)
+            >= crate::masternodes::protx::ops::OVERDUE_SECS
+    {
+        warnings.push(SharedWarning::AbandonHint);
+    }
     let fee = k.funded.as_ref().map(|f| f.fee);
     SharedSession {
         id: k.row.id.clone(),
