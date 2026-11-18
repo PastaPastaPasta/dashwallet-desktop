@@ -51,14 +51,19 @@
 //!   the prune decides. The prune releases the notes only when they are
 //!   all known unspent (the row fails: not executed); otherwise it ends
 //!   the spend unresolved and keeps holding them. The spend's outcome and the status name that
-//!   transition by Platform's hash of it, and the dispatch journal records
-//!   it against the activity; nothing here resends. Every pass goes through
-//!   [`guarded_pass`]: admitted only while the session is open (the
-//!   supervisor's kick, or [`on_pool`]), only with the hook set, only while
-//!   each wallet holding such a spend holds its background lease, and only
-//!   once each is on record (a spend holds the passes off from its library
-//!   call until its record is written, so none can find a spend stored
-//!   mid-pass). Inside the pass the library asks the hook before each
+//!   transition by Platform's hash of it; a spend stored before any hook was
+//!   set is recorded in the 0.1 dispatch journal, while a spend stored under
+//!   the hook has its artifact written before its first send. Nothing here
+//!   resends. Every pass goes through [`guarded_pass`]: admitted only while
+//!   the session is open (the supervisor's kick, or [`on_pool`]), only with
+//!   the hook set, only while each wallet holding a spend stored before any
+//!   hook was set holds its background lease, and only once each such spend
+//!   is on record (a spend holds the passes off from its library call
+//!   until its call has returned and its outcome is read, so none can find a
+//!   spend stored mid-pass). A spend stored under the hook is checked by the
+//!   hook at each re-send, lease included; a locked wallet's pass still scans,
+//!   and its hooked re-sends wait for the lease at `admit`. Inside the pass
+//!   the library asks the hook before each
 //!   re-send of a spend stored under it, and the hook allows only one whose
 //!   artifact it wrote (same wallet, activity and hash, not settled or
 //!   archived), while its wallet holds its background lease and the
@@ -274,15 +279,6 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// outcome and whose notes it holds until that is acknowledged, each by
     /// Platform's hash of its transition.
     fn held_spends(&self) -> impl Future<Output = Result<HashSet<[u8; 32]>, PlatformError>> + Send;
-    /// Records `spend` in the 0.1 table of the dispatch journal
-    /// (`shielded_redrive`, schema 9) against its activity, after the
-    /// library could not confirm it; the first record stands. The hook has
-    /// written the spend's artifact (schema 11) before the library sent
-    /// it; this record is kept beside it, as [`admit_pass`]'s is.
-    fn record(
-        &self,
-        spend: &UnresolvedSpend,
-    ) -> impl Future<Output = Result<(), PlatformError>> + Send;
     /// The account's spends the library could not confirm and keeps to
     /// re-send.
     fn unresolved(
@@ -940,9 +936,9 @@ async fn spend(
     };
     // Again under the wallet's lock, before the quote, the grant or a key.
     unhooked(lib).await?;
-    // No pass runs from here until this spend's record is written: one
-    // admitted meanwhile could find what the library stores on an unknown
-    // result and re-send it before `admit_pass` saw it (Q15).
+    // No pass runs from here until the library's call has returned and its
+    // outcome is read: one admitted meanwhile could find what the library
+    // stores on an unknown result and re-send it before `admit_pass` saw it.
     let hold = hold_passes(session).await?;
     // Quoted again under the hold and the wallet's lock: nothing changes
     // the notes the library selects from now (a pass could, up to the
@@ -1012,12 +1008,6 @@ async fn spend(
                         "a shielded spend's result is unconfirmed; it stays pending and the \
                          library re-sends its signed transition during sync passes"
                     );
-                    // Before any pass the engine admits after this one
-                    // (`admit_pass` records it too, and holds the pass if
-                    // it cannot).
-                    if let Err(e) = lib.record(u).await {
-                        tracing::warn!(error = %e, "could not record a shielded spend's transition");
-                    }
                     drop(hold);
                 }
                 None => {
@@ -1091,11 +1081,6 @@ async fn spend(
                     "a shielded spend failed and the library still holds its signed \
                      transition; it stays pending and a sync pass may send it"
                 );
-                // As an unconfirmed spend's: before any pass the engine
-                // admits after this one.
-                if let Err(e) = lib.record(u).await {
-                    tracing::warn!(error = %e, "could not record a shielded spend's transition");
-                }
             } else if held.is_subset(&held_before) {
                 return Err(spend_error(*e));
             } else {
@@ -2076,12 +2061,6 @@ where
     .map_err(|e| PlatformError::from(crate::EngineError::from(e)))?
 }
 
-fn internal_platform(e: impl std::fmt::Display) -> PlatformError {
-    PlatformError::Internal {
-        detail: e.to_string(),
-    }
-}
-
 fn store_error(e: impl std::fmt::Display) -> PlatformError {
     PlatformError::Internal {
         detail: format!("shielded store: {e}"),
@@ -2336,19 +2315,6 @@ impl ShieldedLib for PwShielded {
             })
             .map(|d| d.st_hash)
             .collect())
-    }
-
-    async fn record(&self, spend: &UnresolvedSpend) -> Result<(), PlatformError> {
-        let bytes = |hex_text: &str| {
-            let mut out = [0u8; 32];
-            hex::decode_to_slice(hex_text, &mut out).map_err(internal_platform)?;
-            Ok::<_, PlatformError>(out)
-        };
-        let record = (bytes(&spend.activity_id)?, bytes(&spend.transition)?);
-        (self.pw.session.leases)
-            .record_shielded_redrives(self.pw.wallet_id, vec![record])
-            .await
-            .map_err(|e| PlatformError::Storage { detail: e })
     }
 
     async fn unresolved(&self) -> Result<Vec<UnresolvedSpend>, PlatformError> {
@@ -2658,8 +2624,9 @@ pub(crate) enum PassHeld {
     /// The coordinator has no dispatch hook: its pass would re-send without
     /// asking the engine.
     NoHook,
-    /// The wallet holds a spend the pass would re-send and not its
-    /// background lease (E0-04 §4.5: the vault is not prompt-free).
+    /// The wallet holds a spend stored before any hook was set (the library
+    /// re-sends it without asking the hook) and not its background lease
+    /// (E0-04 §4.5: the vault is not prompt-free).
     NoLease(WalletId),
     /// The library's redrive records or the journal could not be read or
     /// written.
@@ -2690,12 +2657,12 @@ fn transition_hash(st_bytes: &[u8]) -> [u8; 32] {
 /// The checks before each shielded sync pass the engine runs (E0-04 Q15,
 /// ruling (c), DEC-1032). The pass is where the library re-sends a spend it
 /// could not confirm, byte for byte (`redrive_pending_spends` from
-/// `coordinator.rs:1431`), so it is admitted only when each wallet holding
-/// such a spend holds its background lease (the vault prompt-free), and
-/// after each such spend is on record in the dispatch journal against its
-/// activity, with its transition's hash (the 0.1 table). Not without the
-/// dispatch hook ([`EngineDispatch`]), which the library asks inside the
-/// pass before each re-send of a spend stored under it.
+/// `coordinator.rs:1431`). A spend stored before any hook was set is admitted
+/// only while its wallet holds the background lease and after its 0.1 record
+/// is on the dispatch journal; a spend stored under the hook is checked by the
+/// hook at each re-send, including the lease. Not without the dispatch hook
+/// ([`EngineDispatch`]), which the library asks inside the pass before each
+/// re-send of a spend stored under it.
 pub(crate) async fn admit_pass(
     session: &NetworkSession,
     manager: &Manager,
@@ -2716,24 +2683,27 @@ pub(crate) async fn admit_pass(
             .map(|s| s.wallet_id),
     );
     for id in wallets {
-        let stored = (coordinator.store().read().await)
-            .pending_redrives_for_wallet(id)
-            .map_err(|e| PassHeld::Store(e.to_string()))?;
-        if stored.is_empty() {
-            continue;
+        let unmarked = {
+            let store = coordinator.store().read().await;
+            store
+                .pending_redrives_for_wallet(id)
+                .map_err(|e| PassHeld::Store(e.to_string()))?
+                .into_iter()
+                .filter(|(sub, record)| !store.redrive_armed_recording(*sub, &record.activity_id))
+                .map(|(_, record)| (record.activity_id, transition_hash(&record.st_bytes)))
+                .collect::<Vec<_>>()
+        };
+        if !unmarked.is_empty() {
+            let wallet = WalletId(id);
+            if session.leases.background(&wallet).is_none() {
+                return Err(PassHeld::NoLease(wallet));
+            }
+            (session
+                .leases
+                .record_shielded_redrives(wallet, unmarked)
+                .await)
+                .map_err(PassHeld::Journal)?;
         }
-        let wallet = WalletId(id);
-        if session.leases.background(&wallet).is_none() {
-            return Err(PassHeld::NoLease(wallet));
-        }
-        let records = (stored.iter())
-            .map(|(_, r)| (r.activity_id, transition_hash(&r.st_bytes)))
-            .collect();
-        (session
-            .leases
-            .record_shielded_redrives(wallet, records)
-            .await)
-            .map_err(PassHeld::Journal)?;
     }
     Ok(coordinator)
 }
@@ -2810,8 +2780,9 @@ const SPEND_PASS_WAIT: Duration = Duration::from_secs(60);
 /// "not bound yet" (`PwShielded::bind`).
 const BIND_PASS_WAIT: Duration = Duration::from_secs(5);
 
-/// Holds the shielded passes off, from a spend's library call until its
-/// record is written; `platform.unavailable` (retry) when a pass in flight
+/// Holds the shielded passes off, from a spend's library call until the
+/// library's call has returned and its outcome is read; `platform.unavailable`
+/// (retry) when a pass in flight
 /// does not end within [`SPEND_PASS_WAIT`].
 async fn hold_passes(
     session: &NetworkSession,
