@@ -912,9 +912,9 @@ impl NetworkSession {
                 dashpay.sync_now().await;
             }
         });
-        // The pass's balances and protocol compatibility too (DP1-06, C2).
+        // The pass's balances too (DP1-06). Protocol compatibility refreshes
+        // when the loops start and on the 60 s timer, not on every pass.
         self.kick_balance_pass();
-        self.kick_protocol_refresh();
     }
 
     pub(super) fn apply_cadence(&self, manager: &Manager) {

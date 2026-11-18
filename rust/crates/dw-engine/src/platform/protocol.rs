@@ -96,7 +96,6 @@ impl ProtocolRuntime {
         let Some(hub) = hub.upgrade() else {
             return;
         };
-        hub.pump.mark_sync();
         if let Some(manager) = manager.upgrade() {
             for id in manager.list_wallet_ids_blocking() {
                 hub.pump
@@ -397,6 +396,39 @@ mod tests {
                 .any(|(w, changes)| *w == wallet && changes.contains(&PlatformChange::Startup))
         );
 
+        // The same proved value again does not signal. Deleting the
+        // `previous >= version` return would emit `Platform{Startup}` here.
+        *session.hub.pump.platform_marks.lock().unwrap() = Some(Vec::new());
+        let _ = engine.block_on(session.refresh_protocol_version()).unwrap();
+        assert!(
+            session
+                .hub
+                .pump
+                .platform_marks
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .is_empty(),
+            "refreshing the same version marked wallets"
+        );
+
+        // A lower proved value, from the epoch read and from the observer,
+        // does not replace a higher one. `store` in place of `fetch_max`
+        // would report `supported` here.
+        *session.platform.protocol.test_fetch.lock().unwrap() =
+            Some(Arc::new(move || Ok(supported)));
+        let _ = engine.block_on(session.refresh_protocol_version()).unwrap();
+        assert_eq!(
+            session.protocol_compatibility().unwrap().network_version,
+            Some(upgraded)
+        );
+        session.platform.protocol.record(supported);
+        assert_eq!(
+            session.protocol_compatibility().unwrap().network_version,
+            Some(upgraded)
+        );
+
         // A failed refresh keeps the proved version already learned.
         *session.platform.protocol.test_fetch.lock().unwrap() =
             Some(Arc::new(|| Err(PlatformError::Unavailable)));
@@ -435,5 +467,50 @@ mod tests {
         engine
             .block_on(engine.close_network(DashNetwork::Regtest))
             .unwrap();
+    }
+
+    #[test]
+    fn protocol_refresh_kick_observes_the_hook_and_close_joins_its_task() {
+        let (_dir, engine, _sink) = test_engine();
+        let upgraded = PlatformVersion::latest().protocol_version + 1;
+        let session = engine
+            .block_on(engine.open_network(
+                DashNetwork::Regtest,
+                SessionOptions {
+                    dapi_addresses: vec!["https://127.0.0.1:1".into()],
+                    quorum_url: Some("https://127.0.0.1:1".into()),
+                    spv_peers: vec!["127.0.0.1:1".into()],
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+
+        let calls = Arc::new(AtomicU32::new(0));
+        let hook_calls = Arc::clone(&calls);
+        *session.platform.protocol.test_fetch.lock().unwrap() = Some(Arc::new(move || {
+            hook_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(upgraded)
+        }));
+
+        let protocol = Arc::clone(&session.platform.protocol);
+        protocol.kick(&session.rt);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while protocol.observed() != Some(upgraded) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(protocol.observed(), Some(upgraded));
+        let seen = calls.load(Ordering::SeqCst);
+        assert!(seen >= 1);
+
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        assert!(
+            guard(&protocol.tasks).is_none(),
+            "protocol refresh task outlived close"
+        );
+        protocol.kick(&session.rt);
+        assert_eq!(calls.load(Ordering::SeqCst), seen);
+        assert_eq!(protocol.observed(), Some(upgraded));
     }
 }
