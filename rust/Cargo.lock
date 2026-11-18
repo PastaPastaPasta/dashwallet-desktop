@@ -2522,7 +2522,7 @@ dependencies = [
  "tracing",
  "windows-sys 0.59.0",
  "zbus",
- "zip 9.0.5",
+ "zip",
 ]
 
 [[package]]
@@ -8306,8 +8306,8 @@ dependencies = [
 
 [[package]]
 name = "tenderdash-abci"
-version = "1.8.0"
-source = "git+https://github.com/dashpay/rs-tenderdash-abci?tag=v1.8.0#2e78da6f66d02f1e0b07a0c220373e5fda335fc9"
+version = "1.8.1"
+source = "git+https://www.github.com/dashpay/rs-tenderdash-abci?rev=eebfc46cc64b27022ccbbb3924604dd87a10c340#eebfc46cc64b27022ccbbb3924604dd87a10c340"
 dependencies = [
  "bytes",
  "hex",
@@ -8321,8 +8321,8 @@ dependencies = [
 
 [[package]]
 name = "tenderdash-proto"
-version = "1.8.0"
-source = "git+https://github.com/dashpay/rs-tenderdash-abci?tag=v1.8.0#2e78da6f66d02f1e0b07a0c220373e5fda335fc9"
+version = "1.8.1"
+source = "git+https://www.github.com/dashpay/rs-tenderdash-abci?rev=eebfc46cc64b27022ccbbb3924604dd87a10c340#eebfc46cc64b27022ccbbb3924604dd87a10c340"
 dependencies = [
  "bytes",
  "chrono",
@@ -8339,8 +8339,8 @@ dependencies = [
 
 [[package]]
 name = "tenderdash-proto-compiler"
-version = "1.8.0"
-source = "git+https://github.com/dashpay/rs-tenderdash-abci?tag=v1.8.0#2e78da6f66d02f1e0b07a0c220373e5fda335fc9"
+version = "1.8.1"
+source = "git+https://www.github.com/dashpay/rs-tenderdash-abci?rev=eebfc46cc64b27022ccbbb3924604dd87a10c340#eebfc46cc64b27022ccbbb3924604dd87a10c340"
 dependencies = [
  "fs_extra",
  "prost-build",
@@ -8348,7 +8348,7 @@ dependencies = [
  "tempfile",
  "ureq",
  "walkdir",
- "zip 8.6.0",
+ "zip",
 ]
 
 [[package]]
@@ -10539,20 +10539,6 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "8.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
-dependencies = [
- "crc32fast",
- "flate2",
- "indexmap 2.14.0",
- "memchr",
- "typed-path",
- "zopfli",
-]
-
-[[package]]
-name = "zip"
 version = "9.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e04976da629d3b04204ba8105b396a193af8ad2583b2c79bfb3ab8af580a11e"
@@ -10563,6 +10549,7 @@ dependencies = [
  "memchr",
  "nix",
  "typed-path",
+ "zopfli",
 ]
 
 [[package]]
