@@ -1,5 +1,4 @@
 import { expect, test } from "@playwright/test";
-import { RELEASES_URL } from "../src/protocol/advisory";
 import { seriousAxeViolations } from "./axe";
 import { fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
 
@@ -24,7 +23,7 @@ for (const theme of THEMES) {
 
     await expect(page.getByTestId("protocol-advisory-text")).toHaveText("The network has upgraded. Check for an app update.");
     const link = page.getByTestId("protocol-advisory-link");
-    await expect(link).toHaveAttribute("href", RELEASES_URL);
+    await expect(link).toHaveRole("button");
     expect(await seriousAxeViolations(page)).toEqual([]);
 
     await link.click();

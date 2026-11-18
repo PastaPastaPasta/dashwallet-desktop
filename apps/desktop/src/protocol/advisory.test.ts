@@ -3,7 +3,6 @@ import {
   dismissProtocolAdvisory,
   isProtocolAdvisoryDismissed,
   PROTOCOL_ADVISORY_COPY,
-  RELEASES_URL,
   resetProtocolAdvisoryDismissals,
   shouldShowProtocolAdvisory,
   subscribeProtocolAdvisory,
@@ -42,8 +41,7 @@ describe("protocol advisory model", () => {
     stop();
   });
 
-  it("carries the required advisory copy and releases URL", () => {
+  it("carries the required advisory copy", () => {
     expect(PROTOCOL_ADVISORY_COPY.text).toBe("The network has upgraded. Check for an app update.");
-    expect(RELEASES_URL).toBe("https://github.com/PastaPastaPasta/dashwallet-desktop/releases");
   });
 });

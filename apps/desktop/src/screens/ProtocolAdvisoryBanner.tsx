@@ -5,10 +5,27 @@ import { DashButton } from "../components/basics";
 import {
   dismissProtocolAdvisory,
   PROTOCOL_ADVISORY_COPY as C,
-  RELEASES_URL,
   shouldShowProtocolAdvisory,
   useProtocolAdvisoryDismissed,
 } from "../protocol/advisory";
+
+function focusHomeAfterDismiss() {
+  if (document.activeElement !== document.body) return;
+  const hero = document.querySelector<HTMLElement>('[data-testid="hero-amount"]');
+  if (hero && hero.tabIndex >= 0) {
+    hero.focus();
+    return;
+  }
+  const shortcut = document.querySelector<HTMLElement>('[data-testid="shortcut-receive"]');
+  if (shortcut && shortcut.tabIndex >= 0) {
+    shortcut.focus();
+    return;
+  }
+  const page = document.querySelector<HTMLElement>('[data-testid="page-home"]');
+  if (!page) return;
+  page.tabIndex = -1;
+  page.focus();
+}
 
 export function ProtocolAdvisoryBanner({ network }: { network: NetworkInfo }) {
   const backend = useBackend();
@@ -29,7 +46,7 @@ export function ProtocolAdvisoryBanner({ network }: { network: NetworkInfo }) {
         <circle cx="10" cy="10" r="7.5" />
         <path d="M10 6v5M10 13.5v.5" />
       </svg>
-      <div className="protocol-advisory-body">
+      <div className="protocol-advisory-body" role="status">
         <p className="protocol-advisory-text" data-testid="protocol-advisory-text">
           {C.text}
         </p>
@@ -40,15 +57,12 @@ export function ProtocolAdvisoryBanner({ network }: { network: NetworkInfo }) {
         )}
       </div>
       <div className="protocol-advisory-actions">
-        <a
-          href={RELEASES_URL}
+        <button
+          type="button"
           className="protocol-advisory-link"
           data-testid="protocol-advisory-link"
-          aria-disabled={opening ? "true" : undefined}
-          onClick={(e) => {
-            // Remote navigation is blocked in the webview (U6); dw-app opens the OS browser.
-            e.preventDefault();
-            if (opening) return;
+          disabled={opening}
+          onClick={() => {
             setProblem(null);
             setOpening(true);
             void backend
@@ -58,18 +72,14 @@ export function ProtocolAdvisoryBanner({ network }: { network: NetworkInfo }) {
           }}
         >
           {C.link}
-        </a>
+        </button>
         <DashButton
           variant="tintedGray"
           size="small"
           data-testid="protocol-advisory-dismiss"
           onClick={() => {
             dismissProtocolAdvisory(network.dirName);
-            requestAnimationFrame(() => {
-              if (document.activeElement === document.body) {
-                document.querySelector<HTMLElement>('[data-testid="hero-amount"]')?.focus();
-              }
-            });
+            requestAnimationFrame(focusHomeAfterDismiss);
           }}
         >
           {C.dismiss}

@@ -1,8 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { ProtocolCompatibility } from "../api/generated/ProtocolCompatibility";
 
-export const RELEASES_URL = "https://github.com/PastaPastaPasta/dashwallet-desktop/releases";
-
 export const PROTOCOL_ADVISORY_COPY = {
   label: "App update available",
   text: "The network has upgraded. Check for an app update.",
