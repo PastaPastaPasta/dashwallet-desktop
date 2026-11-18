@@ -21,6 +21,8 @@ export default defineConfig({
   },
   projects: [
     { name: "chromium", use: { browserName: "chromium" } },
-    { name: "webkit", use: { browserName: "webkit" } },
+    // On a loaded CI runner WebKit sometimes misses a fill on a search field, a different test each run.
+    // One retry keeps main green; the run still lists those tests as flaky.
+    { name: "webkit", retries: process.env.CI ? 1 : 0, use: { browserName: "webkit" } },
   ],
 });
