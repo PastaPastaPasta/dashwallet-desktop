@@ -1105,9 +1105,8 @@ export function importDumpWallet(path: string, options: ImportOptions): Promise<
 }
 
 /**
- * Restores from a Dash Core `wallet.dat` (SQLite descriptor wallets;
- * Berkeley DB is `not_implemented`). `walletPassphrase` opens an
- * encrypted file.
+ * Restores from a Dash Core `wallet.dat` (SQLite descriptor wallets
+ * and legacy Berkeley DB). `walletPassphrase` opens an encrypted file.
  */
 export function importWalletDat(path: string, walletPassphrase: string | null, options: ImportOptions): Promise<CoreImportReport> {
   return invoke<CoreImportReport>("import_wallet_dat", { path, walletPassphrase, options });

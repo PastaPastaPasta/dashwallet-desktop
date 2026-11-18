@@ -241,7 +241,7 @@ fn test_qt_106_import_wallet_dat() {
         opts(),
     ));
     assert!(
-        matches!(&bdb, Err(EngineError::NotImplemented(c)) if c == "import_wallet_dat.bdb"),
+        matches!(&bdb, Err(EngineError::Compat(CompatFailure::Corrupt(_)))),
         "{bdb:?}"
     );
     let xprv_only = e.block_on(s.import_wallet_dat(
@@ -253,6 +253,37 @@ fn test_qt_106_import_wallet_dat() {
         matches!(&xprv_only, Err(EngineError::NotImplemented(c)) if c.starts_with("import_wallet_dat.xprv")),
         "{xprv_only:?}"
     );
+
+    // A legacy Berkeley DB wallet (built from the record format; no dashd
+    // here) restores the same phrase, labels and loose-key count.
+    let phrase = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
+    let plain = e
+        .block_on(s.import_wallet_dat(testdata("compat/walletdat/bdb_hd_plain.dat"), None, opts()))
+        .unwrap();
+    assert_eq!(plain.wallet_id, core_id(phrase, "TREZOR"));
+    assert_eq!(plain.labels_imported, 1);
+    assert_eq!(plain.keys_not_imported, 2);
+    assert_eq!(plain.scripts_not_imported, 2);
+    assert!(plain.core_compat_seed);
+    let got = receive_addresses(&e, &s, plain.wallet_id, 1);
+    assert_eq!(got.len(), 1);
+
+    let enc_path = testdata("compat/walletdat/bdb_hd_encrypted.dat");
+    assert_eq!(
+        inspect_wallet_file(&enc_path).unwrap(),
+        WalletFileKind::WalletDatBdb {
+            encrypted: Some(true)
+        }
+    );
+    let missing = e.block_on(s.import_wallet_dat(enc_path.clone(), None, opts()));
+    assert!(matches!(
+        missing,
+        Err(EngineError::Compat(CompatFailure::PassphraseRequired))
+    ));
+    let opened = e
+        .block_on(s.import_wallet_dat(enc_path, Some(Zeroizing::new(b"bdb-pass".to_vec())), opts()))
+        .unwrap();
+    assert_eq!(opened.wallet_id, core_id(phrase, "second"));
 
     // A locked vault cannot take the seed.
     s.lock_vault_sync().unwrap();

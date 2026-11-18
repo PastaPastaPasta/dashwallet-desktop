@@ -11,8 +11,8 @@
 //!
 //! What platform-wallet cannot hold is refused with a typed
 //! `NotImplemented`, never approximated: a master xprv without its seed
-//! (platform-wallet registers wallets from 64-byte seeds only), seeds of
-//! other lengths, and Berkeley DB `wallet.dat` files (M6).
+//! (platform-wallet registers wallets from 64-byte seeds only) and seeds of
+//! other lengths.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -121,7 +121,8 @@ pub enum WalletFileKind {
         encrypted: bool,
         has_mnemonic: bool,
     },
-    /// Berkeley DB: encryption cannot be told without the M6 reader.
+    /// Legacy Berkeley DB `wallet.dat`. `encrypted` is `None` when the file
+    /// is recognised but does not parse.
     WalletDatBdb {
         encrypted: Option<bool>,
     },
@@ -274,7 +275,12 @@ pub fn inspect_wallet_file(path: &Path) -> Result<WalletFileKind, EngineError> {
             });
         }
         Some(Container::BerkeleyDb) => {
-            return Ok(WalletFileKind::WalletDatBdb { encrypted: None });
+            return Ok(match walletdat::read_bdb(path) {
+                Ok(w) => WalletFileKind::WalletDatBdb {
+                    encrypted: Some(w.encrypted()),
+                },
+                Err(_) => WalletFileKind::WalletDatBdb { encrypted: None },
+            });
         }
         None => {}
     }
@@ -547,7 +553,7 @@ impl NetworkSession {
     }
 
     /// dash-qt "Restore wallet" from a `wallet.dat` (QT-106): SQLite
-    /// descriptor wallets; Berkeley DB returns `NotImplemented` until M6.
+    /// descriptor wallets and legacy Berkeley DB wallets.
     pub async fn import_wallet_dat(
         self: &Arc<Self>,
         path: PathBuf,
@@ -556,64 +562,79 @@ impl NetworkSession {
     ) -> Result<ImportReport, EngineError> {
         drop(self.try_enter()?);
         let network_mainnet = self.network == DashNetwork::Mainnet;
-        let (root, coinjoin_salt) = self
+        let (root, coinjoin_salt, loose_keys, scripts) = self
             .on_runtime(async move {
-                tokio::task::spawn_blocking(
-                    move || -> Result<(CoreRoot, Option<[u8; 32]>), EngineError> {
-                        match walletdat::sniff_container(&head(&path)?) {
-                            Some(Container::Sqlite) => {}
-                            Some(Container::BerkeleyDb) => {
-                                return Err(EngineError::NotImplemented(
-                                    "import_wallet_dat.bdb".into(),
-                                ));
-                            }
-                            None => {
-                                return Err(CompatFailure::UnsupportedFormat(
-                                    "not a wallet.dat".into(),
-                                )
-                                .into());
-                            }
+                tokio::task::spawn_blocking(move || -> Result<WalletDatImport, EngineError> {
+                    let wallet = match walletdat::sniff_container(&head(&path)?) {
+                        Some(Container::Sqlite) => {
+                            walletdat::read_sqlite(&path).map_err(walletdat_failure)?
                         }
-                        let wallet = walletdat::read_sqlite(&path).map_err(walletdat_failure)?;
-                        let root = wallet
-                            .hd_root(wallet_passphrase.as_deref().map(|p| &p[..]))
-                            .map_err(walletdat_failure)?;
-                        let mainnet = key_is_mainnet(&root.external.key);
-                        if mainnet.is_some_and(|m| m != network_mainnet) {
-                            return Err(CompatFailure::NetworkMismatch {
-                                mainnet: mainnet == Some(true),
-                            }
+                        Some(Container::BerkeleyDb) => {
+                            walletdat::read_bdb(&path).map_err(walletdat_failure)?
+                        }
+                        None => {
+                            return Err(CompatFailure::UnsupportedFormat(
+                                "not a wallet.dat".into(),
+                            )
                             .into());
                         }
-                        let Some(phrase) = root.mnemonic else {
+                    };
+                    let root = wallet
+                        .hd_root(wallet_passphrase.as_deref().map(|p| &p[..]))
+                        .map_err(walletdat_failure)?;
+                    let mainnet = key_is_mainnet(&root.external.key);
+                    if mainnet.is_some_and(|m| m != network_mainnet) {
+                        return Err(CompatFailure::NetworkMismatch {
+                            mainnet: mainnet == Some(true),
+                        }
+                        .into());
+                    }
+                    let labels = wallet
+                        .address_book
+                        .iter()
+                        .map(|e| {
+                            let purpose = if e.purpose.as_deref() == Some("send") {
+                                BookPurpose::Send
+                            } else {
+                                BookPurpose::Receive
+                            };
+                            (e.address.clone(), e.label.clone(), purpose)
+                        })
+                        .collect();
+                    let (phrase, seed) = match (root.mnemonic, root.hd_seed) {
+                        (Some(phrase), _) => (Some(phrase), None),
+                        (None, Some(seed)) => {
+                            let arr: [u8; 64] = match seed[..].try_into() {
+                                Ok(arr) => arr,
+                                Err(_) => {
+                                    return Err(EngineError::NotImplemented(format!(
+                                        "import_wallet_dat.seed_length.{}",
+                                        seed.len()
+                                    )));
+                                }
+                            };
+                            (None, Some(Zeroizing::new(arr)))
+                        }
+                        (None, None) if wallet.is_descriptor_wallet() => {
                             return Err(EngineError::NotImplemented(
                                 "import_wallet_dat.xprv".into(),
                             ));
-                        };
-                        let labels = wallet
-                            .address_book
-                            .iter()
-                            .map(|e| {
-                                let purpose = if e.purpose.as_deref() == Some("send") {
-                                    BookPurpose::Send
-                                } else {
-                                    BookPurpose::Receive
-                                };
-                                (e.address.clone(), e.label.clone(), purpose)
-                            })
-                            .collect();
-                        Ok((
-                            CoreRoot {
-                                phrase: Some(phrase),
-                                seed: None,
-                                master_pubkey: Some(root.master_pubkey),
-                                used_per_chain: wallet.next_index(),
-                                labels,
-                            },
-                            wallet.coinjoin_salt,
-                        ))
-                    },
-                )
+                        }
+                        (None, None) => return Err(CompatFailure::NoHdChain.into()),
+                    };
+                    Ok((
+                        CoreRoot {
+                            phrase,
+                            seed,
+                            master_pubkey: Some(root.master_pubkey),
+                            used_per_chain: wallet.next_index(),
+                            labels,
+                        },
+                        wallet.coinjoin_salt,
+                        wallet.loose_keys,
+                        wallet.scripts,
+                    ))
+                })
                 .await?
             })
             .await?;
@@ -626,7 +647,11 @@ impl NetworkSession {
             self.on_runtime(async move { this.import_coinjoin_salt(id, salt).await })
                 .await?;
         }
-        Ok(report)
+        Ok(ImportReport {
+            keys_not_imported: loose_keys,
+            scripts_not_imported: scripts,
+            ..report
+        })
     }
 
     /// Imports a wallet from an HD seed, xprv or `listdescriptors true` JSON
@@ -839,6 +864,10 @@ impl NetworkSession {
     }
 }
 
+/// What `import_wallet_dat` carries out of the blocking read: the root,
+/// CoinJoin salt, loose keys left out, and scripts left out.
+type WalletDatImport = (CoreRoot, Option<[u8; 32]>, u32, u32);
+
 fn walletdat_failure(e: WalletDatError) -> EngineError {
     match e {
         WalletDatError::Unreadable(d) => CompatFailure::FileUnreadable(d),
@@ -846,6 +875,10 @@ fn walletdat_failure(e: WalletDatError) -> EngineError {
         WalletDatError::Corrupt(d) => CompatFailure::Corrupt(d),
         WalletDatError::PassphraseRequired => CompatFailure::PassphraseRequired,
         WalletDatError::WrongPassphrase => CompatFailure::WrongPassphrase,
+        WalletDatError::NoHdChain => CompatFailure::NoHdChain,
+        WalletDatError::SeedLength(n) => {
+            return EngineError::NotImplemented(format!("import_wallet_dat.seed_length.{n}"));
+        }
     }
     .into()
 }
