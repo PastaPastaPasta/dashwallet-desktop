@@ -20,6 +20,14 @@ pub struct WalletBalances {
     pub coinjoin: u64,
 }
 
+impl WalletBalances {
+    /// The frozen bindings' reading: `None` while the wallet is catching up
+    /// (review M-3), as before the engine reported a partial balance.
+    pub(crate) fn known(b: dw_engine::WalletBalances) -> Option<Self> {
+        (!b.catching_up).then(|| b.into())
+    }
+}
+
 impl From<dw_engine::WalletBalances> for WalletBalances {
     fn from(b: dw_engine::WalletBalances) -> Self {
         Self {
@@ -118,7 +126,7 @@ impl From<dw_engine::WalletInfo> for WalletInfo {
             hd: w.hd,
             birth_height: w.birth_height,
             created_at: w.created_at,
-            balances: w.balances.map(Into::into),
+            balances: w.balances.and_then(WalletBalances::known),
         }
     }
 }
@@ -406,7 +414,7 @@ impl NetworkSession {
     /// In-memory read.
     pub fn balances(&self, wallet_id: String) -> Result<Option<WalletBalances>, EngineError> {
         let id = parse_wallet_id(&wallet_id)?;
-        Ok(self.inner.balances(&id)?.map(Into::into))
+        Ok(self.inner.balances(&id)?.and_then(WalletBalances::known))
     }
 
     /// Deletes the wallet's vault records, then unloads it and deletes its

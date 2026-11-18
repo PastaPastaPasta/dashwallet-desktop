@@ -87,6 +87,12 @@ pub struct WalletBalances {
     /// spendable balance (confirmed + unconfirmed) of the DIP9 CoinJoin
     /// accounts.
     pub coinjoin: u64,
+    /// The scan has not reached the wallet's birth block yet: the buckets
+    /// hold what the wallet has seen so far (mempool and InstantSend
+    /// payments included) and can miss coins in blocks not scanned yet.
+    /// `false` says only that the birth block was scanned: a wallet born
+    /// long ago is still behind the tip while SPV syncs (the sync snapshot).
+    pub catching_up: bool,
 }
 
 /// Result of [`NetworkSession::create_wallet`]: the wallet's seed is in the
@@ -893,6 +899,9 @@ impl NetworkSession {
             .with_storage_path(self.data_dir.join(SPV_DIR))
             .with_user_agent(crate::tools::USER_AGENT);
         config.enable_masternodes = true;
+        // A payment and its InstantSend lock reach the wallet while the
+        // filters still sync, not only once they are done.
+        config = config.with_mempool_during_sync(true);
         for peer in &self.spv_peers {
             config.add_peer(*peer);
         }
