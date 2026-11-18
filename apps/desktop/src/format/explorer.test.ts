@@ -11,7 +11,8 @@ describe("explorer URL", () => {
     expect(explorerUrl("devnet", TXID)).toBeNull();
   });
 
-  it("refuses a txid that is not 64 hex characters", () => {
+  it("refuses a txid that is not 64 lowercase hex characters, as the app does", () => {
+    expect(explorerUrl("mainnet", TXID.toUpperCase())).toBeNull();
     expect(explorerUrl("mainnet", TXID.slice(0, 63))).toBeNull();
     expect(explorerUrl("mainnet", `${TXID}ff`)).toBeNull();
     expect(explorerUrl("mainnet", `${TXID.slice(0, 63)}g`)).toBeNull();
