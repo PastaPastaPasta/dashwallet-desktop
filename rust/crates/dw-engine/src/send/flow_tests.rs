@@ -1322,7 +1322,7 @@ fn psbt_an_owner_or_voting_keys_coin_is_not_signed() {
     use crate::masternode_keys::MasternodeKeyRole::{Owner, Voting};
     for role in [Owner, Voting] {
         let f = fixture(false);
-        let owner = f
+        let address = f
             .engine
             .block_on(f.session.derive_masternode_keys(f.wallet, role, 0, 1))
             .unwrap()
@@ -1340,7 +1340,7 @@ fn psbt_an_owner_or_voting_keys_coin_is_not_signed() {
             }],
             output: vec![TxOut {
                 value: COIN,
-                script_pubkey: script_of(&owner),
+                script_pubkey: script_of(&address),
             }],
             special_transaction_payload: None,
         };
