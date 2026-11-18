@@ -1023,3 +1023,39 @@ fn test_QT_127_a_malleated_key_change_confirms_by_payload() {
     f.follow();
     assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
 }
+
+/// D103 residual: an approver's first import reads `signing` while the key
+/// change is unmined, and `confirmed` once the list already holds the
+/// requested keys.
+#[test]
+fn test_QT_127_an_approver_importing_a_mined_key_change_reads_confirmed() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let started = start(&f, 0, rotate(txid), 0).unwrap();
+    let (early, _) = f.imported(2, &started.message.text);
+    assert_eq!(
+        (early.stage, early.next),
+        (SharedStage::Signing, SharedNext::Approve)
+    );
+
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    let fee = f.session_of(0, &id).fee.unwrap();
+    send(&f, 0, &id, fee).unwrap();
+    let requested = f.session_of(0, &id).key_change.unwrap().requested;
+    f.run(f.mn().discard_shared_session(f.wallets[2], id.clone()))
+        .unwrap();
+    f.mine(f.net.sent().pop().unwrap(), 101);
+    let operator: [u8; 48] = hex::decode(requested.operator_public_key)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    list_keys(&f, txid, operator, [1; 20]);
+    let late = import_into(&f, 2, &f.message(0, &id)).unwrap();
+    let SharedImport::Session { session, .. } = late else {
+        panic!("not a session");
+    };
+    assert_eq!(session.stage, SharedStage::Confirmed { height: 100 });
+    assert_eq!(session.next, SharedNext::Nothing);
+}

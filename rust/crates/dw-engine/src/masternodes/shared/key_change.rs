@@ -54,7 +54,7 @@ use super::build::sign_own_inputs;
 use super::dissolve::address_of;
 use super::flow::signer_refusal;
 use super::send::typed;
-use super::standby::{in_history, p2pkh_address};
+use super::standby::{in_history, p2pkh_address, registration_of};
 use super::store::{
     ChainView, copy_rank, decode_outpoints, encode_outpoints, json, message_refusal, reserved_of,
     role_name, role_of, stage_refusal,
@@ -352,6 +352,56 @@ fn payload_copy_height(
         })
         .min_by_key(|(id, entry)| copy_rank(id, &entry.context, sent))
         .and_then(|(_, entry)| entry.context.block_info().map(|b| b.height()))
+}
+
+/// The keys a key-change request replaced: the registration's, then every
+/// earlier confirmed ProUpSharedRegTx of the masternode except this
+/// request. An approver often cannot see the request itself (D27).
+fn replaced_keys(chain: &ChainView, hash: [u8; 32], request_payload: &[u8]) -> Keys {
+    let Ok(reg) = registration_of(chain, hash) else {
+        return Keys {
+            operator_public_key: [0; 48],
+            voting_key_id: [0; 20],
+        };
+    };
+    let mut keys = Keys {
+        operator_public_key: dw_protx::bls::basic_form(&reg.operator_public_key)
+            .unwrap_or(reg.operator_public_key),
+        voting_key_id: reg.voting_key_id,
+    };
+    // The mined copy fills the signature slots; the request's payload
+    // still has them empty. `sign_hash` leaves the signatures out.
+    let own = dashcore::consensus::deserialize::<ProUpSharedRegTx>(request_payload)
+        .ok()
+        .map(|payload| payload.sign_hash());
+    let mut prior = Vec::new();
+    for (id, entry) in &chain.history {
+        let Some(height) = entry.context.block_info().map(|b| b.height()) else {
+            continue;
+        };
+        let Some(tx) = special_of(&entry.tx) else {
+            continue;
+        };
+        if tx.tx_type != TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR {
+            continue;
+        }
+        let Ok(payload) = dashcore::consensus::deserialize::<ProUpSharedRegTx>(&tx.payload) else {
+            continue;
+        };
+        if payload.pro_tx_hash.to_byte_array() != hash || own == Some(payload.sign_hash()) {
+            continue;
+        }
+        prior.push((height, *id, payload));
+    }
+    prior.sort_by_key(|(height, id, _)| (*height, *id));
+    for (_, _, payload) in prior {
+        keys = Keys {
+            operator_public_key: dw_protx::bls::basic_form(&payload.operator_public_key)
+                .unwrap_or(payload.operator_public_key),
+            voting_key_id: payload.voting_key_id,
+        };
+    }
+    keys
 }
 
 /// The synced list's keys for the masternode now: `None` while the list
@@ -955,8 +1005,31 @@ impl NetworkSession {
             Some(k) => taken > 0 || k.mine != mine,
         };
         if changed {
-            // The base: the list's keys when first imported (D25).
-            let base = keys_view(list_keys_of(&ctx, hash)?, network);
+            // The base: the list's keys when first imported (D25). A first
+            // import after the request was mined finds the list already
+            // holding the requested keys; recording those would hide the
+            // change, so the base is the keys the request replaced.
+            let listed = list_keys_of(&ctx, hash)?;
+            let base_keys = if stored.is_none() {
+                let requested = Keys {
+                    operator_public_key: checked.payload.operator_public_key,
+                    voting_key_id: checked.payload.voting_key_id,
+                };
+                if listed == requested {
+                    let chain = self.shared_chain(wallet).await?;
+                    let replaced = replaced_keys(&chain, hash, &request.payload);
+                    if requested != replaced {
+                        replaced
+                    } else {
+                        listed
+                    }
+                } else {
+                    listed
+                }
+            } else {
+                listed
+            };
+            let base = keys_view(base_keys, network);
             self.write_key_change(
                 wallet,
                 &id,
