@@ -383,12 +383,14 @@ commands! {
     /// none was open.
     #[facade("Engine::close_network")]
     fn close_network(state) -> bool {
-        let engines = state.engine.clone();
-        let engine = engines.wait().await?;
+        // No session yet, including while the engine is still starting:
+        // `false`, without waiting out the build.
         let mut slot = state.session_slot().await;
         let Some(network) = slot.as_ref().map(|s| s.network().clone()) else {
             return Ok(false);
         };
+        let engines = state.engine.clone();
+        let engine = engines.wait().await?;
         close_active(&state, &mut slot, engine.close_network(network).await)
     }
 

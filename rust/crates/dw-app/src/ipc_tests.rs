@@ -205,6 +205,8 @@ fn the_setup_hook_returns_before_the_engine_is_built() {
             )
         };
         let spv = demo.ok("spv_state", json!({}));
+        // Still held: closing must not wait for the build.
+        assert_eq!(demo.ok("close_network", json!({})), json!(false));
         let _ = snap_tx.send((ready, spv, window_at, engine_at));
         let _ = go_rx.recv();
         {
