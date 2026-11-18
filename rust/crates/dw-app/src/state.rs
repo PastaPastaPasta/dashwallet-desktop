@@ -4,15 +4,17 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use dw_engine::governance::Governance;
 use dw_engine::platform::DashPay;
-use dw_engine::{DashNetwork, Engine, EngineConfig, NetworkSession, PreparedTx, TxDraft, WalletId};
+use dw_engine::{
+    DashNetwork, Engine, EngineConfig, EngineError, NetworkSession, PreparedTx, TxDraft, WalletId,
+};
 use dw_vault::VaultConfig;
 use tauri::{AppHandle, Manager, Runtime};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::bridge::{EventMemory, TauriSink};
 use crate::dto::ThemeName;
@@ -21,11 +23,20 @@ use crate::instance::InstanceLock;
 use crate::launch::LaunchOptions;
 use crate::shell::Shell;
 
+/// One build of the engine, run on the event-loop thread ([`AppState::new`])
+/// or on `dw-engine-start` ([`AppState::start_engine`]).
+type EngineBuild = Box<dyn FnOnce() -> Result<Engine, AppError> + Send>;
+
 pub struct AppState {
     pub launch: LaunchOptions,
     /// Taken at the top of `main`, for the cold-start measurement (U5).
     pub started: Instant,
-    pub engine: Engine,
+    /// The engine. Empty until [`AppState::new`] or [`AppState::start_engine`]
+    /// finishes building it; commands wait, except a status read, which
+    /// reports starting.
+    pub engine: EngineHandle,
+    /// Builds the engine once. Taken by the first start.
+    engine_build: StdMutex<Option<EngineBuild>>,
     /// The data root (`--datadir` or the platform default), where
     /// `settings.json` lives (U-04 D2).
     pub data_root: PathBuf,
@@ -207,10 +218,159 @@ pub(crate) enum SetPause {
     AfterWrite,
 }
 
+/// The engine, filled when its build finishes. Waiters sleep on `notify`;
+/// a status read does not wait.
+#[derive(Clone)]
+pub struct EngineHandle {
+    inner: Arc<EngineSlot>,
+}
+
+struct EngineSlot {
+    cell: OnceLock<Engine>,
+    failed: StdMutex<Option<AppError>>,
+    notify: Notify,
+    /// Set when the window may paint, before the build runs.
+    window_ready_at: StdMutex<Option<Instant>>,
+    /// Set when the build has installed the engine.
+    engine_ready_at: StdMutex<Option<Instant>>,
+}
+
+impl EngineHandle {
+    fn pending() -> Self {
+        Self {
+            inner: Arc::new(EngineSlot {
+                cell: OnceLock::new(),
+                failed: StdMutex::new(None),
+                notify: Notify::new(),
+                window_ready_at: StdMutex::new(None),
+                engine_ready_at: StdMutex::new(None),
+            }),
+        }
+    }
+
+    fn mark_window(&self) {
+        *self
+            .inner
+            .window_ready_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn window_ready_at(&self) -> Option<Instant> {
+        *self
+            .inner
+            .window_ready_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn engine_ready_at(&self) -> Option<Instant> {
+        *self
+            .inner
+            .engine_ready_at
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The engine, once its build has finished.
+    pub(crate) fn ready(&self) -> Option<&Engine> {
+        self.inner.cell.get()
+    }
+
+    pub(crate) fn is_ready(&self) -> bool {
+        self.ready().is_some()
+    }
+
+    pub(crate) fn has_failed(&self) -> bool {
+        self.inner
+            .failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+    }
+
+    fn install(&self, result: Result<Engine, AppError>) {
+        match result {
+            Ok(engine) => {
+                *self
+                    .inner
+                    .engine_ready_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+                let _ = self.inner.cell.set(engine);
+            }
+            Err(e) => {
+                *self.inner.failed.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
+            }
+        }
+        self.inner.notify.notify_waiters();
+    }
+
+    /// Waits until the build installs the engine or records its failure.
+    /// Already finished: ready on the first poll, no runtime required.
+    pub(crate) async fn wait(&self) -> Result<&Engine, AppError> {
+        if let Some(engine) = self.ready() {
+            return Ok(engine);
+        }
+        loop {
+            let notified = self.inner.notify.notified();
+            if let Some(engine) = self.ready() {
+                return Ok(engine);
+            }
+            if let Some(err) = self
+                .inner
+                .failed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
+            {
+                return Err(err);
+            }
+            notified.await;
+        }
+    }
+}
+
+/// If the build thread panics, waiters hear it instead of sleeping forever.
+struct FinishEngine {
+    handle: EngineHandle,
+    done: bool,
+}
+
+impl Drop for FinishEngine {
+    fn drop(&mut self) {
+        if !self.done && !self.handle.is_ready() && !self.handle.has_failed() {
+            self.handle
+                .install(Err(AppError::from(EngineError::Internal(
+                    "the engine stopped while starting".into(),
+                ))));
+        }
+    }
+}
+
 impl AppState {
     /// `vault` is the production `VaultConfig::default()` except in tests
-    /// (an in-memory OS store, cheap KDF parameters).
+    /// (an in-memory OS store, cheap KDF parameters). Builds the engine
+    /// before returning. The window uses [`Self::pending`] and
+    /// [`Self::start_engine`] so the event loop can paint first.
     pub fn new<R: Runtime>(
+        app: &AppHandle<R>,
+        launch: LaunchOptions,
+        started: Instant,
+        vault: VaultConfig,
+        default_data_dir: impl FnOnce() -> Result<PathBuf, AppError>,
+    ) -> Result<Self, AppError> {
+        let state = Self::pending(app, launch, started, vault, default_data_dir)?;
+        state.start_engine_blocking()?;
+        Ok(state)
+    }
+
+    /// The window's state with the engine not built yet. [`Self::start_engine`]
+    /// builds it off the event-loop thread. The window-ready mark is this
+    /// return: nothing here opens a wallet or constructs the runtime.
+    pub(crate) fn pending<R: Runtime>(
         app: &AppHandle<R>,
         mut launch: LaunchOptions,
         started: Instant,
@@ -239,24 +399,32 @@ impl AppState {
                 Some(InstanceLock::acquire(&data_root, Duration::ZERO)?)
             }
         };
-        let engine = Engine::new(
-            EngineConfig {
-                data_root: data_root.clone(),
-                worker_threads: None,
-                vault,
-            },
-            Arc::new(TauriSink::new(app.clone(), Arc::clone(&memory))?),
-        )?;
+        let config = EngineConfig {
+            data_root: data_root.clone(),
+            worker_threads: None,
+            vault,
+        };
+        let sink_app = app.clone();
+        let sink_memory = Arc::clone(&memory);
+        let engine_build: EngineBuild = Box::new(move || {
+            let sink = Arc::new(TauriSink::new(sink_app, sink_memory)?);
+            Engine::new(config, sink).map_err(AppError::from)
+        });
         let handle = app.clone();
         let window = app.clone();
         let titled = app.clone();
         let window_network = StdMutex::new(launch.network.clone());
         let shell = crate::shell::shell(app)
             .unwrap_or_else(|| Arc::new(Shell::new(launch.selftest_link_trace.clone())));
+        let engine = EngineHandle::pending();
+        // Before any engine work: the caller shows the window, then starts
+        // the build. The mark is this instant, not the paint.
+        engine.mark_window();
         Ok(AppState {
             launch,
             started,
             engine,
+            engine_build: StdMutex::new(Some(engine_build)),
             data_root,
             apply_theme: Box::new(move |theme| {
                 if let Some(w) = window.get_webview_window("main") {
@@ -298,6 +466,93 @@ impl AppState {
         })
     }
 
+    /// Builds the engine on this thread. [`Self::new`] uses it; the window
+    /// does not.
+    fn start_engine_blocking(&self) -> Result<(), AppError> {
+        let build = self.take_engine_build()?;
+        let result = build();
+        let out = match &result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.clone()),
+        };
+        self.engine.install(result);
+        out
+    }
+
+    /// Builds the engine on `dw-engine-start` and returns before it finishes.
+    /// The event loop's Ready hook calls this after the window is shown, so
+    /// the window can paint while the runtime, the rates client and the
+    /// first touch of the engine code run here.
+    pub(crate) fn start_engine(&self) {
+        self.spawn_engine(|| {});
+    }
+
+    /// [`Self::start_engine`], running `before` on the build thread ahead of
+    /// `Engine::new`. The call returns while `before` is still blocked.
+    #[cfg(test)]
+    pub(crate) fn start_engine_after(&self, before: impl FnOnce() + Send + 'static) {
+        self.spawn_engine(before);
+    }
+
+    fn take_engine_build(&self) -> Result<EngineBuild, AppError> {
+        self.engine_build
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .ok_or_else(|| {
+                AppError::from(EngineError::Internal(
+                    "the engine was already started".into(),
+                ))
+            })
+    }
+
+    fn spawn_engine(&self, before: impl FnOnce() + Send + 'static) {
+        let build = match self.take_engine_build() {
+            Ok(build) => build,
+            Err(_) => return,
+        };
+        let handle = self.engine.clone();
+        let started = self.started;
+        let spawned = std::thread::Builder::new()
+            .name("dw-engine-start".into())
+            .spawn(move || {
+                before();
+                let mut finish = FinishEngine {
+                    handle: handle.clone(),
+                    done: false,
+                };
+                let build_started = Instant::now();
+                let result = build();
+                eprintln!(
+                    "dw-app: startup engine-build {}",
+                    build_started.elapsed().as_millis()
+                );
+                tracing::info!(
+                    elapsed_ms = build_started.elapsed().as_millis() as u64,
+                    "engine build"
+                );
+                if let Err(ref e) = result {
+                    tracing::warn!(error = %e, "the engine did not start");
+                }
+                crate::startup_phase(
+                    started,
+                    if result.is_ok() {
+                        "engine-ready"
+                    } else {
+                        "engine-failed"
+                    },
+                );
+                finish.done = true;
+                handle.install(result);
+            });
+        if let Err(e) = spawned {
+            self.engine
+                .install(Err(AppError::from(EngineError::Internal(format!(
+                    "could not start the engine thread: {e}"
+                )))));
+        }
+    }
+
     #[cfg(test)]
     pub(crate) async fn pause_payment_set(&self, at: SetPause) {
         let pause = self.payment_set_pause.lock().unwrap().clone();
@@ -318,6 +573,8 @@ impl AppState {
     /// they hold the session, so a handle made from this session can be
     /// stored only under this epoch.
     pub async fn session_and_epoch(&self) -> Result<(Arc<NetworkSession>, u64), AppError> {
+        // An early command waits out the start instead of failing it.
+        self.engine.wait().await?;
         let slot = self.session.lock().await;
         let session = slot
             .clone()

@@ -17,7 +17,7 @@ use ts_rs::TS;
 use crate::dto::platform::{StartupStatus, SyncLoopStatus};
 use crate::dto::{NetworkInfo, SyncStatus, mirror_enum};
 use crate::ipc::commands;
-use crate::state::parse_wallet_id;
+use crate::state::{AppState, parse_wallet_id};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 
@@ -276,6 +276,21 @@ pub enum SpvStateName {
 
 mirror_enum!(SpvState => SpvStateName { Stopped, Starting, Running });
 
+/// SPV as a command sees it. The engine's build has not finished: `starting`,
+/// without waiting. A failed build is that error. Otherwise the session's state.
+pub(crate) async fn spv_state_of(state: &AppState) -> Result<SpvStateName, crate::error::AppError> {
+    if !state.engine.is_ready() {
+        if state.engine.has_failed() {
+            return match state.engine.wait().await {
+                Ok(_) => Ok(state.session().await?.spv_state()?.into()),
+                Err(e) => Err(e),
+            };
+        }
+        return Ok(SpvStateName::Starting);
+    }
+    Ok(state.session().await?.spv_state()?.into())
+}
+
 /// The outcome of a wallet's DashPay bring-up.
 /// One wallet's last DashPay bring-up.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -478,7 +493,7 @@ commands! {
     /// SPV's state, `starting` included.
     #[facade("NetworkSession::spv_state")]
     fn spv_state(state) -> SpvStateName {
-        Ok(state.session().await?.spv_state()?.into())
+        spv_state_of(&state).await
     }
 
     /// A wallet's last DashPay bring-up (`notRun` before the first one).

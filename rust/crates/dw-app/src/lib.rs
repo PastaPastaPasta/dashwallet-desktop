@@ -159,6 +159,15 @@ pub fn install_logging(filter: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// One startup phase, milliseconds from `run`. The same line the cold-start
+/// harness reads (`dw-app: startup <phase> <ms>`), and an info log when
+/// `DW_LOG` is set.
+pub(crate) fn startup_phase(started: Instant, phase: &str) {
+    let ms = started.elapsed().as_millis();
+    tracing::info!(phase, elapsed_ms = ms as u64, "startup");
+    eprintln!("dw-app: startup {phase} {ms}");
+}
+
 /// The line an argument error prints: redacted, though no launch error
 /// quotes a value (D30), in case one ever does: the OS may pass a link
 /// after an option or inside one.
@@ -199,6 +208,7 @@ pub fn run() {
             std::process::exit(2);
         }
     };
+    startup_phase(started, "args");
     let context = tauri::generate_context!();
     // The data root first, created and canonical: the instance name, its
     // lock, the window-state file and the engine all take this one path.
@@ -217,10 +227,13 @@ pub fn run() {
         std::process::exit(1);
     });
     launch.data_dir = Some(root.clone());
+    startup_phase(started, "data-root");
     // The instance lock ends a second launch on this root that cannot hand
     // its links over; it is taken before the main window, webview or tray
-    // icon exists (those, and the setup hook that opens the engine, come with
-    // `run`, where a setup error would panic). With the single-instance
+    // icon exists (those come with `run`). The setup hook shows the window
+    // and returns before the engine is built: it runs on the event loop's
+    // Ready, and the window cannot paint until that hook returns. With the
+    // single-instance
     // plugin it waits for the build, during which the plugin forwards and
     // exits where it can. Without it (macOS, or Linux without a session
     // bus) it comes first, so a refused launch ends before GTK starts and
@@ -239,6 +252,7 @@ pub fn run() {
     if let Some(single_instance) = single_instance {
         base = base.plugin(single_instance);
     }
+    startup_phase(started, "instance");
     if let Some(window_state) = shell::native::window_state(&launch) {
         base = base.plugin(window_state);
     }
@@ -251,6 +265,7 @@ pub fn run() {
             eprintln!("dash-wallet: could not start: {e}");
             std::process::exit(1);
         });
+    startup_phase(started, "built");
     app.manage(early_lock.unwrap_or_else(take_lock));
     // The self-test's grant, outside `capabilities/` so that no other build
     // embeds it (build.rs, E0-13 D17). Tauri panics on one it cannot parse
@@ -277,7 +292,16 @@ pub fn run() {
             && let Some(state) = handle.try_state::<AppState>()
         {
             // Flush and release every wallet database before the process ends.
-            if let Err(e) = tauri::async_runtime::block_on(state.engine.shutdown()) {
+            let engines = state.engine.clone();
+            if let Err(e) = tauri::async_runtime::block_on(async {
+                match engines.wait().await {
+                    Ok(engine) => engine.shutdown().await,
+                    Err(e) => {
+                        eprintln!("dash-wallet: engine did not start: {e}");
+                        Ok(())
+                    }
+                }
+            }) {
                 eprintln!("dash-wallet: engine shutdown: {e}");
             }
         }
@@ -317,11 +341,11 @@ fn app_builder<R: Runtime>(
                 tauri::webview::PageLoadEvent::Started => "page-load-started",
                 tauri::webview::PageLoadEvent::Finished => "page-load-finished",
             };
-            eprintln!("dw-app: startup {mark} {}", started.elapsed().as_millis());
+            startup_phase(started, mark);
         })
         .invoke_handler(api::invoke)
         .setup(move |app| {
-            eprintln!("dw-app: startup setup {}", started.elapsed().as_millis());
+            startup_phase(started, "setup");
             // `--theme` wins; otherwise the appearance Settings saved (U-04 D3).
             let theme = launch.theme.or_else(|| {
                 launch
@@ -330,8 +354,11 @@ fn app_builder<R: Runtime>(
                     .and_then(|root| settings::read(root).theme)
             });
             let window_size = launch.window_size;
-            let handle = app.handle();
-            let state = AppState::new(handle, launch, started, vault, || {
+            let handle = app.handle().clone();
+            // No engine yet. This hook is the event loop's Ready: it has
+            // already created the window, and nothing paints until it
+            // returns. The build (runtime, rates client) runs afterwards.
+            let state = AppState::pending(&handle, launch, started, vault, || {
                 handle
                     .path()
                     .app_data_dir()
@@ -339,7 +366,6 @@ fn app_builder<R: Runtime>(
             })?;
             // After the state: it resolves the saved network choice.
             let title = window_title(&state.window_network());
-            app.manage(state);
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title(&title)?;
                 if let Some(theme) = theme {
@@ -351,8 +377,12 @@ fn app_builder<R: Runtime>(
                     // otherwise leave the resized window partly off-screen.
                     window.center()?;
                 }
+                window.show()?;
             }
-            exit_on_signal(handle.clone());
+            startup_phase(started, "window-ready");
+            app.manage(state);
+            app.state::<AppState>().start_engine();
+            exit_on_signal(handle);
             Ok(())
         })
 }
@@ -405,7 +435,7 @@ mod tests {
             || unreachable!("--datadir given"),
         )
         .unwrap();
-        assert_eq!(state.engine.config().data_root, root);
+        assert_eq!(state.engine.ready().unwrap().config().data_root, root);
         assert!(root.is_dir());
     }
 
@@ -483,6 +513,120 @@ mod tests {
             || unreachable!("--datadir given"),
         )
         .expect("the state opens under the lock run took");
+    }
+
+    /// The window path returns with the engine unbuilt. An early `spv_state`
+    /// is `starting` and does not wait. Once the build is released, a command
+    /// that needs the engine succeeds. Fails if the build runs before the
+    /// window path returns: the second recv times out while the hook is held.
+    #[test]
+    fn the_window_is_ready_before_the_engine_starts() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use crate::api::chain::{SpvStateName, spv_state_of};
+
+        let app = tauri::test::mock_app();
+        let dir = dw_testutil::private_tempdir();
+        let opts = LaunchOptions {
+            data_dir: Some(dir.path().join("data")),
+            ..LaunchOptions::default()
+        };
+        let state = AppState::pending(
+            app.handle(),
+            opts,
+            Instant::now(),
+            Default::default(),
+            || unreachable!("--datadir given"),
+        )
+        .unwrap();
+        assert!(
+            state.engine.ready().is_none(),
+            "the window path built the engine"
+        );
+        assert_eq!(
+            tauri::async_runtime::block_on(spv_state_of(&state)).unwrap(),
+            SpvStateName::Starting
+        );
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                state.start_engine_after(move || {
+                    let _ = entered_tx.send(());
+                    let _ = release_rx.recv();
+                });
+                let _ = done_tx.send(());
+            });
+            assert!(
+                entered_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+                "the engine thread did not start"
+            );
+            assert!(
+                done_rx.recv_timeout(Duration::from_secs(2)).is_ok(),
+                "window setup waited for the engine"
+            );
+            assert!(state.engine.ready().is_none());
+            assert_eq!(
+                tauri::async_runtime::block_on(spv_state_of(&state)).unwrap(),
+                SpvStateName::Starting
+            );
+            release_tx.send(()).unwrap();
+        });
+
+        let engines = state.engine.clone();
+        let engine = tauri::async_runtime::block_on(engines.wait()).expect("the engine starts");
+        let networks = tauri::async_runtime::block_on(engine.existing_networks()).unwrap();
+        assert!(networks.is_empty());
+        assert!(state.engine.window_ready_at().unwrap() < state.engine.engine_ready_at().unwrap());
+        tauri::async_runtime::block_on(engine.shutdown()).unwrap();
+    }
+
+    /// Several runs: preparing the window stays under two seconds and does
+    /// not include the engine build. The numbers are the spread.
+    #[test]
+    fn startup_window_returns_before_the_engine_over_several_runs() {
+        for run in 0..3 {
+            let app = tauri::test::mock_app();
+            let dir = dw_testutil::private_tempdir();
+            let opts = LaunchOptions {
+                data_dir: Some(dir.path().join("data")),
+                ..LaunchOptions::default()
+            };
+            let t0 = Instant::now();
+            let state = AppState::pending(app.handle(), opts, t0, Default::default(), || {
+                unreachable!("--datadir given")
+            })
+            .unwrap();
+            let window_us = t0.elapsed().as_micros();
+            assert!(
+                state.engine.ready().is_none(),
+                "run {run}: the window path built the engine"
+            );
+            assert!(
+                window_us < 2_000_000,
+                "run {run}: window setup took {window_us} µs"
+            );
+            state.start_engine();
+            let engines = state.engine.clone();
+            let engine = tauri::async_runtime::block_on(engines.wait()).expect("the engine starts");
+            let engine_ms = t0.elapsed().as_millis();
+            let marked = state
+                .engine
+                .engine_ready_at()
+                .unwrap()
+                .duration_since(state.engine.window_ready_at().unwrap())
+                .as_millis();
+            eprintln!(
+                "dw-app: measure run={run} window_us={window_us} engine_ms={engine_ms} engine_after_window_ms={marked}"
+            );
+            assert!(
+                state.engine.window_ready_at().unwrap() < state.engine.engine_ready_at().unwrap()
+            );
+            tauri::async_runtime::block_on(engine.shutdown()).unwrap();
+        }
     }
 
     #[test]

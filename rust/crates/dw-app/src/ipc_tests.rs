@@ -14,7 +14,7 @@ use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 use serde_json::{Value, json};
 use tauri::test::{MockRuntime, mock_context, noop_assets};
 use tauri::webview::InvokeRequest;
-use tauri::{App, WebviewWindow};
+use tauri::{App, Manager, WebviewWindow};
 
 use crate::error::ErrorCode;
 use crate::launch::LaunchOptions;
@@ -73,6 +73,10 @@ impl Demo {
         // once, not in a loop (the deprecation is about busy-looping).
         #[allow(deprecated)]
         app.run_iteration(|_, _| {});
+        // Setup returns before the engine is built. Wait, so a command and
+        // the data-root drop do not race the build thread.
+        let state = app.state::<crate::state::AppState>();
+        tauri::async_runtime::block_on(state.engine.wait()).expect("the engine starts");
         let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
             .build()
             .expect("webview");
@@ -1692,7 +1696,14 @@ fn a_refused_close_keeps_the_active_session() {
 
     // Closed in the engine: a failure then still drops it.
     assert!(
-        tauri::async_runtime::block_on(state.engine.close_network(DashNetwork::Regtest)).unwrap()
+        tauri::async_runtime::block_on(
+            state
+                .engine
+                .ready()
+                .unwrap()
+                .close_network(DashNetwork::Regtest)
+        )
+        .unwrap()
     );
     assert!(!session.is_open());
     let mut slot = Some(session);

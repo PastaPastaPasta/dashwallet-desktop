@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, RwLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dash_sdk::SdkBuilder;
 use dash_sdk::dapi_grpc::tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
@@ -292,6 +292,7 @@ impl NetworkSession {
         opts: SessionOptions,
         vault_config: VaultConfig,
     ) -> Result<Arc<Self>, EngineError> {
+        let opened = Instant::now();
         network.validate()?;
         let spv_peers = opts
             .spv_peers
@@ -368,6 +369,7 @@ impl NetworkSession {
         ));
         // First attempt off the async workers: construction does a blocking DNS check.
         let ctx = Arc::clone(&context);
+        let dns = Instant::now();
         match tokio::task::spawn_blocking(move || ctx.get_or_try_init(true)).await? {
             Ok(provider) => {
                 // Prefetch quorums, as the iOS SDK does after building a trusted SDK.
@@ -383,6 +385,10 @@ impl NetworkSession {
                 detail,
             }),
         }
+        tracing::info!(
+            elapsed_ms = dns.elapsed().as_millis() as u64,
+            "startup quorum-dns"
+        );
 
         let trust = Arc::new(TrustProvider::new(
             trust::DEFAULT_MODE,
@@ -736,6 +742,10 @@ impl NetworkSession {
         }
         session.spawn_ensure_background();
         session.spawn_reverify();
+        tracing::info!(
+            elapsed_ms = opened.elapsed().as_millis() as u64,
+            "startup session-open"
+        );
         Ok(session)
     }
 
