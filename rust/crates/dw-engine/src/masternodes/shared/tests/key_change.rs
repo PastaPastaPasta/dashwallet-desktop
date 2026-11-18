@@ -6,17 +6,17 @@ use dw_protx::shared::envelope::{SigsEnvelope, SigsKind, decode_message};
 use dw_protx::shared::key_change;
 use dw_protx::shared::rules::{SharedMn, check_update_shared_registrar};
 use dw_protx::shared::{
-    ProRegTxV3, ProUpSharedRegTx, SpecialTx, TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR,
-    payload_bytes,
+    ProRegTxV3, ProUpShareTx, ProUpSharedRegTx, SpecialTx, TRANSACTION_PROVIDER_UPDATE_SHARE,
+    TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR, payload_bytes,
 };
 
 use super::super::store::reserved_of;
-use super::dissolve::{assert_update_pending, delisted, dissolve_now, listed};
+use super::dissolve::{assert_update_pending, delisted, dissolve_now, listed, listed_with_reward};
 use super::together::scanned_to;
 use super::*;
 use crate::masternodes::{
-    DeadReason, KeepOr, KeyChangeRequest, MaintenanceSent, OperatorChoice, SharedKind,
-    SharedWarning, VotingChoice,
+    DeadReason, KeepOr, KeyChangeRequest, MaintenanceSent, OperatorChoice, RewardChoice,
+    SharedKind, SharedWarning, VotingChoice,
 };
 
 /// The BLS12-381 G1 generator, basic serialization: a valid operator key
@@ -901,4 +901,96 @@ fn ep_conflict_height_preserves_key_change_follower_release() {
     f.tip(65);
     f.follow();
     assert!(f.locked(0).is_empty());
+}
+
+/// A listed masternode whose share 0 was registered with `reward`, fee
+/// coins ready, as [`keyed`] leaves one whose reward is the refund.
+fn keyed_reward(f: &Fx, reward: RewardChoice) -> (String, Txid) {
+    let (id, txid) = listed_with_reward(f, COIN, reward);
+    list_keys(f, txid, listed_operator(), [1; 20]);
+    let mined = f.seam.shared_mined.lock().unwrap().clone();
+    for (_, tx, _) in mined {
+        for input in &tx.input {
+            for w in 0..f.wallets.len() {
+                f.spend(w, input.previous_output);
+            }
+        }
+    }
+    f.credit(0, 9, COIN);
+    (id, txid)
+}
+
+fn p2pkh(id: [u8; 20]) -> dashcore::ScriptBuf {
+    use dashcore::hashes::Hash;
+    dashcore::ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array(id))
+}
+
+fn voting_of(txid: Txid, id: [u8; 20]) -> KeyChangeRequest {
+    KeyChangeRequest {
+        pro_tx_hash: txid.to_string(),
+        operator: KeepOr::Keep,
+        voting: KeepOr::Set(VotingChoice::Address {
+            address: super::super::standby::p2pkh_address(id, dashcore::Network::Regtest),
+        }),
+    }
+}
+
+/// A confirmed ProUpShareTx setting share `index`'s reward script.
+fn mined_share_update(pro_tx: Txid, index: u16, reward: dashcore::ScriptBuf) -> Transaction {
+    let payload = ProUpShareTx {
+        version: ProUpShareTx::CURRENT_VERSION,
+        pro_tx_hash: pro_tx,
+        share_index: index,
+        reward_script: reward,
+        inputs_hash: [0; 32],
+        sig: vec![0; 65],
+    };
+    let special = SpecialTx {
+        version: 3,
+        tx_type: TRANSACTION_PROVIDER_UPDATE_SHARE,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([0x91; 32]), 0),
+            script_sig: dashcore::ScriptBuf::new(),
+            sequence: u32::MAX,
+            witness: Default::default(),
+        }],
+        output: Vec::new(),
+        lock_time: 7,
+        payload: payload_bytes(&payload),
+    };
+    super::super::send::typed(&special).expect("a ProUpShareTx round-trips")
+}
+
+/// D29 residual: the payee-reuse pre-check reads the shares' scripts after
+/// a later ProUpShareTx. Reusing the new reward script is refused; reusing
+/// only the script that update replaced is accepted.
+#[test]
+fn test_QT_127_a_key_change_reads_the_shares_current_scripts() {
+    let f = fx(3, true);
+    let old_id = [0x44; 20];
+    let new_id = [0x55; 20];
+    let old_reward = super::super::standby::p2pkh_address(old_id, dashcore::Network::Regtest);
+    let (reg_id, txid) = keyed_reward(
+        &f,
+        RewardChoice::Address {
+            address: old_reward,
+        },
+    );
+    let registered = registration(&f, &reg_id);
+    assert_eq!(registered.shares[0].reward_script, p2pkh(old_id));
+    f.mine(mined_share_update(txid, 0, p2pkh(new_id)), 60);
+
+    let reused_new = start(&f, 0, voting_of(txid, new_id), 0);
+    assert!(
+        matches!(
+            &reused_new,
+            Err(MasternodesError::ProtxRefused { reason, .. })
+                if reason == "bad-proupsharedreg-payee-reuse"
+        ),
+        "{reused_new:?}"
+    );
+    assert!(f.locked(0).is_empty());
+
+    let reused_old = start(&f, 0, voting_of(txid, old_id), 0).unwrap();
+    assert_eq!(reused_old.session.stage, SharedStage::Signing);
 }

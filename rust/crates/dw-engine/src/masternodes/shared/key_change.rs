@@ -31,7 +31,10 @@ use dw_protx::shared::envelope::{
 };
 use dw_protx::shared::key_change::{self, Checked, Keys, Refusal};
 use dw_protx::shared::rules::{self as shared_rules, SharedMn};
-use dw_protx::shared::{CompactSignature, ProUpSharedRegTx, SpecialTx, payload_bytes};
+use dw_protx::shared::{
+    CollateralShare, CompactSignature, ProUpShareTx, ProUpSharedRegTx, SpecialTx,
+    TRANSACTION_PROVIDER_UPDATE_SHARE, payload_bytes,
+};
 use platform_wallet::masternode::MasternodeListSummary;
 use serde::{Deserialize, Serialize};
 
@@ -53,8 +56,8 @@ use super::flow::signer_refusal;
 use super::send::typed;
 use super::standby::{in_history, p2pkh_address};
 use super::store::{
-    decode_outpoints, encode_outpoints, json, message_refusal, reserved_of, role_name, role_of,
-    stage_refusal,
+    ChainView, decode_outpoints, encode_outpoints, json, message_refusal, reserved_of, role_name,
+    role_of, stage_refusal,
 };
 use super::together::{TogetherView, absorb, known_mn, unsigned};
 use crate::coins::now_secs;
@@ -280,6 +283,50 @@ fn envelope(
         tx: request.to_bytes(),
         signatures: sigs.iter().map(|(i, s)| (*i, *s)).collect(),
     }
+}
+
+/// A history transaction as the shared types read it. The pin keeps a
+/// payload it cannot structure as raw bytes, and those round-trip.
+fn special_of(tx: &Transaction) -> Option<SpecialTx> {
+    SpecialTx::from_bytes(&dashcore::consensus::serialize(tx)).ok()
+}
+
+/// The registration's shares with every later confirmed ProUpShareTx's
+/// reward script applied, in block order (Core writes `scriptReward`,
+/// `specialtxman.cpp:671`). The payee-reuse check reads these: the
+/// registration's scripts are what the share was born with (D29).
+fn shares_now(
+    chain: &ChainView,
+    hash: [u8; 32],
+    registered: &[CollateralShare],
+) -> Vec<CollateralShare> {
+    let mut shares = registered.to_vec();
+    let mut updates = Vec::new();
+    for (id, entry) in &chain.history {
+        let Some(height) = entry.context.block_info().map(|b| b.height()) else {
+            continue;
+        };
+        let Some(tx) = special_of(&entry.tx) else {
+            continue;
+        };
+        if tx.tx_type != TRANSACTION_PROVIDER_UPDATE_SHARE {
+            continue;
+        }
+        let Ok(payload) = dashcore::consensus::deserialize::<ProUpShareTx>(&tx.payload) else {
+            continue;
+        };
+        if payload.pro_tx_hash.to_byte_array() != hash {
+            continue;
+        }
+        updates.push((height, *id, payload.share_index, payload.reward_script));
+    }
+    updates.sort_by_key(|(height, id, _, _)| (*height, *id));
+    for (_, _, index, script) in updates {
+        if let Some(share) = shares.get_mut(usize::from(index)) {
+            share.reward_script = script;
+        }
+    }
+    shares
 }
 
 /// The synced list's keys for the masternode now: `None` while the list
@@ -724,11 +771,18 @@ impl NetworkSession {
         // Core's trivial rules: a kept null key is `bad-protx-key-null`.
         let checked = key_change::check(&tx, &mn).map_err(request_refusal)?;
         // Core's rules on the request: the operator key unique in the list,
-        // the voting key no share's payee, `inputsHash` (D12).
+        // the voting key no share's payee as the shares stand after later
+        // ProUpShareTx, `inputsHash` (D12).
+        let chain = self.shared_chain(wallet).await?;
+        let current = shares_now(&chain, hash, &reg.shares);
+        let payees = SharedMn {
+            shares: &current,
+            ..mn.clone()
+        };
         shared_rules::check_update_shared_registrar(
             &tx,
             &checked.payload,
-            Some(&mn),
+            Some(&payees),
             &ctx.listed,
             true,
             false,
@@ -1020,10 +1074,16 @@ impl NetworkSession {
             let (charge, signer) = charge_fee(&lease, funded.fee)?;
             let signed = sign_own_inputs(&combined, &own, &signer).await?;
             let p = payload_of(&signed);
+            let chain = self.shared_chain(wallet).await?;
+            let current = shares_now(&chain, k.hash, &reg.shares);
+            let payees = SharedMn {
+                shares: &current,
+                ..mn.clone()
+            };
             shared_rules::check_update_shared_registrar(
                 &signed,
                 &p,
-                Some(&mn),
+                Some(&payees),
                 &ctx.listed,
                 true,
                 true,
