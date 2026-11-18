@@ -18,11 +18,8 @@ use dw_vault::GrantPurpose;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
+use crate::governance::proposal_grant_cap;
 use crate::masternodes::{Failure, snake, value, wait_for_list, wallet};
-
-/// Margin over `preview_proposal`'s network fee on `prepare`'s `Spend` grant
-/// (MG-06 D25).
-const PROPOSAL_FEE_MARGIN: u64 = 10_000;
 
 #[derive(Args)]
 pub struct GovArgs {
@@ -342,7 +339,7 @@ fn command(
             engine
                 .block_on(gov.set_sync_enabled(enabled))
                 .map_err(gov_failure)?;
-            value(json!({ "enabled": enabled }))
+            value(json!({ "enabled": gov.sync_enabled().map_err(gov_failure)? }))
         }
         GovCommand::SyncState => value(gov.sync_state().map_err(gov_failure)?),
         GovCommand::Resync => {
@@ -423,11 +420,7 @@ fn command(
             if a.preview {
                 return value(preview);
             }
-            let margin = preview.network_fee.max(PROPOSAL_FEE_MARGIN);
-            let max_duffs = preview
-                .fee
-                .saturating_add(preview.network_fee)
-                .saturating_add(margin);
+            let max_duffs = proposal_grant_cap(&preview);
             let grant = session
                 .vault()
                 .authorize(

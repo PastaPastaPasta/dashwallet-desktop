@@ -246,65 +246,89 @@ fn gov_failures_never_quote_secret_shaped_arguments() {
     }
 
     let outpoint = format!("{SECRET}-0");
-    let commands: &[&[&str]] = &[
-        &["gov", "list", "--text", SECRET],
-        &["gov", "get", SECRET],
-        &["gov", "current-votes", SECRET, "--outpoint", &outpoint],
-        &["gov", "voting-masternodes", SECRET, "--wallet", SECRET],
-        &[
-            "gov",
-            "vote",
-            SECRET,
-            "--outcome",
-            "yes",
-            "--masternode",
-            SECRET,
-            "--wallet",
-            SECRET,
-        ],
-        &[
-            "gov",
-            "voteraw",
-            &outpoint,
-            SECRET,
-            "--outcome",
-            "yes",
-            "--time",
-            "1700000000",
-            "--signature",
-            SECRET,
-        ],
-        &[
-            "gov",
-            "prepare",
-            "--name",
-            SECRET,
-            "--url",
-            SECRET,
-            "--payment-address",
-            SECRET,
-            "--payment-amount",
-            "100000000",
-            "--payment-count",
-            "1",
-            "--first-superblock",
-            "1500",
-            "--coin",
-            &outpoint,
-            "--wallet",
-            SECRET,
-        ],
-        &["gov", "list-prepared", "--wallet", SECRET],
-        &["gov", "submit", SECRET, "--wallet", SECRET],
-        &["gov", "--spv", "--sync-timeout", "1", "info"],
+    let commands: &[(&[&str], &str)] = &[
+        (&["gov", "list", "--text", SECRET], "governance.not_synced"),
+        (&["gov", "get", SECRET], "governance.not_synced"),
+        (
+            &["gov", "current-votes", SECRET, "--outpoint", &outpoint],
+            "governance.not_synced",
+        ),
+        (
+            &["gov", "voting-masternodes", SECRET, "--wallet", SECRET],
+            "wallet_not_found",
+        ),
+        (
+            &[
+                "gov",
+                "vote",
+                SECRET,
+                "--outcome",
+                "yes",
+                "--masternode",
+                SECRET,
+                "--wallet",
+                SECRET,
+            ],
+            "governance.sync_disabled",
+        ),
+        (
+            &[
+                "gov",
+                "voteraw",
+                &outpoint,
+                SECRET,
+                "--outcome",
+                "yes",
+                "--time",
+                "1700000000",
+                "--signature",
+                SECRET,
+            ],
+            "governance.sync_disabled",
+        ),
+        (
+            &[
+                "gov",
+                "prepare",
+                "--name",
+                SECRET,
+                "--url",
+                SECRET,
+                "--payment-address",
+                SECRET,
+                "--payment-amount",
+                "100000000",
+                "--payment-count",
+                "1",
+                "--first-superblock",
+                "1500",
+                "--coin",
+                &outpoint,
+                "--wallet",
+                SECRET,
+            ],
+            "governance.not_synced",
+        ),
+        (
+            &["gov", "list-prepared", "--wallet", SECRET],
+            "wallet_not_found",
+        ),
+        (
+            &["gov", "submit", SECRET, "--wallet", SECRET],
+            "governance.proposal_not_found",
+        ),
+        (
+            &["gov", "--spv", "--sync-timeout", "1", "info"],
+            "governance.list_unavailable",
+        ),
     ];
     let mut rev_bytes = hex::decode(SECRET).unwrap();
     rev_bytes.reverse();
     let reversed = hex::encode(rev_bytes);
-    for args in commands {
+    for (args, want) in commands {
         let out = dwcli(dir.path(), "pass", args);
         let (code, _) = error(&out);
-        assert!(!code.is_empty());
+        assert_eq!(code, *want, "{args:?}");
         let all = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),

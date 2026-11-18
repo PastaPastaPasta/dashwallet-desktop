@@ -144,7 +144,9 @@ enum MnCommand {
     },
     /// An evonode's claimable credits (a proved Platform read).
     Credits { pro_tx_hash: String },
-    /// The header-checked collateral outpoint of a listed masternode.
+    /// The header-checked collateral outpoint of a listed masternode
+    /// (refused `masternodes.unsupported` until dash-spv exposes
+    /// header-by-hash, MG-03 D11).
     ResolveCollateral { pro_tx_hash: String },
     /// What the wallet can withdraw from the evonode's Platform identity
     /// and where to, each destination `fixed` or `checking` (MG-13); signs

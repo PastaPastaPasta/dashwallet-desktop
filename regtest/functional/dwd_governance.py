@@ -171,11 +171,15 @@ class DwdGovernance(DashTestFramework):
         return r["YesCount"], r["NoCount"], r["AbstainCount"]
 
     def voter_sum(self):
-        """Current votes Core holds, summed over every proposal. A ProUpRegTx drops the votes the
-        old voting key signed, so a fixed total is not a sync barrier."""
+        """Funding votes Core holds, summed over every proposal. `tally.voters` counts funding
+        voters only, and a ProUpRegTx drops the votes the old voting key signed, so a fixed total
+        is not a sync barrier."""
         node = self.nodes[0]
-        return sum(len(node.gobject("getcurrentvotes", h))
-                   for h in node.gobject("list", "all", "proposals"))
+        total = 0
+        for h in node.gobject("list", "all", "proposals"):
+            votes = node.gobject("getcurrentvotes", h)
+            total += sum(1 for v in votes.values() if ":funding:" in v)
+        return total
 
     def mn(self, i):
         return self.mninfo[i]
@@ -593,12 +597,19 @@ class DwdGovernance(DashTestFramework):
         assert_equal(created["state"], {"kind": "fee_paid", "confirmations": 0})
         # The fee is already in the mempool. Submitting those same bytes again waits out
         # dash-spv's acceptance timeout (`send.broadcast_unknown`): peers already have them.
-        # One confirmation takes the confirming path, which does not rebroadcast.
+        # One confirmation takes the confirming path, which does not rebroadcast. The
+        # follower announces only after the fee has been seen mined for 15s, so the
+        # process stays up through that wait. Core then holds the object until the fee
+        # has six confirmations.
         self.generate(node, 1)
         tip = node.getblockcount()
-        resub = dwcli.gov("--sync-height", str(tip), "submit", created["hash"], "--wallet", wallet)
+        resub = dwcli.gov("--sync-height", str(tip), "--linger-secs", "45",
+                          "submit", created["hash"], "--wallet", wallet)
         assert_equal(resub["hash"], created["hash"])
         assert resub["state"]["kind"] in ("confirming", "ready_to_submit", "fee_paid"), resub["state"]
+        self.generate(node, 5)
+        self.wait_until(lambda: created["hash"] in node.gobject("list", "all", "proposals"),
+                        timeout=60)
 
         # Cast a funding vote with the wallet's voting key 0, relay an external vote, and read back.
         # `--max-ranged 0` waits until the sync has resolved collaterals: `vote` signs with the
