@@ -235,5 +235,5 @@ status, milestone and test reference. It is re-baselined on the Tauri app in 0.2
 
 - Generated bindings are never hand-edited: the Tauri bindings (`apps/desktop/src/api/generated`) come from
   `cd rust && DW_UPDATE_BINDINGS=1 cargo test -p dw-app`, and CI fails when they are stale.
-- GitHub Actions runs CI on Linux, macOS and Windows for `main` and `dw/**` pushes, a nightly regtest run
-  and the UI-gate measurement runs ([`docs/ci.md`](docs/ci.md)). Run screenshots are downloadable artifacts.
+- GitHub Actions runs the Linux checks on pull requests, CI on Linux, macOS and Windows for `main` pushes and
+  nightly, a nightly regtest run and the UI-gate measurement runs ([`docs/ci.md`](docs/ci.md)). Run screenshots are downloadable artifacts.
