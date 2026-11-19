@@ -385,5 +385,12 @@ check "version: dry-run tag" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.0.0-
 check "version: rc tag of the same version" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.1.0-rc.1) == "VERSION=0.1.0-rc.1" ]]'
 check "version: rc tag of another version fails" '! v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0-rc.1 >/dev/null'
 check "version: a tag that differs from tauri.conf.json fails" '! v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v9.9.9 >/dev/null'
+drift=$work/drift
+mkdir -p "$drift/rust/crates/dw-app"
+cp rust/crates/dw-app/tauri.conf.json "$drift/rust/crates/dw-app/"
+sed '/^\[workspace\.package\]/,/^\[/ s/^version = ".*"/version = "9.9.9"/' rust/Cargo.toml > "$drift/rust/Cargo.toml"
+check "version: the copy differs only in Cargo.toml's workspace version" '[[ $(grep -c "^version = \"9.9.9\"" "$drift/rust/Cargo.toml") -eq 1 ]]'
+check "version: a Cargo.toml workspace version that differs from tauri.conf.json fails" \
+  '! v DW_RELEASE_ROOT="$drift" GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.1.0 >/dev/null'
 
 exit $fail
