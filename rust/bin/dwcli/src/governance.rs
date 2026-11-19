@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use clap::Args;
 use dw_console::{ConsoleContext, ConsoleFailure};
 use dw_engine::governance::{
-    GovernanceSyncPhase, MyProposal, ProposalDraft, ProposalQuery, ProposalScope, RawVote,
-    VoteOutcome,
+    GovernanceSyncPhase, MyProposal, ProposalDraft, ProposalPreview, ProposalQuery, ProposalScope,
+    RawVote, VoteOutcome,
 };
 use dw_engine::{Engine, NetworkSession, WalletId};
 use dw_vault::GrantPurpose;
@@ -86,9 +86,20 @@ fn line<T: Serialize>(kind: &str, value: &T) {
     );
 }
 
-/// The least margin `--propose`'s grant gives over the estimated network
-/// fee: about 60 more P2PKH inputs at the 1 duff/byte minimum relay fee.
-const PROPOSAL_FEE_MARGIN: u64 = 10_000;
+/// The least margin a proposal `Spend` grant gives over the estimated
+/// network fee: about 60 more P2PKH inputs at the 1 duff/byte minimum relay
+/// fee (MG-06 D25). `gov prepare` and `governance --propose` share it.
+pub(crate) const PROPOSAL_FEE_MARGIN: u64 = 10_000;
+
+/// Cap of the `Spend` grant for creating `preview`: the proposal fee, the
+/// estimated network fee, and at least [`PROPOSAL_FEE_MARGIN`] more.
+pub(crate) fn proposal_grant_cap(preview: &ProposalPreview) -> u64 {
+    let margin = preview.network_fee.max(PROPOSAL_FEE_MARGIN);
+    preview
+        .fee
+        .saturating_add(preview.network_fee)
+        .saturating_add(margin)
+}
 
 /// `name:url:address:amount-duffs:payment-count:first-superblock`; the URL
 /// may hold colons.
@@ -207,12 +218,11 @@ pub fn run(
         // A cap, not a charge: the create selects the coins again, and a
         // coin that arrived since can take more inputs than the preview's
         // (MG-06 D25). The lease charges what the fee spends.
-        let margin = preview.network_fee.max(PROPOSAL_FEE_MARGIN);
         let grant = session
             .vault()
             .authorize(
                 GrantPurpose::Spend {
-                    max_duffs: preview.fee + preview.network_fee + margin,
+                    max_duffs: proposal_grant_cap(&preview),
                 },
                 Some(&id.0),
                 credential(session, passphrase),
