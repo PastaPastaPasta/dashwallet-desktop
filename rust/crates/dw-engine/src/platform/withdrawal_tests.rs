@@ -376,6 +376,11 @@ impl FakeWithdrawals {
         *self.lag.lock().unwrap() = Some(snapshot);
     }
 
+    /// The nonce reads are current again.
+    pub(crate) fn caught_up(&self) {
+        *self.lag.lock().unwrap() = None;
+    }
+
     /// The withdrawal documents on Platform.
     pub(crate) fn landed(&self) -> usize {
         self.documents.lock().unwrap().len()
@@ -483,7 +488,12 @@ impl WithdrawNet for FakeWithdrawals {
             Answer::Applied { fee } if self.execute(&transition, fee) => Ok(self.balance_now()),
             Answer::Applied { .. } => Err(refused()),
             Answer::Refused => {
-                self.used.lock().unwrap().insert(nonce_of(&transition));
+                if !matches!(
+                    transition,
+                    StateTransition::IdentityCreditTransferToAddresses(_)
+                ) {
+                    self.used.lock().unwrap().insert(nonce_of(&transition));
+                }
                 Err(refused())
             }
             Answer::Unknown => Err(unknown()),

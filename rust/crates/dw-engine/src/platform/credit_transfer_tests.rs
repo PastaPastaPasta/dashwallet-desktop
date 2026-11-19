@@ -371,6 +371,68 @@ fn a_shared_nonce_is_decided_by_the_withdrawal_document() {
     }
 }
 
+/// R1: a transfer Drive refused while it still takes the nonce no longer
+/// holds the route; the next transfer is quoted and signs at that nonce.
+#[test]
+fn a_refused_transfer_frees_its_nonce() {
+    let w = World::new(10 * DASH);
+    w.net.answer(Answer::Applied { fee: 100 * DASH });
+    let refused = w.send(DASH).unwrap_err();
+    assert_eq!(refused.code(), "platform.insufficient_credits");
+    assert_eq!(w.executed(), 0);
+    let k = nonce_of(&w.net.sent()[0]);
+
+    w.net.answer(Answer::Applied { fee: TRANSFER_FEE });
+    w.send(DASH).unwrap();
+    assert_eq!(nonce_of(&w.net.sent()[1]), k);
+    assert_eq!(w.executed(), 1);
+}
+
+/// C6-7: an `Ok` from the broadcast is not the transfer executed; with its
+/// nonce still free it is `platform.broadcast_unknown`, and it still holds
+/// the route.
+#[test]
+fn a_successful_answer_is_never_evidence() {
+    let w = World::new(10 * DASH);
+    w.net.answer(Answer::LyingSuccess);
+    let t = w.send(DASH).unwrap_err();
+    assert_eq!(t, unknown(&w.net.sent()[0]));
+    assert_eq!(w.executed(), 0);
+    assert_eq!(
+        w.send(DASH).unwrap_err(),
+        CreditsError::MovePending {
+            id: hash(&w.net.sent()[0])
+        }
+    );
+}
+
+/// C6-7: a nonce read older than the one the transfer was signed after
+/// decides nothing, not even a refusal; read again current, the transfer
+/// that executed is `credits.withdrawal_landed` once.
+#[test]
+fn a_lagging_read_decides_nothing() {
+    let w = World::new(10 * DASH);
+    let before = w.net.snapshot();
+    w.net.answer(Answer::Applied { fee: TRANSFER_FEE });
+    w.send(DASH).unwrap();
+    let net = Arc::downgrade(&w.net);
+    *w.net.before_send.lock().unwrap() = Some(Box::new(move |_: &StateTransition| {
+        net.upgrade().unwrap().lag(before);
+    }));
+    w.net.answer(Answer::LandedRefused);
+    let refused = w.send(DASH).unwrap_err();
+    assert_eq!(refused.code(), "platform.insufficient_credits");
+    assert_eq!(w.executed(), 2);
+
+    *w.net.before_send.lock().unwrap() = None;
+    w.net.caught_up();
+    w.net.answer(Answer::Applied { fee: TRANSFER_FEE });
+    let t = w.net.sent()[1].clone();
+    assert_eq!(w.send(DASH).unwrap_err(), landed(hash(&t)));
+    w.send(DASH).unwrap();
+    assert_eq!(nonce_of(&w.net.sent()[2]), nonce_of(&t) + 1);
+}
+
 /// R1 for the nonce record: the transfer is in the session's record at its
 /// nonce before it leaves, so nothing it signed can execute unrecorded.
 #[test]

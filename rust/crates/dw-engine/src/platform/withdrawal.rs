@@ -317,6 +317,18 @@ impl WithdrawalNonces {
         });
     }
 
+    /// `signed` at `nonce` was refused while Drive still takes `nonce`: it
+    /// no longer holds the next write, which still signs at `nonce`.
+    pub(super) fn refused(&self, id: Identifier, nonce: u64, signed: Signed) {
+        self.update(id, |n| {
+            if let Some((k, all)) = &mut n.unconfirmed
+                && *k == nonce
+            {
+                all.retain(|s| *s != signed);
+            }
+        });
+    }
+
     /// A write at `nonce` executed.
     pub(super) fn executed(&self, id: Identifier, nonce: u64) {
         self.update(id, |n| {
