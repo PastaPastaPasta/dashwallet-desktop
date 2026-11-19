@@ -291,42 +291,55 @@ fn special_of(tx: &Transaction) -> Option<SpecialTx> {
     SpecialTx::from_bytes(&dashcore::consensus::serialize(tx)).ok()
 }
 
-/// The registration's shares with every later confirmed ProUpShareTx's
-/// reward script applied, in block order (Core writes `scriptReward`,
-/// `specialtxman.cpp:671`). The payee-reuse check reads these: the
-/// registration's scripts are what the share was born with (D29).
-fn shares_now(
+/// Every reward script the wallet has seen a share hold: the
+/// registration's shares, and one more per confirmed ProUpShareTx with the
+/// script it wrote (Core writes `scriptReward`, `specialtxman.cpp:671`).
+/// The payee-reuse check refuses a voting key any of them pays, superseded
+/// or current, so block order doesn't matter (D29). An update this wallet
+/// never saw is not here (MG-00 D42's watch).
+fn seen_payees(
     chain: &ChainView,
     hash: [u8; 32],
     registered: &[CollateralShare],
 ) -> Vec<CollateralShare> {
     let mut shares = registered.to_vec();
-    let mut updates = Vec::new();
-    for (id, entry) in &chain.history {
-        let Some(height) = entry.context.block_info().map(|b| b.height()) else {
+    for entry in chain.history.values() {
+        if entry.context.block_info().is_none()
+            || entry.tx.tx_type().to_u16() != TRANSACTION_PROVIDER_UPDATE_SHARE
+        {
             continue;
-        };
+        }
         let Some(tx) = special_of(&entry.tx) else {
             continue;
         };
-        if tx.tx_type != TRANSACTION_PROVIDER_UPDATE_SHARE {
-            continue;
-        }
         let Ok(payload) = dashcore::consensus::deserialize::<ProUpShareTx>(&tx.payload) else {
             continue;
         };
         if payload.pro_tx_hash.to_byte_array() != hash {
             continue;
         }
-        updates.push((height, *id, payload.share_index, payload.reward_script));
-    }
-    updates.sort_by_key(|(height, id, _, _)| (*height, *id));
-    for (_, _, index, script) in updates {
-        if let Some(share) = shares.get_mut(usize::from(index)) {
-            share.reward_script = script;
+        if let Some(share) = registered.get(usize::from(payload.share_index)) {
+            shares.push(CollateralShare {
+                reward_script: payload.reward_script,
+                ..share.clone()
+            });
         }
     }
     shares
+}
+
+/// `bad-proupsharedreg-payee-reuse` when `voting` is paid by a script
+/// [`seen_payees`] holds.
+fn check_seen_payees(
+    chain: &ChainView,
+    hash: [u8; 32],
+    registered: &[CollateralShare],
+    voting: [u8; 20],
+) -> Result<(), MasternodesError> {
+    match shared_rules::share_list_voting_key_safe(&seen_payees(chain, hash, registered), voting) {
+        true => Ok(()),
+        false => Err(refused("bad-proupsharedreg-payee-reuse")),
+    }
 }
 
 /// A confirmed ProUpSharedRegTx whose payload is the one this wallet
@@ -805,23 +818,19 @@ impl NetworkSession {
         // Core's trivial rules: a kept null key is `bad-protx-key-null`.
         let checked = key_change::check(&tx, &mn).map_err(request_refusal)?;
         // Core's rules on the request: the operator key unique in the list,
-        // the voting key no share's payee as the shares stand after later
-        // ProUpShareTx, `inputsHash` (D12).
-        let chain = self.shared_chain(wallet).await?;
-        let current = shares_now(&chain, hash, &reg.shares);
-        let payees = SharedMn {
-            shares: &current,
-            ..mn.clone()
-        };
+        // the voting key no share's payee, `inputsHash` (D12); then no
+        // reward script a seen ProUpShareTx wrote either.
         shared_rules::check_update_shared_registrar(
             &tx,
             &checked.payload,
-            Some(&payees),
+            Some(&mn),
             &ctx.listed,
             true,
             false,
         )
         .map_err(refused)?;
+        let chain = self.shared_chain(wallet).await?;
+        check_seen_payees(&chain, hash, &reg.shares, keys.voting_key_id)?;
         let id = session_id(hash, checked.sign_hash);
         let _flight = self.claim_shared_session(wallet, &id)?;
         // The same request as one abandoned before its send, whose coins
@@ -1108,21 +1117,17 @@ impl NetworkSession {
             let (charge, signer) = charge_fee(&lease, funded.fee)?;
             let signed = sign_own_inputs(&combined, &own, &signer).await?;
             let p = payload_of(&signed);
-            let chain = self.shared_chain(wallet).await?;
-            let current = shares_now(&chain, k.hash, &reg.shares);
-            let payees = SharedMn {
-                shares: &current,
-                ..mn.clone()
-            };
             shared_rules::check_update_shared_registrar(
                 &signed,
                 &p,
-                Some(&payees),
+                Some(&mn),
                 &ctx.listed,
                 true,
                 true,
             )
             .map_err(refused)?;
+            let chain = self.shared_chain(wallet).await?;
+            check_seen_payees(&chain, k.hash, &reg.shares, p.voting_key_id)?;
             let tx = typed(&signed)?;
             let (w, sid, bytes, txid) = (
                 wallet.to_string(),

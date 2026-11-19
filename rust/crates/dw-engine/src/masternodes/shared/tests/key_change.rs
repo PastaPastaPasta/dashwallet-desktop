@@ -961,38 +961,78 @@ fn mined_share_update(pro_tx: Txid, index: u16, reward: dashcore::ScriptBuf) -> 
     super::super::send::typed(&special).expect("a ProUpShareTx round-trips")
 }
 
-/// D29 residual: the payee-reuse pre-check reads the shares' scripts after
-/// a later ProUpShareTx. Reusing the new reward script is refused; reusing
-/// only the script that update replaced is accepted.
-#[test]
-fn test_QT_127_a_key_change_reads_the_shares_current_scripts() {
-    let f = fx(3, true);
-    let old_id = [0x44; 20];
-    let new_id = [0x55; 20];
-    let old_reward = super::super::standby::p2pkh_address(old_id, dashcore::Network::Regtest);
-    let (reg_id, txid) = keyed_reward(
-        &f,
-        RewardChoice::Address {
-            address: old_reward,
-        },
-    );
-    let registered = registration(&f, &reg_id);
-    assert_eq!(registered.shares[0].reward_script, p2pkh(old_id));
-    f.mine(mined_share_update(txid, 0, p2pkh(new_id)), 60);
-
-    let reused_new = start(&f, 0, voting_of(txid, new_id), 0);
+fn assert_payee_reuse<T: std::fmt::Debug>(result: &Result<T, MasternodesError>) {
     assert!(
         matches!(
-            &reused_new,
+            result,
             Err(MasternodesError::ProtxRefused { reason, .. })
                 if reason == "bad-proupsharedreg-payee-reuse"
         ),
-        "{reused_new:?}"
+        "{result:?}"
     );
+}
+
+/// A listed masternode whose share 0 was registered paying `id`.
+fn keyed_paying(f: &Fx, id: [u8; 20]) -> Txid {
+    let address = super::super::standby::p2pkh_address(id, dashcore::Network::Regtest);
+    let (reg_id, txid) = keyed_reward(f, RewardChoice::Address { address });
+    assert_eq!(registration(f, &reg_id).shares[0].reward_script, p2pkh(id));
+    txid
+}
+
+/// D29 residual: the payee-reuse pre-check refuses every reward script the
+/// wallet saw a share hold: the one a later ProUpShareTx wrote and the
+/// registration's it replaced.
+#[test]
+fn test_QT_127_a_key_change_refuses_every_seen_reward_script() {
+    let f = fx(3, true);
+    let old_id = [0x44; 20];
+    let new_id = [0x55; 20];
+    let txid = keyed_paying(&f, old_id);
+    f.mine(mined_share_update(txid, 0, p2pkh(new_id)), 60);
+
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, new_id), 0));
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, old_id), 0));
     assert!(f.locked(0).is_empty());
 
-    let reused_old = start(&f, 0, voting_of(txid, old_id), 0).unwrap();
-    assert_eq!(reused_old.session.stage, SharedStage::Signing);
+    let other = start(&f, 0, voting_of(txid, [0x66; 20]), 0).unwrap();
+    assert_eq!(other.session.stage, SharedStage::Signing);
+}
+
+/// A → B → A: both scripts the share held are refused, whichever it holds
+/// now.
+#[test]
+fn test_QT_127_a_key_change_refuses_a_script_a_share_left_and_took_back() {
+    let f = fx(3, true);
+    let a = [0x44; 20];
+    let b = [0x55; 20];
+    let txid = keyed_paying(&f, a);
+    f.mine(mined_share_update(txid, 0, p2pkh(b)), 60);
+    f.mine(mined_share_update(txid, 0, p2pkh(a)), 70);
+
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, a), 0));
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, b), 0));
+    assert!(f.locked(0).is_empty());
+}
+
+/// Two updates of one share in one block: both scripts are refused,
+/// whichever txid sorts first.
+#[test]
+fn test_QT_127_a_key_change_refuses_both_same_block_updates() {
+    let f = fx(3, true);
+    let txid = keyed_paying(&f, [0x44; 20]);
+    let (x, y) = ([0x55; 20], [0x66; 20]);
+    let (ux, uy) = (
+        mined_share_update(txid, 0, p2pkh(x)),
+        mined_share_update(txid, 0, p2pkh(y)),
+    );
+    assert_ne!(ux.txid(), uy.txid());
+    f.mine(ux, 60);
+    f.mine(uy, 60);
+
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, x), 0));
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, y), 0));
+    assert!(f.locked(0).is_empty());
 }
 
 /// D103 residual: a scriptSig-malleated copy of the funder's key change,
