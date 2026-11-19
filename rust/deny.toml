@@ -8,20 +8,6 @@ ignore = [
     # Linux (gtk, libappindicator, tray-icon), so it never runs in the app. Drop this entry
     # when tauri moves to gtk4 or a glib that no longer uses it.
     { id = "RUSTSEC-2024-0370", reason = "unmaintained build-time proc-macro in the gtk3/tauri stack, no safe upgrade" },
-    # zip 8.6.0: `ZipArchive::extract` keeps SUID/SGID bits, writes symlinks that point outside
-    # the destination, and applies permissions through them. Our own log export (dw-desktop)
-    # is on zip 9 and only writes archives. The 8.x copy left is a build-dependency of
-    # tenderdash-proto-compiler 1.8.0 (tenderdash-proto <- dapi-grpc <- dash-sdk, the platform
-    # pin), which requires zip ^8.5: its build script extracts the pinned dashpay/tenderdash
-    # GitHub source archive, fetched over HTTPS, into a temp dir and moves the tree into the build
-    # cache. Nothing at run time extracts a zip. Drop these when the platform pin reaches an
-    # rs-tenderdash-abci tag on zip 9 (its develop branch has moved; no tag has yet).
-    { id = "RUSTSEC-2026-0367", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
-    { id = "RUSTSEC-2026-0368", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
-    { id = "RUSTSEC-2026-0369", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
-    # RUSTSEC-2026-0429 (added 2026-11-02): the same zip 8.6.0 copy. `extract()` aborts the process on a
-    # symlink entry declaring a huge size; patched only in 9.0.0. Same build-script-only path as above.
-    { id = "RUSTSEC-2026-0429", reason = "zip 8 extract runs only in tenderdash-proto-compiler's build script on the pinned tenderdash archive; it requires zip ^8.5" },
     # zvariant, zbus_names and zvariant_derive are unmaintained because zbus 6 absorbed them.
     # They come in with zbus 5, which dw-app and dw-desktop use for the session bus and the
     # screen-capture portal on Linux, and which tauri-plugin-single-instance requires (^5.9,
@@ -48,4 +34,13 @@ ignore = [
     # its data directory, a location the user chose and that is trusted as theirs. Drop this in
     # the re-pin that follows the platform move to rusqlite 0.41.
     { id = "RUSTSEC-2026-0459", reason = "bundled SQLite via rusqlite 0.38 (ours and the platform pin's); wallet.dat import opens immutable (no WAL read); remove at the rusqlite 0.41 re-pin" },
+    # chrono, chrono-tz and chrono-tz-build are unmaintained (added 2026-11-17; no safe upgrade).
+    # None of our crates uses them. chrono comes in through the platform pin (dpp, dash-sdk,
+    # platform-wallet-storage, rs-dapi-client), tenderdash-proto, the rust-dashcore pin (dash-spv,
+    # and dashcore-rpc-json through serde_with) and tauri-utils (through serde_with); chrono-tz
+    # and chrono-tz-build only through dpp, chrono-tz-build at build time.
+    # Unmaintained notices, no security issue reported. Drop each when no path above uses it.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no safe upgrade; through the platform, tenderdash and rust-dashcore pins and tauri-utils" },
+    { id = "RUSTSEC-2026-0555", reason = "chrono-tz unmaintained, no safe upgrade; only through dpp in the platform pin" },
+    { id = "RUSTSEC-2026-0559", reason = "chrono-tz-build unmaintained, no safe upgrade; build-time only, through dpp in the platform pin" },
 ]

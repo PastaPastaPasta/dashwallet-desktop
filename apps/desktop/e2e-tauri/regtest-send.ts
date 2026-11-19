@@ -140,8 +140,9 @@ async function main() {
       await wd.press(tid("sidebar-activity"));
       await wd.press(`[data-txid="${txid}"]`);
     }
-    await poll(LOAD_WAIT_MS, "the transaction in a block", async () => ((await textOf(tid("tx-detail-facts"))).includes("Block") ? true : undefined));
-    evidence.activity = await textOf(tid("tx-detail-facts"));
+    await wd.press(`${tid("tx-detail-technical")} summary`);
+    await poll(LOAD_WAIT_MS, "the transaction in a block", async () => ((await textOf(tid("tx-detail-technical"))).includes("Block") ? true : undefined));
+    evidence.activity = await textOf(tid("tx-detail-technical"));
     await wd.screenshot("5-activity-detail");
     step("Activity: the transaction's detail shows its block");
 

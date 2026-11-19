@@ -24,5 +24,18 @@ case "${1:?usage: $0 rust|tauri|swiftcrossui}" in
   *) echo "unknown package set $1" >&2; exit 2 ;;
 esac
 
-sudo apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${packages[@]}"
+apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+install=(apt-get "${apt_opts[@]}" install -y --no-install-recommends)
+# Only the network steps run under a deadline and are tried again. A deadline that fired while
+# dpkg was unpacking would leave a journal that apt refuses to continue from.
+downloaded=
+for attempt in 1 2 3; do
+  if sudo timeout --verbose 120 apt-get "${apt_opts[@]}" update &&
+    sudo DEBIAN_FRONTEND=noninteractive timeout --verbose 360 "${install[@]}" --download-only "${packages[@]}"; then
+    downloaded=1
+    break
+  fi
+  echo "apt download attempt $attempt failed" >&2
+done
+[ -n "$downloaded" ] || exit 1
+sudo DEBIAN_FRONTEND=noninteractive "${install[@]}" -qq --no-download "${packages[@]}"

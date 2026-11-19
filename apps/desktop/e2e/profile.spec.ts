@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
+import { IDENTITY } from "../src/fixture/dashpay";
 import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // DP1-10: My Profile, the username request card, the credits block and the top-up sheet on the
@@ -72,6 +73,185 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 }
+
+// PRODUCT #12: Share username opens the welcome's sheet, My QR with the dashpay://user link.
+test("Share username shows a large DashPay QR and link; Copy Link copies it; Escape returns focus", async ({ page }) => {
+  // The clipboard as a variable: headless engines refuse writes (tools.spec.ts).
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) } });
+  });
+  const errors = await openProfile(page, "dashpay-registered");
+  const share = page.getByTestId("profile-share");
+  await expect(share).toHaveText("Share Username");
+  await share.click();
+  const shareSheet = page.getByTestId("profile-share-sheet");
+  await expect(shareSheet).toBeVisible();
+  await expect(shareSheet.getByRole("heading", { name: "Share my username" })).toBeVisible();
+  // Whose code it is, for the friend about to scan it.
+  await expect(shareSheet.getByTestId("share-who").locator(".share-who-text")).toHaveText("Alice Liddell@alice");
+  const link = `dashpay://user?id=${IDENTITY.alice}&username=alice`;
+  await expect(shareSheet.getByTestId("add-contact-qr-link")).toHaveText(link);
+  const qr = shareSheet.getByTestId("add-contact-qr");
+  await expect(qr).toBeVisible();
+  expect((await qr.boundingBox())!.width).toBeGreaterThanOrEqual(240);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  await shareSheet.getByTestId("add-contact-copy-link").click();
+  expect(await page.evaluate(() => (window as unknown as { __copied?: string }).__copied)).toBe(link);
+  await page.keyboard.press("Escape");
+  await expect(shareSheet).toHaveCount(0);
+  await expect(share).toBeFocused();
+  await share.click();
+  await shareSheet.getByRole("button", { name: "Close" }).click();
+  await expect(shareSheet).toHaveCount(0);
+  await expect(share).toBeFocused();
+  // WebKit on macOS does not focus a button it clicks: focus still comes back to it.
+  await share.blur();
+  await share.dispatchEvent("click");
+  await expect(shareSheet).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(shareSheet).toHaveCount(0);
+  await expect(share).toBeFocused();
+  expect(errors).toEqual([]);
+});
+
+test("a username being refreshed has no link yet: Share username hides, and an open sheet closes", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-registered");
+  const share = page.getByTestId("profile-share");
+  const shareSheet = page.getByTestId("profile-share-sheet");
+  const names = (updating: boolean) =>
+    page.evaluate((updating) => {
+      const f = window.__dwFixture!;
+      f.world.dashpay.identities = f.world.dashpay.identities.map((i) => ({ ...i, namesUpdating: updating }));
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+    }, updating);
+  await share.click();
+  await expect(shareSheet.getByTestId("add-contact-qr")).toBeVisible();
+  await names(true);
+  await expect(shareSheet).toHaveCount(0);
+  await expect(share).toHaveCount(0);
+  // The button that opened the sheet is gone: focus lands on Edit Profile beside it.
+  await expect(page.getByTestId("profile-edit")).toBeFocused();
+  await expect(page.getByTestId("profile-username")).toHaveText("@alice");
+  await names(false);
+  await expect(share).toBeVisible();
+  // The sheet waits for another click rather than reopening by itself.
+  await expect(shareSheet).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("Share username follows the engine's link, not the identity list: hidden while the link is refused", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-registered");
+  const share = page.getByTestId("profile-share");
+  await expect(share).toBeVisible();
+  const emitNames = () =>
+    page.evaluate(() => {
+      const f = window.__dwFixture!;
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+    });
+  // The identity list still says the name is settled, but the engine refuses a link for it: its
+  // names pass is out, and the list's own re-read has not come back yet.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    (window as unknown as { __release: () => void }).__release = f.hold("identities");
+    f.world.dashpay.identities = f.world.dashpay.identities.map((i) => ({ ...i, namesUpdating: true }));
+  });
+  await emitNames();
+  await expect(share).toHaveCount(0);
+  await expect(page.getByTestId("profile-username")).toHaveText("@alice");
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.dashpay.identities = f.world.dashpay.identities.map((i) => ({ ...i, namesUpdating: false }));
+    (window as unknown as { __release: () => void }).__release();
+  });
+  await emitNames();
+  await expect(share).toBeVisible();
+  // A re-read that fails for another reason keeps the button: the cached link is still right.
+  const reads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "dashpay_my_user_link").length);
+  const before = await reads();
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_my_user_link", "rpc"));
+  await emitNames();
+  await expect.poll(reads).toBeGreaterThan(before);
+  await expect(share).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("dashpay_my_user_link", null));
+  // A slow re-read of the same name keeps the button too.
+  await page.evaluate(() => {
+    (window as unknown as { __release: () => void }).__release = window.__dwFixture!.hold("dashpay_my_user_link");
+  });
+  await emitNames();
+  await expect(share).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(share).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("an open sheet drops its code once the engine refuses the link, though the identity list is not re-read yet", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-registered");
+  await page.getByTestId("profile-share").click();
+  const shareSheet = page.getByTestId("profile-share-sheet");
+  await expect(shareSheet.getByTestId("add-contact-qr")).toBeVisible();
+  // The names pass holds the username: the engine refuses the link, and the identity list's
+  // re-read is still out, so the page's snapshot still says the name is settled.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    (window as unknown as { __release: () => void }).__release = f.hold("identities");
+    f.world.dashpay.identities = f.world.dashpay.identities.map((i) => ({ ...i, namesUpdating: true }));
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+  });
+  await expect(shareSheet.getByTestId("add-contact-qr-updating")).toBeVisible();
+  await expect(shareSheet.getByTestId("add-contact-qr")).toHaveCount(0);
+  await expect(page.getByTestId("profile-share")).toHaveCount(0);
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(shareSheet).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("an open sheet drops its code once the engine says the username is gone", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-registered");
+  await page.getByTestId("profile-share").click();
+  const shareSheet = page.getByTestId("profile-share-sheet");
+  await expect(shareSheet.getByTestId("add-contact-qr")).toBeVisible();
+  // The engine has no username for the identity any more; the identity list's re-read is still out.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    (window as unknown as { __release: () => void }).__release = f.hold("identities");
+    f.world.dashpay.identities = f.world.dashpay.identities.map((i, n) => (n === 0 ? { ...i, names: [], mainName: null } : i));
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+  });
+  await expect(shareSheet.getByTestId("add-contact-qr-no-username")).toBeVisible();
+  await expect(shareSheet.getByTestId("add-contact-qr")).toHaveCount(0);
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(shareSheet).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("a new main name while the sheet is open shows no link for the old one", async ({ page }) => {
+  const errors = await openProfile(page, "dashpay-registered");
+  await page.getByTestId("profile-share").click();
+  const shareSheet = page.getByTestId("profile-share-sheet");
+  const linkText = shareSheet.getByTestId("add-contact-qr-link");
+  await expect(linkText).toHaveText(`dashpay://user?id=${IDENTITY.alice}&username=alice`);
+  // Alice makes another name she owns her main one; its link is read again, slowly.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    (window as unknown as { __release: () => void }).__release = f.hold("dashpay_my_user_link");
+    f.world.dashpay.identities = f.world.dashpay.identities.map((i, n) => (n === 0 ? { ...i, names: [...i.names, "alice2"], mainName: "alice2" } : i));
+    f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "names" } });
+  });
+  await expect(shareSheet.getByTestId("share-who").locator(".share-who-username")).toHaveText("@alice2");
+  await expect(linkText).toHaveCount(0);
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(linkText).toHaveText(`dashpay://user?id=${IDENTITY.alice}&username=alice2`);
+  expect(errors).toEqual([]);
+});
+
+test("without a username there is no Share username: Choose a username instead", async ({ page }) => {
+  await openProfile(page, "dashpay-no-username");
+  await expect(page.getByTestId("profile-choose-name")).toBeVisible();
+  await expect(page.getByTestId("profile-share")).toHaveCount(0);
+  await openProfile(page, "dashpay-no-identity");
+  await expect(body(page)).toHaveAttribute("data-state", "noProfile");
+  await expect(page.getByTestId("profile-share")).toHaveCount(0);
+});
 
 test("IOS-069 P4: header, usernames, identity id with copy, credits and the contest outcome rows", async ({ page }) => {
   await openProfile(page, "dashpay-registered");

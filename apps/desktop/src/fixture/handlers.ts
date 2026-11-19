@@ -656,6 +656,11 @@ export const HANDLERS: Handlers = {
   // App and network
   launch_info: (_, { world }) => world.launch,
   recent_notices: (_, { world }) => world.notices,
+  open_releases_page: (_, { world }) => {
+    world.releasesOpened = (world.releasesOpened ?? 0) + 1;
+    return null;
+  },
+  protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
   open_network: (_, { world }) => {
     // Row 74: the network a failed switch left did not reopen; the splash's Retry opens it.
     if (world.networkSwitch?.reopenFails) {
@@ -901,6 +906,14 @@ export const HANDLERS: Handlers = {
     const row = wallet(world, walletId).rows.find((r) => r.txid === txid);
     if (!row) throw fail("tx_not_found", `transaction not found: ${txid}`);
     return txDetails(row);
+  },
+  // The app's window network, never an argument. Regtest and devnet have no Insight page.
+  open_tx_in_explorer: ({ txid }, { world }) => {
+    const kind = world.launch.network.kind;
+    if (kind === "regtest" || kind === "devnet") throw fail("invalid_argument", "this network has no block explorer");
+    if (!/^[0-9a-f]{64}$/.test(txid)) throw fail("invalid_argument", "txid is not 64 lowercase hex");
+    world.explorerOpened = [...(world.explorerOpened ?? []), txid];
+    return null;
   },
 
   // DashPay: identities and registration
@@ -1166,10 +1179,10 @@ export const HANDLERS: Handlers = {
     return COST_TABLE;
   },
   // DashPay::my_user_link (users.rs): the identity's main name as iOS's link; none is
-  // `contact.no_username`, names being updated `platform.unavailable`.
+  // `contact.no_username`, names being updated or not yet checked `platform.unavailable`.
   dashpay_my_user_link: ({ walletId, identity }, { world }) => {
     const me = dashpay(world, walletId, identity).identities.find((i) => i.identity === identity)!;
-    if (me.namesUpdating) throw fail("platform.unavailable", "names are being updated");
+    if (me.namesUpdating || me.namesCheck !== null) throw fail("platform.unavailable", "names are being updated");
     if (!me.mainName) throw fail("contact.no_username", "the identity has no username");
     return userLinkText(identity, me.mainName);
   },

@@ -73,12 +73,16 @@ describe("the page (IOS-069)", () => {
   });
 
   it("D4: the header's display name, @name, message and initials; the names states", () => {
-    expect(headerModel(alice())).toEqual({ title: "Alice Liddell", username: "@alice", names: "named", message: "Down the rabbit hole", initials: "A" });
+    expect(headerModel(alice())).toEqual({ title: "Alice Liddell", username: "@alice", names: "named", message: "Down the rabbit hole", initials: "A", shareable: true });
     expect(headerModel(alice({ profile: null }))).toMatchObject({ title: "alice", message: null, initials: "A" });
     expect(headerModel(alice({ profile: null, mainName: null, names: [] }))).toMatchObject({ title: PROFILE_COPY.noUsername, username: PROFILE_COPY.noUsername, initials: "?" });
     expect(headerModel(alice({ profile: null, mainName: null, names: [] }), "al").username).toBe("@al · Pending");
     expect(headerModel(alice({ mainName: null, namesCheck: "failed" })).username).toBe(PROFILE_COPY.notLoaded);
     expect(headerModel(alice({ mainName: null, namesUpdating: true })).username).toBe(PROFILE_COPY.updating);
+    // A name being refreshed or rechecked has no link yet (`platform.unavailable`), so no Share.
+    expect(headerModel(alice({ namesUpdating: true }))).toMatchObject({ names: "named", shareable: false });
+    expect(headerModel(alice({ namesCheck: "pending" }))).toMatchObject({ names: "named", shareable: false });
+    expect(headerModel(alice({ mainName: null, names: [] })).shareable).toBe(false);
   });
 });
 

@@ -15,6 +15,7 @@
     "allow-drop-unconfirmed",
     "allow-export-history-csv",
     "allow-tx-notices",
-    "allow-is-coinjoin-internal"
+    "allow-is-coinjoin-internal",
+    "allow-open-tx-in-explorer"
   ]
 }

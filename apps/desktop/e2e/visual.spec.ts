@@ -774,6 +774,16 @@ for (const theme of THEMES) {
     });
   }
 
+  // PRODUCT #12: Share username's sheet over My Profile.
+  test(`visual profile-share ${theme}`, async ({ page }) => {
+    await openProfile(page, "dashpay-registered", theme);
+    await page.getByTestId("profile-outcomes").waitFor();
+    await page.getByTestId("profile-share").click();
+    await page.getByTestId("profile-share-sheet").getByTestId("add-contact-qr").waitFor();
+    await page.mouse.move(0, 0);
+    await shoot(page, "profile-share", theme);
+  });
+
   test(`visual profile-top-up ${theme}`, async ({ page }) => {
     await openProfile(page, "dashpay-registered", theme);
     await page.getByTestId("profile-top-up").click();
@@ -1039,5 +1049,18 @@ for (const theme of THEMES) {
     await page.mouse.move(0, 0);
     await fontsReady(page);
     await expect(sheet).toHaveScreenshot(`${theme}-unfinished-sheet-recovery-unsupported.png`, SHOT);
+  });
+}
+
+for (const theme of THEMES) {
+  test(`visual protocol-advisory ${theme}`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("protocol-upgraded", theme));
+    const banner = page.getByTestId("protocol-advisory-banner");
+    await expect(banner).toBeVisible();
+    await page.mouse.move(0, 0);
+    await fontsReady(page);
+    await expect(banner).toHaveScreenshot(`${theme}-protocol-advisory-banner.png`, SHOT);
+    await shoot(page, "home-protocol-advisory", theme);
   });
 }

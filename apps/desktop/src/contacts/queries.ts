@@ -18,11 +18,14 @@ import { enableBanner, type EnableBanner } from "./pane";
 
 /** Whose contacts show (D2): the DashPay status, the shell's query; `retry` reads it again (the
  * page shows "starting" while it runs). */
-export function useContactsOwner(walletId: string): { owner: ContactsOwner; retry: () => void } {
+export function useContactsOwner(walletId: string): { owner: ContactsOwner; read: boolean; failed: boolean; fetching: boolean; retry: () => void } {
   const b = useBackend();
   const status = useQuery({ queryKey: keys.dashpayStatus(walletId), queryFn: () => b.dashpayStatus(walletId) });
   const owner: ContactsOwner = status.isError && status.data === undefined ? { kind: "error" } : contactsOwner(status.data);
-  return { owner, retry: () => void status.refetch() };
+  // `read`: the status answered or its read failed (`owner` says more than "starting"). `failed`:
+  // the last read failed, though `owner` may still be the one read before it. `fetching`: a read is
+  // running, so `owner` may be about to change.
+  return { owner, read: status.data !== undefined || status.isError, failed: status.isError, fetching: status.isFetching, retry: () => void status.refetch() };
 }
 
 /** Every section of `identity`'s contacts, sorted and filtered by the engine, with the `nextRead`
@@ -165,12 +168,13 @@ export function useEligibility(walletId: string, identity: string | null, contac
 
 /** The identity's `dashpay://user` link for My QR (DP2-08 D12); under `["dashpay"]`, so a new
  * main name re-reads it. */
-export function useMyUserLink(walletId: string, identity: string) {
+export function useMyUserLink(walletId: string, identity: string, enabled = true) {
   const b = useBackend();
   return useQuery({
     queryKey: ["dashpay", "myUserLink", walletId, identity] as const,
     queryFn: () => b.dashpayMyUserLink(walletId, identity),
     retry: false,
+    enabled,
   });
 }
 

@@ -116,7 +116,11 @@ export function JoinDashPayPage({ walletId, network }: { walletId: string; netwo
     }
   };
   const shareIdentity = row?.identity ?? (wiz.mode.kind === "credits" ? wiz.mode.identity : null) ?? inputs.main?.identity ?? null;
-  const share = shareIdentity === null ? null : { walletId, identity: shareIdentity };
+  // The link names the identity's main name, which a second name registered does not replace: an
+  // existing identity's new name is never shown as the one shared.
+  const shareMain = inputs.main?.identity === shareIdentity ? inputs.main.mainName : null;
+  const shareName = shareMain ?? (wiz.mode.kind === "credits" ? null : (wiz.named?.label ?? row?.label ?? null));
+  const share = shareIdentity === null || shareName === null ? null : { walletId, identity: shareIdentity, username: shareName };
 
   if (wiz.step !== null)
     return (

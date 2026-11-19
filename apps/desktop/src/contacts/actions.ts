@@ -28,6 +28,8 @@ export interface ActionOutcome {
   contact: string | null;
   ok: boolean;
   text: string;
+  /** A request answered one of theirs: the two are contacts now, not waiting. */
+  established?: boolean;
 }
 
 /** What the screens re-read after an action, besides what the engine's signal re-reads: the
@@ -96,7 +98,7 @@ export class ContactActions extends Model {
     return this.#run("send", contact, ["contacts", "search"], async () => {
       const done = await this.#withPlatformGrant({ kind: "sendRequest" }, (grant) => this.api.dashpaySendRequest(this.walletId, this.identity, contact, scan, grant.id));
       if (!done) return null;
-      return done.kind === "established" ? `You and ${name} are now contacts.` : `Contact request sent to ${name}.`;
+      return done.kind === "established" ? { text: `You and ${name} are now contacts.`, established: true } : `Contact request sent to ${name}.`;
     });
   }
 
@@ -176,15 +178,15 @@ export class ContactActions extends Model {
   }
 
   /** One action at a time: its outcome, or `null` when it was cancelled or another one runs. */
-  async #run(kind: ActionKind, contact: string | null, refresh: Refresh[], act: () => Promise<string | null>): Promise<ActionOutcome | null> {
+  async #run(kind: ActionKind, contact: string | null, refresh: Refresh[], act: () => Promise<string | { text: string; established: boolean } | null>): Promise<ActionOutcome | null> {
     if (this.running) return null;
     this.running = { kind, contact };
     this.outcome = null;
     this.changed();
     let outcome: ActionOutcome | null = null;
     try {
-      const text = await act();
-      if (text) outcome = { kind, contact, ok: true, text };
+      const done = await act();
+      if (done) outcome = { kind, contact, ok: true, ...(typeof done === "string" ? { text: done } : done) };
     } catch (e) {
       outcome = { kind, contact, ok: false, text: actionError(e) };
     } finally {

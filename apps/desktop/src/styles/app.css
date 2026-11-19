@@ -49,6 +49,70 @@ button {
   color: inherit;
 }
 
+/* Checkboxes and radios are drawn from tokens, not by the engine: WebKitGTK paints a native
+   unchecked box solid white in dark appearance, where it reads as checked. Unchecked is an
+   outline on the surface behind it; checked fills with the accent and draws the mark. */
+input[type="checkbox"],
+input[type="radio"] {
+  --check-fill: var(--dw-role-accent);
+  --check-mark: var(--dw-role-text-on-hero);
+  -webkit-appearance: none; /* WebKitGTK before 2.36 knows only the prefixed property */
+  appearance: none;
+  display: inline-grid;
+  place-content: center;
+  flex: none;
+  width: 16px; /* the box: a touch over the 13 px native one, for the drawn tick */
+  height: 16px;
+  margin: 0;
+  border: 1.5px solid var(--dw-role-text-tertiary);
+  border-radius: var(--dw-space-xxs); /* no radius token is this small */
+  background: transparent;
+  vertical-align: middle;
+}
+
+input[type="radio"] {
+  border-radius: 50%;
+}
+
+input[type="checkbox"]:checked,
+input[type="radio"]:checked {
+  border-color: var(--check-fill);
+  background: var(--check-fill);
+}
+
+input[type="checkbox"]:checked::before {
+  content: "";
+  width: 9px; /* the tick's long arm, 16 px box */
+  height: 5px;
+  margin-top: -2px; /* centres the rotated tick */
+  border: solid var(--check-mark);
+  border-width: 0 0 2px 2px;
+  transform: rotate(-45deg);
+}
+
+input[type="radio"]:checked::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--check-mark);
+}
+
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled {
+  opacity: var(--dw-opacity-disabled);
+}
+
+/* High contrast replaces backgrounds, which would hide the fill and the radio's dot: the
+   engine's own control follows the system colours there. */
+@media (forced-colors: active) {
+  input[type="checkbox"],
+  input[type="radio"] {
+    -webkit-appearance: auto;
+    appearance: auto;
+  }
+}
+
 :focus-visible {
   outline: 2px solid var(--dw-role-accent);
   outline-offset: 2px;
@@ -467,6 +531,34 @@ button {
 
 .add-contact-identity,
 .add-contact-link-text {
+  overflow-wrap: anywhere;
+}
+
+.share-who {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--dw-space-s);
+  margin-bottom: var(--dw-space-s);
+}
+
+.share-who-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.share-who-name {
+  font-size: var(--dw-type-body-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-body-line);
+  overflow-wrap: anywhere;
+}
+
+.share-who-username {
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  color: var(--dw-role-text-secondary);
   overflow-wrap: anywhere;
 }
 
@@ -1639,6 +1731,23 @@ button {
   gap: var(--dw-space-xs);
 }
 
+.tx-detail-who {
+  margin: 0;
+  max-width: 100%;
+  text-align: center;
+  font-size: var(--dw-type-title3-size);
+  font-weight: var(--dw-type-title3-weight);
+  line-height: var(--dw-type-title3-line);
+  overflow-wrap: anywhere;
+}
+
+.tx-detail-who-user {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  font-weight: var(--dw-type-footnote-weight);
+  line-height: var(--dw-type-footnote-line);
+}
+
 .tx-detail-title {
   font-size: var(--dw-type-title3-size);
   font-weight: var(--dw-type-title3-weight);
@@ -1662,13 +1771,53 @@ button {
 
 .tx-detail-status {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: center;
   gap: var(--dw-space-s);
+}
+
+.tx-detail-date,
+.tx-detail-state {
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
 }
 
 .tx-detail-date {
   color: var(--dw-role-text-secondary);
-  font-size: var(--dw-type-footnote-size);
+}
+
+.tx-detail-state.is-problem {
+  color: var(--dw-role-danger);
+}
+
+.tx-detail-explorer {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--dw-role-text-link);
+  font-family: inherit;
+  font-size: var(--dw-type-subhead-medium-size);
+  font-weight: var(--dw-type-subhead-medium-weight);
+  line-height: var(--dw-type-subhead-medium-line);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+  cursor: pointer;
+}
+
+.tx-detail-explorer:disabled {
+  color: var(--dw-role-plain-content-disabled);
+  text-decoration: none;
+  cursor: progress;
+}
+
+.io-heading {
+  margin: 0;
+  padding: var(--dw-space-s) var(--dw-layout-card-padding) 0;
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
   line-height: var(--dw-type-footnote-line);
 }
 
@@ -1797,12 +1946,6 @@ button {
   line-height: var(--dw-type-subhead-line);
 }
 
-.checkbox-row input,
-.radio-row input {
-  margin: 0;
-  accent-color: var(--dw-role-accent);
-}
-
 .radio-group {
   display: flex;
   flex-direction: column;
@@ -1824,7 +1967,7 @@ button {
 .inline-field-column {
   display: flex;
   gap: var(--dw-space-s);
-  margin-left: calc(13px + var(--dw-space-s)); /* under the radio's label */
+  margin-left: calc(16px + var(--dw-space-s)); /* under the radio's label */
   font-size: var(--dw-type-footnote-size);
   line-height: var(--dw-type-footnote-line);
 }
@@ -2112,6 +2255,17 @@ button {
   font-weight: var(--dw-type-subhead-medium-weight);
 }
 
+.pay-found-name {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+/* Flush with the card's edge, as the picker's line under the search. */
+.pay-found-address > .dash-button-plainBlue {
+  padding-left: 0;
+  padding-right: 0;
+}
+
 .pay-banner {
   margin-bottom: 0;
 }
@@ -2293,6 +2447,12 @@ button {
   align-items: center;
   justify-content: space-between;
   gap: var(--dw-space-m);
+}
+
+/* A header's action keeps its label on one line beside the title. */
+.top-intro-row > .dash-button {
+  flex: none;
+  white-space: nowrap;
 }
 
 .tx-intro-actions {
@@ -2695,11 +2855,6 @@ button {
   line-height: var(--dw-type-subhead-line);
 }
 
-.check-row input {
-  flex: none;
-  accent-color: var(--dw-role-accent);
-}
-
 .secret-form {
   display: flex;
   flex-direction: column;
@@ -2899,7 +3054,7 @@ button {
 }
 
 .scan-input {
-  margin-left: calc(13px + var(--dw-space-s)); /* under the radio's label */
+  margin-left: calc(16px + var(--dw-space-s)); /* under the radio's label */
   padding: var(--dw-space-xs) var(--dw-space-m);
   border: 1px solid var(--dw-role-field-stroke);
   border-radius: var(--dw-radius-text-field);
@@ -3173,9 +3328,11 @@ button {
   gap: var(--dw-space-s);
 }
 
-/* After `.check-row input`, which it overrides on hero blue. */
+/* On hero blue the box and its fill are white, and the tick takes the hero's blue. */
 .lock-check input {
-  accent-color: var(--dw-c-white);
+  --check-fill: var(--dw-role-text-on-hero);
+  --check-mark: var(--dw-role-hero);
+  border-color: var(--dw-role-text-on-hero);
 }
 
 .status-button {
@@ -4467,6 +4624,71 @@ button.bell-row-open:focus-visible {
   margin: var(--dw-space-m) 0 0;
 }
 
+/* ------------------------------------------------------------------ Protocol advisory */
+
+.protocol-advisory-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--dw-space-m);
+  margin-bottom: var(--dw-layout-section-gap);
+  padding: var(--dw-layout-card-padding);
+  border-radius: var(--dw-radius-card);
+}
+
+.protocol-advisory-icon {
+  width: var(--dw-layout-row-icon-size);
+  height: var(--dw-layout-row-icon-size);
+  padding: var(--dw-space-xxs);
+  border-radius: 50%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  background: var(--dw-role-warning-tint);
+  color: var(--dw-role-warning);
+}
+
+.protocol-advisory-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dw-space-xxs);
+  min-width: 0;
+}
+
+.protocol-advisory-text {
+  margin: 0;
+  color: var(--dw-role-text-primary);
+  font-size: var(--dw-type-subhead-size);
+  line-height: var(--dw-type-subhead-line);
+}
+
+.protocol-advisory-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--dw-space-m);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.protocol-advisory-link {
+  margin: 0;
+  padding: var(--dw-space-xxs) var(--dw-space-s);
+  border: 0;
+  border-radius: var(--dw-radius-small);
+  background: none;
+  color: var(--dw-role-text-link);
+  font-size: var(--dw-type-footnote-medium-size);
+  font-weight: var(--dw-type-footnote-medium-weight);
+  line-height: var(--dw-type-footnote-medium-line);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.protocol-advisory-link:disabled {
+  opacity: var(--dw-opacity-disabled);
+}
+
 /* ------------------------------------------------------------------ Prices (MP-01) */
 
 .rates-consent-card {
@@ -4697,7 +4919,6 @@ button.bell-row-open:focus-visible {
 
 .coinjoin-level input {
   margin: var(--dw-space-xxs) 0 0;
-  accent-color: var(--dw-role-accent);
 }
 
 .coinjoin-level-icon {
@@ -5663,11 +5884,6 @@ button.bell-row-open:focus-visible {
 
 .mg-node + .mg-node {
   border-top: 1px solid var(--dw-role-separator);
-}
-
-.mg-node input {
-  margin: 0;
-  accent-color: var(--dw-role-accent);
 }
 
 .mg-node[aria-disabled="true"] .mg-node-name {

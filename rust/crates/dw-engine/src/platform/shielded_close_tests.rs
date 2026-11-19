@@ -11,6 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use dw_appdb::dispatch::{ArtifactKind, ArtifactOrigin, ArtifactStatus, NewShieldedArtifact};
 use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, UnlockScope, VaultConfig};
 use platform_wallet::wallet::shielded::store::{PendingRedrive, StalePendingSpend};
 use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
@@ -228,24 +229,42 @@ async fn stash_spends(s: &Arc<NetworkSession>, wallet: WalletId) {
     }
 }
 
-/// Stores [`spends`] for `wallet` and puts them on record in the dispatch
-/// journal (a pass's admission, with the background lease).
+/// Stores [`spends`] for `wallet` and puts their dispatched artifacts in the
+/// journal before pass admission.
 fn store_spends(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) {
     let (s, m) = (Arc::clone(session), session.manager().unwrap());
     engine.block_on(async move {
         stash_spends(&s, wallet).await;
+        for r in spends() {
+            s.leases
+                .record_shielded_artifact(
+                    wallet,
+                    NewShieldedArtifact {
+                        activity: r.activity_id,
+                        origin: ArtifactOrigin::Dispatched,
+                        st_hash: Some(Sha256::digest(&r.st_bytes).into()),
+                        kind: Some(ArtifactKind::Transfer),
+                        anchor: Some(r.anchor),
+                        identity_id: None,
+                        selected: r.nullifiers.clone(),
+                        published: r.nullifiers.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
         s.ensure_background().await;
         assert!(pool::admit_pass(&s, &m).await.is_ok());
     });
 }
 
 /// What must outlive the close: the stored transitions, their
-/// reservations, the journal's records and the facade's pending rows.
+/// reservations, dispatched artifacts and the facade's pending rows.
 #[derive(Debug, PartialEq)]
 struct Kept {
     redrives: Vec<PendingRedrive>,
     reserved: Vec<StalePendingSpend>,
-    audit: Vec<([u8; 32], [u8; 32])>,
+    artifacts: Vec<([u8; 32], [u8; 32], ArtifactStatus)>,
     unresolved: Vec<UnresolvedSpend>,
 }
 
@@ -261,10 +280,24 @@ fn kept(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> Kep
     });
     redrives.sort_by_key(|r| r.activity_id);
     reserved.sort();
-    let mut audit = engine
-        .block_on(session.leases.shielded_redrives(wallet))
-        .unwrap();
-    audit.sort();
+    let mut artifacts = engine.block_on(async {
+        let mut rows = Vec::new();
+        for r in spends() {
+            let artifact = session
+                .leases
+                .shielded_artifact(wallet, r.activity_id)
+                .await
+                .unwrap()
+                .unwrap();
+            rows.push((
+                artifact.activity,
+                artifact.st_hash.unwrap(),
+                artifact.status,
+            ));
+        }
+        rows
+    });
+    artifacts.sort_by_key(|a| a.0);
     let mut unresolved = engine
         .block_on(on_pool(session, wallet, |_, lib| async move {
             Ok(pool::ShieldedLib::unresolved(&lib).await?)
@@ -274,7 +307,7 @@ fn kept(engine: &Engine, session: &Arc<NetworkSession>, wallet: WalletId) -> Kep
     Kept {
         redrives,
         reserved,
-        audit,
+        artifacts,
         unresolved,
     }
 }
@@ -288,8 +321,9 @@ fn expected() -> Kept {
     reserved.sort();
     let hash = |st: &[u8]| -> [u8; 32] { Sha256::digest(st).into() };
     Kept {
-        audit: (redrives.iter())
-            .map(|r| (r.activity_id, hash(&r.st_bytes)))
+        artifacts: redrives
+            .iter()
+            .map(|r| (r.activity_id, hash(&r.st_bytes), ArtifactStatus::Registered))
             .collect(),
         unresolved: (redrives.iter())
             .map(|r| UnresolvedSpend {

@@ -150,7 +150,7 @@ test("D3 a network failure says so with Try again; Close returns focus to Add co
 
 test("IOS-073 a Contacts search's network row opens its hit; Show more carries the search", async ({ page }) => {
   await openContacts(page);
-  await page.getByRole("searchbox", { name: "Search for a contact" }).fill("ma");
+  await page.getByRole("searchbox", { name: "Search contacts or a username" }).fill("ma");
   await page.getByTestId("contacts-network-more").click();
   await expect(field(page)).toHaveValue("ma");
   await expect(hit(page, "Mayumi")).toBeVisible();
@@ -163,6 +163,8 @@ test("IOS-073 a dashpay: link opens Add Contact verified; a link that does not v
   const errors = await openContacts(page);
   await deliver(page, [{ kind: "addContact", identity: IDENTITY.mallory, username: "Mallory" }]);
   await expect(page.getByTestId("add-contact-name")).toHaveText("Mallory");
+  // The section the link opened is Add contact's, so the header button reports it open.
+  await expect(page.getByTestId("contacts-add")).toHaveAttribute("aria-expanded", "true");
   // Platform's spelling, not the link's.
   await expect(page.getByTestId("add-contact-username")).toHaveText("@mallory");
   await expect(page.getByTestId("add-contact-verified")).toContainText("From a link");

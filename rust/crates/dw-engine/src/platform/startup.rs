@@ -5,10 +5,12 @@
 //! seconds, and an unknown value is `None`. Data-carrying enums serialize
 //! with a `kind` tag.
 
+use dpp::version::PlatformVersion;
 use serde::{Deserialize, Serialize};
 
 use super::dashpay::{DashPay, stub};
 use super::errors::PlatformError;
+use crate::NetworkSession;
 
 /// The banner state shared by the Home card, the identity chip and the
 /// Contacts empty state (F1).
@@ -109,6 +111,34 @@ pub enum QuorumSource {
     TrustedFallback,
     /// The trusted service only: the developer toggle or the degraded mode.
     Trusted,
+}
+
+/// The open network's Platform protocol compatibility (`NetworkSession::protocol_compatibility`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolCompatibility {
+    /// Active Platform protocol version from the latest proved epoch read
+    /// (or proved response metadata); `None` until Platform has answered,
+    /// or when `SessionOptions::no_platform` is set.
+    pub network_version: Option<u32>,
+    /// Highest Platform protocol version this build supports.
+    pub supported_version: u32,
+}
+
+impl NetworkSession {
+    /// The open network's Platform protocol version and the highest version
+    /// this build supports. In-memory read; answers offline (`network_version`
+    /// is `None` until Platform has answered).
+    pub fn protocol_compatibility(&self) -> Result<ProtocolCompatibility, PlatformError> {
+        let _op = self.try_enter().map_err(PlatformError::from)?;
+        Ok(ProtocolCompatibility {
+            network_version: self
+                .platform
+                .enabled()
+                .then(|| self.platform.protocol.observed())
+                .flatten(),
+            supported_version: PlatformVersion::latest().protocol_version,
+        })
+    }
 }
 
 impl DashPay {

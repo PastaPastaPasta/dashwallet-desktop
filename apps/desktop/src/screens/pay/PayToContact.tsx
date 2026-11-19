@@ -4,26 +4,28 @@
 // subtract fee, note, coin control. Review opens U-03's confirm sheet with the contact, which can
 // accept their request and pay in one step; U-03's result follows.
 
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import type { ContactRecipient } from "../../api/generated/ContactRecipient";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
+import type { UserHit } from "../../api/generated/UserHit";
 import { useLockStatus, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
-import { DashButton, Icon } from "../../components/basics";
+import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
 import { useDisplay } from "../../format/display";
-import { SEARCH_DEBOUNCE_MS } from "../../contacts/model";
-import { refreshAfter, useContactDetail, useContactsOwner, useHasKeys } from "../../contacts/queries";
+import { NETWORK_DEBOUNCE_MS, networkPrefix, SEARCH_DEBOUNCE_MS } from "../../contacts/model";
+import { refreshAfter, useContactDetail, useContactsOwner, useHasKeys, useNetworkSearch } from "../../contacts/queries";
 import { Outcome as ActionLine } from "../tools/common";
 import { Avatar } from "../contacts/Avatar";
-import { Row } from "../contacts/ContactList";
+import { NetworkResults, Row } from "../contacts/ContactList";
 import { CoinControl } from "./CoinControl";
+import { FoundUser } from "./FoundUser";
 import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, resolveText, type Banner, type Payee } from "./contact";
+import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
 import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
 import { confirmedOf, DEFAULT_ADVANCED, type Advanced } from "./model";
@@ -35,6 +37,16 @@ export function PayToContact({ walletId, network }: { walletId: string; network:
   if (owner.kind === "identity") return <ContactTab key={`${walletId}:${owner.identity}`} walletId={walletId} identity={owner.identity} network={network} />;
   if (owner.kind === "starting") return <LoadingState testId="pay-contact-starting" text="Starting DashPay…" />;
   const none = noOwner(owner);
+  // Without a username the tab is one line: Pay opened on To an address already.
+  if (none.next === "join")
+    return (
+      <p className="placeholder-note" data-testid="pay-contact-none">
+        Join DashPay to pay people by their username.{" "}
+        <DashButton variant="plainBlue" size="small" data-testid="pay-contact-join" onClick={() => navigate("joinDashPay")}>
+          Join DashPay
+        </DashButton>
+      </p>
+    );
   return (
     <EmptyState
       testId="pay-contact-none"
@@ -42,11 +54,6 @@ export function PayToContact({ walletId, network }: { walletId: string; network:
       message={none.message ?? undefined}
       action={
         <span className="add-contact-actions">
-          {none.next === "join" && (
-            <DashButton key="join" variant="filledBlue" data-testid="pay-contact-join" onClick={() => navigate("joinDashPay")}>
-              Join DashPay
-            </DashButton>
-          )}
           {none.next === "retry" && (
             <DashButton key="retry" variant="plainBlue" onClick={retry}>
               Try again
@@ -85,14 +92,61 @@ function ContactTab({ walletId, identity, network }: { walletId: string; identit
   );
 }
 
-/** The frequent strip (D3) and the picker (D4). */
+/** The frequent strip (D3), the picker (D4), and under it Add contact's username search: a user
+ * found there gets their own card. */
 function Chooser({ walletId, identity, onPick }: { walletId: string; identity: string; onPick: (payee: Payee) => void }) {
   const id = useId();
   const [search, setSearch] = useState("");
+  const [found, setFound] = useState<UserHit | null>(null);
   const text = useDebounced(search.trim(), SEARCH_DEBOUNCE_MS);
+  // As Contacts: the username search waits longer, and clearing the field hides it at once.
+  const typed = networkPrefix(search);
+  const debounced = useDebounced(typed, NETWORK_DEBOUNCE_MS);
+  const prefix = typed === null ? null : debounced;
+  // The prefix the shown text searches for: until the search catches up with it, it is running.
+  const wanted = networkPrefix(text);
   const frequent = useFrequentContacts(walletId, identity);
   const list = usePayPicker(walletId, identity, text);
+  const all = usePayPicker(walletId, identity, "");
+  const net = useNetworkSearch(walletId, identity, prefix);
   const groups = pickerGroups(list.data);
+  // Everyone the search found that the picker does not list for the text is listed under it (a
+  // request sent, an ignored sender, oneself, a contact the filter missed), not only strangers.
+  const listing = pickerListing({ data: list.data, placeholder: list.isPlaceholderData, failed: list.isError });
+  const listReady = listing !== null;
+  const hits = listing ? pickerHits(net.data, listing) : { shown: [], more: false, count: 0 };
+  const networkState = pickerNetworkState({ listReady, caughtUp: prefix === wanted, pending: net.isPending, failed: net.isError, fetching: net.isFetching });
+  const view = pickerView({
+    text,
+    groups: groups.length,
+    anyContacts: pickerGroups(all.data).length > 0,
+    network: wanted !== null,
+    networkState,
+    hits: hits.shown.length,
+  });
+  const announce = searchAnnouncement({ network: wanted !== null, networkState, hits: hits.count, none: view.none });
+  const toAddress = () => ui.set({ payTab: "address" });
+  // Change comes back to the search field.
+  const field = useRef<HTMLInputElement>(null);
+  const back = useRef(false);
+  useEffect(() => {
+    if (found || !back.current) return;
+    back.current = false;
+    field.current?.focus();
+  }, [found]);
+  if (found)
+    return (
+      <FoundUser
+        walletId={walletId}
+        identity={identity}
+        hit={found}
+        onPay={onPick}
+        onBack={() => {
+          back.current = true;
+          setFound(null);
+        }}
+      />
+    );
   let body;
   if (list.data === undefined && list.isError)
     body = (
@@ -104,19 +158,28 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
       </p>
     );
   else if (list.data === undefined) body = <LoadingState testId="pay-picker-loading" text="Loading contacts…" />;
-  else if (groups.length === 0)
-    body = text ? (
-      <EmptyState testId="pay-picker-none" title="No contacts match" message="Search by name or username." />
-    ) : (
+  else if (view.none === "anyone")
+    body = (
+      <EmptyState
+        testId="pay-picker-none"
+        title="No one found"
+        message={`No contact or DashPay username starts with “${text}”.`}
+        action={
+          <DashButton variant="tintedBlue" data-testid="pay-none-to-address" onClick={toAddress}>
+            Pay to an address instead
+          </DashButton>
+        }
+      />
+    );
+  else if (view.none === "contacts") body = <EmptyState testId="pay-picker-none" title="No contacts match" message="Search by name or username." />;
+  else if (view.none === "short")
+    body = <EmptyState testId="pay-picker-empty" title={list.data.updating ? "Your contacts are being updated" : "No contacts yet"} message="Keep typing to search DashPay usernames." />;
+  else if (groups.length === 0 && text === "")
+    body = (
       <EmptyState
         testId="pay-picker-empty"
         title={list.data.updating ? "Your contacts are being updated" : "No contacts yet"}
-        message="Add contacts in Contacts to pay them by name."
-        action={
-          <DashButton variant="tintedBlue" onClick={() => navigate("contacts")}>
-            Open Contacts
-          </DashButton>
-        }
+        message="Type a username above to find someone on DashPay."
       />
     );
   else
@@ -149,10 +212,11 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
       <label className="search-field" data-testid="pay-contact-search">
         <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
         <input
+          ref={field}
           type="search"
           value={search}
-          placeholder="Search for a contact"
-          aria-label="Search for a contact"
+          placeholder="Search contacts or a username"
+          aria-label="Search contacts or a username"
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Escape" && search !== "") {
@@ -168,12 +232,29 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
         </p>
       )}
       {body}
-      <p className="placeholder-note">
-        Paying someone who is not a contact?{" "}
-        <DashButton variant="plainBlue" size="small" data-testid="pay-contact-to-address" onClick={() => ui.set({ payTab: "address" })}>
-          Pay to an address
-        </DashButton>
-      </p>
+      <VisuallyHidden>
+        <span role="status" data-testid="pay-search-announce">
+          {announce}
+        </span>
+      </VisuallyHidden>
+      {view.network && wanted !== null && (
+        <NetworkResults
+          state={networkState}
+          shown={hits.shown}
+          more={hits.more}
+          onRetry={() => void net.refetch()}
+          onPick={setFound}
+          onMore={() => navigate("contacts", { addContact: { walletId, query: wanted, hit: null }, contact: null, contactPrefill: null })}
+        />
+      )}
+      {view.none !== "anyone" && (
+        <p className="placeholder-note">
+          Paying someone who is not on DashPay?{" "}
+          <DashButton variant="plainBlue" size="small" data-testid="pay-contact-to-address" onClick={toAddress}>
+            Pay to an address
+          </DashButton>
+        </p>
+      )}
     </div>
   );
 }

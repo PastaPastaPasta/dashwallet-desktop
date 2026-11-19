@@ -5,6 +5,7 @@
 import { useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../api/backend";
+import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
 import type { TxDetails } from "../api/generated/TxDetails";
@@ -12,7 +13,7 @@ import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { TxFiat } from "../api/generated/TxFiat";
 import { keys, useBackend, useTxDetail, useTxDetailExtras } from "../api/queries";
 import { navigate, ui, useUi } from "../app/ui";
-import { AmountText, Chip, DashButton, Icon } from "../components/basics";
+import { AmountText, DashButton, Icon } from "../components/basics";
 import type { UsedIcon } from "../components/icons";
 import { LoadingState } from "../components/history";
 import { Sheet } from "../components/sheet";
@@ -21,15 +22,17 @@ import { findContact, subtitle } from "../contacts/model";
 import { contactListQuery, useContactsOwner } from "../contacts/queries";
 import { FiatLine, timeText, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
+import { explorerUrl } from "../format/explorer";
 import { fiatText } from "../format/fiat";
 import { Avatar } from "./contacts/Avatar";
-import { contactLetters, contactName, detailDate, isProblem, rowDate, shownAmount, txChip, txIcon, txTitle } from "../format/tx";
+import { contactLetters, contactName, detailDate, detailWhat, detailWho, isProblem, rowDate, shownAmount, txIcon } from "../format/tx";
 
 const confirmationsText = (n: number) => `${n} ${n === 1 ? "confirmation" : "confirmations"}`;
 
 /** Plain-language status for the detail sheet; dash-qt's raw string stays in engine/CSV data. The
  * engine keeps `instantLocked` set once a block confirms the transaction, so only an unconfirmed
- * row reads as InstantSend. */
+ * row reads as InstantSend (the activity row's word for it). A count of confirmations is technical
+ * and stays in the folded details. */
 export function statusText(s: TxStatusInfo): string {
   switch (s.kind) {
     case "abandoned":
@@ -39,14 +42,56 @@ export function statusText(s: TxStatusInfo): string {
     case "notAccepted":
       return "Not accepted";
     case "unconfirmed":
-      return s.instantLocked ? "Instant (InstantSend locked)" : "Pending";
+      return s.instantLocked ? "InstantSend" : "Waiting for confirmation";
     case "immature":
-      return `Maturing · ${confirmationsText(s.confirmations)}${s.maturesIn === null ? "" : `, available in ${s.maturesIn} more blocks`}`;
+      return "Maturing";
     case "confirming":
     case "confirmed":
-      if (s.kind === "confirmed" && s.confirmations > 6) return "Confirmed";
-      return `Confirmed · ${confirmationsText(s.confirmations)}`;
+      return "Confirmed";
   }
+}
+
+/** Opens the transaction on Insight in the system browser. The app builds the URL from its own
+ * network; this only asks, and only when this network has a page. A failure stays on the sheet. */
+function ExplorerButton({ txid, kind }: { txid: string; kind: NetworkKind }) {
+  const backend = useBackend();
+  const [problem, setProblem] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
+  if (!explorerUrl(kind, txid)) return null;
+  return (
+    <>
+      <button
+        type="button"
+        className="tx-detail-explorer"
+        data-testid="tx-detail-explorer"
+        disabled={opening}
+        onClick={() => {
+          setProblem(null);
+          setOpening(true);
+          void backend
+            .openTxInExplorer(txid)
+            .catch(() => setProblem("Could not open the explorer."))
+            .finally(() => setOpening(false));
+        }}
+      >
+        {opening ? "Opening the explorer…" : "View in explorer"}
+      </button>
+      {problem && (
+        <p className="field-error" role="alert" data-testid="tx-detail-explorer-error">
+          {problem}
+        </p>
+      )}
+    </>
+  );
+}
+
+/** The confirmation count, for the folded details. Nothing while there are none, so the sheet
+ * never says "0" or "unconfirmed". */
+export function confirmationDetail(s: TxStatusInfo): string | null {
+  if (s.kind !== "confirming" && s.kind !== "confirmed" && s.kind !== "immature") return null;
+  if (s.confirmations === 0) return s.kind === "immature" && s.maturesIn !== null ? `Available in ${s.maturesIn} more blocks` : null;
+  const conf = confirmationsText(s.confirmations);
+  return s.kind === "immature" && s.maturesIn !== null ? `${conf}, available in ${s.maturesIn} more blocks` : conf;
 }
 
 const STAMP_SOURCE = { ctx: "rates.ctx.com", bitPayDashCentral: "BitPay and DashCentral" } as const;
@@ -253,7 +298,6 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
   const amount = d.rows.reduce((sum, r) => sum + r.amount, 0);
   const icon = row ? txIcon(row.txType, d.status, amount) : "received";
   const headerIcon: UsedIcon = icon === "error" ? "txDetailError" : amount < 0 ? "txDetailSent" : "txDetailReceived";
-  const chip = txChip(d.status);
   const date = rowDate(d);
   // The row's address; else, received: our own output, sent: the first output that is not ours.
   const counterparty =
@@ -264,22 +308,42 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
   const unit = display.name;
   // The DashPay contact of the record whose title and address the sheet shows (DP3-02 D24).
   const contact = contactName(row?.counterparty);
+  const what = row ? detailWhat({ ...row, amount }) : "Transaction";
+  const who = row ? detailWho({ ...row, address: counterparty }) : null;
+  const sub =
+    contact && who === contact && row?.counterparty
+      ? subtitle({ alias: null, displayName: row.counterparty.displayName, username: row.counterparty.username, contact: row.counterparty.identity })
+      : null;
   const fiat = useFiat();
   const discreet = useUi((s) => s.discreet);
   const now = discreet ? null : fiat.text(shown.duffs);
   // A stamp is history, shown while prices are on, today's price or not; off hides every value.
   const stamp = !discreet && fiat.view && fiat.view.state.kind !== "off" ? row?.fiatThen : undefined;
+  const confirmations = confirmationDetail(d.status);
   return (
     <>
       <div className="tx-detail-summary" data-testid="tx-detail-summary">
         <Icon id={headerIcon} size={50} />
-        <h3 className="tx-detail-title" data-testid="tx-detail-title">{row ? txTitle({ ...row, amount }) : "Transaction"}</h3>
+        {who && who !== what && (
+          <p className="tx-detail-who" data-testid="tx-detail-who">
+            <span className="tx-detail-who-name">{who}</span>
+            {sub && <span className="tx-detail-who-user"> {sub}</span>}
+          </p>
+        )}
+        <h3 className="tx-detail-title" data-testid="tx-detail-title">{what}</h3>
         <AmountText className="tx-detail-amount" testId="tx-detail-amount" text={display.full(shown.duffs, shown.signed)} unitName={unit} glyphFactor={0.8} />
         {stamp && <FiatThen stamp={stamp} duffs={shown.duffs} sent={amount < 0} internal={!shown.signed} locale={backend.locale} />}
         <div className="tx-detail-status">
-          {chip && <Chip tone={isProblem(d.status) ? "danger" : "info"}>{chip}</Chip>}
-          {date && <span className="tx-detail-date">{detailDate(date, backend.locale)}</span>}
+          {date && (
+            <span className="tx-detail-date" data-testid="tx-detail-when">
+              {detailDate(date, backend.locale)}
+            </span>
+          )}
+          <span className={isProblem(d.status) ? "tx-detail-state is-problem" : "tx-detail-state"} data-testid="tx-detail-status">
+            {statusText(d.status)}
+          </span>
         </div>
+        <ExplorerButton txid={d.txid} kind={network.kind} />
       </div>
       <dl className="detail-list card-l1" data-testid="tx-detail-facts">
         {contact && row?.counterparty && <ContactFact walletId={walletId} counterparty={row.counterparty} name={contact} sent={amount < 0} onView={onViewContact} />}
@@ -289,29 +353,32 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             {own && <span className="detail-note"> (own address)</span>}
           </DetailRow>
         )}
-        {d.fee !== null && (
-          <DetailRow label="Network fee">
-            <AmountText text={display.full(d.fee)} unitName={unit} glyph={false} />
-          </DetailRow>
-        )}
         {now !== null && (
           <DetailRow label="Value now" testId="tx-detail-value-now">
             <FiatLine fiat={fiat} duffs={shown.duffs} testId="tx-detail-value-now-text" />
           </DetailRow>
         )}
-        <DetailRow label="Status" testId="tx-detail-status">{statusText(d.status)}</DetailRow>
-        {d.blockHeight !== null && <DetailRow label="Block">{d.blockHeight.toLocaleString(backend.locale)}</DetailRow>}
-        <DetailRow label="Transaction ID" testId="tx-detail-txid">
-          <CopyValue value={d.txid} label="transaction ID" mono />
-        </DetailRow>
-        <DetailRow label="Size">{`${d.sizeBytes} bytes`}</DetailRow>
         {d.message && <DetailRow label="Message">{d.message}</DetailRow>}
       </dl>
       <LabelEditor key={`label-${d.txid}`} walletId={walletId} txid={d.txid} label={d.label} />
       <Actions key={`actions-${d.txid}`} walletId={walletId} txid={d.txid} />
-      <details className="disclosure card-l1" data-testid="tx-detail-inputs">
-        <summary>Inputs ({d.inputs.length})</summary>
-        <ul role="list" className="io-list">
+      <details className="disclosure card-l1" data-testid="tx-detail-technical">
+        <summary>Details</summary>
+        <dl className="detail-list">
+          {d.fee !== null && (
+            <DetailRow label="Network fee">
+              <AmountText text={display.full(d.fee)} unitName={unit} glyph={false} />
+            </DetailRow>
+          )}
+          {confirmations && <DetailRow label="Confirmations">{confirmations}</DetailRow>}
+          {d.blockHeight !== null && <DetailRow label="Block">{d.blockHeight.toLocaleString(backend.locale)}</DetailRow>}
+          <DetailRow label="Transaction ID" testId="tx-detail-txid">
+            <CopyValue value={d.txid} label="transaction ID" mono />
+          </DetailRow>
+          <DetailRow label="Size">{`${d.sizeBytes} bytes`}</DetailRow>
+        </dl>
+        <p className="io-heading">Inputs ({d.inputs.length})</p>
+        <ul role="list" className="io-list" data-testid="tx-detail-inputs">
           {d.inputs.map((i) => (
             <li key={`${i.previousTxid}:${i.previousVout}`} className="io-row">
               <span className="mono io-ref">{`${i.previousTxid.slice(0, 16)}…:${i.previousVout}`}</span>
@@ -320,10 +387,8 @@ function Body({ d, network, walletId, onViewContact }: { d: TxDetails; network: 
             </li>
           ))}
         </ul>
-      </details>
-      <details className="disclosure card-l1" data-testid="tx-detail-outputs">
-        <summary>Outputs ({d.outputs.length})</summary>
-        <ul role="list" className="io-list">
+        <p className="io-heading">Outputs ({d.outputs.length})</p>
+        <ul role="list" className="io-list" data-testid="tx-detail-outputs">
           {d.outputs.map((o) => (
             <li key={o.vout} className="io-row">
               <span className="mono io-ref">#{o.vout}</span>

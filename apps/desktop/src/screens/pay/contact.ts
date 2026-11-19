@@ -9,10 +9,15 @@ import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { ContactList } from "../../api/generated/ContactList";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
+import type { EligibilityName } from "../../api/generated/EligibilityName";
 import type { LockResolutionName } from "../../api/generated/LockResolutionName";
 import type { LockStateName } from "../../api/generated/LockStateName";
+import type { UserHit } from "../../api/generated/UserHit";
+import type { UserRelation } from "../../api/generated/UserRelation";
+import type { PayTab } from "../../app/ui";
 import { actionError } from "../../contacts/actions";
-import { avatarLetters, shownName, subtitle, type ContactsOwner } from "../../contacts/model";
+import { cardLine } from "../../contacts/add";
+import { avatarLetters, networkHits, shownName, subtitle, type ContactsOwner } from "../../contacts/model";
 import { BROKEN, ENABLE_FIRST, payNote } from "../../contacts/pane";
 
 type Named = Pick<ContactSummaryInfo, "contact" | "alias" | "displayName" | "username">;
@@ -52,6 +57,21 @@ export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "star
   }
 }
 
+/** The tab Pay opens on when nothing named one: To a contact only when there is someone to pay
+ * there (a contact or a request), else To an address; `null` while that is still being read
+ * (`owner` is `undefined` until DashPay's status is read). */
+export function defaultPayTab(
+  owner: (ContactsOwner & { failed?: boolean; fetching?: boolean }) | undefined,
+  list: { data: ContactList | undefined; failed: boolean; fetching?: boolean },
+): PayTab | null {
+  // The tab is chosen once, so not from a cached answer that a running read may yet overturn.
+  if (owner === undefined || owner.fetching || list.fetching) return null;
+  // A failed read keeps the last good answer, which may be stale: To an address, not that list.
+  if (owner.kind !== "identity" || owner.failed || list.failed) return "address";
+  if (list.data === undefined) return null;
+  return pickerGroups(list.data).length > 0 ? "contact" : "address";
+}
+
 // ---------------------------------------------------------------- the picker (D4)
 
 export interface PickerRow extends Payee {
@@ -78,9 +98,99 @@ export function pickerGroups(list: ContactList | undefined): PickerGroup[] {
   return groups;
 }
 
+/** What the picker shows under the search field: the contact groups, the username search's
+ * section (while it runs, failed, or found someone), and which "nothing matches" it says:
+ * `contacts` before the username search can run (under two characters) while there are contacts,
+ * `short` then without any, `anyone` once neither found anyone. */
+export function pickerView(i: {
+  text: string;
+  groups: number;
+  /** Whether the identity has any contact or request, whatever the text. */
+  anyContacts: boolean;
+  /** Whether the username search runs for the text (two characters or more). */
+  network: boolean;
+  networkState: "loading" | "error" | "done";
+  /** The hits the section lists. */
+  hits: number;
+}): { network: boolean; none: "contacts" | "short" | "anyone" | null } {
+  const network = i.network && (i.networkState !== "done" || i.hits > 0);
+  if (i.text === "" || i.groups > 0) return { network, none: null };
+  if (!i.network) return { network, none: i.anyContacts ? "contacts" : "short" };
+  // No group and no hit lists nothing, even when the search matched contacts the picker's own
+  // filter did not (it folds homographs, the filter does not).
+  return { network, none: i.networkState === "done" && i.hits === 0 ? "anyone" : null };
+}
+
+/** The username search's hits under the picker: everyone the picker itself does not list for the
+ * text, whatever their relation. Matched against the filtered list the picker shows, not the
+ * identity's whole list: the search folds homographs, the filter does not, so a contact the
+ * filter missed is found here. */
+export function pickerHits(hits: UserHit[] | undefined, shown: ContactList): { shown: UserHit[]; more: boolean; count: number } {
+  return networkHits(hits, { ...shown, sections: shown.sections.filter((s) => s.section === "contacts" || s.section === "requests") }, true);
+}
+
+/** The list the username search's hits are matched against: the picker's list for the text once
+ * read (not the previous text's, kept while it loads); an empty one when that read failed with
+ * nothing kept, as the picker then lists no one; `null` while it is still being read. */
+export function pickerListing(list: { data: ContactList | undefined; placeholder: boolean; failed: boolean }): ContactList | null {
+  if (list.data !== undefined) return list.placeholder ? null : list.data;
+  return list.failed ? { sections: [], updating: false } : null;
+}
+
+/** Where the username search under the picker stands. It is still running until the search has
+ * answered for the text shown and the picker's list for that text is read (`listReady`): before,
+ * its hits cannot be told apart from the picker's rows. */
+export function pickerNetworkState(i: { listReady: boolean; caughtUp: boolean; pending: boolean; failed: boolean; fetching: boolean }): "loading" | "error" | "done" {
+  // A re-read (after a contact request, say) may change a hit's relation: not the old one meanwhile.
+  if (!i.listReady || !i.caughtUp || i.pending || i.fetching) return "loading";
+  return i.failed ? "error" : "done";
+}
+
+/** What the picker's live region says once the username search answered; `null` before. */
+export function searchAnnouncement(i: { network: boolean; networkState: "loading" | "error" | "done"; hits: number; none: ReturnType<typeof pickerView>["none"] }): string | null {
+  if (i.none === "anyone") return "No one found";
+  if (!i.network || i.networkState === "loading") return null;
+  if (i.networkState === "error") return "Could not search";
+  if (i.hits === 0) return null;
+  return i.hits === 1 ? "1 person found on DashPay" : `${i.hits} people found on DashPay`;
+}
+
 function rowReason(c: Pick<ContactSummaryInfo, "relation" | "channel">): string | null {
   if (c.relation === "pendingIncoming") return "Accept and pay";
   return c.channel === "broken" ? "Payments cannot be sent right now" : null;
+}
+
+// ---------------------------------------------------------------- a user found by username
+
+/** What the card of a user the search found offers: send them a contact request, pay them
+ * (already a contact), accept and pay their request, enable DashPay's keys, or check again. */
+export type FoundNext = "send" | "pay" | "acceptAndPay" | "enable" | "retry" | null;
+
+export interface FoundLine {
+  text: string | null;
+  next: FoundNext;
+}
+
+/** Add contact's card line (`cardLine`) in Pay's words; `undefined` while the check runs. A
+ * DashPay payment needs the payee's request, so a request sent is paid once they accept. */
+export function foundLine(name: string, relation: UserRelation, eligibility: { data: EligibilityName | undefined; failed: boolean }): FoundLine | undefined {
+  const line = cardLine(relation, eligibility);
+  if (!line) return undefined;
+  switch (line.next) {
+    case "send":
+      return { text: `You can pay ${name} once they accept your contact request.`, next: "send" };
+    case "showContact":
+      return { text: line.text, next: "pay" };
+    case "showRequest":
+      return eligibility.data === "pendingIncoming"
+        ? { text: line.text, next: "acceptAndPay" }
+        : { text: `Contact request sent. You can pay ${name} once they accept.`, next: null };
+    case "enable":
+    case "retry":
+      return { text: line.text, next: line.next };
+    default:
+      return { text: line.text, next: null };
+  }
 }
 
 // ---------------------------------------------------------------- the banner (D6)

@@ -213,6 +213,36 @@ describe("fixture backend", () => {
     });
   });
 
+  it("opens a transaction on the window's network and refuses regtest and devnet", async () => {
+    const txid = "ab".repeat(32);
+    const { fixture } = backend({ scenario: "funded" });
+    expect(await cmd.openTxInExplorer(txid)).toBeNull();
+    expect(fixture.calls).toContain("open_tx_in_explorer");
+    expect(fixture.world.explorerOpened).toEqual([txid]);
+    clearMocks();
+    backend({ scenario: "funded", network: "regtest" });
+    await expect(cmd.openTxInExplorer(txid)).rejects.toMatchObject({ code: "invalid_argument" });
+    clearMocks();
+    backend({ scenario: "funded", network: "devnet" });
+    await expect(cmd.openTxInExplorer(txid)).rejects.toMatchObject({ code: "invalid_argument" });
+    clearMocks();
+    backend({ scenario: "funded" });
+    await expect(cmd.openTxInExplorer("abc")).rejects.toMatchObject({ code: "invalid_argument" });
+  });
+
+  it("answers protocol compatibility states and counts open_releases_page", async () => {
+    const unknown = backend({ scenario: "protocol-unknown" });
+    expect(await unknown.b.protocolCompatibility()).toEqual({ networkVersion: null, supportedVersion: 15 });
+    clearMocks();
+    const equal = backend({ scenario: "protocol-equal" });
+    expect(await equal.b.protocolCompatibility()).toEqual({ networkVersion: 15, supportedVersion: 15 });
+    clearMocks();
+    const upgraded = backend({ scenario: "protocol-upgraded" });
+    expect(await upgraded.b.protocolCompatibility()).toEqual({ networkVersion: 16, supportedVersion: 15 });
+    expect(await upgraded.b.openReleasesPage()).toBeNull();
+    expect(upgraded.fixture.world.releasesOpened).toBe(1);
+  });
+
   it("rejects a command it does not implement with a typed AppError", async () => {
     backend({ scenario: "funded" });
     const e = await cmd.coinjoinSalt(FIXTURE_WALLET_ID).catch((x: unknown) => x);

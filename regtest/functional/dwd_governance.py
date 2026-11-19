@@ -55,6 +55,7 @@ import subprocess
 import time
 from decimal import Decimal
 
+from dwd_masternodes import VOTING, address, provider_key
 from test_framework.governance import prepare_object
 from test_framework.messages import uint256_to_string
 from test_framework.test_framework import EVONODE_COLLATERAL, DashTestFramework
@@ -85,7 +86,7 @@ class Dwcli:
         with open(self.passfile, "w", encoding="utf8") as f:
             f.write(PASSPHRASE + "\n")
 
-    def run(self, *args, timeout=900, options=(), stdin=None):
+    def run_raw(self, *args, timeout=900, options=(), stdin=None):
         cmd = [
             self.binary,
             "--datadir", os.path.join(self.datadir, "data"),
@@ -101,9 +102,24 @@ class Dwcli:
         env.setdefault("DWCLI_LOG", "warn,dw_governance=debug,dw_engine::governance=debug")
         p = subprocess.run(cmd, input=stdin, capture_output=True, text=True, timeout=timeout, env=env)
         self.log.info(f"dwcli {' '.join(args)} -> {p.returncode}\n{p.stdout}{p.stderr[-6000:]}")
+        return p
+
+    def run(self, *args, timeout=900, options=(), stdin=None):
+        p = self.run_raw(*args, timeout=timeout, options=options, stdin=stdin)
         if p.returncode != 0:
             raise AssertionError(f"dwcli {args} failed: {p.stderr[-3000:]}")
         return p.stdout.splitlines()
+
+    def gov(self, *args, timeout=900, options=(), error=None):
+        """Runs `dwcli gov <args>` and parses its single JSON line."""
+        p = self.run_raw("gov", *args, timeout=timeout, options=options)
+        line = json.loads(p.stdout.strip().splitlines()[-1])
+        if error is not None:
+            assert not line["ok"], line
+            assert_equal(line["error"]["code"], error)
+            return line["error"]
+        assert line["ok"] and p.returncode == 0, (line, p.stderr[-2000:])
+        return line["result"]
 
     def governance(self, *args, timeout=900, options=()):
         """Runs `dwcli governance` (after the global `options`); returns its lines grouped by kind."""
@@ -153,6 +169,17 @@ class DwdGovernance(DashTestFramework):
     def core_counts(self, h):
         r = self.nodes[1].gobject("get", h)["FundingResult"]
         return r["YesCount"], r["NoCount"], r["AbstainCount"]
+
+    def voter_sum(self):
+        """Funding votes Core holds, summed over every proposal. `tally.voters` counts funding
+        voters only, and a ProUpRegTx drops the votes the old voting key signed, so a fixed total
+        is not a sync barrier."""
+        node = self.nodes[0]
+        total = 0
+        for h in node.gobject("list", "all", "proposals"):
+            votes = node.gobject("getcurrentvotes", h)
+            total += sum(1 for v in votes.values() if ":funding:" in v)
+        return total
 
     def mn(self, i):
         return self.mninfo[i]
@@ -431,7 +458,8 @@ class DwdGovernance(DashTestFramework):
             assert_equal(sorted(json.loads(text)), sorted(node.gobject("list", signal, "proposals")))
         assert_equal(sorted(node.gobject("list", "valid", "proposals")), sorted([p0, p1]))
 
-        self.own_proposal(dwcli)
+        wallet, own_hash = self.own_proposal(dwcli)
+        self.gov_cli(dwcli, wallet, own_hash, rpc)
         self.log.info("governance suite passed")
 
     def own_proposal(self, dwcli):
@@ -512,6 +540,111 @@ class DwdGovernance(DashTestFramework):
             assert_equal(mine[-1]["fee_txid"], fee_txid)
             rows = {r["hash"]: r for r in out["proposal"]}
             assert_equal(rows[h]["tally"]["yes"]["estimate"], 3 + 4)
+            return wallet, h
+
+    def gov_cli(self, dwcli, wallet, public_hash, rpc):
+        self.log.info("8. dwcli gov subcommands (MG-08): settings, reads, prepare, submit and wallet voting")
+        node = self.nodes[0]
+        assert_equal(dwcli.gov("sync-enabled"), {"enabled": True})
+        assert_equal(dwcli.gov("set-sync-enabled", "false"), {"enabled": False})
+        assert_equal(dwcli.gov("sync-state")["phase"], "disabled")
+        dwcli.gov("resync", error="governance.sync_disabled")
+        assert_equal(dwcli.gov("set-sync-enabled", "true"), {"enabled": True})
+        assert_equal(dwcli.gov("resync"), {"resync": True})
+        assert_equal(dwcli.gov("budget", str(FIRST_SUPERBLOCK))["budget"],
+                     duffs(node.getsuperblockbudget(FIRST_SUPERBLOCK)))
+        prepared_list = dwcli.gov("list-prepared", "--wallet", wallet)
+        assert public_hash in {p["hash"] for p in prepared_list}
+        # `public` is a synced store's fact. An unsynced `submit` still reads the fee as confirming
+        # and does not refuse; sync first, then a proposal peers already hold is `submit_refused`.
+        tip0 = node.getblockcount()
+        dwcli.gov("--gov", "--sync-height", str(tip0), "--min-proposals", "3",
+                  "submit", public_hash, "--wallet", wallet, error="governance.submit_refused")
+
+        # Give regular[0] the wallet's DIP3 voting key 0, and submit a fresh proposal p8 to vote on.
+        regular = [m for m in self.mninfo if not m.evo]
+        fee_addr = node.getnewaddress()
+        node.sendtoaddress(fee_addr, 1)
+        self.generate(node, 1)
+        node.protx("update_registrar", regular[0].proTxHash, "", address(provider_key(VOTING, 0)), "", fee_addr)
+        now = int(time.time())
+        p8_prep = prepare_object(node, 1, uint256_to_string(0), now, 1, "dwd_p8", Decimal("1.0"),
+                                 node.getnewaddress())
+        self.generate(node, 6)
+        p8 = node.gobject("submit", "0", 1, now, p8_prep["hex"], p8_prep["collateralHash"])
+        for n in self.nodes:
+            self.wait_until(lambda: p8 in n.gobject("list", "all", "proposals"), timeout=30)
+        assert_equal(node.protx("info", regular[0].proTxHash)["state"]["votingAddress"],
+                     address(provider_key(VOTING, 0)))
+
+        tip = node.getblockcount()
+        clock = dwcli.gov("--sync-height", str(tip), "clock")
+        assert clock["tip_height"] >= tip
+        info = dwcli.gov("--sync-height", str(tip), "info")
+        assert_equal((info["valid_masternodes"], info["valid_evonodes"]), (4, 1))
+        sbs = dwcli.gov("--sync-height", str(tip), "superblocks", "--count", "4")
+        assert_equal(len(sbs), 4)
+        vms = dwcli.gov("--sync-height", str(tip), "voting-masternodes", p8, "--wallet", wallet)
+        assert_equal([(v["pro_tx_hash"], v["key_index"], v["weight"], v["current_vote"]) for v in vms],
+                     [(regular[0].proTxHash, 0, 1, None)])
+
+        p9_args = ("prepare", "--name", "dwd_p9", "--url", "https://example.org/p9",
+                   "--payment-address", node.getnewaddress(), "--payment-amount", str(duffs("1.0")),
+                   "--payment-count", "1", "--first-superblock", str(sbs[1]["height"]), "--wallet", wallet)
+        preview = dwcli.gov("--sync-height", str(tip), *p9_args, "--preview")
+        assert_equal(node.gobject("check", preview["data_hex"]), {"Object status": "OK"})
+        created = dwcli.gov("--sync-height", str(tip), *p9_args)
+        assert_equal(created["state"], {"kind": "fee_paid", "confirmations": 0})
+        # The fee is already in the mempool. Submitting those same bytes again waits out
+        # dash-spv's acceptance timeout (`send.broadcast_unknown`): peers already have them.
+        # One confirmation takes the confirming path, which does not rebroadcast. The
+        # follower announces only after the fee has been seen mined for 15s, so the
+        # process stays up through that wait. Core then holds the object until the fee
+        # has six confirmations.
+        self.generate(node, 1)
+        tip = node.getblockcount()
+        resub = dwcli.gov("--sync-height", str(tip), "--linger-secs", "45",
+                          "submit", created["hash"], "--wallet", wallet)
+        assert_equal(resub["hash"], created["hash"])
+        assert resub["state"]["kind"] in ("confirming", "ready_to_submit", "fee_paid"), resub["state"]
+        self.generate(node, 5)
+        self.wait_until(lambda: created["hash"] in node.gobject("list", "all", "proposals"),
+                        timeout=60)
+
+        # Cast a funding vote with the wallet's voting key 0, relay an external vote, and read back.
+        # `--max-ranged 0` waits until the sync has resolved collaterals: `vote` signs with the
+        # outpoint the store resolved, and refuses `collateral_unresolved` before that.
+        cast = dwcli.gov("--gov", "--sync-height", str(tip), "--min-proposals", "4", "--max-ranged", "0",
+                         "--linger-secs", "15", "vote", p8, "--outcome", "yes",
+                         "--masternode", regular[0].proTxHash, "--wallet", wallet,
+                         options=("--collateral-rpc", rpc))
+        assert_equal([(c["pro_tx_hash"], c["rejected"]) for c in cast], [(regular[0].proTxHash, None)])
+        assert_greater_than(cast[0]["peers"], 0)
+        self.wait_until(lambda: self.core_counts(p8) == (1, 0, 0), timeout=30)
+
+        voter1 = regular[1]
+        v1_info = node.protx("info", voter1.proTxHash)
+        v1_out = f"{v1_info['collateralHash']}-{v1_info['collateralIndex']}"
+        v1_time = int(time.time())
+        v1_sig = node.signmessage(voter1.votingAddr, f"{v1_out}|{p8}|1|{OUTCOME_CODES['abstain']}|{v1_time}")
+        relayed = dwcli.gov("--gov", "--sync-height", str(tip), "--min-proposals", "4", "--linger-secs", "15",
+                            "voteraw", v1_out, p8, "--outcome", "abstain", "--time", str(v1_time),
+                            "--signature", v1_sig, options=("--collateral-rpc", rpc))
+        assert_greater_than(relayed["peers"], 0)
+        self.wait_until(lambda: self.core_counts(p8) == (1, 0, 1), timeout=30)
+        voters = str(self.voter_sum())
+
+        listed = dwcli.gov("--gov", "--sync-height", str(tip), "--min-proposals", "4",
+                           "--min-voters", voters, "--max-ranged", "0",
+                           "list", "--scope", "current", "--text", "dwd_p8", options=("--collateral-rpc", rpc))
+        assert_equal([r["hash"] for r in listed], [p8])
+        assert_equal((listed[0]["tally"]["yes"]["estimate"], listed[0]["tally"]["abstain"]["estimate"]), (1, 1))
+        detail = dwcli.gov("--gov", "--sync-height", str(tip), "--min-proposals", "4", "get", p8)
+        assert_equal(detail["row"]["hash"], p8)
+        cvotes = dwcli.gov("--gov", "--sync-height", str(tip), "--min-proposals", "4",
+                           "--min-voters", voters, "--max-ranged", "0",
+                           "current-votes", p8, "--outpoint", v1_out, options=("--collateral-rpc", rpc))
+        assert_equal([(v["outpoint"], v["outcome"]) for v in cvotes], [(v1_out, "abstain")])
 
 
 if __name__ == "__main__":
