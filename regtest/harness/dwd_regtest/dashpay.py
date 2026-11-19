@@ -222,11 +222,6 @@ class Root:
         line = next(ln for ln in out.splitlines() if ln.startswith("synced"))
         return dict(re.findall(r"(\w+)=(\S+)", line))
 
-    def send(self, wallet: str, address: str, duffs: int, height: int) -> str:
-        out = self.run("send", wallet, "--to", f"{address}:{duffs}", "--sync-height", str(height),
-                       "--rebroadcast-unknown", "3").stdout
-        return re.search(r"^broadcast (\S+)$", out, re.M).group(1)
-
     def session(self, wallet: str | None = None, peers: list[str] | None = None, name: str = "session") -> Session:
         return Session(self, wallet, peers, name)
 
@@ -415,14 +410,16 @@ class Funder:
         wait_until(lambda: self._try_send(to, tip), 1800, "a mined coin to split", interval=30)
         return wait_until(lambda: self._mined(duffs), 1800, "the split coins to be mined", interval=30)
 
-    def _try_send(self, to: list[str], height: int) -> bool:
+    def _try_send(self, to: list[str], height: int) -> str | None:
+        """The txid, or `None` when nothing was sent and asking again may help: no mined coin
+        yet, or SPV has not connected a peer."""
         proc = self.root.run("send", self.wallet, *to, "--sync-height", str(height), "--rebroadcast-unknown", "3",
                              check=False)
         if proc.returncode == 0:
-            return True
-        if "exceeds the available" in proc.stderr:
-            return False
-        raise AssertionError(f"funder split failed: {self.root.redactor.mask(proc.stderr)[-2000:]}")
+            return re.search(r"^broadcast (\S+)$", proc.stdout, re.M).group(1)
+        if "exceeds the available" in proc.stderr or "no connected peers" in proc.stderr:
+            return None
+        raise AssertionError(f"funder send failed: {self.root.redactor.mask(proc.stderr)[-2000:]}")
 
     def _mined(self, duffs: int) -> int | None:
         tip = self.root.tip()
@@ -432,7 +429,8 @@ class Funder:
         """Pays `duffs` to a fresh address of `wallet` and waits until `to` has scanned a block
         that holds it; returns the txid and the height `to` scanned."""
         tip = self.ensure_coins(duffs)
-        txid = self.root.send(self.wallet, to.address(wallet), duffs, tip)
+        to_address = ["--to", f"{to.address(wallet)}:{duffs}"]
+        txid = wait_until(lambda: self._try_send(to_address, tip), 600, "the funder's payment to go out", interval=15)
         height = tip
         while True:
             height += 1

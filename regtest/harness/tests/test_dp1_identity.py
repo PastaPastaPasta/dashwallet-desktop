@@ -30,7 +30,7 @@ FUND_DUFFS = 5_000_000
 
 @pytest.fixture(scope="module")
 def registered(dp, funder):
-    root = dp.root("a")
+    root = dp.root("dp1")
     wallet = root.create(f"dp1-{dp.run_id}")
     txid, tip = funder.pay(root, wallet.id, FUND_DUFFS)
     print(f"funded {wallet.id} with {FUND_DUFFS} duffs: {txid}")
@@ -65,7 +65,7 @@ def test_names_before_registration(registered):
 
 
 def test_offline_rules(dp, funder):
-    root = dp.root("a")
+    root = dp.root("dp1")
     homograph = root.json("name", "check", "dwdp1-o0o")
     assert homograph["valid"] is True and homograph["normalized"] == "dwdp1-000"
     assert homograph["contested"] is True
@@ -118,7 +118,7 @@ def test_main_name_survives_sync_and_restart(registered):
 
 
 def test_restore_finds_the_identity(dp, registered):
-    root = dp.root("restore")
+    root = dp.root("dp1-restore")
     restored = root.restore(registered["wallet"].mnemonic, registered["birth"], f"dp1r-{dp.run_id}")
     with root.session(restored.id, name="dp1-restore") as s:
         rows = wait_until(lambda: s.ok("identity", "list"), 900, "the restored wallet's identity")
