@@ -2044,7 +2044,8 @@ mod tests {
     #[test]
     fn bdb_records_are_wiped_on_drop() {
         type Wiped = zeroize::Zeroizing<Vec<u8>>;
-        let read: fn(&[u8]) -> Result<Vec<(Wiped, Wiped)>, WalletDatError> = crate::bdb::read_pairs;
+        type Pairs = Result<Vec<(Wiped, Wiped)>, WalletDatError>;
+        let read: fn(&[u8]) -> Pairs = crate::bdb::read_pairs;
         assert!(read(&[]).is_err());
     }
 
