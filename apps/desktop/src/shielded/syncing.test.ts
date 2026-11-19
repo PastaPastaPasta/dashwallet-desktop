@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
-import { shieldedSyncing, syncingRefusal } from "./syncing";
+import { SHIELDED_SCAN_POLL_MS, shieldedStatusRefetchMs } from "../api/queries";
+import { shieldedSyncing, shieldedSyncText, syncingRefusal } from "./syncing";
 
 const status = (over: Partial<ShieldedStatus>): ShieldedStatus =>
   ({ active: true, ready: true, syncing: false, balance: "0", pending: "0", pendingShields: [], proverReady: true, ...over }) as ShieldedStatus;
@@ -19,5 +20,26 @@ describe("Shielded syncing adapter (DEC-1058)", () => {
     expect(syncingRefusal("platform.unavailable", true)).toBe(true);
     expect(syncingRefusal("platform.unavailable", false)).toBe(false);
     expect(syncingRefusal("shielded.insufficient_funds", true)).toBe(false);
+  });
+
+  it("says Scanning… while a pass runs, else when the last pass ended", () => {
+    const now = 1_800_000_000;
+    expect(shieldedSyncText(status({ syncing: true, syncedIndex: 4096, lastSyncAt: now - 600 }), now)).toBe("Scanning…");
+    expect(shieldedSyncText(status({ syncing: true, ready: false, syncedIndex: null, lastSyncAt: null }), now)).toBe("Scanning…");
+    expect(shieldedSyncText(status({ syncedIndex: 4096, lastSyncAt: now - 20 }), now)).toBe("Last checked just now");
+    expect(shieldedSyncText(status({ syncedIndex: 4096, lastSyncAt: now - 300 }), now)).toBe("Last checked 5 min ago");
+    expect(shieldedSyncText(status({ syncedIndex: 4096, lastSyncAt: now - 3 * 3600 }), now)).toBe("Last checked 3 hours ago");
+    // No completed pass yet, Shielded off, or not read: no line.
+    expect(shieldedSyncText(status({ syncedIndex: null, lastSyncAt: null }), now)).toBeNull();
+    expect(shieldedSyncText(status({ active: false, syncing: true }), now)).toBeNull();
+    expect(shieldedSyncText(null, now)).toBeNull();
+  });
+
+  it("re-reads the status every 5 s while a pass runs, and stops once it has ended", () => {
+    expect(SHIELDED_SCAN_POLL_MS).toBe(5_000);
+    expect(shieldedStatusRefetchMs(status({ syncing: true }))).toBe(5_000);
+    expect(shieldedStatusRefetchMs(status({ syncing: false }))).toBe(false);
+    expect(shieldedStatusRefetchMs(null)).toBe(false);
+    expect(shieldedStatusRefetchMs(undefined)).toBe(false);
   });
 });

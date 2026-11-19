@@ -1,14 +1,15 @@
 // The vote and create sheets' passphrase (D12, D14): Pay's confirm-sheet rules (U-03 D3–D4) for
 // a governance or spend grant. The prompt follows the lock and "Require authentication for every
-// payment" (a failed read counts as on); a vault that asks anyway shows the field; a wrong
-// passphrase says so and holds the button for the vault's wait.
+// payment" (a failed read counts as on); a vote always asks on an encrypted vault, as the signing
+// window covers payments only; a vault that asks anyway shows the field; a wrong passphrase says
+// so and holds the button for the vault's wait.
 
 import { useEffect, useId, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { GrantPurposeSpec } from "../../api/generated/GrantPurposeSpec";
-import { useBackend, useLockStatus, usePaymentAuthentication } from "../../api/queries";
+import { useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy } from "../../api/queries";
 import { authRefusal, credentialPrompt } from "../pay/model";
 
 export interface Credential {
@@ -25,10 +26,13 @@ export interface Credential {
   authorize: (purpose: GrantPurposeSpec) => Promise<AuthGrant | null>;
 }
 
-export function useCredential(walletId: string, ask: string): Credential {
+/** `windowAmount`: what the grant would charge the signing window, in duffs, or `null` for a grant
+ * the window never issues (a vote), which always asks on an encrypted vault. */
+export function useCredential(walletId: string, ask: string, windowAmount: number | bigint | null): Credential {
   const b = useBackend();
   const lock = useLockStatus();
   const policy = usePaymentAuthentication();
+  const quick = useQuickUnlockPolicy(policy.data === false);
   const [askAnyway, setAskAnyway] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -55,7 +59,12 @@ export function useCredential(walletId: string, ask: string): Credential {
       live = false;
     };
   }, [b]);
-  const prompt = askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined);
+  const windowNeeded = policy.data === false;
+  const cover =
+    quick.isSuccess && windowAmount !== null
+      ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.signingWindowRemainingDuffs ?? 0, amount: windowAmount }
+      : null;
+  const prompt = askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined, windowNeeded ? cover : null);
   const waitSecs = retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
 
   const authorize = async (purpose: GrantPurposeSpec): Promise<AuthGrant | null> => {
@@ -85,7 +94,7 @@ export function useCredential(walletId: string, ask: string): Credential {
   };
 
   return {
-    ready: !policy.isPending && waitKnown && retryAt === null,
+    ready: !policy.isPending && (!windowNeeded || quick.isSuccess || quick.isError) && waitKnown && retryAt === null,
     prompt,
     passphrase,
     setPassphrase,

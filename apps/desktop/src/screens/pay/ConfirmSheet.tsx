@@ -9,12 +9,13 @@
 // and "Accept and pay" accepts the contact's request and pays it under one credential and one
 // lease, ended once the first broadcast returned.
 
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBackend, useLockStatus, usePaymentAuthentication, useWallets } from "../../api/queries";
+import { useBackend, useLockStatus, usePaymentAuthentication, useQuickUnlockPolicy, useWallets } from "../../api/queries";
 import { navigate, useUi } from "../../app/ui";
 import { AmountText, DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
@@ -27,6 +28,7 @@ import { Avatar } from "../contacts/Avatar";
 import { useActionToast } from "../contacts/afterAction";
 import { AcceptFailed, acceptFailedText, acceptUnderLease, acceptedText, type Payee } from "./contact";
 import {
+  acceptAndPayValue,
   authRefusal,
   broadcastFailure,
   confirmActions,
@@ -92,6 +94,7 @@ export function ConfirmSheet({
   const { chain, amountUnit } = shown;
   const lock = useLockStatus();
   const policy = usePaymentAuthentication();
+  const quick = useQuickUnlockPolicy(policy.data === false);
   // `undefined` until the wallet list is read: neither the prompt nor Send shows before it is
   // known whether the wallet can sign.
   const wallets = useWallets();
@@ -142,9 +145,24 @@ export function ConfirmSheet({
   const feeWarn = payFeeWarning(estimate.fee, estimate.totalSent);
   const toast = useActionToast(walletId);
 
-  // A failed read of the policy counts as "on" (U-03 D3): the prompt waits only while it loads.
-  const policyKnown = !policy.isPending;
-  const prompt = !actions.credential ? "none" : askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined);
+  // A failed read of the policy counts as "on" (U-03 D3). With the signing window, an unread
+  // window also asks: the prompt waits until that read settles. A sheet that sends nothing
+  // (unsigned, watch-only) asks for nothing.
+  const windowNeeded = policy.data === false;
+  const acceptQuote = useQuery({
+    queryKey: ["pay", "accept-grant", walletId, contact?.identity] as const,
+    queryFn: () => b.grantRequest(walletId, contact!.identity, { kind: "acceptRequest" }),
+    enabled: Boolean(contact?.acceptsToo && contact.identity),
+    retry: false,
+  });
+  const policyKnown =
+    !policy.isPending && (!windowNeeded || quick.isSuccess || quick.isError) && (!contact?.acceptsToo || acceptQuote.isSuccess || acceptQuote.isError);
+  // Accept and pay also spends the quoted platform value. Until that quote is known, ask.
+  const coveredAmount = !contact?.acceptsToo ? total : acceptQuote.isSuccess ? acceptAndPayValue(total, acceptQuote.data) : Number.MAX_SAFE_INTEGER;
+  const cover = quick.isSuccess
+    ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.signingWindowRemainingDuffs ?? 0, amount: coveredAmount }
+    : null;
+  const prompt = !actions.credential ? "none" : askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined, windowNeeded ? cover : null);
   // The policy loads after the sheet opened: once it asks for nothing, Cancel takes the focus,
   // so Return does not send (U-03 D4). The passphrase field focuses itself when it appears.
   const cancel = useRef<HTMLButtonElement>(null);
