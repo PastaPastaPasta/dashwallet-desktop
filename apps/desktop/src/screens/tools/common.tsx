@@ -4,6 +4,8 @@
 
 import { useEffect, useEffectEvent, type ReactNode } from "react";
 import { useSyncStatus } from "../../api/queries";
+import { ui } from "../../app/ui";
+import { DashButton } from "../../components/basics";
 import { PassphrasePrompt } from "../../components/passphrase";
 import { Sheet } from "../../components/sheet";
 import { useModel } from "../../onboarding/model";
@@ -67,7 +69,19 @@ export function NotYet({ title, children, testId }: { title: string; children: R
 
 /** A tab that needs a wallet, on a network without one. */
 export function NeedsWallet({ testId }: { testId: string }) {
-  return <EmptyState testId={testId} title="No wallet on this network yet" message="Create or restore a wallet to use this tool." />;
+  return (
+    <EmptyState
+      testId={testId}
+      art="wallet"
+      title="No wallet on this network yet"
+      message="Create or restore a wallet to use this tool."
+      action={
+        <DashButton variant="filledBlue" data-testid={`${testId}-create`} onClick={() => ui.set({ onboarding: true })}>
+          Create a wallet
+        </DashButton>
+      }
+    />
+  );
 }
 
 /** Reads again whenever the sync status is read anew (every `sync` event refreshes it, D4). */

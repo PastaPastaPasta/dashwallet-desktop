@@ -133,9 +133,14 @@ fn created_wallet_survives_engine_restart() {
     assert_eq!(wallets[0].wallet_id, created.wallet_id);
     assert_eq!(wallets[0].name, "Wallet 1");
     assert!(wallets[0].has_mnemonic && !wallets[0].watch_only);
-    // Nothing scanned yet: the balance is unknown, not zero (review M-3).
-    assert_eq!(wallets[0].balances, None);
-    assert_eq!(session.balances(&created.wallet_id).unwrap(), None);
+    // Nothing scanned yet: the balance is what the wallet knows, flagged as
+    // catching up rather than passed off as a settled zero (review M-3).
+    let known = dw_engine::WalletBalances {
+        catching_up: true,
+        ..Default::default()
+    };
+    assert_eq!(wallets[0].balances, Some(known));
+    assert_eq!(session.balances(&created.wallet_id).unwrap(), Some(known));
 
     let events = rec.events();
     assert!(events.contains(&EngineEvent::SessionOpened {
@@ -529,12 +534,20 @@ fn imported_wallet_signs_after_restart_and_unlock() {
         .unwrap();
     // MG-04 D50: no message signature by a ProTx owner key, which the
     // wallet lists: no key for it (r2 n-3); the grant survives the refusal.
+    // A voting key is refused the same way, still before the grant is spent.
     let owner = address_at(ABANDON_12, "m/9'/1'/3'/2'/0");
     let refused =
         engine.block_on(s.sign_message(id, owner.clone(), b"m".to_vec(), grant.id.clone()));
     assert!(
         matches!(&refused, Err(EngineError::AddressNoKey(a)) if *a == owner),
         "{refused:?}"
+    );
+    let voting = address_at(ABANDON_12, "m/9'/1'/3'/1'/0");
+    let refused_voting =
+        engine.block_on(s.sign_message(id, voting.clone(), b"m".to_vec(), grant.id.clone()));
+    assert!(
+        matches!(&refused_voting, Err(EngineError::AddressNoKey(a)) if *a == voting),
+        "{refused_voting:?}"
     );
     let address = first_receive_address(ABANDON_12);
     let message = b"dashwallet-desktop restart test".to_vec();

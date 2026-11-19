@@ -178,8 +178,8 @@ pub use signers::{
     VaultScanKey,
 };
 pub use startup::{
-    DashPayStatus, DashPaySyncStatus, NoIdentityReason, QuorumSource, StartupStatus, SyncLoop,
-    SyncLoopStatus, SyncPassReport,
+    DashPayStatus, DashPaySyncStatus, NoIdentityReason, ProtocolCompatibility, QuorumSource,
+    StartupStatus, SyncLoop, SyncLoopStatus, SyncPassReport,
 };
 pub use startup_status::{DashPayStartup, PlatformCadence, SpvState};
 pub use status::PlatformStatus;

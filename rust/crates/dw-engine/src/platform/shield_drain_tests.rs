@@ -751,6 +751,7 @@ fn the_drain_reads_the_coinjoin_accounts_coins_and_what_holds_them() {
                 utxo,
                 send_account: !coinjoin_account,
                 coinjoin_account,
+                counted_denomination: false,
                 is_change: false,
                 block_time: None,
                 chain_locked: false,

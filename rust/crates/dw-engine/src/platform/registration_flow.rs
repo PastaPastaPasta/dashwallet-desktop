@@ -3305,6 +3305,10 @@ impl PwLib {
         if spendable_of(&snapshot).protected > 0 {
             return Err(FundError::CoinsLocked);
         }
+        self.session
+            .exclude_denominations_under_fence(&fence, &snapshot)
+            .await
+            .map_err(refused)?;
         Ok(fence)
     }
 

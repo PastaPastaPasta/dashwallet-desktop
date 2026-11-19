@@ -63,7 +63,7 @@ type is `pub(crate)`.
 | File | Owner (ROADMAP) | Calls |
 |---|---|---|
 | `dashpay.rs` | E0-08 | `NetworkSession.dashpay`, `wallet_id`; `BearerSecret` |
-| `startup.rs` | E0-05 bring-up | `status`, `sync_status`, `sync_now` |
+| `startup.rs` | E0-05 bring-up; 1.0 C2 | `status`, `sync_status`, `sync_now`, `NetworkSession.protocol_compatibility` |
 | `identity.rs` | DP1-01, DP1-05, DP6-01 | `identities`, `set_main_identity`, `identity_detail`, `refresh_identity`, `refresh_identities`, `find_identity`, `refresh_balance`, `discover_identities` |
 | `registration.rs` | DP1-02 | `registration_quote`, `registration_resume_grant`, `start_registration`, `start_registration_past_unknown_funding`, `registrations`, `resume_registration`, `discard_registration`, `finish_asset_locks`, `prepare_faucet_lock` |
 | `names.rs` | DP1-03, DP1-04, DP2-03 | `check_username`, `name_availability`, `register_name`, `set_main_name`, `main_name`, `contest_status`, `search_users`, `resolve_user` |
@@ -200,6 +200,7 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 |---|---|---|---|
 | `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. Reads memory and app.sqlite only, never Platform, so it answers offline; the rules are item 49. `StartupIncomplete` only while no identity is on file. Changes are signalled as `Platform{Startup}` (bring-up, `set_main_identity`), `Platform{Registration}`, `Platform{Identities}`, `Platform{Names}`; `WaitingForSync` ends with sync, which has its own events. **Implemented (BL-153).** | `PlatformError` |
 | `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source. **works** (E0-10b): `last_pass` is `None` until sync passes report one. | `PlatformError` |
+| `NetworkSession.protocol_compatibility()` | sync | Platform protocol compatibility of the open network (1.0 C2): `ProtocolCompatibility{network_version, supported_version}`. `supported_version` is `PlatformVersion::latest().protocol_version` (highest version this build knows); `network_version` is the highest active version proved on this session (`ExtendedEpochInfo::fetch_current`'s unclamped epoch version, or a proved response metadata ratchet), `None` before Platform has answered or with `no_platform`. Refreshed in the background when the Platform loops start and every 60 s while SPV runs, and whenever `refresh_protocol_version` runs (invitations, shielded pool, platform fund); never blocks any action (`refresh_protocol_version` stays clamped at `<= supported_version`). Signalled on each loaded wallet's `Platform{Startup}` when `network_version` advances. **Implemented (1.0 C2).** | `PlatformError` |
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
 | `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown) with `balance_as_of` (the Platform block time, ms, of the balance shown, once a refresh read it) and `balance_stale` (it may be behind: spent by a write since its refresh, or neither refreshed by this process nor stored by Platform in the last ten minutes; the engine refreshes it in the background and sends `Platform{Identities}` when the flag may have changed, §7 item 44), and its `credit_level` against the cost table (`None` while the balance is unknown; DP1-06), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden. From the older snapshot, `names` is empty, `main_name` is `None` and `names_updating` is `true` (show "updating", not "no name"); the other fields still come from it. `names_updating` is `false` on a live read. `names_check` (item 51) is `Pending` or `Failed` while `main_name` is `None` and Platform has not said this session that the identity owns no name: it may still own one. **Implemented (DP1-05).** | `PlatformError` |
 | `set_main_identity(identity)` | async | Writes `dp_main_identity`; one of the wallet's identities, else `identity.not_found`. Signalled `Platform{Identities}` and `Platform{Startup}` (the list's `is_main`, `status`'s main; DP6-01). **Implemented (DP1-05).** | `PlatformError` (`identity.not_found`) |
@@ -907,7 +908,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 7156df89a46b176bf9aa7af8d4d1befbd11c5b91411ec4aac15929919abfb805 version: 68 -->
+<!-- surface-sha256: ab266c59d8095777693b1fbe90cd83ced82c32c3683f5c35c182f0722b860498 version: 68 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2425,6 +2426,14 @@ pub enum QuorumSource {
     Spv,
     TrustedFallback,
     Trusted,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolCompatibility {
+    pub network_version: Option<u32>,
+    pub supported_version: u32,
+}
+impl NetworkSession {
+    pub fn protocol_compatibility(&self) -> Result<ProtocolCompatibility, PlatformError>;
 }
 impl DashPay {
     pub fn status(&self) -> Result<DashPayStatus, PlatformError>;
