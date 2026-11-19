@@ -45,6 +45,7 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // statuses without an identity are re-read (bridgeEvents), `startupIncomplete` too (DP1-09 D28).
     // The Platform loops start and stop with SPV, also without one (DP6-03 D6).
     case "spvStateChanged":
+      return [keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, keys.protocolCompatibility];
     case "sync":
       return [keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll];
     // The username quote's fee grows with the wallet's coins (DP1-08).

@@ -203,6 +203,8 @@ pub(crate) struct PlatformRuntime {
     /// The balances spent since their refresh, and the balance pass
     /// (DP1-06, `balances.rs`).
     pub(crate) balances: Arc<super::balances::Balances>,
+    /// The network's proved Platform protocol version (`protocol.rs`).
+    pub(crate) protocol: Arc<super::protocol::ProtocolRuntime>,
     /// The per-contact payment locks (DP3-01, `payment_locks.rs`).
     pub(crate) payments: super::payment_locks::PaymentLocks,
     /// The timers that signal a relied-on proof of no identity's expiry
@@ -424,7 +426,12 @@ pub(super) fn guard<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl PlatformRuntime {
-    pub(crate) fn new(lock: LockState, enabled: bool, hub: Arc<SessionHub>) -> Self {
+    pub(crate) fn new(
+        lock: LockState,
+        enabled: bool,
+        hub: Arc<SessionHub>,
+        protocol: Arc<super::protocol::ProtocolRuntime>,
+    ) -> Self {
         Self {
             enabled,
             supervisor: Mutex::new(None),
@@ -469,6 +476,7 @@ impl PlatformRuntime {
             invitation_net: Mutex::new(None),
             contests: Default::default(),
             balances: Default::default(),
+            protocol,
             payments: Default::default(),
             absence_expiries: Default::default(),
             money_gate: Default::default(),
@@ -575,8 +583,10 @@ impl PlatformRuntime {
         // A background balance refresh or names check holds the wallet:
         // none outlives a close (DP1-06, DP1-08 D27).
         self.recovery.names_runs.stop();
+        self.protocol.stop();
         if closing {
             self.balances.close().await;
+            self.protocol.close().await;
             self.recovery.names_runs.close().await;
         }
         for entry in self.write_startup().values_mut() {
@@ -902,7 +912,8 @@ impl NetworkSession {
                 dashpay.sync_now().await;
             }
         });
-        // The pass's balances too (DP1-06).
+        // The pass's balances too (DP1-06). Protocol compatibility refreshes
+        // when the loops start and on the 60 s timer, not on every pass.
         self.kick_balance_pass();
     }
 

@@ -99,6 +99,7 @@ export const keys = {
   ratesCurrencies: ["rates", "currencies"] as const,
   /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
   dashpayAll: ["dashpay"] as const,
+  protocolCompatibility: ["dashpay", "protocolCompatibility"] as const,
   /** Every wallet's DashPay status: sync moves `noIdentity`'s `waitingForSync` (BL-153 D9). */
   dashpayStatusAll: ["dashpay", "status"] as const,
   dashpayStatus: (walletId: string) => ["dashpay", "status", walletId] as const,
@@ -517,4 +518,9 @@ export function useDustProtection() {
 export function useNodeInfo() {
   const b = useBackend();
   return useQuery({ queryKey: keys.nodeInfo, queryFn: () => b.nodeInfo(), staleTime: 0 });
+}
+
+export function useProtocolCompatibility() {
+  const b = useBackend();
+  return useQuery({ queryKey: keys.protocolCompatibility, queryFn: () => b.protocolCompatibility() });
 }

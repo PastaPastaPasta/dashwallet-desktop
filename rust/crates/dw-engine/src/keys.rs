@@ -828,8 +828,11 @@ impl NetworkSession {
             .ok_or_else(|| EngineError::AddressNotMine(address.clone()))?;
             // A ProTx owner key signs owner payloads only (MG-04 D50): no
             // key for a message. Refused before the grant is redeemed, so
-            // it isn't spent; the vault enforces the same rule.
-            if dw_vault::paths::is_owner_key(&path, network) {
+            // it isn't spent; the vault enforces the same rule. Nor a voting
+            // key: off testnet a vote signature is a message one.
+            if dw_vault::paths::is_owner_key(&path, network)
+                || dw_vault::paths::is_voting_key(&path, network)
+            {
                 return Err(EngineError::AddressNoKey(address));
             }
 

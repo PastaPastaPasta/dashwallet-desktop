@@ -26,6 +26,7 @@ import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
 import { buyCredits } from "./dashpay/MyProfile";
 import { useFrequentContacts } from "./pay/contactQueries";
 import { FrequentStrip } from "./pay/FrequentStrip";
+import { ProtocolAdvisoryBanner } from "./ProtocolAdvisoryBanner";
 import { TransferSheet, useTransferPools } from "./TransferSheet";
 import { UnfinishedTransfersCard } from "./UnfinishedTransfersCard";
 import { defaultRoute, transferFor, TRANSFER_COPY } from "../transfer/model";
@@ -235,6 +236,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">
+        <ProtocolAdvisoryBanner network={network} />
         <RatesConsentCard network={network} />
         <HomeDashPayCard walletId={walletId} network={network} />
         <UnfinishedTransfersCard walletId={walletId} network={network} />
