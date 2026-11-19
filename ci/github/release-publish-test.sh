@@ -187,17 +187,23 @@ meta_gen() { if grep -q "commit $c2" "$FS/notes"; then echo new; else echo old; 
 # the tag and notes of generation $1 (old: tag c1, old notes; new: tag c2, new notes)
 meta_ok() { [[ "$(meta_gen)" == "$1" && "$(cat "$FS/ref")" == "$([[ $1 == new ]] && echo "$c2" || echo "$c1")" ]]; }
 # old | new | missing:<name> | mixed | badsums
+# GEN_OLD_NO_SBOM=1: the old generation is from before the SBOMs, so a missing SBOM counts as old.
 gen_of() {
   local n g="" one want have
-  for n in "${CN[@]}"; do [[ -n "$(body "$n")" ]] || { echo "missing:$n"; return; }; done
+  [[ -n "$(body SHA256SUMS)" ]] || { echo "missing:SHA256SUMS"; return; }
   for n in "${CN[@]}"; do
     [[ $n == SHA256SUMS ]] && continue
-    case "$(body "$n")" in old:*) one=old ;; *) one=new ;; esac
+    if [[ -z "$(body "$n")" ]]; then
+      [[ -n "${GEN_OLD_NO_SBOM:-}" && $n == *sbom* ]] || { echo "missing:$n"; return; }
+      one=old
+    else
+      case "$(body "$n")" in old:*) one=old ;; *) one=new ;; esac
+      want=$(body SHA256SUMS | awk -v n="$n" '$2==n{print $1}')
+      have=$(body "$n" | sha256sum | cut -d' ' -f1)
+      [[ "$want" == "$have" ]] || { echo badsums; return; }
+    fi
     [[ -z "$g" || "$g" == "$one" ]] || { echo mixed; return; }
     g=$one
-    want=$(body SHA256SUMS | awk -v n="$n" '$2==n{print $1}')
-    have=$(body "$n" | sha256sum | cut -d' ' -f1)
-    [[ "$want" == "$have" ]] || { echo badsums; return; }
   done
   echo "$g"
 }
@@ -255,6 +261,21 @@ SEED_NO_SBOM=1 seed_old
 FAKE_RELEASES="$tag" run push refs/heads/main "$c2" "$ver"
 check "main after a generation without SBOMs: adds them, ends as the complete new generation" \
   '[[ $status -eq 0 && $(gen_of) == new && $(leftovers) -eq 0 && -n "$(body DashWallet-continuous-sbom-rust.cdx.json)" ]]'
+# a failed or cancelled update of that generation rolls back to it, without the SBOMs it never had
+SEED_NO_SBOM=1 seed_old
+FAKE_RELEASES="$tag" publish_only
+total_nosbom=$(writes)
+bad=0
+for mode in once lateerr; do
+  for ((k = 1; k <= total_nosbom; k++)); do
+    SEED_NO_SBOM=1 seed_old
+    FAKE_RELEASES="$tag" FAKE_FAIL_AT=$k FAKE_FAIL_MODE=$mode publish_only
+    g=$(GEN_OLD_NO_SBOM=1 gen_of)
+    if [[ $status -eq 0 ]]; then [[ $g == new ]] && meta_ok new || { echo "  no-sbom $mode@$k: exit 0 but $g"; bad=1; }
+    else [[ $g == old && $(leftovers) -eq 0 ]] && meta_ok old || { echo "  no-sbom $mode@$k: exit $status, state $g, leftovers $(leftovers)"; bad=1; }; fi
+  done
+done
+check "faults (once, lateerr) at each of the $total_nosbom writes of the first update with SBOMs end in one complete generation" '[[ $bad -eq 0 ]]'
 
 # --- an older run finishing after a newer one must not move continuous back
 seed_old; echo "$code" > "$FS/ref"

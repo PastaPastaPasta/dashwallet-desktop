@@ -8,6 +8,8 @@
 #
 #   ci/github/release-sbom.sh OUT_DIR VERSION
 #
+# Both are stable for a commit: the timestamp is the commit's time, neither has a serial number, and the npm
+# one's lists are sorted (pnpm's order varies).
 # Needs cargo-cyclonedx and pnpm on PATH, and jq. The workspace crates' bom-refs carry the checkout's absolute
 # path (path+file:///.../rust/crates/x): they are rewritten relative to the repository (path+file:rust/crates/x),
 # and the script fails if either file still holds the checkout path, $HOME or a file:/// URL.
@@ -25,14 +27,17 @@ npm_sbom="$out/dash-wallet-$version-sbom-npm.cdx.json"
 # cargo-cyclonedx writes one file next to every workspace member's Cargo.toml.
 name="release-sbom-$$"
 trap 'find "$root/rust" -name "$name.json" -delete' EXIT
-SOURCE_DATE_EPOCH=$(git -C "$root" log -1 --format=%ct) \
+epoch=$(git -C "$root" log -1 --format=%ct)
+SOURCE_DATE_EPOCH=$epoch \
   cargo cyclonedx --manifest-path "$root/rust/Cargo.toml" -f json --spec-version 1.5 --target all \
   --override-filename "$name" -q
 jq --arg abs "file://$root/" 'walk(if type == "string" then (split($abs) | join("file:")) else . end)' \
   "$root/rust/crates/dw-app/$name.json" > "$rust_sbom"
 
 (cd "$root/apps/desktop" && pnpm sbom --sbom-format cyclonedx --sbom-spec-version 1.6 --sbom-type application \
-  --lockfile-only --prod) > "$npm_sbom"
+  --lockfile-only --prod) | jq --arg ts "$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)" \
+  '.metadata.timestamp = $ts | del(.serialNumber) | .components |= sort_by(.["bom-ref"])
+   | .dependencies |= (. // [] | sort_by(.ref) | map(.dependsOn |= (. // [] | sort)))' > "$npm_sbom"
 
 for f in "$rust_sbom" "$npm_sbom"; do
   jq -e '.bomFormat == "CycloneDX" and (.components | length) > 0 and (.metadata.component.name | length) > 0' \

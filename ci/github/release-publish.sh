@@ -33,8 +33,8 @@
 #   4. move the tag and rewrite the notes;
 #   5. only then delete the <name>.old assets and txn.json.
 # Any failure in 3 or 4, and SIGINT / SIGTERM (a cancelled run), roll the whole generation back: every
-# canonical name is restored from its .old, the tag and the notes go back (also when the API call that
-# failed had in fact taken effect), then txn.json goes. The end state is the old generation, complete.
+# canonical name is restored from its .old (a name the old generation lacked is deleted), the tag and the
+# notes go back (also when the API call that failed had in fact taken effect), then txn.json goes. The end state is the old generation, complete.
 # The Releases API is not atomic. While step 3 runs (a few seconds per asset, tens of seconds in all) a
 # download of one name can fail for the two calls between its renames, and bundles can be the new build
 # while SHA256SUMS is still the old one: check a download against the SHA256SUMS you fetch at the same
@@ -343,6 +343,7 @@ publish)
   # Steps 3-5, with rollback on any failure and on a cancel.
   tag_moved=
   notes_touched=
+  added=() # names the old generation lacks: a rollback deletes them
   fail() {
     local ok=1
     echo "release-publish: $* ; rolling back the continuous release" >&2
@@ -352,6 +353,14 @@ publish)
     fi
     if [[ -n "$notes_touched" ]]; then
       w gh release edit continuous --repo "$repo" --notes "$old_notes" --prerelease --latest=false || { ok=0; echo "release-publish: could not restore the notes" >&2; }
+    fi
+    if ((${#added[@]})); then
+      local n id
+      ASSETS=$(gh api "repos/$repo/releases/$cont_id/assets" --paginate --jq '.[]|[.id,.name,(.digest // "")]|@tsv') || ok=0
+      for n in "${added[@]}"; do
+        id=$(aid "$n")
+        if [[ -n "$id" ]]; then delete_asset "$id" || { ok=0; echo "release-publish: could not delete the new $n" >&2; }; fi
+      done
     fi
     restore_olds || { ok=0; echo "release-publish: ROLLBACK INCOMPLETE: rename each <name>.old over <name> (delete <name> first if present) and delete <name>.new, or re-run this job" >&2; }
     # The record stays when anything above failed: the next run's recovery finishes the job with it.
@@ -365,7 +374,7 @@ publish)
   done
   for n in "${names[@]}"; do # SHA256SUMS is last in names
     id=$(aid "$n"); nid=$(aid "$n.new")
-    if [[ -n "$id" ]]; then rename_asset "$id" "$n.old" || fail "cannot rename $n to $n.old"; fi
+    if [[ -n "$id" ]]; then rename_asset "$id" "$n.old" || fail "cannot rename $n to $n.old"; else added+=("$n"); fi
     rename_asset "$nid" "$n" || fail "cannot promote $n.new"
   done
   if [[ -n "$cur" ]]; then
