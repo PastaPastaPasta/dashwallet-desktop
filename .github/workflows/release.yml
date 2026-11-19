@@ -16,8 +16,11 @@
 # time.
 #
 # Bundles are staged under stable names, dash-wallet-<version>-<os-arch>.<ext>, and uploaded as
-# `dist-<os>`. The `checksums` job gathers them, writes SHA256SUMS (sha256sum format, file names
-# only) and uploads one artifact, `release-v<version>`.
+# `dist-<os>`. The `sbom` job writes two CycloneDX JSON SBOMs, dash-wallet-<version>-sbom-rust.cdx.json
+# (the app crate's dependencies, every target) and -sbom-npm.cdx.json (the renderer's production
+# dependencies), uploaded as `dist-sbom` (ci/github/release-sbom.sh). The `checksums` job gathers all
+# six files, writes SHA256SUMS (sha256sum format, file names only) and uploads one artifact,
+# `release-v<version>`.
 #
 # What publishes, by trigger (ci/github/release-publish.sh has the logic and refuses anything else;
 # ci/github/release-publish-test.sh tests it on every run):
@@ -26,7 +29,7 @@
 #   push of a tag vX.Y.Z[-rc.N]  that tag's release: full for vX.Y.Z, a prerelease for -rc.N;
 #   anything else         builds and uploads CI artifacts only: other branches, pull requests (forks
 #                         included) and workflow_dispatch. They never reach the publish job.
-# Every published file and both SHA256SUMS are attested with actions/attest-build-provenance
+# Every published file (bundles and SBOMs) and both SHA256SUMS are attested with actions/attest-build-provenance
 # (`gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop`, docs/release/verifying.md).
 # No GPG until 1.0.
 #
@@ -334,9 +337,39 @@ jobs:
           path: ${{ runner.temp }}/launch/
           if-no-files-found: warn
 
+  sbom:
+    name: SBOMs (CycloneDX)
+    runs-on: ubuntu-24.04
+    needs: decide
+    if: ${{ needs.decide.outputs.build == 'true' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/github/release-version.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - name: cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx --version 0.5.9
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Write the SBOMs
+        run: ci/github/release-sbom.sh "$RUNNER_TEMP/dist" "$VERSION"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-sbom
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
   checksums:
     name: SHA256SUMS
-    needs: [macos, windows, linux]
+    needs: [macos, windows, linux, sbom]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -353,7 +386,7 @@ jobs:
         working-directory: ${{ runner.temp }}/release
         run: |
           ls -l
-          [[ $(ls | wc -l) -eq 4 ]] || { echo "::error::expected 4 bundles (dmg, exe, AppImage, deb)"; exit 1; }
+          [[ $(ls | wc -l) -eq 6 ]] || { echo "::error::expected 6 files (dmg, exe, AppImage, deb, two SBOMs)"; exit 1; }
           # The list is taken before the redirect creates SHA256SUMS.
           files=$(LC_ALL=C ls)
           sha256sum $files > SHA256SUMS

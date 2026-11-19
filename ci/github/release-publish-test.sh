@@ -101,7 +101,7 @@ case "$1 $2" in
     case "$method $path" in
       "GET releases")
         [[ "${FAKE_API_ERROR:-}" != releases ]] || e503
-        for t in ${FAKE_RELEASES:-}; do printf '%s\t1\tfalse\t%s\n' "$t" "${FAKE_ASSET_COUNT:-5}"; done
+        for t in ${FAKE_RELEASES:-}; do printf '%s\t1\tfalse\t%s\n' "$t" "${FAKE_ASSET_COUNT:-7}"; done
         for t in ${FAKE_DRAFTS:-}; do printf '%s\t2\ttrue\t0\n' "$t"; done
         [[ -z "${FAKE_CONT_RELEASE:-}" ]] || printf 'continuous\t42\tfalse\t%s\n' "$(wc -l < "$FS/ids")"
         exit 0 ;;
@@ -141,10 +141,11 @@ export PATH="$bin:$PATH" LOG=$work/log FAKE_FS=$FS
 dist=$work/dist
 mkdir -p "$dist"
 ver=0.1.0-dev.7.g${c2:0:7}
-for s in macos-universal.dmg windows-x64-setup.exe linux-x86_64.AppImage linux-amd64.deb; do echo "$s" > "$dist/dash-wallet-$ver-$s"; done
+for s in macos-universal.dmg windows-x64-setup.exe linux-x86_64.AppImage linux-amd64.deb sbom-rust.cdx.json sbom-npm.cdx.json; do echo "$s" > "$dist/dash-wallet-$ver-$s"; done
 (cd "$dist" && sha256sum dash-wallet-* > SHA256SUMS)
 export DIST=$dist OUT=$work/publish GITHUB_REPOSITORY=o/r GITHUB_RUN_NUMBER=7 GITHUB_RUN_ID=99 GITHUB_SERVER_URL=https://github.com GH_TOKEN=x
-CN=(DashWallet-continuous-macos-universal.dmg DashWallet-continuous-windows-x64-setup.exe DashWallet-continuous-linux-x86_64.AppImage DashWallet-continuous-linux-amd64.deb SHA256SUMS)
+CN=(DashWallet-continuous-macos-universal.dmg DashWallet-continuous-windows-x64-setup.exe DashWallet-continuous-linux-x86_64.AppImage DashWallet-continuous-linux-amd64.deb
+  DashWallet-continuous-sbom-npm.cdx.json DashWallet-continuous-sbom-rust.cdx.json SHA256SUMS)
 
 fail=0
 check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
@@ -171,9 +172,11 @@ seed_old() {
   fs_reset
   local n t=$work/seed
   rm -rf "$t"; mkdir -p "$t"
-  for n in "${CN[@]}"; do [[ $n == SHA256SUMS ]] || echo "old:$n" > "$t/$n"; done
+  local names=("${CN[@]}")
+  [[ -z "${SEED_NO_SBOM:-}" ]] || names=("${CN[@]/*sbom*/}") # a generation from before the SBOMs
+  for n in "${names[@]}"; do [[ -z $n || $n == SHA256SUMS ]] || echo "old:$n" > "$t/$n"; done
   (cd "$t" && sha256sum DashWallet-continuous-* > SHA256SUMS)
-  for n in "${CN[@]}"; do FS=$FS bash -c 'id=$(( $(cat "$FS/next") )); echo $((id+1)) > "$FS/next"; printf "%s\t%s\n" "$id" "$2" >> "$FS/ids"; cp "$1" "$FS/data/$id"' _ "$t/$n" "$n"; done
+  for n in "${names[@]}"; do [[ -n $n ]] || continue; FS=$FS bash -c 'id=$(( $(cat "$FS/next") )); echo $((id+1)) > "$FS/next"; printf "%s\t%s\n" "$id" "$2" >> "$FS/ids"; cp "$1" "$FS/data/$id"' _ "$t/$n" "$n"; done
   echo "$c1" > "$FS/ref"; printf old-notes > "$FS/notes"
   export FAKE_CONT_RELEASE=1
 }
@@ -216,8 +219,8 @@ run push refs/heads/main "$side" "0.1.0-dev.7.g${side:0:7}"; refused "main point
 fs_reset; unset FAKE_CONT_RELEASE
 run push refs/heads/main "$c2" "$ver"
 check "main: succeeds" '[[ $status -eq 0 ]]'
-check "main: attest dir holds 4 bundles, SHA256SUMS, 4 continuous files, SHA256SUMS.continuous" '[[ $(ls "$OUT/attest" | wc -l) -eq 10 ]]'
-check "main: continuous SHA256SUMS lists stable names only" '[[ $(grep -c "DashWallet-continuous-" "$OUT/continuous/SHA256SUMS") -eq 4 && $(wc -l < "$OUT/continuous/SHA256SUMS") -eq 4 ]]'
+check "main: attest dir holds 4 bundles, 2 SBOMs, SHA256SUMS, 6 continuous files, SHA256SUMS.continuous" '[[ $(ls "$OUT/attest" | wc -l) -eq 14 ]]'
+check "main: continuous SHA256SUMS lists stable names only" '[[ $(grep -c "DashWallet-continuous-" "$OUT/continuous/SHA256SUMS") -eq 6 && $(wc -l < "$OUT/continuous/SHA256SUMS") -eq 6 ]]'
 tag="v0.1.0-dev.7+${c2:0:7}"
 check "main: immutable prerelease $tag, at the commit, a prerelease, not latest" \
   'log_has "release create $tag " && log_has "--target $c2" && log_has "--prerelease" && log_has "--latest=false"'
@@ -225,7 +228,7 @@ check "main: no draft, no delete" '! log_has "--draft" && ! log_has "DELETE"'
 check "main: creates continuous" 'log_has "release create continuous "'
 
 # --- push of a release tag: a version is a full release, a release candidate a prerelease
-tag_bundles() { # the four bundles under version $1, alone in their own dist
+tag_bundles() { # the six files under version $1, alone in their own dist
   rm -rf "$work/tagdist"; mkdir -p "$work/tagdist"
   for f in "$dist"/dash-wallet-"$ver"-*; do cp "$f" "$work/tagdist/$(basename "${f/$ver/$1}")"; done
   (cd "$work/tagdist" && sha256sum dash-wallet-* > SHA256SUMS); }
@@ -248,6 +251,10 @@ check "main rerun: SHA256SUMS is swapped last" '[[ $(line_of "name=SHA256SUMS.ol
 check "main rerun: the tag moves after the assets, the .old copies go after the tag" \
   '[[ $(line_of "git/refs/tags/continuous") -gt $(line_of "name=SHA256SUMS.old") && $(line_of "DELETE") -gt $(line_of "git/refs/tags/continuous") ]] && log_has "-f sha=$c2"'
 check "main rerun: ends as the complete new generation, nothing left over" '[[ $(gen_of) == new && $(leftovers) -eq 0 && $(cat "$FS/ref") == "$c2" ]]'
+SEED_NO_SBOM=1 seed_old
+FAKE_RELEASES="$tag" run push refs/heads/main "$c2" "$ver"
+check "main after a generation without SBOMs: adds them, ends as the complete new generation" \
+  '[[ $status -eq 0 && $(gen_of) == new && $(leftovers) -eq 0 && -n "$(body DashWallet-continuous-sbom-rust.cdx.json)" ]]'
 
 # --- an older run finishing after a newer one must not move continuous back
 seed_old; echo "$code" > "$FS/ref"
@@ -322,7 +329,7 @@ for what in releases assets ref; do
 done
 seed_old
 FAKE_RELEASES="$tag" FAKE_DRAFTS="" FAKE_ASSET_COUNT=3 publish_only
-check "release exists with 3 of 5 assets: fails, writes nothing" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
+check "release exists with 3 of 7 assets: fails, writes nothing" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
 seed_old
 FAKE_RELEASES="" FAKE_DRAFTS="$tag" publish_only
 check "a draft with the tag: fails, writes nothing" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
