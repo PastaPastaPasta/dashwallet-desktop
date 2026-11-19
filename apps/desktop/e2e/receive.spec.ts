@@ -1,6 +1,6 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
-import { fixtureUrl, THEMES, trackPageErrors } from "./helpers";
+import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
 
 // Receive's Dash / Platform / Shielded tabs switch the address only: the request column keeps its
 // place and size on every tab, and on Platform and Shielded it says requests are for Dash addresses.
@@ -31,6 +31,31 @@ async function pick(page: Page, tab: Tab) {
   return { column: await box(column), card: await box(card), left: await box(page.locator(".receive-columns > section").first()), tabs: await box(page.getByRole("group", { name: "Receive in" })) };
 }
 
+type Rgba = [number, number, number, number];
+const rgba = (c: string): Rgba => {
+  const [r, g, b, a = 1] = c.match(/[\d.]+/g)!.map(Number);
+  return [r, g, b, a];
+};
+const over = (top: Rgba, under: Rgba): Rgba => [0, 1, 2].map((i) => top[i] * top[3] + under[i] * (1 - top[3])).concat(1) as Rgba;
+const luminance = ([r, g, b]: Rgba) =>
+  [r, g, b].map((v) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)).reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+
+/** The tick's contrast with the line's background, laid over the nearest opaque ancestor. */
+async function tickContrast(line: Locator): Promise<number> {
+  const { tick, layers } = await line.evaluate((p) => {
+    const layers: string[] = [];
+    for (let e: Element | null = p; e; e = e.parentElement) {
+      const bg = getComputedStyle(e).backgroundColor;
+      layers.push(bg);
+      if (!/rgba|\/ /.test(bg) || bg.endsWith(", 1)")) break;
+    }
+    return { tick: getComputedStyle(p.querySelector("span")!).color, layers };
+  });
+  const back = layers.map(rgba).reduceRight((under, top) => over(top, under), [255, 255, 255, 1] as Rgba);
+  const [a, b] = [luminance(over(rgba(tick), back)), luminance(back)];
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
 function same(a: Box, b: Box, what: string) {
   for (const k of ["x", "y", "width", "height"] as const) expect(Math.abs(a[k] - b[k]), `${what} ${k}: ${a[k]} vs ${b[k]}`).toBeLessThanOrEqual(1);
 }
@@ -48,6 +73,23 @@ for (const theme of THEMES) {
       expect(Math.abs(now.left.y - first.left.y), `${tab} address column top`).toBeLessThanOrEqual(1);
       same(now.tabs, first.tabs, `${tab} tabs`);
     }
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const theme of THEMES) {
+  test(`#67 a payment that arrived says so with a tick and text that meet AA contrast (${theme})`, async ({ page }, info) => {
+    const errors = await open(page, theme);
+    const address = (await page.getByTestId("receive-address").textContent())!;
+    await page.evaluate(`window.__dwFixture.receivePayment(150000000, undefined, ${JSON.stringify(address)})`);
+    const received = page.getByTestId("receive-received");
+    await expect(received).toHaveText("✓ Received 1.50 tDASH");
+    // The tick is aria-hidden, so axe skips it; as a graphic it needs 3:1 against the tint it sits on.
+    // Measured first: the line shows for RECEIVED_HOLD_MS only.
+    expect(await tickContrast(received)).toBeGreaterThanOrEqual(3);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await fontsReady(page);
+    await page.screenshot({ path: artifactPath(info, `${theme}-receive-received.png`) });
     expect(errors).toEqual([]);
   });
 }
