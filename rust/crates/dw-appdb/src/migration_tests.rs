@@ -278,7 +278,7 @@ fn an_upgrade_stopped_partway_changes_nothing_and_the_next_open_finishes_it() {
         conn.execute_batch("DROP TRIGGER stop").unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), MG_WITHDRAWALS);
+    assert_eq!(db.schema_version().unwrap(), SHARED_ABANDON);
     assert!(db.conn().prepare("SELECT 1 FROM tx_fiat").is_ok());
 }
 
