@@ -109,6 +109,19 @@ impl Demo {
     pub(crate) fn open(&self) -> Value {
         self.ok("open_network", json!({ "settings": offline_settings() }))
     }
+
+    /// Every engine and shell event payload sent from now on.
+    pub(crate) fn events(&self) -> Arc<std::sync::Mutex<Vec<String>>> {
+        use tauri::Listener;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for event in [crate::bridge::EVENT, crate::shell::EVENT] {
+            let seen = Arc::clone(&seen);
+            self.app.listen_any(event, move |e| {
+                seen.lock().unwrap().push(e.payload().to_owned());
+            });
+        }
+        seen
+    }
 }
 
 /// [`Demo::call`] without the app, so several threads can invoke at once.

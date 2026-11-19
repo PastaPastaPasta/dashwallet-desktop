@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use dw_engine::governance::Governance;
+use dw_engine::masternodes::Masternodes;
 use dw_engine::platform::DashPay;
 use dw_engine::{DashNetwork, Engine, EngineConfig, NetworkSession, PreparedTx, TxDraft, WalletId};
 use dw_vault::VaultConfig;
@@ -342,6 +343,11 @@ impl AppState {
     /// The governance facade of the active session.
     pub async fn governance(&self) -> Result<Governance, AppError> {
         Ok(self.session().await?.governance())
+    }
+
+    /// The masternodes facade of the active session.
+    pub async fn masternodes(&self) -> Result<Masternodes, AppError> {
+        Ok(self.session().await?.masternodes())
     }
 
     /// The `--selftest` report path; the self-test commands refuse to run without it.

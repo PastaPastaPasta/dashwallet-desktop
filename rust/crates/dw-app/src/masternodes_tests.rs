@@ -1,0 +1,396 @@
+//! The masternodes commands (MG-10 S1) over Tauri's IPC against a real,
+//! offline regtest engine: no masternode list is ever synced here, so every
+//! list-backed call answers as it does before the list arrives, and the
+//! keychain answers in full.
+
+use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, Once};
+
+use serde_json::{Value, json};
+
+use crate::ipc_tests::Demo;
+
+const PW: &str = "pw";
+
+fn hash(byte: &str) -> String {
+    byte.repeat(32)
+}
+
+/// An open demo with an encrypted vault and one seed wallet.
+fn demo_with_wallet() -> (Demo, String) {
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": PW }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (demo, wallet)
+}
+
+/// A watch-only wallet of `wallet`'s first account.
+fn watch_only(demo: &Demo, wallet: &str) -> String {
+    let xpub = demo.ok("account_xpub", json!({ "walletId": wallet, "account": 0 }))["xpub"].clone();
+    demo.ok(
+        "import_watch_only",
+        json!({ "xpub": xpub, "options": { "name": "Watched" } }),
+    )
+    .as_str()
+    .unwrap()
+    .to_owned()
+}
+
+fn grant(demo: &Demo, wallet: &str, purpose: Value) -> String {
+    demo.ok(
+        "authorize",
+        json!({
+            "purpose": purpose,
+            "walletId": wallet,
+            "credential": { "kind": "passphrase", "passphrase": PW },
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn reveal_grant(demo: &Demo, wallet: &str) -> String {
+    grant(demo, wallet, json!({ "kind": "revealSecret" }))
+}
+
+fn reveal(demo: &Demo, wallet: &str, role: &str, index: u32, grant: &str) -> Result<Value, Value> {
+    demo.call(
+        "mn_reveal_key",
+        json!({ "walletId": wallet, "role": role, "index": index, "grant": grant }),
+    )
+}
+
+fn keys(demo: &Demo, wallet: &str, role: &str, start: u32, count: u32) -> Result<Value, Value> {
+    demo.call(
+        "mn_keys",
+        json!({ "walletId": wallet, "role": role, "start": start, "count": count }),
+    )
+}
+
+/// The P2PKH address of a regtest WIF.
+fn wif_address(wif: &str) -> String {
+    let key = dashcore::PrivateKey::from_wif(wif).expect("a WIF");
+    dashcore::Address::p2pkh(&key.public_key(), dashcore::Network::Regtest).to_string()
+}
+
+#[test]
+fn reads_answer_before_the_list_is_synced() {
+    let (demo, wallet) = demo_with_wallet();
+    let watched = watch_only(&demo, &wallet);
+    assert_eq!(
+        demo.ok("mn_list_state", json!({})),
+        json!({ "synced": false, "height": null })
+    );
+    let empty = json!({
+        "list": { "synced": false, "height": null },
+        "masternodes": [],
+        "collateralCoins": [],
+        "payouts30d": 0,
+        "unattributed30d": 0,
+        "payoutsIncomplete": false,
+    });
+    assert_eq!(demo.ok("mn_list", json!({ "walletId": wallet })), empty);
+    assert_eq!(demo.ok("mn_list", json!({ "walletId": watched })), empty);
+    demo.ok("lock", json!({}));
+    assert_eq!(demo.ok("mn_list", json!({ "walletId": wallet })), empty);
+
+    let other = hash("ef");
+    for cmd in ["mn_list", "mn_masternode", "mn_payouts"] {
+        let args = json!({ "walletId": other, "proTxHash": hash("ab"), "since": null });
+        let e = demo.err(cmd, args, "wallet_not_found");
+        assert!(!e["message"].as_str().unwrap().contains(&other), "{e}");
+        demo.err(
+            cmd,
+            json!({ "walletId": "zz", "proTxHash": hash("ab"), "since": null }),
+            "invalid_argument",
+        );
+    }
+    for cmd in ["mn_masternode", "mn_payouts"] {
+        let malformed = json!({ "walletId": wallet, "proTxHash": "ab", "since": null });
+        demo.err(cmd, malformed, "invalid_argument");
+        let unknown = json!({ "walletId": wallet, "proTxHash": hash("ab"), "since": 0 });
+        demo.err(cmd, unknown, "masternodes.list_unavailable");
+    }
+    demo.err(
+        "mn_find",
+        json!({ "query": "not a query" }),
+        "invalid_argument",
+    );
+    for query in [hash("ab"), "203.0.113.7:19999".into()] {
+        demo.err(
+            "mn_find",
+            json!({ "query": query }),
+            "masternodes.list_unavailable",
+        );
+    }
+    demo.err(
+        "mn_evonode_credits",
+        json!({ "proTxHash": "ab" }),
+        "invalid_argument",
+    );
+    demo.err(
+        "mn_evonode_credits",
+        json!({ "proTxHash": hash("ab") }),
+        "masternodes.list_unavailable",
+    );
+}
+
+#[test]
+fn tracking_refuses_in_the_contract_order() {
+    let (demo, _) = demo_with_wallet();
+    let events = demo.events();
+    let h = hash("ab");
+    demo.err(
+        "mn_track",
+        json!({ "proTxHash": "ab", "label": null }),
+        "invalid_argument",
+    );
+    demo.err(
+        "mn_track",
+        json!({ "proTxHash": h, "label": "x".repeat(1000) }),
+        "invalid_argument",
+    );
+    demo.err(
+        "mn_track",
+        json!({ "proTxHash": h, "label": "Home node" }),
+        "masternodes.list_unavailable",
+    );
+    demo.err(
+        "mn_set_label",
+        json!({ "proTxHash": h, "label": "Home node" }),
+        "masternodes.list_unavailable",
+    );
+    demo.err(
+        "mn_untrack",
+        json!({ "proTxHash": h }),
+        "masternodes.not_tracked",
+    );
+    for role in ["owner", "voting", "payout"] {
+        demo.err(
+            "mn_detach_key",
+            json!({ "proTxHash": h, "role": role }),
+            "masternodes.not_tracked",
+        );
+    }
+    let operator = json!({ "proTxHash": h, "role": "operator" });
+    assert!(demo.call("mn_detach_key", operator).is_err());
+
+    // A pasted key is never echoed, refused or not.
+    let pasted = "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy";
+    let e = demo.err(
+        "mn_attach_key",
+        json!({ "proTxHash": h, "role": "owner", "key": "not a key" }),
+        "invalid_argument",
+    );
+    assert!(!e.to_string().contains("not a key"), "{e}");
+    for role in ["owner", "voting", "payout"] {
+        let e = demo.err(
+            "mn_attach_key",
+            json!({ "proTxHash": h, "role": role, "key": pasted }),
+            "masternodes.not_tracked",
+        );
+        assert!(!e.to_string().contains(pasted), "{e}");
+    }
+    assert!(
+        events.lock().unwrap().iter().all(|e| !e.contains(pasted)),
+        "an event carries the pasted key"
+    );
+}
+
+/// `mn_keys` and `mn_reveal_key` name the same key: the revealed WIF's
+/// address is the listed one, for the role and index asked.
+#[test]
+fn the_keychain_lists_and_reveals_the_same_keys() {
+    let (demo, wallet) = demo_with_wallet();
+    for (role, sub) in [("voting", 1), ("owner", 2)] {
+        let listed = keys(&demo, &wallet, role, 3, 2).unwrap();
+        let listed = listed.as_array().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0]["role"], role);
+        assert_eq!(listed[0]["index"], 3);
+        assert_eq!(listed[0]["derivationPath"], format!("m/9'/1'/3'/{sub}'/3"));
+        let shown = reveal(&demo, &wallet, role, 4, &reveal_grant(&demo, &wallet)).unwrap();
+        assert_eq!(
+            wif_address(shown["wif"].as_str().unwrap()),
+            listed[1]["address"]
+        );
+        assert_eq!(shown["privateKeyHex"].as_str().unwrap().len(), 64);
+        assert_eq!(shown["tenderdashKey"], Value::Null);
+    }
+    let operator = keys(&demo, &wallet, "operator", 0, 1).unwrap();
+    assert_eq!(operator[0]["publicKeyHex"].as_str().unwrap().len(), 96);
+    assert_eq!(
+        operator[0]["legacyPublicKeyHex"].as_str().unwrap().len(),
+        96
+    );
+    assert_eq!(operator[0]["address"], Value::Null);
+    let node = keys(&demo, &wallet, "platform_node", 0, 1).unwrap();
+    assert_eq!(node[0]["derivationPath"], "m/9'/1'/3'/4'/0'");
+    assert_eq!(node[0]["platformNodeId"].as_str().unwrap().len(), 40);
+    let shown = reveal(
+        &demo,
+        &wallet,
+        "platform_node",
+        0,
+        &reveal_grant(&demo, &wallet),
+    )
+    .unwrap();
+    assert_eq!(shown["tenderdashKey"].as_str().unwrap().len(), 88);
+
+    // Public keys need no unlocked vault.
+    demo.ok("lock", json!({}));
+    assert_eq!(keys(&demo, &wallet, "operator", 0, 1).unwrap(), operator);
+
+    demo.err(
+        "mn_keys",
+        json!({ "walletId": wallet, "role": "owner", "start": 0, "count": 101 }),
+        "invalid_argument",
+    );
+    demo.err(
+        "mn_keys",
+        json!({ "walletId": hash("ef"), "role": "owner", "start": 0, "count": 1 }),
+        "wallet_not_found",
+    );
+}
+
+#[test]
+fn a_watch_only_wallet_has_no_keychain() {
+    let (demo, wallet) = demo_with_wallet();
+    let watched = watch_only(&demo, &wallet);
+    for role in ["owner", "voting", "operator", "platform_node"] {
+        let e = keys(&demo, &watched, role, 0, 1).unwrap_err();
+        assert_eq!(e["code"], "masternode.watch_only", "{role}: {e}");
+    }
+    let e = reveal(&demo, &watched, "owner", 0, &reveal_grant(&demo, &watched)).unwrap_err();
+    assert_eq!(e["code"], "masternode.watch_only", "{e}");
+    let e = reveal(&demo, &watched, "owner", 0, &reveal_grant(&demo, &wallet)).unwrap_err();
+    assert_eq!(e["code"], "masternode.grant_invalid", "{e}");
+}
+
+/// Each refusal of a reveal: no grant, a grant of another purpose or
+/// wallet, a spent grant, a locked vault (which revoked every grant and
+/// issues one only for the passphrase). Nothing is revealed.
+#[test]
+fn a_reveal_needs_its_own_unspent_grant_and_an_unlocked_vault() {
+    let (demo, wallet) = demo_with_wallet();
+    let other = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let refused = |grant: &str| {
+        let e = reveal(&demo, &wallet, "owner", 0, grant).unwrap_err();
+        assert_eq!(e["code"], "masternode.grant_invalid", "{e}");
+    };
+    refused("no-such-grant");
+    refused(&grant(&demo, &wallet, json!({ "kind": "signMessage" })));
+    refused(&grant(
+        &demo,
+        &wallet,
+        json!({ "kind": "masternodeOp", "maxDuffs": 0 }),
+    ));
+    refused(&reveal_grant(&demo, &other));
+
+    let once = reveal_grant(&demo, &wallet);
+    reveal(&demo, &wallet, "owner", 0, &once).unwrap();
+    refused(&once);
+
+    let before_lock = reveal_grant(&demo, &wallet);
+    demo.ok("lock", json!({}));
+    refused(&before_lock);
+    demo.err(
+        "authorize",
+        json!({
+            "purpose": { "kind": "revealSecret" },
+            "walletId": wallet,
+            "credential": { "kind": "unencrypted" },
+        }),
+        "vault.credential_required",
+    );
+    demo.err(
+        "mn_reveal_key",
+        json!({ "walletId": hash("ef"), "role": "owner", "index": 0, "grant": before_lock }),
+        "wallet_not_found",
+    );
+}
+
+static CAPTURING: AtomicBool = AtomicBool::new(false);
+static CAPTURED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+
+struct Capture;
+
+impl Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if CAPTURING.load(Ordering::SeqCst) {
+            CAPTURED.lock().unwrap().extend_from_slice(buf);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Every log record of the process, at trace, while `CAPTURING` is set.
+fn capture_logs() {
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(|| Capture)
+            .try_init()
+            .expect("no other global subscriber in dw-app's tests");
+    });
+}
+
+/// A revealed key reaches the caller only: no log record at trace and no
+/// event carries any form of it.
+#[test]
+fn a_revealed_key_is_in_no_log_and_no_event() {
+    capture_logs();
+    let (demo, wallet) = demo_with_wallet();
+    let events = demo.events();
+    CAPTURING.store(true, Ordering::SeqCst);
+    tracing::info!("reveal-capture-probe");
+    let mut secrets = Vec::new();
+    for (role, index) in [
+        ("owner", 0),
+        ("voting", 1),
+        ("operator", 2),
+        ("platform_node", 0),
+    ] {
+        let shown = reveal(&demo, &wallet, role, index, &reveal_grant(&demo, &wallet)).unwrap();
+        for field in ["privateKeyHex", "wif", "tenderdashKey"] {
+            if let Some(s) = shown[field].as_str() {
+                secrets.push(s.to_owned());
+            }
+        }
+    }
+    let spent = reveal_grant(&demo, &wallet);
+    reveal(&demo, &wallet, "owner", 0, &spent).unwrap();
+    let refusal = reveal(&demo, &wallet, "owner", 0, &spent).unwrap_err();
+    CAPTURING.store(false, Ordering::SeqCst);
+    assert_eq!(secrets.len(), 7, "{secrets:?}");
+
+    let logs = String::from_utf8_lossy(&CAPTURED.lock().unwrap()).into_owned();
+    assert!(logs.contains("reveal-capture-probe"), "the capture is live");
+    let events = events.lock().unwrap().join("\n");
+    for secret in &secrets {
+        assert!(
+            !logs.contains(secret.as_str()),
+            "a log record holds a revealed key"
+        );
+        assert!(
+            !events.contains(secret.as_str()),
+            "an event holds a revealed key"
+        );
+        assert!(!refusal.to_string().contains(secret.as_str()));
+    }
+}

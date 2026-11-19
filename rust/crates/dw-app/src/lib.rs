@@ -20,6 +20,8 @@ mod ipc;
 #[cfg(test)]
 mod ipc_tests;
 pub mod launch;
+#[cfg(test)]
+mod masternodes_tests;
 pub mod settings;
 pub mod shell;
 pub mod state;
