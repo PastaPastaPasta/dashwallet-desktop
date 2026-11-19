@@ -2590,7 +2590,8 @@ fn test_an_abandon_crash_after_its_hand_off_keeps_the_spend_without_an_outcome()
 
 /// Review r1 M1, first probe: a spend handed off and the engine gone, then
 /// signed again after a restart (the same txid) and refused, never reads
-/// `not_sent`: its first hand-off may be out.
+/// `not_sent`: its first hand-off may be out. The second hand-off runs as a
+/// later one, so its refusal reads unknown and its coin stays held (r2-n1).
 #[test]
 fn test_an_abandon_signed_again_after_a_crash_never_reads_refused() {
     let mut f = fx(3, true);
@@ -2607,6 +2608,16 @@ fn test_an_abandon_signed_again_after_a_crash_never_reads_refused() {
     assert_eq!(log.len(), 1, "the same spend");
     assert_eq!(log[0].0, txid);
     assert_eq!(log[0].1.as_deref(), Some("maybe_sent"));
+    assert_eq!(
+        f.row(1, &id).last_error.as_deref(),
+        Some("send.broadcast_unknown"),
+        "handed off as a later hand-off"
+    );
+    let e = f.abandon(1, &id).unwrap_err();
+    assert!(
+        matches!(e, MasternodesError::SharedStage { ref stage } if stage == "funding_signed"),
+        "the coin stays held: {e:?}"
+    );
 }
 
 /// Review r1 M1, second probe: a refused spend signed again (the same
