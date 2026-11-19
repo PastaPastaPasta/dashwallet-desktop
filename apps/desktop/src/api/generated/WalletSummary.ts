@@ -15,6 +15,7 @@ hasMnemonic: boolean, hd: boolean, birthHeight: number | null,
  */
 createdAt: number | null,
 /**
- * `null` until the scan has processed the birth block: a zero would be a guess.
+ * What the wallet knows so far (`catchingUp` until the scan has processed
+ * the birth block); `null` before the wallet's state was first read.
  */
 balances: Balances | null, };

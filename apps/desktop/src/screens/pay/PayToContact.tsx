@@ -14,7 +14,8 @@ import { useLockStatus, useWallets } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
-import { EmptyState, LoadingState } from "../../components/history";
+import { EMPTY } from "../../components/emptyStates";
+import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import { useDisplay } from "../../format/display";
 import { NETWORK_DEBOUNCE_MS, networkPrefix, SEARCH_DEBOUNCE_MS } from "../../contacts/model";
 import { refreshAfter, useContactDetail, useContactsOwner, useHasKeys, useNetworkSearch } from "../../contacts/queries";
@@ -50,6 +51,7 @@ export function PayToContact({ walletId, network }: { walletId: string; network:
   return (
     <EmptyState
       testId="pay-contact-none"
+      art={EMPTY.join.art}
       title={none.title}
       message={none.message ?? undefined}
       action={
@@ -162,6 +164,7 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
     body = (
       <EmptyState
         testId="pay-picker-none"
+        art="search"
         title="No one found"
         message={`No contact or DashPay username starts with “${text}”.`}
         action={
@@ -171,13 +174,41 @@ function Chooser({ walletId, identity, onPick }: { walletId: string; identity: s
         }
       />
     );
-  else if (view.none === "contacts") body = <EmptyState testId="pay-picker-none" title="No contacts match" message="Search by name or username." />;
+  else if (view.none === "contacts")
+    body = (
+      <EmptyState
+        testId="pay-picker-none"
+        art="search"
+        title="No contacts match"
+        message="Search by name or username."
+        action={
+          <DashButton
+            variant="filledBlue"
+            data-testid="pay-picker-clear"
+            onClick={() => {
+              setSearch("");
+              focusWhenIdle(field);
+            }}
+          >
+            Clear search
+          </DashButton>
+        }
+      />
+    );
   else if (view.none === "short")
-    body = <EmptyState testId="pay-picker-empty" title={list.data.updating ? "Your contacts are being updated" : "No contacts yet"} message="Keep typing to search DashPay usernames." />;
+    body = (
+      <EmptyState
+        testId="pay-picker-empty"
+        art="contacts"
+        title={list.data.updating ? "Your contacts are being updated" : "No contacts yet"}
+        message="Keep typing to search DashPay usernames."
+      />
+    );
   else if (groups.length === 0 && text === "")
     body = (
       <EmptyState
         testId="pay-picker-empty"
+        art="contacts"
         title={list.data.updating ? "Your contacts are being updated" : "No contacts yet"}
         message="Type a username above to find someone on DashPay."
       />

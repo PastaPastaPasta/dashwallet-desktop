@@ -155,6 +155,7 @@ fn seam_for(session: &NetworkSession, lib: &Arc<FakeLibrary>) -> Arc<Seam> {
         list: Mutex::new(Some(Vec::new())),
         list_height: Mutex::new(100),
         shared_mined: Mutex::default(),
+        shared_locked: Mutex::default(),
     });
     session.masternodes.set_protx_seam(Some(seam.clone()));
     seam
