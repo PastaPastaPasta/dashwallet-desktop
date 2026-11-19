@@ -11,7 +11,7 @@ import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
 import { FiatSecondary, FiatToggle, useFiatEntry } from "../../fiat/entry";
 import type { useDisplay } from "../../format/display";
-import { availableLabel, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient } from "./model";
+import { availableLabel, PAY_CHECKING, PAY_INCOMPLETE, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 /** How long a field stays unchanged before it is checked and the draft estimated (U-03 D5). */
@@ -261,8 +261,6 @@ export function AmountFields({
   );
 }
 
-export const PAY_INCOMPLETE = "Enter an address and an amount first.";
-export const PAY_CHECKING = "Checking the payment…";
 
 /** The fee line, or what holds the payment back; then Review. */
 export function PayFooter({

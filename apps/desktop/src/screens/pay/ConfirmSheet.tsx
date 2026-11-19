@@ -263,6 +263,16 @@ export function ConfirmSheet({
     }
   };
 
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  // A PSBT that arrives after the sheet went (another page, another wallet) is dropped: it neither
+  // reaches the clipboard nor opens Tools.
   const createUnsigned = async () => {
     if (busy) return;
     setBusy(true);
@@ -271,6 +281,7 @@ export function ConfirmSheet({
     try {
       psbt = await draft.createUnsigned(spec);
     } catch (e) {
+      if (!mounted.current) return;
       setBusy(false);
       setError(failureText(e, chain));
       return;
@@ -278,6 +289,7 @@ export function ConfirmSheet({
     // The engine planned again: the PSBT leaves the sheet only if it is the payment shown, and one
     // that cannot be checked is not shown to be (D37).
     const analysis = await b.analyzePsbt(walletId, psbt).catch(() => null);
+    if (!mounted.current) return;
     if (analysis === null || !unsignedKeepsPromise(confirmed, analysis)) {
       onOutcome({ kind: "failed", text: "The payment changed. Review it again." });
       return;
@@ -286,11 +298,12 @@ export function ConfirmSheet({
       () => true,
       () => false,
     );
+    if (!mounted.current) return;
     navigate("tools", { toolsTab: "psbt", psbtPrefill: { psbt, copied } });
   };
 
   return (
-    <Sheet title={unsigned ? "Review unsigned transaction" : "Confirm payment"} width="small" testId="pay-confirm" returnFocus={returnFocus} onClose={() => !busy && onCancel()}>
+    <Sheet title={unsigned ? "Unsigned transaction" : "Confirm payment"} width="small" testId="pay-confirm" returnFocus={returnFocus} onClose={() => !busy && onCancel()}>
       <form
         className="confirm"
         onSubmit={(e) => {
@@ -305,7 +318,7 @@ export function ConfirmSheet({
             {contact?.acceptsToo
               ? `Accept ${contact.payee.name}'s contact request and send this payment?`
               : actions.unsignedFirst
-              ? "Please, review your transaction proposal. This will produce a Partially Signed Transaction (PSBT) which you can save or copy and then sign with e.g. an offline Dash Core wallet."
+              ? "Check the payment below. Nothing is signed or sent: this creates an unsigned transaction (PSBT) to copy or save, then sign in the wallet that holds the keys, for example an offline Dash Core wallet."
               : "Do you want to send this payment?"}
           </p>
         </div>

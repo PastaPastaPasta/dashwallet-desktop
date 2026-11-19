@@ -11,6 +11,9 @@ import {
   changePolicy,
   coinSource,
   confirmActions,
+  PAY_CHECKING,
+  PAY_INCOMPLETE,
+  reviewBlockedReason,
   confirmedOf,
   credentialPrompt,
   DEFAULT_ADVANCED,
@@ -319,5 +322,22 @@ describe("what the confirm sheet offers (P15)", () => {
 
   it("holds Send while the wallet is not known", () => {
     expect(confirmActions(false, undefined)).toEqual({ send: false, credential: false, unsignedFirst: false });
+  });
+});
+
+describe("why a payment cannot be reviewed yet (P15)", () => {
+  it("gives no reason once it can", () => {
+    expect(reviewBlockedReason(true, ["stale"], true)).toBeNull();
+  });
+
+  it("names the first field problem the form shows, not an incomplete form", () => {
+    const wrongNetwork = "This is a Mainnet address. This wallet is on Testnet.";
+    expect(reviewBlockedReason(false, [wrongNetwork, null, undefined, "general"], true)).toBe(wrongNetwork);
+    expect(reviewBlockedReason(false, [null, undefined, "Enter a valid amount."], false)).toBe("Enter a valid amount.");
+  });
+
+  it("falls back to incomplete or still being checked", () => {
+    expect(reviewBlockedReason(false, [null, undefined, ""], false)).toBe(PAY_INCOMPLETE);
+    expect(reviewBlockedReason(false, [null], true)).toBe(PAY_CHECKING);
   });
 });

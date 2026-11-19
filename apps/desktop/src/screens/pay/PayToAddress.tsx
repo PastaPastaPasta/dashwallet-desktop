@@ -15,8 +15,8 @@ import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { PayFromPlatform } from "./PayFromPlatform";
-import { AmountFields, draftSpec, FormField, PAY_CHECKING, PAY_INCOMPLETE, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
-import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced } from "./model";
+import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
+import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, reviewBlockedReason, type Advanced } from "./model";
 import { ResultSheet } from "./ResultSheet";
 import { UnsignedPsbt } from "./UnsignedPsbt";
 import { useDraft } from "./useDraft";
@@ -60,7 +60,15 @@ export function PayToAddress({
   // Closing the confirm or result sheet returns to Review, or to the address of a cleared form.
   const reviewButton = useRef<HTMLButtonElement>(null);
   const addressField = useRef<HTMLInputElement>(null);
-  const backToForm = useCallback(() => (reviewButton.current?.disabled === false ? reviewButton.current : addressField.current), []);
+  // Advanced's unsigned path gets the focus back, never Review's signing one (P15): its button, or
+  // its summary while the payment is estimated again.
+  const psbtButton = useRef<HTMLButtonElement>(null);
+  const psbtSummary = useRef<HTMLElement>(null);
+  const openedBy = useRef<"review" | "psbt">("review");
+  const backToForm = useCallback(() => {
+    if (openedBy.current === "psbt") return psbtButton.current?.disabled === false ? psbtButton.current : psbtSummary.current;
+    return reviewButton.current?.disabled === false ? reviewButton.current : addressField.current;
+  }, []);
   // The sending address book (QT-097): choosing fills the address, and its label if none was typed.
   const [picking, setPicking] = useState(false);
   const chosen = useCallback((a: string, l: string) => {
@@ -100,7 +108,9 @@ export function PayToAddress({
     setSubtractFee(true);
   });
 
-  const review = (unsigned: boolean) => {
+  const review = (from: "review" | "psbt") => {
+    const unsigned = from === "psbt" || watchOnly;
+    openedBy.current = from;
     if (ready && estimate.data && spec) sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change), spec, unsigned);
   };
 
@@ -112,7 +122,7 @@ export function PayToAddress({
         aria-label="Pay to an address"
         onSubmit={(e) => {
           e.preventDefault();
-          review(watchOnly);
+          review("review");
         }}
       >
         {prefill?.username && (
@@ -166,7 +176,13 @@ export function PayToAddress({
         {!platform && (
           <>
             <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
-            <UnsignedPsbt watchOnly={watchOnly} why={ready ? null : (generalError ?? (spec ? PAY_CHECKING : PAY_INCOMPLETE))} onCreate={() => review(true)} />
+            <UnsignedPsbt
+              watchOnly={watchOnly}
+              why={reviewBlockedReason(ready, [addrError, fieldError("address"), amount.fiat.error, amount.error, fieldError("amount"), max.error, generalError], !!spec)}
+              onCreate={() => review("psbt")}
+              buttonRef={psbtButton}
+              summaryRef={psbtSummary}
+            />
             <PayFooter reviewLabel={watchOnly ? "Review PSBT" : "Review"} problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
           </>
         )}

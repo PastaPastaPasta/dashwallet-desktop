@@ -285,6 +285,16 @@ export function confirmActions(unsignedAsked: boolean, watchOnly: boolean | unde
   return { send, credential: send, unsignedFirst: unsignedAsked || watchOnly === true };
 }
 
+export const PAY_INCOMPLETE = "Enter an address and an amount first.";
+export const PAY_CHECKING = "Checking the payment…";
+
+/** Why a payment cannot be reviewed yet (P15): the first field problem the form shows, then the
+ * draft's own, then whether it is still incomplete or being checked; `null` once it can. */
+export function reviewBlockedReason(ready: boolean, problems: (string | null | undefined)[], complete: boolean): string | null {
+  if (ready) return null;
+  return problems.find((p): p is string => !!p) ?? (complete ? PAY_CHECKING : PAY_INCOMPLETE);
+}
+
 /** What an `authorize` refusal means for the confirm sheet. */
 export type AuthRefusal =
   | { kind: "needsPassphrase" }
