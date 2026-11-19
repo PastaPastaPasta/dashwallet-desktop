@@ -172,6 +172,11 @@ class DwdProtx(DwdMasternodes):
                 "--service", "127.0.0.1:30001", "--platform-p2p-port", "30001")
 
         self.log.info("2. F: FundNew, the operator key given")
+        keys = dw.mn(h, "registration-keys")
+        assert_equal((keys["owner"]["index"], keys["owner"]["address"]), (0, address(provider_key(OWNER, 0))))
+        assert_equal((keys["voting"]["index"], keys["voting"]["address"]), (0, address(provider_key(VOTING, 0))))
+        assert_equal((keys["operator"]["index"], keys["platform_node"]), (0, None))
+        assert_equal(dw.mn(h, "registration-keys", "--evonode")["platform_node"]["index"], 0)
         operator_f = node.bls("generate")["public"]
         service_f = f"127.0.0.1:{p2p_port(14)}"
         preview = dw.mn(h, "register", "--preview", "--collateral", "fund-new", "--service", service_f,
@@ -302,6 +307,10 @@ class DwdProtx(DwdMasternodes):
                    for k in ("owner", "voting", "collateral")), mine
         listed = {m["proTxHash"] for m in node.protx("list", "registered", True)}
         assert ours <= listed
+        next_keys = dw.mn(h, "registration-keys", "--evonode")
+        assert_equal((next_keys["owner"]["index"], next_keys["voting"]["index"],
+                      next_keys["operator"]["index"], next_keys["platform_node"]["index"]), (5, 5, 4, 1))
+        dw.mn(h, "resolve-collateral", f["pro_tx_hash"], error="masternodes.unsupported")
 
         hash_f = f["pro_tx_hash"]
         payout_f = f["terms"]["payout_address"]
