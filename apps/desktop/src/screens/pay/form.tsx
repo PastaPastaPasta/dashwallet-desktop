@@ -11,7 +11,7 @@ import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
 import { FiatSecondary, FiatToggle, useFiatEntry } from "../../fiat/entry";
 import type { useDisplay } from "../../format/display";
-import { availableLabel, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient } from "./model";
+import { availableLabel, PAY_CHECKING, PAY_INCOMPLETE, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 /** How long a field stays unchanged before it is checked and the draft estimated (U-03 D5). */
@@ -20,7 +20,7 @@ export const SETTLE_MS = 300;
 type Shown = ReturnType<typeof useDisplay>;
 
 /** Where a form is: editing, confirming, or showing the result. */
-export type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec } | { kind: "result"; outcome: Outcome };
+export type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec; unsigned: boolean } | { kind: "result"; outcome: Outcome };
 
 /** A Pay form's sheets (U-03): Review's confirm, then the result. While either is up the form
  * estimates nothing (`held`), so the payment's own events re-check nothing behind them. A payment
@@ -46,7 +46,7 @@ export function usePaySheets(walletId: string, draft: DraftApi, clear: () => voi
   return {
     phase,
     held: phase.kind === "confirm" || (phase.kind === "result" && phase.outcome.kind !== "failed"),
-    review: (confirmed: Confirmed, spec: DraftSpec) => setPhase({ kind: "confirm", confirmed, spec }),
+    review: (confirmed: Confirmed, spec: DraftSpec, unsigned = false) => setPhase({ kind: "confirm", confirmed, spec, unsigned }),
     cancel: () => setPhase({ kind: "editing" }),
     outcome,
     done,
@@ -152,8 +152,9 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
   const normal = spec?.source.kind === "any";
   const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: normal });
   // A disabled query keeps its cached data: the hints are for the normal source alone.
-  const { fullyMixed = 0, denominated = 0 } = mixing.data?.balances ?? {};
-  const hints = normal ? { mixed: fullyMixed > 0, mixing: denominated > fullyMixed } : undefined;
+  const { fullyMixed = 0, denominated = 0, mixableUnfinished = 0 } = mixing.data?.balances ?? {};
+  const stalled = denominated > fullyMixed + mixableUnfinished;
+  const hints = normal ? { mixed: fullyMixed > 0, mixing: mixableUnfinished > 0, stalled } : undefined;
   const refusal = estimate.isError ? sendErrorText(estimate.error, chain, amountUnit, hints) : null;
   // A fully mixed payment refused as an absurd fee: offer Subtract fee with what it would send,
   // from the engine's own estimate of it (MX-FEE); a refusal of that too leaves the reason alone.
@@ -261,8 +262,6 @@ export function AmountFields({
   );
 }
 
-const PAY_INCOMPLETE = "Enter an address and an amount first.";
-const PAY_CHECKING = "Checking the payment…";
 
 /** The fee line, or what holds the payment back; then Review. */
 export function PayFooter({
@@ -273,7 +272,9 @@ export function PayFooter({
   incomplete,
   reviewRef,
   offer,
+  reviewLabel = "Review",
 }: {
+  reviewLabel?: string;
   problem: string | null;
   /** Subtract fee would send this amount; its button turns it on (MX-FEE). Pass it only for settled fields. */
   offer?: { amount: number; accept: () => void } | null;
@@ -315,7 +316,7 @@ export function PayFooter({
         ) : null}
       </div>
       <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready} why={problem ?? waiting} whyId="pay-reason">
-        Review
+        {reviewLabel}
       </DashButton>
     </div>
   );

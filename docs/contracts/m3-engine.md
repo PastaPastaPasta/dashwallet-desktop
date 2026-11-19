@@ -122,7 +122,9 @@ Status of every call: **works** unless marked otherwise. "In-memory read" calls 
   declined to unlock. Disabling CoinJoin.".
 - `balances { anonymizable, denominated, normalized_anonymized, fully_mixed }`: Core's names
   (`GetAnonymizableBalance`, …); `fully_mixed` is the panel's "CoinJoin Balance" and the CoinJoin page's
-  spendable. The M1 `WalletBalances.coinjoin` becomes this value (§5).
+  spendable. The M1 `WalletBalances.coinjoin` becomes this value (§5). `denominated` and `fully_mixed` count
+  denominations on BIP44 receive and change addresses too, where dash-qt mixes. `mixable_unfinished` counts only
+  the CoinJoin account's denominations that are not fully mixed: what mixing in this wallet can still finish.
 - `progress { overall_percent, denominated_percent, partially_mixed_percent, mixed_percent, average_rounds }` with
   dash-qt's formula (research 02 §9.2): `max = min(anonymizable + fully_mixed, target)`; parts are
   `min(1, x/max)·100` for denominated (weight 1), normalized (weight rounds) and fully mixed (weight 2);

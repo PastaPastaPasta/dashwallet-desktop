@@ -687,7 +687,14 @@ jobs:
           $url = 'https://download.microsoft.com/download/4f5a8b87-f017-485d-8cf7-c16e82671dbe/WindowsAppRuntimeInstall-x64.exe'
           $sha256 = '7418DC8DC18CFEE1CDC1B087A326EA6FD66E2E3A5E1C76D49FA948737A83A45E'
           $installer = Join-Path $env:RUNNER_TEMP 'WindowsAppRuntimeInstall-x64.exe'
-          Invoke-WebRequest -Uri $url -OutFile $installer
+          for ($attempt = 1; ; $attempt++) {
+            try { Invoke-WebRequest -Uri $url -OutFile $installer; break }
+            catch {
+              if ($attempt -ge 5) { throw }
+              Write-Host "download attempt $attempt failed: $($_.Exception.Message)"
+              Start-Sleep -Seconds 5
+            }
+          }
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash
           if ($hash -ne $sha256) { throw "Windows App Runtime installer SHA-256 $hash, expected $sha256" }
           $signature = Get-AuthenticodeSignature $installer
