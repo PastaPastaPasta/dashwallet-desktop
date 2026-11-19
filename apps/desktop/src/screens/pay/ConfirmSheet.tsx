@@ -8,6 +8,7 @@
 // and "Accept and pay" accepts the contact's request and pays it under one credential and one
 // lease, ended once the first broadcast returned.
 
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
@@ -141,9 +142,21 @@ export function ConfirmSheet({
   // A failed read of the policy counts as "on" (U-03 D3). With the signing window, an unread
   // window also asks: the prompt waits until that read settles.
   const windowNeeded = policy.data === false;
-  const policyKnown = !policy.isPending && (!windowNeeded || quick.isSuccess || quick.isError);
+  const acceptQuote = useQuery({
+    queryKey: ["pay", "accept-grant", walletId, contact?.identity] as const,
+    queryFn: () => b.grantRequest(walletId, contact!.identity, { kind: "acceptRequest" }),
+    enabled: Boolean(contact?.acceptsToo && contact.identity),
+    retry: false,
+  });
+  const policyKnown =
+    !policy.isPending && (!windowNeeded || quick.isSuccess || quick.isError) && (!contact?.acceptsToo || acceptQuote.isSuccess || acceptQuote.isError);
+  // Accept and pay also spends the quoted platform value. Until that quote is known, ask.
+  const platformDuffs = acceptQuote.isSuccess
+    ? acceptQuote.data.maxDuffs + Math.ceil(Number(acceptQuote.data.maxCredits) / 1000)
+    : null;
+  const coveredAmount = contact?.acceptsToo ? (platformDuffs === null ? Number.MAX_SAFE_INTEGER : total + platformDuffs) : total;
   const cover = quick.isSuccess
-    ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.spendLimitDuffs, amount: total }
+    ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.signingWindowRemainingDuffs ?? 0, amount: coveredAmount }
     : null;
   const prompt = watchOnlyKnown !== false ? "none" : askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined, windowNeeded ? cover : null);
   // The policy loads after the sheet opened: once it asks for nothing, Cancel takes the focus,

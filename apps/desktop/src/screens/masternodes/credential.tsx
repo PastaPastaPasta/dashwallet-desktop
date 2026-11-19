@@ -58,7 +58,7 @@ export function useCredential(walletId: string, ask: string, amount = 0): Creden
   }, [b]);
   const windowNeeded = policy.data === false;
   const cover = quick.isSuccess
-    ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.spendLimitDuffs, amount }
+    ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.signingWindowRemainingDuffs ?? 0, amount }
     : null;
   const prompt = askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined, windowNeeded ? cover : null);
   const waitSecs = retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));

@@ -204,7 +204,7 @@ async function main() {
     await enter("settings-change-repeat", NEW_PASSPHRASE);
     await wd.press(tid("settings-change-submit"));
     await wd.waitFor(tid("settings-security-notice"), "the passphrase-changed notice");
-    if (!(await checked("settings-payment-auth"))) throw new Error("payment authentication is not on by default");
+    if (await checked("settings-payment-auth")) throw new Error("a new vault asks for every payment; it starts on the signing window");
     await wd.press(tid("settings-payment-auth"));
     await enter("settings-payment-auth-passphrase-field", PASSPHRASE);
     await wd.press(tid("settings-payment-auth-passphrase-submit"));
@@ -212,15 +212,15 @@ async function main() {
     await enter("settings-payment-auth-passphrase-field", NEW_PASSPHRASE);
     await wd.press(tid("settings-payment-auth-passphrase-submit"));
     await wd.waitGone(tid("settings-payment-auth-sheet"), "the payment authentication sheet");
-    if ((await invoke<boolean>("payment_authentication")) !== false) throw new Error("payment_authentication is still on");
+    if ((await invoke<boolean>("payment_authentication")) !== true) throw new Error("payment_authentication did not turn on");
     await wd.press(tid("settings-payment-auth"));
     await enter("settings-payment-auth-passphrase-field", NEW_PASSPHRASE);
     await wd.press(tid("settings-payment-auth-passphrase-submit"));
     await wd.waitGone(tid("settings-payment-auth-sheet"), "the payment authentication sheet");
-    if ((await invoke<boolean>("payment_authentication")) !== true) throw new Error("payment_authentication is not back on");
+    if ((await invoke<boolean>("payment_authentication")) !== false) throw new Error("payment_authentication did not turn off");
     await wd.press(tid("settings-autohide"));
     await wd.screenshot("03-security");
-    step("Security: a wrong current passphrase counted, then changed (the old one refused after); payment authentication off and on; autohide on");
+    step("Security: a wrong current passphrase counted, then changed (the old one refused after); a new vault starts on the window, then strict, then the window again; autohide on");
 
     // ---- Wallets: rename, xpub, watch-only, close (IOS-110, IOS-111, QT-114, QT-101)
     await tab("wallets");

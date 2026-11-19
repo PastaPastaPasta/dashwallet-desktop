@@ -119,6 +119,8 @@ export interface World {
   /** When the post-unlock signing window ends (ms). `null` when it is closed. The funded
    * scenario starts unlocked, so the window is open. */
   signingUntil: number | null;
+  /** Duff already authorized from this window. The limit is a total, not per payment. */
+  windowCharged?: number;
   /** "Load contact pictures" (DP4-02 D17); absent: on. */
   loadContactPictures?: boolean;
   /** The vault's wait after a wrong passphrase (`retryAfterSecs`); null: none. */

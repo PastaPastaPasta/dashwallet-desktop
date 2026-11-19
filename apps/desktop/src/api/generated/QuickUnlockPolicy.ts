@@ -14,10 +14,15 @@ export type QuickUnlockPolicy = { enrolled: boolean, spendLimitDuffs: number, pa
  */
 lastPassphraseAt: number | null,
 /**
- * A passphrase unlock in this process still covers a payment at or
- * under `spendLimitDuffs`.
+ * A passphrase unlock in this process still covers payments, up to
+ * `spendLimitDuffs` in total for the window.
  */
 signingWindowOpen: boolean,
+/**
+ * Duff still authorizable from the open window. Absent when it is
+ * closed or the sealed policy does not authenticate.
+ */
+signingWindowRemainingDuffs: number | null,
 /**
  * How long that window lasts, in seconds.
  */

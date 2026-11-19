@@ -368,19 +368,33 @@ enum TokenBinding {
     EndedEpoch,
 }
 
-/// Wall and monotonic clocks at one look. A suspend moves the wall clock
-/// and leaves the monotonic clock; the difference ends the signing window.
+/// Wall and monotonic clocks at one look. A suspend that freezes the
+/// monotonic clock moves only the wall clock; one that advances both shows
+/// up as a long gap since the last look. Either ends the signing window.
+/// The OS suspend notification is the real signal; this is the backstop.
 struct SleepSample {
     wall: SystemTime,
     mono: Instant,
 }
 
-/// How far the wall clock may run ahead of the monotonic clock before this
-/// process treats the gap as a sleep. Larger than a normal NTP step.
+/// How far a clock may jump before this process treats the gap as a sleep.
+/// Larger than a normal NTP step.
 const SLEEP_GAP: Duration = Duration::from_secs(2);
 
-fn arm_signing_window(inner: &mut Inner, now: u64) {
-    inner.signing_until = Some(now.saturating_add(SIGNING_WINDOW_SECS));
+fn window_purpose(purpose: &GrantPurpose) -> bool {
+    matches!(
+        purpose,
+        GrantPurpose::Spend { .. }
+            | GrantPurpose::PlatformOp { .. }
+            | GrantPurpose::MasternodeOp { .. }
+            | GrantPurpose::MasternodeWithdraw { .. }
+            | GrantPurpose::Governance
+    )
+}
+
+fn arm_signing_window(inner: &mut Inner, now: Instant) {
+    inner.signing_deadline = Some(now + Duration::from_secs(SIGNING_WINDOW_SECS));
+    inner.window_charged = 0;
     inner.sleep_sample = Some(SleepSample {
         wall: SystemTime::now(),
         mono: Instant::now(),
@@ -388,11 +402,14 @@ fn arm_signing_window(inner: &mut Inner, now: u64) {
 }
 
 fn clear_signing_window(inner: &mut Inner) {
-    inner.signing_until = None;
+    inner.signing_deadline = None;
+    inner.window_charged = 0;
     inner.sleep_sample = None;
+    inner.grants.retain(|_, grant| !grant.from_window);
 }
 
-/// Ends the window when the machine slept since the last look.
+/// Ends the window when the machine slept since the last look. A backward
+/// wall-clock step does not extend it.
 fn observe_sleep(inner: &mut Inner) {
     let Some(sample) = &inner.sleep_sample else {
         return;
@@ -401,12 +418,40 @@ fn observe_sleep(inner: &mut Inner) {
     let mono = Instant::now();
     let wall_dt = wall.duration_since(sample.wall).unwrap_or_default();
     let mono_dt = mono.saturating_duration_since(sample.mono);
+    // Only a wall clock that ran ahead of the monotonic clock. A long gap
+    // in both is a normal wait between looks, not a sleep; the process
+    // watcher measures its own one-second tick for that case.
     if wall_dt > mono_dt.saturating_add(SLEEP_GAP) {
         clear_signing_window(inner);
         return;
     }
-    if inner.signing_until.is_some() {
+    if inner.signing_deadline.is_some() {
         inner.sleep_sample = Some(SleepSample { wall, mono });
+    }
+}
+
+fn settle_window(inner: &mut Inner, now: Instant) {
+    observe_sleep(inner);
+    if inner
+        .signing_deadline
+        .is_some_and(|deadline| now >= deadline)
+    {
+        clear_signing_window(inner);
+    }
+}
+
+/// The sealed spend limit. An absent policy is the default. A policy that
+/// does not authenticate, or whose plain copy was altered, refuses the
+/// window (`CredentialRequired` at the caller) rather than trusting the
+/// plain number.
+fn sealed_spend_limit(inner: &Inner) -> Result<u64, VaultError> {
+    let (Some(file), Some(dek)) = (inner.file.as_ref(), inner.dek.as_ref()) else {
+        return Err(VaultError::CredentialRequired);
+    };
+    match open_policy(file, dek) {
+        Ok(Some(policy)) => Ok(policy.spend_limit_duffs),
+        Ok(None) => Ok(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT),
+        Err(_) => Err(VaultError::CredentialRequired),
     }
 }
 
@@ -417,6 +462,9 @@ struct IssuedGrant {
     /// held no full-scope key (locked or mixing-only). Only this grant uses
     /// it; the vault's lock state is unchanged (dash-qt re-lock parity).
     key: Option<Key32>,
+    /// Issued from the signing window, with no passphrase. Closing the
+    /// window drops it, so it cannot be composed into a lease afterwards.
+    from_window: bool,
 }
 
 struct Inner {
@@ -439,11 +487,14 @@ struct Inner {
     /// (`.dwbackup` bundle v2), derived from slot P's KEK whenever the
     /// passphrase is checked or set. Held only while `dek` is; never stored.
     backup_kek: Option<BackupKek>,
-    /// When the post-unlock signing window ends (this vault's clock, UNIX
-    /// seconds). Memory only: not written to the vault file, so a quit
-    /// ends it. Distinct from `last_passphrase_at`, which is the 7-day
-    /// quick-unlock freshness and is sealed.
-    signing_until: Option<u64>,
+    /// When the post-unlock signing window ends, on the vault clock's
+    /// monotonic timeline. Memory only: not written, so a quit ends it.
+    /// A wall-clock change does not move it. Once cleared, only a new
+    /// passphrase unlock arms it again.
+    signing_deadline: Option<Instant>,
+    /// Duff already authorized from this window, across every credential-free
+    /// grant. Not refunded when a grant goes unused. Cleared with the window.
+    window_charged: u64,
     /// Clocks at the last look, for [`observe_sleep`].
     sleep_sample: Option<SleepSample>,
     #[cfg(test)]
@@ -592,7 +643,8 @@ impl Vault {
                     grants: HashMap::new(),
                     last_passphrase_at: None,
                     backup_kek: None,
-                    signing_until: None,
+                    signing_deadline: None,
+                    window_charged: 0,
                     sleep_sample: None,
                     #[cfg(test)]
                     gate_log: None,
@@ -882,7 +934,7 @@ impl Vault {
         inner.backup_kek = backup_kek;
         if encrypted {
             inner.last_passphrase_at = Some(now);
-            arm_signing_window(&mut inner, now);
+            arm_signing_window(&mut inner, self.clock_mono());
         }
         let mut status = self.status_of(&inner);
         drop(inner);
@@ -964,14 +1016,13 @@ impl Vault {
         let writer = self.writer();
         let (dek, backup_kek) = self.check_passphrase(&writer, passphrase)?;
         let link_dek = Zeroizing::new(*dek);
-        let now = self.now();
         let (mut status, vault_id) = {
             let ops = self.epoch_guard();
             let mut inner = self.inner();
             inner.install_key(dek, scope, &ops);
             inner.backup_kek = Some(backup_kek);
             if scope == UnlockScope::Full {
-                arm_signing_window(&mut inner, now);
+                arm_signing_window(&mut inner, self.clock_mono());
             } else {
                 clear_signing_window(&mut inner);
             }
@@ -1280,6 +1331,7 @@ impl Vault {
                     purposes,
                     wallet,
                     (!full_in_memory).then_some(&dek),
+                    false,
                 )
             }
             Credential::None => {
@@ -1318,9 +1370,55 @@ impl Vault {
                     LockState::UnlockedMixingOnly => return Err(VaultError::MixingOnly),
                     LockState::NoKeys | LockState::Unencrypted | LockState::Unlocked => {}
                 }
-                self.issue(&mut inner, purposes, wallet, None)
+                let window = Self::state_of(&inner) == LockState::Unlocked
+                    && inner.file.as_ref().is_some_and(|f| f.slot_p.is_some())
+                    && purposes.iter().any(window_purpose);
+                let charge = if window {
+                    Some(self.admit_window(&mut inner, purposes)?)
+                } else {
+                    None
+                };
+                let grants = self.issue(&mut inner, purposes, wallet, None, window)?;
+                if let Some(n) = charge {
+                    inner.window_charged = inner.window_charged.saturating_add(n);
+                }
+                Ok(grants)
             }
         }
+    }
+
+    /// The signing-window half of [`Self::authorize_set`], under the same
+    /// `inner` guard as the grant insert. The limit is the sealed policy,
+    /// and it is cumulative for the window: several grants cannot add up
+    /// past it. A closed or corrupt window is `CredentialRequired`.
+    fn admit_window(
+        &self,
+        inner: &mut Inner,
+        purposes: &[GrantPurpose],
+    ) -> Result<u64, VaultError> {
+        settle_window(inner, self.clock_mono());
+        if inner.signing_deadline.is_none() {
+            return Err(VaultError::CredentialRequired);
+        }
+        let limit = sealed_spend_limit(inner)?;
+        let mut total = 0u64;
+        for purpose in purposes {
+            if !window_purpose(purpose) {
+                continue;
+            }
+            let value = purpose
+                .quick_unlock_value()
+                .ok_or(VaultError::CredentialRequired)?;
+            total = total.saturating_add(value);
+        }
+        if inner.window_charged.saturating_add(total) > limit {
+            return Err(VaultError::CredentialRequired);
+        }
+        Ok(total)
+    }
+
+    fn clock_mono(&self) -> Instant {
+        self.shared.config.clock.monotonic()
     }
 
     /// The `QuickUnlock` arm of [`Self::authorize_set`].
@@ -1381,17 +1479,20 @@ impl Vault {
             purposes,
             wallet,
             (!full_in_memory).then_some(&dek),
+            false,
         )
     }
 
     /// Stores one new grant per purpose, dropping expired ones; each gets
-    /// its own copy of `key`.
+    /// its own copy of `key`. `from_window` marks a credential-free grant so
+    /// closing the window drops it.
     fn issue(
         &self,
         inner: &mut Inner,
         purposes: &[GrantPurpose],
         wallet: Option<&WalletId>,
         key: Option<&Key32>,
+        from_window: bool,
     ) -> Result<Vec<AuthGrant>, VaultError> {
         let now = self.now();
         inner.drop_expired_grants(now);
@@ -1415,6 +1516,7 @@ impl Vault {
                 IssuedGrant {
                     grant: grant.clone(),
                     key: key.cloned(),
+                    from_window,
                 },
             );
         }
@@ -2696,49 +2798,73 @@ impl Vault {
         Ok(self.status())
     }
 
-    /// The post-unlock signing window is open: a passphrase unlock in this
-    /// process is still inside [`SIGNING_WINDOW_SECS`], and lock, sleep and
-    /// quit have not ended it. A fresh open is closed (the deadline is not
-    /// stored).
+    /// The post-unlock signing window is open. Expiry clears it, so a later
+    /// clock change cannot open it again. A fresh open is closed.
     pub fn signing_window_open(&self) -> bool {
-        let now = self.now();
         let mut inner = self.inner();
-        observe_sleep(&mut inner);
-        inner.signing_until.is_some_and(|until| now < until)
+        settle_window(&mut inner, self.clock_mono());
+        inner.signing_deadline.is_some()
+    }
+
+    /// Duff still authorizable from the open window, against the sealed
+    /// limit. `None` when the window is closed or the sealed policy does
+    /// not authenticate.
+    pub fn signing_window_remaining(&self) -> Option<u64> {
+        let mut inner = self.inner();
+        settle_window(&mut inner, self.clock_mono());
+        if inner.signing_deadline.is_none() {
+            return None;
+        }
+        let limit = sealed_spend_limit(&inner).ok()?;
+        Some(limit.saturating_sub(inner.window_charged))
     }
 
     /// Ends the signing window without locking. Sleep calls this; lock
-    /// clears it too.
+    /// clears it too. Grants the window issued are dropped.
     pub fn end_signing_window(&self) {
         clear_signing_window(&mut self.inner());
     }
 
-    /// Whether `purposes` may be issued with [`Credential::None`] during the
-    /// signing window: every purpose is one quick unlock may issue, and
-    /// their combined [`GrantPurpose::quick_unlock_value`] is within the
-    /// spend limit. A locked vault is not covered (there is no window).
-    pub fn signing_window_covers(&self, purposes: &[GrantPurpose]) -> bool {
-        let now = self.now();
-        let mut inner = self.inner();
-        observe_sleep(&mut inner);
-        let open = inner.signing_until.is_some_and(|until| now < until);
-        if !open {
-            return false;
-        }
-        let limit = inner
-            .file
-            .as_ref()
-            .and_then(|f| f.quick_unlock.as_ref())
-            .map(|s| s.spend_limit_duffs)
-            .unwrap_or(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT);
+    /// A lease may redeem `ids` together only when the ones the window
+    /// issued do not add up past the sealed spend limit. A passphrase grant
+    /// is not counted. Missing ids are left to the redeem that follows.
+    pub fn window_lease_allowed(&self, ids: &[String]) -> Result<(), VaultError> {
+        let inner = self.inner();
         let mut total = 0u64;
-        for purpose in purposes {
-            let Some(value) = purpose.quick_unlock_value() else {
-                return false;
+        let mut any = false;
+        for id in ids {
+            let Some(issued) = inner.grants.get(id) else {
+                continue;
             };
+            if !issued.from_window {
+                continue;
+            }
+            any = true;
+            let value = issued
+                .grant
+                .purpose
+                .quick_unlock_value()
+                .unwrap_or(u64::MAX);
             total = total.saturating_add(value);
         }
-        total <= limit
+        if !any {
+            return Ok(());
+        }
+        if total > sealed_spend_limit(&inner)? {
+            return Err(VaultError::CredentialRequired);
+        }
+        Ok(())
+    }
+
+    /// Whether `purposes` could still be issued with [`Credential::None`].
+    /// The authority is [`Self::authorize_set`], which checks this under the
+    /// same guard as the insert. The limit is cumulative for the window and
+    /// is the sealed policy.
+    pub fn signing_window_covers(&self, purposes: &[GrantPurpose]) -> bool {
+        purposes.iter().all(window_purpose) && {
+            let mut inner = self.inner();
+            self.admit_window(&mut inner, purposes).is_ok()
+        }
     }
 
     /// Moves the sleep sample's wall clock back, so the next look sees a
@@ -2936,7 +3062,7 @@ impl Vault {
             inner.install_key(Zeroizing::new(*dek), UnlockScope::Full, &ops);
             inner.backup_kek = Some(backup_kek);
             inner.last_passphrase_at = Some(now);
-            arm_signing_window(&mut inner, now);
+            arm_signing_window(&mut inner, self.clock_mono());
         }
         drop(ops);
         let disk = file::read(&self.shared.dir)?

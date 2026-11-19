@@ -100,7 +100,6 @@ export function CreateProposalSheet({
   const [feeChanged, setFeeChanged] = useState(false);
   const mine = useMyProposals(wallet.walletId);
   const [after, setAfter] = useState<AfterFailure | null>(null);
-  const credential = useCredential(wallet.walletId, "Enter your passphrase to pay the fee.", amount.duffs ?? 0);
 
   const choice = useMemo(() => defaultFirstPayment(superblocks.data ?? [], now), [superblocks.data, now]);
   // The default, and again when the chosen superblock passes (the list re-reads on the tip).
@@ -129,6 +128,12 @@ export function CreateProposalSheet({
     setReviewed({ key: draftKey, p: preview.data });
   }, [draftKey, preview.data, reviewed]);
   const figures = reviewed?.key === draftKey ? reviewed.p : undefined;
+  // Unknown figures ask. The grant is the submission fee, not the proposed payout.
+  const credential = useCredential(
+    wallet.walletId,
+    "Enter your passphrase to pay the fee.",
+    figures ? feeGrantCap(figures) : Number.MAX_SAFE_INTEGER,
+  );
   /** The draft on screen now, for a press whose awaits outlive it. */
   const shownKey = useRef(draftKey);
   shownKey.current = draftKey;

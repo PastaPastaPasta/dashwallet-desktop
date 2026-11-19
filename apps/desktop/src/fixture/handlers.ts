@@ -198,7 +198,7 @@ function leaseKey(id: string): string | null {
 const SPEND_LIMITS = [0, 10_000_000, 50_000_000, 100_000_000, 500_000_000];
 const SIGNING_WINDOW_MS = 5 * 60 * 1000;
 
-/** What a purpose counts against the spend limit. `null` for one the window never covers. */
+/** What a purpose counts against the spend limit. `null` for one quick unlock never issues. */
 function quickValue(p: GrantPurposeSpec): number | null {
   switch (p.kind) {
     case "spend":
@@ -218,15 +218,23 @@ function windowOpen(w: World): boolean {
   return w.lock.state === "unlocked" && w.signingUntil !== null && Date.now() < w.signingUntil;
 }
 
-function windowCovers(w: World, purposes: GrantPurposeSpec[]): boolean {
-  if (!windowOpen(w)) return false;
+/** What this set counts against the window: dw-vault's window purposes only, as `admit_window`. */
+function windowSum(purposes: GrantPurposeSpec[]): number {
   let total = 0;
   for (const purpose of purposes) {
-    const value = quickValue(purpose);
-    if (value === null) return false;
-    total += value;
+    if (purpose.kind === "spend" || purpose.kind === "platformOp" || purpose.kind === "masternodeOp" || purpose.kind === "governance")
+      total += quickValue(purpose) ?? 0;
   }
-  return total <= w.spendLimitDuffs;
+  return total;
+}
+
+function windowCovers(w: World, purposes: GrantPurposeSpec[]): boolean {
+  return windowOpen(w) && (w.windowCharged ?? 0) + windowSum(purposes) <= w.spendLimitDuffs;
+}
+
+function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
+  if (credential.kind !== "unencrypted" || !w.lock.encrypted || !windowOpen(w)) return;
+  w.windowCharged = (w.windowCharged ?? 0) + windowSum(purposes);
 }
 
 /** dw-vault's credential check of `authorize`. While "Ask for my passphrase for every payment"
@@ -275,6 +283,7 @@ export function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: s
   const unbound = purposes.find((p) => (p.kind !== "changeCredential") !== (walletId !== null));
   if (unbound) throw fail("invalid_argument", `a ${unbound.kind} grant ${walletId === null ? "needs a wallet id" : "is not bound to a wallet"}`);
   checkCredential(w, credential, purposes);
+  chargeWindow(w, credential, purposes);
   const expiresAt = secs(FIXTURE_NOW) + GRANT_TTL_SECS;
   const ownKey = keyless(w);
   return purposes.map((purpose) => {
@@ -559,6 +568,7 @@ function unlock(ctx: Ctx, passphrase: string, state: "unlocked" | "unlockedMixin
   world.lock = { ...world.lock, failedAttempts: 0, retryAfterSecs: null };
   setLock(ctx, state);
   world.signingUntil = state === "unlocked" ? Date.now() + SIGNING_WINDOW_MS : null;
+  world.windowCharged = 0;
   return world.lock;
 }
 
@@ -721,6 +731,7 @@ export const HANDLERS: Handlers = {
     for (const lease of world.leases.filter(live)) setLease(ctx, { ...lease, state: { kind: "revoked", cause: "lock" }, keyExpiresInSecs: null });
     revokeGrants(world);
     world.signingUntil = null;
+    world.windowCharged = 0;
     setLock(ctx, "locked");
     const inFlight = world.leases.reduce((n, l) => n + l.inFlight, 0);
     if (inFlight > 0) emit({ kind: "lockProgress", network, progress: { kind: "draining", inFlight, deadlineInMs: 30_000 } });
@@ -812,6 +823,7 @@ export const HANDLERS: Handlers = {
     passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
     lastPassphraseAt: null,
     signingWindowOpen: windowOpen(world),
+    signingWindowRemainingDuffs: windowOpen(world) ? Math.max(0, world.spendLimitDuffs - (world.windowCharged ?? 0)) : null,
     signingWindowSecs: SIGNING_WINDOW_MS / 1000,
   }),
   set_quick_unlock_spend_limit: ({ grantId, spendLimitDuffs }, { world }) => {
@@ -827,6 +839,7 @@ export const HANDLERS: Handlers = {
       passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
       lastPassphraseAt: null,
       signingWindowOpen: windowOpen(world),
+      signingWindowRemainingDuffs: windowOpen(world) ? Math.max(0, spendLimitDuffs - (world.windowCharged ?? 0)) : null,
       signingWindowSecs: SIGNING_WINDOW_MS / 1000,
     };
   },

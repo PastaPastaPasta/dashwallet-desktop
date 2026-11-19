@@ -88,6 +88,10 @@ pub struct AppState {
     pub(crate) send_bind_seam: StdMutex<Option<Arc<Seam>>>,
     #[cfg(test)]
     pub(crate) send_grant_issued: StdMutex<Option<String>>,
+    /// Test seam: a payment `authorize` runs it on the vault after the
+    /// payment check and before the grant is issued.
+    #[cfg(test)]
+    pub(crate) before_payment_issue: StdMutex<Option<Box<dyn FnOnce(&dw_vault::Vault) + Send>>>,
     /// Test seam: the endpoints `switch_network` and `open_network(null)`
     /// open the window network with, instead of the launch's (tests reach
     /// no public DAPI or quorum service).
@@ -289,6 +293,8 @@ impl AppState {
             send_bind_seam: StdMutex::default(),
             #[cfg(test)]
             send_grant_issued: StdMutex::default(),
+            #[cfg(test)]
+            before_payment_issue: StdMutex::default(),
             #[cfg(test)]
             test_endpoints: StdMutex::default(),
             #[cfg(test)]

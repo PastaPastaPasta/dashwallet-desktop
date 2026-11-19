@@ -25,9 +25,10 @@ export const SecurityText = {
   quickUnlockWhy: "Touch ID and Windows Hello are coming soon.",
   requireAuthentication: "Ask for my passphrase for every payment",
   requireAuthenticationHint: "Every payment asks for the passphrase, even just after you unlock.",
-  signingWindowHint: "For 5 minutes after you unlock, a payment at or under the limit does not ask again. A larger one still asks. Locking, sleep and quitting end it.",
+  signingWindowHint:
+    "For 5 minutes after you unlock, payments can add up to the spending limit without asking again. A total over the limit still asks. Locking, sleep and quitting end it.",
   spendLimit: "Spending limit",
-  spendLimitHint: "Payments over this ask for the passphrase. The same limit applies to Touch ID when it is available.",
+  spendLimitHint: "The total payments can add up to during those 5 minutes. The same limit applies to Touch ID when it is available.",
   encryptFirst: "Encrypt the wallet first.",
   autohideBalance: "Hide balances when the app starts",
   lockedAutomatically: "Locked automatically.",
@@ -52,6 +53,11 @@ export const SecurityText = {
   wipeStopped: (name: string, why: string, removed: number) =>
     `${name} could not be removed: ${why} ${removed === 0 ? "Nothing was deleted." : `${removed === 1 ? "The wallet" : `The ${removed} wallets`} before it ${removed === 1 ? "was" : "were"} removed; the others and the vault were kept.`}`,
 };
+
+/** The label Settings shows for a spend-limit value, in duffs. */
+export function spendLimitLabel(duffs: number): string {
+  return SPEND_LIMITS.find((c) => c.duffs === duffs)?.label ?? `${duffs} duffs`;
+}
 
 /** The iOS spending-limit options, in duffs. The signing window and quick unlock share them. */
 export const SPEND_LIMITS: { duffs: number; label: string }[] = [

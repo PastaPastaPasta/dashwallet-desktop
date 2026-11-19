@@ -13,7 +13,7 @@ import { Sheet } from "../../components/sheet";
 import { showToast } from "../../components/toast";
 import { useModel } from "../../onboarding/model";
 import { PassphraseText } from "../../onboarding/passphrase";
-import { AUTO_LOCK_CHOICES, ChangePassphraseModel, EncryptModel, PaymentAuthModel, SPEND_LIMITS, SecurityText, SpendLimitModel, WipeModel } from "../../settings/security";
+import { AUTO_LOCK_CHOICES, ChangePassphraseModel, EncryptModel, PaymentAuthModel, SPEND_LIMITS, SecurityText, SpendLimitModel, WipeModel, spendLimitLabel } from "../../settings/security";
 import { useLockTimer } from "../LockScreen";
 import { useSavePrefs } from "./General";
 import { Done, Hint, NotYetRow, Problem, SettingsCard } from "./parts";
@@ -195,7 +195,7 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
           <p className="sheet-text">
             {model.pending
               ? "Turn on: every payment asks for the passphrase."
-              : "Turn off: for 5 minutes after you unlock, a payment at or under the limit does not ask again."}
+              : "Turn off: for 5 minutes after you unlock, payments can add up to the spending limit without asking again. A total over the limit still asks."}
           </p>
           <PassphrasePrompt
             testId="settings-payment-auth-passphrase"
@@ -209,7 +209,10 @@ function PaymentAuthCard({ encrypted, known }: { encrypted: boolean; known: bool
       )}
       {limit.pending !== null && (
         <Sheet title={SecurityText.spendLimit} width="small" testId="settings-spend-limit-sheet" closable={!limit.busy} onClose={() => limit.cancel()}>
-          <p className="sheet-text">Payments over this ask for the passphrase during the 5 minutes after you unlock.</p>
+          <p className="sheet-text" data-testid="settings-spend-limit-pending">
+            Change the limit from {spendLimitLabel(limit.limit ?? 0)} to {spendLimitLabel(limit.pending)}. Payments during the 5 minutes after you unlock can add up to{" "}
+            {spendLimitLabel(limit.pending)}. A total over that still asks for the passphrase.
+          </p>
           <PassphrasePrompt
             testId="settings-spend-limit-passphrase"
             error={limit.lock.message ?? limit.error}

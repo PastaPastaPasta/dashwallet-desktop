@@ -105,6 +105,10 @@ impl Demo {
         e
     }
 
+    pub(crate) fn handle(&self) -> &tauri::AppHandle<MockRuntime> {
+        self.app.handle()
+    }
+
     /// Opens the launch network (regtest) offline.
     pub(crate) fn open(&self) -> Value {
         self.ok("open_network", json!({ "settings": offline_settings() }))
@@ -695,6 +699,124 @@ fn payment_authentication_is_enforced_over_ipc() {
         authorize(&spend, &wallet, &none),
         "vault.locked",
     );
+}
+
+/// A vault that stored no row (the old "ask every time" default) still asks
+/// after the window exists. `"0"` was an explicit choice to stop asking, and
+/// now means the window. Anything else asks. A vault this build creates
+/// writes the window, so only that one starts without asking.
+#[test]
+fn an_absent_payment_auth_row_keeps_asking_after_upgrade() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let spend = json!({
+        "purpose": { "kind": "spend", "maxDuffs": 1000 },
+        "walletId": wallet,
+        "credential": { "kind": "unencrypted" },
+    });
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    demo.ok("authorize", spend.clone());
+
+    let session =
+        tauri::async_runtime::block_on(demo.app.state::<crate::state::AppState>().session())
+            .unwrap();
+    let write = |value: Option<&str>| {
+        tauri::async_runtime::block_on(
+            session.set_payment_auth_row_for_test(value.map(str::to_owned)),
+        )
+        .unwrap();
+    };
+
+    write(None);
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    demo.err("authorize", spend.clone(), "vault.credential_required");
+
+    write(Some("0"));
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    demo.ok("authorize", spend.clone());
+
+    write(Some("garbage"));
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    demo.err("authorize", spend.clone(), "vault.credential_required");
+
+    write(Some("1"));
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    write(Some("strict"));
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    write(Some("window"));
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    demo.ok("authorize", spend);
+}
+
+/// logind's PrepareForSleep(true) ends the window and leaves the vault
+/// unlocked. false does not. A passphrase unlock is what opens it again.
+#[test]
+fn prepare_for_sleep_ends_the_signing_window() {
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let spend = json!({
+        "purpose": { "kind": "spend", "maxDuffs": 1000 },
+        "walletId": wallet,
+        "credential": { "kind": "unencrypted" },
+    });
+    demo.ok("authorize", spend.clone());
+    crate::shell::sleep::apply_prepare_for_sleep(false, demo.handle());
+    demo.ok("authorize", spend.clone());
+    crate::shell::sleep::apply_prepare_for_sleep(true, demo.handle());
+    assert_eq!(demo.ok("lock_status", json!({}))["state"], "unlocked");
+    demo.err("authorize", spend.clone(), "vault.credential_required");
+    demo.ok("unlock", json!({ "passphrase": "pw" }));
+    demo.ok("authorize", spend);
+}
+
+/// "Ask every payment" on: a no-credential payment that passed the check
+/// while the vault was locked, then met an unlock before its grant was
+/// issued, is refused. The unlock opened the signing window, but the
+/// window does not stand in for the setting.
+#[test]
+fn an_unlock_between_check_and_issue_does_not_bypass_ask_every_payment() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    let grant = demo.ok(
+        "authorize",
+        json!({
+            "purpose": { "kind": "changeCredential" },
+            "walletId": null,
+            "credential": { "kind": "passphrase", "passphrase": "pw" },
+        }),
+    )["id"]
+        .clone();
+    demo.ok(
+        "set_payment_authentication",
+        json!({ "on": true, "grantId": grant }),
+    );
+    demo.ok("lock", json!({}));
+    *demo
+        .app
+        .state::<crate::state::AppState>()
+        .before_payment_issue
+        .lock()
+        .unwrap() = Some(Box::new(|v: &dw_vault::Vault| {
+        v.unlock(b"pw", dw_vault::UnlockScope::Full).unwrap();
+    }));
+    demo.err(
+        "authorize",
+        json!({
+            "purpose": { "kind": "spend", "maxDuffs": 1000 },
+            "walletId": wallet,
+            "credential": { "kind": "unencrypted" },
+        }),
+        "vault.credential_required",
+    );
+    assert_eq!(demo.ok("lock_status", json!({}))["state"], "unlocked");
 }
 
 /// `authorize_platform_send` sizes the grant from the engine's quote: an

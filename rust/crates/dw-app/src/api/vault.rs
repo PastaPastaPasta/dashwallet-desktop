@@ -38,7 +38,23 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "Vault::signing_window_covers",
-        "internal: the payment-authentication check uses it when issuing a grant",
+        "internal: `authorize_set` decides the window under the same lock as the grant insert",
+    ),
+    (
+        "Vault::signing_window_remaining",
+        "internal: `quick_unlock_policy` reports the duff still left in the window",
+    ),
+    (
+        "Vault::window_lease_allowed",
+        "internal: the engine's lease checks a composed set of window grants against the sealed limit",
+    ),
+    (
+        "NetworkSession::adopt_signing_window_default",
+        "internal: `create_vault` and `recover_with_mnemonic` store the signing window for the new vault they made",
+    ),
+    (
+        "NetworkSession::set_payment_auth_row_for_test",
+        "test-only (`test-support`): writes a legacy payment-auth row to prove an upgrade still asks",
     ),
     (
         "Vault::end_signing_window",
@@ -440,59 +456,43 @@ impl From<CredentialSpec> for OwnedCredential {
 /// While it is on, an unlocked encrypted vault issues `spend`,
 /// `platformOp`, `masternodeOp` and `governance` grants only against the
 /// passphrase or the quick-unlock key, never `unencrypted` (MG-05 D11).
-/// While it is off (the default), `unencrypted` is accepted for those
-/// purposes only when the vault's signing window covers them: still inside
-/// five minutes of a passphrase unlock, and at or under the quick-unlock
-/// spend limit, counting the same value quick unlock counts. A purpose
-/// quick unlock never issues (reveal, wipe, a credential change) is not
-/// covered. The vault itself takes `Credential::None` for a payment once
-/// unlocked; this is the extra gate. A locked vault refuses it itself
-/// (`vault.locked`). A mixing-only vault is left to the vault
+/// While it is off, `unencrypted` reaches the vault, which accepts those
+/// purposes only inside the signing window and only until the sealed spend
+/// limit for the whole window is used up. The check and the grant insert
+/// happen under one lock. A purpose the window never issues (reveal, wipe,
+/// a credential change) is refused by the vault. A locked vault refuses it
+/// itself (`vault.locked`). A mixing-only vault is left to the vault
 /// (`vault.mixing_only`) when the setting is off, and is
-/// `vault.credential_required` when it is on, as before.
+/// `vault.credential_required` when it is on. A vault with no stored choice
+/// is on; a vault this build creates stores the window.
 fn check_payment_auth(
     vault: &dw_vault::Vault,
     credential: &OwnedCredential,
     required: bool,
-    purposes: &[GrantPurpose],
 ) -> Result<(), dw_vault::VaultError> {
     let status = vault.status();
-    let asking = matches!(credential, OwnedCredential::None)
+    if required
+        && matches!(credential, OwnedCredential::None)
         && status.encrypted
-        && status.state != dw_vault::LockState::Locked;
-    if !asking {
-        return Ok(());
+        && status.state != dw_vault::LockState::Locked
+    {
+        return Err(dw_vault::VaultError::CredentialRequired);
     }
-    if status.state != dw_vault::LockState::Unlocked {
-        if required {
-            return Err(dw_vault::VaultError::CredentialRequired);
-        }
-        return Ok(());
-    }
-    if required || !pays(purposes) {
-        return if required {
-            Err(dw_vault::VaultError::CredentialRequired)
-        } else {
-            // Not a payment: the vault's own rule. Reveal, wipe and a
-            // credential change still need the passphrase there.
-            Ok(())
-        };
-    }
-    if vault.signing_window_covers(purposes) {
-        return Ok(());
-    }
-    Err(dw_vault::VaultError::CredentialRequired)
+    Ok(())
 }
 
 /// Issues grants through `issue` under "require authentication for every
 /// payment" (D11). The setting and its generation are read together under
 /// [`PaymentPolicy::gate`](crate::state::PaymentPolicy); once the grants
-/// exist the generation is compared again. If it moved (the setter
-/// advances it before it writes, under the same gate) or the vault is no
-/// longer the one the setting was read for, the stricter rule decides, and
-/// a refusal revokes what was issued before the call fails (Sol r2/r3
-/// F1b). So a grant issued once "on" is readable was not judged under
-/// "off"; one issued before the change keeps its 120 s, as D11 says.
+/// exist the setting is checked again against the vault as it is now. If
+/// it is on, or it moved (the setter advances the generation before it
+/// writes, under the same gate), or the vault is no longer the one the
+/// setting was read for, the stricter rule decides, and a refusal revokes
+/// what was issued before the call fails (Sol r2/r3 F1b). So a grant
+/// issued once "on" is readable was not judged under "off", and an unlock
+/// between the first check and the issue does not let the signing window
+/// stand in for "on". One issued before the change keeps its 120 s, as D11
+/// says.
 async fn issue_grants(
     state: &AppState,
     session: Arc<NetworkSession>,
@@ -516,20 +516,21 @@ async fn issue_grants(
     if policy.is_some() {
         crate::state::Seam::pass_slot(&state.payment_seam).await;
     }
-    let purposes = purposes.to_vec();
+    #[cfg(test)]
+    let before_issue = state.before_payment_issue.lock().unwrap().take();
     let grants = session
         .vault_op(move |v| {
-            check_payment_auth(
-                v,
-                &credential,
-                policy.as_ref().is_some_and(|p| p.on),
-                &purposes,
-            )?;
+            check_payment_auth(v, &credential, policy.as_ref().is_some_and(|p| p.on))?;
+            #[cfg(test)]
+            if let Some(hook) = before_issue {
+                hook(v);
+            }
             let grants = issue(v, credential.as_credential())?;
             if let Some(policy) = &policy
-                && (payment_policy.generation.load(Ordering::SeqCst) != read_at
+                && (policy.on
+                    || payment_policy.generation.load(Ordering::SeqCst) != read_at
                     || v.vault_id() != policy.vault_id)
-                && let Err(e) = check_payment_auth(v, &credential, true, &purposes)
+                && let Err(e) = check_payment_auth(v, &credential, true)
             {
                 for grant in &grants {
                     v.revoke_grant(&grant.id);
@@ -655,9 +656,12 @@ pub struct QuickUnlockPolicy {
     pub passphrase_max_age_secs: u64,
     /// UNIX seconds of the last successful passphrase entry.
     pub last_passphrase_at: Option<u64>,
-    /// A passphrase unlock in this process still covers a payment at or
-    /// under `spendLimitDuffs`.
+    /// A passphrase unlock in this process still covers payments, up to
+    /// `spendLimitDuffs` in total for the window.
     pub signing_window_open: bool,
+    /// Duff still authorizable from the open window. Absent when it is
+    /// closed or the sealed policy does not authenticate.
+    pub signing_window_remaining_duffs: Option<u64>,
     /// How long that window lasts, in seconds.
     pub signing_window_secs: u64,
 }
@@ -671,6 +675,7 @@ impl QuickUnlockPolicy {
             passphrase_max_age_secs: p.passphrase_max_age_secs,
             last_passphrase_at: p.last_passphrase_at,
             signing_window_open: vault.signing_window_open(),
+            signing_window_remaining_duffs: vault.signing_window_remaining(),
             signing_window_secs: dw_vault::SIGNING_WINDOW_SECS,
         }
     }
@@ -858,6 +863,7 @@ commands! {
         let status = session
             .vault_op(move |v| v.create(passphrase.as_ref().map(|p| &p[..])))
             .await?;
+        session.adopt_signing_window_default().await?;
         Ok(status.into())
     }
 
@@ -1129,6 +1135,7 @@ commands! {
                 v.recover_with_mnemonic(&id.0, &mnemonic, &bip39_passphrase, &new_passphrase)
             })
             .await?;
+        session.adopt_signing_window_default().await?;
         Ok(VaultRecovery {
             status: session.vault().status().into(),
             wallets_without_secrets: lost.iter().map(hex::encode).collect(),

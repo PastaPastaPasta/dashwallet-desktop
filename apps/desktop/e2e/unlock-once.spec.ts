@@ -31,11 +31,16 @@ async function review(page: Page, amount: string) {
 
 test("a second send inside the window does not ask, and one over the limit does", async ({ page }) => {
   const errors = await open(page);
-  await review(page, "0.1");
+  await review(page, "0.3");
   await expect(page.getByTestId("pay-confirm-passphrase")).toHaveCount(0);
   await page.getByTestId("pay-confirm-send").click();
   await expect(page.getByTestId("pay-result-sent")).toBeVisible();
   await page.getByTestId("pay-result-close").click();
+
+  // The limit is a total for the window: a second 0.3 would add up past 0.5.
+  await review(page, "0.3");
+  await expect(page.getByTestId("pay-confirm-passphrase")).toBeVisible();
+  await page.getByTestId("pay-confirm-cancel").click();
 
   await review(page, "0.1");
   await expect(page.getByTestId("pay-confirm-passphrase")).toHaveCount(0);

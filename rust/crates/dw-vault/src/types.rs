@@ -2,7 +2,7 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use zeroize::Zeroizing;
 
@@ -499,6 +499,13 @@ impl std::fmt::Debug for RevealedMnemonic {
 /// tested without sleeping.
 pub trait Clock: Send + Sync {
     fn now_secs(&self) -> u64;
+
+    /// Monotonic instant for deadlines that a wall-clock change must not move.
+    /// The default is the process clock. A test clock overrides it so a test
+    /// can expire a window without sleeping.
+    fn monotonic(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 /// [`Clock`] backed by `SystemTime`.
