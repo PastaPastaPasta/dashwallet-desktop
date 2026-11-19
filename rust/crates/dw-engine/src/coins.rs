@@ -84,9 +84,6 @@ use crate::{EngineError, NetworkSession, WalletId};
 pub const DUST_PROTECTION_KEY: &str = "dust_protection_threshold";
 /// dash-qt's range for the threshold (QT-075).
 pub const DUST_PROTECTION_MAX: u64 = 1_000_000;
-/// CoinJoin denominations in duffs (Dash Core `CoinJoin::GetStandardDenominations`).
-pub const COINJOIN_DENOMINATIONS: [u64; 5] =
-    [1_000_010_000, 100_001_000, 10_000_100, 1_000_010, 100_001];
 
 /// Wall clock in UNIX seconds.
 pub(crate) fn now_secs() -> u64 {
@@ -180,6 +177,9 @@ pub(crate) struct WalletCoin {
     /// receiving), as opposed to CoinJoin.
     pub send_account: bool,
     pub coinjoin_account: bool,
+    /// A denomination on the CoinJoin account or a BIP44 receive or change
+    /// address: Dash Core would count it as mixed or still mixing.
+    pub counted_denomination: bool,
     /// On an internal (change) chain.
     pub is_change: bool,
     pub block_time: Option<u64>,
@@ -212,9 +212,14 @@ impl WalletCoin {
         self.utxo.is_confirmed || self.utxo.is_instantlocked || self.utxo.is_trusted
     }
 
-    /// Eligible for automatic coin selection.
+    /// Eligible for automatic ordinary selection. A denomination is not:
+    /// Pay, a move to Shielded and an asset-lock funding leave it alone.
     pub(crate) fn auto_selectable(&self, height: u32) -> bool {
-        self.utxo.is_spendable(height) && self.trusted() && !self.user_locked && !self.reserved
+        self.utxo.is_spendable(height)
+            && self.trusted()
+            && !self.user_locked
+            && !self.reserved
+            && !self.counted_denomination
     }
 
     /// Eligible when picked by hand (coin control may spend untrusted
@@ -228,10 +233,6 @@ impl WalletCoin {
     /// reservation does not hold it back.
     pub(crate) fn self_spend_selectable(&self, height: u32) -> bool {
         self.utxo.is_spendable(height) && !self.user_locked && (!self.reserved || self.lock_input)
-    }
-
-    fn denominated(&self) -> bool {
-        self.coinjoin_account && COINJOIN_DENOMINATIONS.contains(&self.utxo.value())
     }
 }
 
@@ -279,7 +280,10 @@ impl CoinSnapshot {
     /// funding under this read's fence may spend.
     pub(crate) fn free_outpoints(&self) -> HashSet<OutPoint> {
         (self.coins.iter())
-            .filter(|c| !(c.reserved || c.user_locked || c.dust_locked || c.unresolved_lock))
+            .filter(|c| {
+                !(c.reserved || c.user_locked || c.dust_locked || c.unresolved_lock)
+                    && !(c.send_account && c.counted_denomination)
+            })
             .map(|c| c.utxo.outpoint)
             .collect()
     }
@@ -320,17 +324,57 @@ impl CoinSnapshot {
     }
 }
 
+type ManagerArc = Arc<
+    tokio::sync::RwLock<
+        platform_wallet::key_wallet_manager::WalletManager<platform_wallet::PlatformWalletInfo>,
+    >,
+>;
+
+struct TempUtxoLocks {
+    wm: ManagerArc,
+    wallet_id: [u8; 32],
+    outpoints: Vec<OutPoint>,
+    rt: tokio::runtime::Handle,
+}
+
+fn unlock_temp_utxos(
+    wm: &mut platform_wallet::key_wallet_manager::WalletManager<
+        platform_wallet::PlatformWalletInfo,
+    >,
+    wallet_id: &[u8; 32],
+    outpoints: &[OutPoint],
+) {
+    let Some(info) = wm.get_wallet_info_mut(wallet_id) else {
+        return;
+    };
+    let mut changed = false;
+    for account in funding_accounts_mut(&mut info.core_wallet.accounts) {
+        for op in outpoints {
+            if let Some(utxo) = account.utxos.get_mut(op)
+                && utxo.is_locked
+            {
+                utxo.unlock();
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        info.core_wallet.update_balance();
+    }
+}
+
 /// Proof that the caller holds a wallet's coin fence (module doc): no
 /// coin lock, dust lock, reservation or other build of the wallet changes
 /// what may be spent until it is dropped. Taken with
 /// [`NetworkSession::coin_fence`].
 pub struct CoinFence {
     wallet: WalletId,
-    _guard: tokio::sync::OwnedMutexGuard<()>,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
     /// The coins the last read under this fence found free
     /// ([`CoinSnapshot::free_outpoints`]): a library funding that keeps the
     /// fence signs no other ([`crate::platform::signers::CountingFundingSigner`]).
     checked: std::sync::Mutex<Option<Arc<HashSet<OutPoint>>>>,
+    temp_locks: std::sync::Mutex<Option<TempUtxoLocks>>,
 }
 
 impl CoinFence {
@@ -348,6 +392,32 @@ impl CoinFence {
 
     fn record_checked(&self, free: HashSet<OutPoint>) {
         *self.checked.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(free));
+    }
+
+    fn set_temp_locks(&self, locks: TempUtxoLocks) {
+        *self.temp_locks.lock().unwrap_or_else(|p| p.into_inner()) = Some(locks);
+    }
+}
+
+impl Drop for CoinFence {
+    fn drop(&mut self) {
+        let locks = self
+            .temp_locks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        let Some(locks) = locks else { return };
+        if let Ok(mut wm) = locks.wm.try_write() {
+            unlock_temp_utxos(&mut wm, &locks.wallet_id, &locks.outpoints);
+        } else {
+            let guard = self.guard.take();
+            locks.rt.spawn(async move {
+                let mut wm = locks.wm.write().await;
+                unlock_temp_utxos(&mut wm, &locks.wallet_id, &locks.outpoints);
+                drop(wm);
+                drop(guard);
+            });
+        }
     }
 }
 
@@ -453,8 +523,9 @@ impl CoinFences {
         let fence = Arc::clone(self.map().entry(wallet).or_default());
         CoinFence {
             wallet,
-            _guard: fence.lock_owned().await,
+            guard: Some(fence.lock_owned().await),
             checked: std::sync::Mutex::new(None),
+            temp_locks: std::sync::Mutex::new(None),
         }
     }
 
@@ -463,8 +534,9 @@ impl CoinFences {
         let fence = Arc::clone(self.map().entry(wallet).or_default());
         Some(CoinFence {
             wallet,
-            _guard: fence.try_lock_owned().ok()?,
+            guard: Some(fence.try_lock_owned().ok()?),
             checked: std::sync::Mutex::new(None),
+            temp_locks: std::sync::Mutex::new(None),
         })
     }
 
@@ -594,18 +666,25 @@ fn collect(
     account: &ManagedCoreFundsAccount,
     send_account: bool,
     coinjoin_account: bool,
+    network: key_wallet::Network,
 ) {
     for utxo in account.utxos.values() {
         let txid = utxo.outpoint.txid;
         let record = account.transactions().get(&txid);
-        let is_change = !coinjoin_account
-            && account
-                .get_address_info(&utxo.address)
-                .is_some_and(|info| is_internal_path(&info.path));
+        let path = account
+            .get_address_info(&utxo.address)
+            .map(|info| info.path);
+        let is_change = !coinjoin_account && path.as_ref().is_some_and(is_internal_path);
+        let counted_denomination = dw_coinjoin::denoms::is_denominated(utxo.value())
+            && (coinjoin_account
+                || path
+                    .as_ref()
+                    .is_some_and(|p| dw_vault::is_bip44_address(p, network)));
         coins.push(WalletCoin {
             utxo: utxo.clone(),
             send_account,
             coinjoin_account,
+            counted_denomination,
             is_change,
             block_time: record
                 .and_then(|r| r.context.block_info())
@@ -655,15 +734,26 @@ fn funding_accounts(
         .chain(accounts.dashpay_receival_accounts.values())
 }
 
+fn funding_accounts_mut(
+    accounts: &mut ManagedAccountCollection,
+) -> impl Iterator<Item = &mut ManagedCoreFundsAccount> {
+    accounts
+        .standard_bip44_accounts
+        .values_mut()
+        .chain(accounts.standard_bip32_accounts.values_mut())
+        .chain(accounts.dashpay_receival_accounts.values_mut())
+}
+
 /// Reads every funds account of `info` (key-wallet state only).
 pub(crate) fn read_coins(info: &ManagedWalletInfo) -> CoinSnapshot {
     let accounts = &info.accounts;
     let mut coins = Vec::new();
+    let network = info.network();
     for a in funding_accounts(accounts) {
-        collect(&mut coins, a, true, false);
+        collect(&mut coins, a, true, false, network);
     }
     for a in accounts.coinjoin_accounts.values() {
-        collect(&mut coins, a, false, true);
+        collect(&mut coins, a, false, true, network);
     }
     CoinSnapshot {
         height: info.last_processed_height(),
@@ -784,6 +874,49 @@ impl NetworkSession {
     ) -> Result<CoinSnapshot, EngineError> {
         let wallet = self.wallet(&fence.wallet).await?;
         self.coin_snapshot(fence, &wallet).await
+    }
+
+    pub(crate) async fn exclude_denominations_under_fence(
+        &self,
+        fence: &CoinFence,
+        snapshot: &CoinSnapshot,
+    ) -> Result<(), EngineError> {
+        let denoms: Vec<OutPoint> = snapshot
+            .coins
+            .iter()
+            .filter(|c| c.send_account && c.counted_denomination)
+            .map(|c| c.utxo.outpoint)
+            .collect();
+        if denoms.is_empty() {
+            return Ok(());
+        }
+        let wm = self.manager()?.wallet_manager_arc();
+        let mut locked = Vec::new();
+        {
+            let mut guard = wm.write().await;
+            let info = guard
+                .get_wallet_info_mut(&fence.wallet.0)
+                .ok_or_else(|| EngineError::WalletNotFound(fence.wallet.to_string()))?;
+            for account in funding_accounts_mut(&mut info.core_wallet.accounts) {
+                for op in &denoms {
+                    if let Some(utxo) = account.utxos.get_mut(op)
+                        && !utxo.is_locked
+                    {
+                        utxo.lock();
+                        locked.push(*op);
+                    }
+                }
+            }
+        }
+        if !locked.is_empty() {
+            fence.set_temp_locks(TempUtxoLocks {
+                wm,
+                wallet_id: fence.wallet.0,
+                outpoints: locked,
+                rt: self.rt.clone(),
+            });
+        }
+        Ok(())
     }
 
     /// The fenced wallet's coins with user/dust locks and reservations
@@ -958,7 +1091,7 @@ impl NetworkSession {
                         reserved: c.reserved,
                         is_change: c.is_change,
                         is_coinbase: u.is_coinbase,
-                        coinjoin_denominated: c.denominated(),
+                        coinjoin_denominated: m.denominated(),
                         coinjoin_rounds: (m.denominated() && m.rounds >= 0)
                             .then_some(m.rounds as u32),
                         spendable: has_keys && c.chosen_selectable(height),
@@ -1183,6 +1316,7 @@ mod tests {
             utxo,
             send_account,
             coinjoin_account: !send_account,
+            counted_denomination: false,
             is_change: false,
             block_time: None,
             chain_locked: false,

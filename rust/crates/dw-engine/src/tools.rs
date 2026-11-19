@@ -450,15 +450,22 @@ impl NetworkSession {
             info.core_wallet.update_synced_height(checkpoint);
             tracing::info!(wallet = %wallet, checkpoint, target, "rewound the filter checkpoint for a replay");
         }
-        self.hub.update_wallet_state(wallet, |s| {
+        let flipped = self.hub.update_wallet_state(wallet, |s| {
             s.scan_target = match how {
                 Rewind::Resume { .. } => target,
                 Rewind::Now | Rewind::Ahead => s.scan_target.max(target),
             };
-            if lower {
-                s.note_rewind(checkpoint);
+            if !lower {
+                return false;
             }
+            s.note_rewind(checkpoint);
+            let catching_up = s.catching_up();
+            s.synced_height = checkpoint;
+            catching_up != s.catching_up()
         });
+        if flipped {
+            self.hub.pump.mark_balances(wallet);
+        }
         Ok(Some(target))
     }
 

@@ -78,6 +78,7 @@ export class IpcBackend implements Backend {
   dispatchStatus = cmd.dispatchStatus;
   balance = (walletId: string) => cmd.balance(walletId);
   syncStatus = () => cmd.syncStatus();
+  walletScanHeight = (walletId: string) => cmd.walletScanHeight(walletId);
   historyPage = cmd.historyPage;
   exportHistoryCsv = cmd.exportHistoryCsv;
   txNotices = cmd.txNotices;
@@ -115,6 +116,8 @@ export class IpcBackend implements Backend {
   abandonTransaction = cmd.abandonTransaction;
   resendTransaction = cmd.resendTransaction;
   openTxInExplorer = cmd.openTxInExplorer;
+  openReleasesPage = () => cmd.openReleasesPage();
+  protocolCompatibility = () => cmd.protocolCompatibility();
   currentReceiveAddress = cmd.currentReceiveAddress;
   nextReceiveAddress = cmd.nextReceiveAddress;
   createReceiveRequest = cmd.createReceiveRequest;

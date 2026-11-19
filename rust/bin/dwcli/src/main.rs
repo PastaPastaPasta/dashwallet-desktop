@@ -4,6 +4,7 @@
 mod coinjoin;
 mod compat;
 mod dashpay;
+mod gov;
 mod governance;
 mod log;
 mod masternodes;
@@ -177,8 +178,8 @@ enum Command {
         #[arg(long)]
         bip39_passphrase_file: Option<PathBuf>,
     },
-    /// List wallets with names and balances (duffs; `unknown` before the
-    /// first scan).
+    /// List wallets with names and balances (duffs; `catching_up=true` until
+    /// the scan reaches the birth block, `unknown` before the wallet is read).
     List,
     /// The network the desktop app opens (release 0.1), kept in the data
     /// root's `network.json`; `set` takes effect at the app's next start.
@@ -233,6 +234,8 @@ enum Command {
     DashPay(dashpay::DashPayCommand),
     /// Masternodes (MG-03): one JSON line per command.
     Mn(masternodes::MnArgs),
+    /// Governance (MG-08): one JSON line per command.
+    Gov(gov::GovArgs),
     /// MG-02: turn governance sync on, wait until it is synced, print the
     /// state, info, proposals and votes as JSON lines; optionally relay a
     /// vote and run console lines.
@@ -343,8 +346,14 @@ fn print_wallets(session: &Arc<NetworkSession>) -> Result<(), EngineError> {
     for w in session.wallet_infos()? {
         let balances = match w.balances {
             Some(b) => format!(
-                "confirmed={} unconfirmed={} immature={} locked={} total={} coinjoin={}",
-                b.confirmed, b.unconfirmed, b.immature, b.locked, b.total, b.coinjoin
+                "confirmed={} unconfirmed={} immature={} locked={} total={} coinjoin={} catching_up={}",
+                b.confirmed,
+                b.unconfirmed,
+                b.immature,
+                b.locked,
+                b.total,
+                b.coinjoin,
+                b.catching_up
             ),
             None => "balance=unknown".to_string(),
         };
@@ -490,6 +499,9 @@ fn open_failure(e: &EngineError, opts: &SessionOptions) -> &'static str {
         EngineError::InvalidConfig(m) if m.starts_with("initial protocol version") => {
             "unknown --initial-protocol-version"
         }
+        EngineError::InvalidArgument(m) if m.contains("collateral RPC") => {
+            "invalid --collateral-rpc value"
+        }
         EngineError::InvalidArgument(m) | EngineError::InvalidConfig(m) if m.contains("DAPI") => {
             "invalid or missing --dapi value"
         }
@@ -531,7 +543,7 @@ fn run(cli: Cli) -> Result<(), RunError> {
         },
         Arc::new(StderrSink {
             verbose: cli.verbose_events,
-            kind_only: matches!(cli.command, Command::Mn(_)),
+            kind_only: matches!(cli.command, Command::Mn(_) | Command::Gov(_)),
             new_tx: matches!(
                 cli.command,
                 Command::Tools(tools::ToolsCommand::WatchEvents { .. })
@@ -712,26 +724,16 @@ fn run_command(
             return finish(engine, &session, passphrase, result);
         }
         Command::Mn(args) => {
-            // Unlocks itself, so a failed unlock is a JSON error too, and
-            // prints its line once SPV is stopped and the engine shut down:
-            // a teardown that fails makes it an error line (MG-03 D32). A
-            // panic on this thread is answered too, and the engine still
-            // ends through `teardown`.
             let started_spv = args.starts_spv();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                masternodes::run(&engine, &session, passphrase.as_ref(), args)
-            }))
-            .unwrap_or_else(|_| Err(masternodes::panicked()));
-            let stopped = !started_spv || teardown::stop_spv(&session, false).is_ok();
-            return match teardown::shut_down(engine, &session, dashpay::probe_fault()) {
-                Ok(done) => {
-                    drop(passphrase);
-                    masternodes::report(result, stopped && done.is_ok())
-                }
-                Err(why) => abandon(passphrase, &why, || {
-                    let _ = masternodes::report(result, false);
-                }),
-            };
+            return finish_json(engine, &session, passphrase, started_spv, |e, p| {
+                masternodes::run(e, &session, p, args)
+            });
+        }
+        Command::Gov(args) => {
+            let started_spv = args.starts_spv();
+            return finish_json(engine, &session, passphrase, started_spv, |e, p| {
+                gov::run(e, &session, p, args)
+            });
         }
         Command::DashPay(cmd) => {
             // Unlocks itself, so a failed unlock is a JSON error too, and
@@ -759,6 +761,34 @@ fn run_command(
         passphrase,
         result.map_err(|e| e.to_string()),
     )
+}
+
+/// Runs an `mn` or `gov` command (which unlocks itself), stops SPV, shuts
+/// the engine down and prints the single JSON line (MG-03 D32).
+fn finish_json(
+    engine: Engine,
+    session: &Arc<NetworkSession>,
+    passphrase: Option<Zeroizing<Vec<u8>>>,
+    started_spv: bool,
+    f: impl FnOnce(
+        &Engine,
+        Option<&Zeroizing<Vec<u8>>>,
+    ) -> Result<serde_json::Value, masternodes::Failure>,
+) -> Result<(), String> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        f(&engine, passphrase.as_ref())
+    }))
+    .unwrap_or_else(|_| Err(masternodes::panicked()));
+    let stopped = !started_spv || teardown::stop_spv(session, false).is_ok();
+    match teardown::shut_down(engine, session, dashpay::probe_fault()) {
+        Ok(done) => {
+            drop(passphrase);
+            masternodes::report(result, stopped && done.is_ok())
+        }
+        Err(why) => abandon(passphrase, &why, || {
+            let _ = masternodes::report(result, false);
+        }),
+    }
 }
 
 /// Shuts the engine down after a command ([`teardown::shut_down`]): the
@@ -820,13 +850,14 @@ fn cli_main() -> ExitCode {
         Err(e) => return parse_failure(&e),
     };
     // `DWCLI_LOG=info,dash_spv=debug` (EnvFilter syntax) logs to stderr.
-    log::init(&cli, matches!(cli.command, Command::Mn(_)));
+    let json_cli = matches!(cli.command, Command::Mn(_) | Command::Gov(_));
+    log::init(&cli, json_cli);
     if let Command::Network { cmd } = &cli.command {
         return network_cmd(&cli.datadir, cmd);
     }
-    // `mn` commands print one JSON line whatever happens (MG-03 D26), and a
-    // panic's payload never reaches stderr.
-    if matches!(cli.command, Command::Mn(_)) {
+    // `mn` and `gov` commands print one JSON line whatever happens (MG-03
+    // D26), and a panic's payload never reaches stderr.
+    if json_cli {
         dashpay::quiet_panics();
         return match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(cli))) {
             Ok(Ok(())) => ExitCode::SUCCESS,
@@ -882,12 +913,12 @@ fn parse_failure(e: &clap::Error) -> ExitCode {
     use clap::CommandFactory;
     use clap::error::ErrorKind;
     let code = u8::try_from(e.exit_code()).unwrap_or(2);
-    // An `mn` command line answers with its JSON line too (MG-03 D26): the
-    // subcommand as clap reads it past the error.
+    // An `mn` or `gov` command line answers with its JSON line too (MG-03
+    // D26): the subcommand as clap reads it past the error.
     let mn = Cli::command()
         .ignore_errors(true)
         .try_get_matches()
-        .is_ok_and(|m| m.subcommand_name() == Some("mn"));
+        .is_ok_and(|m| matches!(m.subcommand_name(), Some("mn" | "gov")));
     if e.kind() == ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand && mn {
         masternodes::report_parse_failure("a subcommand is required");
     }

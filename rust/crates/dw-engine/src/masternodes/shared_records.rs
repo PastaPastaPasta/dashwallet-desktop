@@ -390,6 +390,10 @@ pub enum SharedWarning {
     /// spending one (an abandon once it is out; before, an abandon only
     /// releases them, MG-04b D25, D102).
     UsableByFunder,
+    /// A funder's key change has sat at `signing` for the overdue quiet
+    /// period without a new signature. Before `out_at` an abandon spends
+    /// nothing (D102). The hint does not change `next`.
+    AbandonHint,
 }
 
 /// A ProUpShareTx to preview for one of this wallet's shares (§8).

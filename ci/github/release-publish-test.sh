@@ -352,6 +352,7 @@ check "decide: a dry-run tag does not publish" '[[ $(decide push refs/tags/v0.0.
 check "decide: main on a commit outside origin/main does not publish" '[[ $(decide push refs/heads/main "$side" "") == "false true" ]]'
 check "decide: another repository does not publish" '[[ $(decide push refs/heads/main "$c2" "" someone/dashwallet-desktop) == "false true" ]]'
 check "decide: a pull request and a dispatch do not publish" '[[ $(decide pull_request refs/pull/9/merge "$c2" "$c1") == "false true" && $(decide workflow_dispatch refs/heads/main "$c2" "") == "false true" ]]'
+check "decide: the schedule builds main and does not publish" '[[ $(decide schedule refs/heads/main "$c2" "") == "false true" ]]'
 check "decide: a docs-only branch push does not build" '[[ $(decide push refs/heads/dw/x "$newer" "$c2") == "false false" ]]'
 check "decide: a docs-only pull request does not build" '[[ $(decide pull_request refs/pull/9/merge "$newer" "$c2") == "false false" ]]'
 check "decide: a code change builds" '[[ $(decide push refs/heads/dw/x "$code" "$c2") == "false true" ]]'
@@ -364,11 +365,11 @@ check "decide: a docs-only change on a tag still builds" '[[ $(decide push refs/
 cd "$here/../.."
 v() { env -i PATH="$PATH" GITHUB_ENV="$work/env" "$@" ci/github/release-version.sh > /dev/null 2>&1 && tail -1 "$work/env"; }
 : > "$work/env"
-check "version: main push" '[[ $(v GITHUB_REF_TYPE=branch GITHUB_SHA=1234567890 GITHUB_RUN_NUMBER=5) == "VERSION=0.1.0-dev.5.g1234567" ]]'
-check "version: tag v0.1.0" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.1.0) == "VERSION=0.1.0" ]]'
+check "version: main push" '[[ $(v GITHUB_REF_TYPE=branch GITHUB_SHA=1234567890 GITHUB_RUN_NUMBER=5) == "VERSION=0.2.0-dev.5.g1234567" ]]'
+check "version: tag v0.2.0" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0) == "VERSION=0.2.0" ]]'
 check "version: dry-run tag" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.0.0-rel8) == "VERSION=0.0.0-rel8" ]]'
-check "version: rc tag of the same version" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.1.0-rc.1) == "VERSION=0.1.0-rc.1" ]]'
-check "version: rc tag of another version fails" '! v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0-rc.1 >/dev/null'
+check "version: rc tag of the same version" '[[ $(v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.2.0-rc.1) == "VERSION=0.2.0-rc.1" ]]'
+check "version: rc tag of another version fails" '! v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v0.3.0-rc.1 >/dev/null'
 check "version: a tag that differs from tauri.conf.json fails" '! v GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v9.9.9 >/dev/null'
 
 exit $fail

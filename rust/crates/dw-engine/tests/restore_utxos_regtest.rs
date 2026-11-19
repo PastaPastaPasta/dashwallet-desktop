@@ -654,11 +654,12 @@ fn coinjoin_coins_past_99_reload_replay_once_and_spend_against_dashd() {
 }
 
 /// Sol r1 M1 through the public CoinJoin recovery scan: coins at CoinJoin
-/// 600 and 1,500, which only the recovery scan's lookahead (1,000) finds,
-/// the one at 1,500 only through the one at 600. The wallet spends the coin
-/// at 600. Reloaded from the store (pool rows 0..99, the scan's lookahead
-/// stored), the coin at 1,500 comes back in CoinJoin; a second recovery scan
-/// replays the whole history, the spent coin's included, and counts it once.
+/// 600 and 1,500. The restore's CoinJoin gap (1,000) finds the one at 600,
+/// and the one at 1,500 only through it; the recovery scan replays both and
+/// counts each once. The wallet spends the coin at 600. Reloaded from the
+/// store (the scan's lookahead stored), the coin at 1,500 comes back in
+/// CoinJoin; a second recovery scan replays the whole history, the spent
+/// coin's included, and counts it once.
 #[test]
 fn a_coin_past_a_spent_bridge_counts_once_through_the_recovery_scan_against_dashd() {
     let dir = dw_testutil::private_tempdir();
@@ -673,12 +674,13 @@ fn a_coin_past_a_spent_bridge_counts_once_through_the_recovery_scan_against_dash
     }
     f.start_spv();
     f.wait_scanned(node.height());
-    f.assert_counted(0, 0, "past the default gap");
+    f.assert_counted(2 * COIN, 2 * COIN, "first sync");
+    let deep = f.coin_at(&addrs[1]);
 
     f.recovery_scan();
     f.wait_scanned(node.height());
     f.assert_counted(2 * COIN, 2 * COIN, "after the recovery scan");
-    let deep = f.coin_at(&addrs[1]);
+    assert_eq!(f.coin_at(&addrs[1]), deep);
 
     spend_by_psbt(&f, &node, f.coin_at(&addrs[0]));
     f.wait_scanned(node.height());

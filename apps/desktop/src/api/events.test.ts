@@ -76,8 +76,8 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "events", identity: "i" } })).toEqual([keys.dashpayAll]);
     // The bring-up's outcome, and sync, move the DashPay status (BL-153 D8, D9).
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "startup" } })).toEqual([keys.dashpayAll]);
-    expect(invalidationsFor({ kind: "spvStateChanged", network: "testnet", running: true })).toEqual([keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState]);
-    expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toEqual([keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState]);
+    expect(invalidationsFor({ kind: "spvStateChanged", network: "testnet", running: true })).toEqual([keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, keys.protocolCompatibility, mnKeys.listState]);
+    expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toEqual([keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState]);
     // U-06: the engine's CoinJoin signal, and a balance change (D7), re-read the wallet's mixing status.
     expect(invalidationsFor({ kind: "coinJoin", network: "testnet", walletId: "w" })).toEqual([keys.coinjoinStatus("w"), keys.coinsAll("w")]);
     const report = REPORT;
@@ -194,6 +194,33 @@ describe("event bridge", () => {
     emit({ kind: "walletCreated", network: "testnet", walletId: "a" });
     expect(client.getQueryState(keys.dashpayStatus("a"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
+  });
+
+  it("drops a wallet's scan height when that wallet comes, goes, or the network changes, without a sync event", async () => {
+    const client = new QueryClient();
+    client.setQueryData(keys.scanHeight("a"), 100);
+    client.setQueryData(keys.scanHeight("b"), 80);
+    let emit: (e: AppEvent) => void = () => undefined;
+    const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
+    await bridgeEvents(fake, client, "testnet");
+    emit({ kind: "walletRemoved", network: "testnet", walletId: "a" });
+    expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
+    expect(client.getQueryData(keys.scanHeight("b"))).toBe(80);
+    client.setQueryData(keys.scanHeight("a"), 100);
+    emit({ kind: "walletCreated", network: "testnet", walletId: "a" });
+    expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
+    client.setQueryData(keys.scanHeight("b"), 80);
+    emit({ kind: "walletLoadChanged", network: "testnet", walletId: "b", loaded: true });
+    expect(client.getQueryData(keys.scanHeight("b"))).toBeUndefined();
+    client.setQueryData(keys.scanHeight("a"), 50);
+    emit({ kind: "sessionOpened", network: "testnet" });
+    expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
+    client.setQueryData(keys.scanHeight("a"), 50);
+    emit({ kind: "sessionClosed", network: "testnet" });
+    expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
+    client.setQueryData(keys.scanHeight("a"), 50);
+    emit({ kind: "eventsOverflowed" });
+    expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
   });
 
   it("a wallet that comes or goes drops its cached receive reads (DP3-03b D17)", async () => {

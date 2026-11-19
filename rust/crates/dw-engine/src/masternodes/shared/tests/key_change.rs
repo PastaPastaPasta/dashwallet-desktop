@@ -6,17 +6,17 @@ use dw_protx::shared::envelope::{SigsEnvelope, SigsKind, decode_message};
 use dw_protx::shared::key_change;
 use dw_protx::shared::rules::{SharedMn, check_update_shared_registrar};
 use dw_protx::shared::{
-    ProRegTxV3, ProUpSharedRegTx, SpecialTx, TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR,
-    payload_bytes,
+    ProRegTxV3, ProUpShareTx, ProUpSharedRegTx, SpecialTx, TRANSACTION_PROVIDER_UPDATE_SHARE,
+    TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR, payload_bytes,
 };
 
 use super::super::store::reserved_of;
-use super::dissolve::{assert_update_pending, delisted, dissolve_now, listed};
+use super::dissolve::{assert_update_pending, delisted, dissolve_now, listed, listed_with_reward};
 use super::together::scanned_to;
 use super::*;
 use crate::masternodes::{
-    DeadReason, KeepOr, KeyChangeRequest, MaintenanceSent, OperatorChoice, SharedKind,
-    SharedWarning, VotingChoice,
+    DeadReason, KeepOr, KeyChangeRequest, MaintenanceSent, OperatorChoice, RewardChoice,
+    SharedKind, SharedWarning, VotingChoice,
 };
 
 /// The BLS12-381 G1 generator, basic serialization: a valid operator key
@@ -134,7 +134,11 @@ fn import_into(f: &Fx, w: usize, text: &str) -> Result<SharedImport, Masternodes
 /// A starts, B and C approve from the copied text, A takes C's Reply: the
 /// session id, A's start and the request's fee.
 fn complete(f: &Fx, txid: Txid) -> (String, SharedOutcome) {
-    let a = start(f, 0, rotate(txid), 0).unwrap();
+    complete_with(f, rotate(txid))
+}
+
+fn complete_with(f: &Fx, request: KeyChangeRequest) -> (String, SharedOutcome) {
+    let a = start(f, 0, request, 0).unwrap();
     let id = a.session.id.clone();
     f.imported(1, &a.message.text);
     let b = approve(f, 1, &id, 0).unwrap();
@@ -901,4 +905,243 @@ fn ep_conflict_height_preserves_key_change_follower_release() {
     f.tip(65);
     f.follow();
     assert!(f.locked(0).is_empty());
+}
+
+/// A listed masternode whose share 0 was registered with `reward`, fee
+/// coins ready, as [`keyed`] leaves one whose reward is the refund.
+fn keyed_reward(f: &Fx, reward: RewardChoice) -> (String, Txid) {
+    let (id, txid) = listed_with_reward(f, COIN, reward);
+    list_keys(f, txid, listed_operator(), [1; 20]);
+    let mined = f.seam.shared_mined.lock().unwrap().clone();
+    for (_, tx, _) in mined {
+        for input in &tx.input {
+            for w in 0..f.wallets.len() {
+                f.spend(w, input.previous_output);
+            }
+        }
+    }
+    f.credit(0, 9, COIN);
+    (id, txid)
+}
+
+fn p2pkh(id: [u8; 20]) -> dashcore::ScriptBuf {
+    use dashcore::hashes::Hash;
+    dashcore::ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array(id))
+}
+
+fn voting_of(txid: Txid, id: [u8; 20]) -> KeyChangeRequest {
+    KeyChangeRequest {
+        pro_tx_hash: txid.to_string(),
+        operator: KeepOr::Keep,
+        voting: KeepOr::Set(VotingChoice::Address {
+            address: super::super::standby::p2pkh_address(id, dashcore::Network::Regtest),
+        }),
+    }
+}
+
+/// A confirmed ProUpShareTx setting share `index`'s reward script.
+fn mined_share_update(pro_tx: Txid, index: u16, reward: dashcore::ScriptBuf) -> Transaction {
+    let payload = ProUpShareTx {
+        version: ProUpShareTx::CURRENT_VERSION,
+        pro_tx_hash: pro_tx,
+        share_index: index,
+        reward_script: reward,
+        inputs_hash: [0; 32],
+        sig: vec![0; 65],
+    };
+    let special = SpecialTx {
+        version: 3,
+        tx_type: TRANSACTION_PROVIDER_UPDATE_SHARE,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(Txid::from_byte_array([0x91; 32]), 0),
+            script_sig: dashcore::ScriptBuf::new(),
+            sequence: u32::MAX,
+            witness: Default::default(),
+        }],
+        output: Vec::new(),
+        lock_time: 7,
+        payload: payload_bytes(&payload),
+    };
+    super::super::send::typed(&special).expect("a ProUpShareTx round-trips")
+}
+
+fn assert_payee_reuse<T: std::fmt::Debug>(result: &Result<T, MasternodesError>) {
+    assert!(
+        matches!(
+            result,
+            Err(MasternodesError::ProtxRefused { reason, .. })
+                if reason == "bad-proupsharedreg-payee-reuse"
+        ),
+        "{result:?}"
+    );
+}
+
+/// A listed masternode whose share 0 was registered paying `id`.
+fn keyed_paying(f: &Fx, id: [u8; 20]) -> Txid {
+    let address = super::super::standby::p2pkh_address(id, dashcore::Network::Regtest);
+    let (reg_id, txid) = keyed_reward(f, RewardChoice::Address { address });
+    assert_eq!(registration(f, &reg_id).shares[0].reward_script, p2pkh(id));
+    txid
+}
+
+/// D29 residual: the payee-reuse pre-check refuses every reward script the
+/// wallet saw a share hold: the one a later ProUpShareTx wrote and the
+/// registration's it replaced.
+#[test]
+fn test_QT_127_a_key_change_refuses_every_seen_reward_script() {
+    let f = fx(3, true);
+    let old_id = [0x44; 20];
+    let new_id = [0x55; 20];
+    let txid = keyed_paying(&f, old_id);
+    f.mine(mined_share_update(txid, 0, p2pkh(new_id)), 60);
+
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, new_id), 0));
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, old_id), 0));
+    assert!(f.locked(0).is_empty());
+
+    let other = start(&f, 0, voting_of(txid, [0x66; 20]), 0).unwrap();
+    assert_eq!(other.session.stage, SharedStage::Signing);
+}
+
+/// A → B → A: both scripts the share held are refused, whichever it holds
+/// now.
+#[test]
+fn test_QT_127_a_key_change_refuses_a_script_a_share_left_and_took_back() {
+    let f = fx(3, true);
+    let a = [0x44; 20];
+    let b = [0x55; 20];
+    let txid = keyed_paying(&f, a);
+    f.mine(mined_share_update(txid, 0, p2pkh(b)), 60);
+    f.mine(mined_share_update(txid, 0, p2pkh(a)), 70);
+
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, a), 0));
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, b), 0));
+    assert!(f.locked(0).is_empty());
+}
+
+/// Two updates of one share in one block: both scripts are refused,
+/// whichever txid sorts first.
+#[test]
+fn test_QT_127_a_key_change_refuses_both_same_block_updates() {
+    let f = fx(3, true);
+    let txid = keyed_paying(&f, [0x44; 20]);
+    let (x, y) = ([0x55; 20], [0x66; 20]);
+    let (ux, uy) = (
+        mined_share_update(txid, 0, p2pkh(x)),
+        mined_share_update(txid, 0, p2pkh(y)),
+    );
+    assert_ne!(ux.txid(), uy.txid());
+    f.mine(ux, 60);
+    f.mine(uy, 60);
+
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, x), 0));
+    assert_payee_reuse(&start(&f, 0, voting_of(txid, y), 0));
+    assert!(f.locked(0).is_empty());
+}
+
+/// A resend checks the seen reward scripts too: a confirmed ProUpShareTx
+/// paying the requested voting key since the send refuses it, the saved
+/// bytes not handed off and the session as it was.
+#[test]
+fn test_QT_127_a_resend_refuses_a_voting_key_a_share_now_pays() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let voting = [0x77; 20];
+    let (id, _) = complete_with(&f, voting_of(txid, voting));
+    let fee = f.session_of(0, &id).fee.unwrap();
+    send(&f, 0, &id, fee).unwrap();
+    let before = f.row(0, &id);
+    f.mine(mined_share_update(txid, 0, p2pkh(voting)), 60);
+
+    assert_payee_reuse(&send(&f, 0, &id, fee));
+    assert_eq!(f.net.sent().len(), 1);
+    let after = f.row(0, &id);
+    assert_eq!(
+        (&after.signed_tx, &after.txid, after.out_at),
+        (&before.signed_tx, &before.txid, before.out_at)
+    );
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Sent);
+}
+
+/// A ChainLocked copy of the funder's key change ranks before the sent
+/// txid in a block without a ChainLock (`copy_rank`): its height is the
+/// stage's.
+#[test]
+fn test_QT_127_a_chainlocked_copy_ranks_before_an_unlocked_original() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    let fee = f.session_of(0, &id).fee.unwrap();
+    send(&f, 0, &id, fee).unwrap();
+    let original = f.net.sent().pop().unwrap();
+    let mut copy = original.clone();
+    let mut script = copy.input[0].script_sig.as_bytes().to_vec();
+    script.push(0);
+    copy.input[0].script_sig = dashcore::ScriptBuf::from_bytes(script);
+    assert_ne!(copy.txid(), original.txid());
+    f.mine(original, 101);
+    f.mine_locked(copy, 105);
+    assert_eq!(
+        f.session_of(0, &id).stage,
+        SharedStage::Confirmed { height: 105 }
+    );
+}
+
+/// D103 residual: a scriptSig-malleated copy of the funder's key change,
+/// mined instead of the txid it sent, reads `confirmed`. The locks are
+/// released once it is buried, not held as a `conflicted` spend.
+#[test]
+fn test_QT_127_a_malleated_key_change_confirms_by_payload() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    let fee = f.session_of(0, &id).fee.unwrap();
+    send(&f, 0, &id, fee).unwrap();
+    let reserved = reserved_of(&f.row(0, &id));
+    let mut malleated = f.net.sent().pop().unwrap();
+    let original = malleated.txid();
+    let mut script = malleated.input[0].script_sig.as_bytes().to_vec();
+    script.push(0);
+    malleated.input[0].script_sig = dashcore::ScriptBuf::from_bytes(script);
+    assert_ne!(malleated.txid(), original);
+    f.mine(malleated, 101);
+    assert_eq!(
+        f.session_of(0, &id).stage,
+        SharedStage::Confirmed { height: 101 }
+    );
+    f.tip(200);
+    f.follow();
+    assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
+    f.follow();
+    assert!(reserved.iter().all(|o| !f.locked(0).contains(o)));
+}
+
+/// A funder's key change left at `signing` surfaces an abandon hint after
+/// the overdue quiet period. An approver's session does not, and the fee
+/// inputs stay locked.
+#[test]
+fn test_QT_127_a_quiet_key_change_hints_abandon() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let started = start(&f, 0, rotate(txid), 0).unwrap();
+    let id = started.session.id;
+    let reserved = reserved_of(&f.row(0, &id));
+    let fresh = serde_json::to_string(&f.session_of(0, &id).warnings).unwrap();
+    assert!(!fresh.contains("abandon_hint"), "{fresh}");
+    let quiet =
+        crate::coins::now_secs().saturating_sub(crate::masternodes::protx::ops::OVERDUE_SECS);
+    f.rewrite(0, &id, |u| u.updated_at = quiet);
+    let hinted = serde_json::to_string(&f.session_of(0, &id).warnings).unwrap();
+    assert!(hinted.contains("\"abandon_hint\""), "{hinted}");
+    let session = f.session_of(0, &id);
+    assert_eq!(
+        (session.stage, session.next),
+        (SharedStage::Signing, SharedNext::Copy)
+    );
+    assert!(reserved.iter().all(|o| f.locked(0).contains(o)));
+
+    f.imported(1, &started.message.text);
+    f.rewrite(1, &id, |u| u.updated_at = quiet);
+    let approver = serde_json::to_string(&f.session_of(1, &id).warnings).unwrap();
+    assert!(!approver.contains("abandon_hint"), "{approver}");
 }

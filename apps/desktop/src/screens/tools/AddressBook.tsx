@@ -3,16 +3,18 @@
 // copy, a QR, and the CSV export through the save dialog (D2). The picker (QT-097) is the same
 // list in a sheet: Pay offers the sending book, Sign the receiving book.
 
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { AddressBookEntry } from "../../api/generated/AddressBookEntry";
 import type { AddressPurposeName } from "../../api/generated/AddressPurposeName";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend, useQrMatrix } from "../../api/queries";
 import { fileErrorText, saveText } from "../../app/files";
+import { navigate } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue } from "../../components/detail";
-import { LoadingState } from "../../components/history";
+import { addressBookEmpty, type AddressBookStep } from "../../components/emptyStates";
+import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import { QrCode } from "../../components/qr";
 import { Sheet } from "../../components/sheet";
 import { useModel } from "../../onboarding/model";
@@ -24,16 +26,57 @@ const PURPOSES: { id: AddressPurposeName; title: string }[] = [
   { id: "receive", title: "Receiving addresses" },
 ];
 
+function AddressBookEmpty({ model, actions }: { model: AddressBookModel; actions: Partial<Record<AddressBookStep, () => void>> }) {
+  const copy = addressBookEmpty({ search: model.search, purpose: model.purpose, count: 0 });
+  if (!copy) return null;
+  const go = actions[copy.step];
+  return (
+    <EmptyState
+      testId="address-book-none"
+      art={copy.art}
+      title={copy.title}
+      message={copy.message}
+      action={
+        copy.action && go ? (
+          <DashButton variant="filledBlue" data-testid={copy.action.testId} onClick={go}>
+            {copy.action.label}
+          </DashButton>
+        ) : undefined
+      }
+    />
+  );
+}
+
 /** The search field and the purpose's entries, each with `actions`. */
-function AddressList({ model, actions, onOpen }: { model: AddressBookModel; actions: (e: AddressBookEntry) => ReactNode; onOpen?: (e: AddressBookEntry) => void }) {
+function AddressList({
+  model,
+  actions,
+  onOpen,
+  emptyActions,
+}: {
+  model: AddressBookModel;
+  actions: (e: AddressBookEntry) => ReactNode;
+  onOpen?: (e: AddressBookEntry) => void;
+  /** Steps this list may take. The picker omits any that would leave the sheet. */
+  emptyActions: Partial<Record<AddressBookStep, () => void>>;
+}) {
   const id = useId();
+  const searchRef = useRef<HTMLInputElement>(null);
   const entries = model.entries;
+  const steps: Partial<Record<AddressBookStep, () => void>> = {
+    ...emptyActions,
+    clear: () => {
+      model.setSearch("");
+      focusWhenIdle(searchRef);
+    },
+  };
   return (
     <>
       <label className="sr-only" htmlFor={`${id}-search`}>
         Search
       </label>
       <input
+        ref={searchRef}
         id={`${id}-search`}
         className="tool-field"
         type="search"
@@ -45,9 +88,7 @@ function AddressList({ model, actions, onOpen }: { model: AddressBookModel; acti
       {model.all === null ? (
         !model.error && <LoadingState testId="address-book-loading" text="Reading the address book" />
       ) : entries.length === 0 ? (
-        <p className="placeholder-note" data-testid="address-book-none">
-          {model.search ? "No entry matches the search." : "No entries yet."}
-        </p>
+        <AddressBookEmpty model={model} actions={steps} />
       ) : (
         <div className="table-card">
           <table className="data-table address-book-table" data-testid="address-book-table">
@@ -188,7 +229,7 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
     <div className="tool-stack" data-testid="tools-addressBook">
       <div className="tool-actions">
         <PurposeSwitch model={model} />
-        {model.canCreate && (
+        {model.canCreate && (model.all === null || model.search !== "" || model.all.some((e) => e.purpose === model.purpose)) && (
           <DashButton variant="tintedBlue" size="small" data-testid="address-book-new" onClick={() => edit(null)}>
             New
           </DashButton>
@@ -204,6 +245,10 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
       {model.error && editing === undefined && <Outcome ok={false} text={model.error} testId="address-book-problem" />}
       <AddressList
         model={model}
+        emptyActions={{
+          ...(model.canCreate ? { add: () => edit(null) } : {}),
+          receive: () => navigate("receive"),
+        }}
         actions={(e) => (
           <span className="tool-row-actions">
             <RowMenu
@@ -263,6 +308,7 @@ export function AddressBookPicker({
         {model.error && <Outcome ok={false} text={model.error} testId="address-book-problem" />}
         <AddressList
           model={model}
+          emptyActions={{}}
           onOpen={(e) => model.choose(e)}
           actions={(e) => (
             <DashButton variant="tintedBlue" size="small" data-testid={`address-book-choose-${e.address}`} aria-label={`Choose ${model.labelText(e)}`} onClick={() => model.choose(e)}>

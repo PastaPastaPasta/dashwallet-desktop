@@ -274,8 +274,11 @@ impl NetworkSession {
         // `shielded_pool::start`): the first with the loops, ahead of the
         // names passes, then one every interval from the loop below.
         let shielded = super::shielded_pool::runs_sync(&manager).await;
-        if shielded && !loops_pending {
-            self.kick_shielded_pass(&manager);
+        if !loops_pending {
+            self.kick_protocol_refresh();
+            if shielded {
+                self.kick_shielded_pass(&manager);
+            }
         }
         let mut shielded_due = tokio::time::Instant::now() + manager.shielded_sync().interval();
         if !self
@@ -314,9 +317,12 @@ impl NetworkSession {
                 () = retry => {
                     let Some(this) = session.upgrade() else { return };
                     loops_pending = !this.start_loops(&manager).await;
-                    if shielded && !loops_pending {
-                        this.kick_shielded_pass(&manager);
-                        shielded_due = tokio::time::Instant::now() + manager.shielded_sync().interval();
+                    if !loops_pending {
+                        this.kick_protocol_refresh();
+                        if shielded {
+                            this.kick_shielded_pass(&manager);
+                            shielded_due = tokio::time::Instant::now() + manager.shielded_sync().interval();
+                        }
                     }
                     continue;
                 }
@@ -332,6 +338,7 @@ impl NetworkSession {
                 () = tokio::time::sleep_until(balances_due) => {
                     let Some(this) = session.upgrade() else { return };
                     this.kick_balance_pass();
+                    this.kick_protocol_refresh();
                     balances_due = tokio::time::Instant::now() + BALANCE_PASS_EVERY;
                     continue;
                 }

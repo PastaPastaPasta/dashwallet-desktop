@@ -1076,3 +1076,16 @@ for (const theme of THEMES) {
     await expect(sheet).toHaveScreenshot(`${theme}-unfinished-sheet-recovery-unsupported.png`, SHOT);
   });
 }
+
+for (const theme of THEMES) {
+  test(`visual protocol-advisory ${theme}`, async ({ page }) => {
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("protocol-upgraded", theme));
+    const banner = page.getByTestId("protocol-advisory-banner");
+    await expect(banner).toBeVisible();
+    await page.mouse.move(0, 0);
+    await fontsReady(page);
+    await expect(banner).toHaveScreenshot(`${theme}-protocol-advisory-banner.png`, SHOT);
+    await shoot(page, "home-protocol-advisory", theme);
+  });
+}

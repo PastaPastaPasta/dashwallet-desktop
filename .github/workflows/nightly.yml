@@ -45,7 +45,7 @@ jobs:
   regtest:
     name: Regtest suites (T1)
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 210
     env:
       # The pytest suites use the image built by the "Build the regtest image" step.
       DWD_REGTEST_BUILD: "0"
@@ -85,7 +85,7 @@ jobs:
           uv pip install --python regtest/harness/.venv/bin/python -r regtest/harness/requirements.txt
           uv venv .func-venv --python 3.12
           # dash_hash 1.4.0 (X11 for the functional framework) from its commit archive, hash-checked.
-          curl -fsSL -o "$RUNNER_TEMP/dash_hash.tar.gz" \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 -o "$RUNNER_TEMP/dash_hash.tar.gz" \
             https://github.com/dashpay/dash_hash/archive/7af387315d9064ec3a751545fee0524d997c8867.tar.gz
           echo "7153d3341e3a6b1a2a1365dbdf9ff6315fa7c6c67b60506e91ffd93383a601d5  $RUNNER_TEMP/dash_hash.tar.gz" | sha256sum -c -
           uv pip install --python .func-venv/bin/python "$RUNNER_TEMP/dash_hash.tar.gz"
@@ -147,6 +147,39 @@ jobs:
           regtest/functional/run.sh dwd_masternodes.py --portseed=4731 --loglevel=INFO \
             > "$LOGS/masternodes.log" 2>&1 || { tail -n 200 "$LOGS/masternodes.log"; exit 1; }
           tail -n 20 "$LOGS/masternodes.log"
+      - name: governance (govsync, proposals and voting against 4 masternodes; host)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          DWD_PYTHON: ${{ github.workspace }}/.func-venv/bin/python
+        run: |
+          regtest/functional/run.sh dwd_governance.py --portseed=4741 --loglevel=INFO \
+            > "$LOGS/governance.log" 2>&1 || { tail -n 200 "$LOGS/governance.log"; exit 1; }
+          tail -n 20 "$LOGS/governance.log"
+      - name: protx (ProRegTx and ProUpRegTx owner flows; host)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          DWD_PYTHON: ${{ github.workspace }}/.func-venv/bin/python
+        run: |
+          regtest/functional/run.sh dwd_protx.py --portseed=4751 --loglevel=INFO \
+            > "$LOGS/protx.log" 2>&1 || { tail -n 200 "$LOGS/protx.log"; exit 1; }
+          tail -n 20 "$LOGS/protx.log"
+      - name: protx-v24 (ProTx owner flows with v24 active; host)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          DWD_PYTHON: ${{ github.workspace }}/.func-venv/bin/python
+          DWD_MG04_V24: "1"
+        run: |
+          regtest/functional/run.sh dwd_protx.py --portseed=4761 --loglevel=INFO \
+            > "$LOGS/protx-v24.log" 2>&1 || { tail -n 200 "$LOGS/protx-v24.log"; exit 1; }
+          tail -n 20 "$LOGS/protx-v24.log"
+      - name: shared (v24 shared masternode sessions and maintenance; host)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          DWD_PYTHON: ${{ github.workspace }}/.func-venv/bin/python
+        run: |
+          regtest/functional/run.sh dwd_shared.py --portseed=4771 --timeout-factor=4 --loglevel=INFO \
+            > "$LOGS/shared.log" 2>&1 || { tail -n 200 "$LOGS/shared.log"; exit 1; }
+          tail -n 20 "$LOGS/shared.log"
       # PR CI runs only the table tests with `invitation-create-test` and `coinjoin::tests` with
       # `mix-shield-test`. These need dwcli's build, not the regtest image.
       - name: dwcli tests with the invitation-create-test feature
