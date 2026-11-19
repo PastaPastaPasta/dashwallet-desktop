@@ -577,19 +577,6 @@ impl NetworkSession {
             }
         };
         self.store_fingerprint(wallet_id, fingerprint).await;
-        // A Dash Core file's range, coin locks and salt are stored before the
-        // wallet is registered, so nothing can see it without them. A
-        // wallet that is already there gets them too: a retry finishes an
-        // import that stopped after registering.
-        if let Err(e) = self.write_imported_state(wallet_id, &state).await {
-            if !had_secret {
-                self.forget_secret(held, wallet_id).await;
-            }
-            if readmitted {
-                self.record_removed_again(held, wallet_id).await;
-            }
-            return Err(e);
-        }
 
         // A closed (unloaded) wallet is registered: open it instead.
         if self.live()?.store.is_unloaded(&wallet_id.0) {
@@ -598,11 +585,28 @@ impl NetworkSession {
             }
             return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
         }
-        if manager.get_wallet(&wallet_id.0).await.is_some() {
-            self.cover_imported_range(&manager, wallet_id, &state).await;
-            if had_secret {
-                return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
+        let registered = manager.get_wallet(&wallet_id.0).await.is_some();
+        if registered && had_secret {
+            return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
+        }
+        // Keys for a watch-only wallet: it gets Core's range first.
+        if registered && let Err(e) = self.cover_imported_range(&manager, wallet_id, &state).await {
+            self.forget_secret(held, wallet_id).await;
+            return Err(e);
+        }
+        // A Dash Core file's range, coin locks and salt are stored before the
+        // wallet is registered or gets its keys, so nothing can see it
+        // without them. A wallet already there with its keys is left as it is.
+        if let Err(e) = self.write_imported_state(wallet_id, &state).await {
+            if !had_secret {
+                self.forget_secret(held, wallet_id).await;
             }
+            if readmitted || !had_secret {
+                self.record_removed_again(held, wallet_id).await;
+            }
+            return Err(e);
+        }
+        if registered {
             // Keys attached: watch-only becomes false; hosts reload.
             self.sink.emit(EngineEvent::WalletCreated {
                 network: self.network.clone(),
@@ -659,7 +663,7 @@ impl NetworkSession {
                     if !had_secret {
                         self.forget_secret(held, wallet_id).await;
                     }
-                    if readmitted {
+                    if readmitted || !had_secret {
                         self.record_removed_again(held, wallet_id).await;
                     }
                 }
@@ -672,7 +676,22 @@ impl NetworkSession {
             }
             self.store_lookahead(wallet_id, gap).await;
         }
-        self.cover_imported_range(&manager, wallet_id, &state).await;
+        // Not announced without Core's range: taken out again, with the rows
+        // written for it.
+        if let Err(e) = self.cover_imported_range(&manager, wallet_id, &state).await {
+            let _discoveries = self.platform.recovery.end_discoveries(wallet_id).await;
+            self.platform.forget(&wallet_id);
+            if let Err(removal) = self.remove_registered(wallet_id).await {
+                tracing::warn!(%wallet_id, error = %removal, "could not take out a wallet whose range was not applied");
+            }
+            if let Ok(live) = self.live() {
+                live.tap.forget(&wallet_id);
+            }
+            if !had_secret {
+                self.forget_secret(held, wallet_id).await;
+            }
+            return Err(e);
+        }
         self.refresh_wallet_state(&manager, wallet_id).await;
         // The wallet is registered; a failed name write leaves it with
         // the computed default name and is reported in the log only.
@@ -797,8 +816,10 @@ impl NetworkSession {
         }
     }
 
-    /// A removed wallet whose import failed after it was readmitted is
-    /// recorded as removed again, with what the import wrote of it, unless
+    /// A removed wallet whose import failed after it was readmitted, or a
+    /// new wallet whose first import failed, is recorded as removed (again),
+    /// with what the import wrote of it, so a later import of the seed
+    /// starts from no rows, unless
     /// the failed call registered it after all (DEC-210). The lifecycle
     /// lock keeps any other registration out meanwhile.
     pub(crate) async fn record_removed_again(&self, _held: &Lifecycle<'_>, wallet_id: WalletId) {

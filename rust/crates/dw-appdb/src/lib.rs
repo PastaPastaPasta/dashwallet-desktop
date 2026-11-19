@@ -1099,6 +1099,22 @@ impl AppDb {
         Self::lock_manual_on(&self.conn(), wallet_id, txid, vout, now)
     }
 
+    /// [`Self::lock_manual`] for each of `outpoints`, in one transaction.
+    pub fn lock_manual_all(
+        &self,
+        wallet_id: &str,
+        outpoints: &[(String, u32)],
+        now: u64,
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        for (txid, vout) in outpoints {
+            Self::lock_manual_on(&tx, wallet_id, txid, *vout, now)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// [`Self::lock_manual`] on `conn`, inside a caller's transaction.
     pub(crate) fn lock_manual_on(
         conn: &Connection,

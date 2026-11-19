@@ -678,6 +678,43 @@ impl NetworkSession {
         Ok(())
     }
 
+    /// Takes a wallet a failed call registered out of the manager and
+    /// deletes its stored wallet and rows, recording it as removed (DEC-210).
+    /// The caller has ended its discoveries and forgotten it in the platform
+    /// runtime.
+    pub(crate) async fn remove_registered(
+        self: &Arc<Self>,
+        id: WalletId,
+    ) -> Result<(), EngineError> {
+        let live = self.live()?;
+        // A wallet holding a stored shielded spend stays (DEC-1046), as does
+        // one with a marked spend (DEC-1057).
+        let removal = (self.platform)
+            .remove_from_manager(
+                &self.leases,
+                &live.manager,
+                id,
+                crate::platform::runtime::StoredSpends::Refuse,
+            )
+            .await;
+        // Again, now that it is out of the manager (or failed to leave it):
+        // a scan begun since the first forget passed the wallet check, and a
+        // names check begun since read the wallet (D33).
+        self.platform.users.scans.forget(&id);
+        self.platform.recovery.fence_names(&id);
+        removal?;
+        self.hub.forget_wallet(&id);
+        self.coin_fences.forget(&id);
+        let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+        tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
+            persister.delete_wallet(id.0)?;
+            appdb
+                .delete_wallet(&id.to_string())
+                .map_err(|e| EngineError::Storage(e.to_string()))
+        })
+        .await?
+    }
+
     /// Undoes what a failed restore registered, newest first: a new wallet
     /// is unloaded and its rows and vault records deleted; keys attached
     /// to a watch-only wallet are deleted again. Best effort: a failing
@@ -695,37 +732,7 @@ impl NetworkSession {
             let _discoveries = self.platform.recovery.end_discoveries(id).await;
             self.platform.forget(&id);
             if created {
-                let removed = async {
-                    let live = self.live()?;
-                    // A wallet holding a stored shielded spend stays (DEC-1046),
-                    // as does one with a marked spend (DEC-1057).
-                    let removal = (self.platform)
-                        .remove_from_manager(
-                            &self.leases,
-                            &live.manager,
-                            id,
-                            crate::platform::runtime::StoredSpends::Refuse,
-                        )
-                        .await;
-                    // Again, now that it is out of the manager (or failed to
-                    // leave it): a scan begun since the first forget passed
-                    // the wallet check, and a names check begun since read
-                    // the wallet (D33).
-                    self.platform.users.scans.forget(&id);
-                    self.platform.recovery.fence_names(&id);
-                    removal?;
-                    self.hub.forget_wallet(&id);
-                    self.coin_fences.forget(&id);
-                    let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
-                    tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
-                        persister.delete_wallet(id.0)?;
-                        appdb
-                            .delete_wallet(&id.to_string())
-                            .map_err(|e| EngineError::Storage(e.to_string()))
-                    })
-                    .await?
-                }
-                .await;
+                let removed = self.remove_registered(id).await;
                 if let Err(EngineError::ShieldedSpendUnresolved) = removed {
                     // It stays whole, its seed with it: without the seed it
                     // would never hold a background lease again, and every

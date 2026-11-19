@@ -979,8 +979,8 @@ impl NetworkSession {
 
     /// Stores `state` for wallet `id`: the range setting, Core's coin locks
     /// and its CoinJoin salt, so the same coins count as fully mixed
-    /// (QT-043, m3-engine.md §5). Each write replaces the last, so a retry
-    /// writes them again.
+    /// (QT-043, m3-engine.md §5). The range and salt replace stored ones;
+    /// Core's locks are added to any the wallet has.
     pub(crate) async fn write_imported_state(
         self: &Arc<Self>,
         id: WalletId,
@@ -996,19 +996,22 @@ impl NetworkSession {
         Ok(())
     }
 
-    /// Applies the stored range of `state` to registered wallet `id`. A
-    /// failure is logged: the setting is stored, so the next load applies it.
+    /// Applies the range of `state` to registered wallet `id`, before it is
+    /// announced. The import fails if this does.
     pub(crate) async fn cover_imported_range(
         &self,
         manager: &crate::session::Manager,
         id: WalletId,
         state: &ImportedState,
-    ) {
-        if let Some(issued) = state.issued
-            && let Err(e) = self.cover_issued(manager, id, issued).await
-        {
-            tracing::warn!(wallet_id = %id, error = %e, "could not apply the legacy wallet's address range");
+    ) -> Result<(), EngineError> {
+        let Some(issued) = state.issued else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        if crate::keys::take_test_failure(&FAIL_COVER_IN, self.data_dir()) {
+            return Err(EngineError::Internal("test: range not applied".into()));
         }
+        self.cover_issued(manager, id, issued).await
     }
 
     async fn store_issued(
@@ -1052,16 +1055,17 @@ impl NetworkSession {
             return Ok(());
         }
         let key = id.to_string();
-        self.appdb_op(move |db| {
-            let now = crate::coins::now_secs();
-            for o in &locks {
-                db.lock_manual(&key, &o.txid.to_string(), o.vout, now)?;
-            }
-            Ok(())
-        })
-        .await
+        let locks: Vec<(String, u32)> =
+            locks.iter().map(|o| (o.txid.to_string(), o.vout)).collect();
+        self.appdb_op(move |db| db.lock_manual_all(&key, &locks, crate::coins::now_secs()))
+            .await
     }
 }
+
+/// Tests: the next legacy range an import applies in a session on one of
+/// these data directories fails.
+#[cfg(test)]
+pub(crate) static FAIL_COVER_IN: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 
 fn walletdat_failure(e: WalletDatError) -> EngineError {
     match e {
@@ -1261,6 +1265,85 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../testdata")
             .join(rel)
+    }
+
+    #[derive(Default)]
+    struct Created(std::sync::Mutex<Vec<WalletId>>);
+
+    impl crate::EventSink for Created {
+        fn emit(&self, event: crate::EngineEvent) {
+            if let crate::EngineEvent::WalletCreated { wallet_id, .. } = event {
+                self.0.lock().unwrap().push(wallet_id);
+            }
+        }
+    }
+
+    /// A legacy wallet whose range cannot be applied is not announced: the
+    /// import fails, the wallet is taken out with its rows, and importing
+    /// the file again works.
+    #[test]
+    fn a_legacy_range_not_applied_fails_the_import_before_it_is_announced() {
+        use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let created = Arc::new(Created::default());
+        let engine = crate::Engine::new(
+            crate::EngineConfig {
+                data_root: dir.path().join("data"),
+                worker_threads: Some(2),
+                vault: VaultConfig {
+                    kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                    os_store: Arc::new(MemoryOsStore::new()),
+                    ..Default::default()
+                },
+            },
+            Arc::clone(&created) as Arc<dyn crate::EventSink>,
+        )
+        .unwrap();
+        let s = engine
+            .block_on(engine.open_network(
+                DashNetwork::Regtest,
+                crate::SessionOptions {
+                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                    quorum_url: Some("http://127.0.0.1:1".into()),
+                    spv_peers: vec!["127.0.0.1:1".into()],
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+        let phrase = b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let seed = mnemonic::derive_secret(phrase, b"", true).unwrap().seed;
+        let id = WalletId(mnemonic::wallet_id_for_seed(&seed, dashcore::Network::Regtest).unwrap());
+        let file = testdata("compat/walletdat/bdb_wide_range.dat");
+
+        FAIL_COVER_IN
+            .lock()
+            .unwrap()
+            .push(s.data_dir().to_path_buf());
+        let failed =
+            engine.block_on(s.import_wallet_dat(file.clone(), None, ImportOptions::default()));
+        assert!(
+            matches!(failed, Err(EngineError::Internal(_))),
+            "{failed:?}"
+        );
+        assert!(
+            created.0.lock().unwrap().is_empty(),
+            "the wallet was announced"
+        );
+        let manager = s.manager().unwrap();
+        assert!(engine.block_on(manager.get_wallet(&id.0)).is_none());
+        let (db, wallet) = (s.live().unwrap().appdb, id.to_string());
+        assert_eq!(db.setting(&wallet, ISSUED_SETTING).unwrap(), None);
+        assert_eq!(db.setting(&wallet, "coinjoin.salt").unwrap(), None);
+        assert!(db.locks(&wallet).unwrap().is_empty());
+
+        let report = engine
+            .block_on(s.import_wallet_dat(file, None, ImportOptions::default()))
+            .unwrap();
+        assert_eq!(report.wallet_id, id);
+        assert_eq!(*created.0.lock().unwrap(), [id]);
+        assert_eq!(engine.block_on(s.locked_outpoints(id)).unwrap().len(), 1);
+        engine.block_on(engine.shutdown()).unwrap();
     }
 
     /// Review L4: what the guard's drop runs replaces the private key.

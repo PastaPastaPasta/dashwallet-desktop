@@ -507,61 +507,163 @@ fn test_qt_106_import_checks_network_range_locks_and_loose_keys() {
     );
 }
 
-/// An import that registered the wallet and then stopped (a failed write, a
-/// closing session) leaves it without Core's range and locks. Importing the
-/// file again still says the wallet exists, and applies both.
-#[test]
-fn test_qt_106_a_retry_finishes_an_interrupted_wallet_dat_import() {
-    let abandon = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-    let dir = dw_testutil::private_tempdir();
-    let e = engine(dir.path());
-    let s = open(&e, Some(b"vault pass"));
-    e.block_on(s.vault_op(|v| v.unlock(b"vault pass", UnlockScope::Full)))
-        .unwrap();
-    let id = e
-        .block_on(s.import_wallet(
-            Zeroizing::new(abandon.as_bytes().to_vec()),
-            Zeroizing::new(Vec::new()),
-            ImportOptions {
-                core_compat: true,
-                ..ImportOptions::default()
-            },
-        ))
-        .unwrap();
-    assert_eq!(id, core_id(abandon, ""));
-    assert!(e.block_on(s.locked_outpoints(id)).unwrap().is_empty());
-    // As after a failed salt write: the wallet made its own on first use.
-    let own_salt = e.block_on(s.coinjoin_salt(id)).unwrap();
-    assert_ne!(own_salt, CORE_SALT);
-    let again = e.block_on(s.import_wallet_dat(
+const ABANDON: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+fn app_db(s: &Arc<NetworkSession>) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(s.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.busy_timeout(Duration::from_secs(30)).unwrap();
+    conn
+}
+
+/// A wallet's setting `key` as stored, read past the engine.
+fn stored_setting(s: &Arc<NetworkSession>, id: WalletId, key: &str) -> Option<String> {
+    app_db(s)
+        .query_row(
+            "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+            [id.to_string().as_str(), key],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+/// Makes every CoinJoin salt write fail, or work again: the last write of
+/// a wallet.dat import, after its range and locks are stored.
+fn refuse_salt_writes(s: &Arc<NetworkSession>, refuse: bool) {
+    let sql = if refuse {
+        "CREATE TRIGGER refuse_salt_insert BEFORE INSERT ON settings_kv
+           WHEN NEW.key = 'coinjoin.salt' BEGIN SELECT RAISE(ABORT, 'test: salt refused'); END;
+         CREATE TRIGGER refuse_salt_update BEFORE UPDATE ON settings_kv
+           WHEN NEW.key = 'coinjoin.salt' BEGIN SELECT RAISE(ABORT, 'test: salt refused'); END;"
+    } else {
+        "DROP TRIGGER refuse_salt_insert; DROP TRIGGER refuse_salt_update;"
+    };
+    app_db(s).execute_batch(sql).unwrap();
+}
+
+fn import_wide(e: &Engine, s: &Arc<NetworkSession>) -> Result<WalletId, EngineError> {
+    e.block_on(s.import_wallet_dat(
         testdata("compat/walletdat/bdb_wide_range.dat"),
         None,
         ImportOptions::default(),
-    ));
-    assert!(
-        matches!(&again, Err(EngineError::WalletAlreadyExists(w)) if *w == id.to_string()),
-        "{again:?}"
-    );
-    let receive = e
-        .block_on(s.addresses(
-            id,
-            AddressFilter {
-                chain: Some(AddressChain::Receiving),
-                used: None,
-            },
-        ))
+    ))
+    .map(|r| r.wallet_id)
+}
+
+fn restore_abandon(e: &Engine, s: &Arc<NetworkSession>) -> WalletId {
+    e.block_on(s.import_wallet(
+        Zeroizing::new(ABANDON.as_bytes().to_vec()),
+        Zeroizing::new(Vec::new()),
+        ImportOptions {
+            core_compat: true,
+            ..ImportOptions::default()
+        },
+    ))
+    .unwrap()
+}
+
+fn reaches_index_1000(e: &Engine, s: &Arc<NetworkSession>, id: WalletId) -> bool {
+    e.block_on(s.addresses(
+        id,
+        AddressFilter {
+            chain: Some(AddressChain::Receiving),
+            used: None,
+        },
+    ))
+    .unwrap()
+    .iter()
+    .any(|a| a.index == 1000)
+}
+
+fn unlocked_session(e: &Engine) -> Arc<NetworkSession> {
+    let s = open(e, Some(b"vault pass"));
+    e.block_on(s.vault_op(|v| v.unlock(b"vault pass", UnlockScope::Full)))
         .unwrap();
+    s
+}
+
+/// An import whose last write fails is refused; importing the file again
+/// restores the range, Core's lock and its salt.
+#[test]
+fn test_qt_106_a_failed_wallet_dat_import_can_be_retried() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = unlocked_session(&e);
+    let id = core_id(ABANDON, "");
+    refuse_salt_writes(&s, true);
+    let failed = import_wide(&e, &s);
+    assert!(failed.is_err(), "{failed:?}");
+    refuse_salt_writes(&s, false);
+    assert_eq!(import_wide(&e, &s).unwrap(), id);
     assert!(
-        receive.iter().any(|a| a.index == 1000),
+        reaches_index_1000(&e, &s, id),
         "the retry did not restore the receive range"
     );
     let locks = e.block_on(s.locked_outpoints(id)).unwrap();
     assert_eq!(locks.len(), 1, "the retry did not install Core's lock");
     assert_eq!(locks[0].vout, 7);
+    assert_eq!(e.block_on(s.coinjoin_salt(id)).unwrap(), CORE_SALT);
+}
+
+/// A failed import leaves nothing of the file: restoring the same seed from
+/// its phrase gets no Core lock, salt or range.
+#[test]
+fn test_qt_106_a_failed_wallet_dat_import_leaves_nothing_for_a_phrase_restore() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = unlocked_session(&e);
+    refuse_salt_writes(&s, true);
+    let failed = import_wide(&e, &s);
+    assert!(failed.is_err(), "{failed:?}");
+    refuse_salt_writes(&s, false);
+    let id = restore_abandon(&e, &s);
+    assert!(e.block_on(s.locked_outpoints(id)).unwrap().is_empty());
+    assert_eq!(stored_setting(&s, id, "bip44.legacy_issued"), None);
+    assert_ne!(e.block_on(s.coinjoin_salt(id)).unwrap(), CORE_SALT);
+    assert!(!reaches_index_1000(&e, &s, id));
+}
+
+/// Importing the wallet.dat of a wallet already there, open or closed,
+/// says it exists and changes nothing of it: its own salt, the locks the
+/// user left, its range.
+#[test]
+fn test_qt_106_an_import_of_a_wallet_already_there_changes_nothing() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = unlocked_session(&e);
+    let id = restore_abandon(&e, &s);
+    let own_salt = e.block_on(s.coinjoin_salt(id)).unwrap();
+    assert_ne!(own_salt, CORE_SALT);
+    let exists = |again: Result<WalletId, EngineError>| {
+        assert!(
+            matches!(&again, Err(EngineError::WalletAlreadyExists(w)) if *w == id.to_string()),
+            "{again:?}"
+        );
+    };
+    exists(import_wide(&e, &s));
+    assert_eq!(e.block_on(s.coinjoin_salt(id)).unwrap(), own_salt);
+    assert!(e.block_on(s.locked_outpoints(id)).unwrap().is_empty());
+    assert_eq!(stored_setting(&s, id, "bip44.legacy_issued"), None);
+    assert!(!reaches_index_1000(&e, &s, id));
+    e.block_on(s.unload_wallet(id)).unwrap();
+    exists(import_wide(&e, &s));
     assert_eq!(
-        e.block_on(s.coinjoin_salt(id)).unwrap(),
-        CORE_SALT,
-        "the retry did not write Core's CoinJoin salt"
+        stored_setting(&s, id, "coinjoin.salt").as_deref(),
+        Some(own_salt.as_str())
+    );
+    assert_eq!(stored_setting(&s, id, "bip44.legacy_issued"), None);
+
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = unlocked_session(&e);
+    let id = import_wide(&e, &s).unwrap();
+    let locks = e.block_on(s.locked_outpoints(id)).unwrap();
+    assert_eq!(locks.len(), 1);
+    e.block_on(s.unlock_outpoints(id, locks)).unwrap();
+    exists(import_wide(&e, &s));
+    assert!(
+        e.block_on(s.locked_outpoints(id)).unwrap().is_empty(),
+        "the coin the user unlocked was locked again"
     );
 }
 

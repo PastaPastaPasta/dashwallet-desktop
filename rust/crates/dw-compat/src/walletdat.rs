@@ -1179,10 +1179,16 @@ fn parse_record(
             let address = utf8(k.bytes().ok_or_else(|| bad("address book"))?, "address")?;
             let text =
                 String::from_utf8_lossy(v.bytes().ok_or_else(|| bad("address book"))?).into_owned();
-            if kind == b"name" {
-                g.names.insert(address, text);
+            let book = if kind == b"name" {
+                &mut g.names
             } else {
-                g.purposes.insert(address, text);
+                &mut g.purposes
+            };
+            book.insert(address, text);
+            if book.len() > MAX_ADDRESS_BOOK_ENTRIES {
+                return Err(WalletDatError::Unsupported(
+                    "the wallet has more address-book entries than can be restored".into(),
+                ));
             }
         }
         b"hdchain" | b"chdchain" => {
@@ -1202,6 +1208,11 @@ fn parse_record(
                 .try_into()
                 .map_err(|_| bad("lockedutxo"))?;
             let vout = k.u32().ok_or_else(|| bad("lockedutxo"))?;
+            if w.locked_outpoints.len() >= MAX_LOCKED_OUTPOINTS {
+                return Err(WalletDatError::Unsupported(
+                    "the wallet has more coin locks than can be restored".into(),
+                ));
+            }
             w.locked_outpoints.push((txid, vout));
         }
         b"key" | b"ckey" => {
@@ -1306,6 +1317,13 @@ const MAX_CHAIN_FIELD: usize = 4096;
 /// Most keys a legacy wallet may have derived on one HD chain, keypool
 /// included. Larger wallets are refused.
 pub const MAX_LEGACY_CHAIN_KEYS: u32 = 10_000;
+
+/// The most persistent coin locks (`lockedutxo`) a wallet may have.
+pub const MAX_LOCKED_OUTPOINTS: usize = 10_000;
+
+/// The most address-book labels (`name`) or purposes (`purpose`) a wallet
+/// may have.
+pub const MAX_ADDRESS_BOOK_ENTRIES: usize = 50_000;
 
 fn parse_hdchain(v: &mut Reader<'_>) -> Result<LegacyChain, WalletDatError> {
     let _version = v.i32().ok_or_else(|| corrupt("hdchain record"))?;
@@ -1493,6 +1511,62 @@ mod tests {
             read_sqlite(&path),
             Err(WalletDatError::Corrupt(d)) if d.contains("rounds")
         ));
+    }
+
+    /// More coin locks or address-book records than a real wallet has are
+    /// refused while the file is read, before any is written.
+    #[test]
+    fn too_many_coin_locks_or_address_book_entries_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = vector("desc_nomnemonic.dat");
+        let fill = |name: &str, n: usize, record: &dyn Fn(usize) -> (Vec<u8>, Vec<u8>)| {
+            let path = dir.path().join(name);
+            std::fs::copy(&base, &path).unwrap();
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            let tx = conn.transaction().unwrap();
+            for i in 0..n {
+                let (key, value) = record(i);
+                tx.execute(
+                    "INSERT INTO main (key, value) VALUES (?1, ?2)",
+                    rusqlite::params![key, value],
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+            path
+        };
+        let lock = |i: usize| {
+            let mut key = db_key("lockedutxo");
+            let mut txid = [0xeeu8; 32];
+            txid[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            key.extend_from_slice(&txid);
+            key.extend_from_slice(&3u32.to_le_bytes());
+            (key, b"1".to_vec())
+        };
+        let room = MAX_LOCKED_OUTPOINTS - read_sqlite(&base).unwrap().locked_outpoints.len();
+        let full = read_sqlite(&fill("locks.dat", room, &lock)).unwrap();
+        assert_eq!(full.locked_outpoints.len(), MAX_LOCKED_OUTPOINTS);
+        let over = read_sqlite(&fill("more_locks.dat", room + 1, &lock));
+        assert!(
+            matches!(&over, Err(WalletDatError::Unsupported(d)) if d.contains("coin locks")),
+            "{over:?}"
+        );
+        for kind in ["name", "purpose"] {
+            let entry = |i: usize| {
+                let mut value = Vec::new();
+                ser_bytes(&mut value, b"receive");
+                (db_key_pub(kind, format!("entry-{i}").as_bytes()), value)
+            };
+            let over = read_sqlite(&fill(
+                &format!("{kind}.dat"),
+                MAX_ADDRESS_BOOK_ENTRIES + 1,
+                &entry,
+            ));
+            assert!(
+                matches!(&over, Err(WalletDatError::Unsupported(d)) if d.contains("address-book")),
+                "{kind}: {over:?}"
+            );
+        }
     }
 
     #[test]
@@ -1939,6 +2013,25 @@ mod tests {
             false,
         );
         assert!(crate::bdb::read_pairs(&build::assemble(&[odd], false)).is_err());
+    }
+
+    /// A child named twice is refused when it is pushed, before it is read,
+    /// so slots that all name one page cannot grow the walk's stack.
+    #[test]
+    fn a_btree_child_named_twice_is_refused_before_it_is_read() {
+        let internal = build::pack(
+            3,
+            &[build::child_item(4, false), build::child_item(4, false)],
+            TYPE_INTERNAL,
+            2,
+            0,
+            false,
+        );
+        // Page 4 claims another number: reading it fails differently.
+        let unreadable = build::overflow_page(9, b"", 0, false);
+        let err =
+            crate::bdb::read_pairs(&build::assemble(&[internal, unreadable], false)).unwrap_err();
+        assert_eq!(err, WalletDatError::Corrupt("btree page cycle".into()));
     }
 
     #[test]

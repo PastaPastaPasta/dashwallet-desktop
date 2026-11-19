@@ -413,13 +413,12 @@ pub(crate) fn read_pairs(file: &[u8]) -> Result<Vec<Record>, WalletDatError> {
 
     let mut records = Vec::new();
     let mut stored = 0usize;
-    let mut stack = vec![inner.root];
+    // A page is marked when it is pushed, so the stack never holds more
+    // entries than the file has pages.
     let mut seen = vec![false; outer.last_page as usize + 1];
+    seen[inner.root as usize] = true;
+    let mut stack = vec![inner.root];
     while let Some(n) = stack.pop() {
-        if n > outer.last_page || seen[n as usize] {
-            return Err(corrupt("btree page cycle"));
-        }
-        seen[n as usize] = true;
         let bytes = page(file, inner.pagesize, n)?;
         let head = read_head(bytes, n, inner.other_endian)?;
         match head.kind {
@@ -436,6 +435,9 @@ pub(crate) fn read_pairs(file: &[u8]) -> Result<Vec<Record>, WalletDatError> {
                         }
                         if child > outer.last_page {
                             return Err(corrupt("child page past end of file"));
+                        }
+                        if std::mem::replace(&mut seen[child as usize], true) {
+                            return Err(corrupt("btree page cycle"));
                         }
                         stack.push(child);
                     }
