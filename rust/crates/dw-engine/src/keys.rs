@@ -78,10 +78,22 @@ pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
 const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 
-/// app.sqlite setting of "require authentication for every payment", one
-/// per vault: this prefix and the vault id in hex. `"0"` is off; absent
-/// (the default) or anything else is on.
+/// app.sqlite setting of "ask for my passphrase for every payment", one
+/// per vault: this prefix and the vault id in hex.
+///
+/// `"strict"` asks every time. `"window"` is the five-minute window.
+/// A vault from before the window existed stored nothing when the choice
+/// was the old default (ask every time) and `"0"` when the user turned
+/// that off. Absence and any other value stay strict, so an upgrade does
+/// not start signing without a passphrase. A vault created by this build
+/// writes `"window"` itself. `"0"` was an explicit choice to stop asking,
+/// and it now means the window rather than an unlimited unlock.
 const PAYMENT_AUTH_KEY: &str = "auth.every_payment/";
+
+/// Whether the stored value asks for the passphrase on every payment.
+pub(crate) fn asks_every_payment(stored: Option<&str>) -> bool {
+    !matches!(stored, Some("window") | Some("0"))
+}
 
 fn payment_auth_key(vault_id: &[u8]) -> String {
     format!("{PAYMENT_AUTH_KEY}{}", hex::encode(vault_id))
@@ -93,7 +105,7 @@ fn payment_auth_key(vault_id: &[u8]) -> String {
 pub struct PaymentAuthentication {
     pub on: bool,
     /// The vault it was read for ([`Vault::vault_id`]); `None` without a
-    /// vault (the default, on). A host that issues a grant later checks the
+    /// vault, which reads as on. A host that issues a grant later checks the
     /// vault is still this one.
     pub vault_id: Option<Vec<u8>>,
 }
@@ -311,12 +323,14 @@ impl NetworkSession {
         out
     }
 
-    /// "Require authentication for every payment" (DESIGN-opus §1.8; default
-    /// on). While on, a host issues `Spend` and `PlatformOp` grants on an
-    /// encrypted vault only against a credential, never `Credential::None`
-    /// (dw-app enforces it at its IPC boundary). Stored in this network's
-    /// app.sqlite under the vault's id, so script in a webview cannot change
-    /// it and every new vault (after `destroy`, or a recovery) starts on.
+    /// "Ask for my passphrase for every payment". While on, a host issues a
+    /// payment grant on an encrypted vault only against a credential (dw-app
+    /// enforces it at its IPC boundary). While off, the vault's signing
+    /// window may issue one, up to the sealed spend limit for the whole
+    /// window. Stored per vault id. A vault that has no row yet is on:
+    /// that is how every vault from before the window stored the default.
+    /// [`Self::adopt_signing_window_default`] writes the window for a vault
+    /// this build creates.
     pub async fn payment_authentication(
         self: &Arc<Self>,
     ) -> Result<PaymentAuthentication, EngineError> {
@@ -332,7 +346,9 @@ impl NetworkSession {
             let key = payment_auth_key(&vault_id);
             let on = this
                 .appdb_op(move |db| {
-                    Ok(db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.as_deref() != Some("0"))
+                    Ok(asks_every_payment(
+                        db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.as_deref(),
+                    ))
                 })
                 .await?;
             Ok(PaymentAuthentication {
@@ -369,10 +385,52 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let key = payment_auth_key(&vault_id);
+            let value = if on { "strict" } else { "window" };
+            this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some(value)))
+                .await
+        })
+        .await
+    }
+
+    /// Writes the signing-window default for a vault this build just
+    /// created, when the vault has no row yet. An older vault is left
+    /// absent, which still asks every time.
+    pub async fn adopt_signing_window_default(self: &Arc<Self>) -> Result<(), EngineError> {
+        let Some(vault_id) = self.vault().vault_id() else {
+            return Ok(());
+        };
+        let key = payment_auth_key(&vault_id);
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
             this.appdb_op(move |db| {
-                db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, (!on).then_some("0"))
+                if db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.is_none() {
+                    db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some("window"))?;
+                }
+                Ok(())
             })
             .await
+        })
+        .await
+    }
+
+    /// Replaces this vault's payment-auth row. `None` deletes it, which is
+    /// how a vault from before the signing window stored "ask every time".
+    /// Tests use it to prove an upgrade still asks.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub async fn set_payment_auth_row_for_test(
+        self: &Arc<Self>,
+        value: Option<String>,
+    ) -> Result<(), EngineError> {
+        let Some(vault_id) = self.vault().vault_id() else {
+            return Ok(());
+        };
+        let key = payment_auth_key(&vault_id);
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, value.as_deref()))
+                .await
         })
         .await
     }
@@ -939,5 +997,20 @@ impl NetworkSession {
             Ok(signer.sign_message(&path, &message).await?)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod payment_auth_tests {
+    use super::asks_every_payment;
+
+    #[test]
+    fn an_absent_or_unknown_row_asks_and_only_an_explicit_window_does_not() {
+        assert!(asks_every_payment(None));
+        assert!(asks_every_payment(Some("strict")));
+        assert!(asks_every_payment(Some("1")));
+        assert!(asks_every_payment(Some("garbage")));
+        assert!(!asks_every_payment(Some("window")));
+        assert!(!asks_every_payment(Some("0")));
     }
 }
