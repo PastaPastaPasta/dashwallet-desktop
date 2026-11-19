@@ -341,30 +341,37 @@ jobs:
           path: ${{ runner.temp }}/launch/
           if-no-files-found: warn
 
-  # The Flatpak repackages this run's .deb (packaging/flatpak), so it ships the same binary.
+  # The Flatpak repackages this run's .deb (packaging/flatpak), so it ships the same binary (checked below).
   flatpak:
     name: Linux Flatpak
     runs-on: ubuntu-24.04
     needs: linux
     timeout-minutes: 45
-    env:
-      # Kept out of HOME: the launch check gives the app a private, empty one.
-      FLATPAK_USER_DIR: ${{ runner.temp }}/flatpak-user
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - run: ci/github/release-version.sh
+      # Kept out of HOME: the launch check gives the app a private, empty one.
+      - run: echo "FLATPAK_USER_DIR=$RUNNER_TEMP/flatpak-user" >> "$GITHUB_ENV"
       - name: Linux packages (flatpak-builder, Xvfb, ImageMagick)
         run: ci/github/linux-host-deps.sh flatpak
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist-linux
           path: ${{ runner.temp }}/linux
+      # bwrap needs unprivileged user namespaces, which Ubuntu 24.04's AppArmor may restrict.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Build the Flatpak bundle from the .deb
         run: ci/github/flatpak-bundle.sh "$RUNNER_TEMP/linux/dash-wallet-$VERSION-linux-amd64.deb" "$RUNNER_TEMP/dist/dash-wallet-$VERSION-linux-x86_64.flatpak" "$RUNNER_TEMP/flatpak-build"
       - name: Install the bundle
         run: flatpak install --user -y --noninteractive --bundle "$RUNNER_TEMP/dist/dash-wallet-$VERSION-linux-x86_64.flatpak"
+      - name: The Flatpak ships the .deb's binary unchanged
+        run: |
+          cmp "$FLATPAK_USER_DIR/app/org.dash.wallet.desktop/current/active/files/bin/dash-wallet" \
+            <(dpkg-deb --fsys-tarfile "$RUNNER_TEMP/linux/dash-wallet-$VERSION-linux-amd64.deb" | tar -xO usr/bin/dash-wallet)
+          echo "dash-wallet is byte-identical to the .deb's"
       # No --datadir: the sandbox sees no host path, and its own data dir is under the private HOME.
       - name: Launch the Flatpak under Xvfb and take a screenshot
         run: |

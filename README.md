@@ -74,6 +74,7 @@ The binaries are not notarized (macOS) or signed (Windows), so each OS warns on 
   It registers the same links. The sandbox has network and display access only: wallet data lives in
   `~/.var/app/org.dash.wallet.desktop/data/org.dash.wallet.desktop`, `--datadir` must point inside the
   sandbox, files are opened and saved through the system file dialog, and there is no tray icon.
+  In the Flatpak a wallet needs a passphrase: the sandbox has no access to the system secret store.
   Update it by installing a newer bundle.
 
 ## Verify a download

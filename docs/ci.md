@@ -251,6 +251,7 @@ On a push to `main`, the 02:47 UTC schedule, a dispatch and a tag `v*` (pull req
 | macOS | `macos-latest` | `pnpm tauri build --target universal-apple-darwin --bundles dmg`: `macos-universal.dmg`, ad-hoc signed (`signingIdentity "-"` in `tauri.conf.json`), not notarized | 45 min (build 42) |
 | Windows | `windows-latest` | `pnpm tauri build --bundles nsis`: `windows-x64-setup.exe`, unsigned | 33 min (build 28) |
 | Linux | `ubuntu-24.04` | `pnpm tauri build --bundles appimage,deb`: `linux-x86_64.AppImage`, `linux-amd64.deb` | 16 min (build 13) |
+| Linux Flatpak | `ubuntu-24.04` | `flatpak-builder` from the linux job's `.deb` (`packaging/flatpak`, `ci/github/flatpak-bundle.sh`): `linux-x86_64.flatpak`; a `cmp` checks its binary is the `.deb`'s, then `flatpak run` takes the launch check | |
 
 Each job then launches the built app for 30 s on an empty `--datadir` with `--network regtest --no-platform
 --dapi https://127.0.0.1:1 --window-size 960x640` (nothing syncs, nothing leaves the runner), fails if the
@@ -262,7 +263,7 @@ runners the screen capture is black or shows the runner console although the win
 VM renders the same build), so there the check is "the process is alive after 30 s", with the window title
 logged; real screenshots of those two come from a person at release time.
 
-The `checksums` job downloads the three `dist-<os>` artifacts, writes `SHA256SUMS` in `sha256sum` format
+The `checksums` job downloads the four `dist-*` artifacts (five bundles), writes `SHA256SUMS` in `sha256sum` format
 (file names only), checks it with `sha256sum -c` and uploads everything as `release-v<version>`.
 `ci/github/release-version.sh` names the files: the tag's version for a tag (a plain `vX.Y.Z` must equal
 `tauri.conf.json`), else `<version>-dev.<run>.g<short sha>`.
@@ -277,7 +278,7 @@ commit outside `main` therefore never start the job that holds the write token. 
 commit, like the workflow, so it cannot stop a tag whose own workflow file was edited; that needs an environment
 deployment policy or a tag ruleset in the repository settings. `release-publish.sh` repeats the ancestry check
 (second line). `decide` also gates the build: a branch push or pull request that changes only `docs/`, `*.md`, the
-Swift trees (`Sources`, `Tests`, `Apps`, `Vendor`, `Package.*`) or the unrelated workflows skips the three build
+Swift trees (`Sources`, `Tests`, `Apps`, `Vendor`, `Package.*`) or the unrelated workflows skips the build
 jobs and so `checksums` (`script-tests` still runs); main, tags and dispatches always build. A new push to a branch
 or pull request cancels that ref's running release build (main and tags are never cancelled). The `publish` job checks
 out the full history, runs `ci/github/release-publish.sh` and publishes:
@@ -303,7 +304,7 @@ out the full history, runs `ci/github/release-publish.sh` and publishes:
 - push of a tag `vX.Y.Z[-rc.N]` (on `main`): a full release for `vX.Y.Z` (GitHub marks the highest version
   Latest), a prerelease for `-rc.N`, with the run's files (notes from
   `docs/release/X.Y.Z-notes.md`), nothing rolling. `v0.0.0-rel<N>` dry-run tags only build.
-- `actions/attest-build-provenance` runs before the release is written, on every file (the four bundles and both
+- `actions/attest-build-provenance` runs before the release is written, on every file (the five bundles and both
   `SHA256SUMS`); the stable-named copies have the same bytes, so one attestation covers both.
 
 The publish concurrency group is per ref (`release-publish-main`, and one per tag), never cancelling. GitHub

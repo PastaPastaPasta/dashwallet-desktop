@@ -12,6 +12,8 @@ finish-args:
 modules:
   - name: dash-wallet
     buildsystem: simple
+    build-options:
+      no-debuginfo: true
     sources:
       - type: file
         path: dash-wallet.deb
