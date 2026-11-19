@@ -123,6 +123,9 @@ pub(crate) struct PlatformRuntime {
     /// R1-3). So the wallets the library's pass syncs and re-sends for are
     /// the ones its admission checked.
     pub(crate) shielded_passes: Arc<tokio::sync::RwLock<()>>,
+    /// Shuts the dispatch hook from the close's start and during each drain
+    /// of `shielded_passes`.
+    pub(crate) hook_fence: Arc<super::shielded_pool::HookFence>,
     /// A test's pause of the next shielded pass, after its admission and
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
@@ -439,6 +442,7 @@ impl PlatformRuntime {
             tasks: Mutex::new(HashMap::new()),
             loops_on: Arc::new(AtomicBool::new(false)),
             shielded_passes: Arc::default(),
+            hook_fence: Arc::default(),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
             shielded_spends: tokio::sync::RwLock::new(()),

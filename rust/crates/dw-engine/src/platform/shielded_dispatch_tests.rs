@@ -15,20 +15,36 @@ use dw_appdb::dispatch::{
 };
 use dw_vault::SHIELDED_ACCOUNT;
 use platform_wallet::PlatformWalletError;
-use platform_wallet::wallet::shielded::store::PendingRedrive;
+use platform_wallet::wallet::shielded::store::{NotExecutedReason, PendingRedrive};
 use platform_wallet::wallet::shielded::{
     CachedOrchardProver, DispatchedNote, NetworkShieldedCoordinator, OrchardKeySet,
-    ShieldedDispatch, ShieldedDispatchKind, ShieldedDispatchPayload, ShieldedStore, SubwalletId,
+    ShieldedDispatch, ShieldedDispatchKind, ShieldedDispatchPayload, ShieldedSpendDisposition,
+    ShieldedStore, SubwalletId,
 };
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use super::super::shielded_pool::{self as pool, EngineDispatch, ShieldedLib, on_pool};
 use super::super::topup_tests::{self, PASS, options};
 use super::{NOTE, bound_address, core_address, note, payee};
-use crate::{DashNetwork, NetworkSession};
+use crate::{DashNetwork, EngineError, ImportOptions, NetworkSession};
 
 /// A nullifier no note of the account has: a padding action's.
 const PADDING: [u8; 32] = [0xee; 32];
+
+/// A second wallet's recovery phrase (BIP-39's test vector).
+const OTHER_PHRASE: &str =
+    "legal winner thank year wave sausage worth useful legal winner thank yellow";
+
+fn wait_until(what: impl Fn() -> bool, why: &str) {
+    for _ in 0..4_000 {
+        if what() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("{why}");
+}
 
 /// A real session, its wallet bound through the facade's open (which
 /// configures the coordinator and sets the hook), with a hook over the
@@ -165,6 +181,51 @@ impl Hooked {
             s.ensure_background().await;
             assert!(s.leases.background(&wallet).is_some());
         });
+    }
+
+    /// Runs `during` while a quit (`Engine::shutdown`) has begun and is held
+    /// at its first step, before the leases drop: the Platform supervisor's
+    /// task, which the close cancels and awaits first
+    /// (`PlatformRuntime::deactivate`), waits until `during` returns. The
+    /// quit then completes.
+    fn during_a_held_quit<T>(&self, during: impl FnOnce() -> T) -> T {
+        use super::super::runtime::{Supervisor, guard};
+        let (reached_tx, reached) = std::sync::mpsc::channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
+        let (signals, _signals) = tokio::sync::mpsc::unbounded_channel();
+        let task = {
+            let release = Arc::clone(&release);
+            self.f.session.rt.spawn(async move {
+                let _ = cancelled.changed().await;
+                let _ = reached_tx.send(());
+                release.notified().await;
+            })
+        };
+        *guard(&self.f.session.platform.supervisor) = Some(Supervisor {
+            cancel,
+            signals,
+            task: Some(task),
+            running: true,
+        });
+        std::thread::scope(|scope| {
+            let quit = scope.spawn(|| self.f.engine.block_on(self.f.engine.shutdown()));
+            reached
+                .recv_timeout(Duration::from_secs(30))
+                .expect("the quit never began");
+            struct Release(Arc<tokio::sync::Notify>);
+            impl Drop for Release {
+                fn drop(&mut self) {
+                    self.0.notify_one();
+                }
+            }
+            let out = {
+                let _release = Release(release);
+                during()
+            };
+            quit.join().unwrap().unwrap();
+            out
+        })
     }
 
     /// The attempts of the stored spend `n`; `None` once it is gone.
@@ -674,10 +735,11 @@ fn a_pass_is_held_without_the_lease_while_a_spend_predates_the_hook() {
     });
 }
 
-/// Once the session's close has shut its gate the hook refuses both ways,
-/// with the wallet's lease still held: a pass in flight re-sends nothing
-/// more (the stored spend keeps its attempts) and no new spend is accepted
-/// or written.
+/// Once the session's close has begun (a quit, held here before its leases
+/// drop) the hook refuses both ways, with the wallet's lease still held: a
+/// pass in flight re-sends nothing more (the stored spend keeps its
+/// attempts) and no new spend is accepted or written. So it does once the
+/// close has ended.
 #[test]
 fn close_during_redrive_pass_admit_refuses_without_attempt_bump() {
     let h = Hooked::new();
@@ -686,22 +748,162 @@ fn close_during_redrive_pass_admit_refuses_without_attempt_bump() {
     let unsent = h.staged(2, &[2]);
     assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
 
-    let (s, hook, wallet) = (Arc::clone(&h.f.session), Arc::clone(&h.hook), h.f.wallet);
-    h.f.engine.block_on(async move {
-        let _closing = s.gate.close().await;
-        assert!(!s.is_open());
-        assert!(s.leases.background(&wallet).is_some());
-        let refused = (hook
-            .admit(wallet.0, SHIELDED_ACCOUNT, [1; 32], st_hash(1))
-            .await)
-            .unwrap_err()
-            .reason;
+    h.during_a_held_quit(|| {
+        assert!(h.f.session.leases.background(&h.f.wallet).is_some());
+        let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
         assert!(refused.contains("closing"), "{refused}");
-        let refused = hook.dispatch(unsent).await.unwrap_err().reason;
+        let refused = h.dispatch(unsent).unwrap_err();
         assert!(refused.contains("closing"), "{refused}");
+        assert_eq!((h.attempts(1), h.attempts(2)), (Some(0), Some(0)));
+        assert_eq!(h.artifact(2), None);
     });
-    assert_eq!((h.attempts(1), h.attempts(2)), (Some(0), Some(0)));
-    assert_eq!(h.artifact(2), None);
+    assert!(!h.f.session.is_open());
+    let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+    assert!(refused.contains("closing"), "{refused}");
+}
+
+/// A quit begun between the library's store of a spend (unsent, its note
+/// reserved) and the hook's answer: with the wallet's lease still held the
+/// hook refuses it and writes nothing. The library then records it
+/// `NotExecuted(Refused)`, which frees its note (its `record_refusal`,
+/// staged here: no spend built in a test reaches the network's hook), so
+/// nothing was sent and nothing of it holds the wallet.
+#[test]
+fn quit_between_h2_and_h1_refuses_and_settles_not_sent() {
+    let h = Hooked::new();
+    h.lease();
+    let payload = h.staged(1, &[1]);
+    // The library's selection reserved the note for the spend.
+    let (coordinator, id) = (Arc::clone(&h.coordinator), h.subwallet());
+    h.f.engine.block_on(async move {
+        let mut store = coordinator.store().write().await;
+        let n = note(1, NOTE).nullifier;
+        assert!(store.mark_pending(id, &n).unwrap());
+        (store.set_pending_spend(id, &n, [0xa0; 32], [1; 32])).unwrap();
+    });
+    h.during_a_held_quit(|| {
+        assert!(h.f.session.leases.background(&h.f.wallet).is_some());
+        let refused = h.dispatch(payload).unwrap_err();
+        assert!(refused.contains("closing"), "{refused}");
+        assert_eq!(h.artifact(1), None);
+
+        let (coordinator, id, wallet) = (Arc::clone(&h.coordinator), h.subwallet(), h.f.wallet);
+        let manager = h.f.session.manager().unwrap();
+        h.f.engine.block_on(async move {
+            let mut store = coordinator.store().write().await;
+            assert!(store.get_unspent_notes(id).unwrap().is_empty(), "reserved");
+            (store.resolve_unsent_redrive(id, &[1; 32], NotExecutedReason::Refused)).unwrap();
+            assert_eq!(store.get_unspent_notes(id).unwrap().len(), 1, "freed");
+            assert!(store.stale_pending_spends(id).unwrap().is_empty());
+            drop(store);
+            assert!(
+                (coordinator.pending_spend_redrives(wallet.0).await)
+                    .unwrap()
+                    .is_empty()
+            );
+            let dispositions = coordinator.spend_dispositions(wallet.0).await.unwrap();
+            assert!(
+                matches!(
+                    &dispositions[..],
+                    [d] if d.disposition
+                        == ShieldedSpendDisposition::NotExecuted(NotExecutedReason::Refused)
+                ),
+                "{dispositions:?}"
+            );
+            assert!(!pool::holds_stored_spends(&manager, wallet).await);
+        });
+    });
+}
+
+/// While a revocation drains the passes (here another wallet's Close
+/// Wallet, waiting for a pass in flight) the hook refuses for every wallet,
+/// one that holds its lease too, and writes nothing; once the drain has
+/// ended it answers again.
+#[test]
+fn a_drain_of_the_passes_refuses_the_hook() {
+    let h = Hooked::new();
+    let other = (h.f.engine)
+        .block_on(h.f.session.import_wallet(
+            Zeroizing::new(OTHER_PHRASE.as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    h.lease();
+    assert_eq!(h.dispatch(h.staged(1, &[1])), Ok(()));
+    h.hold_notes(&[2]);
+    h.store_unsent(2, &[2]);
+    let passes = Arc::clone(&h.f.session.platform.shielded_passes);
+    let in_flight = h.f.engine.block_on(passes.clone().read_owned());
+    std::thread::scope(|scope| {
+        let close = scope.spawn(|| h.f.engine.block_on(h.f.session.unload_wallet(other)));
+        // The drain's write is queued behind the pass.
+        wait_until(|| passes.try_read().is_err(), "the drain never began");
+        assert!(h.f.session.leases.background(&h.f.wallet).is_some());
+        let refused = h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)).unwrap_err();
+        assert!(refused.contains("drain"), "{refused}");
+        let refused = h.dispatch(h.payload(2, &[2])).unwrap_err();
+        assert!(refused.contains("drain"), "{refused}");
+        assert_eq!(h.artifact(2), None);
+        drop(in_flight);
+        close.join().unwrap().unwrap();
+    });
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
+    assert_eq!(h.dispatch(h.payload(2, &[2])), Ok(()));
+}
+
+/// An in-app close (the network switch's) is refused while a signing call
+/// runs (`close_preflight`), so a dispatch in it is never cut: here the
+/// close is asked while the hook waits to read the account's notes, and
+/// the hook then accepts the spend and writes its artifact. The refused
+/// close leaves the hook answering and the session open.
+#[test]
+fn close_during_dispatch_is_refused_and_dispatch_completes() {
+    let h = Hooked::new();
+    h.lease();
+    let payload = h.staged(1, &[1]);
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (go, go_rx) = tokio::sync::oneshot::channel::<()>();
+    let hook = Arc::clone(&h.hook);
+    let call = pool::on_pool_signing(&h.f.session, h.f.wallet, move |_, _| async move {
+        let _ = entered_tx.send(());
+        let _ = go_rx.await;
+        Ok(hook.dispatch(payload).await)
+    });
+    let (store_held_tx, store_held) = std::sync::mpsc::channel();
+    let (release_store, release_rx) = tokio::sync::oneshot::channel::<()>();
+    let coordinator = Arc::clone(&h.coordinator);
+    std::thread::scope(|scope| {
+        let call = scope.spawn(|| h.f.engine.block_on(call));
+        entered.recv_timeout(Duration::from_secs(30)).unwrap();
+        // The account's notes are not readable until the close was asked.
+        h.f.session.rt.spawn(async move {
+            let _store = coordinator.store().write().await;
+            let _ = store_held_tx.send(());
+            let _ = release_rx.await;
+        });
+        store_held.recv_timeout(Duration::from_secs(30)).unwrap();
+        let _ = go.send(());
+        std::thread::sleep(Duration::from_millis(50));
+        let closed =
+            h.f.engine
+                .block_on(h.f.engine.close_network(DashNetwork::Regtest));
+        assert!(
+            matches!(closed, Err(EngineError::ShieldedSpendUnresolved)),
+            "{closed:?}"
+        );
+        let _ = release_store.send(());
+        assert_eq!(call.join().unwrap().unwrap(), Ok(()));
+    });
+    assert!(h.f.session.is_open());
+    assert_eq!(
+        h.artifact(1).map(|a| (a.origin, a.st_hash)),
+        Some((ArtifactOrigin::Dispatched, Some(st_hash(1))))
+    );
+    assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
 }
 
 /// The hook is set by every open of the shielded store, before the

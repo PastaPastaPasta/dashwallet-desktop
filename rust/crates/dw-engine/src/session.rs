@@ -953,6 +953,9 @@ impl NetworkSession {
     /// databases: it returns once the last reference to the wallet database
     /// is gone, within [`PERSISTER_RELEASE`]. Must run on the engine runtime.
     pub(crate) async fn close(&self) {
+        // From here the dispatch hook accepts no spend and allows no re-send:
+        // a quit does not wait for the signing calls in flight.
+        self.platform.hook_fence.close();
         // A running bring-up ends first (DASHPAY §3.2). It holds no
         // operation guard, so it is cancelled before waiting for the guards,
         // and again after, for a start admitted meanwhile; then its blocking

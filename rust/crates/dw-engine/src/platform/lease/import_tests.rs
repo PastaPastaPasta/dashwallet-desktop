@@ -338,3 +338,84 @@ fn a_failed_classification_fails_the_open_and_the_next_open_reads_the_rows() {
     f.open();
     assert_eq!(statuses(artifacts(&f.session)), ["unresolved", "archived"]);
 }
+
+/// While the dispatch journal is unavailable (here unopenable), nothing
+/// changes which wallets the session knows, as no leased First starts: a
+/// removal, an import of a seed or of a watch-only xpub and a restore are
+/// refused (`storage`) before anything of them is stored or deleted. So no
+/// removal skips archiving its wallet's rows, and no import waits for a
+/// classification of its rows that cannot run.
+#[test]
+fn import_restore_and_remove_are_refused_while_the_journal_is_unavailable() {
+    let mut f = Fixture::new();
+    let a = f.import(PHRASE_A);
+    let b = f.import(PHRASE_B);
+    let backup = f._dir.path().join("b.dwbackup");
+    let pass = || Some(Zeroizing::new(b"bk".to_vec()));
+    (f.engine)
+        .block_on(f.session.backup_wallet(b, backup.clone(), pass()))
+        .unwrap();
+    let wipe = |f: &Fixture, w: WalletId| {
+        (f.session.vault())
+            .authorize(GrantPurpose::Wipe, Some(&w.0), Credential::None)
+            .unwrap()
+            .id
+    };
+    f.engine
+        .block_on(f.session.remove_wallet(b, wipe(&f, b)))
+        .unwrap();
+    let xpub = (f.engine.block_on(f.session.account_xpub(a, 0)))
+        .unwrap()
+        .xpub;
+
+    let data_dir = f.close();
+    let journal = data_dir.join(dw_appdb::dispatch::DISPATCH_DB_FILE);
+    for suffix in ["-wal", "-shm"] {
+        let mut side = journal.clone().into_os_string();
+        side.push(suffix);
+        let _ = std::fs::remove_file(side);
+    }
+    std::fs::write(&journal, b"not a journal").unwrap();
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    assert!(!f.session.leases.journal_ready());
+    let refused = |r: Result<(), crate::EngineError>| {
+        assert!(
+            matches!(&r, Err(crate::EngineError::Storage(e)) if e.contains("dispatch journal")),
+            "{r:?}"
+        );
+    };
+
+    refused(f.engine.block_on(f.session.remove_wallet(a, wipe(&f, a))));
+    assert!(f.session.require_wallet(&a).is_ok());
+    assert!(f.session.vault().has_wallet_secret(&a.0));
+    refused(
+        (f.engine)
+            .block_on(f.session.import_wallet(
+                Zeroizing::new(PHRASE_B.as_bytes().to_vec()),
+                Zeroizing::new(Vec::new()),
+                ImportOptions::default(),
+            ))
+            .map(drop),
+    );
+    refused(
+        (f.engine)
+            .block_on(
+                f.session
+                    .import_watch_only(xpub, crate::WatchOnlyOptions::default()),
+            )
+            .map(drop),
+    );
+    refused(
+        (f.engine)
+            .block_on(f.session.restore_backup(backup, pass()))
+            .map(drop),
+    );
+    let listed: Vec<WalletId> = (f.session.wallet_infos().unwrap().into_iter())
+        .map(|w| w.wallet_id)
+        .collect();
+    assert_eq!(listed, [a]);
+    assert!(!f.session.vault().has_wallet_secret(&b.0));
+}

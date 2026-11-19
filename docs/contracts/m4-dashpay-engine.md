@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 65
+Contract-Version: 66
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -722,7 +722,11 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
 
 **Closing with an unresolved spend (DEC-1046).** At the pin, removing a wallet from platform-wallet's manager deletes its
 stored transitions and reservations (`remove_wallet` → `unregister_wallet` → `purge_wallet`, `wallet_lifecycle.rs:847`,
-`coordinator.rs:878-902`, `file_store.rs:880-901`), and the library has no detach. So while a wallet holds such a spend:
+`coordinator.rs:878-902`, `file_store.rs:880-901`), and the library has no detach. A wallet holds such a spend while
+the library stores a record of it (one stored under the dispatch hook and not sent yet included), or keeps an
+`Executed` or `Unresolved` outcome of one that the engine has not acknowledged (version 66): removing the wallet would
+hand that outcome's hold on its notes to the next scan instead of the acknowledgement. A `NotExecuted` outcome holds
+nothing. So while a wallet holds such a spend:
 Close Wallet (`unload_wallet`) and an in-app network close or switch (`close_network`) are refused with the engine code
 `shielded_spend_unresolved`, "a shielded payment is still being confirmed; wait, or quit and reopen the app", and change
 nothing (dw-app keeps the network active and its drafts); a restore's rollback keeps the wallet. The close's check and
@@ -732,7 +736,12 @@ went ahead; a signing call already running refuses the close, while a wallet loa
 30 s, then the close is refused with `wallet`, "a wallet is still opening; close the network once it is open"). The
 shielded store's first open, which rehydrates its stored spends (the supervisor's start, or the session's first
 shielded call), is admitted as a load is: one running is waited for, and one that starts after the check fails with
-`network_not_open`. So a close or switch that succeeds leaves no spend unresolved. App quit (`shutdown`)
+`network_not_open`. So a close or switch that succeeds leaves no spend unresolved. From the start of a close (an in-app
+one once it goes ahead, and the quit), and while a lock, a wallet's revocation or the close waits for a shielded pass
+in flight, the dispatch hook refuses whatever it is asked (version 66): a spend the library stored but has not sent
+yet is refused before its first broadcast, so the library records it `NotExecuted(Refused)` and frees its notes, and
+the call returns `shielded.spend_refused` ("The payment was not sent"); a pass in flight re-sends nothing more, each
+spend keeping its re-send count. App quit (`shutdown`)
 is never refused: it seals and drains as any close, then leaves that wallet loaded in the sealed manager, which runs
 nothing more. Its stores are committed (WAL), not closed: wallet.sqlite writes commit inline (the persister's
 `Immediate` mode), the close flushes the wallet once more (a failed flush is logged, not returned), and the library
@@ -743,7 +752,16 @@ checkpoint does not run; the WAL replays at the next open. The next launch rehyd
 reservations and all: its stored transition, decodable as the library's re-send decodes it, its `unresolved_spends`
 entry and its journal record (not its history row, above). dw-ffi, frozen in 0.1, reports `shielded_spend_unresolved`
 as `wallet` (`EngineError`) or `internal` (`WalletError`), with the same detail. Removing the wallet (the
-user's `remove_wallet`, under its wipe grant) deletes its spends with it. 0.2 replaces this with an upstream detach.
+user's `remove_wallet`, under its wipe grant) deletes its spends with it. Item 1, on the fork line, replaces this with
+an upstream detach.
+
+**While the dispatch journal is unavailable** (version 66: `dispatch.sqlite` could not be opened or is of a newer
+schema; the session still opens), the calls that change which wallets the session knows are refused with `storage`
+("the dispatch journal is unavailable") before anything of them is stored, deleted or consumed, as a leased First is:
+`remove_wallet` (before the grant is checked or redeemed), `import_wallet` and every other seed import (the Dash Core
+file imports), `import_watch_only` and `restore_backup` (before any bundle is opened, so no passphrase is counted).
+Otherwise a removal could not archive the wallet's journal rows, and an import could reappear under an id whose rows
+the journal never classified. Creating a wallet (`create_wallet`, a new id) is not refused.
 
 **Unrecorded spends (DEC-1057).** When the library could not write a pending spend's record (its result unknown and no
 `unresolved` in the outcome), the spend's notes are reserved in memory only (`file_store.rs:572`, `mark_pending`) and
@@ -907,7 +925,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 051121d307a723fa435dadb4fb68e9f7bb5ea8d8a0cfd4bcdcf96e8d9af76fca version: 65 -->
+<!-- surface-sha256: 051121d307a723fa435dadb4fb68e9f7bb5ea8d8a0cfd4bcdcf96e8d9af76fca version: 66 -->
 
 ```rust
 // src/platform/contacts.rs

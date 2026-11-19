@@ -193,7 +193,8 @@ impl NetworkSession {
 
     /// Removes a wallet: unloads it, deletes its wallet-state rows, its app
     /// metadata and finally its vault records (IOS-109, QT-101). Needs a
-    /// `Wipe` grant, redeemed after the wallet is found.
+    /// `Wipe` grant, redeemed after the wallet is found. Refused (`Storage`)
+    /// before anything changes while the dispatch journal is unavailable.
     ///
     /// Deleting the vault records needs a full-scope data key: the vault's,
     /// or the grant's own key when it was issued with the passphrase on a
@@ -231,6 +232,7 @@ impl NetworkSession {
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             this.require_wallet(&id)?;
+            this.require_journal()?;
             if this.vault.has_wallet_secret(&id.0) {
                 this.vault
                     .check_grant(&grant_id, GrantKind::Wipe, Some(&id.0))?;

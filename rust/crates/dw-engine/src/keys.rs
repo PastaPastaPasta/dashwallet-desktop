@@ -427,7 +427,8 @@ impl NetworkSession {
     ///   which attaches the keys, and the call succeeds (`WalletCreated`).
     ///
     /// Errors: `InvalidMnemonic`, `InvalidArgument` (passphrase not UTF-8 in
-    /// strict mode), `Vault(NoVault | Locked | MixingOnly | …)`.
+    /// strict mode), `Vault(NoVault | Locked | MixingOnly | …)`, `Storage`
+    /// while the dispatch journal is unavailable (nothing is stored).
     ///
     /// Counterpart: `platform_wallet_manager_create_wallet_from_seed_bytes`.
     pub async fn import_wallet(
@@ -498,6 +499,9 @@ impl NetworkSession {
         auto_backup: AutoBackup,
         origin: Origin,
     ) -> Result<WalletId, EngineError> {
+        if origin == Origin::Imported {
+            self.require_journal()?;
+        }
         let Checked {
             name,
             lookahead,

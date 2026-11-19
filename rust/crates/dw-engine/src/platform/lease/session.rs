@@ -340,9 +340,10 @@ impl NetworkSession {
         self.cancel_relock();
         let this = Arc::clone(self);
         let passes = Arc::clone(&self.platform.shielded_passes);
+        let fence = Arc::clone(&self.platform.hook_fence);
         let report = (self.leases)
             .lock_then(RevokeCause::Lock, move || this.vault_gate(), async move {
-                drain_passes(&passes).await
+                drain_passes(&passes, &fence).await
             })
             .await;
         Ok(report)
@@ -360,7 +361,7 @@ impl NetworkSession {
     /// the pass's end, which the SDK's request settings bound
     /// (`shielded_pool::drain_passes`).
     pub(crate) async fn drain_shielded_pass(&self) {
-        drain_passes(&self.platform.shielded_passes).await;
+        drain_passes(&self.platform.shielded_passes, &self.platform.hook_fence).await;
     }
 
     /// The synchronous lock (`Vault.lock()`, the console, the relock
@@ -382,9 +383,10 @@ impl NetworkSession {
         // (`drain_shielded_pass`); none is admitted after it for a wallet
         // holding a stored spend (its background lease is gone).
         let passes = Arc::clone(&self.platform.shielded_passes);
+        let fence = Arc::clone(&self.platform.hook_fence);
         self.leases
             .lock_sync_then(RevokeCause::Lock, || self.vault_gate(), async move {
-                drain_passes(&passes).await
+                drain_passes(&passes, &fence).await
             })
     }
 
@@ -490,6 +492,20 @@ impl NetworkSession {
         // pass admitted under it ends first (DEC-1032).
         self.drain_shielded_pass().await;
         freeze
+    }
+
+    /// `storage` while the dispatch journal is not read or is unavailable,
+    /// as a leased First is refused then: a wallet's import, restore and
+    /// removal change which of its rows stand (the removal archives them,
+    /// the next open classifies an import's), which only a journal that is
+    /// open can keep.
+    pub(crate) fn require_journal(&self) -> Result<(), EngineError> {
+        if self.leases.journal_ready() {
+            return Ok(());
+        }
+        Err(EngineError::Storage(
+            LeaseError::JournalUnavailable.to_string(),
+        ))
     }
 
     /// Erases a removed wallet's journal rows (§6.5, DEC-134), under the

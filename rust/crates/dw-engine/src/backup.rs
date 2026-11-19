@@ -489,6 +489,8 @@ impl NetworkSession {
     /// Restores the wallets of a `.dwbackup` (QT-110): verifies it, stores
     /// each wallet's secrets under this vault's key (seed-safety order),
     /// registers it and inserts its app metadata. Returns the wallet ids.
+    /// Refused (`Storage`) before any bundle is opened while the dispatch
+    /// journal is unavailable.
     pub async fn restore_backup(
         self: &Arc<Self>,
         path: PathBuf,
@@ -505,6 +507,7 @@ impl NetworkSession {
         path: PathBuf,
         passphrase: Option<Zeroizing<Vec<u8>>>,
     ) -> Result<Vec<WalletId>, EngineError> {
+        self.require_journal()?;
         let tag = self.network.dir_name();
         let vault = self.vault.clone();
         // Refused before any bundle is opened, so no passphrase is checked
