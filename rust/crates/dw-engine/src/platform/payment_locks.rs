@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use dashcore::{Address, OutPoint, ScriptBuf, Txid};
 use dpp::prelude::Identifier;
-use dw_appdb::{DpContactPayoutRow, DpPaymentLockRow};
+use dw_appdb::{DpContactPayoutRow, DpPaymentLockRow, PairHolder};
 use key_wallet::transaction_checking::TransactionContext;
 
 use super::contacts_model::identifier;
@@ -152,13 +152,18 @@ pub(crate) struct Payout {
     pub(crate) since: u64,
 }
 
+/// A `dp_contact_payout.source` value.
+fn row_source(source: &str) -> Option<PaymentSource> {
+    match source {
+        "shielded" => Some(PaymentSource::Shielded),
+        "platform" => Some(PaymentSource::Platform),
+        _ => None,
+    }
+}
+
 impl Payout {
     fn of(row: &DpContactPayoutRow, network: dashcore::Network) -> Option<Self> {
-        let source = match row.source.as_str() {
-            "shielded" => PaymentSource::Shielded,
-            "platform" => PaymentSource::Platform,
-            _ => return None,
-        };
+        let source = row_source(&row.source)?;
         let state = match row.state.as_str() {
             "pending" => PayoutState::Pending,
             "sent" => PayoutState::Sent,
@@ -318,7 +323,7 @@ impl NetworkSession {
                 continue;
             };
             let pair = payout.pair;
-            let under_way = guard(&payments.in_flight).get(&(id, pair)) == Some(&row.reference);
+            let under_way = guard(&payments.in_flight).contains_key(&(id, pair));
             if payout.state == PayoutState::Pending && !under_way {
                 if self.payout_recorded(id, &row).await == Some(false) {
                     let (wallet, reference) = (id.to_string(), row.reference.clone());
@@ -326,7 +331,7 @@ impl NetworkSession {
                         db.settle_dp_contact_payout(&wallet, &reference, "not_sent")
                     });
                     match settled.await {
-                        Ok(_) => {
+                        Ok(true) => {
                             payout.state = PayoutState::NotSent;
                             if let Ok(a) = row.address.parse::<Address<_>>()
                                 && let Ok(address) = a.require_network(network)
@@ -335,6 +340,7 @@ impl NetworkSession {
                             }
                             self.signal_payments(id, &pair.0);
                         }
+                        Ok(false) => {}
                         Err(e) => {
                             tracing::warn!(wallet_id = %id, error = %e, "could not settle a payout");
                         }
@@ -358,15 +364,27 @@ impl NetworkSession {
 
     /// Whether `row`'s source record exists (P6): a Platform move record
     /// with its reference, or a dispatch artifact with its `st_hash`.
-    /// `None` when that cannot be read.
+    /// `None` when that cannot be read, and for a row this install did not
+    /// write (no [`dw_appdb::dp_payout_marker`]: a restored backup carries
+    /// the row but not its source record).
     async fn payout_recorded(&self, id: WalletId, row: &DpContactPayoutRow) -> Option<bool> {
+        let scope = dw_appdb::local_scope(&id.to_string());
+        let marker = dw_appdb::dp_payout_marker(&row.reference);
+        let record = (row.source == "platform").then(|| move_key(&row.reference));
+        let read = self.appdb_op(move |db| {
+            let here = db.setting(&scope, &marker)?.is_some();
+            let moved = match record {
+                Some(key) => Some(db.setting(&scope, &key)?.is_some()),
+                None => None,
+            };
+            Ok((here, moved))
+        });
+        let (here, moved) = read.await.ok()?;
+        if !here {
+            return None;
+        }
         match row.source.as_str() {
-            "platform" => {
-                let scope = dw_appdb::local_scope(&id.to_string());
-                let key = move_key(&row.reference);
-                let value = self.appdb_op(move |db| db.setting(&scope, &key)).await;
-                value.ok().map(|v| v.is_some())
-            }
+            "platform" => moved,
             "shielded" => {
                 let Some(hash) = (row.st_hash.as_deref())
                     .and_then(|h| <[u8; 32]>::try_from(hex::decode(h).ok()?).ok())
@@ -466,25 +484,28 @@ impl NetworkSession {
         let wallet = id.to_string();
         let held = self
             .appdb_op(move |db| {
-                let Some(holder) = db.set_dp_payment_lock_durable(&wallet, &row)? else {
-                    return Ok(None);
-                };
-                let rows = db.dp_payment_locks(&wallet)?;
-                let core = (rows.into_iter())
-                    .find(|r| r.identity == row.identity && r.contact == row.contact);
-                if let Some(held) = core {
-                    let inputs = decode_inputs(&held.inputs);
-                    return Ok(Some((held.txid, held.since, PaymentSource::Core, inputs)));
+                match db.set_dp_payment_lock_durable(&wallet, &row)? {
+                    None => Ok(None),
+                    Some(PairHolder::Core(txid)) => {
+                        let rows = db.dp_payment_locks(&wallet)?;
+                        let held = (rows.into_iter()).find(|r| r.txid == txid);
+                        let (since, inputs) = held.map_or((row.since, Vec::new()), |h| {
+                            (h.since, decode_inputs(&h.inputs))
+                        });
+                        Ok(Some((txid, since, PaymentSource::Core, inputs)))
+                    }
+                    // A pending payout holds the pair (P6).
+                    Some(PairHolder::Payout {
+                        reference,
+                        source,
+                        since,
+                    }) => {
+                        let source = row_source(&source).ok_or_else(|| {
+                            dw_appdb::AppDbError::Corrupt("dp_contact_payout.source".into())
+                        })?;
+                        Ok(Some((reference, since, source, Vec::new())))
+                    }
                 }
-                // A pending payout holds the pair (P6).
-                let payout = (db.dp_contact_payouts(&wallet)?.into_iter())
-                    .find(|p| p.reference == holder && p.state == "pending");
-                let source = match payout.as_ref().map(|p| p.source.as_str()) {
-                    Some("shielded") => PaymentSource::Shielded,
-                    _ => PaymentSource::Platform,
-                };
-                let since = payout.map_or(row.since, |p| p.since);
-                Ok(Some((holder, since, source, Vec::new())))
             })
             .await?;
         let Some((txid, since, source, inputs)) = held else {
@@ -674,8 +695,12 @@ impl NetworkSession {
         identity: &str,
         contact: &str,
         credits: u64,
+        source: PaymentSource,
     ) -> Result<Pair, ContactError> {
         self.require_wallet(&id).map_err(PlatformError::from)?;
+        if source == PaymentSource::Core {
+            return Err(payout_source(source).into());
+        }
         let pair = pair_of(identity, contact)?;
         if credits == 0 {
             return Err(PlatformError::InvalidArgument {
@@ -697,7 +722,7 @@ impl NetworkSession {
         source: PaymentSource,
     ) -> Result<ContactPayQuote, ContactError> {
         let _op = self.enter().await.map_err(PlatformError::from)?;
-        let pair = self.payout_terms(id, &identity, &contact, credits)?;
+        let pair = self.payout_terms(id, &identity, &contact, credits, source)?;
         check_payee(self.payee_state(id, &pair)?, true)?;
         self.check_payment_lock(id, &pair, None)?;
         Err(payout_source(source).into())
@@ -712,7 +737,8 @@ impl NetworkSession {
         call: PayCall,
     ) -> Result<ContactPayOutcome, ContactError> {
         let _op = self.enter().await.map_err(PlatformError::from)?;
-        let pair = self.payout_terms(id, &call.identity, &call.contact, call.credits)?;
+        let pair =
+            self.payout_terms(id, &call.identity, &call.contact, call.credits, call.source)?;
         if call.grant.trim().is_empty() {
             return Err(PlatformError::InvalidArgument {
                 detail: "grant is empty".into(),

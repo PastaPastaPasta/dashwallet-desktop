@@ -8,8 +8,8 @@ use dw_appdb::DpContactPayoutRow;
 use dw_appdb::dispatch::{ArtifactKind, ArtifactOrigin, NewShieldedArtifact};
 
 use super::*;
-use crate::platform::PaymentSource;
 use crate::platform::payment_locks::move_key;
+use crate::platform::{ActivityFilter, PaymentSource};
 
 const MOVE: &str = "move-7-0";
 
@@ -36,7 +36,8 @@ impl Fixture {
         }
     }
 
-    /// Writes `row` as a payout's row; `None` when written.
+    /// Writes `row` as a payout's row; `None` when written, else the
+    /// holder's txid or reference.
     fn write_payout(&self, row: DpContactPayoutRow) -> Option<String> {
         let w = self.wallet.to_string();
         (self.engine)
@@ -44,6 +45,43 @@ impl Fixture {
                 (self.session).appdb_op(move |db| db.insert_dp_contact_payout_durable(&w, &row)),
             )
             .unwrap()
+            .map(|h| h.id().to_owned())
+    }
+
+    /// The wallet's rows through a `.dwbackup`'s export, the wallet's
+    /// removal and the import.
+    fn restore_rows(&self) {
+        let w = self.wallet.to_string();
+        let imported = (self.engine)
+            .block_on(self.session.appdb_op(move |db| {
+                let rows = db.export_wallet_rows(&w)?;
+                db.delete_wallet(&w)?;
+                db.readmit_wallet(&w)?;
+                db.import_wallet_rows(&w, &rows)
+            }))
+            .unwrap();
+        assert!(imported > 0);
+    }
+
+    /// Makes app.sqlite's settings unreadable, or readable again.
+    fn settings_readable(&self, readable: bool) {
+        let path = self.session.data_dir().join(dw_appdb::APP_DB_FILE);
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+        db.execute_batch(if readable {
+            "ALTER TABLE settings_kv_away RENAME TO settings_kv;"
+        } else {
+            "ALTER TABLE settings_kv RENAME TO settings_kv_away;"
+        })
+        .unwrap();
+    }
+
+    fn activity(&self, to: u8) -> Vec<String> {
+        let dp = self.session.dashpay(self.wallet);
+        let page = (self.engine)
+            .block_on(dp.contact_activity(b58(ME), b58(to), None, ActivityFilter::All))
+            .unwrap();
+        page.items.into_iter().map(|i| i.reference).collect()
     }
 
     /// The move record a Platform payout writes before it signs.
@@ -159,6 +197,11 @@ fn a_restart_keeps_a_recorded_payout_as_the_lock_for_every_source() {
         assert_eq!(locked(f.contact_pay(BOB, 1_000, source, &grant)), MOVE);
         assert_eq!(locked(f.quote(BOB, source)), MOVE);
     }
+    assert_eq!(
+        code(f.contact_pay(BOB, 1_000, PaymentSource::Core, &grant)),
+        "invalid_argument"
+    );
+    assert_eq!(code(f.quote(BOB, PaymentSource::Core)), "invalid_argument");
     assert_eq!(f.resolve(BOB), LockResolution::Unknown);
     assert!(f.lock(BOB).is_some(), "no evidence, no clear");
     assert_eq!(f.payouts(), [(MOVE.to_string(), "pending".to_string())]);
@@ -212,6 +255,71 @@ fn a_restart_clears_a_payout_with_no_source_record_and_returns_its_address() {
     assert_eq!(states, ["not_sent"; 3]);
 }
 
+/// A restored `.dwbackup` carries the payout rows but not their source
+/// records (the move record is `local:`, the artifact in dispatch.sqlite):
+/// a row this install did not write stays the lock, its address consumed,
+/// and still shows.
+#[test]
+fn a_restored_payout_stays_the_lock_without_its_source_record() {
+    let f = fixture(false);
+    assert_eq!(f.write_payout(f.payout(BOB, "platform", MOVE, None)), None);
+    f.write_move(MOVE);
+    let hash = [0x5c; 32];
+    assert_eq!(
+        f.write_payout(f.payout(CAROL, "shielded", "sh-1", Some(hash))),
+        None
+    );
+    f.restore_rows();
+    f.restart();
+    assert_eq!(
+        f.lock(BOB).map(|l| (l.reference, l.source)),
+        Some((MOVE.to_string(), PaymentSource::Platform))
+    );
+    assert_eq!(
+        f.lock(CAROL).map(|l| l.source),
+        Some(PaymentSource::Shielded)
+    );
+    let states: Vec<String> = f.payouts().into_iter().map(|(_, s)| s).collect();
+    assert_eq!(states, ["pending"; 2]);
+    assert!(f.reserved(BOB).is_none(), "the address is not given back");
+    assert!(f.reserved(CAROL).is_none());
+    assert_eq!(f.activity(BOB), [MOVE]);
+}
+
+/// P6: a source record that cannot be read is not an absent one; the row
+/// stays the lock and its address stays consumed.
+#[test]
+fn a_restart_keeps_a_payout_whose_source_record_cannot_be_read() {
+    let f = fixture(false);
+    assert_eq!(f.write_payout(f.payout(BOB, "platform", MOVE, None)), None);
+    f.write_move(MOVE);
+    f.settings_readable(false);
+    f.restart();
+    f.settings_readable(true);
+    assert_eq!(f.lock(BOB).map(|l| l.reference), Some(MOVE.to_string()));
+    assert_eq!(f.payouts(), [(MOVE.to_string(), "pending".to_string())]);
+    assert!(f.reserved(BOB).is_none());
+
+    let hash = [0x5d; 32];
+    assert_eq!(
+        f.write_payout(f.payout(CAROL, "shielded", "sh-1", Some(hash))),
+        None
+    );
+    let journal = f.session.leases.journal.get();
+    f.session.leases.journal.set(None);
+    f.restart();
+    f.session.leases.journal.set(journal);
+    assert_eq!(
+        f.lock(CAROL).map(|l| l.source),
+        Some(PaymentSource::Shielded)
+    );
+    assert!(f.reserved(CAROL).is_none());
+    assert!(
+        f.payouts()
+            .contains(&("sh-1".to_string(), "pending".to_string()))
+    );
+}
+
 /// A payout whose call is under way here is left to it by a load.
 #[test]
 fn a_load_leaves_a_payout_under_way_alone() {
@@ -219,7 +327,8 @@ fn a_load_leaves_a_payout_under_way_alone() {
     let pair = (id(ME), id(BOB));
     let address = f.contact_address(BOB, 0);
     (f.session.platform.payments).keep(f.wallet, pair, address.clone(), true);
-    let claimed = f.session.claim_payment(f.wallet, pair, MOVE, &address);
+    // P2 claims the pair before the payout's reference exists.
+    let claimed = f.session.claim_payment(f.wallet, pair, "claim", &address);
     let Ok(_under_way) = claimed else {
         panic!("the claim");
     };

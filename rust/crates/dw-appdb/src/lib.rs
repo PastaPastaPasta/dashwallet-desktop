@@ -95,6 +95,13 @@ pub fn local_scope(wallet_id: &str) -> String {
     format!("local:{wallet_id}")
 }
 
+/// The `local:` key [`AppDb::insert_dp_contact_payout_durable`] writes
+/// beside a payout's row: a row without it was not written on this install
+/// (a `.dwbackup` restore), so its source record's absence proves nothing.
+pub fn dp_payout_marker(reference: &str) -> String {
+    format!("dp_payout/{reference}")
+}
+
 /// The lock file next to the database at `path` (`<file>.lock`), never the
 /// database itself, whose bytes SQLite locks by range.
 fn lock_path(path: &Path) -> PathBuf {
@@ -455,6 +462,28 @@ pub struct DpPaymentLockRow {
     pub txid: String,
     pub since: u64,
     pub inputs: String,
+}
+
+/// What holds a pair's payments: a `dp_payment_lock` row's txid, or a
+/// `pending` payout's reference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PairHolder {
+    Core(String),
+    Payout {
+        reference: String,
+        source: String,
+        since: u64,
+    },
+}
+
+impl PairHolder {
+    /// The holder's txid or reference.
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Core(txid) => txid,
+            Self::Payout { reference, .. } => reference,
+        }
+    }
 }
 
 /// A `dp_contact_payout` row (C-funding D-C5, P6): a contact payment from
@@ -1449,7 +1478,8 @@ impl AppDb {
         wallet_id: &str,
         row: &DpPaymentLockRow,
     ) -> Result<Option<String>> {
-        Self::upsert_payment_lock(&self.conn(), wallet_id, row)
+        let held = Self::upsert_payment_lock(&self.conn(), wallet_id, row)?;
+        Ok(held.map(|h| h.id().to_owned()))
     }
 
     /// [`Self::set_dp_payment_lock`], durable against power loss when it
@@ -1464,7 +1494,7 @@ impl AppDb {
         &self,
         wallet_id: &str,
         row: &DpPaymentLockRow,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<PairHolder>> {
         self.durably(|conn| Self::upsert_payment_lock(conn, wallet_id, row))
     }
 
@@ -1518,7 +1548,7 @@ impl AppDb {
         conn: &Connection,
         wallet_id: &str,
         row: &DpPaymentLockRow,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<PairHolder>> {
         if let Some(payout) = Self::pending_payout(conn, wallet_id, &row.identity, &row.contact)? {
             return Ok(Some(payout));
         }
@@ -1542,7 +1572,7 @@ impl AppDb {
             params![wallet_id, row.identity, row.contact],
             |r| r.get(0),
         )?;
-        Ok((held != row.txid).then_some(held))
+        Ok((held != row.txid).then_some(PairHolder::Core(held)))
     }
 
     /// Removes the pair's lock if it is still `txid`'s; whether one went.
@@ -1563,19 +1593,25 @@ impl AppDb {
 
     // ---- DashPay contact payouts (C-funding D-C5) ----
 
-    /// The reference of the pair's `pending` payout, if any.
+    /// The pair's `pending` payout, if any.
     fn pending_payout(
         conn: &Connection,
         wallet_id: &str,
         identity: &str,
         contact: &str,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<PairHolder>> {
         Ok(conn
             .query_row(
-                "SELECT reference FROM dp_contact_payout
+                "SELECT reference, source, since FROM dp_contact_payout
                  WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3 AND state = 'pending'",
                 params![wallet_id, identity, contact],
-                |r| r.get(0),
+                |r| {
+                    Ok(PairHolder::Payout {
+                        reference: r.get(0)?,
+                        source: r.get(1)?,
+                        since: r.get::<_, i64>(2)? as u64,
+                    })
+                },
             )
             .optional()?)
     }
@@ -1606,16 +1642,19 @@ impl AppDb {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
-    /// Writes `row` as the pair's payout, durable as
+    /// Writes `row` as the pair's payout, with its
+    /// [`dp_payout_marker`] in the wallet's `local:` scope, durable as
     /// [`Self::set_dp_payment_lock_durable`], unless another payment holds
     /// the pair (a `dp_payment_lock` row, or another `pending` payout):
-    /// then nothing is written and its txid or reference is returned.
-    /// Writing `row.reference` again changes nothing.
+    /// then nothing is written and that holder is returned. Writing
+    /// `row.reference`'s pending row again changes nothing; a reference
+    /// some other row already has (settled, or another pair's) is returned
+    /// as its own holder, and nothing is written.
     pub fn insert_dp_contact_payout_durable(
         &self,
         wallet_id: &str,
         row: &DpContactPayoutRow,
-    ) -> Result<Option<String>> {
+    ) -> Result<Option<PairHolder>> {
         self.durably(|conn| {
             let tx = conn.unchecked_transaction()?;
             let core: Option<String> = tx
@@ -1626,10 +1665,10 @@ impl AppDb {
                     |r| r.get(0),
                 )
                 .optional()?;
-            let held = match core {
-                Some(txid) => Some(txid),
+            let mut held = match core {
+                Some(txid) => Some(PairHolder::Core(txid)),
                 None => Self::pending_payout(&tx, wallet_id, &row.identity, &row.contact)?
-                    .filter(|r| *r != row.reference),
+                    .filter(|h| h.id() != row.reference),
             };
             if held.is_none() {
                 tx.execute(
@@ -1652,6 +1691,34 @@ impl AppDb {
                         row.since as i64
                     ],
                 )?;
+                let ours: bool = tx
+                    .query_row(
+                        "SELECT state = 'pending' AND identity = ?3 AND contact = ?4
+                             AND source = ?5 AND address = ?6 AND credits = ?7
+                         FROM dp_contact_payout WHERE wallet_id = ?1 AND reference = ?2",
+                        params![
+                            wallet_id,
+                            row.reference,
+                            row.identity,
+                            row.contact,
+                            row.source,
+                            row.address,
+                            row.credits as i64
+                        ],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .unwrap_or(false);
+                if ours {
+                    let marker = dp_payout_marker(&row.reference);
+                    Self::put_setting(&tx, &local_scope(wallet_id), &marker, Some("1"))?;
+                } else {
+                    held = Some(PairHolder::Payout {
+                        reference: row.reference.clone(),
+                        source: row.source.clone(),
+                        since: row.since,
+                    });
+                }
             }
             tx.commit()?;
             Ok(held)
@@ -1949,17 +2016,34 @@ mod tests {
             since: 20,
             inputs: String::new(),
         };
+        let holds = |reference: &str| {
+            Some(PairHolder::Payout {
+                reference: reference.into(),
+                source: "platform".into(),
+                since: 10,
+            })
+        };
+        let marked = |reference: &str| {
+            (db.setting(&local_scope(W), &dp_payout_marker(reference)))
+                .unwrap()
+                .is_some()
+        };
         let bob = payout("bob", "move-1");
         assert_eq!(db.insert_dp_contact_payout_durable(W, &bob).unwrap(), None);
+        assert!(marked("move-1"), "this install wrote it");
         assert_eq!(db.insert_dp_contact_payout_durable(W, &bob).unwrap(), None);
         assert_eq!(
             db.insert_dp_contact_payout_durable(W, &payout("bob", "move-2"))
                 .unwrap(),
-            Some("move-1".into())
+            holds("move-1")
         );
         assert_eq!(
             db.set_dp_payment_lock_durable(W, &core("bob", "t1"))
                 .unwrap(),
+            holds("move-1")
+        );
+        assert_eq!(
+            db.set_dp_payment_lock(W, &core("bob", "t1")).unwrap(),
             Some("move-1".into())
         );
         assert!(db.dp_payment_locks(W).unwrap().is_empty());
@@ -1968,15 +2052,27 @@ mod tests {
         assert_eq!(
             db.insert_dp_contact_payout_durable(W, &payout("carol", "move-3"))
                 .unwrap(),
-            Some("t2".into())
+            Some(PairHolder::Core("t2".into()))
+        );
+        assert_eq!(
+            db.insert_dp_contact_payout_durable(W, &payout("dave", "move-1"))
+                .unwrap(),
+            holds("move-1"),
+            "another pair's reference"
         );
         assert_eq!(db.dp_contact_payouts(W).unwrap(), vec![bob.clone()]);
+        assert!(!marked("move-3"));
 
         assert!(
             db.settle_dp_contact_payout(W, "move-1", "not_sent")
                 .unwrap()
         );
         assert!(!db.settle_dp_contact_payout(W, "move-1", "sent").unwrap());
+        assert_eq!(
+            db.insert_dp_contact_payout_durable(W, &bob).unwrap(),
+            holds("move-1"),
+            "a settled reference is not written again"
+        );
         assert_eq!(db.set_dp_payment_lock(W, &core("bob", "t1")).unwrap(), None);
         let settled = DpContactPayoutRow {
             state: "not_sent".into(),
