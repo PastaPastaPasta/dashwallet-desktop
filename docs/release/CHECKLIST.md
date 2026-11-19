@@ -56,9 +56,10 @@ first candidate.
 
 ## 4. Run the test bar
 
-Test the build that will ship: tag a release candidate (section 5) and test its files, or, for a version that skips
-candidates, the `v<version>-dev.<run>+<sha>` build of the chosen commit (it shows the test-build warning; nothing
-else differs).
+Test the commit that will ship: tag a release candidate (section 5) and test its `-rc.N` files, or, for a version
+that skips candidates, the `v<version>-dev.<run>+<sha>` build of the chosen commit (it shows the test-build warning;
+nothing else differs). The final tag rebuilds the same commit with its own version stamp, so section 7 installs the
+published files once more.
 
 The minimal bar (RELEASE-PLAN §1), on public testnet, funded with the `dash-faucet` skill, on the Linux AppImage:
 
@@ -80,6 +81,8 @@ For 1.0 (RELEASE-PLAN §2, 0.9 and 1.0), also:
       shielded round trip.
 - [ ] H-01 security review findings fixed or accepted in writing; the kill -9 matrix (H-03) green.
 - [ ] Every user story in `docs/parity.md` done or marked N/A with a reason.
+- [ ] Signed with the real release key (section 6): the tag and `SHA256SUMS`. Without the B2 certificates, 1.0 ships
+      unsigned binaries with a signed `SHA256SUMS` and the notes say so (RELEASE-PLAN §2, 0.9).
 
 A bug that blocks the bar is fixed before the tag; anything else becomes an issue for the next version.
 
@@ -134,19 +137,24 @@ Signing that the workflow does not do yet:
 - [ ] **When available (B2):** Windows code signing of the installer (W-03).
 - [ ] Until both exist, the notes' Known limitations and Install sections say the builds are not notarized and not
       signed, and what the first launch shows.
+- [ ] **When available (the real release key, required for 1.0):** sign `SHA256SUMS` once the release is published
+      and add the signature to it (`gh release upload vX.Y.Z <signature file>`). This is the RELEASE-PLAN fallback
+      when the certificates don't exist: unsigned binaries, signed checksums. The notes' Verify section then says
+      how to check the signature with the published key.
 
 ## 7. Verify what was published
 
 On a machine with `gh` logged in, in an empty directory:
 
 ```sh
+sha=$(gh api repos/PastaPastaPasta/dashwallet-desktop/commits/vX.Y.Z --jq .sha)   # the tag's commit
 gh release download vX.Y.Z --repo PastaPastaPasta/dashwallet-desktop
 ls | wc -l                                  # 7
 sha256sum -c SHA256SUMS                     # every file OK
 for f in *; do
   gh attestation verify "$f" --repo PastaPastaPasta/dashwallet-desktop \
     --signer-workflow PastaPastaPasta/dashwallet-desktop/.github/workflows/release.yml \
-    --source-ref refs/tags/vX.Y.Z --source-digest "$(git rev-parse vX.Y.Z^{commit})"
+    --source-ref refs/tags/vX.Y.Z --source-digest "${sha:?no commit for vX.Y.Z}"
 done
 jq -r '.metadata.component.name, (.components | length)' dash-wallet-X.Y.Z-sbom-*.cdx.json
 ```
@@ -166,8 +174,9 @@ A published release cannot be made unpublished for people who downloaded it, and
 bytes. So:
 
 - [ ] A bad release: mark it at once with `gh release edit vX.Y.Z --repo PastaPastaPasta/dashwallet-desktop
-      --prerelease --latest=false` and a warning at the top of its notes (`--notes-file`), so Latest falls back to
-      the previous release. Then ship the fix as `vX.Y.(Z+1)`, with a candidate if time allows.
+      --prerelease --latest=false` and a warning at the top of its notes (`--notes-file`). Make the previous release
+      Latest again, explicitly: `gh release edit v<previous> --repo PastaPastaPasta/dashwallet-desktop --latest`,
+      and check the Releases page. Then ship the fix as `vX.Y.(Z+1)`, with a candidate if time allows.
 - [ ] Delete the release (`gh release delete vX.Y.Z --repo PastaPastaPasta/dashwallet-desktop --yes`) only when
       its files must not be downloaded at all (for example, they lose funds). Keep the tag: the version is used and
       is never re-cut with other bytes.
