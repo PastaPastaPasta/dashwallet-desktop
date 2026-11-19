@@ -33,9 +33,11 @@
 # Screenshots and logs are uploaded as the `screenshots-<os>` artifacts.
 name: CI
 
+# A branch is checked through its pull request only: a push trigger for it as well ran every
+# job twice, and the hosted macOS runners are the scarce ones.
 on:
   push:
-    branches: [main, "dw/**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
