@@ -72,7 +72,9 @@ env:
 jobs:
   # A pull request that changes only documentation (docs/ outside docs/contracts and the generated
   # E0-13 coverage table, or *.md elsewhere) and whose paths are valid on Windows skips the four required
-  # jobs, which then report success. Every other event, and any failure here, runs them.
+  # jobs, which then report success. Every other event, and any failure here, runs them. This job is a
+  # required check too: a run cancelled while it is pending skips the four jobs, and its own cancelled
+  # check then blocks the merge.
   changes:
     name: What this pull request changes
     runs-on: ubuntu-24.04
