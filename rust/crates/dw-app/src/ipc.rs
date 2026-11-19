@@ -19,7 +19,7 @@
 //!
 //! ```ignore
 //! commands! {
-//!     /// Balance buckets of one wallet; `null` until the scan reaches its birth height.
+//!     /// Balance buckets of one wallet known so far; `null` before its state is first read.
 //!     #[facade("NetworkSession::balances")]
 //!     fn balance(state, wallet_id: String) -> Option<Balances> {
 //!         let id = parse_wallet_id(&wallet_id)?;

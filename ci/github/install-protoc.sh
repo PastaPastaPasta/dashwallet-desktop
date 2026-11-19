@@ -26,7 +26,8 @@ esac
 
 dest="${RUNNER_TEMP:?}/protoc"
 zip="$dest.zip"
-curl -fsSL -o "$zip" \
+# Retried: a runner that cannot reach the host for a few seconds must not fail the job.
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 -o "$zip" \
   "https://github.com/protocolbuffers/protobuf/releases/download/v${version}/protoc-${version}-${asset}.zip"
 # From stdin: given a path with backslashes, Git Bash's sha256sum prefixes the hash with "\".
 if command -v sha256sum >/dev/null; then actual="$(sha256sum <"$zip")"; else actual="$(shasum -a 256 <"$zip")"; fi

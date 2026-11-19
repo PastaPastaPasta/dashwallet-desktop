@@ -119,6 +119,18 @@ impl EventPump {
         self.with_pending(|p| p.sync = true);
     }
 
+    /// Tests: whether a `Sync` event is waiting to be sent.
+    #[cfg(test)]
+    pub(crate) fn sync_marked(&self) -> bool {
+        self.pending.lock().unwrap().sync
+    }
+
+    /// Tests: takes the waiting `Sync` mark; whether there was one.
+    #[cfg(test)]
+    pub(crate) fn take_sync_mark(&self) -> bool {
+        std::mem::take(&mut self.pending.lock().unwrap().sync)
+    }
+
     pub(crate) fn mark_balances(&self, wallet: WalletId) {
         self.with_pending(|p| {
             p.balances.insert(wallet);
