@@ -337,14 +337,21 @@ impl Write for Capture {
     }
 }
 
-/// Every log record of the process, at trace, while `CAPTURING` is set.
+/// Every log record of the process, at trace, while `CAPTURING` is set;
+/// outside that window no record is even formatted.
 fn capture_logs() {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    use tracing_subscriber::{Layer, filter};
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
-            .with_ansi(false)
-            .with_writer(|| Capture)
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(|| Capture)
+                    .with_filter(filter::filter_fn(|_| CAPTURING.load(Ordering::SeqCst))),
+            )
             .try_init()
             .expect("no other global subscriber in dw-app's tests");
     });
@@ -360,6 +367,7 @@ fn a_revealed_key_is_in_no_log_and_no_event() {
     CAPTURING.store(true, Ordering::SeqCst);
     tracing::info!("reveal-capture-probe");
     let mut secrets = Vec::new();
+    let mut byte_forms = Vec::new();
     for (role, index) in [
         ("owner", 0),
         ("voting", 1),
@@ -370,6 +378,9 @@ fn a_revealed_key_is_in_no_log_and_no_event() {
         for field in ["privateKeyHex", "wif", "tenderdashKey"] {
             if let Some(s) = shown[field].as_str() {
                 secrets.push(s.to_owned());
+                if field == "privateKeyHex" {
+                    byte_forms.push(format!("{:?}", hex::decode(s).unwrap()));
+                }
             }
         }
     }
@@ -378,6 +389,8 @@ fn a_revealed_key_is_in_no_log_and_no_event() {
     let refusal = reveal(&demo, &wallet, "owner", 0, &spent).unwrap_err();
     CAPTURING.store(false, Ordering::SeqCst);
     assert_eq!(secrets.len(), 7, "{secrets:?}");
+    assert!(!byte_forms.is_empty());
+    secrets.extend(byte_forms);
 
     let logs = String::from_utf8_lossy(&CAPTURED.lock().unwrap()).into_owned();
     assert!(logs.contains("reveal-capture-probe"), "the capture is live");
