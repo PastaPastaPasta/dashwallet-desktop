@@ -114,7 +114,7 @@ fn the_same_an_older_or_a_test_release_is_not_an_update() {
         "0.0.1",
         "0.3.0-rc.1",
         "0.3.0-dev.4+abc",
-        "latest",
+        "v0.3.0-rc.2",
     ] {
         let body = format!(r#"{{"version":"{v}"}}"#);
         assert_eq!(parse_feed(body.as_bytes(), "0.2.0"), Ok(None), "{v}");
@@ -126,6 +126,38 @@ fn a_body_that_is_not_a_feed_is_an_error() {
     for body in [&b""[..], b"<html>", b"{}", br#"{"version":3}"#, b"[]"] {
         assert!(parse_feed(body, "0.2.0").is_err(), "{body:?}");
     }
+    for v in [
+        "latest",
+        "",
+        "0.3",
+        "1.2.3.4",
+        "0.3.0-",
+        "0.3.0+abc",
+        "x.3.0-rc.1",
+        "-rc.1",
+    ] {
+        let body = format!(r#"{{"version":"{v}"}}"#);
+        assert!(parse_feed(body.as_bytes(), "0.2.0").is_err(), "{v:?}");
+    }
+}
+
+#[test]
+fn a_release_candidate_is_offered_its_final_and_a_dev_build_never_its_own() {
+    let offered = |feed: &str, build: &str| {
+        let body = format!(r#"{{"version":"{feed}"}}"#);
+        parse_feed(body.as_bytes(), build)
+            .unwrap()
+            .map(|r| r.version)
+    };
+    assert_eq!(offered("0.2.0", "0.2.0-rc.1"), Some("0.2.0".into()));
+    assert_eq!(offered("0.3.0", "0.2.0-rc.1"), Some("0.3.0".into()));
+    assert_eq!(offered("0.1.9", "0.2.0-rc.1"), None);
+    assert_eq!(offered("0.2.0", "0.2.0-dev"), None);
+    assert_eq!(offered("0.2.0", "0.2.0-dev.57.g1a2b3c4"), None);
+    assert_eq!(offered("0.3.0", "0.2.0-dev"), Some("0.3.0".into()));
+    assert_eq!(offered("0.1.0", "0.2.0-dev"), None);
+    assert_eq!(offered("0.2.0", "0.2.0"), None);
+    assert!(parse_feed(br#"{"version":"0.2.0"}"#, "0.2.0rc1").is_err());
 }
 
 #[test]

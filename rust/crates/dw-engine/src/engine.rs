@@ -151,7 +151,7 @@ impl Engine {
         let updates = crate::updates::UpdatesHub::new(
             &config.data_root,
             updates_http,
-            crate::ENGINE_VERSION,
+            crate::tools::BUILD_VERSION,
             Arc::new(crate::events::unix_now),
         );
         Ok(Self {

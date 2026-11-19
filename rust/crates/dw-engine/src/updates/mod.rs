@@ -1,7 +1,8 @@
 //! The update check (PK-03a): notify only. One HTTPS GET of the latest
 //! full release's `latest.json`, which `ci/github/release-publish.sh`
-//! writes for `vX.Y.Z` tags only, and a semver comparison with
-//! [`crate::ENGINE_VERSION`]. Nothing is downloaded or installed.
+//! writes for `vX.Y.Z` tags only, and a semver comparison with the build's
+//! own version (`BUILD_VERSION`: an rc is offered its final, a dev build
+//! never its own `X.Y.Z`). Nothing is downloaded or installed.
 //!
 //! Off by default (D-N1): the request shows GitHub the user's IP address.
 //! No request is made while it is off, and turning it off stops a request
@@ -98,7 +99,9 @@ struct Stored {
 
 /// `X.Y.Z` (with an optional leading `v`) as numbers; `None` for anything
 /// else, a prerelease (`-rc.1`, `-dev.3`) or build suffix included.
-pub(crate) fn release_version(v: &str) -> Option<(u64, u64, u64)> {
+type Triple = (u64, u64, u64);
+
+pub(crate) fn release_version(v: &str) -> Option<Triple> {
     let v = v.strip_prefix('v').unwrap_or(v);
     let mut parts = v.split('.').map(|p| {
         (!p.is_empty() && p.len() <= 9 && p.bytes().all(|b| b.is_ascii_digit()))
@@ -109,9 +112,30 @@ pub(crate) fn release_version(v: &str) -> Option<(u64, u64, u64)> {
     parts.next().is_none().then_some(triple)
 }
 
-/// What a feed body means for a build of `current`: a newer full release,
-/// or `None` (not newer, or not a full release). An error for a body that
-/// is not a feed.
+/// `X.Y.Z[-<suffix>]` as its numbers and the suffix; `None` when the
+/// `X.Y.Z` part does not parse or the suffix is empty.
+fn split_version(v: &str) -> Option<(Triple, Option<&str>)> {
+    let (core, suffix) = match v.split_once('-') {
+        Some((_, "")) => return None,
+        Some((core, suffix)) => (core, Some(suffix)),
+        None => (v, None),
+    };
+    Some((release_version(core)?, suffix))
+}
+
+/// Where a build stands among releases: `X.Y.Z-rc.N` before `X.Y.Z`, a dev
+/// build (any other suffix) level with its `X.Y.Z`, so it is never offered
+/// the release it came from.
+fn build_rank(current: &str) -> Option<(Triple, u8)> {
+    let (triple, suffix) = split_version(current)?;
+    let rc = suffix.is_some_and(|s| s.starts_with("rc."));
+    Some((triple, if rc { 0 } else { 1 }))
+}
+
+/// What a feed body means for a build of `current` (`BUILD_VERSION`): a
+/// newer full release, or `None` (not newer, or a prerelease). An error for
+/// a body that is not a feed or a version that is malformed, so a broken
+/// publish shows as a failed check, never as "up to date".
 pub(crate) fn parse_feed(body: &[u8], current: &str) -> Result<Option<Release>, String> {
     #[derive(Deserialize)]
     struct Feed {
@@ -119,11 +143,13 @@ pub(crate) fn parse_feed(body: &[u8], current: &str) -> Result<Option<Release>, 
         pub_date: Option<String>,
     }
     let feed: Feed = serde_json::from_slice(body).map_err(|e| format!("latest.json: {e}"))?;
-    let Some(latest) = release_version(&feed.version) else {
+    let (latest, suffix) = split_version(&feed.version)
+        .ok_or_else(|| format!("latest.json: not a version: {:?}", feed.version))?;
+    if suffix.is_some() {
         return Ok(None);
-    };
-    let ours = release_version(current).ok_or_else(|| format!("not a version: {current}"))?;
-    if latest <= ours {
+    }
+    let ours = build_rank(current).ok_or_else(|| format!("not a version: {current}"))?;
+    if (latest, 1) <= ours {
         return Ok(None);
     }
     let version = format!("{}.{}.{}", latest.0, latest.1, latest.2);
