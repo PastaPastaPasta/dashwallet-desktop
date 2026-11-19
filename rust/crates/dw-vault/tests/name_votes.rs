@@ -53,7 +53,7 @@ fn encrypted(fx: &Fixture) -> Vault {
 fn vote_signer(v: &Vault) -> VoteSigner {
     let purpose = GrantPurpose::Governance;
     let grant = v
-        .authorize(purpose, Some(&wallet(1)), Credential::None)
+        .authorize(purpose, Some(&wallet(1)), Credential::Passphrase(PASS))
         .unwrap();
     let token = v
         .redeem_grant(&grant.id, purpose.kind(), Some(&wallet(1)))

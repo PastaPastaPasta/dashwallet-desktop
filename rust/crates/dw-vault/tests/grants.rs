@@ -260,7 +260,14 @@ fn assert_scan_only(v: &Vault, credential: Credential<'_>) {
     if let Some(key) = key {
         assert_eq!(key.master_key().unwrap().depth, 0, "{state:?}");
     }
-    for purpose in [platform_op(0, 0), platform_op(u64::MAX, u64::MAX)] {
+    // No credential on an encrypted vault is the signing window, which
+    // issues only up to its spend limit.
+    let wide = if matches!(credential, Credential::None) && v.status().encrypted {
+        1_000
+    } else {
+        u64::MAX
+    };
+    for purpose in [platform_op(0, 0), platform_op(wide, wide)] {
         assert_eq!(
             v.scan_key(&wallet(1), &token(v, purpose, credential))
                 .map(drop),
