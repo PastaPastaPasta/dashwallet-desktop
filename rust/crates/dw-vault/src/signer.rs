@@ -222,11 +222,15 @@ impl SignerScope {
             // only (MG-04 D38), and no other signature at an owner key: a
             // ProUpRegTx's owner signature is a plain ECDSA one over the
             // payload's hash, which `Sign` would make for any digest (D50).
+            // Nor at a voting key: off testnet a vote signature is a
+            // message one (MG-05 D1).
             // No export of an asset-lock credit key or its account
             // ([`paths::is_asset_lock_credit_key`]).
             SignerScope::Full => match key_use {
                 KeyUse::OwnerPayload | KeyUse::MasternodeWithdrawal => false,
-                KeyUse::Sign | KeyUse::Message => !paths::is_owner_key(path, network),
+                KeyUse::Sign | KeyUse::Message => {
+                    !paths::is_owner_key(path, network) && !paths::is_voting_key(path, network)
+                }
                 KeyUse::Export => {
                     !paths::is_asset_lock_credit_key(path, network)
                         && !paths::is_asset_lock_credit_account(path, network)
@@ -777,21 +781,25 @@ mod tests {
     /// Everything but an owner payload signature, which only a
     /// `MasternodeOp` grant's signer makes (MG-04 D38), or a masternode
     /// withdrawal, which only a `MasternodeWithdraw` grant's makes (MG-13
-    /// P3), no signature or message signature at an owner key (D50), and no
-    /// export of an asset-lock credit key. A voting key keeps every use but
-    /// those two.
+    /// P3), no signature or message signature at an owner key (D50) or a
+    /// voting key, and no export of an asset-lock credit key.
     #[test]
-    fn full_scope_allows_everything_but_owner_signatures() {
-        for p in ["m/0", "m/44'/1'/0'/0/0", "m/9'/1'/3'/1'/0"] {
+    fn full_scope_allows_everything_but_owner_and_voting_signatures() {
+        for p in ["m/0", "m/44'/1'/0'/0/0"] {
             assert_eq!(uses(SignerScope::Full, p), ALL_USES[..8].to_vec(), "{p}");
         }
-        let owner: Vec<KeyUse> = ALL_USES[..8]
+        let no_signature: Vec<KeyUse> = ALL_USES[..8]
             .iter()
             .copied()
             .filter(|u| !matches!(u, KeyUse::Sign | KeyUse::Message))
             .collect();
-        for p in ["m/9'/1'/3'/2'/0", "m/9'/1'/3'/2'/7"] {
-            assert_eq!(uses(SignerScope::Full, p), owner, "{p}");
+        for p in [
+            "m/9'/1'/3'/2'/0",
+            "m/9'/1'/3'/2'/7",
+            "m/9'/1'/3'/1'/0",
+            "m/9'/1'/3'/1'/19",
+        ] {
+            assert_eq!(uses(SignerScope::Full, p), no_signature, "{p}");
         }
         let no_export: Vec<KeyUse> = ALL_USES[..8]
             .iter()
