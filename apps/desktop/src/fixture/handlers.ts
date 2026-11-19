@@ -704,6 +704,11 @@ export const HANDLERS: Handlers = {
   // App and network
   launch_info: (_, { world }) => world.launch,
   recent_notices: (_, { world }) => world.notices,
+  open_releases_page: (_, { world }) => {
+    world.releasesOpened = (world.releasesOpened ?? 0) + 1;
+    return null;
+  },
+  protocol_compatibility: (_, { world }) => world.protocolCompatibility ?? { networkVersion: 15, supportedVersion: 15 },
   open_network: (_, { world }) => {
     // Row 74: the network a failed switch left did not reopen; the splash's Retry opens it.
     if (world.networkSwitch?.reopenFails) {

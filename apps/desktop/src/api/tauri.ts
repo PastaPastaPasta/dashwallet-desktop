@@ -115,6 +115,8 @@ export class IpcBackend implements Backend {
   abandonTransaction = cmd.abandonTransaction;
   resendTransaction = cmd.resendTransaction;
   openTxInExplorer = cmd.openTxInExplorer;
+  openReleasesPage = () => cmd.openReleasesPage();
+  protocolCompatibility = () => cmd.protocolCompatibility();
   currentReceiveAddress = cmd.currentReceiveAddress;
   nextReceiveAddress = cmd.nextReceiveAddress;
   createReceiveRequest = cmd.createReceiveRequest;

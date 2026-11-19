@@ -183,12 +183,16 @@ fn ownership(
     network: dashcore::Network,
 ) -> Ownership {
     // A ProTx owner key signs owner payloads only (MG-04 D50): an input
-    // paying one is left unsigned, as another wallet's would be.
+    // paying one is left unsigned, as another wallet's would be; so is
+    // one paying a voting key, which signs votes only.
     let path_of = |script: &dashcore::ScriptBuf| -> Option<DerivationPath> {
         let address = Address::from_script(script, network).ok()?;
         crate::coins::own_address_info(info, &address)
             .map(|i| i.path)
-            .filter(|p| !dw_vault::paths::is_owner_key(p, network))
+            .filter(|p| {
+                !dw_vault::paths::is_owner_key(p, network)
+                    && !dw_vault::paths::is_voting_key(p, network)
+            })
     };
     let mut paths = BTreeMap::new();
     for i in 0..psbt.inputs.len() {

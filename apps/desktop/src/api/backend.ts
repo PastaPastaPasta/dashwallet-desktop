@@ -179,6 +179,7 @@ import type { PublishStateName } from "./generated/PublishStateName";
 import type { FoundIdentity } from "./generated/FoundIdentity";
 import type { IdentityDetail } from "./generated/IdentityDetail";
 import type { IdentityRefresh } from "./generated/IdentityRefresh";
+import type { ProtocolCompatibility } from "./generated/ProtocolCompatibility";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -292,6 +293,10 @@ export interface Backend {
   resendTransaction(walletId: string, txid: string): Promise<null>;
   /** Opens this transaction on Insight in the system browser. The app picks the network. */
   openTxInExplorer(txid: string): Promise<null>;
+  /** Opens the GitHub releases page in the system browser. */
+  openReleasesPage(): Promise<null>;
+  /** The network's observed Platform protocol version and the version this build supports. */
+  protocolCompatibility(): Promise<ProtocolCompatibility>;
   // Receive (U-03 D11).
   currentReceiveAddress(walletId: string): Promise<AddressInfo>;
   nextReceiveAddress(walletId: string, label: string | null): Promise<AddressInfo>;
