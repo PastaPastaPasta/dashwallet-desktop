@@ -591,6 +591,7 @@ impl AppDb {
         embedded::migrations::runner()
             .set_abort_divergent(true)
             .set_abort_missing(true)
+            .set_grouped(true)
             .run(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),

@@ -19,6 +19,7 @@
 
 pub mod governance;
 pub mod history;
+pub mod masternodes;
 pub mod platform;
 
 use dw_engine::{
