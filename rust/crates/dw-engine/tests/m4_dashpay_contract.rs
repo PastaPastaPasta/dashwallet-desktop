@@ -282,6 +282,7 @@ const NOT_FACADE: &[&str] = &[
     "shielded_close_tests.rs",
     "shielded_dispatch_tests.rs",
     "shielded_pool.rs",
+    "shielded_rebind_tests.rs",
     "shielded_tests",
     "shielded_tests.rs",
     "signers.rs",

@@ -88,6 +88,8 @@ mod shielded;
 mod shielded_close_tests;
 pub(crate) mod shielded_pool;
 #[cfg(test)]
+mod shielded_rebind_tests;
+#[cfg(test)]
 mod shielded_tests;
 pub mod signers;
 mod startup;
