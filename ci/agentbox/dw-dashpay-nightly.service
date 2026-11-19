@@ -1,0 +1,15 @@
+# Install: copy this and dw-dashpay-nightly.timer to ~/.config/systemd/user/, write the
+# environment file below (DW_DP_STATE, DW_DP_FUNDER, DW_DP_FUNDER_BIRTH; the
+# funder's phrase lives in the secret store, never in this repository), copy
+# regtest/scripts/dashpay-nightly.sh to $DW_DP_STATE/dashpay-nightly.sh, then
+# `systemctl --user daemon-reload && systemctl --user enable --now dw-dashpay-nightly.timer`.
+[Unit]
+Description=dashwallet-desktop DashPay suites on testnet, nightly (DASHPAY §6 T3)
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/dashwallet-desktop/dashpay-nightly.env
+Environment=TMPDIR=/work/tmp
+ExecStart=/bin/bash -c 'exec "$DW_DP_STATE/dashpay-nightly.sh"'
+Nice=10
+TimeoutStartSec=4h

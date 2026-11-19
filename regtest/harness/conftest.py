@@ -63,3 +63,29 @@ def funded_miner(regtest_node: RegtestNode):
     if miner.getbalance() == Decimal(0):
         regtest_node.mine(COINBASE_MATURITY_BLOCKS, miner.getnewaddress())
     return miner
+
+
+# ---- DashPay suites (DASHPAY §6 T2 and T3; regtest/README.md "DashPay suites") ----
+
+from dwd_regtest.dashpay import Harness, dwcli_path  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def dp() -> Iterator[Harness]:
+    """The DashPay run: skipped unless DW_DP_NET names a network and dwcli is built. At the end
+    every wallet the run created is closed, and the run fails if a log holds a secret."""
+    harness = Harness.from_env()
+    if harness is None:
+        pytest.skip("set DW_DP_NET (testnet or devnet) to run the DashPay suites")
+    if dwcli_path() is None:
+        pytest.skip("no dwcli binary (set DWCLI)")
+    print(f"DashPay run {harness.run_id} on {harness.net.tier}, logs in {harness.logs}")
+    yield harness
+    leaks = harness.close()
+    assert not leaks, f"a secret is in the run's logs: {leaks}"
+
+
+@pytest.fixture(scope="session")
+def funder(dp):
+    return dp.funder()
+

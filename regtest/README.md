@@ -165,6 +165,50 @@ datadir (through `docker compose exec` for the tmpfs datadir of the Docker backe
 The harness has no dependency beyond pytest: `dwd_regtest/rpc.py` is a small stdlib JSON-RPC client
 that decodes amounts as `Decimal` and sends them as strings.
 
+## DashPay suites (T2, T3)
+
+`harness/tests/test_dp*.py` drive DashPay through `dwcli` only (ROADMAP E0-09) on a network with
+Platform: testnet (DASHPAY §6 T3) or a dashmate devnet (T2). `dwd_regtest/dashpay.py` holds the
+harness: one fresh wallet on its own fresh data root per member (its own device), JSON commands,
+`dwcli dashpay session --spv` for everything that needs SPV running, and a funder wallet restored
+from a phrase file outside the repository. Every phrase and passphrase of a run is masked in what
+it prints, and the run fails if one shows up in its logs.
+
+| Suite | ROADMAP | What |
+|---|---|---|
+| `test_dp1_identity.py` | DP1-07 | availability, offline name rules, a registration from the Core balance to `done` within its grant, the identity, its name and keys, the name taken and resolved, the main name after a sync pass and a restart, a restore that finds the identity |
+
+| Variable | Meaning |
+|---|---|
+| `DW_DP_NET` | `testnet` or `devnet`; the suites are skipped when unset |
+| `DW_DP_NET_ARGS` | extra network arguments (devnet: `--network regtest --dapi … --ca-cert … --quorum-url … --peer …`) |
+| `DW_DP_STATE` | persistent directory (0700): the funder's data root, the vault passphrase, `runs/` (deleted after three days) and `logs/` |
+| `DW_DP_FUNDER`, `DW_DP_FUNDER_BIRTH` | the funder's phrase file and birth height; on agentbox the phrase is the secret store's `dashwallet-desktop/dashpay-suites-funder` |
+| `DWCLI` | the dwcli binary |
+
+```sh
+(cd ../../rust && cargo build -p dwcli)
+DW_DP_NET=testnet DW_DP_STATE=/work/scratch/dw-suites/t3 \
+  DW_DP_FUNDER=~/.config/dashwallet-desktop/dashpay-suites-funder.mnemonic DW_DP_FUNDER_BIRTH=1594390 \
+  DWCLI=$DW_TARGET/debug/dwcli .venv/bin/python -m pytest -v tests/test_dp*.py
+```
+
+The funder keeps a dozen mined coins of 0.5 tDASH and splits its balance again when fewer than
+four are left: a restarted dwcli no longer knows its own change's InstantSend lock, so change is
+spendable only once mined. Top it up with the `dash-faucet` skill when its balance runs low. A
+run costs about 0.1 tDASH per registered member.
+
+**Nightly (T3).** `scripts/dashpay-nightly.sh` builds dwcli at `origin/main` in its own checkout
+under `DW_DP_STATE` and runs every `tests/test_dp*.py` on testnet, keeping the junit, the log
+and the dwcli logs in `DW_DP_STATE/nightly/<date>`. On agentbox it runs from the systemd user
+timer in `ci/agentbox/` (install steps in the service file). T3 alerts; it does not gate.
+
+**T2 is blocked.** On the shared dashmate `local` devnet (3 evonodes) dash-spv never finishes
+its masternode list: the network forms no `llmq_test_dip0024` quorum, so QRInfo is never
+answered, `caught_up` never comes, and every Platform write waits on `sync` (DP6-01 D11, MG-07
+D17, BL-316). The suites run there unchanged (`DW_DP_NET=devnet`) once the devnet has rotating
+quorums.
+
 ## Dash Core functional test_framework from release binaries
 
 ### What is vendored
@@ -376,12 +420,13 @@ regtest/
 ├── Dockerfile               image: python:3.12-slim + dash_hash + Dash Core release + functional/
 ├── docker-compose.yml       services: dashd (single node), functional (profile; runs one test script)
 ├── scripts/
+│   ├── dashpay-nightly.sh   the DashPay suites on testnet, nightly (agentbox)
 │   ├── fetch-dashcore.sh    download + SHA-256 verify + unpack (+ ad-hoc codesign on macOS)
 │   ├── node-entrypoint.sh   dashd regtest command line used by the image
 │   ├── regtest.sh           up/down/status/mine/fund/cli/wcli
 │   ├── selftest.sh          end-to-end check of regtest.sh
 │   └── run-functional.sh    run functional tests in the compose service, one summary line each
-├── harness/                 pytest: dwd_regtest/ (rpc.py, node.py), conftest.py,
+├── harness/                 pytest: dwd_regtest/ (rpc.py, node.py, dashpay.py), conftest.py,
 │                            tests/test_smoke.py (node), tests/test_harness.py (failure handling)
 └── functional/
     ├── run.sh               writes config.ini for release binaries, runs one test
