@@ -239,7 +239,7 @@ pub(crate) static CHILD_STARTS: std::sync::RwLock<()> = std::sync::RwLock::new((
 /// The tables keyed by `wallet_id` that [`AppDb::delete_wallet`] clears, each
 /// with an insert trigger that skips rows of a removed wallet (migration
 /// `V2026101302`, DEC-210). Settings are cleared by scope.
-pub(crate) const WALLET_TABLES: [&str; 19] = [
+pub(crate) const WALLET_TABLES: [&str; 20] = [
     "wallets",
     "address_book",
     "labels",
@@ -251,6 +251,7 @@ pub(crate) const WALLET_TABLES: [&str; 19] = [
     "dp_contest_watch",
     "dp_events",
     "dp_payment_lock",
+    "dp_contact_payout",
     "dp_trust_unverified",
     "dp_prefs",
     "dp_contact_info",
@@ -454,6 +455,25 @@ pub struct DpPaymentLockRow {
     pub txid: String,
     pub since: u64,
     pub inputs: String,
+}
+
+/// A `dp_contact_payout` row (C-funding D-C5, P6): a contact payment from
+/// the Shielded or Platform balance; `pending` locks the pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DpContactPayoutRow {
+    pub reference: String,
+    pub identity: String,
+    pub contact: String,
+    /// `shielded` or `platform`.
+    pub source: String,
+    pub st_hash: Option<String>,
+    pub address: String,
+    pub credits: u64,
+    pub expected_duffs: u64,
+    pub note: Option<String>,
+    /// `pending`, `sent` or `not_sent`.
+    pub state: String,
+    pub since: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1499,6 +1519,9 @@ impl AppDb {
         wallet_id: &str,
         row: &DpPaymentLockRow,
     ) -> Result<Option<String>> {
+        if let Some(payout) = Self::pending_payout(conn, wallet_id, &row.identity, &row.contact)? {
+            return Ok(Some(payout));
+        }
         conn.execute(
             "INSERT INTO dp_payment_lock (wallet_id, identity, contact, txid, since, inputs)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -1534,6 +1557,119 @@ impl AppDb {
             "DELETE FROM dp_payment_lock
              WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3 AND txid = ?4",
             params![wallet_id, identity, contact, txid],
+        )?;
+        Ok(n > 0)
+    }
+
+    // ---- DashPay contact payouts (C-funding D-C5) ----
+
+    /// The reference of the pair's `pending` payout, if any.
+    fn pending_payout(
+        conn: &Connection,
+        wallet_id: &str,
+        identity: &str,
+        contact: &str,
+    ) -> Result<Option<String>> {
+        Ok(conn
+            .query_row(
+                "SELECT reference FROM dp_contact_payout
+                 WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3 AND state = 'pending'",
+                params![wallet_id, identity, contact],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Every payout row of the wallet, oldest first.
+    pub fn dp_contact_payouts(&self, wallet_id: &str) -> Result<Vec<DpContactPayoutRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT reference, identity, contact, source, st_hash, address, credits,
+                    expected_duffs, note, state, since
+             FROM dp_contact_payout WHERE wallet_id = ?1 ORDER BY since, reference",
+        )?;
+        let rows = stmt.query_map([wallet_id], |r| {
+            Ok(DpContactPayoutRow {
+                reference: r.get(0)?,
+                identity: r.get(1)?,
+                contact: r.get(2)?,
+                source: r.get(3)?,
+                st_hash: r.get(4)?,
+                address: r.get(5)?,
+                credits: r.get::<_, i64>(6)? as u64,
+                expected_duffs: r.get::<_, i64>(7)? as u64,
+                note: r.get(8)?,
+                state: r.get(9)?,
+                since: r.get::<_, i64>(10)? as u64,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Writes `row` as the pair's payout, durable as
+    /// [`Self::set_dp_payment_lock_durable`], unless another payment holds
+    /// the pair (a `dp_payment_lock` row, or another `pending` payout):
+    /// then nothing is written and its txid or reference is returned.
+    /// Writing `row.reference` again changes nothing.
+    pub fn insert_dp_contact_payout_durable(
+        &self,
+        wallet_id: &str,
+        row: &DpContactPayoutRow,
+    ) -> Result<Option<String>> {
+        self.durably(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let core: Option<String> = tx
+                .query_row(
+                    "SELECT txid FROM dp_payment_lock
+                     WHERE wallet_id = ?1 AND identity = ?2 AND contact = ?3",
+                    params![wallet_id, row.identity, row.contact],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let held = match core {
+                Some(txid) => Some(txid),
+                None => Self::pending_payout(&tx, wallet_id, &row.identity, &row.contact)?
+                    .filter(|r| *r != row.reference),
+            };
+            if held.is_none() {
+                tx.execute(
+                    "INSERT INTO dp_contact_payout (wallet_id, reference, identity, contact,
+                         source, st_hash, address, credits, expected_duffs, note, state, since)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                     ON CONFLICT (wallet_id, reference) DO NOTHING",
+                    params![
+                        wallet_id,
+                        row.reference,
+                        row.identity,
+                        row.contact,
+                        row.source,
+                        row.st_hash,
+                        row.address,
+                        row.credits as i64,
+                        row.expected_duffs as i64,
+                        row.note,
+                        row.state,
+                        row.since as i64
+                    ],
+                )?;
+            }
+            tx.commit()?;
+            Ok(held)
+        })
+    }
+
+    /// Settles a `pending` payout as `state` (`sent` or `not_sent`);
+    /// whether it was pending.
+    pub fn settle_dp_contact_payout(
+        &self,
+        wallet_id: &str,
+        reference: &str,
+        state: &str,
+    ) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE dp_contact_payout SET state = ?3
+             WHERE wallet_id = ?1 AND reference = ?2 AND state = 'pending'",
+            params![wallet_id, reference, state],
         )?;
         Ok(n > 0)
     }
@@ -1738,7 +1874,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026111002);
+        assert_eq!(db.schema_version().unwrap(), 2026111901);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();
@@ -1787,6 +1923,66 @@ mod tests {
             vec![row("carol", "t3", 30)]
         );
         assert_eq!(db.dp_payment_locks(W2).unwrap(), vec![row("bob", "t4", 40)]);
+    }
+
+    /// C-funding P6: one lock per pair across every source, on disk.
+    #[test]
+    fn a_pending_payout_and_a_core_lock_hold_the_pair_against_each_other() {
+        let db = AppDb::open_in_memory().unwrap();
+        let payout = |c: &str, reference: &str| DpContactPayoutRow {
+            reference: reference.into(),
+            identity: "me".into(),
+            contact: c.into(),
+            source: "platform".into(),
+            st_hash: None,
+            address: "yaddr".into(),
+            credits: 5_000,
+            expected_duffs: 4,
+            note: Some("lunch".into()),
+            state: "pending".into(),
+            since: 10,
+        };
+        let core = |c: &str, t: &str| DpPaymentLockRow {
+            identity: "me".into(),
+            contact: c.into(),
+            txid: t.into(),
+            since: 20,
+            inputs: String::new(),
+        };
+        let bob = payout("bob", "move-1");
+        assert_eq!(db.insert_dp_contact_payout_durable(W, &bob).unwrap(), None);
+        assert_eq!(db.insert_dp_contact_payout_durable(W, &bob).unwrap(), None);
+        assert_eq!(
+            db.insert_dp_contact_payout_durable(W, &payout("bob", "move-2"))
+                .unwrap(),
+            Some("move-1".into())
+        );
+        assert_eq!(
+            db.set_dp_payment_lock_durable(W, &core("bob", "t1"))
+                .unwrap(),
+            Some("move-1".into())
+        );
+        assert!(db.dp_payment_locks(W).unwrap().is_empty());
+
+        db.set_dp_payment_lock(W, &core("carol", "t2")).unwrap();
+        assert_eq!(
+            db.insert_dp_contact_payout_durable(W, &payout("carol", "move-3"))
+                .unwrap(),
+            Some("t2".into())
+        );
+        assert_eq!(db.dp_contact_payouts(W).unwrap(), vec![bob.clone()]);
+
+        assert!(
+            db.settle_dp_contact_payout(W, "move-1", "not_sent")
+                .unwrap()
+        );
+        assert!(!db.settle_dp_contact_payout(W, "move-1", "sent").unwrap());
+        assert_eq!(db.set_dp_payment_lock(W, &core("bob", "t1")).unwrap(), None);
+        let settled = DpContactPayoutRow {
+            state: "not_sent".into(),
+            ..bob
+        };
+        assert_eq!(db.dp_contact_payouts(W).unwrap(), vec![settled]);
     }
 
     /// MG-03 D34: a durable setting survives power loss, with every commit

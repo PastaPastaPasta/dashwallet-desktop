@@ -42,6 +42,8 @@ fn kinds_for(flow: FlowKind) -> &'static [GrantKind] {
         | FlowKind::SharedMasternode
         | FlowKind::Dissolution => &[GrantKind::MasternodeOp],
         FlowKind::MasternodeWithdraw => &[GrantKind::MasternodeWithdraw],
+        // No source's key class is issued before its slice (C5a, C5b).
+        FlowKind::ContactPayFromBalance => &[],
         FlowKind::Registration
         | FlowKind::TopUp
         | FlowKind::Withdraw

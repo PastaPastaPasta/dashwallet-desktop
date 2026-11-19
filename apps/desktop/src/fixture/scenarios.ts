@@ -27,7 +27,7 @@ import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
@@ -361,7 +361,7 @@ function attributePayments(w: World) {
     row.counterparty = party(name);
     // The contact's activity lists it too (DP2-09), so its row opens the transaction.
     const items = (w.dashpay.activity[IDENTITY[name]] ??= []);
-    items.push({ txid: row.txid, direction, amount: Math.abs(row.amount) - (direction === "sent" ? (row.fee ?? 0) : 0), height: row.blockHeight, timestamp: row.timestamp });
+    items.push(coreActivity({ txid: row.txid, direction, amount: Math.abs(row.amount) - (direction === "sent" ? (row.fee ?? 0) : 0), height: row.blockHeight, timestamp: row.timestamp }));
   };
   attribute(first("recvWithAddress")!, "bob", "received");
   attribute(first("sendToAddress")!, "dave", "sent");
@@ -412,13 +412,13 @@ function attributeMore(w: World) {
   // The newest labelled receipt, "Coffee refund" (its text stays wallet.ts's sentinel).
   const refund = rows.find((r) => r.label && r.amount > 0)!;
   refund.counterparty = { identity: IDENTITY.bob, username: "bob", displayName: "Bob Builder", avatarUrl: null };
-  w.dashpay.activity[IDENTITY.bob].unshift({ txid: refund.txid, direction: "received", amount: refund.amount, height: refund.blockHeight, timestamp: refund.timestamp });
+  w.dashpay.activity[IDENTITY.bob].unshift(coreActivity({ txid: refund.txid, direction: "received", amount: refund.amount, height: refund.blockHeight, timestamp: refund.timestamp }));
   const nameless = rows.find((r) => r.txType === "recvWithAddress" && r.category === "received" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
   nameless.counterparty = { identity: IDENTITY.mateo, username: null, displayName: null, avatarUrl: null };
   // The oldest plain payment went to Judy, a contact the user hid: listed, in the collapsed Hidden section.
   const hidden = rows.findLast((r) => r.txType === "sendToAddress" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
   hidden.counterparty = { identity: IDENTITY.judy, username: "judy", displayName: "Judy", avatarUrl: null };
-  (w.dashpay.activity[IDENTITY.judy] ??= []).push({ txid: hidden.txid, direction: "sent", amount: Math.abs(hidden.amount) - (hidden.fee ?? 0), height: hidden.blockHeight, timestamp: hidden.timestamp });
+  (w.dashpay.activity[IDENTITY.judy] ??= []).push(coreActivity({ txid: hidden.txid, direction: "sent", amount: Math.abs(hidden.amount) - (hidden.fee ?? 0), height: hidden.blockHeight, timestamp: hidden.timestamp }));
 }
 
 function twoWallets(w: World): World {

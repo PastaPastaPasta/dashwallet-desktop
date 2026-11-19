@@ -146,8 +146,8 @@ pub use names::{
 };
 pub use notifications::{DashPayEvent, EventKind, EventPage, MAX_NEWS};
 pub use payments::{
-    ActivityDirection, ActivityFilter, ActivityItem, ActivityPage, Counterparty, LockResolution,
-    PaymentLock,
+    ActivityDirection, ActivityFilter, ActivityItem, ActivityPage, ContactPayOutcome,
+    ContactPayQuote, Counterparty, LockResolution, PaymentLock, PaymentSource, PayoutState,
 };
 pub use platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,

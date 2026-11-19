@@ -143,7 +143,7 @@ const PASS_WAIT: Duration = Duration::from_secs(120);
 const LEGACY_SNAPSHOT_KEY: &str = "platform_address/snapshot";
 const BASELINE_KEY: &str = "platform_address/baseline";
 const ROW_PREFIX: &str = "platform_address/row/";
-const MOVE_PREFIX: &str = "platform_address/move/";
+pub(super) const MOVE_PREFIX: &str = "platform_address/move/";
 const FUND_PREFIX: &str = "platform_address/fund/";
 
 /// What a move pays: the wallet's Core address, or a Platform address.
