@@ -86,7 +86,7 @@ fn max_is_the_usable_balance_less_the_reserve() {
 }
 
 /// Nothing above the reserve, or no amount: refused, the shortfall against
-/// what every funded address holds.
+/// the largest address, since input 0 is one address.
 #[test]
 fn nothing_to_plan_is_refused() {
     let b = balances(&[(1, RESERVE), (2, 500)]);
@@ -94,7 +94,7 @@ fn nothing_to_plan_is_refused() {
         plan(&b, WithdrawAmount::All, &rules()),
         Err(Input0Refused::Short {
             needed: 1 + RESERVE,
-            available: RESERVE + 500,
+            available: RESERVE,
         })
     );
     assert_eq!(
@@ -147,9 +147,11 @@ fn the_minimum_claim_and_total_refuse() {
     );
 }
 
-/// Over many address sets and amounts: no claim exceeds its address's
+/// Over many address sets and amounts: a plan exactly when the amount is
+/// within Max (computed here on its own), no claim exceeds its address's
 /// proved balance, input 0 keeps the reserve and is the first address above
-/// it, the claims cover the amount, and the count stays within the cap.
+/// it, later inputs hold the input minimum, the claims cover the amount,
+/// and the count stays within the cap.
 #[test]
 fn a_plan_never_claims_past_the_proved_balances() {
     let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
@@ -160,6 +162,7 @@ fn a_plan_never_claims_past_the_proved_balances() {
         seed % bound
     };
     let r = rules();
+    let mut planned = 0;
     for _ in 0..2_000 {
         let n = 1 + next(6) as u8;
         let b: BTreeMap<_, _> = (0..n)
@@ -169,19 +172,40 @@ fn a_plan_never_claims_past_the_proved_balances() {
             0 => WithdrawAmount::All,
             _ => credits(1 + next(12_000)),
         };
-        let Ok(p) = plan(&b, amount, &r) else {
+        let first = (b.iter()).find(|(_, c)| **c > RESERVE).map(|(a, _)| *a);
+        let max = first.map_or(0, |first| {
+            let later = (b.range(first..).skip(1))
+                .filter(|(_, c)| **c >= r.min_input)
+                .take(r.max_inputs - 1);
+            (b[&first] + later.map(|(_, c)| *c).sum::<u64>()) - RESERVE
+        });
+        let fits = match amount {
+            WithdrawAmount::All => max > 0,
+            WithdrawAmount::Credits { credits } => credits <= max,
+        };
+        let planned_now = plan(&b, amount, &r);
+        assert_eq!(
+            planned_now.is_ok(),
+            fits,
+            "{b:?} {amount:?} {planned_now:?}"
+        );
+        let Ok(p) = planned_now else {
             continue;
         };
-        let first = (b.iter()).find(|(_, c)| **c > RESERVE).map(|(a, _)| *a);
+        planned += 1;
         assert_eq!(Some(p.input_0().0), first, "{b:?} {amount:?}");
         assert!(b[&p.input_0().0] - p.input_0().1 >= RESERVE);
-        for (a, c) in &p.inputs {
+        for (i, (a, c)) in p.inputs.iter().enumerate() {
             assert!(*c > 0 && *c <= b[a], "{b:?} {amount:?} {p:?}");
+            assert!(i == 0 || *c >= r.min_input, "{b:?} {amount:?} {p:?}");
         }
         assert!(p.inputs.values().sum::<u64>() >= p.credits);
         assert!(p.inputs.len() <= r.max_inputs);
-        if let WithdrawAmount::Credits { credits } = amount {
-            assert_eq!(p.credits, credits);
-        }
+        let expected = match amount {
+            WithdrawAmount::All => max,
+            WithdrawAmount::Credits { credits } => credits,
+        };
+        assert_eq!(p.credits, expected);
     }
+    assert!(planned > 500, "{planned}");
 }

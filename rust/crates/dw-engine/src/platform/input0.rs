@@ -56,7 +56,7 @@ impl Input0Plan {
 pub(crate) enum Input0Refused {
     /// The usable addresses hold `available`, less than the amount and the
     /// reserve (`needed`); with no address above the reserve, `available`
-    /// is what every funded address holds.
+    /// is the largest funded address's balance, as input 0 is one address.
     Short { needed: u64, available: u64 },
     /// Input 0 would claim less than [`Input0Rules::min_claim_0`].
     ClaimBelow { min: u64 },
@@ -83,7 +83,7 @@ pub(crate) fn plan(
                         .copied()
                         .filter(|(_, c)| *c >= rules.min_input),
                 )
-                .take(rules.max_inputs.max(1))
+                .take(rules.max_inputs)
                 .collect(),
             None => Vec::new(),
         };
@@ -100,7 +100,7 @@ pub(crate) fn plan(
     };
     if credits == 0 || credits > max {
         let available = if usable.is_empty() {
-            total(funded.iter().map(|(_, c)| *c))
+            funded.iter().map(|(_, c)| *c).max().unwrap_or(0)
         } else {
             held
         };

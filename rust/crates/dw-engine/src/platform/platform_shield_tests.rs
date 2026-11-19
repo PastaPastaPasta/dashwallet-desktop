@@ -99,11 +99,14 @@ fn a_shield_quote_never_exceeds_the_proved_balances() {
     );
 }
 
-/// With nothing above the reserve there is nothing to shield.
+/// With nothing above the reserve there is nothing to shield, and the
+/// shortfall is against the largest address (input 0 is one address), so
+/// it always reads as short.
 #[test]
 fn a_shield_quote_without_an_address_above_the_reserve_is_refused() {
     let w = World::new();
     w.net.fund(w.address(0), reserve());
+    w.net.fund(w.address(1), reserve() / 2);
     match w.shield_quote(WithdrawAmount::All) {
         Err(CreditsError::Platform(PlatformError::InsufficientCredits { needed, available })) => {
             assert_eq!((needed, available), (1 + reserve(), reserve()));
@@ -112,8 +115,23 @@ fn a_shield_quote_without_an_address_above_the_reserve_is_refused() {
     }
 }
 
-/// A move or send that may still execute refuses the shield, also once it
-/// is failed by height; once its nonces are taken the quote plans again.
+/// A pending move (its outcome unknown) refuses the shield.
+#[test]
+fn the_shield_quote_refuses_beside_a_pending_move() {
+    let w = World::new();
+    w.net.fund(w.address(0), 5 * DASH);
+    w.net.then(Act::Lost);
+    let one = WithdrawAmount::Credits { credits: DASH };
+    let pending = w.move_to(one, &w.to, &w.f.grant(2 * DASH)).unwrap();
+    assert_eq!(pending.state, PlatformActivityState::Pending);
+    match w.shield_quote(WithdrawAmount::All) {
+        Err(CreditsError::MovePending { id }) => assert_eq!(id, pending.id),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A send failed by height may still execute, so it refuses the shield;
+/// once its nonces are taken the quote plans again.
 #[test]
 fn the_shield_quote_refuses_beside_a_hold() {
     let w = World::new();
