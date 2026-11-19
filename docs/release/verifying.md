@@ -60,9 +60,11 @@ lists its `DashWallet-continuous-…` names.
 
 Each release also carries two software bills of materials in CycloneDX JSON:
 `dash-wallet-<version>-sbom-rust.cdx.json` lists the Rust crates the app is built from (every platform's
-dependencies), and `dash-wallet-<version>-sbom-npm.cdx.json` the renderer's production npm packages, the ones
-bundled into the app. The `continuous` release has them as `DashWallet-continuous-sbom-rust.cdx.json` and
-`DashWallet-continuous-sbom-npm.cdx.json`. They are made by the same workflow run as the bundles
+dependencies), and `dash-wallet-<version>-sbom-npm.cdx.json` the renderer's declared production npm dependencies
+(`package.json` `dependencies` and the packages they pull in). The npm one does not list build tools such as Vite,
+even where they add a little code to the bundle (Vite's module-preload polyfill). The `continuous` release has
+them as `DashWallet-continuous-sbom-rust.cdx.json` and `DashWallet-continuous-sbom-npm.cdx.json`.
+They are made by the same workflow run as the bundles
 (`ci/github/release-sbom.sh`), listed in `SHA256SUMS` and attested like every other file, so they are checked the
 same way:
 

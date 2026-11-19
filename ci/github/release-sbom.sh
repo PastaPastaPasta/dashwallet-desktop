@@ -3,8 +3,10 @@
 # named like the bundles so the checksums and publish steps treat them the same, and echo their paths:
 #   dash-wallet-<version>-sbom-rust.cdx.json  the app (crate dw-app, binary dash-wallet), default features,
 #                                             dependencies for every target (cargo-cyclonedx, CycloneDX 1.5);
-#   dash-wallet-<version>-sbom-npm.cdx.json   the renderer's production dependencies, the ones bundled into the
-#                                             app, from apps/desktop/pnpm-lock.yaml (pnpm sbom, CycloneDX 1.6).
+#   dash-wallet-<version>-sbom-npm.cdx.json   the renderer's declared production dependencies (package.json
+#                                             `dependencies` and what they pull in, from apps/desktop/pnpm-lock.yaml;
+#                                             pnpm sbom, CycloneDX 1.6). Build tools are not listed, even where
+#                                             they add code to the bundle (Vite's module-preload polyfill).
 #
 #   ci/github/release-sbom.sh OUT_DIR VERSION
 #

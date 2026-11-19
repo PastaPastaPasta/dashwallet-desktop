@@ -93,15 +93,20 @@ The workflow screenshots only Linux: on the hosted macOS and Windows runners the
 
 - [ ] macOS (a real Mac, Apple silicon or Intel): open the dmg, drag to Applications, first launch (the
       Gatekeeper prompt and the right-click ▸ Open path from the notes), onboarding, Home of a testnet wallet,
-      Settings ▸ About showing `X.Y.Z` and no test-build warning (for the final tag).
+      Settings ▸ About showing `X.Y.Z`, and Tools ▸ Information with its test-build warning (a candidate shows
+      it; the final tag must not).
 - [ ] Windows 11 (a real machine or VM): run the installer (the SmartScreen prompt, More info ▸ Run anyway), first
-      launch, onboarding, Home, About.
+      launch, onboarding, Home, Settings ▸ About, Tools ▸ Information.
 - [ ] Light and dark. Testnet data only; no real phrase, no mainnet address with funds.
 - [ ] Post them on the release's tracking issue or pull request, committed to a `pr-artifacts/…` branch and linked
       by SHA-pinned raw URLs (the repository's `CLAUDE.md` rule), never to `main`.
 
 ## 5. Tag
 
+- [ ] Before tagging (DEC-1806): a manual Linux testnet smoke on the AppImage that `main` built for the commit to
+      tag: a fresh install and an upgrade from the previous release; create, restore, sync, receive and send, and
+      each of the release's headline features once. The evidence goes in the release pull request and the release
+      text, never key material (no phrase, no private key, no passphrase).
 - [ ] Optional dry run of the whole build without publishing: `git tag v0.0.0-rel<N> <sha> && git push origin
       v0.0.0-rel<N>`. A tag that is not `vX.Y.Z[-rc.N]` builds and never starts the publish job. Delete it after.
 - [ ] Release candidate: `git tag -a vX.Y.Z-rc.N <sha> -m "Dash Wallet Desktop X.Y.Z-rc.N"`, push it. It becomes a
@@ -164,8 +169,8 @@ jq -r '.metadata.component.name, (.components | length)' dash-wallet-X.Y.Z-sbom-
       (`grep -c 'file:///' dash-wallet-X.Y.Z-sbom-*.cdx.json` prints 0 for each).
 - [ ] The release is marked as the notes intend (full release, or prerelease for a candidate), the body is
       `X.Y.Z-notes.md`, and the final tag is Latest.
-- [ ] Install each bundle once more from the published files (the screenshots of section 4 can be these): About
-      shows `X.Y.Z`, and the final tag shows no test-build warning.
+- [ ] Install each bundle once more from the published files (the screenshots of section 4 can be these):
+      Settings ▸ About shows `X.Y.Z`, and Tools ▸ Information shows no test-build warning on the final tag.
 - [ ] Update the State column of `docs/PLAN-1.0.md` and the README's tagged-release mention if it names a version.
 
 ## 8. Rollback

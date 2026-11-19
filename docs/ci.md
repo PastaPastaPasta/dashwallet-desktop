@@ -262,8 +262,14 @@ runners the screen capture is black or shows the runner console although the win
 VM renders the same build), so there the check is "the process is alive after 30 s", with the window title
 logged; real screenshots of those two come from a person at release time.
 
-The `checksums` job downloads the three `dist-<os>` artifacts, writes `SHA256SUMS` in `sha256sum` format
-(file names only), checks it with `sha256sum -c` and uploads everything as `release-v<version>`.
+The `sbom` job (`ubuntu-24.04`, same conditions as the build jobs) writes two CycloneDX JSON SBOMs with
+`ci/github/release-sbom.sh` and uploads them as `dist-sbom`: `sbom-rust.cdx.json`, the `dw-app` crate's
+dependencies for every target (`cargo-cyclonedx` 0.5.9), and `sbom-npm.cdx.json`, the renderer's declared
+production npm dependencies from `pnpm-lock.yaml` (`pnpm sbom`; build tools such as Vite are not listed). Both carry
+the commit's time, no serial number and no machine path. The `checksums` job downloads the four `dist-*` artifacts
+(`dist-macos`, `dist-windows`, `dist-linux`, `dist-sbom`), checks there are six files (four bundles, two SBOMs),
+writes `SHA256SUMS` in `sha256sum` format (file names only), checks it with `sha256sum -c` and uploads everything
+as `release-v<version>`.
 `ci/github/release-version.sh` names the files: the tag's version for a tag (a plain `vX.Y.Z` must equal
 `tauri.conf.json`), else `<version>-dev.<run>.g<short sha>`.
 
@@ -289,8 +295,9 @@ out the full history, runs `ci/github/release-publish.sh` and publishes:
   run, an older one too, which then leaves `continuous` alone), upload the record and every new file as `<name>.new`,
   then per name rename the old asset `<name>.old` and the new one `<name>` (`SHA256SUMS` last), move the tag, rewrite
   the notes, and only then delete the `.old` assets and the record. Any failure after the first rename, and a cancel
-  (SIGINT/SIGTERM), rolls back: every name is restored from its `.old`, the tag and the notes go back (also when the
-  failing API call had in fact taken effect). The API is not atomic, so for tens of seconds during the renames a file
+  (SIGINT/SIGTERM), rolls back: every name is restored from its `.old` (a name the old generation lacked is
+  deleted), the tag and the notes go back (also when the failing API call had in fact taken effect).
+  The API is not atomic, so for tens of seconds during the renames a file
   can be missing for the two calls between its renames, or newer than the `SHA256SUMS` next to it (downloaders retry;
   see `verifying.md`). A hard kill or an API outage can leave canonical names missing, `.new`/`.old` leftovers,
   mismatched checksums, or a tag and notes that describe the other generation, until the next publish, whose first
