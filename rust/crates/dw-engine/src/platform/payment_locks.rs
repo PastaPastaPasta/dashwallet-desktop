@@ -301,8 +301,8 @@ impl NetworkSession {
     /// [`Self::load_payment_locks`]' payouts (P6), under its `rows` guard:
     /// a `pending` row is the pair's lock while its source record exists or
     /// cannot be read; one with no source record was never signed, so it
-    /// settles `not_sent` and its address goes back to the pair. A row
-    /// whose payment is under way here is left to it.
+    /// settles `not_sent` and its address goes back to the pair. A pair
+    /// with a payment under way here is left to it.
     async fn load_payouts(&self, id: WalletId) {
         let wallet = id.to_string();
         let rows = match self

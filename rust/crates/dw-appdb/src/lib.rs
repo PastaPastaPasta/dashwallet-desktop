@@ -1691,10 +1691,10 @@ impl AppDb {
                         row.since as i64
                     ],
                 )?;
-                let ours: bool = tx
+                let stored: Option<(bool, String, i64)> = tx
                     .query_row(
                         "SELECT state = 'pending' AND identity = ?3 AND contact = ?4
-                             AND source = ?5 AND address = ?6 AND credits = ?7
+                             AND source = ?5 AND address = ?6 AND credits = ?7, source, since
                          FROM dp_contact_payout WHERE wallet_id = ?1 AND reference = ?2",
                         params![
                             wallet_id,
@@ -1705,19 +1705,28 @@ impl AppDb {
                             row.address,
                             row.credits as i64
                         ],
-                        |r| r.get(0),
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                     )
-                    .optional()?
-                    .unwrap_or(false);
-                if ours {
-                    let marker = dp_payout_marker(&row.reference);
-                    Self::put_setting(&tx, &local_scope(wallet_id), &marker, Some("1"))?;
-                } else {
-                    held = Some(PairHolder::Payout {
-                        reference: row.reference.clone(),
-                        source: row.source.clone(),
-                        since: row.since,
-                    });
+                    .optional()?;
+                match stored {
+                    Some((true, _, _)) => {
+                        let marker = dp_payout_marker(&row.reference);
+                        Self::put_setting(&tx, &local_scope(wallet_id), &marker, Some("1"))?;
+                    }
+                    Some((false, source, since)) => {
+                        held = Some(PairHolder::Payout {
+                            reference: row.reference.clone(),
+                            source,
+                            since: since as u64,
+                        });
+                    }
+                    None => {
+                        held = Some(PairHolder::Payout {
+                            reference: row.reference.clone(),
+                            source: row.source.clone(),
+                            since: row.since,
+                        });
+                    }
                 }
             }
             tx.commit()?;
@@ -2054,11 +2063,15 @@ mod tests {
                 .unwrap(),
             Some(PairHolder::Core("t2".into()))
         );
+        let dave = DpContactPayoutRow {
+            source: "shielded".into(),
+            since: 99,
+            ..payout("dave", "move-1")
+        };
         assert_eq!(
-            db.insert_dp_contact_payout_durable(W, &payout("dave", "move-1"))
-                .unwrap(),
+            db.insert_dp_contact_payout_durable(W, &dave).unwrap(),
             holds("move-1"),
-            "another pair's reference"
+            "another pair's reference, as stored"
         );
         assert_eq!(db.dp_contact_payouts(W).unwrap(), vec![bob.clone()]);
         assert!(!marked("move-3"));
