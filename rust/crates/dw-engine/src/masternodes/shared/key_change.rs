@@ -693,6 +693,10 @@ impl NetworkSession {
                     created_at: now,
                     updated_at: now,
                     last_error: None,
+                    abandon_tx: None,
+                    abandon_log: None,
+                    legacy_bound: false,
+                    resend_marked: false,
                 };
                 // The fee inputs are locked with the row (MG-04 D53).
                 self.appdb_op(move |db| db.insert_shared_session_durable(&w, &row, now))
@@ -1097,6 +1101,13 @@ impl NetworkSession {
         let stage = self.key_change_stage(wallet, &k).await?;
         match stage {
             SharedStage::Combined => {}
+            // As the registration's (D72): an abandoned key change isn't
+            // handed off again (MG-10 §4.4 change 1).
+            SharedStage::Sent if k.row.abandon_txid.is_some() => {
+                return Err(MasternodesError::SharedStage {
+                    stage: "abandoned".into(),
+                });
+            }
             SharedStage::Sent => {
                 self.resend_key_change(wallet, grant, &k, funded, fence)
                     .await?;
