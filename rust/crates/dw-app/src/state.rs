@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use dw_engine::governance::Governance;
+use dw_engine::masternodes::Masternodes;
 use dw_engine::platform::DashPay;
 use dw_engine::{
     DashNetwork, Engine, EngineConfig, EngineError, NetworkSession, PreparedTx, TxDraft, WalletId,
@@ -116,6 +117,10 @@ pub struct AppState {
     pub(crate) send_bind_seam: StdMutex<Option<Arc<Seam>>>,
     #[cfg(test)]
     pub(crate) send_grant_issued: StdMutex<Option<String>>,
+    /// Test seam: a payment `authorize` runs it on the vault after the
+    /// payment check and before the grant is issued.
+    #[cfg(test)]
+    pub(crate) before_payment_issue: StdMutex<Option<BeforePaymentIssue>>,
     /// Test seam: the endpoints `switch_network` and `open_network(null)`
     /// open the window network with, instead of the launch's (tests reach
     /// no public DAPI or quorum service).
@@ -224,6 +229,10 @@ impl SeamHandle {
         }
     }
 }
+
+/// [`AppState::before_payment_issue`]'s hook.
+#[cfg(test)]
+pub(crate) type BeforePaymentIssue = Box<dyn FnOnce(&dw_vault::Vault) + Send>;
 
 /// Where [`AppState::payment_set_pause`] stops the setter.
 #[cfg(test)]
@@ -606,6 +615,8 @@ impl AppState {
             #[cfg(test)]
             send_grant_issued: StdMutex::default(),
             #[cfg(test)]
+            before_payment_issue: StdMutex::default(),
+            #[cfg(test)]
             test_endpoints: StdMutex::default(),
             #[cfg(test)]
             before_rollback: StdMutex::default(),
@@ -776,6 +787,11 @@ impl AppState {
     /// The governance facade of the active session.
     pub async fn governance(&self) -> Result<Governance, AppError> {
         Ok(self.session().await?.governance())
+    }
+
+    /// The masternodes facade of the active session.
+    pub async fn masternodes(&self) -> Result<Masternodes, AppError> {
+        Ok(self.session().await?.masternodes())
     }
 
     /// The `--selftest` report path; the self-test commands refuse to run without it.

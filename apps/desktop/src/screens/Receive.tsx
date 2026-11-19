@@ -413,7 +413,7 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
         <p className="form-problem">Could not load the requests: {errorMessage(requests.error)}</p>
       ) : rows.length === 0 ? (
         <p className="placeholder-note" data-testid="requests-empty">
-          {requests.isPending ? "Loading requests…" : "No payment requests yet."}
+          {requests.isPending ? "Loading requests…" : "Requests you create show up here."}
         </p>
       ) : (
         <div className="card-l1 table-card">

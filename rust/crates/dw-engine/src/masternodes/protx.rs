@@ -10,6 +10,8 @@ pub(crate) mod build;
 pub(crate) mod keys;
 pub(crate) mod ops;
 #[cfg(test)]
+mod outcome_tests;
+#[cfg(test)]
 mod tests;
 mod update;
 

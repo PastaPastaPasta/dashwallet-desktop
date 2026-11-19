@@ -57,6 +57,8 @@ export interface FixtureWallet {
   rows: TxRow[];
   coins: Utxo[];
   receive: ReceiveWorld;
+  /** Filter checkpoint. Omitted: the tip once Core is caught up, otherwise no scan state. */
+  scanHeight?: number | null;
 }
 
 /** A 4 x 4 PNG in the DashPay blue: the fixture's avatar thumbnail (DP4-02). */
@@ -117,8 +119,16 @@ export interface World {
   releasesOpened?: number;
   /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
   protocolCompatibility?: ProtocolCompatibility;
-  /** "Require authentication for every payment" (E0-13 D11; on by default). */
+  /** "Ask for my passphrase for every payment". The funded scenario leaves it on, so the
+   * existing screens keep asking. The engine's own default is off: the signing window. */
   paymentAuth: boolean;
+  /** Quick-unlock and signing-window spend limit, in duffs. Default 0.5 DASH. */
+  spendLimitDuffs: number;
+  /** When the post-unlock signing window ends (ms). `null` when it is closed. The funded
+   * scenario starts unlocked, so the window is open. */
+  signingUntil: number | null;
+  /** Duff already authorized from this window. The limit is a total, not per payment. */
+  windowCharged?: number;
   /** "Load contact pictures" (DP4-02 D17); absent: on. */
   loadContactPictures?: boolean;
   /** The vault's wait after a wrong passphrase (`retryAfterSecs`); null: none. */
@@ -228,6 +238,8 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     stash: [],
     shellSync: null,
     paymentAuth: true,
+    spendLimitDuffs: 50_000_000,
+    signingUntil: Date.now() + 5 * 60 * 1000,
     throttleSecs: null,
     throttledUntil: null,
     send: newSendWorld(),
@@ -575,6 +587,13 @@ function withInvitation(w: World, status?: InvitationStatus): World {
   return w;
 }
 
+/** Platform and Shielded history succeed with nothing. A failed command is a different state. */
+function quietOptionalHistory(w: World): World {
+  if (w.pending.platform) w.pending.platform.activity = [];
+  if (w.pending.shielded) w.pending.shielded.activity = [];
+  return w;
+}
+
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t, "default", true),
@@ -792,6 +811,30 @@ const SCENARIOS = {
     w.pending.shielded!.balance = "0";
     return w;
   },
+  /** Shielded is ready and a sync pass is running: the send sheet says "Scanning…". */
+  "shielded-scanning": (t) => {
+    const w = base(t);
+    w.pending.shielded!.scanning = true;
+    return w;
+  },
+  /** Shielded's last completed pass ended three hours before the fixture's now. */
+  "shielded-synced-earlier": (t) => {
+    const w = base(t);
+    w.pending.shielded!.lastSyncAt = Math.floor(FIXTURE_NOW.getTime() / 1000) - 3 * 3600;
+    return w;
+  },
+  /** Shielded's 1.25 is three notes (1, 0.2 and 0.05), priced per action: Max takes all three. */
+  "shielded-three-notes": (t) => {
+    const w = base(t);
+    w.pending.shielded!.notes = ["100000000000", "20000000000", "5000000000"];
+    return w;
+  },
+  /** Shielded holds less than a send's fee: Max has nothing to send and says why. */
+  "shielded-below-fee": (t) => {
+    const w = base(t);
+    w.pending.shielded!.balance = "15000000";
+    return w;
+  },
   /** Shielded has too few notes to withdraw from. */
   "shielded-pool-small": (t) => {
     const w = base(t);
@@ -863,8 +906,16 @@ const SCENARIOS = {
     w.pending.recovery.failures = 1;
     return w;
   },
-  /** A new wallet: no history, zero balance. */
+  /** A new wallet: no history, zero balance. Platform and Shielded still have their sample rows. */
   empty: (t) => base(t, "empty"),
+  /** That wallet with those optional histories empty too: the commands succeed and return nothing. */
+  "empty-activity": (t) => quietOptionalHistory(base(t, "empty")),
+  /** That wallet while the chain is still syncing: history must not offer Receive yet. */
+  "empty-syncing": (t) => {
+    const w = quietOptionalHistory(base(t, "empty"));
+    w.sync = syncing();
+    return w;
+  },
   /** No wallet on the network yet, and no vault. */
   "no-wallet": (t) => {
     const w = base(t);
@@ -1238,6 +1289,12 @@ const SCENARIOS = {
   },
   /** Coin Selection: CoinJoin denominations beside the plain coins, hidden by default (QT-071). */
   "tools-coinjoin": (t) => withCoinJoinCoins(base(t)),
+  /** Every coin is mixed, so Coin Selection's default list is empty until Show all coins. */
+  "coins-all-mixed": (t) => {
+    const w = base(t);
+    w.wallets[0].coins = w.wallets[0].coins.map((c) => ({ ...c, coinjoinDenominated: true, coinjoinRounds: 4 }));
+    return w;
+  },
   /** "alice" before her first contact: the Contacts empty state (DP2-07). */
   "dashpay-contacts-empty": (t) => {
     const w = base(t);

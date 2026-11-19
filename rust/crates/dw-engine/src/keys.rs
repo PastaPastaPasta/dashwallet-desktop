@@ -19,6 +19,7 @@ use dw_vault::{GrantKind, LockState, Vault, VaultError, WalletSecret, WalletSign
 use key_wallet::mnemonic::Language;
 use key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
+use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use zeroize::Zeroizing;
 
 use crate::gate::Lifecycle;
@@ -65,16 +66,34 @@ pub(crate) fn registration_refused(_: &std::path::Path) -> bool {
 /// restores scan 1000 keys ahead (QT-105), which also finds funds Core mixed
 /// on its BIP44 chains (DESIGN.md R2).
 pub const CORE_COMPAT_LOOKAHEAD: u32 = 1000;
+/// CoinJoin scan window on restore and rescan. The account's default gap
+/// derives indexes 0 through 99 only, so a key used at index 100 or beyond
+/// is invisible to a filter scan until an earlier address is marked used.
+/// This is the largest gap key-wallet will keep, applied to the CoinJoin
+/// account alone.
+pub(crate) const COINJOIN_SCAN_GAP: u32 = MAX_LOOKAHEAD;
 /// Largest lookahead key-wallet supports (`MAX_GAP_LIMIT`).
 pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// dw-appdb setting (wallet scope) holding a raised lookahead, applied again
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
 const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 
-/// app.sqlite setting of "require authentication for every payment", one
-/// per vault: this prefix and the vault id in hex. `"0"` is off; absent
-/// (the default) or anything else is on.
+/// app.sqlite setting of "ask for my passphrase for every payment", one
+/// per vault: this prefix and the vault id in hex.
+///
+/// `"strict"` asks every time. `"window"` is the five-minute window.
+/// A vault from before the window existed stored nothing when the choice
+/// was the old default (ask every time) and `"0"` when the user turned
+/// that off. Absence and any other value stay strict, so an upgrade does
+/// not start signing without a passphrase. A vault created by this build
+/// writes `"window"` itself. `"0"` was an explicit choice to stop asking,
+/// and it now means the window rather than an unlimited unlock.
 const PAYMENT_AUTH_KEY: &str = "auth.every_payment/";
+
+/// Whether the stored value asks for the passphrase on every payment.
+pub(crate) fn asks_every_payment(stored: Option<&str>) -> bool {
+    !matches!(stored, Some("window") | Some("0"))
+}
 
 fn payment_auth_key(vault_id: &[u8]) -> String {
     format!("{PAYMENT_AUTH_KEY}{}", hex::encode(vault_id))
@@ -86,7 +105,7 @@ fn payment_auth_key(vault_id: &[u8]) -> String {
 pub struct PaymentAuthentication {
     pub on: bool,
     /// The vault it was read for ([`Vault::vault_id`]); `None` without a
-    /// vault (the default, on). A host that issues a grant later checks the
+    /// vault, which reads as on. A host that issues a grant later checks the
     /// vault is still this one.
     pub vault_id: Option<Vec<u8>>,
 }
@@ -215,6 +234,46 @@ pub(crate) async fn apply_lookahead(
     first_error.map_or(Ok(()), |e| Err(e.into()))
 }
 
+/// Raises each CoinJoin account of open wallet `id` to [`COINJOIN_SCAN_GAP`]
+/// when a pool of it is narrower, so a restore or rescan derives index 100
+/// and beyond. BIP44 is untouched. A wallet no longer open is skipped.
+pub(crate) async fn ensure_coinjoin_scan_gap(
+    manager: &crate::session::Manager,
+    id: WalletId,
+) -> Result<(), EngineError> {
+    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+    let narrow: Vec<u32> = {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let Some(info) = wm.get_wallet_info(&id.0) else {
+            return Ok(());
+        };
+        (info.core_wallet.accounts.coinjoin_accounts.iter())
+            .filter(|(_, account)| {
+                (account.managed_account_type().address_pools().iter())
+                    .any(|pool| pool.gap_limit < COINJOIN_SCAN_GAP)
+            })
+            .map(|(index, _)| *index)
+            .collect()
+    };
+    if narrow.is_empty() {
+        return Ok(());
+    }
+    let Some(wallet) = manager.get_wallet(&id.0).await else {
+        return Ok(());
+    };
+    let mut first_error = None;
+    for index in narrow {
+        if let Err(e) = (wallet.core())
+            .set_gap_limit(AccountTypePreference::CoinJoin, index, COINJOIN_SCAN_GAP)
+            .await
+        {
+            first_error.get_or_insert(e);
+        }
+    }
+    first_error.map_or(Ok(()), |e| Err(e.into()))
+}
+
 impl NetworkSession {
     /// The vault of this session's network.
     pub fn vault(&self) -> &Vault {
@@ -264,12 +323,14 @@ impl NetworkSession {
         out
     }
 
-    /// "Require authentication for every payment" (DESIGN-opus §1.8; default
-    /// on). While on, a host issues `Spend` and `PlatformOp` grants on an
-    /// encrypted vault only against a credential, never `Credential::None`
-    /// (dw-app enforces it at its IPC boundary). Stored in this network's
-    /// app.sqlite under the vault's id, so script in a webview cannot change
-    /// it and every new vault (after `destroy`, or a recovery) starts on.
+    /// "Ask for my passphrase for every payment". While on, a host issues a
+    /// payment grant on an encrypted vault only against a credential (dw-app
+    /// enforces it at its IPC boundary). While off, the vault's signing
+    /// window may issue one, up to the sealed spend limit for the whole
+    /// window. Stored per vault id. A vault that has no row yet is on:
+    /// that is how every vault from before the window stored the default.
+    /// [`Self::adopt_signing_window_default`] writes the window for a vault
+    /// this build creates.
     pub async fn payment_authentication(
         self: &Arc<Self>,
     ) -> Result<PaymentAuthentication, EngineError> {
@@ -285,7 +346,9 @@ impl NetworkSession {
             let key = payment_auth_key(&vault_id);
             let on = this
                 .appdb_op(move |db| {
-                    Ok(db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.as_deref() != Some("0"))
+                    Ok(asks_every_payment(
+                        db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.as_deref(),
+                    ))
                 })
                 .await?;
             Ok(PaymentAuthentication {
@@ -322,10 +385,52 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let key = payment_auth_key(&vault_id);
+            let value = if on { "strict" } else { "window" };
+            this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some(value)))
+                .await
+        })
+        .await
+    }
+
+    /// Writes the signing-window default for a vault this build just
+    /// created, when the vault has no row yet. An older vault is left
+    /// absent, which still asks every time.
+    pub async fn adopt_signing_window_default(self: &Arc<Self>) -> Result<(), EngineError> {
+        let Some(vault_id) = self.vault().vault_id() else {
+            return Ok(());
+        };
+        let key = payment_auth_key(&vault_id);
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
             this.appdb_op(move |db| {
-                db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, (!on).then_some("0"))
+                if db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.is_none() {
+                    db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some("window"))?;
+                }
+                Ok(())
             })
             .await
+        })
+        .await
+    }
+
+    /// Replaces this vault's payment-auth row. `None` deletes it, which is
+    /// how a vault from before the signing window stored "ask every time".
+    /// Tests use it to prove an upgrade still asks.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub async fn set_payment_auth_row_for_test(
+        self: &Arc<Self>,
+        value: Option<String>,
+    ) -> Result<(), EngineError> {
+        let Some(vault_id) = self.vault().vault_id() else {
+            return Ok(());
+        };
+        let key = payment_auth_key(&vault_id);
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, value.as_deref()))
+                .await
         })
         .await
     }
@@ -632,6 +737,14 @@ impl NetworkSession {
             }
             self.store_lookahead(wallet_id, gap).await;
         }
+        let published_at = {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            (wm.get_wallet_info(&wallet_id.0))
+                .map_or(0, |info| info.core_wallet.birth_height().saturating_sub(1))
+        };
+        self.widen_published_wallet(&manager, wallet_id, published_at)
+            .await;
         self.refresh_wallet_state(&manager, wallet_id).await;
         // The wallet is registered; a failed name write leaves it with
         // the computed default name and is reported in the log only.
@@ -707,6 +820,45 @@ impl NetworkSession {
         };
         if let Err(e) = restored {
             tracing::warn!(wallet_id = %id, error = %e, "could not restore the loaded wallet's lookahead or coins");
+        }
+        let loaded_at = self
+            .live()
+            .ok()
+            .and_then(|live| live.store.loaded_checkpoint(&id.0));
+        match loaded_at {
+            Some(checkpoint) => self.widen_published_wallet(manager, id, checkpoint).await,
+            None => {
+                if let Err(e) = ensure_coinjoin_scan_gap(manager, id).await {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap");
+                }
+            }
+        }
+    }
+
+    /// Widens open wallet `id`'s CoinJoin pools, then rewinds its filter
+    /// checkpoint to `published_at`, the one it had when platform-wallet
+    /// made it visible to SPV, if a batch committed above it since: that
+    /// batch matched the narrower pools. The rewind stores its replay
+    /// record first. Failures are logged.
+    pub(crate) async fn widen_published_wallet(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        published_at: u32,
+    ) {
+        if let Err(e) = ensure_coinjoin_scan_gap(manager, id).await {
+            tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap");
+        }
+        let synced = {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            wm.get_wallet_info(&id.0)
+                .map(|info| info.core_wallet.synced_height())
+        };
+        if synced.is_some_and(|synced| synced > published_at)
+            && let Err(e) = self.rewind_recorded(manager, id, published_at).await
+        {
+            tracing::warn!(wallet_id = %id, error = %e, "could not rescan what SPV matched before the CoinJoin gap was widened");
         }
     }
 
@@ -841,5 +993,20 @@ impl NetworkSession {
             Ok(signer.sign_message(&path, &message).await?)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod payment_auth_tests {
+    use super::asks_every_payment;
+
+    #[test]
+    fn an_absent_or_unknown_row_asks_and_only_an_explicit_window_does_not() {
+        assert!(asks_every_payment(None));
+        assert!(asks_every_payment(Some("strict")));
+        assert!(asks_every_payment(Some("1")));
+        assert!(asks_every_payment(Some("garbage")));
+        assert!(!asks_every_payment(Some("window")));
+        assert!(!asks_every_payment(Some("0")));
     }
 }

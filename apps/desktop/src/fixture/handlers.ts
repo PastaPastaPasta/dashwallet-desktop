@@ -26,6 +26,7 @@ import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import { isCheckable } from "../api/lockReport";
+import { CREDITS_PER_DUFF } from "../api/pending";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import type { DashPayProfile } from "../api/generated/DashPayProfile";
 import type { ProfileFieldName } from "../api/generated/ProfileFieldName";
@@ -195,14 +196,67 @@ function leaseKey(id: string): string | null {
   return /^lease-[0-9a-f]{32}$/i.test(id) ? id.toLowerCase() : null;
 }
 
-/** dw-vault's credential check of `authorize`. While "Require authentication for every payment"
- * is on (E0-13 D11), a `spend` grant of an encrypted vault needs a real credential: the
- * unlocked vault's own (`unencrypted`) is `vault.credential_required`. */
+const SPEND_LIMITS = [0, 10_000_000, 50_000_000, 100_000_000, 500_000_000];
+const SIGNING_WINDOW_MS = 5 * 60 * 1000;
+
+/** What a purpose counts against the spend limit, its credits rounded up to whole duffs in
+ * `bigint` as dw-vault's `quick_unlock_value`. `null` for one quick unlock never issues. */
+function quickValue(p: GrantPurposeSpec): bigint | null {
+  switch (p.kind) {
+    case "spend":
+    case "masternodeOp":
+      return BigInt(p.maxDuffs);
+    case "platformOp":
+      return BigInt(p.maxDuffs) + (BigInt(p.maxCredits) + CREDITS_PER_DUFF - 1n) / CREDITS_PER_DUFF;
+    case "signMessage":
+    case "governance":
+      return 0n;
+    default:
+      return null;
+  }
+}
+
+function windowOpen(w: World): boolean {
+  return w.lock.state === "unlocked" && w.signingUntil !== null && Date.now() < w.signingUntil;
+}
+
+/** dw-vault's `window_purpose`: the window issues payments only. */
+function windowPurpose(p: GrantPurposeSpec): boolean {
+  return p.kind === "spend" || p.kind === "platformOp";
+}
+
+/** What this set counts against the window: dw-vault's window purposes only, as `admit_window`. */
+function windowSum(purposes: GrantPurposeSpec[]): bigint {
+  let total = 0n;
+  for (const purpose of purposes) if (windowPurpose(purpose)) total += quickValue(purpose) ?? 0n;
+  return total;
+}
+
+/** `admit_window`: an open window, a limit above 0, and the total within it. */
+function windowCovers(w: World, purposes: GrantPurposeSpec[]): boolean {
+  return windowOpen(w) && w.spendLimitDuffs > 0 && BigInt(w.windowCharged ?? 0) + windowSum(purposes) <= BigInt(w.spendLimitDuffs);
+}
+
+function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
+  if (credential.kind !== "unencrypted" || !w.lock.encrypted || !windowOpen(w)) return;
+  // Charged only once covered, so within the limit and exact as a number.
+  w.windowCharged = (w.windowCharged ?? 0) + Number(windowSum(purposes));
+}
+
+/** dw-vault's credential check of `authorize`. While "Ask for my passphrase for every payment"
+ * is on, a payment grant of an encrypted unlocked vault needs a real credential. While it is
+ * off, the post-unlock window covers one at or under the spend limit (none at a limit of 0). A
+ * vote or a masternode owner operation always needs one. A locked vault answers `vault.locked`
+ * below instead. */
 function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
-  // E0-13 D11 (`check_payment_auth`): a locked vault answers `vault.locked` below instead.
+  const sensitive = purposes.some(
+    (p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential" || p.kind === "governance" || p.kind === "masternodeOp",
+  );
+  if (credential.kind === "unencrypted" && w.lock.encrypted && sensitive)
+    throw fail("vault.credential_required", "the passphrase is required");
   const pays = purposes.some((p) => p.kind === "spend" || p.kind === "platformOp" || p.kind === "masternodeOp" || p.kind === "governance");
-  if (credential.kind === "unencrypted" && w.lock.encrypted && w.lock.state !== "locked" && w.paymentAuth && pays)
+  if (credential.kind === "unencrypted" && w.lock.encrypted && w.lock.state === "unlocked" && pays && (w.paymentAuth || !windowCovers(w, purposes)))
     throw fail("vault.credential_required", "every payment needs authentication");
   switch (credential.kind) {
     case "passphrase": {
@@ -238,6 +292,7 @@ export function authorizeSet(w: World, purposes: GrantPurposeSpec[], walletId: s
   const unbound = purposes.find((p) => (p.kind !== "changeCredential") !== (walletId !== null));
   if (unbound) throw fail("invalid_argument", `a ${unbound.kind} grant ${walletId === null ? "needs a wallet id" : "is not bound to a wallet"}`);
   checkCredential(w, credential, purposes);
+  chargeWindow(w, credential, purposes);
   const expiresAt = secs(FIXTURE_NOW) + GRANT_TTL_SECS;
   const ownKey = keyless(w);
   return purposes.map((purpose) => {
@@ -521,6 +576,8 @@ function unlock(ctx: Ctx, passphrase: string, state: "unlocked" | "unlockedMixin
   }
   world.lock = { ...world.lock, failedAttempts: 0, retryAfterSecs: null };
   setLock(ctx, state);
+  world.signingUntil = state === "unlocked" ? Date.now() + SIGNING_WINDOW_MS : null;
+  world.windowCharged = 0;
   return world.lock;
 }
 
@@ -687,6 +744,8 @@ export const HANDLERS: Handlers = {
     // stays), then report what the cut did.
     for (const lease of world.leases.filter(live)) setLease(ctx, { ...lease, state: { kind: "revoked", cause: "lock" }, keyExpiresInSecs: null });
     revokeGrants(world);
+    world.signingUntil = null;
+    world.windowCharged = 0;
     setLock(ctx, "locked");
     const inFlight = world.leases.reduce((n, l) => n + l.inFlight, 0);
     if (inFlight > 0) emit({ kind: "lockProgress", network, progress: { kind: "draining", inFlight, deadlineInMs: 30_000 } });
@@ -771,6 +830,32 @@ export const HANDLERS: Handlers = {
     useGrant(world, grantId);
     world.paymentAuth = on;
     return null;
+  },
+  quick_unlock_policy: (_, { world }) => ({
+    enrolled: world.lock.quickUnlockEnrolled,
+    spendLimitDuffs: world.spendLimitDuffs,
+    passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
+    lastPassphraseAt: null,
+    signingWindowOpen: windowOpen(world),
+    signingWindowRemainingDuffs: windowOpen(world) ? Math.max(0, world.spendLimitDuffs - (world.windowCharged ?? 0)) : null,
+    signingWindowSecs: SIGNING_WINDOW_MS / 1000,
+  }),
+  set_quick_unlock_spend_limit: ({ grantId, spendLimitDuffs }, { world }) => {
+    if (world.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
+    if (!world.lock.encrypted) throw fail("vault.not_encrypted", "vault not encrypted");
+    if (!SPEND_LIMITS.includes(spendLimitDuffs)) throw fail("invalid_argument", "spending limit is not one of the options");
+    if (!credentialGrant(world, grantId)) throw fail("vault.grant_invalid", "grant invalid");
+    useGrant(world, grantId);
+    world.spendLimitDuffs = spendLimitDuffs;
+    return {
+      enrolled: world.lock.quickUnlockEnrolled,
+      spendLimitDuffs,
+      passphraseMaxAgeSecs: 7 * 24 * 60 * 60,
+      lastPassphraseAt: null,
+      signingWindowOpen: windowOpen(world),
+      signingWindowRemainingDuffs: windowOpen(world) ? Math.max(0, spendLimitDuffs - (world.windowCharged ?? 0)) : null,
+      signingWindowSecs: SIGNING_WINDOW_MS / 1000,
+    };
   },
   destroy_vault: ({ credential }, ctx) => {
     const { world } = ctx;
@@ -884,6 +969,11 @@ export const HANDLERS: Handlers = {
   list_wallets: (_, { world }) => world.wallets.filter((x) => !isClosed(world, x.summary.walletId)).map((x) => x.summary),
   wallet_info: ({ walletId }, { world }) => wallet(world, walletId).summary,
   balance: ({ walletId }, { world }) => wallet(world, walletId).summary.balances,
+  wallet_scan_height: ({ walletId }, { world }) => {
+    const w = wallet(world, walletId);
+    if (w.scanHeight !== undefined) return w.scanHeight;
+    return world.sync.caughtUp ? world.sync.tipHeight : null;
+  },
   import_wallet: ({ mnemonic, options }, ctx) => importWallet(ctx, mnemonic, options.name),
   sync_status: (_, { world }) => world.sync,
   history_page: ({ walletId, request }, { world }) => historyPage(wallet(world, walletId).rows, request),

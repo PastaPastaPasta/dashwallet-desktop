@@ -78,6 +78,7 @@ export class IpcBackend implements Backend {
   dispatchStatus = cmd.dispatchStatus;
   balance = (walletId: string) => cmd.balance(walletId);
   syncStatus = () => cmd.syncStatus();
+  walletScanHeight = (walletId: string) => cmd.walletScanHeight(walletId);
   historyPage = cmd.historyPage;
   exportHistoryCsv = cmd.exportHistoryCsv;
   txNotices = cmd.txNotices;
@@ -146,6 +147,8 @@ export class IpcBackend implements Backend {
   coinSelectionSummary = (walletId: string, outpoints: OutPoint[], payAmounts: number[], fee: FeeMode) =>
     cmd.coinSelectionSummary(walletId, outpoints, payAmounts, fee, false);
   paymentAuthentication = () => cmd.paymentAuthentication();
+  quickUnlockPolicy = () => cmd.quickUnlockPolicy();
+  setQuickUnlockSpendLimit = cmd.setQuickUnlockSpendLimit;
   uiSettings = () => cmd.uiSettings();
   setUiSettings = cmd.setUiSettings;
   ratesStatus = () => cmd.ratesStatus();

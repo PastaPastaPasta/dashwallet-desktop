@@ -285,7 +285,7 @@ test.describe("Pay", () => {
   test("with the payment setting off, the unlocked vault signs and Cancel has the focus", async ({ page }) => {
     await open(page);
     await world(page, (w) => (w.paymentAuth = false));
-    await fillPayment(page, PAYEE, "0.5");
+    await fillPayment(page, PAYEE, "0.1");
     await review(page);
     await expect(page.getByTestId("pay-confirm-cancel")).toBeFocused();
     await expect(page.getByTestId("pay-confirm-passphrase")).toHaveCount(0);
@@ -302,7 +302,7 @@ test.describe("Pay", () => {
     await open(page);
     // The page read the setting as off, but the engine has it on (it changed meanwhile).
     await world(page, (w) => (w.paymentAuth = false));
-    await fillPayment(page, PAYEE, "0.5");
+    await fillPayment(page, PAYEE, "0.1");
     await review(page);
     await world(page, (w) => (w.paymentAuth = true));
     await page.getByTestId("pay-confirm-send").click();
@@ -530,7 +530,7 @@ test.describe("Pay", () => {
       const restored = wallet.coins[0];
       const single = { ...restored, amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: 2 };
       wallet.coins = [single];
-      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0 };
+      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0, catchingUp: false };
       w.coinjoin.restoredOutpoints = [`${single.outpoint.txid}:${single.outpoint.vout}`];
       w.coinjoin.mixers[wallet.summary.walletId] = {
         state: "idle",
@@ -684,7 +684,7 @@ test.describe("Receive", () => {
   test("creates, shows and removes payment requests", async ({ page }) => {
     await open(page);
     await page.getByTestId("sidebar-receive").click();
-    await expect(page.getByTestId("requests-empty")).toHaveText("No payment requests yet.");
+    await expect(page.getByTestId("requests-empty")).toHaveText("Requests you create show up here.");
     await page.getByTestId("request-label").fill("Rent");
     await page.getByTestId("request-amount").fill("0.25");
     await page.getByTestId("request-create").click();
