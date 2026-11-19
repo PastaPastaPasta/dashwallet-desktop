@@ -341,24 +341,11 @@ impl NetworkSession {
                     .collect(),
                 None => HashSet::new(),
             };
-            // InstantSend locks come back from the store on the coins
-            // they lock (`core_instant_locks`), not on the records: an
-            // unconfirmed locked payment keeps its lock across a restart.
-            let locked: Vec<Txid> = info
-                .map(|info| {
-                    (info.core_wallet.instant_send_locks().iter())
-                        .copied()
-                        .collect()
-                })
-                .unwrap_or_default();
             let seen: HashMap<String, u64> = seen.into_iter().collect();
             self.hub.history.with_wallet(wallet, |h| {
                 h.set_loaded_coins(loaded_coins);
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
-                }
-                for txid in &locked {
-                    h.set_instant_locked(txid);
                 }
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
                 // Abandoned transactions are gone from wallet.sqlite; the

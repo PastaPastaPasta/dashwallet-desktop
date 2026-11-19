@@ -23,6 +23,7 @@ const PHRASE: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const BIRTH: u32 = 500;
 const PAID: u64 = 25 * 100_000_000;
+const CHANGE: u64 = 10 * 100_000_000;
 
 /// Keeps every event the engine sends its host.
 #[derive(Default)]
@@ -401,9 +402,12 @@ fn a_restart_mid_sync_keeps_the_payment_once() {
     let b = balances(&session, id);
     assert!(b.catching_up);
     assert_eq!(b.total, PAID);
+    let kept: Vec<_> = (rows(&engine, &session, id).into_iter())
+        .map(|(txid, kind, _, amount)| (txid, kind, amount))
+        .collect();
     assert_eq!(
-        rows(&engine, &session, id),
-        [(txid.clone(), TxStatusKind::Unconfirmed, true, PAID as i64)]
+        kept,
+        [(txid.clone(), TxStatusKind::Unconfirmed, PAID as i64)]
     );
 
     mempool(&engine, &session, id, &tx);
@@ -434,6 +438,52 @@ fn spend_of(coin: OutPoint, outputs: Vec<(dashcore::ScriptBuf, u64)>) -> Transac
             .collect(),
         special_transaction_payload: None,
     }
+}
+
+/// `tx` with its one input signed by the wallet's key for `owner`, the
+/// address the coin it spends pays, as another device of the wallet signs.
+fn signed_by_wallet(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    owner: &Address,
+    tx: Transaction,
+) -> Transaction {
+    use key_wallet::wallet::initialization::WalletAccountCreationOptions;
+    use key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionSigner;
+    let manager = session.manager().unwrap();
+    let owner = owner.clone();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let path = {
+            let wm = wm.read().await;
+            let info = wm.get_wallet_info(&id.0).unwrap();
+            crate::coins::own_address_info(&info.core_wallet, &owner)
+                .unwrap()
+                .path
+        };
+        let phrase = std::str::from_utf8(PHRASE).unwrap();
+        let device = key_wallet::Wallet::from_mnemonic(
+            key_wallet::Mnemonic::from_phrase(phrase).unwrap(),
+            key_wallet::Network::Regtest,
+            WalletAccountCreationOptions::Default,
+        )
+        .unwrap();
+        let coin = key_wallet::Utxo::new(
+            tx.input[0].previous_output,
+            TxOut {
+                value: PAID,
+                script_pubkey: owner.script_pubkey(),
+            },
+            owner,
+            0,
+            false,
+        );
+        device
+            .sign_tx(tx, vec![coin], move |_| Some(path.clone()))
+            .await
+            .unwrap()
+    })
 }
 
 /// A script no address of the wallet's pays.
@@ -474,14 +524,15 @@ fn a_conflicting_spend_seen_mid_sync_is_dropped_when_its_rival_is_mined() {
     assert_eq!(b.total, 0, "the coin is spent once");
 }
 
-/// Mid-sync, the wallet sees an unconfirmed spend of a coin its scan has
-/// not found yet, paying change to it (another device spent it). When the
-/// scan reaches the coin's block the coin is not credited as unspent, and
-/// when it reaches the spend's block only the change counts.
-#[test]
-fn a_spend_of_a_coin_not_scanned_yet_never_overstates_the_balance() {
-    let (_dir, engine, session, id) = engine_wallet();
-    let to = receive_address(&engine, &session, id);
+/// A coin the wallet's scan has not found yet, paying [`PAID`] to its
+/// receive address, and a spend of it to someone else that pays [`CHANGE`]
+/// back to the wallet. Returns the coin's address, its funding and the spend.
+fn funding_and_spend(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+) -> (Address, Transaction, Transaction) {
+    let to = receive_address(engine, session, id);
     let funding = payment(&to);
     let coin = OutPoint::new(funding.txid(), 0);
     let change_address = engine
@@ -491,26 +542,93 @@ fn a_spend_of_a_coin_not_scanned_yet_never_overstates_the_balance() {
         .parse::<Address<dashcore::address::NetworkUnchecked>>()
         .unwrap()
         .assume_checked();
-    let change = 10 * 100_000_000;
     let spend = spend_of(
         coin,
         vec![
-            (elsewhere(), PAID - change - 1_000),
-            (change_address.script_pubkey(), change),
+            (elsewhere(), PAID - CHANGE - 1_000),
+            (change_address.script_pubkey(), CHANGE),
         ],
     );
+    (to, funding, spend)
+}
+
+/// Mid-sync, the wallet sees an unconfirmed spend of a coin its scan has
+/// not found yet, paying change to it (another device spent it). When the
+/// scan reaches the coin's block the coin is not credited as unspent, and
+/// when it reaches the spend's block only the change counts.
+#[test]
+fn a_spend_of_a_coin_not_scanned_yet_never_overstates_the_balance() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (to, funding, spend) = funding_and_spend(&engine, &session, id);
+    let spend = signed_by_wallet(&engine, &session, id, &to, spend);
 
     mempool(&engine, &session, id, &spend);
-    assert_eq!(balances(&session, id).total, change);
+    assert_eq!(balances(&session, id).total, CHANGE);
 
     mined(&engine, &session, id, BIRTH - 20, vec![funding]);
     let b = balances(&session, id);
     assert!(b.catching_up);
-    assert_eq!(b.total, change, "the spent coin is not credited");
+    assert_eq!(b.total, CHANGE, "the spent coin is not credited");
 
     mined(&engine, &session, id, BIRTH + 1, vec![spend]);
     let b = balances(&session, id);
     assert!(!b.catching_up);
-    assert_eq!((b.total, b.confirmed), (change, change));
+    assert_eq!((b.total, b.confirmed), (CHANGE, CHANGE));
     assert_eq!(rows(&engine, &session, id).len(), 2);
+}
+
+/// Mid-sync, a peer announces a spend of a coin the scan has not found yet
+/// that its owner never signed. When the scan finds the coin, the claim is
+/// dropped with its row and the coin counts, across a restart too.
+#[test]
+fn an_unsigned_spend_of_a_coin_not_scanned_yet_does_not_hide_it() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let (_, funding, spend) = funding_and_spend(&engine, &session, id);
+
+    mempool(&engine, &session, id, &spend);
+    assert_eq!(balances(&session, id).total, CHANGE);
+
+    mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
+    let b = balances(&session, id);
+    assert!(b.catching_up);
+    assert_eq!(b.total, PAID, "the coin is credited");
+    let ids: Vec<String> = rows(&engine, &session, id)
+        .into_iter()
+        .map(|r| r.0)
+        .collect();
+    assert_eq!(ids, [funding.txid().to_string()], "the claim's row is gone");
+
+    let session = reopen(&engine, session);
+    assert_eq!(balances(&session, id).total, PAID);
+    assert_eq!(rows(&engine, &session, id).len(), 1);
+}
+
+/// A rescan from the birth height takes the wallet back to catching up at
+/// once: the balance read says so and a `Balances` event marks it, before
+/// the scan resumes.
+#[test]
+fn a_rescan_from_the_birth_height_marks_the_balance_catching_up() {
+    let (_dir, engine, session, id, recorder) = engine_wallet_recorded();
+    let to = receive_address(&engine, &session, id);
+    mined(&engine, &session, id, BIRTH + 10, vec![payment(&to)]);
+    assert!(!balances(&session, id).catching_up);
+
+    let from = recorder.len();
+    let s = Arc::clone(&session);
+    engine
+        .block_on(
+            session.on_runtime(async move { s.start_rescan(vec![id], BIRTH, |_| BIRTH).await }),
+        )
+        .unwrap();
+    let b = balances(&session, id);
+    assert!(b.catching_up, "the checkpoint is below the birth block");
+    assert_eq!(b.total, PAID);
+    assert!(
+        recorder.wait_for(from, |e| matches!(
+            e,
+            crate::EngineEvent::Balances { wallet_id, balances: Some(b), .. }
+                if *wallet_id == id && b.catching_up
+        )),
+        "Balances is sent when the rescan rewinds below the birth block"
+    );
 }
