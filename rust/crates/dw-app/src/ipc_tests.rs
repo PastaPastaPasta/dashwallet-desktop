@@ -594,12 +594,18 @@ fn payment_authentication_is_enforced_over_ipc() {
     };
 
     // Default is the signing window create_vault just opened. A payment at
-    // or under the spend limit needs no passphrase; one over it does.
+    // or under the spend limit needs no passphrase; one over it does. A
+    // masternode owner operation and a vote are not payments: they ask.
     assert_eq!(demo.ok("payment_authentication", json!({})), false);
     demo.ok("authorize", authorize(&spend, &wallet, &none));
     demo.ok("authorize", authorize(&platform, &wallet, &none));
-    demo.ok("authorize", authorize(&masternode, &wallet, &none));
-    demo.ok("authorize", authorize(&governance, &wallet, &none));
+    for purpose in [&masternode, &governance] {
+        demo.err(
+            "authorize",
+            authorize(purpose, &wallet, &none),
+            "vault.credential_required",
+        );
+    }
     demo.ok(
         "authorize_set",
         json!({ "purposes": [platform, spend], "walletId": wallet, "credential": none }),

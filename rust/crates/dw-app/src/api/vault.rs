@@ -544,8 +544,8 @@ async fn issue_grants(
 }
 
 /// Whether the setting applies: a purpose that moves funds (`spend`,
-/// `platformOp`, `masternodeOp`) among `purposes`, or casts votes
-/// (`governance`: MG-00's "N votes, one passphrase", MG-05 D11).
+/// `platformOp`, `masternodeOp`, `masternodeWithdraw`) among `purposes`, or
+/// casts votes (`governance`: MG-00's "N votes, one passphrase", MG-05 D11).
 fn pays(purposes: &[GrantPurpose]) -> bool {
     purposes.iter().any(|p| {
         matches!(
@@ -553,6 +553,7 @@ fn pays(purposes: &[GrantPurpose]) -> bool {
             GrantPurpose::Spend { .. }
                 | GrantPurpose::PlatformOp { .. }
                 | GrantPurpose::MasternodeOp { .. }
+                | GrantPurpose::MasternodeWithdraw { .. }
                 | GrantPurpose::Governance
         )
     })
@@ -1178,6 +1179,18 @@ mod tests {
     use super::*;
 
     const ABANDON_12: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    #[test]
+    fn ask_every_payment_covers_an_evonode_credit_withdrawal() {
+        let withdraw = GrantPurpose::MasternodeWithdraw {
+            pro_tx_hash: [7; 32],
+            max_credits: 1,
+            destination: None,
+        };
+        assert!(pays(&[withdraw]));
+        assert!(pays(&[GrantPurpose::SignMessage, withdraw]));
+        assert!(!pays(&[GrantPurpose::SignMessage, GrantPurpose::IdentityScan]));
+    }
 
     #[test]
     fn grant_purposes_round_trip_with_credits_as_strings() {

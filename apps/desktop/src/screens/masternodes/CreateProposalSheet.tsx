@@ -132,7 +132,7 @@ export function CreateProposalSheet({
   const credential = useCredential(
     wallet.walletId,
     "Enter your passphrase to pay the fee.",
-    figures ? feeGrantCap(figures) : Number.MAX_SAFE_INTEGER,
+    figures ? feeGrantCap(figures) : null,
   );
   /** The draft on screen now, for a press whose awaits outlive it. */
   const shownKey = useRef(draftKey);

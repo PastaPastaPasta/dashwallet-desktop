@@ -1,7 +1,8 @@
 // The vote and create sheets' passphrase (D12, D14): Pay's confirm-sheet rules (U-03 D3–D4) for
 // a governance or spend grant. The prompt follows the lock and "Require authentication for every
-// payment" (a failed read counts as on); a vault that asks anyway shows the field; a wrong
-// passphrase says so and holds the button for the vault's wait.
+// payment" (a failed read counts as on); a vote always asks on an encrypted vault, as the signing
+// window covers payments only; a vault that asks anyway shows the field; a wrong passphrase says
+// so and holds the button for the vault's wait.
 
 import { useEffect, useId, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
@@ -25,7 +26,9 @@ export interface Credential {
   authorize: (purpose: GrantPurposeSpec) => Promise<AuthGrant | null>;
 }
 
-export function useCredential(walletId: string, ask: string, amount = 0): Credential {
+/** `windowAmount`: what the grant would charge the signing window, in duffs, or `null` for a grant
+ * the window never issues (a vote), which always asks on an encrypted vault. */
+export function useCredential(walletId: string, ask: string, windowAmount: number | bigint | null): Credential {
   const b = useBackend();
   const lock = useLockStatus();
   const policy = usePaymentAuthentication();
@@ -57,9 +60,10 @@ export function useCredential(walletId: string, ask: string, amount = 0): Creden
     };
   }, [b]);
   const windowNeeded = policy.data === false;
-  const cover = quick.isSuccess
-    ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.signingWindowRemainingDuffs ?? 0, amount }
-    : null;
+  const cover =
+    quick.isSuccess && windowAmount !== null
+      ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.signingWindowRemainingDuffs ?? 0, amount: windowAmount }
+      : null;
   const prompt = askAnyway ? "passphrase" : credentialPrompt(lock.data, policy.isSuccess ? policy.data : undefined, windowNeeded ? cover : null);
   const waitSecs = retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - Date.now()) / 1000));
 

@@ -381,21 +381,20 @@ struct SleepSample {
 /// Larger than a normal NTP step.
 const SLEEP_GAP: Duration = Duration::from_secs(2);
 
+/// The payments the signing window may issue without a passphrase.
 fn window_purpose(purpose: &GrantPurpose) -> bool {
     matches!(
         purpose,
         GrantPurpose::Spend { .. }
             | GrantPurpose::PlatformOp { .. }
-            | GrantPurpose::MasternodeOp { .. }
             | GrantPurpose::MasternodeWithdraw { .. }
-            | GrantPurpose::Governance
     )
 }
 
-/// Opens a new window. An earlier one that has already ended is settled
-/// first, so its grants do not carry over.
+/// Opens a new window. The previous one ends first, with its grants and
+/// its charge, so two windows never add up past the limit.
 fn arm_signing_window(inner: &mut Inner, now: Instant) {
-    settle_window(inner, now);
+    clear_signing_window(inner);
     inner.signing_deadline = Some(now + Duration::from_secs(SIGNING_WINDOW_SECS));
     inner.window_charged = 0;
     inner.sleep_sample = Some(SleepSample {
@@ -1135,6 +1134,7 @@ impl Vault {
         let ops = self.epoch_guard();
         let mut inner = self.inner();
         inner.revoke(&ops);
+        clear_signing_window(&mut inner);
         // Backups written from now on open with the new passphrase.
         if inner.dek.is_some() {
             inner.backup_kek = Some(BackupKek::of(kdf, &salt, &kek));
@@ -1266,7 +1266,10 @@ impl Vault {
     ///   revoked or the vault locks.
     /// - `None`: accepted on an unencrypted vault, and on a vault unlocked
     ///   with scope Full except for [`GrantPurpose::requires_credential`]
-    ///   purposes, which need the passphrase whenever slot P exists.
+    ///   purposes, which need the passphrase whenever slot P exists. With
+    ///   slot P, a payment (`Spend`, `PlatformOp`, `MasternodeWithdraw`)
+    ///   also needs the open signing window, within its sealed limit; a
+    ///   limit of 0 admits none.
     /// - `QuickUnlock`: the slot B wrap key. Issues `Spend`, `PlatformOp`,
     ///   `SignMessage`, `Governance`, `MasternodeOp` and `MasternodeWithdraw`
     ///   grants whose value
@@ -1404,6 +1407,9 @@ impl Vault {
             return Err(VaultError::CredentialRequired);
         }
         let limit = sealed_spend_limit(inner)?;
+        if limit == 0 {
+            return Err(VaultError::CredentialRequired);
+        }
         let mut total = 0u64;
         for purpose in purposes {
             if !window_purpose(purpose) {
@@ -1487,8 +1493,9 @@ impl Vault {
     }
 
     /// Stores one new grant per purpose, dropping expired ones; each gets
-    /// its own copy of `key`. `from_window` marks a credential-free grant so
-    /// closing the window drops it.
+    /// its own copy of `key`. `from_window` marks the credential-free
+    /// payment grants of the set, so closing the window drops them; another
+    /// purpose in the same set is not the window's.
     fn issue(
         &self,
         inner: &mut Inner,
@@ -1519,7 +1526,7 @@ impl Vault {
                 IssuedGrant {
                     grant: grant.clone(),
                     key: key.cloned(),
-                    from_window,
+                    from_window: from_window && window_purpose(&grant.purpose),
                 },
             );
         }
@@ -2846,16 +2853,15 @@ impl Vault {
 
     /// A lease may redeem `ids` together only when the ones the window
     /// issued do not add up past the sealed spend limit. A passphrase grant
-    /// is not counted. Missing ids are left to the redeem that follows.
+    /// is not counted. An id the vault no longer holds, a window grant whose
+    /// window has ended included, is `GrantInvalid`.
     pub fn window_lease_allowed(&self, ids: &[String]) -> Result<(), VaultError> {
         let mut inner = self.inner();
         settle_window(&mut inner, self.clock_mono());
         let mut total = 0u64;
         let mut any = false;
         for id in ids {
-            let Some(issued) = inner.grants.get(id) else {
-                continue;
-            };
+            let issued = inner.grants.get(id).ok_or(VaultError::GrantInvalid)?;
             if !issued.from_window {
                 continue;
             }

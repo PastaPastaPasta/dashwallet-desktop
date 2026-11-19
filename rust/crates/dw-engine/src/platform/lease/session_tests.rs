@@ -708,23 +708,29 @@ fn the_facade_lease_handle_begins_ends_and_checks_its_grants() {
 /// passphrase grant is not counted.
 #[test]
 fn a_lease_does_not_compose_window_grants_past_the_spend_limit() {
+    const PART: u64 = 6_000_000;
     let f = fixture(true);
-    let limit = dw_vault::DEFAULT_QUICK_UNLOCK_SPEND_LIMIT;
-    let spend = f.grant(GrantPurpose::Spend { max_duffs: limit }, Credential::None);
+    let spend = f.grant(GrantPurpose::Spend { max_duffs: PART }, Credential::None);
+    let platform = f.platform_op(0, PART * 1_000);
+    // Both fit 0.5 DASH when issued; together they pass 0.1 DASH.
     f.engine
-        .block_on(
-            f.session
-                .vault_op(|v| v.unlock(PASS, UnlockScope::Full).map(drop)),
-        )
+        .block_on(f.session.vault_op(|v| {
+            let change = v.authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(PASS),
+            )?;
+            v.set_quick_unlock_spend_limit(&change.id, 10_000_000)
+                .map(drop)
+        }))
         .unwrap();
-    let platform = f.platform_op(0, limit * 1_000);
     assert_eq!(
         f.lease(FlowKind::AcceptAndPay, &[platform.clone(), spend])
             .unwrap_err(),
         LeaseError::Invalid
     );
     let typed = f.grant(
-        GrantPurpose::Spend { max_duffs: limit },
+        GrantPurpose::Spend { max_duffs: PART },
         Credential::Passphrase(PASS),
     );
     f.lease(FlowKind::AcceptAndPay, &[platform, typed]).unwrap();

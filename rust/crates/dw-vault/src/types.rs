@@ -186,11 +186,17 @@ impl GrantPurpose {
 
     /// Whether this purpose needs a credential (passphrase, or quick unlock
     /// in M2) whenever the vault has a passphrase slot, even while it is
-    /// unlocked: revealing the phrase, wiping a wallet, changing a credential.
+    /// unlocked or inside the signing window: revealing the phrase, wiping a
+    /// wallet, changing a credential, a vote, and a masternode owner
+    /// operation (which can move every future reward for a fee).
     pub fn requires_credential(&self) -> bool {
         matches!(
             self,
-            GrantPurpose::RevealSecret | GrantPurpose::Wipe | GrantPurpose::ChangeCredential
+            GrantPurpose::RevealSecret
+                | GrantPurpose::Wipe
+                | GrantPurpose::ChangeCredential
+                | GrantPurpose::Governance
+                | GrantPurpose::MasternodeOp { .. }
         )
     }
 

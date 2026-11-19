@@ -26,6 +26,7 @@ import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
 import { isCheckable } from "../api/lockReport";
+import { CREDITS_PER_DUFF } from "../api/pending";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import type { DashPayProfile } from "../api/generated/DashPayProfile";
 import type { ProfileFieldName } from "../api/generated/ProfileFieldName";
@@ -198,17 +199,18 @@ function leaseKey(id: string): string | null {
 const SPEND_LIMITS = [0, 10_000_000, 50_000_000, 100_000_000, 500_000_000];
 const SIGNING_WINDOW_MS = 5 * 60 * 1000;
 
-/** What a purpose counts against the spend limit. `null` for one quick unlock never issues. */
-function quickValue(p: GrantPurposeSpec): number | null {
+/** What a purpose counts against the spend limit, its credits rounded up to whole duffs in
+ * `bigint` as dw-vault's `quick_unlock_value`. `null` for one quick unlock never issues. */
+function quickValue(p: GrantPurposeSpec): bigint | null {
   switch (p.kind) {
     case "spend":
     case "masternodeOp":
-      return p.maxDuffs;
+      return BigInt(p.maxDuffs);
     case "platformOp":
-      return p.maxDuffs + Math.ceil(Number(p.maxCredits) / 1000);
+      return BigInt(p.maxDuffs) + (BigInt(p.maxCredits) + CREDITS_PER_DUFF - 1n) / CREDITS_PER_DUFF;
     case "signMessage":
     case "governance":
-      return 0;
+      return 0n;
     default:
       return null;
   }
@@ -218,32 +220,39 @@ function windowOpen(w: World): boolean {
   return w.lock.state === "unlocked" && w.signingUntil !== null && Date.now() < w.signingUntil;
 }
 
+/** dw-vault's `window_purpose`: the window issues payments only. */
+function windowPurpose(p: GrantPurposeSpec): boolean {
+  return p.kind === "spend" || p.kind === "platformOp";
+}
+
 /** What this set counts against the window: dw-vault's window purposes only, as `admit_window`. */
-function windowSum(purposes: GrantPurposeSpec[]): number {
-  let total = 0;
-  for (const purpose of purposes) {
-    if (purpose.kind === "spend" || purpose.kind === "platformOp" || purpose.kind === "masternodeOp" || purpose.kind === "governance")
-      total += quickValue(purpose) ?? 0;
-  }
+function windowSum(purposes: GrantPurposeSpec[]): bigint {
+  let total = 0n;
+  for (const purpose of purposes) if (windowPurpose(purpose)) total += quickValue(purpose) ?? 0n;
   return total;
 }
 
+/** `admit_window`: an open window, a limit above 0, and the total within it. */
 function windowCovers(w: World, purposes: GrantPurposeSpec[]): boolean {
-  return windowOpen(w) && (w.windowCharged ?? 0) + windowSum(purposes) <= w.spendLimitDuffs;
+  return windowOpen(w) && w.spendLimitDuffs > 0 && BigInt(w.windowCharged ?? 0) + windowSum(purposes) <= BigInt(w.spendLimitDuffs);
 }
 
 function chargeWindow(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (credential.kind !== "unencrypted" || !w.lock.encrypted || !windowOpen(w)) return;
-  w.windowCharged = (w.windowCharged ?? 0) + windowSum(purposes);
+  // Charged only once covered, so within the limit and exact as a number.
+  w.windowCharged = (w.windowCharged ?? 0) + Number(windowSum(purposes));
 }
 
 /** dw-vault's credential check of `authorize`. While "Ask for my passphrase for every payment"
  * is on, a payment grant of an encrypted unlocked vault needs a real credential. While it is
- * off, the post-unlock window covers one at or under the spend limit. A locked vault answers
- * `vault.locked` below instead. */
+ * off, the post-unlock window covers one at or under the spend limit (none at a limit of 0). A
+ * vote or a masternode owner operation always needs one. A locked vault answers `vault.locked`
+ * below instead. */
 function checkCredential(w: World, credential: CredentialSpec, purposes: GrantPurposeSpec[]) {
   if (w.lock.state === "noVault") throw fail("vault.no_vault", "no vault");
-  const sensitive = purposes.some((p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential");
+  const sensitive = purposes.some(
+    (p) => p.kind === "revealSecret" || p.kind === "wipe" || p.kind === "changeCredential" || p.kind === "governance" || p.kind === "masternodeOp",
+  );
   if (credential.kind === "unencrypted" && w.lock.encrypted && sensitive)
     throw fail("vault.credential_required", "the passphrase is required");
   const pays = purposes.some((p) => p.kind === "spend" || p.kind === "platformOp" || p.kind === "masternodeOp" || p.kind === "governance");

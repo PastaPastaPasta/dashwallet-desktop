@@ -163,6 +163,21 @@ describe("fixture send engine", () => {
     await expect(cmd.authorize({ kind: "spend", maxDuffs: 1 }, W, { kind: "unencrypted" })).rejects.toMatchObject({ code: "vault.locked" });
   });
 
+  it("keeps votes and masternode operations out of the signing window, and a 0 limit admits nothing", async () => {
+    fixture.world.paymentAuth = false;
+    for (const purpose of [{ kind: "governance" }, { kind: "masternodeOp", maxDuffs: 1_000 }] as const) {
+      await expect(cmd.authorize(purpose, W, { kind: "unencrypted" })).rejects.toMatchObject({ code: "vault.credential_required" });
+      await expect(cmd.authorize(purpose, W, PASS)).resolves.toMatchObject({ walletId: W });
+    }
+    await expect(cmd.authorize({ kind: "spend", maxDuffs: 0 }, W, { kind: "unencrypted" })).resolves.toMatchObject({ walletId: W });
+    fixture.world.spendLimitDuffs = 0;
+    for (const purpose of [
+      { kind: "spend", maxDuffs: 0 },
+      { kind: "platformOp", maxDuffs: 0, maxCredits: "0" },
+    ] as const)
+      await expect(cmd.authorize(purpose, W, { kind: "unencrypted" })).rejects.toMatchObject({ code: "vault.credential_required" });
+  });
+
   it("signs only within the spend grant, once", async () => {
     const d = await draftFor(pay(50_000_000));
     const small = await cmd.authorize({ kind: "spend", maxDuffs: 50_000_000 }, W, PASS);
