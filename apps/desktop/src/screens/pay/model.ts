@@ -296,6 +296,23 @@ export function credentialPrompt(lock: LockStatus | undefined, paymentAuth: bool
   return lock.encrypted && paymentAuth !== false ? "passphrase" : "none";
 }
 
+/** What the confirm sheet offers (P15, U-05 D18). Advanced's unsigned path, or a wallet that
+ * cannot sign, makes a PSBT and nothing else; Send waits until the wallet is known to sign. */
+export function confirmActions(unsignedAsked: boolean, watchOnly: boolean | undefined): { send: boolean; credential: boolean; unsignedFirst: boolean } {
+  const send = !unsignedAsked && watchOnly === false;
+  return { send, credential: send, unsignedFirst: unsignedAsked || watchOnly === true };
+}
+
+export const PAY_INCOMPLETE = "Enter an address and an amount first.";
+export const PAY_CHECKING = "Checking the payment…";
+
+/** Why a payment cannot be reviewed yet (P15): the first field problem the form shows, then the
+ * draft's own, then whether it is still incomplete or being checked; `null` once it can. */
+export function reviewBlockedReason(ready: boolean, problems: (string | null | undefined)[], complete: boolean): string | null {
+  if (ready) return null;
+  return problems.find((p): p is string => !!p) ?? (complete ? PAY_CHECKING : PAY_INCOMPLETE);
+}
+
 /** What an `authorize` refusal means for the confirm sheet. */
 export type AuthRefusal =
   | { kind: "needsPassphrase" }
