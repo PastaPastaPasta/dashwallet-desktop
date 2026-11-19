@@ -34,7 +34,7 @@ For a tagged release use the tag, for example `--source-ref refs/tags/v0.1.0` (`
 the workflow file, not the branch or tag it ran on).
 
 It prints the workflow, the commit and the run that built the file, and exits non-zero when the file's digest has
-no attestation from this repository (or none that satisfies the filters). The same works for every other file (`.exe`, `.AppImage`, `.deb`) and for
+no attestation from this repository (or none that satisfies the filters). The same works for every other file (`.exe`, `.AppImage`, `.deb`, `.flatpak`) and for
 `SHA256SUMS`. Verification goes by the file's contents, so a renamed copy verifies too, and so does
 `DashWallet-continuous-macos-universal.dmg` from the rolling `continuous` release: it is the same file as the
 per-build one.

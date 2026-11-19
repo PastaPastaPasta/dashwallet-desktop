@@ -3,7 +3,8 @@
 # Every trigger builds the Tauri app in release mode, without the `selftest` feature, one job per OS:
 #   macos    a universal .dmg (aarch64 + x86_64), ad-hoc signed, not notarized;
 #   windows  an unsigned NSIS .exe installer;
-#   linux    an x86_64 AppImage and .deb.
+#   linux    an x86_64 AppImage and .deb;
+#   flatpak  a Flatpak bundle (GNOME runtime) repackaging the linux job's .deb.
 # Each job then launches the built app for 30 s and uploads a screenshot (`launch-<os>`). The
 # launch uses an empty private data dir and `--network regtest --no-platform` with an unreachable
 # DAPI address, so the app starts no mainnet or testnet sync and touches no network. It fails the
@@ -334,9 +335,50 @@ jobs:
           path: ${{ runner.temp }}/launch/
           if-no-files-found: warn
 
+  # The Flatpak repackages this run's .deb (packaging/flatpak), so it ships the same binary.
+  flatpak:
+    name: Linux Flatpak
+    runs-on: ubuntu-24.04
+    needs: linux
+    timeout-minutes: 45
+    env:
+      # Kept out of HOME: the launch check gives the app a private, empty one.
+      FLATPAK_USER_DIR: ${{ runner.temp }}/flatpak-user
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/github/release-version.sh
+      - name: Linux packages (flatpak-builder, Xvfb, ImageMagick)
+        run: ci/github/linux-host-deps.sh flatpak
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-linux
+          path: ${{ runner.temp }}/linux
+      - name: Build the Flatpak bundle from the .deb
+        run: ci/github/flatpak-bundle.sh "$RUNNER_TEMP/linux/dash-wallet-$VERSION-linux-amd64.deb" "$RUNNER_TEMP/dist/dash-wallet-$VERSION-linux-x86_64.flatpak" "$RUNNER_TEMP/flatpak-build"
+      - name: Install the bundle
+        run: flatpak install --user -y --noninteractive --bundle "$RUNNER_TEMP/dist/dash-wallet-$VERSION-linux-x86_64.flatpak"
+      # No --datadir: the sandbox sees no host path, and its own data dir is under the private HOME.
+      - name: Launch the Flatpak under Xvfb and take a screenshot
+        run: |
+          read -ra args <<<"$LAUNCH_ARGS"
+          ci/github/linux-release-launch.sh flatpak "$RUNNER_TEMP/launch" 30 run org.dash.wallet.desktop "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-flatpak
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: launch-flatpak
+          path: ${{ runner.temp }}/launch/
+          if-no-files-found: warn
+
   checksums:
     name: SHA256SUMS
-    needs: [macos, windows, linux]
+    needs: [macos, windows, linux, flatpak]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -353,7 +395,7 @@ jobs:
         working-directory: ${{ runner.temp }}/release
         run: |
           ls -l
-          [[ $(ls | wc -l) -eq 4 ]] || { echo "::error::expected 4 bundles (dmg, exe, AppImage, deb)"; exit 1; }
+          [[ $(ls | wc -l) -eq 5 ]] || { echo "::error::expected 5 bundles (dmg, exe, AppImage, deb, flatpak)"; exit 1; }
           # The list is taken before the redirect creates SHA256SUMS.
           files=$(LC_ALL=C ls)
           sha256sum $files > SHA256SUMS
