@@ -643,7 +643,7 @@ export class TransferModel extends Model {
   }
 
   /** Max on `route`: `probe` is the pool's whole balance in duffs. The field is filled (`fill`, the
-   * amount in duffs) only from a second quote that took it; `text` is how the field shows that amount. */
+   * amount in duffs) only from the last quote that took it; `text` is how the field shows that amount. */
   async max(route: Exclude<RouteId, "platformToCore">, probe: number, fill: (duffs: number) => void, text?: (duffs: number) => string): Promise<void> {
     const line = this.lineOf(route);
     const got = await line.max(probe, MAX_DERIVE[route] as (answer: Settled<unknown>, amount: number) => number | null, route === "shieldedToCore" ? SHIELDED_MAX_QUOTES : 2);

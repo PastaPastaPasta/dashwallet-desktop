@@ -164,13 +164,13 @@ test.describe("Send from Shielded: sync line", () => {
   test("a pass that just ended reads just now, and only Scanning… is announced", async ({ page }) => {
     await openSend(page, "funded");
     await expect(page.getByTestId("shielded-sync")).toHaveText("Last checked just now");
-    await expect(page.getByTestId("shielded-sync").getByRole("status")).toHaveText("");
+    await expect(page.getByTestId("shielded-sync-status")).toHaveText("");
   });
 
   test("re-reads the status while a pass runs, and stops once it has ended", async ({ page }) => {
     await openSend(page, "shielded-scanning");
     const line = page.getByTestId("shielded-sync");
-    await expect(line.getByRole("status")).toHaveText("Scanning…");
+    await expect(page.getByTestId("shielded-sync-status")).toHaveText("Scanning…");
     await page.evaluate(() => (window.__dwFixture!.world.pending.shielded!.scanning = false));
     await expect(line).toHaveText("Last checked just now", { timeout: 15_000 });
     const reads = await callsOf(page, "shielded_status");

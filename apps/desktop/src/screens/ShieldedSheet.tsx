@@ -40,6 +40,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   const kind = flow.kind === "resume" ? "add" : flow.kind;
   const now = useNowSecs();
   const syncLine = kind === "send" ? shieldedSyncText(status, now) : null;
+  const scanning = syncLine === SHIELDED_SYNC_COPY.scanning;
   const [line] = useState(() => sendMaxLine(b, flow));
   useModel(line);
   useEffect(() => () => line.dispose(), [line]);
@@ -98,10 +99,14 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
     >
       <p className="sheet-text">{C.form[kind]}</p>
       {kind !== "add" && available !== null && <p className="field-hint">{C.form.available(fmt(available))}</p>}
+      {kind === "send" && (
+        <span className="sr-only" role="status" data-testid="shielded-sync-status">
+          {scanning ? syncLine : ""}
+        </span>
+      )}
       {syncLine && (
-        <p className="field-hint" data-testid="shielded-sync">
-          <span role="status">{syncLine === SHIELDED_SYNC_COPY.scanning ? syncLine : ""}</span>
-          {syncLine !== SHIELDED_SYNC_COPY.scanning && syncLine}
+        <p className="field-hint" data-testid="shielded-sync" aria-hidden={scanning || undefined}>
+          {syncLine}
         </p>
       )}
       {kind === "send" ? (
