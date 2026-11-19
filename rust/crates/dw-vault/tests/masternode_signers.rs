@@ -525,10 +525,11 @@ fn only_a_masternode_op_grant_signs_owner_payloads() {
 }
 
 /// D50: a full signer (a `Spend` or `SignMessage` grant's) makes no
-/// signature at a keychain owner key. A ProUpRegTx's owner signature is
-/// a plain ECDSA one over the payload's hash, so `sign_ecdsa` there would
-/// forge one past the `MasternodeOp` grant. Voting and address keys still
-/// sign.
+/// signature at a keychain owner key or a voting key. A ProUpRegTx's owner
+/// signature is a plain ECDSA one over the payload's hash, so `sign_ecdsa`
+/// there would forge one past the `MasternodeOp` grant. Off testnet a vote
+/// is a `signmessage` signature, so the same refusal covers a voting key.
+/// Address keys still sign. A vote itself still goes through `VoteSigner`.
 #[tokio::test]
 async fn a_full_signer_signs_nothing_at_an_owner_key() {
     let fx = Fixture::new();
@@ -543,28 +544,34 @@ async fn a_full_signer_signs_nothing_at_an_owner_key() {
             .signer(&wallet(1), &token(&v, purpose, Credential::None))
             .unwrap();
         assert_eq!(full.scope(), SignerScope::Full);
-        for owner in ["m/9'/1'/3'/2'/0", "m/9'/1'/3'/2'/19"] {
+        for refused in [
+            "m/9'/1'/3'/2'/0",
+            "m/9'/1'/3'/2'/19",
+            "m/9'/1'/3'/1'/0",
+            "m/9'/1'/3'/1'/19",
+        ] {
             assert!(
                 matches!(
-                    full.sign_ecdsa(&path(owner), digest).await,
+                    full.sign_ecdsa(&path(refused), digest).await,
                     Err(SignerError::PathNotAllowed(_))
                 ),
-                "{purpose:?} {owner}"
+                "{purpose:?} {refused}"
             );
             assert!(
                 matches!(
-                    full.sign_message(&path(owner), b"owner").await,
+                    full.sign_message(&path(refused), b"refused").await,
                     Err(SignerError::PathNotAllowed(_))
                 ),
-                "{purpose:?} {owner}"
+                "{purpose:?} {refused}"
             );
-            full.public_key(&path(owner)).await.unwrap();
+            full.public_key(&path(refused)).await.unwrap();
         }
-        for other in [BIP44, "m/9'/1'/3'/1'/0"] {
-            full.sign_ecdsa(&path(other), digest).await.unwrap();
-            full.sign_message(&path(other), b"other").await.unwrap();
-        }
+        full.sign_ecdsa(&path(BIP44), digest).await.unwrap();
+        full.sign_message(&path(BIP44), b"other").await.unwrap();
     }
+    vote_signer(&v)
+        .sign_vote(&VotingKey::Keychain { index: 0 }, &vote(1))
+        .unwrap();
 }
 
 /// dashd's own ProUpRegTx payloads (testdata/protx_update_registrar.json,

@@ -164,6 +164,8 @@ codes! {
         /// The system browser could not be opened for an Insight transaction
         /// (`open_tx_in_explorer`).
         ExplorerOpen = "app.explorer_open",
+        /// The system browser could not be opened (`open_releases_page`).
+        BrowserOpen = "app.browser_open",
     }
 }
 

@@ -330,6 +330,8 @@ pub(crate) struct Seam {
     /// history by their ProTx hash: the pin can't decode a version-3
     /// ProRegTx into it (BL-187).
     pub shared_mined: std::sync::Mutex<Vec<(Txid, dashcore::Transaction, u32)>>,
+    /// Which of `shared_mined` are in a ChainLocked block.
+    pub shared_locked: std::sync::Mutex<std::collections::HashSet<Txid>>,
 }
 
 #[cfg(test)]

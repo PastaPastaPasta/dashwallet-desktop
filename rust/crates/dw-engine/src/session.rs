@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, RwLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dash_sdk::SdkBuilder;
 use dash_sdk::dapi_grpc::tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
@@ -87,6 +87,12 @@ pub struct WalletBalances {
     /// spendable balance (confirmed + unconfirmed) of the DIP9 CoinJoin
     /// accounts.
     pub coinjoin: u64,
+    /// The scan has not reached the wallet's birth block yet: the buckets
+    /// hold what the wallet has seen so far (mempool and InstantSend
+    /// payments included) and can miss coins in blocks not scanned yet.
+    /// `false` says only that the birth block was scanned: a wallet born
+    /// long ago is still behind the tip while SPV syncs (the sync snapshot).
+    pub catching_up: bool,
 }
 
 /// Result of [`NetworkSession::create_wallet`]: the wallet's seed is in the
@@ -292,6 +298,7 @@ impl NetworkSession {
         opts: SessionOptions,
         vault_config: VaultConfig,
     ) -> Result<Arc<Self>, EngineError> {
+        let opened = Instant::now();
         network.validate()?;
         let spv_peers = opts
             .spv_peers
@@ -366,23 +373,7 @@ impl NetworkSession {
             network.devnet_name().map(str::to_string),
             opts.quorum_url.clone(),
         ));
-        // First attempt off the async workers: construction does a blocking DNS check.
-        let ctx = Arc::clone(&context);
-        match tokio::task::spawn_blocking(move || ctx.get_or_try_init(true)).await? {
-            Ok(provider) => {
-                // Prefetch quorums, as the iOS SDK does after building a trusted SDK.
-                tokio::spawn(async move {
-                    if let Err(e) = provider.update_quorum_caches().await {
-                        tracing::warn!(error = %e, "quorum prefetch failed; continuing");
-                    }
-                });
-            }
-            Err(detail) => sink.emit(EngineEvent::Notice {
-                network: Some(network.clone()),
-                code: NoticeCode::PlatformContextUnavailable,
-                detail,
-            }),
-        }
+        init_quorum_context(&context, &network, sink.as_ref()).await?;
 
         let trust = Arc::new(TrustProvider::new(
             trust::DEFAULT_MODE,
@@ -394,6 +385,7 @@ impl NetworkSession {
             let appdb = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || read_trusted_only(&appdb)).await?
         });
+        let protocol = Arc::new(crate::platform::protocol::ProtocolRuntime::default());
         let sdk = build_sdk(
             &network,
             &opts,
@@ -402,6 +394,7 @@ impl NetworkSession {
                 trusted: Arc::clone(&context),
                 trust: Arc::clone(&trust),
             },
+            (!opts.no_platform).then(|| protocol.observer()),
         )?;
 
         let db_path = data_dir.join(WALLET_DB_FILE);
@@ -489,6 +482,7 @@ impl NetworkSession {
             Arc::clone(&hub) as Arc<dyn platform_wallet::PlatformEventHandler>,
         ));
         replay.start(Arc::downgrade(&manager), Arc::downgrade(&hub));
+        protocol.attach(Arc::downgrade(&manager), Arc::downgrade(&hub));
         trust.attach(
             Arc::new(trust::RuntimeQuorums(Arc::downgrade(&manager.spv_arc()))),
             &provenance,
@@ -625,6 +619,7 @@ impl NetworkSession {
                 lock_state,
                 !opts.no_platform,
                 Arc::clone(&hub),
+                protocol,
             ),
             leases,
             flow_leases: Mutex::default(),
@@ -736,6 +731,10 @@ impl NetworkSession {
         }
         session.spawn_ensure_background();
         session.spawn_reverify();
+        tracing::info!(
+            elapsed_ms = opened.elapsed().as_millis() as u64,
+            "startup session-open"
+        );
         Ok(session)
     }
 
@@ -893,6 +892,9 @@ impl NetworkSession {
             .with_storage_path(self.data_dir.join(SPV_DIR))
             .with_user_agent(crate::tools::USER_AGENT);
         config.enable_masternodes = true;
+        // A payment and its InstantSend lock reach the wallet while the
+        // filters still sync, not only once they are done.
+        config = config.with_mempool_during_sync(true);
         for peer in &self.spv_peers {
             config.add_peer(*peer);
         }
@@ -1227,6 +1229,7 @@ fn build_sdk(
     opts: &SessionOptions,
     sdk_options: SdkOptions,
     context: SharedContext,
+    observer: Option<dash_sdk::sdk::ProtocolVersionObserver>,
 ) -> Result<dash_sdk::Sdk, EngineError> {
     let builder = if opts.dapi_addresses.is_empty() {
         match network {
@@ -1250,7 +1253,37 @@ fn build_sdk(
     if let Some(version) = sdk_options.initial_version {
         builder = builder.with_initial_version(version);
     }
+    if let Some(observer) = observer {
+        builder = builder.with_protocol_version_observer(observer);
+    }
     Ok(builder.build()?)
+}
+
+async fn init_quorum_context(
+    context: &Arc<LazyTrustedContext>,
+    network: &DashNetwork,
+    sink: &dyn EventSink,
+) -> Result<u64, EngineError> {
+    let ctx = Arc::clone(context);
+    let started = Instant::now();
+    let init = tokio::task::spawn_blocking(move || ctx.get_or_try_init(true)).await?;
+    let quorum_init_ms = started.elapsed().as_millis() as u64;
+    match init {
+        Ok(provider) => {
+            tokio::spawn(async move {
+                if let Err(e) = provider.update_quorum_caches().await {
+                    tracing::warn!(error = %e, "quorum prefetch failed; continuing");
+                }
+            });
+        }
+        Err(detail) => sink.emit(EngineEvent::Notice {
+            network: Some(network.clone()),
+            code: NoticeCode::PlatformContextUnavailable,
+            detail,
+        }),
+    }
+    tracing::info!(elapsed_ms = quorum_init_ms, "startup quorum-context-init");
+    Ok(quorum_init_ms)
 }
 
 #[cfg(test)]
@@ -1293,7 +1326,7 @@ mod tests {
             ..opts
         };
         let sdk_options = SdkOptions::validate(&opts)?;
-        build_sdk(&DashNetwork::Regtest, &opts, sdk_options, context)
+        build_sdk(&DashNetwork::Regtest, &opts, sdk_options, context, None)
     }
 
     #[test]
@@ -1426,5 +1459,37 @@ PRihiNYRunWtfhIwgcXNS8k8Aw/lDZNOwwt4ykNeDyMuBUM=\n\
             mnemonic: Zeroizing::new("secret words".into()),
         };
         assert!(!format!("{w:?}").contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn quorum_context_init_excludes_notice_delivery_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct SlowNoticeSink(AtomicUsize);
+        impl EventSink for SlowNoticeSink {
+            fn emit(&self, event: EngineEvent) {
+                if matches!(event, EngineEvent::Notice { .. }) {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            }
+        }
+
+        let context = Arc::new(LazyTrustedContext::new(
+            dashcore::Network::Regtest,
+            None,
+            Some("not a valid url".into()),
+        ));
+        let sink = SlowNoticeSink(AtomicUsize::new(0));
+        let total = Instant::now();
+        let init_ms = init_quorum_context(&context, &DashNetwork::Regtest, &sink)
+            .await
+            .unwrap();
+        let total_ms = total.elapsed().as_millis() as u64;
+        assert_eq!(sink.0.load(Ordering::SeqCst), 1);
+        assert!(
+            total_ms >= init_ms + 300,
+            "quorum init duration included slow notice delivery: {init_ms} of {total_ms} ms"
+        );
     }
 }
