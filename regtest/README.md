@@ -177,6 +177,7 @@ it prints, and the run fails if one shows up in its logs.
 | Suite | ROADMAP | What |
 |---|---|---|
 | `test_dp1_identity.py` | DP1-07 | availability, offline name rules, a registration from the Core balance to `done` within its grant, the identity, its name and keys, the name taken and resolved, the main name after a sync pass and a restart, a restore that finds the identity |
+| `test_dp2_contacts.py` | DP2-06 | the request and accept round trip between two members, the contact in a new process, ignore and unignore (hidden as `ignored` through a pass and a restart; back as a request on the next sweep), hide and show, a restore whose contact accounts exist before SPV so the first scan attributes a payment to its contact; the one-way contact is skipped (platform #4740 is not in the pin) |
 
 | Variable | Meaning |
 |---|---|

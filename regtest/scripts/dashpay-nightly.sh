@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The DashPay suites, nightly on agentbox (DASHPAY §6 T3; ROADMAP DP1-07): builds
+# The DashPay suites, nightly on agentbox (DASHPAY §6 T3; ROADMAP DP1-07, DP2-06): builds
 # dwcli at origin/main in its own checkout and runs the suites of regtest/README.md "DashPay suites"
 # against testnet. Alerting, not gating: the exit status is pytest's, and the junit, the log and
 # the run's dwcli logs stay under $DW_DP_STATE/nightly/<date>.

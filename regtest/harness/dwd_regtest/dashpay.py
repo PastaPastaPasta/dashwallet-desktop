@@ -32,7 +32,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -425,12 +425,15 @@ class Funder:
         tip = self.root.tip()
         return tip if sum(1 for c in self.mined_coins() if c >= duffs) >= 4 else None
 
-    def pay(self, to: Root, wallet: str, duffs: int) -> tuple[str, int]:
-        """Pays `duffs` to a fresh address of `wallet` and waits until `to` has scanned a block
-        that holds it; returns the txid and the height `to` scanned."""
+    def pay(self, to: Root, wallet: str, duffs: int, coins: int = 1) -> tuple[str, int]:
+        """Pays `duffs` to `wallet` as `coins` equal outputs and waits until `to` has scanned a
+        block that holds them; returns the txid and the height `to` scanned."""
         tip = self.ensure_coins(duffs)
-        to_address = ["--to", f"{to.address(wallet)}:{duffs}"]
-        txid = wait_until(lambda: self._try_send(to_address, tip), 600, "the funder's payment to go out", interval=15)
+        outputs = []
+        for _ in range(coins):
+            outputs += ["--to", f"{to.address(wallet)}:{duffs // coins}"]
+        txid = wait_until(lambda: self._try_send(outputs, tip), 600, "the funder's payment to go out", interval=15)
+        duffs = duffs // coins * coins
         height = tip
         while True:
             height += 1
@@ -493,3 +496,135 @@ def wait_pass(session: Session, loops: tuple[str, ...] = ("dash_pay_sync",), tim
         return status if all(after(ran.get(loop)) for loop in loops) else None
 
     return wait_until(done, timeout, f"a pass of {', '.join(loops)}", interval=10)
+
+
+def iter_contacts(page: dict) -> Iterator[tuple[str, dict]]:
+    for section in page["sections"]:
+        for row in section["contacts"]:
+            yield section["section"], row
+
+
+@dataclass
+class Member:
+    """A fresh wallet with a registered identity, on its own data root (its own device)."""
+
+    root: Root
+    wallet: Wallet
+    identity: str
+    label: str
+    birth: int
+
+    def session(self, name: str, peers: list[str] | None = None) -> Session:
+        return self.root.session(self.wallet.id, peers=peers, name=name)
+
+
+def make_member(dp: Harness, funder: Funder, role: str, prefix: str, duffs: int, coins: int = 8) -> Member:
+    """A fresh wallet funded with `coins` mined coins, and a registered identity. Several coins,
+    as for the funder: a payment's change is spendable only once mined in the next process."""
+    root = dp.root(role)
+    birth = root.tip()
+    wallet = root.create(f"{prefix}-{dp.run_id}")
+    funder.pay(root, wallet.id, duffs, coins)
+    label = dp.label(prefix)
+    with root.session(wallet.id, name=f"{prefix}-register") as s:
+        _, row, steps = register(s, wallet.id, label)
+    assert row["phase"] == "done" and row["name_failure"] is None, (row, steps)
+    return Member(root, wallet, row["identity"], label, birth)
+
+
+def contact_page(session: Session, *args: str) -> dict:
+    """`contact list`, read again while a sync pass holds the contacts state (`updating`)."""
+    return wait_until(lambda: (p := session.ok("contact", "list", *args)) and not p["updating"] and p, 300,
+                      "a contacts page no sync pass holds", interval=3)
+
+
+def find_contact(session: Session, contact: str) -> tuple[str, dict] | None:
+    page = contact_page(session)
+    return next(((sec, row) for sec, row in iter_contacts(page) if row["contact"] == contact), None)
+
+
+def try_pay(session: Session, contact: str, duffs: int, *extra: str, timeout: float = 900) -> dict:
+    """`pay-contact`'s answer, asked again while nothing could be sent yet: the session's SPV has
+    not connected a peer (the engine reports it as a rejection, see test_dp3_payments) or the
+    wallet is still rescanning."""
+
+    def once() -> dict | None:
+        answer = session.call("pay-contact", contact, "--amount", str(duffs), *extra, timeout=900)
+        error = answer.get("error") or {}
+        if error.get("code") == "rescan_in_progress" or "no connected peers" in error.get("message", ""):
+            return None
+        return answer
+
+    return wait_until(once, timeout, "a connected peer and no rescan to pay through", interval=10)
+
+
+def send_kind(error: dict) -> str:
+    """The `SendFailure` a `send` error is (dwcli's DashPay commands give every one the code
+    `send`; the message names it)."""
+    message = error.get("message", "")
+    for prefix, kind in (("send: no peers", "no_peers"), ("send: broadcast rejected", "rejected"),
+                         ("send: broadcast outcome unknown", "unknown"), ("send: cancelled", "cancelled")):
+        if message.startswith(prefix):
+            return kind
+    return error.get("code", "")
+
+
+def pay_contact(session: Session, contact: str, duffs: int, *extra: str) -> dict:
+    """A payment that went out. An unknown outcome (on a loaded host the lease's deadline can cut
+    the broadcast's hand-off) is settled as the app does, through the contact's lock: `sent` is
+    the payment, under the lock's txid; `not_sent` pays again."""
+    answer = try_pay(session, contact, duffs, *extra)
+    if answer.get("ok"):
+        return answer["result"]
+    error = answer["error"]
+    lock = session.ok("contact", "lock", contact) if send_kind(error) == "unknown" else None
+    if not lock:
+        raise DwcliError(["pay-contact", contact], error, "")
+    print(f"pay-contact {duffs}: {error['message']}; resolving the lock on {lock['txid']}")
+    outcome = wait_until(lambda: (o := session.ok("contact", "resolve-lock", contact)) != "unknown" and o, 900,
+                         f"the lock on {lock['txid']} to resolve", interval=15)
+    if outcome == "sent":
+        return {"txid": lock["txid"], "resolved": outcome}
+    answer = try_pay(session, contact, duffs, *extra)
+    if not answer.get("ok"):
+        raise DwcliError(["pay-contact", contact], answer["error"], "")
+    return answer["result"]
+
+
+def synced_until(session: Session, check: Callable[[], Any], timeout: float, what: str) -> Any:
+    """Polls `check` while the session's DashPay sync loops run."""
+    return wait_until(check, timeout, what, interval=15)
+
+
+def befriend(a: Member, b: Member, timeout: float = 1200, live: float = 300) -> dict:
+    """A asks B, B accepts: the round trip, with what each side saw on the way. A's session stays
+    open while B accepts, as an app left unlocked; `a_live` is A's row in that session `live`
+    seconds after it lists B as a contact, `a_contact` A's row once ready in a new process."""
+    seen: dict[str, Any] = {}
+
+    def contact_of(s: Session, other: Member, ready: bool) -> Callable[[], Any]:
+        def check() -> Any:
+            r = find_contact(s, other.identity)
+            done = r and r[1]["relation"] == "contact" and r[1]["username"]
+            return r if done and (r[1]["channel"] == "ready" or not ready) else None
+        return check
+
+    with a.session("befriend-a") as sa:
+        seen["eligibility"] = sa.ok("contact", "eligibility", b.identity)
+        seen["request"] = sa.ok("contact", "request", b.identity, timeout=1200)
+        seen["a_pending"] = find_contact(sa, b.identity)
+        with b.session("befriend-b") as sb:
+            seen["b_incoming"] = synced_until(
+                sb, lambda: (r := find_contact(sb, a.identity)) and r[1]["relation"] == "pending_incoming"
+                and r[1]["username"] and r, timeout, "B to list A's request with A's username")
+            seen["accept"] = sb.ok("contact", "accept", a.identity, timeout=1200)
+            seen["b_contact"] = synced_until(sb, contact_of(sb, a, True), timeout, "B's contact A to be ready")
+        row = synced_until(sa, contact_of(sa, b, False), timeout, "A to list B as a contact")
+        deadline = time.monotonic() + live
+        while row[1]["channel"] != "ready" and time.monotonic() < deadline:
+            time.sleep(15)
+            row = find_contact(sa, b.identity)
+        seen["a_live"] = row
+    with a.session("befriend-a2") as sa:
+        seen["a_contact"] = synced_until(sa, contact_of(sa, b, True), timeout, "A's contact B to be ready")
+    return seen

@@ -67,7 +67,7 @@ def funded_miner(regtest_node: RegtestNode):
 
 # ---- DashPay suites (DASHPAY §6 T2 and T3; regtest/README.md "DashPay suites") ----
 
-from dwd_regtest.dashpay import Harness, dwcli_path  # noqa: E402
+from dwd_regtest.dashpay import Harness, befriend, dwcli_path, make_member  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -89,3 +89,17 @@ def dp() -> Iterator[Harness]:
 def funder(dp):
     return dp.funder()
 
+
+@pytest.fixture(scope="session")
+def pair(dp, funder):
+    """Two members on their own data roots, A and B, each with a registered identity; not yet
+    contacts."""
+    a = make_member(dp, funder, "a", "dwdpa", 20_000_000)
+    b = make_member(dp, funder, "b", "dwdpb", 20_000_000)
+    return a, b
+
+
+@pytest.fixture(scope="session")
+def contacts(pair):
+    """The round trip A → B → A, done once per run; what each side saw on the way."""
+    return befriend(*pair)
