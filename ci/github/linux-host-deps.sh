@@ -25,5 +25,13 @@ case "${1:?usage: $0 rust|tauri|swiftcrossui}" in
   *) echo "unknown package set $1" >&2; exit 2 ;;
 esac
 
-sudo apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${packages[@]}"
+apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+for attempt in 1 2 3; do
+  if sudo timeout 120 apt-get "${apt_opts[@]}" update &&
+    sudo DEBIAN_FRONTEND=noninteractive timeout 360 apt-get "${apt_opts[@]}" install -y -qq --no-install-recommends \
+      "${packages[@]}"; then
+    exit 0
+  fi
+  echo "apt attempt $attempt failed" >&2
+done
+exit 1
