@@ -7,7 +7,7 @@ job's `GITHUB_TOKEN` is read-only (`contents: read`).
 
 | Workflow | Triggers | What it runs |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | push to `main` and `dw/**`, pull requests, manual | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
+| [`ci.yml`](../.github/workflows/ci.yml) | push to `main`, pull requests, manual | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
 | [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the shielded prover warm-up; the MG-04b release check; the Linux GUI (AT-SPI) demo |
 | [`gate.yml`](../.github/workflows/gate.yml) | manual only | G-02 / G-03 measurement scripts on the chosen OSes |
 | [`tauri-selftest.yml`](../.github/workflows/tauri-selftest.yml) | manual only | the Tauri app (G-01) built, run with `--selftest` and launched for a screenshot on macOS and Windows |
@@ -233,7 +233,7 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 
 ## `release.yml` (PK-01, PK-02; 0.1)
 
-On every push, pull request and dispatch (see Triggers below), and on a tag `v*`. One job per OS builds the release-profile app without the
+On a push to `main`, every pull request and dispatch (see Triggers below), and on a tag `v*`. One job per OS builds the release-profile app without the
 `selftest` feature (`rust-cache` keys `release-<os>`; Node 24, pnpm; the Windows `unistd` shim as in
 `ci.yml`):
 
