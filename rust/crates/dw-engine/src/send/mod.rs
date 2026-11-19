@@ -1862,6 +1862,28 @@ pub(crate) fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) ->
     }
 }
 
+/// How a stored hand-off code reads (MG-10 §4.4 rule 3): `Refused` exactly
+/// for the codes of the errors [`attempt_outcome`] calls `NotSent`
+/// (dw-appdb `INHERITED_REFUSED_CODES`); anything else, the resend marker
+/// included, may have left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandoffOutcome {
+    Refused,
+    Unknown,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "read by the shared recovery read (MG-10 EP 4)")
+)]
+pub(crate) fn outcome_of_code(code: &str) -> HandoffOutcome {
+    if dw_appdb::INHERITED_REFUSED_CODES.contains(&code) {
+        HandoffOutcome::Refused
+    } else {
+        HandoffOutcome::Unknown
+    }
+}
+
 /// dash-spv's never-sent rejections: client not started, no connected peer.
 fn reason_means_no_peers(reason: &str) -> bool {
     let r = reason.to_ascii_lowercase();
