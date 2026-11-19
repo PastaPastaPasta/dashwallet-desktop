@@ -7,7 +7,7 @@ job's `GITHUB_TOKEN` is read-only (`contents: read`).
 
 | Workflow | Triggers | What it runs |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | push to `main`, pull requests, manual | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
+| [`ci.yml`](../.github/workflows/ci.yml) | pull requests (Linux checks only); push to `main`, 02:47 UTC daily and manual (every job) | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
 | [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the shielded prover warm-up; the MG-04b release check; the Linux GUI (AT-SPI) demo |
 | [`gate.yml`](../.github/workflows/gate.yml) | manual only | G-02 / G-03 measurement scripts on the chosen OSes |
 | [`tauri-selftest.yml`](../.github/workflows/tauri-selftest.yml) | manual only | the Tauri app (G-01) built, run with `--selftest` and launched for a screenshot on macOS and Windows |
@@ -21,8 +21,16 @@ unverified installer below; pinning them would mean vendoring the action.
 A new push to a branch cancels that branch's running CI. Each distinct commit on `main` has its own
 concurrency group, so a running `main` run is never cancelled and a queued one is not superseded by a later
 commit's. Two runs of the same `main` commit (a re-run or a manual dispatch) still share a group. Every `run` step uses bash with `pipefail` (Git Bash on
-Windows) unless it names another shell. A pull request from a `dw/*` branch runs CI twice, once for the
-push and once for the pull request. Checkouts do not keep the job token (`persist-credentials: false`).
+Windows) unless it names another shell. Checkouts do not keep the job token (`persist-credentials: false`).
+
+**Triggers.** A branch is checked once, through its pull request; branch pushes start no run. A pull
+request runs only the Linux checks: `lint`, `rust-linux`, `desktop-renderer` and `ui-playwright` in
+`ci.yml`, and `script-tests` and `decide` in `release.yml`. These four `ci.yml` jobs are the required status
+checks on `main`. The hosted macOS runners (five at a time across the account) were the bottleneck, so the
+macOS, Windows, deep-link, tauri-driver E2E and Linux Swift jobs, and the release bundles, run on every push
+to `main` (each merge), on `ci.yml`'s 02:47 UTC schedule and on a dispatch. The non-blocking Windows Swift job
+runs only on the schedule and on a dispatch. To run everything for a branch before it merges:
+`gh workflow run ci.yml --ref <branch>` and `gh workflow run release.yml --ref <branch>`.
 
 **Downloads are pinned and verified** before anything runs them, except the Windows Swift installer (last
 row):
@@ -233,7 +241,7 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 
 ## `release.yml` (PK-01, PK-02; 0.1)
 
-On a push to `main`, every pull request and dispatch (see Triggers below), and on a tag `v*`. One job per OS builds the release-profile app without the
+On a push to `main`, a dispatch and a tag `v*` (pull requests run only `script-tests` and `decide`; see Triggers below). One job per OS builds the release-profile app without the
 `selftest` feature (`rust-cache` keys `release-<os>`; Node 24, pnpm; the Windows `unistd` shim as in
 `ci.yml`):
 
@@ -258,8 +266,8 @@ The `checksums` job downloads the three `dist-<os>` artifacts, writes `SHA256SUM
 `ci/github/release-version.sh` names the files: the tag's version for a tag (a plain `vX.Y.Z` must equal
 `tauri.conf.json`), else `<version>-dev.<run>.g<short sha>`.
 
-**Triggers and publishing (DEC-1058).** The workflow runs on pushes to every branch, on tags `v*`, on pull requests
-and on `workflow_dispatch`; all of them build and upload CI artifacts with `contents: read`. Only the `publish` job
+**Triggers and publishing (DEC-1058).** The workflow runs on pushes to `main`, on tags `v*`, on pull requests
+and on `workflow_dispatch`; all but pull requests build and upload CI artifacts with `contents: read`. Only the `publish` job
 has write permissions (`contents`, `id-token`, `attestations`), and its `if` admits a push to `main` or to a release
 tag only when the read-only `decide` job (`ci/github/release-decide.sh`) says `publish=true`: the trigger is a push
 to `main` or a tag `vX.Y.Z[-rc.N]`, in `PastaPastaPasta/dashwallet-desktop`, **and the commit is an ancestor of a
