@@ -35,6 +35,7 @@ use dw_protx::shared::{
     CollateralShare, CompactSignature, ProUpShareTx, ProUpSharedRegTx, SpecialTx,
     TRANSACTION_PROVIDER_UPDATE_SHARE, TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR, payload_bytes,
 };
+use key_wallet::transaction_checking::TransactionContext;
 use platform_wallet::masternode::MasternodeListSummary;
 use serde::{Deserialize, Serialize};
 
@@ -342,26 +343,31 @@ fn check_seen_payees(
     }
 }
 
-/// A confirmed ProUpSharedRegTx whose payload is the one this wallet
-/// sent, under another txid. Best copy first, as a registration's copies
-/// (`copy_rank`).
-fn payload_copy_height(
-    chain: &ChainView,
-    signed: Option<&[u8]>,
-    sent: Option<&Txid>,
-) -> Option<u32> {
-    let signed = SpecialTx::from_bytes(signed?).ok()?;
-    if signed.tx_type != TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR {
-        return None;
+/// The height of the funder's key change in a block: `sent` in a
+/// ChainLocked block, else the best of `sent` and every confirmed
+/// ProUpSharedRegTx with the payload this wallet signed under another
+/// txid, as a registration's copies (`copy_rank`).
+fn mined_height(chain: &ChainView, signed: Option<&[u8]>, sent: Option<&Txid>) -> Option<u32> {
+    let original = sent.and_then(|t| chain.history.get(t));
+    if let Some(e) =
+        original.filter(|e| matches!(e.context, TransactionContext::InChainLockedBlock(_)))
+    {
+        return e.context.block_info().map(|b| b.height());
     }
+    let payload = signed
+        .and_then(|s| SpecialTx::from_bytes(s).ok())
+        .filter(|s| s.tx_type == TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR)
+        .map(|s| s.payload);
     chain
         .history
         .iter()
         .filter(|(id, entry)| {
-            Some(*id) != sent
-                && entry.context.block_info().is_some()
-                && special_of(&entry.tx)
-                    .is_some_and(|tx| tx.tx_type == signed.tx_type && tx.payload == signed.payload)
+            entry.context.block_info().is_some()
+                && (Some(*id) == sent
+                    || payload.as_ref().is_some_and(|p| {
+                        entry.tx.tx_type().to_u16() == TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR
+                            && special_of(&entry.tx).is_some_and(|tx| tx.payload == *p)
+                    }))
         })
         .min_by_key(|(id, entry)| copy_rank(id, &entry.context, sent))
         .and_then(|(_, entry)| entry.context.block_info().map(|b| b.height()))
@@ -405,15 +411,10 @@ fn derive_stage(
             };
         }
         let txid = k.row.txid.as_deref().and_then(|t| Txid::from_str(t).ok());
-        if let Some(height) = txid.as_ref().and_then(|t| v.chain.confirmed_height(t)) {
-            return SharedStage::Confirmed { height };
-        }
         // A scriptSig-malleated copy has another txid and the same payload.
         // Matching it the way `ChainView::registration` ranks copies keeps
         // the spend from reading `conflicted`.
-        if let Some(height) =
-            payload_copy_height(&v.chain, k.row.signed_tx.as_deref(), txid.as_ref())
-        {
+        if let Some(height) = mined_height(&v.chain, k.row.signed_tx.as_deref(), txid.as_ref()) {
             return SharedStage::Confirmed { height };
         }
         let own = f.inputs();

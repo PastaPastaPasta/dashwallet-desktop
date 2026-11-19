@@ -1063,6 +1063,30 @@ fn test_QT_127_a_resend_refuses_a_voting_key_a_share_now_pays() {
     assert_eq!(f.session_of(0, &id).stage, SharedStage::Sent);
 }
 
+/// A ChainLocked copy of the funder's key change ranks before the sent
+/// txid in a block without a ChainLock (`copy_rank`): its height is the
+/// stage's.
+#[test]
+fn test_QT_127_a_chainlocked_copy_ranks_before_an_unlocked_original() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    let fee = f.session_of(0, &id).fee.unwrap();
+    send(&f, 0, &id, fee).unwrap();
+    let original = f.net.sent().pop().unwrap();
+    let mut copy = original.clone();
+    let mut script = copy.input[0].script_sig.as_bytes().to_vec();
+    script.push(0);
+    copy.input[0].script_sig = dashcore::ScriptBuf::from_bytes(script);
+    assert_ne!(copy.txid(), original.txid());
+    f.mine(original, 101);
+    f.mine_locked(copy, 105);
+    assert_eq!(
+        f.session_of(0, &id).stage,
+        SharedStage::Confirmed { height: 105 }
+    );
+}
+
 /// D103 residual: a scriptSig-malleated copy of the funder's key change,
 /// mined instead of the txid it sent, reads `confirmed`. The locks are
 /// released once it is buried, not held as a `conflicted` spend.
