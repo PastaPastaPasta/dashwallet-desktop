@@ -557,11 +557,16 @@ impl crate::NetworkSession {
             {
                 return Err(crate::EngineError::HeightOutOfRange(h));
             }
+            // No wallet is loaded or removed between the list and the rewinds.
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             let ids: Vec<crate::WalletId> = manager
                 .list_wallet_ids_blocking()
                 .into_iter()
                 .map(crate::WalletId)
                 .collect();
+            for id in &ids {
+                crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await?;
+            }
             let from_height = match from {
                 RescanFrom::WalletBirth => ids
                     .iter()
