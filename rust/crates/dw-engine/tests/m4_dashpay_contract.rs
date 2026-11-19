@@ -133,6 +133,9 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.withdraw_quote",
     "DashPay.withdraw",
     "DashPay.withdrawals",
+    // C-routes C6a-1: credits to an own Platform address.
+    "DashPay.withdraw_to_platform_quote",
+    "DashPay.withdraw_to_platform",
     // Release 0.1 (lane E2): the Platform addresses.
     "DashPay.platform_addresses",
     "DashPay.platform_activity",
@@ -233,6 +236,8 @@ const NOT_FACADE: &[&str] = &[
     "contest_watch.rs",
     "contest_watch_tests.rs",
     "credit_costs.rs",
+    "credit_transfer.rs",
+    "credit_transfer_tests.rs",
     "identity_reads.rs",
     "identity_tests.rs",
     "identity_writes.rs",
@@ -1561,6 +1566,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await
                 .map(drop),
             dp.withdrawals(s()).await.map(drop),
+            // C6a-1's.
+            dp.withdraw_to_platform_quote(s(), WithdrawAmount::All)
+                .await
+                .map(drop),
+            dp.withdraw_to_platform(s(), s(), WithdrawAmount::All, s())
+                .await
+                .map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }

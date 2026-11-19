@@ -17,6 +17,7 @@ use dpp::identity::identity_public_key::accessors::v0::{
 use dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dpp::serialization::{PlatformSerializable, Signable};
 use dpp::state_transition::StateTransitionHasUserFeeIncrease;
+use dpp::state_transition::identity_credit_transfer_to_addresses_transition::accessors::IdentityCreditTransferToAddressesTransitionAccessorsV0;
 use dpp::state_transition::identity_credit_withdrawal_transition::accessors::IdentityCreditWithdrawalTransitionAccessorsV0;
 
 use super::super::flows::FlowKind;
@@ -33,7 +34,7 @@ fn versions() -> impl Iterator<Item = &'static PlatformVersion> {
         .filter(|v| Rules::at(v).is_ok())
 }
 
-const DASH: u64 = 100_000_000_000;
+pub(crate) const DASH: u64 = 100_000_000_000;
 
 #[test]
 fn every_version_from_the_first_withdrawals_has_rules() {
@@ -249,7 +250,7 @@ fn the_document_id_is_drives() {
 // ---- The write, on a scripted Platform --------------------------------------
 
 /// What `broadcast` answers.
-enum Answer {
+pub(crate) enum Answer {
     /// It executes: Platform's proved new balance, the balance less the
     /// amount and `fee`; Platform's refusal when Drive refuses it.
     Applied { fee: u64 },
@@ -276,10 +277,10 @@ enum Answer {
 }
 
 /// What a withdrawal Drive executes is charged on top of its amount.
-const FEE: u64 = 210_000_000;
+pub(crate) const FEE: u64 = 210_000_000;
 
-/// Platform as a withdrawal sees it.
-struct FakeWithdrawals {
+/// Platform as a withdrawal or a transfer to an address sees it.
+pub(crate) struct FakeWithdrawals {
     /// What `version` answers: the seed until a proved read.
     version: Mutex<&'static PlatformVersion>,
     /// The network's protocol version, which a proved read ratchets to.
@@ -303,6 +304,11 @@ struct FakeWithdrawals {
     pending: Mutex<Vec<StateTransition>>,
     /// The withdrawal documents on Platform.
     documents: Mutex<Vec<Document>>,
+    /// The transfers to addresses Drive executed.
+    pub(crate) transfers: Mutex<Vec<StateTransition>>,
+    /// Asked before each broadcast.
+    #[allow(clippy::type_complexity)]
+    pub(crate) before_send: Mutex<Option<Box<dyn Fn(&StateTransition) + Send>>>,
     /// The document reads fail.
     reads_fail: Mutex<bool>,
 }
@@ -314,8 +320,11 @@ fn withdrawal_of(transition: &StateTransition) -> &IdentityCreditWithdrawalTrans
     w
 }
 
-fn nonce_of(transition: &StateTransition) -> u64 {
-    withdrawal_of(transition).nonce()
+pub(crate) fn nonce_of(transition: &StateTransition) -> u64 {
+    match transition {
+        StateTransition::IdentityCreditTransferToAddresses(t) => t.nonce(),
+        _ => withdrawal_of(transition).nonce(),
+    }
 }
 
 impl FakeWithdrawals {
@@ -332,6 +341,8 @@ impl FakeWithdrawals {
             sent: Mutex::default(),
             pending: Mutex::default(),
             documents: Mutex::default(),
+            transfers: Mutex::default(),
+            before_send: Mutex::default(),
             reads_fail: Mutex::new(false),
         })
     }
@@ -347,26 +358,26 @@ impl FakeWithdrawals {
         *self.version.lock().unwrap() = PlatformVersion::get(13).unwrap();
     }
 
-    fn sent(&self) -> Vec<StateTransition> {
+    pub(crate) fn sent(&self) -> Vec<StateTransition> {
         self.sent.lock().unwrap().clone()
     }
 
-    fn answer(&self, answer: Answer) {
+    pub(crate) fn answer(&self, answer: Answer) {
         *self.answer.lock().unwrap() = answer;
     }
 
     /// The nonce state and height now, as a node that stops here answers.
-    fn snapshot(&self) -> (u64, u64) {
+    pub(crate) fn snapshot(&self) -> (u64, u64) {
         (self.state(), *self.height.lock().unwrap())
     }
 
     /// A node stopped at `snapshot` answers the nonce reads.
-    fn lag(&self, snapshot: (u64, u64)) {
+    pub(crate) fn lag(&self, snapshot: (u64, u64)) {
         *self.lag.lock().unwrap() = Some(snapshot);
     }
 
     /// The withdrawal documents on Platform.
-    fn landed(&self) -> usize {
+    pub(crate) fn landed(&self) -> usize {
         self.documents.lock().unwrap().len()
     }
 
@@ -392,6 +403,22 @@ impl FakeWithdrawals {
     /// credits and `fee` charged, the document written. False when Drive
     /// refuses it.
     fn execute(&self, transition: &StateTransition, fee: u64) -> bool {
+        if let StateTransition::IdentityCreditTransferToAddresses(t) = transition {
+            if !validate_identity_nonce_update(self.state(), t.nonce(), t.identity_id()).is_valid()
+            {
+                return false;
+            }
+            let credits: u64 = t.recipient_addresses().values().sum();
+            let mut balance = self.balance.lock().unwrap();
+            let Some(after) = balance.unwrap().checked_sub(credits + fee) else {
+                return false;
+            };
+            *balance = Some(after);
+            self.used.lock().unwrap().insert(t.nonce());
+            *self.height.lock().unwrap() += 1;
+            self.transfers.lock().unwrap().push(transition.clone());
+            return true;
+        }
         let w = withdrawal_of(transition);
         if !validate_identity_nonce_update(self.state(), w.nonce(), w.identity_id()).is_valid() {
             return false;
@@ -413,14 +440,14 @@ impl FakeWithdrawals {
     }
 
     /// The mempool's transitions reach a block.
-    fn execute_pending(&self) {
+    pub(crate) fn execute_pending(&self) {
         let pending = std::mem::take(&mut *self.pending.lock().unwrap());
         for t in &pending {
             self.execute(t, FEE);
         }
     }
 
-    fn balance_now(&self) -> u64 {
+    pub(crate) fn balance_now(&self) -> u64 {
         self.balance.lock().unwrap().unwrap()
     }
 }
@@ -441,6 +468,9 @@ impl WithdrawNet for FakeWithdrawals {
     }
 
     async fn broadcast(&self, transition: StateTransition) -> Result<u64, Unsent> {
+        if let Some(check) = &*self.before_send.lock().unwrap() {
+            check(&transition);
+        }
         self.sent.lock().unwrap().push(transition.clone());
         let refused = || {
             Unsent::Refused(PlatformError::InsufficientCredits {
@@ -453,10 +483,7 @@ impl WithdrawNet for FakeWithdrawals {
             Answer::Applied { fee } if self.execute(&transition, fee) => Ok(self.balance_now()),
             Answer::Applied { .. } => Err(refused()),
             Answer::Refused => {
-                self.used
-                    .lock()
-                    .unwrap()
-                    .insert(withdrawal_of(&transition).nonce());
+                self.used.lock().unwrap().insert(nonce_of(&transition));
                 Err(refused())
             }
             Answer::Unknown => Err(unknown()),
@@ -519,18 +546,18 @@ impl WithdrawNet for FakeWithdrawals {
     }
 }
 
-const ME: u8 = 1;
+pub(crate) const ME: u8 = 1;
 
-struct World {
-    f: Fixture,
-    net: Arc<FakeWithdrawals>,
+pub(crate) struct World {
+    pub(crate) f: Fixture,
+    pub(crate) net: Arc<FakeWithdrawals>,
     /// A P2PKH address of the session's network.
     to: String,
     script: CoreScript,
 }
 
 impl World {
-    fn new(balance: u64) -> Self {
+    pub(crate) fn new(balance: u64) -> Self {
         Self::of(Fixture::new(balance), balance)
     }
 
@@ -545,7 +572,7 @@ impl World {
         }
     }
 
-    fn call<T: Send + 'static, Fut>(
+    pub(crate) fn call<T: Send + 'static, Fut>(
         &self,
         body: impl FnOnce(Arc<FakeWithdrawals>, Arc<NetworkSession>, Arc<PlatformWallet>) -> Fut
         + Send
@@ -577,7 +604,7 @@ impl World {
         })
     }
 
-    fn withdraw(
+    pub(crate) fn withdraw(
         &self,
         amount: WithdrawAmount,
         grant: &str,
@@ -592,7 +619,7 @@ impl World {
     }
 
     /// Our identity as the library holds it.
-    fn me(&self) -> Identity {
+    pub(crate) fn me(&self) -> Identity {
         let manager = self.f.s.manager().unwrap();
         let wallet = self.f.wallet;
         self.f.engine.block_on(async move {
@@ -606,6 +633,11 @@ impl World {
                 .clone()
         })
     }
+}
+
+/// The process restarts: the session's nonce record is gone (BL-335).
+pub(crate) fn restart(w: &World) {
+    w.f.s.withdrawal_nonces.0.lock().unwrap().clear();
 }
 
 fn rules() -> Rules {
@@ -1296,7 +1328,7 @@ fn the_unconfirmed_nonce_is_reused_only_where_drive_takes_it() {
     let id = Identifier::from([7; 32]);
     let at = |unconfirmed: u64, floor: u64| {
         let nonces = WithdrawalNonces::default();
-        let signed = Signed {
+        let signed = Signed::Withdrawal {
             document: Identifier::from([8; 32]),
             credits: DASH,
         };

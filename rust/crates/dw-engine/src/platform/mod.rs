@@ -27,6 +27,7 @@ pub(crate) mod contest_watch;
 #[cfg(test)]
 mod contest_watch_tests;
 mod credit_costs;
+mod credit_transfer;
 mod credits;
 mod dashpay;
 mod errors;
@@ -121,7 +122,8 @@ pub use contacts::{
 };
 pub use credits::{
     CostTable, CreditLevel, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, TopUpState,
-    WithdrawAmount, WithdrawOutcome, WithdrawQuote, Withdrawal, WithdrawalStatus,
+    WithdrawAmount, WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome,
+    WithdrawToPlatformQuote, Withdrawal, WithdrawalStatus,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
