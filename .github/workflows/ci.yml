@@ -125,8 +125,9 @@ jobs:
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
         working-directory: .
         run: ci/github/linux-host-deps.sh rust
+      # Only that toolchain: rust-cache's key hashes every installed one.
       - name: Rust toolchain (rust-toolchain.toml)
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
@@ -164,54 +165,67 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Free disk space
-        working-directory: .
-        run: ci/github/linux-free-disk.sh
+      # No linux-free-disk.sh: the runner has about 75 GB free, and the job needs much less.
       - name: protoc
         working-directory: .
         run: ci/github/install-protoc.sh
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
         working-directory: .
         run: ci/github/linux-host-deps.sh rust
+      # Only that toolchain: rust-cache's key hashes every installed one.
       - name: Rust toolchain (rust-toolchain.toml)
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.head_ref == 'fix/ci-rust-tests-time' }}
       - run: cargo test --workspace --no-run --locked
-      - run: cargo test --workspace --locked --no-fail-fast
+      # `cargo test --workspace --locked --no-fail-fast` in two concurrent lanes (libraries' unit
+      # tests and doc tests; bins' unit tests and integration tests), each binary in one process.
+      - name: cargo test --workspace (two lanes)
+        run: ../ci/github/cargo-test-lanes.sh
       # Without the feature, dw-app's tests prove the self-test's options, commands and grant
-      # are absent; with it, that they work (E0-13 D17).
+      # are absent; with it, that they work (E0-13 D17). The workspace is selected, so only dw-app
+      # is compiled again.
       - name: dw-app with the selftest feature
         if: ${{ !cancelled() }}
-        run: cargo test -p dw-app --features selftest --locked --no-fail-fast
+        run: ../ci/github/cargo-test-package.sh dw-app --features dw-app/selftest
       # Without the feature (the workspace run above), dwcli has no `coinjoin-test-addresses`; with
       # it, the command parses and dw-engine's probe sees the test calls, so the nightly's release
       # leg of mix_shield_release_check isn't vacuous. With `invitation-create-test`, the table
-      # tests cover its `invite create` row. The Nightly runs dwcli's whole suite with each debug
-      # feature.
+      # tests cover its `invite create` row. The three runs share one feature set, so dw-engine and
+      # dwcli compile once: the table tests read only `invitation-create-test`, the coinjoin tests
+      # only `mix-shield-test` and the release check only `test-mix-shield`. The Nightly runs
+      # dwcli's whole suite with each debug feature on its own.
       - name: dwcli and dw-engine with the debug features
         if: ${{ !cancelled() }}
         run: |
-          cargo test -p dwcli --bin dwcli --features invitation-create-test --locked --no-fail-fast -- --exact \
+          debug=(-p dwcli -p dw-engine --locked --no-fail-fast
+            --features dwcli/invitation-create-test,dwcli/mix-shield-test,dw-engine/test-mix-shield)
+          cargo test "${debug[@]}" --bin dwcli -- --exact \
             dashpay::tests::the_table_covers_every_dashpay_command \
             dashpay::tests::every_command_passes_the_session_grammar \
             dashpay::tests::every_command_reports_its_stub_as_a_json_error | tee "$RUNNER_TEMP/dwcli-table.txt"
           grep -q '^test result: ok\. 3 passed' "$RUNNER_TEMP/dwcli-table.txt"
-          cargo test -p dwcli --features mix-shield-test --locked --no-fail-fast -- coinjoin::tests
-          cargo test -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked
+          cargo test "${debug[@]}" --bin dwcli -- coinjoin::tests
+          cargo test "${debug[@]}" --test mix_shield_release_check
       # E0-13: the TypeScript bindings and the facade coverage table are generated from dw-app;
       # regenerate them and fail when the committed files differ (or a new file is missing).
+      # `--workspace --lib` reuses the test binary the workspace build made.
       - name: Regenerate the Tauri bindings and check them in
         # Also after a failed test step (stale bindings fail it): the diff shows what changed.
         if: ${{ !cancelled() }}
         run: |
-          DW_UPDATE_BINDINGS=1 cargo test -p dw-app --lib --locked -- codegen::tests::bindings_are_current coverage::tests::coverage_doc_is_current
+          DW_UPDATE_BINDINGS=1 cargo test --workspace --lib --locked -- --exact \
+            codegen::tests::bindings_are_current coverage::tests::coverage_doc_is_current | tee "$RUNNER_TEMP/bindings.txt"
+          [ "$(grep -c '^test .* \.\.\. ok$' "$RUNNER_TEMP/bindings.txt")" -eq 2 ]
           cd ..
           git add -N apps/desktop/src/api/generated docs/design/E0-13-facade-coverage.md
           git diff --exit-code -- apps/desktop/src/api/generated docs/design/E0-13-facade-coverage.md
+      - name: Disk use
+        if: ${{ !cancelled() }}
+        run: df -h / && du -sh target
 
   desktop-renderer:
     name: Tauri renderer (tokens, tsc, vitest)
