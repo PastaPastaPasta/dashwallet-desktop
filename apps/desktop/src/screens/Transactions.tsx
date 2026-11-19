@@ -242,6 +242,8 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
           <LoadingState testId="tx-loading" text="Loading transactions" />
         ) : history.isError && coreRows.length === 0 ? (
           <EmptyState testId="tx-error" title="Could not load transactions" message={errorMessage(history.error)} />
+        ) : rows.length === 0 && routeFilter && hasNextPage && !isFetchNextPageError ? (
+          <LoadingState testId="tx-loading" text="Loading transactions" />
         ) : rows.length === 0 ? (
           <EmptyState testId="tx-empty" title="There are no transactions to display" />
         ) : mode === "list" ? (
