@@ -205,8 +205,14 @@ fn the_setup_hook_returns_before_the_engine_is_built() {
             )
         };
         let spv = demo.ok("spv_state", json!({}));
-        // Still held: closing must not wait for the build.
+        // Still held: closing must not wait for the build, and a bad
+        // network name is rejected before the wait or a retry.
         assert_eq!(demo.ok("close_network", json!({})), json!(false));
+        demo.err(
+            "open_network",
+            json!({ "network": "moon" }),
+            "invalid_argument",
+        );
         let _ = snap_tx.send((ready, spv, window_at, engine_at));
         let _ = go_rx.recv();
         {
@@ -235,6 +241,32 @@ fn the_setup_hook_returns_before_the_engine_is_built() {
     );
     drop(finish);
     worker.join().expect("setup thread");
+}
+
+#[test]
+fn a_failed_engine_build_rejects_bad_network_without_retrying_and_closes_false() {
+    crate::state::set_engine_start_hook(|| panic!("engine build failed"));
+    let demo = Demo::open_unready(|_, _| {});
+    {
+        let state = demo.app.state::<crate::state::AppState>();
+        assert!(tauri::async_runtime::block_on(state.engine.wait()).is_err());
+        assert_eq!(state.engine.builds_started(), 1);
+    }
+    assert_eq!(demo.ok("close_network", json!({})), json!(false));
+    demo.err(
+        "open_network",
+        json!({ "network": "moon" }),
+        "invalid_argument",
+    );
+    {
+        let state = demo.app.state::<crate::state::AppState>();
+        assert_eq!(state.engine.builds_started(), 1);
+    }
+    assert_eq!(demo.open()["network"]["dirName"], "regtest");
+    {
+        let state = demo.app.state::<crate::state::AppState>();
+        assert_eq!(state.engine.builds_started(), 2);
+    }
 }
 
 #[test]

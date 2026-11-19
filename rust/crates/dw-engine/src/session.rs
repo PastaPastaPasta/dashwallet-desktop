@@ -367,28 +367,7 @@ impl NetworkSession {
             network.devnet_name().map(str::to_string),
             opts.quorum_url.clone(),
         ));
-        // First attempt off the async workers: construction does a blocking DNS check.
-        let ctx = Arc::clone(&context);
-        let dns = Instant::now();
-        match tokio::task::spawn_blocking(move || ctx.get_or_try_init(true)).await? {
-            Ok(provider) => {
-                // Prefetch quorums, as the iOS SDK does after building a trusted SDK.
-                tokio::spawn(async move {
-                    if let Err(e) = provider.update_quorum_caches().await {
-                        tracing::warn!(error = %e, "quorum prefetch failed; continuing");
-                    }
-                });
-            }
-            Err(detail) => sink.emit(EngineEvent::Notice {
-                network: Some(network.clone()),
-                code: NoticeCode::PlatformContextUnavailable,
-                detail,
-            }),
-        }
-        tracing::info!(
-            elapsed_ms = dns.elapsed().as_millis() as u64,
-            "startup quorum-dns"
-        );
+        init_quorum_context(&context, &network, sink.as_ref()).await?;
 
         let trust = Arc::new(TrustProvider::new(
             trust::DEFAULT_MODE,
@@ -1263,6 +1242,33 @@ fn build_sdk(
     Ok(builder.build()?)
 }
 
+async fn init_quorum_context(
+    context: &Arc<LazyTrustedContext>,
+    network: &DashNetwork,
+    sink: &dyn EventSink,
+) -> Result<u64, EngineError> {
+    let ctx = Arc::clone(context);
+    let started = Instant::now();
+    let init = tokio::task::spawn_blocking(move || ctx.get_or_try_init(true)).await?;
+    let quorum_init_ms = started.elapsed().as_millis() as u64;
+    match init {
+        Ok(provider) => {
+            tokio::spawn(async move {
+                if let Err(e) = provider.update_quorum_caches().await {
+                    tracing::warn!(error = %e, "quorum prefetch failed; continuing");
+                }
+            });
+        }
+        Err(detail) => sink.emit(EngineEvent::Notice {
+            network: Some(network.clone()),
+            code: NoticeCode::PlatformContextUnavailable,
+            detail,
+        }),
+    }
+    tracing::info!(elapsed_ms = quorum_init_ms, "startup quorum-context-init");
+    Ok(quorum_init_ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1436,5 +1442,37 @@ PRihiNYRunWtfhIwgcXNS8k8Aw/lDZNOwwt4ykNeDyMuBUM=\n\
             mnemonic: Zeroizing::new("secret words".into()),
         };
         assert!(!format!("{w:?}").contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn quorum_context_init_excludes_notice_delivery_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct SlowNoticeSink(AtomicUsize);
+        impl EventSink for SlowNoticeSink {
+            fn emit(&self, event: EngineEvent) {
+                if matches!(event, EngineEvent::Notice { .. }) {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            }
+        }
+
+        let context = Arc::new(LazyTrustedContext::new(
+            dashcore::Network::Regtest,
+            None,
+            Some("not a valid url".into()),
+        ));
+        let sink = SlowNoticeSink(AtomicUsize::new(0));
+        let total = Instant::now();
+        let init_ms = init_quorum_context(&context, &DashNetwork::Regtest, &sink)
+            .await
+            .unwrap();
+        let total_ms = total.elapsed().as_millis() as u64;
+        assert_eq!(sink.0.load(Ordering::SeqCst), 1);
+        assert!(
+            total_ms >= init_ms + 300,
+            "quorum init duration included slow notice delivery: {init_ms} of {total_ms} ms"
+        );
     }
 }

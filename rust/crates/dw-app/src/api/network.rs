@@ -235,10 +235,13 @@ commands! {
         network: Option<String>,
         settings: Option<SessionSettings>,
     ) -> OpenedNetwork {
+        // Before the wait and before a retry: "moon" is `invalid_argument`
+        // even while the engine is still starting, and it must not start
+        // another build after a failure.
+        let requested = network.as_deref().map(parse_network).transpose()?;
         state.retry_engine_if_failed();
         let engines = state.engine.clone();
         let engine = engines.wait().await?;
-        let requested = network.as_deref().map(parse_network).transpose()?;
         let settings = settings.unwrap_or_default();
         let mut slot = state.session_slot().await;
         // Read under the slot: a switch moves the window network while it

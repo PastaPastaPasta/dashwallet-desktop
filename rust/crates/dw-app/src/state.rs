@@ -53,8 +53,7 @@ pub struct AppState {
     /// finishes building it; commands wait, except a status read, which
     /// reports starting.
     pub engine: EngineHandle,
-    /// Builds the engine once. Taken by the first start.
-    engine_build: StdMutex<Option<EngineBuild>>,
+    engine_build: EngineBuild,
     /// The data root (`--datadir` or the platform default), where
     /// `settings.json` lives (U-04 D2).
     pub data_root: PathBuf,
@@ -243,11 +242,25 @@ pub struct EngineHandle {
     inner: Arc<EngineSlot>,
 }
 
+/// Single lifecycle state for engine construction, completion, retry, and exit.
+enum BuildState {
+    Idle,
+    Starting,
+    Failed(AppError),
+    Ready,
+    Abandoned(AppError),
+}
+
+enum ShutdownStep<'a> {
+    Ready(&'a Engine),
+    PendingAbandoned,
+    Failed(AppError),
+    AlreadyAbandoned,
+}
+
 struct EngineSlot {
     cell: OnceLock<Engine>,
-    failed: StdMutex<Option<AppError>>,
-    /// A build thread is running.
-    starting: StdMutex<bool>,
+    state: StdMutex<BuildState>,
     notify: Notify,
     /// Set when the window may paint, before the build runs.
     #[cfg(test)]
@@ -259,6 +272,12 @@ struct EngineSlot {
     /// build only after they are parked.
     #[cfg(test)]
     parked: AtomicUsize,
+    /// Builds admitted to start.
+    #[cfg(test)]
+    builds_started: AtomicUsize,
+    /// Build threads that have finished, published or not.
+    #[cfg(test)]
+    builds_settled: AtomicUsize,
 }
 
 impl EngineHandle {
@@ -266,8 +285,7 @@ impl EngineHandle {
         Self {
             inner: Arc::new(EngineSlot {
                 cell: OnceLock::new(),
-                failed: StdMutex::new(None),
-                starting: StdMutex::new(false),
+                state: StdMutex::new(BuildState::Idle),
                 notify: Notify::new(),
                 #[cfg(test)]
                 window_ready_at: StdMutex::new(None),
@@ -275,6 +293,10 @@ impl EngineHandle {
                 engine_ready_at: StdMutex::new(None),
                 #[cfg(test)]
                 parked: AtomicUsize::new(0),
+                #[cfg(test)]
+                builds_started: AtomicUsize::new(0),
+                #[cfg(test)]
+                builds_settled: AtomicUsize::new(0),
             }),
         }
     }
@@ -311,62 +333,75 @@ impl EngineHandle {
         self.inner.cell.get()
     }
 
+    #[cfg(test)]
     pub(crate) fn is_ready(&self) -> bool {
         self.ready().is_some()
     }
 
-    pub(crate) fn has_failed(&self) -> bool {
-        self.inner
-            .failed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
-    }
-
-    fn clear_failure(&self) {
-        *self.inner.failed.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
-    /// One build at a time, and none once the engine is in.
-    fn try_begin(&self) -> bool {
-        if self.is_ready() {
+    fn try_begin_initial(&self) -> bool {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(*state, BuildState::Idle) {
             return false;
         }
-        let mut starting = self
-            .inner
-            .starting
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if *starting {
-            return false;
-        }
-        *starting = true;
+        *state = BuildState::Starting;
+        #[cfg(test)]
+        self.inner.builds_started.fetch_add(1, Ordering::SeqCst);
         true
     }
 
-    fn end_begin(&self) {
-        *self
-            .inner
-            .starting
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = false;
+    fn try_begin_retry(&self) -> bool {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(*state, BuildState::Failed(_)) {
+            return false;
+        }
+        *state = BuildState::Starting;
+        #[cfg(test)]
+        self.inner.builds_started.fetch_add(1, Ordering::SeqCst);
+        true
     }
 
-    /// Pending, the recorded failure, or ready. One observation: a later
-    /// `wait` is not required to learn that the build failed.
+    fn begin_shutdown(&self) -> ShutdownStep<'_> {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        match &*state {
+            BuildState::Ready => {
+                let engine = self.inner.cell.get().expect("ready engine installed");
+                ShutdownStep::Ready(engine)
+            }
+            BuildState::Idle | BuildState::Starting => {
+                *state = BuildState::Abandoned(AppError::from(EngineError::Internal(
+                    "quit while the engine was still starting".into(),
+                )));
+                drop(state);
+                self.inner.notify.notify_waiters();
+                ShutdownStep::PendingAbandoned
+            }
+            BuildState::Failed(err) => {
+                let err = err.clone();
+                *state = BuildState::Abandoned(err.clone());
+                ShutdownStep::Failed(err)
+            }
+            BuildState::Abandoned(_) => ShutdownStep::AlreadyAbandoned,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn builds_started(&self) -> usize {
+        self.inner.builds_started.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn builds_settled(&self) -> usize {
+        self.inner.builds_settled.load(Ordering::SeqCst)
+    }
+
+    /// Pending, the recorded failure, or ready.
     pub(crate) fn build_view(&self) -> EngineBuildView {
-        let failed = self
-            .inner
-            .failed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        if self.is_ready() {
-            EngineBuildView::Ready
-        } else if let Some(err) = failed {
-            EngineBuildView::Failed(err)
-        } else {
-            EngineBuildView::Pending
+        match &*self.inner.state.lock().unwrap_or_else(|e| e.into_inner()) {
+            BuildState::Idle | BuildState::Starting => EngineBuildView::Pending,
+            BuildState::Failed(err) | BuildState::Abandoned(err) => {
+                EngineBuildView::Failed(err.clone())
+            }
+            BuildState::Ready => EngineBuildView::Ready,
         }
     }
 
@@ -375,8 +410,11 @@ impl EngineHandle {
         self.inner.parked.load(Ordering::SeqCst)
     }
 
-    fn install(&self, result: Result<Engine, AppError>) {
-        self.end_begin();
+    fn install(&self, result: Result<Engine, AppError>) -> bool {
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(*state, BuildState::Starting) {
+            return false;
+        }
         match result {
             Ok(engine) => {
                 #[cfg(test)]
@@ -388,12 +426,15 @@ impl EngineHandle {
                         .unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
                 }
                 let _ = self.inner.cell.set(engine);
+                *state = BuildState::Ready;
             }
             Err(e) => {
-                *self.inner.failed.lock().unwrap_or_else(|p| p.into_inner()) = Some(e);
+                *state = BuildState::Failed(e);
             }
         }
+        drop(state);
         self.inner.notify.notify_waiters();
+        true
     }
 
     /// Waits until the build installs the engine or records its failure.
@@ -404,17 +445,14 @@ impl EngineHandle {
         }
         loop {
             let notified = self.inner.notify.notified();
-            if let Some(engine) = self.ready() {
-                return Ok(engine);
-            }
-            if let Some(err) = self
-                .inner
-                .failed
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .clone()
-            {
-                return Err(err);
+            match self.build_view() {
+                EngineBuildView::Ready => {
+                    if let Some(engine) = self.ready() {
+                        return Ok(engine);
+                    }
+                }
+                EngineBuildView::Failed(err) => return Err(err),
+                EngineBuildView::Pending => {}
             }
             #[cfg(test)]
             self.inner.parked.fetch_add(1, Ordering::SeqCst);
@@ -442,12 +480,14 @@ struct FinishEngine {
 
 impl Drop for FinishEngine {
     fn drop(&mut self) {
-        if !self.done && !self.handle.is_ready() && !self.handle.has_failed() {
-            crate::startup_phase(self.started, "engine-failed");
-            self.handle
+        if !self.done
+            && self
+                .handle
                 .install(Err(AppError::from(EngineError::Internal(
                     "the engine stopped while starting".into(),
-                ))));
+                ))))
+        {
+            crate::startup_phase(self.started, "engine-failed");
         }
     }
 }
@@ -528,7 +568,7 @@ impl AppState {
             launch,
             started,
             engine,
-            engine_build: StdMutex::new(Some(engine_build)),
+            engine_build,
             data_root,
             apply_theme: Box::new(move |theme| {
                 if let Some(w) = window.get_webview_window("main") {
@@ -573,23 +613,17 @@ impl AppState {
     /// Builds the engine on this thread. Tests use it; the window does not.
     #[cfg(test)]
     fn start_engine_blocking(&self) -> Result<(), AppError> {
-        if !self.engine.try_begin() {
+        if !self.engine.try_begin_initial() {
             return Err(AppError::from(EngineError::Internal(
                 "the engine was already started".into(),
             )));
         }
-        let Some(build) = self.engine_factory() else {
-            self.engine.end_begin();
-            return Err(AppError::from(EngineError::Internal(
-                "the engine was already started".into(),
-            )));
-        };
-        let result = build();
+        let result = (self.engine_build)();
         let out = match &result {
             Ok(_) => Ok(()),
             Err(e) => Err(e.clone()),
         };
-        self.engine.install(result);
+        let _ = self.engine.install(result);
         out
     }
 
@@ -598,39 +632,31 @@ impl AppState {
     /// the window can paint while the runtime, the rates client and the
     /// first touch of the engine code run here.
     pub(crate) fn start_engine(&self) {
-        self.spawn_engine(|| {});
+        self.spawn_engine(false, || {});
     }
 
     /// [`Self::start_engine`], running `before` on the build thread ahead of
     /// `Engine::new`. The call returns while `before` is still blocked.
     #[cfg(test)]
     pub(crate) fn start_engine_after(&self, before: impl FnOnce() + Send + 'static) {
-        self.spawn_engine(before);
-    }
-
-    fn engine_factory(&self) -> Option<EngineBuild> {
-        self.engine_build
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        self.spawn_engine(false, before);
     }
 
     /// Starts another build when the last one failed, so Retry is not a dead end.
     pub(crate) fn retry_engine_if_failed(&self) {
-        if self.engine.has_failed() {
-            self.start_engine();
-        }
+        self.spawn_engine(true, || {});
     }
 
-    fn spawn_engine(&self, before: impl FnOnce() + Send + 'static) {
-        if !self.engine.try_begin() {
+    fn spawn_engine(&self, retry_only: bool, before: impl FnOnce() + Send + 'static) {
+        let admitted = if retry_only {
+            self.engine.try_begin_retry()
+        } else {
+            self.engine.try_begin_initial()
+        };
+        if !admitted {
             return;
         }
-        let Some(build) = self.engine_factory() else {
-            self.engine.end_begin();
-            return;
-        };
-        self.engine.clear_failure();
+        let build = Arc::clone(&self.engine_build);
         let handle = self.engine.clone();
         let started = self.started;
         let spawned = std::thread::Builder::new()
@@ -659,34 +685,43 @@ impl AppState {
                 if let Err(ref e) = result {
                     tracing::warn!(error = %e, "the engine did not start");
                 }
-                crate::startup_phase(
-                    started,
-                    if result.is_ok() {
-                        "engine-ready"
-                    } else {
-                        "engine-failed"
-                    },
-                );
+                let ok = result.is_ok();
                 finish.done = true;
-                handle.install(result);
+                if handle.install(result) {
+                    crate::startup_phase(
+                        started,
+                        if ok { "engine-ready" } else { "engine-failed" },
+                    );
+                }
+                #[cfg(test)]
+                handle.inner.builds_settled.fetch_add(1, Ordering::SeqCst);
             });
-        if let Err(e) = spawned {
-            crate::startup_phase(self.started, "engine-failed");
-            self.engine
+        if let Err(e) = spawned
+            && self
+                .engine
                 .install(Err(AppError::from(EngineError::Internal(format!(
                     "could not start the engine thread: {e}"
-                )))));
+                )))))
+        {
+            crate::startup_phase(self.started, "engine-failed");
         }
     }
 
-    /// Shuts the engine down, or logs and returns if the build never finished.
+    /// Shuts a ready engine down. If startup has not produced an engine, marks
+    /// the slot abandoned so late completion drops the result without releasing
+    /// queued commands, and returns without waiting on the build.
     pub(crate) async fn shutdown_engine(&self) -> Result<(), AppError> {
-        match self.engine.wait().await {
-            Ok(engine) => engine.shutdown().await.map_err(AppError::from),
-            Err(e) => {
+        match self.engine.begin_shutdown() {
+            ShutdownStep::Ready(engine) => engine.shutdown().await.map_err(AppError::from),
+            ShutdownStep::PendingAbandoned => {
+                eprintln!("dash-wallet: quit while the engine was still starting");
+                Ok(())
+            }
+            ShutdownStep::Failed(e) => {
                 eprintln!("dash-wallet: engine did not start: {e}");
                 Ok(())
             }
+            ShutdownStep::AlreadyAbandoned => Ok(()),
         }
     }
 
