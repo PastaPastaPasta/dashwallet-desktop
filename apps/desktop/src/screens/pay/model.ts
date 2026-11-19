@@ -4,6 +4,7 @@
 // DashPay contact (DP3-06) shares all of it; its own parts are in contact.ts.
 
 import { hasCode, isAppError, retryAfterSecs } from "../../api/backend";
+import { CREDITS_PER_DUFF } from "../../api/pending";
 import { RESCAN_INTERRUPTED, RESCAN_RUNNING } from "../../app/rescan";
 import type { AddressClass } from "../../api/generated/AddressClass";
 import type { AppError } from "../../api/generated/AppError";
@@ -288,12 +289,36 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
 
 // ---------------------------------------------------------------- the payment policy (E0-13 D11)
 
-/** The credential the confirm sheet asks for: the passphrase when the vault is encrypted and
- * "Require authentication for every payment" is on or unknown (U-03 D3); otherwise the
- * unlocked vault's own (`unencrypted`). The engine enforces the rule either way. */
-export function credentialPrompt(lock: LockStatus | undefined, paymentAuth: boolean | undefined): "passphrase" | "none" {
+/** What the signing window would cover for this payment. `null` when it has not been read. */
+export interface SigningCover {
+  open: boolean;
+  /** What the window can still authorize, in duffs. */
+  limitDuffs: number;
+  /** What this payment counts against that limit, in duffs. */
+  amount: number | bigint;
+}
+
+/** What "Accept and pay" counts against the window: the payment and the accept's quoted Platform
+ * value, its credits rounded up to whole duffs as dw-vault's `quick_unlock_value` does. Exact
+ * past 2^53. */
+export function acceptAndPayValue(total: number, quote: { maxDuffs: number; maxCredits: string }): bigint {
+  const credits = BigInt(quote.maxCredits);
+  return BigInt(total) + BigInt(quote.maxDuffs) + (credits + CREDITS_PER_DUFF - 1n) / CREDITS_PER_DUFF;
+}
+
+/** The credential the confirm sheet asks for. An encrypted vault asks when "Ask for my passphrase
+ * for every payment" is on or not yet known, and when the post-unlock window does not cover this
+ * amount. The engine enforces the same rule. */
+export function credentialPrompt(
+  lock: LockStatus | undefined,
+  paymentAuth: boolean | undefined,
+  cover?: SigningCover | null,
+): "passphrase" | "none" {
   if (lock === undefined) return "passphrase";
-  return lock.encrypted && paymentAuth !== false ? "passphrase" : "none";
+  if (!lock.encrypted) return "none";
+  if (paymentAuth !== false) return "passphrase";
+  if (!cover || !cover.open || BigInt(cover.amount) > BigInt(cover.limitDuffs)) return "passphrase";
+  return "none";
 }
 
 /** What the confirm sheet offers (P15, U-05 D18). Advanced's unsigned path, or a wallet that

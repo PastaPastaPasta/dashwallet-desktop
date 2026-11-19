@@ -103,6 +103,11 @@ pub(crate) fn issue(
     if kinds.is_empty() {
         return Err(LeaseError::Invalid);
     }
+    // Window grants are capped as a set, not one by one. A passphrase grant
+    // is not part of that sum.
+    vault
+        .window_lease_allowed(grants)
+        .map_err(|_| LeaseError::Invalid)?;
     // The key-checked redemption first, so a key the vault does not hold
     // leaves every grant unused.
     let mut order: Vec<_> = grants.iter().zip(&kinds).collect();
