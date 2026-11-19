@@ -85,7 +85,7 @@ attempt fails, the script puts `azure.archive.ubuntu.com` first, drops the mirro
 `archive.ubuntu.com`, and points the `noble-security` source at the same mirror list, so it keeps
 `archive.ubuntu.com` and `security.ubuntu.com` as fallbacks. apt checks every package against Ubuntu's
 signed indexes whichever mirror serves it. The download deadline is 6 minutes (`DW_APT_DOWNLOAD_DEADLINE`);
-the two Rust jobs set 2 minutes, since a download takes seconds and a stalled regional mirror otherwise
+the two Rust jobs set 1 minute, since a download takes seconds and a stalled regional mirror otherwise
 held them for the whole 6 minutes before the Azure mirror served the packages in about a second.
 `ci/github/linux-host-deps-test.sh` covers this with stand-ins for apt and runs in the "Release scripts"
 job.
@@ -133,7 +133,7 @@ key, so the Linux Rust jobs uninstall every toolchain but `rust/rust-toolchain.t
 (`ci/github/rust-toolchain-only.sh`): with the image's stable left in, a runner image that bumps it moves
 every job to a key that nothing has saved yet. `actions/cache` caches SwiftPM's repository cache, keyed on
 `Package.resolved`. A cold run builds the whole platform graph: it takes about 25–90 minutes per job,
-depending on the job and the runner (65–95 for `Rust tests (Linux)`), and a warm one much less.
+depending on the job and the runner (about 45 for `Rust tests (Linux)`, which takes under 20 warm), and a warm one much less.
 In `ci.yml` and `release.yml` only `main` saves the Rust caches; `gate.yml`, `nightly.yml` and
 `tauri-selftest.yml` save from whatever branch they run on. A cache is saved only when its job
 succeeds. Past the repository's cache limit (10 GB by default), GitHub evicts the least recently
