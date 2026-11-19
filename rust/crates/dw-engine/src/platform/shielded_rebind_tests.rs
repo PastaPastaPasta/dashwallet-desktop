@@ -1,6 +1,6 @@
 //! C8b: the shielded viewing key over the real `PwShielded::bind`, with the
 //! vault locked. A key persisted by an earlier bind rebinds at the Platform
-//! start after a reopen and a pass runs, the vault locked throughout; a
+//! start after a reopen and a pass is admitted, the vault locked throughout; a
 //! wallet never bound reads `shielded.not_synced{account}` while the vault
 //! is locked and binds once it is unlocked.
 
@@ -57,7 +57,7 @@ fn wait_of<T: std::fmt::Debug>(r: Result<T, ShieldedError>) -> String {
 }
 
 #[test]
-fn a_persisted_viewing_key_rebinds_at_the_start_and_a_pass_runs_with_the_vault_locked() {
+fn a_persisted_viewing_key_rebinds_at_the_start_and_a_pass_is_admitted_with_the_vault_locked() {
     let mut f = fixture(true);
     let want = expected_address(&f.session, f.wallet);
     let first = f
@@ -72,23 +72,33 @@ fn a_persisted_viewing_key_rebinds_at_the_start_and_a_pass_runs_with_the_vault_l
         .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
         .unwrap();
     lock(&f.engine, &f.session, f.wallet);
-    assert!(!registered(&f.engine, &f.session, f.wallet));
-
-    let (s, m, wallet) = (
-        Arc::clone(&f.session),
-        f.session.manager().unwrap(),
-        f.wallet,
+    let manager = f.session.manager().unwrap();
+    assert!(
+        f.engine.block_on(manager.shielded_coordinator()).is_none(),
+        "no shielded store is open before the start"
     );
-    let ran = f.engine.block_on(async move {
+
+    let admitted: Vec<WalletId> = [f.wallet]
+        .into_iter()
+        .filter(|w| {
+            f.session
+                .platform
+                .admit(w, || f.session.vault.has_wallet_secret(&w.0))
+                == Some(true)
+        })
+        .collect();
+    assert_eq!(admitted, [f.wallet], "admitted with the vault locked");
+    let s = Arc::clone(&f.session);
+    let admitted_pass = f.engine.block_on(async move {
         let (_cancel, cancelled) = tokio::sync::watch::channel(false);
-        pool::start(&s, &m, &[wallet], &cancelled).await;
-        pool::guarded_pass(&s, &m, true).await
+        pool::start(&s, &manager, &admitted, &cancelled).await;
+        pool::guarded_pass(&s, &manager, true).await
     });
     assert!(
         registered(&f.engine, &f.session, f.wallet),
         "the start rebound the account from wallet.sqlite"
     );
-    assert!(ran, "a pass ran with the vault locked");
+    assert!(admitted_pass, "a pass was admitted with the vault locked");
 
     let dp = f.session.dashpay(f.wallet);
     let address = f.engine.block_on(dp.shielded_receive_address()).unwrap();
