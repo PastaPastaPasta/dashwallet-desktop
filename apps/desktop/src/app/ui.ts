@@ -194,10 +194,10 @@ export function setLeaveGuard(guard: LeaveGuard): () => void {
   };
 }
 
-/** Opens `route`, closing the detail sheet. */
 /** The toolbar's wallet switch: a route filter (a node's payouts) belongs to the wallet it came from. */
 export const switchWallet = (walletId: string) => ui.set({ walletId, detail: null, activityFilter: null });
 
+/** Opens `route`, closing the detail sheet. */
 export function navigate(route: Route, patch: Partial<UiState> = {}) {
   // Coming to Pay from elsewhere chooses its tab afresh and starts an empty form with no payee,
   // unless the caller names a tab, a contact or fills the form (openPayForm).
