@@ -24,5 +24,29 @@ case "${1:?usage: $0 rust|tauri|swiftcrossui}" in
   *) echo "unknown package set $1" >&2; exit 2 ;;
 esac
 
-sudo apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends "${packages[@]}"
+apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+install=(apt-get "${apt_opts[@]}" install -y --no-install-recommends)
+# Only the network steps run under a deadline and are tried again. A deadline that fired while
+# dpkg was unpacking would leave a journal that apt refuses to continue from.
+# The runner image lists its regional mirror first (mirror+file:/etc/apt/apt-mirrors.txt). When
+# that mirror stalls without failing, apt never moves on to the next one, so a failed attempt
+# drops every mirror listed ahead of archive.ubuntu.com.
+mirrors=${DW_APT_MIRRORS:-/etc/apt/apt-mirrors.txt}
+skip_stalled_mirror() {
+  local main='^https?://archive\.ubuntu\.com/'
+  sudo grep -Eq "$main" "$mirrors" 2>/dev/null || return 0
+  sudo sed -i -E "0,\\#$main#{\\#$main#!d}" "$mirrors"
+  echo "apt mirrors now: $(tr '\n' ' ' < "$mirrors")" >&2
+}
+downloaded=
+for attempt in 1 2 3; do
+  if sudo timeout --verbose 120 apt-get "${apt_opts[@]}" update &&
+    sudo DEBIAN_FRONTEND=noninteractive timeout --verbose 360 "${install[@]}" --download-only "${packages[@]}"; then
+    downloaded=1
+    break
+  fi
+  echo "apt download attempt $attempt failed" >&2
+  skip_stalled_mirror
+done
+[ -n "$downloaded" ] || exit 1
+sudo DEBIAN_FRONTEND=noninteractive "${install[@]}" -qq --no-download "${packages[@]}"

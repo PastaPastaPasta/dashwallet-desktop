@@ -400,6 +400,7 @@ impl NetworkSession {
             let appdb = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || read_trusted_only(&appdb)).await?
         });
+        let protocol = Arc::new(crate::platform::protocol::ProtocolRuntime::default());
         let sdk = build_sdk(
             &network,
             &opts,
@@ -408,6 +409,7 @@ impl NetworkSession {
                 trusted: Arc::clone(&context),
                 trust: Arc::clone(&trust),
             },
+            (!opts.no_platform).then(|| protocol.observer()),
         )?;
 
         let db_path = data_dir.join(WALLET_DB_FILE);
@@ -495,6 +497,7 @@ impl NetworkSession {
             Arc::clone(&hub) as Arc<dyn platform_wallet::PlatformEventHandler>,
         ));
         replay.start(Arc::downgrade(&manager), Arc::downgrade(&hub));
+        protocol.attach(Arc::downgrade(&manager), Arc::downgrade(&hub));
         trust.attach(
             Arc::new(trust::RuntimeQuorums(Arc::downgrade(&manager.spv_arc()))),
             &provenance,
@@ -631,6 +634,7 @@ impl NetworkSession {
                 lock_state,
                 !opts.no_platform,
                 Arc::clone(&hub),
+                protocol,
             ),
             leases,
             flow_leases: Mutex::default(),
@@ -1236,6 +1240,7 @@ fn build_sdk(
     opts: &SessionOptions,
     sdk_options: SdkOptions,
     context: SharedContext,
+    observer: Option<dash_sdk::sdk::ProtocolVersionObserver>,
 ) -> Result<dash_sdk::Sdk, EngineError> {
     let builder = if opts.dapi_addresses.is_empty() {
         match network {
@@ -1258,6 +1263,9 @@ fn build_sdk(
     }
     if let Some(version) = sdk_options.initial_version {
         builder = builder.with_initial_version(version);
+    }
+    if let Some(observer) = observer {
+        builder = builder.with_protocol_version_observer(observer);
     }
     Ok(builder.build()?)
 }
@@ -1302,7 +1310,7 @@ mod tests {
             ..opts
         };
         let sdk_options = SdkOptions::validate(&opts)?;
-        build_sdk(&DashNetwork::Regtest, &opts, sdk_options, context)
+        build_sdk(&DashNetwork::Regtest, &opts, sdk_options, context, None)
     }
 
     #[test]

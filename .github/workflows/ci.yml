@@ -33,10 +33,17 @@
 # Screenshots and logs are uploaded as the `screenshots-<os>` artifacts.
 name: CI
 
+# A branch is checked through its pull request only: a push trigger for it as well ran every
+# job twice, and the hosted macOS runners are the scarce ones.
+# Pull requests run the Linux checks only (lint, rust-linux, desktop-renderer, ui-playwright). The
+# macOS, Windows, deep-link, E2E and Swift jobs run on pushes to main, nightly and on a dispatch
+# (`gh workflow run ci.yml --ref <branch>` runs them all for a branch); docs/ci.md, "Triggers".
 on:
   push:
-    branches: [main, "dw/**"]
+    branches: [main]
   pull_request:
+  schedule:
+    - cron: "47 2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -46,10 +53,10 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its branch's running CI. Each distinct commit on main gets its own group, so a
-# queued main run is not superseded by a later commit's (two runs of the same commit still share one).
+# A new push cancels its branch's or pull request's running CI. Main runs one at a time and is never
+# cancelled; a newer main run replaces a pending one, so a burst of merges queues one run behind the running one.
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
@@ -63,8 +70,42 @@ env:
   DWD_SWIFT_LINUX_SUITES: DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests|SwiftCrossUIPatchTests
 
 jobs:
+  # A pull request that changes only documentation (docs/ outside docs/contracts and the generated
+  # E0-13 coverage table, or *.md elsewhere) and whose paths are valid on Windows skips the four required
+  # jobs, which then report success. Every other event, and any failure here, runs them. This job is a
+  # required check too: a run cancelled while it is pending skips the four jobs, and its own cancelled
+  # check then blocks the merge.
+  changes:
+    name: What this pull request changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        run: |
+          code=true
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
+            printf '%s\n' "$changed"
+            if [[ -n "$changed" ]] \
+              && ! grep -vE '^docs/|\.md$' <<<"$changed" >/dev/null \
+              && ! grep -E '^docs/contracts/|^docs/design/E0-13-facade-coverage\.md$' <<<"$changed" >/dev/null; then
+              code=false
+              ci/github/windows-paths.py
+            fi
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
   lint:
     name: Rust lint (fmt, clippy)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -109,6 +150,8 @@ jobs:
 
   rust-linux:
     name: Rust tests (Linux)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
     # Cold runs (no cache restored) take 65-95 min. This job alone saves the ci-Linux cache, only
     # on main and only when it succeeds, so it must be able to finish cold.
@@ -129,8 +172,6 @@ jobs:
         run: ci/github/install-protoc.sh
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
         working-directory: .
-        # A mirror outage otherwise hangs here for most of the job's time.
-        timeout-minutes: 15
         run: ci/github/linux-host-deps.sh rust
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install && rustc --version
@@ -174,6 +215,8 @@ jobs:
 
   desktop-renderer:
     name: Tauri renderer (tokens, tsc, vitest)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -213,6 +256,8 @@ jobs:
 
   ui-playwright:
     name: UI tests (Playwright, axe)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # The browsers and their libraries, pinned to @playwright/test in package.json (bump both).
@@ -262,6 +307,7 @@ jobs:
 
   e2e-tauri-linux:
     name: Tauri E2E (tauri-driver, Linux)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     defaults:
@@ -321,6 +367,7 @@ jobs:
 
   deep-links:
     name: Deep links (${{ matrix.os }})
+    if: ${{ github.event_name != 'pull_request' }}
     strategy:
       fail-fast: false
       matrix:
@@ -403,6 +450,7 @@ jobs:
 
   swift-linux:
     name: Swift + UI T0 (Linux)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -450,6 +498,7 @@ jobs:
 
   macos:
     name: macOS (engine, Swift, app)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-latest
     timeout-minutes: 150
     steps:
@@ -526,6 +575,7 @@ jobs:
 
   windows:
     name: Windows (engine)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-latest
     timeout-minutes: 150
     env:
@@ -572,6 +622,7 @@ jobs:
   # bundle, the headless Swift suites, and dash-wallet launched with a screenshot.
   windows-swift:
     name: Windows Swift (known gap, non-blocking)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: windows-latest
     timeout-minutes: 150
     continue-on-error: true
