@@ -2039,6 +2039,7 @@ impl ShieldedDispatch for EngineDispatch {
         let accepted = artifact.origin == ArtifactOrigin::Dispatched
             && artifact.st_hash == Some(st_hash)
             && artifact.disposition.is_none()
+            && !artifact.acked
             && matches!(
                 artifact.status,
                 ArtifactStatus::Registered | ArtifactStatus::Unresolved { unrecorded: false }
@@ -2804,16 +2805,26 @@ pub(crate) async fn consume_dispositions(
         return;
     }
     for _ in 0..=UNREADABLE_PER_READ {
-        let spent: HashSet<[u8; 32]> = match session.leases.shielded_artifacts(wallet).await {
-            Ok(artifacts) => (artifacts.into_iter())
-                .flat_map(|a| a.selected)
-                .filter_map(|(nullifier, spent)| spent.then_some(nullifier))
-                .collect(),
+        let artifacts = match session.leases.shielded_artifacts(wallet).await {
+            Ok(artifacts) => artifacts,
             Err(e) => {
                 tracing::warn!(wallet_id = %wallet, error = %e, "the shielded artifacts could not be read");
                 return;
             }
         };
+        let spent: HashSet<[u8; 32]> = (artifacts.iter())
+            .flat_map(|a| &a.selected)
+            .filter_map(|&(nullifier, spent)| spent.then_some(nullifier))
+            .collect();
+        let unsettled: HashSet<[u8; 32]> = (artifacts.iter())
+            .filter(|a| {
+                matches!(
+                    a.status,
+                    ArtifactStatus::Registered | ArtifactStatus::Unresolved { unrecorded: false }
+                )
+            })
+            .filter_map(|a| a.st_hash)
+            .collect();
         let durable = |held: &[[u8; 32]]| held.iter().all(|n| spent.contains(n));
         let records = match coordinator.spend_dispositions(wallet.0).await {
             Ok(records) => records,
@@ -2848,7 +2859,15 @@ pub(crate) async fn consume_dispositions(
             let (status, ack) = match d.disposition {
                 ShieldedSpendDisposition::NotExecuted(_) => (ArtifactStatus::NotExecuted, true),
                 ShieldedSpendDisposition::Executed => {
-                    (ArtifactStatus::Executed, durable(&d.held_nullifiers))
+                    let ack = durable(&d.held_nullifiers);
+                    if !ack && unsettled.contains(&d.st_hash) {
+                        tracing::info!(
+                            wallet_id = %wallet,
+                            transition = %hex::encode(d.st_hash),
+                            "a shielded spend executed; its notes stay held until the journal reads them spent"
+                        );
+                    }
+                    (ArtifactStatus::Executed, ack)
                 }
                 ShieldedSpendDisposition::Unresolved(UnresolvedReason::Unattributable)
                     if confirmed(coordinator, d.subwallet, &d.activity_id).await =>

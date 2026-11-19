@@ -643,6 +643,9 @@ pub struct ShieldedArtifact {
     pub status: ArtifactStatus,
     /// The library's disposition, as its `kind_str` and `reason_str`.
     pub disposition: Option<(String, Option<String>)>,
+    /// The engine settled it for acknowledgement. The library may still list
+    /// its outcome until that acknowledgement lands (a crash between the two
+    /// repeats both).
     pub acked: bool,
     pub at: u64,
     /// The nullifiers of the notes it selected, by nullifier, `true` once

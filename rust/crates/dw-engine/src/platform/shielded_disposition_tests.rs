@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 
 use platform_wallet::wallet::shielded::{
     ShieldedActivityEntry, ShieldedActivityKind, ShieldedActivityStatus, ShieldedDirection,
+    ShieldedDispatch,
 };
 
 use super::*;
@@ -165,7 +166,10 @@ fn executed_ack_lifts_the_close_refusal() {
 /// Run by [`disposition_replayed_after_crash_before_ack`] in a child
 /// process: an executed spend, its notes seen spent, and a pass that
 /// crashes between the journal's settlement and the acknowledgement; then
-/// the app quits.
+/// the app quits. It quits rather than aborting so that it can report what
+/// it left: a quit runs no pass and does not configure the shielded store
+/// again, so it neither settles nor acknowledges an outcome, and the
+/// relaunch's open is the first to read it again.
 #[test]
 #[ignore = "the child process of disposition_replayed_after_crash_before_ack"]
 fn crash_before_ack_child() {
@@ -375,6 +379,21 @@ fn unreadable_disposition_row_is_acked_by_key_and_listing_resumes() {
             stored("not_executed", Some("pruned")),
             true
         )
+    );
+
+    engine.block_on(session.ensure_background());
+    assert!(session.leases.background(&wallet).is_some());
+    let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+    let readmitted = engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let hook = pool::EngineDispatch::new(&s, &coordinator);
+        let account = subwallet(wallet).account_index;
+        (hook.admit(wallet.0, account, [1; 32], st_hash(1)).await).map_err(|e| e.reason)
+    });
+    assert_eq!(
+        readmitted,
+        Err("the spend's artifact does not allow a send".to_owned()),
+        "an acknowledged artifact admits no send"
     );
 }
 

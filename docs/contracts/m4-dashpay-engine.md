@@ -723,13 +723,16 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   hold on the notes. A crash between the two repeats both. `NotExecuted` (nothing was sent, the notes are free) reads
   not executed and is acknowledged, also for a spend the hook refused (it has no artifact). `Executed` reads executed
   and is acknowledged once each note it holds reads spent in the journal (the wallet store took that spent state), so
-  no note it held becomes selectable while the wallet store could still read it unspent; until then a later pass
-  acknowledges it. `Unresolved` reads unresolved (being confirmed) and is never acknowledged by the engine: its notes
+  no note it held becomes selectable while the wallet store could still read it unspent; until then each later pass
+  checks again. If the journal never took that spent state (a failed write), it stays held, and Close Wallet refused,
+  until Tools ▸ Repair. `Unresolved` reads unresolved (being confirmed) and is never acknowledged by the engine: its notes
   stay held until a later scan or the user settles it. One the library could not attribute (`Unattributable`) whose
   history row reads `confirmed` reads executed, never failed: it is no proof, so it is not acknowledged either, nothing
   of it is re-sent or rebuilt, and no gate (`confirm_unrecorded` included) is relaxed by it. An outcome this build
   cannot read is acknowledged by its key only once each note it holds reads spent in the journal (its artifact reads
-  unresolved); until then the wallet's other outcomes wait. An outcome of a spend with no artifact (a spend stored
+  unresolved, and the hook no longer admits a send of it); until then the wallet's other outcomes wait. One that lists
+  no notes, or whose note list cannot be read, is never acknowledged by the engine: the wallet's other outcomes wait
+  for Tools ▸ Repair. An outcome of a spend with no artifact (a spend stored
   before any hook was set) or with an unclassified one waits, as does every outcome while the journal is unavailable.
   So Close Wallet and a switch stay refused (DEC-1046, below) only while an outcome is not acknowledged.
 - **No way back.** Once a build with the hook has run on a data directory, a build on a platform-wallet older than
