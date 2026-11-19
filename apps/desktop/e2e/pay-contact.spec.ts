@@ -135,6 +135,34 @@ test("IOS-050 pays a frequent contact; the confirm sheet names them and Activity
   expect(errors).toEqual([]);
 });
 
+for (const theme of THEMES) {
+  test(`IOS-050 #82 a watch-only answer that arrives after the sheet opened keeps the contact's confirm wording (${theme})`, async ({ page }, info) => {
+    const errors = await openPay(page, "dashpay-registered", theme);
+    await page.getByTestId("pay-frequent-chip").first().click();
+    await fillAmount(page, "0.01");
+    const sheet = page.getByTestId("pay-confirm");
+    await expect(sheet.getByTestId("pay-confirm-send")).toBeVisible();
+    await page.evaluate(`(() => {
+      const f = window.__dwFixture;
+      const wallet = f.world.wallets[0];
+      wallet.summary = { ...wallet.summary, watchOnly: true };
+      f.emit({ kind: "walletLoadChanged", network: f.world.launch.network.dirName, walletId: wallet.summary.walletId, loaded: true });
+    })()`);
+    await expect(sheet.getByTestId("pay-confirm-send")).toHaveCount(0);
+    await expect(sheet.getByRole("heading", { name: "Confirm payment" })).toBeVisible();
+    await expect(sheet).not.toContainText("Unsigned transaction");
+    await expect(sheet).not.toContainText("PSBT");
+    await expect(sheet.getByTestId("pay-confirm-watch-only")).toHaveText("A watch-only wallet cannot pay contacts.");
+    await expect(sheet.getByTestId("pay-confirm-unsigned")).toHaveCount(0);
+    await expect(sheet.getByTestId("pay-confirm-passphrase")).toHaveCount(0);
+    await expect(sheet.getByTestId("pay-confirm-cancel")).toBeVisible();
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await fontsReady(page);
+    await page.screenshot({ path: artifactPath(info, `${theme}-pay-contact-watch-only-confirm.png`) });
+    expect(errors).toEqual([]);
+  });
+}
+
 test("IOS-050 the picker searches the contacts and requests, and Change goes back to it", async ({ page }) => {
   await openPay(page);
   await expect(page.getByTestId("pay-picker-contacts").locator(".contact-row-name")).toContainText(["Bob Builder", "Carol"]);

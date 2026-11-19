@@ -25,11 +25,12 @@ import { useDisplay } from "../../format/display";
 import { feeWarningText, payFeeWarning } from "../../format/feeWarning";
 import { Avatar } from "../contacts/Avatar";
 import { useActionToast } from "../contacts/afterAction";
-import { AcceptFailed, acceptFailedText, acceptUnderLease, acceptedText, type Payee } from "./contact";
+import { AcceptFailed, acceptFailedText, acceptUnderLease, acceptedText, WATCH_ONLY, type Payee } from "./contact";
 import {
   authRefusal,
   broadcastFailure,
   confirmActions,
+  contactConfirmActions,
   credentialPrompt,
   failureText,
   isContact,
@@ -98,7 +99,7 @@ export function ConfirmSheet({
   const watchOnlyKnown = wallets.data?.find((w) => w.walletId === walletId)?.watchOnly;
   // Read and not there, or not readable: Send stays hidden, and the sheet says why.
   const walletUnknown = watchOnlyKnown === undefined && (wallets.isError || wallets.isSuccess);
-  const actions = confirmActions(unsigned, watchOnlyKnown);
+  const actions = contact ? contactConfirmActions(watchOnlyKnown) : confirmActions(unsigned, watchOnlyKnown);
   const [askAnyway, setAskAnyway] = useState(false);
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -409,6 +410,11 @@ export function ConfirmSheet({
         {walletUnknown && !unsigned && (
           <p className="placeholder-note" role="status" data-testid="pay-confirm-wallet-unknown">
             This wallet could not be read, so it cannot send now.{contact ? "" : " Create Unsigned still works."}
+          </p>
+        )}
+        {contact && watchOnlyKnown === true && (
+          <p className="placeholder-note" role="status" data-testid="pay-confirm-watch-only">
+            {WATCH_ONLY}
           </p>
         )}
         <div className="sheet-actions sheet-actions-fit">

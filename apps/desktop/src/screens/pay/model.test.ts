@@ -11,6 +11,7 @@ import {
   changePolicy,
   coinSource,
   confirmActions,
+  contactConfirmActions,
   PAY_CHECKING,
   PAY_INCOMPLETE,
   reviewBlockedReason,
@@ -329,6 +330,20 @@ describe("what the confirm sheet offers (P15)", () => {
 
   it("holds Send while the wallet is not known", () => {
     expect(confirmActions(false, undefined)).toEqual({ send: false, credential: false, unsignedFirst: false });
+  });
+});
+
+describe("what a contact's confirm sheet offers (#82)", () => {
+  it("sends, under a credential, from a wallet that signs", () => {
+    expect(contactConfirmActions(false)).toEqual({ send: true, credential: true, unsignedFirst: false });
+  });
+
+  it("never turns into the unsigned review: a contact payment cannot make a PSBT", () => {
+    expect(contactConfirmActions(true)).toEqual({ send: false, credential: false, unsignedFirst: false });
+  });
+
+  it("holds Send while the wallet is not known", () => {
+    expect(contactConfirmActions(undefined)).toEqual({ send: false, credential: false, unsignedFirst: false });
   });
 });
 
