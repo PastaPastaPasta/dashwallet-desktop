@@ -9,6 +9,7 @@ import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
+import type { ProtocolCompatibility } from "../api/generated/ProtocolCompatibility";
 import type { QuorumSource } from "../api/generated/QuorumSource";
 import type { DispatchStateName } from "../api/generated/DispatchStateName";
 import type { FlowKindName } from "../api/generated/FlowKindName";
@@ -43,6 +44,7 @@ import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld }
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
+import { COIN } from "../format/amount";
 import { buildRows, caughtUp, FIXTURE_NOW, FUNDED_BALANCES, makeIds, prng, secs, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
 export const FIXTURE_PASSPHRASE = "demo";
@@ -111,6 +113,10 @@ export interface World {
   shellSync: ShellSync | null;
   /** Txids `open_tx_in_explorer` accepted, in call order. The command takes no network. */
   explorerOpened?: string[];
+  /** How many times `open_releases_page` was called. */
+  releasesOpened?: number;
+  /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
+  protocolCompatibility?: ProtocolCompatibility;
   /** "Require authentication for every payment" (E0-13 D11; on by default). */
   paymentAuth: boolean;
   /** "Load contact pictures" (DP4-02 D17); absent: on. */
@@ -994,6 +1000,33 @@ const SCENARIOS = {
    * chip says "@alice · Pending"; Contacts, the bell and the badge stay (BL-153 D11). */
   "dashpay-contest-pending": (t) => contestPending(base(t), 1_900_000_000),
   // DP1-08: the Home card's other banner states (the status read failing is `fail=dashpay_status:none`).
+  /** A new wallet still catching up when a 25 DASH payment arrives: the engine reports it at once,
+   * InstantSend-locked and unconfirmed, in a balance flagged `catchingUp` (PRODUCT backlog 1). */
+  "catching-up-payment": (t) => {
+    const w = base(t, "empty");
+    const paid = 25 * COIN;
+    const main = w.wallets[0];
+    main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, confirmed: paid, total: paid, catchingUp: true } };
+    main.rows = [
+      {
+        txid: "5f0c2a6e9d4b4a3c8e7f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
+        recordIndex: 0,
+        txType: "recvWithAddress",
+        category: "received",
+        status: { kind: "unconfirmed", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
+        timestamp: secs(FIXTURE_NOW),
+        blockHeight: null,
+        amount: paid,
+        fee: null,
+        address: "yXbH3JxbVWgEzq6aZDyEbNQx5PtUfZvvXZ",
+        label: null,
+        countsTowardBalance: true,
+        involvesWatchOnly: false,
+      },
+    ];
+    w.sync = syncing();
+    return w;
+  },
   /** No identity while the wallet syncs: Join DashPay disabled, "Available after sync finishes". */
   "dashpay-waiting-for-sync": (t) => {
     const w = withStatus(base(t), { kind: "noIdentity", reason: "waitingForSync" });
@@ -1196,7 +1229,8 @@ const SCENARIOS = {
     ];
     return w;
   },
-  /** The funded wallet watch-only: Pay's confirm sheet offers Create Unsigned only (U-05 D18). */
+  /** The funded wallet watch-only: Pay opens Advanced: unsigned transaction (PSBT), Review makes a
+   * PSBT, and the confirm sheet offers Create Unsigned only (P15, U-05 D18). */
   "watch-only": (t) => {
     const w = base(t);
     w.wallets[0].summary = { ...w.wallets[0].summary, watchOnly: true };
@@ -1337,6 +1371,12 @@ const SCENARIOS = {
   "fiat-first-run": (t): World => onMainnet(buildWorld("no-wallet", t)),
   /** `dashpay-registered` with prices: paying a contact with the fiat toggle. */
   "fiat-contacts": (t): World => withPrices(buildWorld("dashpay-registered", t)),
+  /** Platform protocol version not learned yet (`null`). */
+  "protocol-unknown": (t): World => ({ ...base(t, "default", true), protocolCompatibility: { networkVersion: null, supportedVersion: 15 } }),
+  /** Platform protocol version equal to this build's supported version (`15`). */
+  "protocol-equal": (t): World => ({ ...base(t, "default", true), protocolCompatibility: { networkVersion: 15, supportedVersion: 15 } }),
+  /** Platform runs a newer protocol version (`16` > `15`): Home shows the advisory banner. */
+  "protocol-upgraded": (t): World => ({ ...base(t, "default", true), protocolCompatibility: { networkVersion: 16, supportedVersion: 15 } }),
 } satisfies Record<string, (theme: ThemeName | null) => World>;
 
 export type ScenarioName = keyof typeof SCENARIOS;

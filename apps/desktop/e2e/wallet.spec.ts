@@ -523,6 +523,39 @@ test.describe("Pay", () => {
     await expect(page.getByTestId("pay-problem")).toHaveText(plain);
   });
 
+  test("an unfinished restored BIP44 denomination points to Selected coins instead of waiting for mixing", async ({ page }) => {
+    await open(page);
+    await world(page, (w) => {
+      const wallet = w.wallets[0];
+      const restored = wallet.coins[0];
+      const single = { ...restored, amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: 2 };
+      wallet.coins = [single];
+      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0 };
+      w.coinjoin.restoredOutpoints = [`${single.outpoint.txid}:${single.outpoint.vout}`];
+      w.coinjoin.mixers[wallet.summary.walletId] = {
+        state: "idle",
+        stopReason: null,
+        status: { kind: "idle" },
+        progress: { overallPercent: 0, denominatedPercent: 0, partiallyMixedPercent: 0, mixedPercent: 0, averageRounds: 2 },
+        sessions: [],
+        queueSize: 0,
+      };
+    });
+    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "coinJoin", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId }); })()`);
+    await fillPayment(page, PAYEE, "0.05");
+    const reason =
+      "The amount exceeds the 0.00000000 tDASH a normal payment can spend. Denominations this wallet cannot mix stay apart; choose Advanced: coins, fee and change ▸ Selected coins to spend them, which can link your coins.";
+    await expect(page.locator(".field-error")).toHaveText(reason);
+    await expect(page.getByTestId("pay-problem")).toHaveText(reason);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+
+    await page.getByTestId("pay-advanced").locator("summary").click();
+    await page.getByTestId("coin-choice-selected").check();
+    await page.getByRole("checkbox", { name: /^Use 0\.100001 / }).check();
+    await expect(page.getByText("Available (selected coins): 0.10000100 tDASH")).toBeVisible();
+    await expect(page.getByTestId("pay-continue")).toBeEnabled();
+  });
+
   test("an empty custom change address holds the payment", async ({ page }) => {
     await open(page);
     await fillPayment(page, PAYEE, "0.5");
