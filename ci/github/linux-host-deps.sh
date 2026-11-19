@@ -34,6 +34,7 @@ install=(apt-get "${apt_opts[@]}" install -y --no-install-recommends)
 # apt leaves a stalled mirror too slowly to finish under the deadline, and on 2026-11-19 all three
 # were down together. So a failed attempt puts the Azure mirror first, drops the mirrors listed
 # ahead of archive.ubuntu.com, and reads noble-security from the same mirror list.
+# DW_APT_DOWNLOAD_DEADLINE (seconds, default 360) bounds each download attempt.
 mirrors=${DW_APT_MIRRORS:-/etc/apt/apt-mirrors.txt}
 sources=${DW_APT_SOURCES:-/etc/apt/sources.list.d/ubuntu.sources}
 fallback=http://azure.archive.ubuntu.com/ubuntu/
@@ -59,7 +60,7 @@ use_fallback_mirror() {
 downloaded=
 for attempt in 1 2 3; do
   if sudo timeout --verbose 120 apt-get "${apt_opts[@]}" update &&
-    sudo DEBIAN_FRONTEND=noninteractive timeout --verbose 360 "${install[@]}" --download-only "${packages[@]}"; then
+    sudo DEBIAN_FRONTEND=noninteractive timeout --verbose "${DW_APT_DOWNLOAD_DEADLINE:-360}" "${install[@]}" --download-only "${packages[@]}"; then
     downloaded=1
     break
   fi
