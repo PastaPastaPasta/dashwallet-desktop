@@ -74,6 +74,7 @@ use key_wallet::managed_account::managed_account_collection::ManagedAccountColle
 use key_wallet::managed_account::managed_account_ref::ManagedAccountRef;
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::managed_account::transaction_record::TransactionDirection;
+use key_wallet::wallet::balance::WalletCoreBalance;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::wallet::platform_wallet::PlatformWallet;
@@ -332,21 +333,28 @@ type ManagerArc = Arc<
 
 struct TempUtxoLocks {
     wm: ManagerArc,
+    hub: Arc<crate::events::SessionHub>,
     wallet_id: [u8; 32],
     outpoints: Vec<OutPoint>,
     rt: tokio::runtime::Handle,
 }
 
+/// A wallet's balances as key-wallet last computed them.
+type CoreBalances = (
+    WalletCoreBalance,
+    std::collections::BTreeMap<key_wallet::account::AccountType, WalletCoreBalance>,
+);
+
+/// Unlocks `outpoints` in wallet `wallet_id`'s funds accounts; returns the
+/// balances recomputed when one was locked.
 fn unlock_temp_utxos(
     wm: &mut platform_wallet::key_wallet_manager::WalletManager<
         platform_wallet::PlatformWalletInfo,
     >,
     wallet_id: &[u8; 32],
     outpoints: &[OutPoint],
-) {
-    let Some(info) = wm.get_wallet_info_mut(wallet_id) else {
-        return;
-    };
+) -> Option<CoreBalances> {
+    let info = wm.get_wallet_info_mut(wallet_id)?;
     let mut changed = false;
     for account in funding_accounts_mut(&mut info.core_wallet.accounts) {
         for op in outpoints {
@@ -358,8 +366,43 @@ fn unlock_temp_utxos(
             }
         }
     }
+    changed.then(|| recompute_balances(&mut info.core_wallet))
+}
+
+fn recompute_balances(info: &mut ManagedWalletInfo) -> CoreBalances {
+    info.update_balance();
+    (info.balance(), info.account_balances())
+}
+
+/// Hands balances key-wallet recomputed outside a wallet event to the hub,
+/// which would otherwise keep the last event's until the next one.
+fn announce_balances(hub: &crate::events::SessionHub, wallet: WalletId, balances: CoreBalances) {
+    let (balance, accounts) = balances;
+    let changed = hub.update_wallet_state(wallet, |s| {
+        let before = s.balances();
+        s.balance = balance;
+        s.accounts.extend(accounts);
+        before != s.balances()
+    });
     if changed {
-        info.core_wallet.update_balance();
+        hub.pump.mark_balances(wallet);
+    }
+}
+
+impl TempUtxoLocks {
+    fn release(
+        &self,
+        wm: &mut platform_wallet::key_wallet_manager::WalletManager<
+            platform_wallet::PlatformWalletInfo,
+        >,
+    ) -> Option<CoreBalances> {
+        unlock_temp_utxos(wm, &self.wallet_id, &self.outpoints)
+    }
+
+    fn announce(&self, balances: Option<CoreBalances>) {
+        if let Some(balances) = balances {
+            announce_balances(&self.hub, WalletId(self.wallet_id), balances);
+        }
     }
 }
 
@@ -408,13 +451,17 @@ impl Drop for CoinFence {
             .take();
         let Some(locks) = locks else { return };
         if let Ok(mut wm) = locks.wm.try_write() {
-            unlock_temp_utxos(&mut wm, &locks.wallet_id, &locks.outpoints);
+            let balances = locks.release(&mut wm);
+            drop(wm);
+            locks.announce(balances);
         } else {
             let guard = self.guard.take();
-            locks.rt.spawn(async move {
+            let rt = locks.rt.clone();
+            rt.spawn(async move {
                 let mut wm = locks.wm.write().await;
-                unlock_temp_utxos(&mut wm, &locks.wallet_id, &locks.outpoints);
+                let balances = locks.release(&mut wm);
                 drop(wm);
+                locks.announce(balances);
                 drop(guard);
             });
         }
@@ -887,16 +934,24 @@ impl NetworkSession {
             .filter(|c| c.send_account && c.counted_denomination)
             .map(|c| c.utxo.outpoint)
             .collect();
-        if denoms.is_empty() {
-            return Ok(());
-        }
         let wm = self.manager()?.wallet_manager_arc();
         let mut locked = Vec::new();
-        {
+        let unlocked = {
             let mut guard = wm.write().await;
             let info = guard
                 .get_wallet_info_mut(&fence.wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(fence.wallet.to_string()))?;
+            // Only a fence's temporary locks set this flag, and a fence
+            // holder meets none of its own: one left is a coin a spend
+            // elsewhere took while it was locked, given back since.
+            let mut stale = false;
+            for account in funding_accounts_mut(&mut info.core_wallet.accounts) {
+                for utxo in account.utxos.values_mut().filter(|u| u.is_locked) {
+                    utxo.unlock();
+                    stale = true;
+                }
+            }
+            let unlocked = stale.then(|| recompute_balances(&mut info.core_wallet));
             for account in funding_accounts_mut(&mut info.core_wallet.accounts) {
                 for op in &denoms {
                     if let Some(utxo) = account.utxos.get_mut(op)
@@ -907,10 +962,15 @@ impl NetworkSession {
                     }
                 }
             }
+            unlocked
+        };
+        if let Some(balances) = unlocked {
+            announce_balances(&self.hub, fence.wallet, balances);
         }
         if !locked.is_empty() {
             fence.set_temp_locks(TempUtxoLocks {
                 wm,
+                hub: Arc::clone(&self.hub),
                 wallet_id: fence.wallet.0,
                 outpoints: locked,
                 rt: self.rt.clone(),
@@ -1285,6 +1345,116 @@ impl NetworkSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const DENOMINATION: u64 = dw_coinjoin::denoms::DENOMINATIONS[2];
+
+    /// Recomputes the wallet's balance, as a block or transaction does, and
+    /// hands it to the hub, as that event does.
+    async fn wallet_event(s: &NetworkSession, w: WalletId) {
+        let manager = s.manager().unwrap();
+        {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            wm.get_wallet_info_mut(&w.0)
+                .unwrap()
+                .core_wallet
+                .update_balance();
+        }
+        s.refresh_wallet_state(&manager, w).await;
+    }
+
+    fn confirmed(s: &NetworkSession, w: WalletId) -> u64 {
+        s.hub.wallet_state(&w).unwrap().balance.confirmed()
+    }
+
+    async fn locked(s: &NetworkSession, w: WalletId, outpoint: OutPoint) -> Option<bool> {
+        let wallet = s.wallet(&w).await.unwrap();
+        let state = wallet.state().await;
+        (state.core_wallet.accounts.standard_bip44_accounts[&0].utxos)
+            .get(&outpoint)
+            .map(|u| u.is_locked)
+    }
+
+    /// Takes the funding fence and locks the BIP44 denominations, as a
+    /// Shielded, top-up or registration funding does.
+    async fn funding_fence(s: &Arc<NetworkSession>, w: WalletId) -> CoinFence {
+        let fence = s.coin_fence(w).await.unwrap();
+        let snapshot = s.fenced_coins(&fence).await.unwrap();
+        (s.exclude_denominations_under_fence(&fence, &snapshot).await).unwrap();
+        fence
+    }
+
+    /// A wallet event inside a funding's fence hands the app a balance
+    /// without the locked denominations; once the fence drops, the app has
+    /// them back with no further event.
+    #[test]
+    fn the_balance_counts_the_denominations_again_when_the_funding_fence_drops() {
+        let f = crate::platform::lease::session_tests::fixture(false);
+        f.credit(1, 100_000_000);
+        f.credit(2, DENOMINATION);
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        let inner = Arc::clone(&s);
+        let (before, during, after) = f
+            .engine
+            .block_on(s.on_runtime(async move {
+                wallet_event(&inner, w).await;
+                let before = confirmed(&inner, w);
+                let fence = funding_fence(&inner, w).await;
+                wallet_event(&inner, w).await;
+                let during = confirmed(&inner, w);
+                drop(fence);
+                Ok((before, during, confirmed(&inner, w)))
+            }))
+            .unwrap();
+        assert_eq!(during, before - DENOMINATION);
+        assert_eq!(after, before);
+    }
+
+    /// A denomination another wallet on the seed spent while a funding held
+    /// it locked, given back after the fence dropped (a reorg, a dropped
+    /// transaction), comes back locked; the next funding releases it with
+    /// its own locks.
+    #[test]
+    fn a_denomination_spent_and_given_back_around_a_fence_ends_unlocked() {
+        let f = crate::platform::lease::session_tests::fixture(false);
+        f.credit(1, 100_000_000);
+        let denom = f.credit(2, DENOMINATION);
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        let inner = Arc::clone(&s);
+        let (returned_locked, after, balance) = f
+            .engine
+            .block_on(s.on_runtime(async move {
+                wallet_event(&inner, w).await;
+                let before = confirmed(&inner, w);
+                let fence = funding_fence(&inner, w).await;
+                let spent = {
+                    let wallet = inner.wallet(&w).await.unwrap();
+                    let mut state = wallet.state_mut().await;
+                    let account = (state.core_wallet.accounts.standard_bip44_accounts)
+                        .get_mut(&0)
+                        .unwrap();
+                    account.utxos.remove(&denom).unwrap()
+                };
+                drop(fence);
+                {
+                    let wallet = inner.wallet(&w).await.unwrap();
+                    let mut state = wallet.state_mut().await;
+                    let account = (state.core_wallet.accounts.standard_bip44_accounts)
+                        .get_mut(&0)
+                        .unwrap();
+                    account.utxos.insert(denom, spent);
+                }
+                wallet_event(&inner, w).await;
+                let returned_locked = locked(&inner, w, denom).await;
+                drop(funding_fence(&inner, w).await);
+                let after = locked(&inner, w, denom).await;
+                Ok((returned_locked, after, (before, confirmed(&inner, w))))
+            }))
+            .unwrap();
+        assert_eq!(returned_locked, Some(true));
+        assert_eq!(after, Some(false));
+        assert_eq!(balance.1, balance.0);
+    }
 
     #[test]
     fn internal_chain_detection() {
