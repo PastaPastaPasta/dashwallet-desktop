@@ -178,6 +178,7 @@ it prints, and the run fails if one shows up in its logs.
 |---|---|---|
 | `test_dp1_identity.py` | DP1-07 | availability, offline name rules, a registration from the Core balance to `done` within its grant, the identity, its name and keys, the name taken and resolved, the main name after a sync pass and a restart, a restore that finds the identity |
 | `test_dp2_contacts.py` | DP2-06 | the request and accept round trip between two members, the contact in a new process, ignore and unignore (hidden as `ignored` through a pass and a restart; back as a request on the next sweep), hide and show, a restore whose contact accounts exist before SPV so the first scan attributes a payment to its contact; the one-way contact is skipped (platform #4740 is not in the pin) |
+| `test_dp3_payments.py` | DP3-05 | contact payments both ways, a payment with no peer (definite: no lock; reported as a rejection, xfail), an unknown outcome through a relay that holds the transaction (the contact locked to its txid, a second payment refused, `resolve-lock` settling it `Sent` once released), 25 cancelled confirms past the 20-address gap then a payment the recipient sees |
 
 | Variable | Meaning |
 |---|---|
@@ -186,6 +187,7 @@ it prints, and the run fails if one shows up in its logs.
 | `DW_DP_STATE` | persistent directory (0700): the funder's data root, the vault passphrase, `runs/` (deleted after three days) and `logs/` |
 | `DW_DP_FUNDER`, `DW_DP_FUNDER_BIRTH` | the funder's phrase file and birth height; on agentbox the phrase is the secret store's `dashwallet-desktop/dashpay-suites-funder` |
 | `DWCLI` | the dwcli binary |
+| `DW_DP_HOLD_UPSTREAM` | `ip:port` of a testnet peer serving BIP157 filters, for the unknown-outcome relay (DP3); that case is skipped when unset |
 
 ```sh
 (cd ../../rust && cargo build -p dwcli)

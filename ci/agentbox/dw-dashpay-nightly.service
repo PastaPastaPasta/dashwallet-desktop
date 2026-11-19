@@ -1,5 +1,5 @@
 # Install: copy this and dw-dashpay-nightly.timer to ~/.config/systemd/user/, write the
-# environment file below (DW_DP_STATE, DW_DP_FUNDER, DW_DP_FUNDER_BIRTH; the
+# environment file below (DW_DP_STATE, DW_DP_FUNDER, DW_DP_FUNDER_BIRTH, DW_DP_HOLD_UPSTREAM; the
 # funder's phrase lives in the secret store, never in this repository), copy
 # regtest/scripts/dashpay-nightly.sh to $DW_DP_STATE/dashpay-nightly.sh, then
 # `systemctl --user daemon-reload && systemctl --user enable --now dw-dashpay-nightly.timer`.

@@ -27,6 +27,7 @@ import re
 import secrets
 import shlex
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -628,3 +629,97 @@ def befriend(a: Member, b: Member, timeout: float = 1200, live: float = 300) -> 
     with a.session("befriend-a2") as sa:
         seen["a_contact"] = synced_until(sa, contact_of(sa, b, True), timeout, "A's contact B to be ready")
     return seen
+
+
+class HoldingPeer:
+    """A loopback P2P relay to one real peer that holds back every `tx` message the client sends
+    until `release()`: the client's broadcast reaches no node, so its outcome is unknown; released,
+    the same bytes reach the network."""
+
+    def __init__(self, upstream: str):
+        self.upstream = upstream
+        self.server = socket.socket()
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(4)
+        self.port = self.server.getsockname()[1]
+        self.held: list[tuple[Any, bytes]] = []
+        self.holding = True
+        self.lock = threading.Lock()
+        self.closed = False
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    @property
+    def address(self) -> str:
+        return f"127.0.0.1:{self.port}"
+
+    def _accept(self) -> None:
+        while not self.closed:
+            try:
+                client, _ = self.server.accept()
+            except OSError:
+                return
+            host, port = self.upstream.rsplit(":", 1)
+            try:
+                up = socket.create_connection((host, int(port)), timeout=20)
+                up.settimeout(None)
+            except OSError:
+                client.close()
+                continue
+            threading.Thread(target=self._pipe, args=(client, up, True), daemon=True).start()
+            threading.Thread(target=self._pipe, args=(up, client, False), daemon=True).start()
+
+    def _pipe(self, src: Any, dst: Any, from_client: bool) -> None:
+        buf = b""
+        try:
+            while True:
+                data = src.recv(65536)
+                if not data:
+                    break
+                if not from_client:
+                    dst.sendall(data)
+                    continue
+                buf += data
+                while len(buf) >= 24:
+                    length = int.from_bytes(buf[16:20], "little")
+                    if len(buf) < 24 + length:
+                        break
+                    message, buf = buf[: 24 + length], buf[24 + length:]
+                    command = message[4:16].rstrip(b"\0")
+                    with self.lock:
+                        if command == b"tx" and self.holding:
+                            self.held.append((dst, message))
+                            continue
+                    dst.sendall(message)
+        except OSError:
+            pass
+        finally:
+            for s in (src, dst):
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+    def held_count(self) -> int:
+        with self.lock:
+            return len(self.held)
+
+    def release(self) -> list[str]:
+        """Sends the held transactions on over the connections they came on (dropped if a
+        connection closed meanwhile); returns every held transaction's hex."""
+        with self.lock:
+            self.holding = False
+            held, self.held = self.held, []
+        for dst, message in held:
+            try:
+                dst.sendall(message)
+            except OSError:
+                pass
+        return [message[24:].hex() for _, message in held]
+
+    def close(self) -> None:
+        self.closed = True
+        try:
+            self.server.close()
+        except OSError:
+            pass

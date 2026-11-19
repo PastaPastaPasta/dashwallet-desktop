@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The DashPay suites, nightly on agentbox (DASHPAY §6 T3; ROADMAP DP1-07, DP2-06): builds
+# The DashPay suites, nightly on agentbox (DASHPAY §6 T3; ROADMAP DP1-07, DP2-06, DP3-05): builds
 # dwcli at origin/main in its own checkout and runs the suites of regtest/README.md "DashPay suites"
 # against testnet. Alerting, not gating: the exit status is pytest's, and the junit, the log and
 # the run's dwcli logs stay under $DW_DP_STATE/nightly/<date>.
@@ -7,6 +7,7 @@
 #   DW_DP_STATE=<dir>          persistent state (data roots, vault passphrase, the checkout); required
 #   DW_DP_FUNDER=<file>        the funder's phrase (agentbox's secret store); required
 #   DW_DP_FUNDER_BIRTH=<n>     the funder's birth height; required
+#   DW_DP_HOLD_UPSTREAM=<ip:port>  a testnet peer serving BIP157 filters (DP3-05's relay)
 #   DW_DP_SUITES="…"           the suite files (default: every tests/test_dp*.py)
 #   DW_DP_REF=<ref>            what to test (default origin/main)
 set -euo pipefail

@@ -110,6 +110,10 @@ pub enum DashPayCommand {
         note: Option<String>,
         #[arg(long)]
         accept: bool,
+        /// Prepare the payment, then abandon it unsent: the confirm
+        /// sheet's Cancel.
+        #[arg(long, conflicts_with = "accept")]
+        cancel: bool,
     },
     /// The DashPay profile.
     Profile {
@@ -1617,6 +1621,7 @@ fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Valu
             subtract_fee,
             note,
             accept,
+            cancel,
             ..
         } => {
             let dp = ctx.dashpay()?;
@@ -1627,7 +1632,7 @@ fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Valu
                 subtract_fee,
                 note,
             };
-            pay_contact(ctx, &dp, recipient, accept)
+            pay_contact(ctx, &dp, recipient, accept, cancel)
         }
         DashPayCommand::Profile { cmd, .. } => profile_cmd(ctx, cmd),
         DashPayCommand::Invite { cmd, .. } => invite_cmd(ctx, cmd, stdin),
@@ -2015,6 +2020,7 @@ fn pay_contact(
     dp: &DashPay,
     recipient: ContactRecipient,
     accept: bool,
+    cancel: bool,
 ) -> Result<Value, CliError> {
     let (identity, contact) = (recipient.identity.clone(), recipient.contact.clone());
     let (amount, subtract_fee) = (recipient.amount, recipient.subtract_fee);
@@ -2031,6 +2037,12 @@ fn pay_contact(
     if !accept {
         let grant = ctx.grant(dp, spend)?;
         let prepared = ctx.block_on(draft.prepare(grant))?;
+        if cancel {
+            ctx.block_on(draft.abandon(Arc::clone(&prepared)))?;
+            let mut result = paid(Value::Null, &prepared, &prepared.summary().txid);
+            result["cancelled"] = json!(true);
+            return Ok(result);
+        }
         let outcome = ctx.block_on(draft.broadcast(Arc::clone(&prepared)))?;
         return Ok(paid(Value::Null, &prepared, &outcome.txid));
     }
@@ -3055,6 +3067,17 @@ mod tests {
             let parsed = RequestArgs::try_parse_from(args.iter().map(|a| a.as_str()));
             assert!(parsed.is_ok(), "{line:?}");
         }
+    }
+
+    #[test]
+    fn pay_contact_cancel_is_a_flag_apart_from_accept() {
+        let line = format!("pay-contact {ID1} --amount 5 --cancel");
+        let Ok(DashPayCommand::PayContact { cancel, accept, .. }) = parse(&line) else {
+            panic!("{line:?}");
+        };
+        assert!(cancel && !accept);
+        let both = format!("pay-contact {ID1} --amount 5 --cancel --accept");
+        assert!(parse(&both).is_err(), "{both:?}");
     }
 
     #[test]
