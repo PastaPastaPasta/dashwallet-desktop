@@ -328,6 +328,13 @@ export function confirmActions(unsignedAsked: boolean, watchOnly: boolean | unde
   return { send, credential: send, unsignedFirst: unsignedAsked || watchOnly === true };
 }
 
+/** A contact's confirm sheet (#82) has no unsigned path: it sends once the wallet is known to sign,
+ * and otherwise offers nothing. */
+export function contactConfirmActions(watchOnly: boolean | undefined): ReturnType<typeof confirmActions> {
+  const send = watchOnly === false;
+  return { send, credential: send, unsignedFirst: false };
+}
+
 export const PAY_INCOMPLETE = "Enter an address and an amount first.";
 export const PAY_CHECKING = "Checking the payment…";
 

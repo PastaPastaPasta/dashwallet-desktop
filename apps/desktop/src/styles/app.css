@@ -2844,7 +2844,7 @@ input[type="radio"]:disabled {
 }
 
 .form-ok {
-  color: var(--dw-role-success);
+  color: var(--dw-role-success-text);
 }
 
 .onboarding-warning,
@@ -6261,7 +6261,7 @@ button.bell-row-open:focus-visible {
 }
 
 .receive-received span {
-  color: var(--dw-role-success);
+  color: var(--dw-role-success-text);
 }
 
 .receive-qr {
