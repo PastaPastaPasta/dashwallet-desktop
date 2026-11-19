@@ -43,10 +43,10 @@ fn encrypted(fx: &Fixture) -> Vault {
     v
 }
 
-/// A redeemed grant of `purpose` for wallet 1.
+/// A redeemed grant of `purpose` for wallet 1, under the passphrase.
 fn token(v: &Vault, purpose: GrantPurpose) -> GrantToken {
     let grant = v
-        .authorize(purpose, Some(&wallet(1)), Credential::None)
+        .authorize(purpose, Some(&wallet(1)), Credential::Passphrase(PASS))
         .unwrap();
     v.redeem_grant(&grant.id, purpose.kind(), Some(&wallet(1)))
         .unwrap()
