@@ -41,6 +41,7 @@ import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
+import { newUpdatesWorld, updatesScenarios, type UpdatesWorld } from "./updates";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FIXTURE_NOW, FUNDED_BALANCES, makeIds, prng, secs, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
@@ -133,6 +134,8 @@ export interface World {
   governance: GovernanceWorld;
   /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
   rates: RatesWorld;
+  /** The update check: the setting and what the next check finds (updates.ts, PK-03a). */
+  updates: UpdatesWorld;
   /** The commands dw-app does not have yet: network choice, shielded and Platform balances (pending.ts). */
   pending: PendingWorld;
 }
@@ -231,6 +234,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
     rates: newRatesWorld(),
+    updates: newUpdatesWorld(),
     pending: newPendingWorld(),
   };
 }
@@ -1331,6 +1335,8 @@ const SCENARIOS = {
   ...governanceScenarios(base),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesScenarios(base),
+  // The update check (PK-03a): updates.ts.
+  ...updatesScenarios(base),
   // Transfer (POLISH 25): transfer.ts.
   ...transferScenarios(base),
   /** A new install on Mainnet: onboarding's last step carries the price disclosure. */

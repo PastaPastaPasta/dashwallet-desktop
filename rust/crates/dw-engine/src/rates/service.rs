@@ -478,7 +478,7 @@ fn jittered(base: Duration, jitter: f64) -> Duration {
 }
 
 /// Replaces `path` with `bytes` through a temporary file created 0600.
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let tmp = path.with_extension("json.tmp");
     let _ = std::fs::remove_file(&tmp);

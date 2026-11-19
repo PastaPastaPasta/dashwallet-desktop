@@ -361,6 +361,7 @@ export function StatusBar({
   hd,
   onUnlock,
   governance = null,
+  update = null,
 }: {
   sync: SyncStatus | undefined;
   lock: LockStatus | undefined;
@@ -370,6 +371,8 @@ export function StatusBar({
   onUnlock: () => void;
   /** Masternodes' voting item (MG-09 D7), before the sync state as in MG-00's frame. */
   governance?: ReactNode;
+  /** The update check's chip (PK-03a), while a newer release is available. */
+  update?: ReactNode;
 }) {
   const percent = sync && isSyncing(sync) ? syncPercent(sync) : null;
   return (
@@ -395,6 +398,7 @@ export function StatusBar({
         )}
         {sync && <span>{sync.connectedPeers === 1 ? "1 peer" : `${sync.connectedPeers} peers`}</span>}
         {governance}
+        {update}
         {sync && <span>{!sync.running ? "Offline" : sync.caughtUp ? "Synced" : "Syncing"}</span>}
       </span>
     </footer>

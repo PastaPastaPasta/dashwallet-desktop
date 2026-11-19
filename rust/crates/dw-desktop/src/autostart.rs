@@ -82,7 +82,7 @@ pub(crate) mod linux {
 
     /// Inside Flatpak only the Background portal may add autostart entries.
     pub(crate) fn refuse_flatpak() -> Result<(), DesktopError> {
-        if std::env::var_os("FLATPAK_ID").is_some() || Path::new("/.flatpak-info").exists() {
+        if crate::in_flatpak() {
             return Err(DesktopError::Unsupported(
                 "autostart inside Flatpak (needs the Background portal)".into(),
             ));

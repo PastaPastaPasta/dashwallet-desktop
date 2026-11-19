@@ -46,6 +46,7 @@ import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
 import { savePrefs } from "../settings/prefs";
 import { navigate, ui, useUi } from "./ui";
+import { UpdateStatusItem, useLaunchUpdateCheck } from "../updates/updates";
 
 const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null });
 const closeOnboarding = () => ui.set({ onboarding: false });
@@ -108,6 +109,7 @@ function useAutoLock(backend: Backend, status: LockStatus | undefined, secs: num
 function Shell() {
   const backend = useBackend();
   const launch = useLaunch();
+  useLaunchUpdateCheck();
   const { network } = launch;
   const unitName = useDisplay(network).name;
   const route = useUi((s) => s.route);
@@ -280,6 +282,7 @@ function Shell() {
           hd={wallet?.hd ?? false}
           onUnlock={() => ui.set({ dialog: "unlock" })}
           governance={wallet && masternodesItem.shown ? <GovernanceStatusItem key={wallet.walletId} walletId={wallet.walletId} /> : null}
+          update={<UpdateStatusItem />}
         />
         </SheetLayer.Provider>
       </div>

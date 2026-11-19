@@ -37,6 +37,7 @@ import type { Balances } from "./generated/Balances";
 import type { CurrencyRate } from "./generated/CurrencyRate";
 import type { RatesSettings } from "./generated/RatesSettings";
 import type { RatesView } from "./generated/RatesView";
+import type { UpdatesView } from "./generated/UpdatesView";
 import type { DisplayUnit } from "./generated/DisplayUnit";
 import type { ContactList } from "./generated/ContactList";
 import type { ContactQueryArgs } from "./generated/ContactQueryArgs";
@@ -339,6 +340,14 @@ export interface Backend {
   setRatesSettings(settings: RatesSettings): Promise<RatesView>;
   /** "Update now": `rates.off` while no request may be made, `rates.throttled` within 30 s. */
   refreshRates(): Promise<RatesView>;
+  // The update check (PK-03a): notify only, off by default; no request inside Flatpak.
+  updateStatus(): Promise<UpdatesView>;
+  /** Saves the setting; makes no request by itself. */
+  setUpdateCheck(enabled: boolean): Promise<UpdatesView>;
+  /** One request: `updates.off` while the check is off or when it is turned off before the answer. */
+  checkForUpdate(): Promise<UpdatesView>;
+  /** The available release's page in the system browser (`app.release_notes_open` when none). */
+  openReleaseNotes(): Promise<null>;
   /** Encrypts an unencrypted vault with a `changeCredential` grant; the vault ends locked. */
   encryptVault(newPassphrase: string, grantId: string): Promise<LockStatus>;
   changePassphrase(oldPassphrase: string, newPassphrase: string): Promise<LockStatus>;

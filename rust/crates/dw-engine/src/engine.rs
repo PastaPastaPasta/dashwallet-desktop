@@ -82,6 +82,8 @@ struct Shared {
     config: EngineConfig,
     /// Prices (MP-01): the engine's, not a network's.
     rates: Arc<crate::rates::RatesHub>,
+    /// The update check (PK-03a): the engine's, not a network's.
+    updates: Arc<crate::updates::UpdatesHub>,
     sink: Arc<dyn EventSink>,
     /// Lifecycle operations (open/close) are serialised by this lock, the
     /// desktop analogue of iOS's `SerialAsyncLifecycleQueue` at engine level.
@@ -142,12 +144,23 @@ impl Engine {
             Arc::clone(&sink),
             &handle,
         );
+        #[cfg(not(test))]
+        let updates_http = None;
+        #[cfg(test)]
+        let updates_http = Some(Arc::new(crate::rates::NoNetwork) as _);
+        let updates = crate::updates::UpdatesHub::new(
+            &config.data_root,
+            updates_http,
+            crate::ENGINE_VERSION,
+            Arc::new(crate::events::unix_now),
+        );
         Ok(Self {
             runtime: Some(runtime),
             handle,
             shared: Arc::new(Shared {
                 config,
                 rates,
+                updates,
                 sink,
                 sessions: Mutex::new(HashMap::new()),
                 _instance: instance,
@@ -157,6 +170,10 @@ impl Engine {
 
     pub(crate) fn rates_hub(&self) -> Arc<crate::rates::RatesHub> {
         Arc::clone(&self.shared.rates)
+    }
+
+    pub(crate) fn updates_hub(&self) -> Arc<crate::updates::UpdatesHub> {
+        Arc::clone(&self.shared.updates)
     }
 
     pub fn config(&self) -> &EngineConfig {

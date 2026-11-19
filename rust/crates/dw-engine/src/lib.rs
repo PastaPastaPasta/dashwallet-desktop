@@ -51,6 +51,7 @@ pub(crate) mod send;
 mod session;
 mod store;
 pub mod sync;
+pub mod updates;
 // Present only with the `test-support` feature, which dwcli's
 // dev-dependency and its `invitation-create-test` feature alone enable, in
 // a debug build: never in a release or dist build (MG-03 D40, DP5-02 D18).

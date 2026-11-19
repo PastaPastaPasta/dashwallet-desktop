@@ -306,8 +306,12 @@ pub(crate) struct ReqwestGet {
 
 impl ReqwestGet {
     pub(crate) fn new() -> Result<Self, String> {
+        Self::with_redirects(reqwest::redirect::Policy::none())
+    }
+
+    pub(crate) fn with_redirects(redirects: reqwest::redirect::Policy) -> Result<Self, String> {
         let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(redirects)
             .no_proxy()
             .https_only(true)
             .referer(false)

@@ -184,6 +184,7 @@ import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
+import type { UpdatesView } from "./UpdatesView";
 import type { UriParse } from "./UriParse";
 import type { UserHit } from "./UserHit";
 import type { UsernameCheck } from "./UsernameCheck";
@@ -2706,6 +2707,40 @@ export function refreshRates(): Promise<RatesView> {
 }
 
 /**
+ * The setting and the last check's result.
+ */
+export function updateStatus(): Promise<UpdatesView> {
+  return invoke<UpdatesView>("update_status");
+}
+
+/**
+ * Saves the setting; off stops a check in flight and forgets the last
+ * result. Makes no request by itself.
+ */
+export function setUpdateCheck(enabled: boolean): Promise<UpdatesView> {
+  return invoke<UpdatesView>("set_update_check", { enabled });
+}
+
+/**
+ * One request for the latest full release: `updates.off` while the
+ * check is off or when it is turned off before the answer. Inside
+ * Flatpak, the status, with no request.
+ */
+export function checkForUpdate(): Promise<UpdatesView> {
+  return invoke<UpdatesView>("check_for_update");
+}
+
+/**
+ * Opens the available release's page in the system browser: a URL the
+ * engine builds from the version, never one the renderer or the feed
+ * gives. `app.release_notes_open` when no update is available or the
+ * browser could not be opened.
+ */
+export function openReleaseNotes(): Promise<null> {
+  return invoke<null>("open_release_notes");
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -3065,6 +3100,10 @@ export type CommandArgs = {
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
   refresh_rates: {  };
+  update_status: {  };
+  set_update_check: { enabled: boolean };
+  check_for_update: {  };
+  open_release_notes: {  };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -3379,6 +3418,10 @@ export type CommandResults = {
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
   refresh_rates: RatesView;
+  update_status: UpdatesView;
+  set_update_check: UpdatesView;
+  check_for_update: UpdatesView;
+  open_release_notes: null;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -3695,6 +3738,10 @@ export const COMMANDS: Record<CommandName, string> = {
   rates_currencies: "rates",
   set_rates_settings: "rates",
   refresh_rates: "rates",
+  update_status: "updates",
+  set_update_check: "updates",
+  check_for_update: "updates",
+  open_release_notes: "updates",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -3725,6 +3772,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.network_busy",
   "app.network_switch_failed",
   "app.explorer_open",
+  "app.release_notes_open",
   "invalid_config",
   "invalid_argument",
   "network_not_open",
@@ -3970,4 +4018,6 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "rates.throttled",
   "rates.off",
   "rates.storage",
+  "updates.off",
+  "updates.storage",
 ];

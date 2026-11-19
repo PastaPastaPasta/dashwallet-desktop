@@ -2,10 +2,13 @@
 // Help ▸ About keeps U-01's small sheet. Command-line options (D22) and support (U-05) are not
 // shown yet.
 
+import { useState } from "react";
 import { useBackupDirectory, useNodeInfo } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { CopyValue, DetailRow } from "../../components/detail";
-import { NotYetRow, pendingText, SettingsCard } from "./parts";
+import { availableVersion, updateText } from "../../updates/model";
+import { useOpenReleaseNotes, useUpdates } from "../../updates/updates";
+import { NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
 
 export function AboutTab() {
   const launch = useLaunch();
@@ -18,6 +21,7 @@ export function AboutTab() {
           <DetailRow label="Version" testId="settings-about-version">
             {launch.appVersion}
           </DetailRow>
+          <UpdateRow />
           <DetailRow label="Engine" testId="settings-about-engine">
             {launch.engineVersion}
           </DetailRow>
@@ -40,5 +44,41 @@ export function AboutTab() {
         <NotYetRow testId="settings-support" title="Support, source code and log export" why="Support and log export are coming soon." />
       </SettingsCard>
     </>
+  );
+}
+
+/** PK-03a: what the update check found; "Release notes" opens the newer version's page. */
+function UpdateRow() {
+  const updates = useUpdates();
+  const open = useOpenReleaseNotes();
+  const [opening, setOpening] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const version = availableVersion(updates.data);
+  return (
+    <DetailRow label="Updates" testId="settings-about-updates">
+      {updates.data ? updateText(updates.data) : pendingText(updates)}
+      {version && (
+        <>
+          {" "}
+          <button
+            type="button"
+            className="about-release-notes"
+            data-testid="settings-about-release-notes"
+            disabled={opening}
+            onClick={() => {
+              setProblem(null);
+              setOpening(true);
+              void open().then((p) => {
+                setProblem(p);
+                setOpening(false);
+              });
+            }}
+          >
+            Release notes
+          </button>
+        </>
+      )}
+      <Problem text={problem} testId="settings-about-release-notes-problem" />
+    </DetailRow>
   );
 }

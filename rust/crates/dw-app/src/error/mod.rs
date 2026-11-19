@@ -19,6 +19,7 @@ mod governance;
 mod nested;
 mod platform;
 mod rates;
+mod updates;
 
 use serde::Serialize;
 use ts_rs::TS;
@@ -40,6 +41,7 @@ pub use platform::{
     ProfileCode, RegistrationCode, ShieldedCode,
 };
 pub use rates::RatesCode;
+pub use updates::UpdatesCode;
 
 /// Error returned by every command.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS, thiserror::Error)]
@@ -82,6 +84,7 @@ pub enum ErrorCode {
     Shielded(ShieldedCode),
     Governance(GovernanceCode),
     Rates(RatesCode),
+    Updates(UpdatesCode),
 }
 
 /// Declares a code enum: each variant serialises as its string, and
@@ -164,6 +167,10 @@ codes! {
         /// The system browser could not be opened for an Insight transaction
         /// (`open_tx_in_explorer`).
         ExplorerOpen = "app.explorer_open",
+        /// The system browser could not be opened for the release notes of
+        /// an available update, or no update is available
+        /// (`open_release_notes`).
+        ReleaseNotesOpen = "app.release_notes_open",
     }
 }
 
@@ -543,6 +550,7 @@ into_code!(
     Shielded(ShieldedCode),
     Governance(GovernanceCode),
     Rates(RatesCode),
+    Updates(UpdatesCode),
 );
 
 #[cfg(test)]

@@ -55,7 +55,8 @@
         "files",
         "scan",
         "governance",
-        "rates"
+        "rates",
+        "updates"
       ]
     },
     "withGlobalTauri": false

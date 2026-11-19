@@ -20,7 +20,10 @@ mod types;
 use std::sync::Arc;
 
 pub use errors::RatesError;
-pub(crate) use service::{RatesConfig, RatesHub};
+pub(crate) use service::{RatesConfig, RatesHub, write_private};
+#[cfg(test)]
+pub(crate) use sources::NoNetwork;
+pub(crate) use sources::{HttpGet, ReqwestGet, parse_rfc3339_utc};
 pub use types::{
     CurrencyRate, FiatRate, RateSourceId, RateState, RatesOff, RatesSettings, RatesUnavailable,
     RatesView, TxFiat,

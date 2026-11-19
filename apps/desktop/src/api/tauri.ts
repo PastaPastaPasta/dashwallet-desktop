@@ -150,6 +150,10 @@ export class IpcBackend implements Backend {
   ratesCurrencies = () => cmd.ratesCurrencies();
   setRatesSettings = cmd.setRatesSettings;
   refreshRates = () => cmd.refreshRates();
+  updateStatus = () => cmd.updateStatus();
+  setUpdateCheck = cmd.setUpdateCheck;
+  checkForUpdate = () => cmd.checkForUpdate();
+  openReleaseNotes = () => cmd.openReleaseNotes();
   encryptVault = cmd.encryptVault;
   changePassphrase = cmd.changePassphrase;
   setPaymentAuthentication = cmd.setPaymentAuthentication;

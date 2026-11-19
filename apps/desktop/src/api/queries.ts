@@ -97,6 +97,8 @@ export const keys = {
   ratesAll: ["rates"] as const,
   ratesStatus: ["rates", "status"] as const,
   ratesCurrencies: ["rates", "currencies"] as const,
+  /** The update check (PK-03a): `updateStatus`, replaced by each check's answer. */
+  updates: ["updates"] as const,
   /** Every DashPay read below: a `platform` or `dashPayNews` signal makes them all stale. */
   dashpayAll: ["dashpay"] as const,
   /** Every wallet's DashPay status: sync moves `noIdentity`'s `waitingForSync` (BL-153 D9). */

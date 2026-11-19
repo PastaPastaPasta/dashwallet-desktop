@@ -1,6 +1,7 @@
 // Settings ▸ General ▸ Privacy (DP3-03b, DASHPAY §5 F15): "Include my username in payment
 // requests" for the window's wallet. The engine keeps it per wallet, off by default (DP3-02 D21).
-// "Load contact pictures" (DP4-03 D14) is the network's, on by default (DP4-02 D17).
+// "Load contact pictures" (DP4-03 D14) is the network's, on by default (DP4-02 D17). "Check for
+// updates" (PK-03a) is the app's, off by default (D-N1), and shows with no wallet too.
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useId, useState } from "react";
@@ -10,6 +11,7 @@ import { changingUsernameInRequests } from "../../api/username";
 import { useUi } from "../../app/ui";
 import { useContactPictures, useSetContactPictures } from "../../dashpay/profileQueries";
 import { failureText } from "../../onboarding/model";
+import { UpdateCheckRow } from "../../updates/updates";
 import { Hint, Problem, SettingsCard } from "./parts";
 
 /** The card of the wallet the window shows, picked as the shell picks it (App.tsx). */
@@ -17,11 +19,11 @@ export function PrivacyCard() {
   const walletId = useUi((s) => s.walletId);
   const wallets = useWallets();
   const wallet = wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0];
-  if (!wallet) return null;
   return (
     <SettingsCard title="Privacy" testId="settings-privacy">
-      <UsernameInRequests key={wallet.walletId} wallet={wallet} />
-      <ContactPictures />
+      {wallet && <UsernameInRequests key={wallet.walletId} wallet={wallet} />}
+      {wallet && <ContactPictures />}
+      <UpdateCheckRow />
     </SettingsCard>
   );
 }

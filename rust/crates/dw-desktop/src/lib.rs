@@ -37,6 +37,12 @@ pub mod qr;
 pub mod screen;
 pub mod uri_schemes;
 
+/// Whether this process runs inside Flatpak, which updates the app itself:
+/// no update check there (PK-03 D-N4).
+pub fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists()
+}
+
 /// Errors of this crate. Variants mirror the `desktop.*` codes of
 /// docs/contracts/m2-engine.md §4 plus `invalid_argument`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
