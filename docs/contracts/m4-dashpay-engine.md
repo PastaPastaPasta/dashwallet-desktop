@@ -4304,15 +4304,19 @@ renames or reshapes them takes the next version bump:
     create's fee. `checks` holds every `ShieldedCheckState{check, ready}` in this order, which is the start's:
     `pool_active` (protocol version 12 or later), `feature_on` (Platform runs), `denomination`, `balance` (the notes
     cover it), `no_unsettled_spend` (no unrecorded, unresolved or held spend of the wallet, and the dispatch journal
-    read), `synced` (the ledger established and its tree scanned), `rested` (3 hours since the newest incoming shielded
-    note's time: when the engine first saw it, or its row's earlier non-zero `created_at`. The library stamps no time on
-    a row a scan derives, so the engine keeps its own clock in the wallet's local scope of `app.sqlite`, per note
-    commitment, recorded at each completed sync pass and each quote. The notes first seen in the wallet's first
+    read), `synced` (the ledger established and its tree scanned), `rested` (3 hours since the newest time of the
+    wallet's unspent own notes and incoming notes: when the engine first saw the note, or a row's earlier non-zero
+    `created_at`. The library stamps no time on a row a scan derives, and files a shield from another device of a wallet
+    that has spent as a `SelfTransfer` and a payment batched with an own operation under no row of its own, so the
+    engine keeps its own clock in the wallet's local scope of `app.sqlite`, per note commitment, recorded at each
+    completed sync pass and each quote for every unspent own note, whatever its row, and every incoming row's note;
+    change from the user's own spends rests too. A recorded time never moves. The notes first seen in the wallet's first
     completed shielded scan in this install, after it was created, restored or imported, are restored and count as
-    rested once `synced`. Before that scan completes, or when the clock cannot be read, `rested` is not ready and
-    `ready_at` is `None`). `ready_at` is when `rested` will hold; a `shielded_not_ready` refusal carries it only when
-    `reason` is `rested`. The quote's `grant` is `max_duffs` 0 and `max_credits` the denomination plus the names and the
-    profile; `remaining_credits` is the denomination less the fee, the names and the profile. `start_registration` with
+    rested once `synced`, and so are notes first seen before that scan's mark is recorded; a re-import starts a new
+    first scan. Before that scan completes, or when the clock cannot be read, `rested` is not ready and `ready_at` is
+    `None`). `ready_at` is when `rested` will hold; a `shielded_not_ready` refusal carries it only when `reason` is
+    `rested`. The quote's `grant` is `max_duffs` 0 and `max_credits` the denomination plus the names and the profile;
+    `remaining_credits` is the denomination less the fee, the names and the profile. `start_registration` with
     `Shielded` runs every check again before anything is read for the ledger, written or redeemed, with no override:
     `pool_active`, `feature_on` or `denomination` failing is `platform.feature_off{feature: "shielded_registration"}`
     (no member of the version's set can pay, an empty set included); any other is the new

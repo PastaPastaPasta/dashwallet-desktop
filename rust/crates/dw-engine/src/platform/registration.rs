@@ -583,9 +583,9 @@ pub(crate) struct ShieldedFacts {
     /// The rest clock was read and the wallet's first shielded scan in this
     /// install has completed (`shielded_pool::observe_rest`).
     pub(crate) rest_known: bool,
-    /// The newest time of the wallet's incoming shielded notes: when the
-    /// engine first saw each, or its earlier `created_at`; none for the
-    /// notes of the first scan (restored).
+    /// The newest time of the wallet's unspent own and incoming shielded
+    /// notes: when the engine first saw each, or an earlier `created_at`;
+    /// none for the notes of the first scan (restored).
     pub(crate) latest_incoming: Option<u64>,
 }
 

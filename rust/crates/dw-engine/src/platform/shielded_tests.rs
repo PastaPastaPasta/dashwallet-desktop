@@ -812,12 +812,16 @@ impl ShieldedLib for FakeShielded {
 
     async fn record_rest(
         &self,
-        seen: Vec<([u8; 32], u64)>,
+        seen: Vec<[u8; 32]>,
+        (at, now): (u64, u64),
         scanned: bool,
     ) -> Result<(), PlatformError> {
         let mut rest = self.rest.lock().unwrap();
         let clock = rest.as_mut().ok_or(PlatformError::Unavailable)?;
-        clock.seen.extend(seen);
+        let at = if clock.scanned { now } else { at };
+        for cmx in seen {
+            clock.seen.entry(cmx).or_insert(at);
+        }
         clock.scanned |= scanned;
         Ok(())
     }
@@ -2548,6 +2552,7 @@ fn registration_facts_read_each_unsettled_source_and_the_newest_incoming_row() {
         .collect();
     activity.push(row(520, Direction::In, at * 1000 + 999));
     let lib = Arc::new(FakeShielded {
+        notes: Vec::new(),
         activity,
         rest: Mutex::new(Some(pool::RestClock {
             scanned: true,
@@ -2672,23 +2677,106 @@ fn a_scanned_receive_has_no_time_but_its_commitment() {
     assert_eq!(row.note_cmxs, vec![note(0, NOTE).cmx]);
 }
 
+/// Ruling M2b: an unspent own note rests whatever row the library files it
+/// under, as platform-wallet's scan derives them: a shield from another
+/// device of a wallet that has spent (a `SelfTransfer`, not incoming), and a
+/// payment in the same batch as an own operation (no row of its own). What
+/// the incoming rows name was seen in the first scan (restored).
+#[test]
+fn every_unspent_own_note_rests_whatever_row_it_has() {
+    use platform_wallet::wallet::shielded::{
+        ScanDeriveInput, ShieldedOutgoingNote, derive_activity_from_scan_data,
+    };
+    let own = vec![1u8; 43];
+    let at = |n, height| ShieldedNote {
+        block_height: height,
+        note_data: vec![0; 115],
+        ..note(n, NOTE)
+    };
+    let (spent, shield) = (
+        ShieldedNote {
+            is_spent: true,
+            ..at(1, 1)
+        },
+        at(2, 5),
+    );
+    let from_device = derive_activity_from_scan_data(
+        &ScanDeriveInput {
+            notes: vec![spent, shield.clone()],
+            outgoing: vec![ShieldedOutgoingNote {
+                cmx: shield.cmx,
+                recipient: own.clone(),
+                value: NOTE,
+                memo: vec![0; 36],
+                block_height: 5,
+            }],
+            own_addresses: vec![own.clone()],
+        },
+        &Default::default(),
+    )
+    .new_entries;
+    let filed = (from_device.iter()).find(|e| e.note_cmxs.contains(&shield.cmx));
+    assert_eq!(filed.unwrap().direction, Direction::SelfTransfer);
+    let (change, theirs) = (at(3, 7), at(4, 7));
+    let batched = derive_activity_from_scan_data(
+        &ScanDeriveInput {
+            notes: vec![change.clone(), theirs.clone()],
+            outgoing: Vec::new(),
+            own_addresses: vec![own],
+        },
+        &[(change.cmx, [0xAA; 32])].into_iter().collect(),
+    );
+    assert!(batched.new_entries.is_empty(), "{batched:?}");
+
+    let fx = Fixture::new(0);
+    for (rows, fresh) in [(from_device, shield), (batched.new_entries, theirs)] {
+        let restored = (rows.iter())
+            .filter(|e| e.direction == Direction::In)
+            .flat_map(|e| e.note_cmxs.iter().map(|cmx| (*cmx, 0)))
+            .collect();
+        let lib = Arc::new(FakeShielded {
+            notes: vec![fresh],
+            activity: rows,
+            rest: Mutex::new(Some(pool::RestClock {
+                scanned: true,
+                seen: restored,
+            })),
+            ..FakeShielded::default()
+        });
+        let now = crate::events::unix_now();
+        let facts = facts(&fx, &lib);
+        let seen = facts.latest_incoming.unwrap();
+        assert!(seen >= now);
+        assert_eq!(
+            rested(&facts, now),
+            (false, Some(seen + SHIELDED_REST_SECS))
+        );
+    }
+}
+
 /// The rest clock lives in the wallet's local scope of `app.sqlite`,
 /// across a reopen; a row that does not read fails the read.
 #[test]
-fn the_rest_clock_survives_a_reopen_and_a_bad_row_fails_it() {
+fn the_rest_clock_survives_a_reopen_never_moves_and_a_bad_row_fails_it() {
     let dir = dw_testutil::private_tempdir();
     let path = dir.path().join("app.sqlite");
     let (a, b) = (crate::WalletId([1; 32]), crate::WalletId([2; 32]));
     {
         let db = dw_appdb::AppDb::open(&path).unwrap();
         assert_eq!(pool::read_rest_clock(&db, a).unwrap(), Default::default());
-        pool::write_rest_clock(&db, a, &[([3; 32], 0)], true).unwrap();
-        pool::write_rest_clock(&db, a, &[([4; 32], 17)], false).unwrap();
+        pool::write_rest_clock(&db, a, &[[3; 32]], (0, 5), true).unwrap();
+        pool::write_rest_clock(&db, a, &[[4; 32]], (17, 17), false).unwrap();
+        // An observer that read the clock before the mark: it neither
+        // lowers a recorded time nor records a later note as restored.
+        pool::write_rest_clock(&db, a, &[[4; 32], [5; 32]], (0, 20), false).unwrap();
     }
     let db = dw_appdb::AppDb::open(&path).unwrap();
     let clock = pool::read_rest_clock(&db, a).unwrap();
     assert!(clock.scanned);
-    assert_eq!(clock.seen, [([3; 32], 0), ([4; 32], 17)].into());
+    assert_eq!(
+        clock.seen,
+        [([3; 32], 0), ([4; 32], 17), ([5; 32], 20)].into()
+    );
     assert_eq!(pool::read_rest_clock(&db, b).unwrap(), Default::default());
     let scope = dw_appdb::local_scope(&a.to_string());
     db.set_setting(&scope, "shielded.rest.zz", Some("1"))

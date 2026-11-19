@@ -282,11 +282,11 @@ pub(crate) trait ShieldedLib: Send + Sync {
     fn held_spends(&self) -> impl Future<Output = Result<HashSet<[u8; 32]>, PlatformError>> + Send;
     /// The wallet's [`RestClock`], kept in `app.sqlite`.
     fn rest_clock(&self) -> impl Future<Output = Result<RestClock, PlatformError>> + Send;
-    /// Adds `seen` to the [`RestClock`] and, with `scanned`, marks the
-    /// first scan complete: durably, in one write.
+    /// [`write_rest_clock`] on the wallet's `app.sqlite`.
     fn record_rest(
         &self,
-        seen: Vec<([u8; 32], u64)>,
+        seen: Vec<[u8; 32]>,
+        at: (u64, u64),
         scanned: bool,
     ) -> impl Future<Output = Result<(), PlatformError>> + Send;
     /// The account's spends the library could not confirm and keeps to
@@ -656,55 +656,61 @@ pub(crate) fn read_rest_clock(
     Ok(clock)
 }
 
-/// Adds `seen` to `wallet`'s [`RestClock`] and, with `scanned`, marks its
-/// first scan complete, durably in one transaction.
+/// Adds each of `seen` the clock lacks to `wallet`'s [`RestClock`] at `at`
+/// (at `now` once the first scan is marked), and with `scanned` marks that
+/// scan complete: durably in one transaction, never moving a recorded time.
 pub(crate) fn write_rest_clock(
     db: &dw_appdb::AppDb,
     wallet: WalletId,
-    seen: &[([u8; 32], u64)],
+    seen: &[[u8; 32]],
+    (at, now): (u64, u64),
     scanned: bool,
 ) -> Result<(), dw_appdb::AppDbError> {
-    let rows: Vec<(String, String)> = (seen.iter())
-        .map(|(cmx, at)| (format!("{REST_PREFIX}{}", hex::encode(cmx)), at.to_string()))
-        .chain(scanned.then(|| (REST_SCANNED.into(), "1".into())))
+    let keys: Vec<String> = (seen.iter())
+        .map(|cmx| format!("{REST_PREFIX}{}", hex::encode(cmx)))
         .collect();
-    let writes: Vec<_> = (rows.iter())
-        .map(|(k, v)| (k.as_str(), Some(v.as_str())))
+    let (at, now) = (at.to_string(), now.to_string());
+    let writes: Vec<_> = (keys.iter())
+        .map(|k| (k.as_str(), at.as_str(), now.as_str()))
+        .chain(scanned.then_some((REST_SCANNED, "1", "1")))
         .collect();
-    db.set_settings_durable(&dw_appdb::local_scope(&wallet.to_string()), &writes)
+    db.add_settings_durable(
+        &dw_appdb::local_scope(&wallet.to_string()),
+        REST_SCANNED,
+        &writes,
+    )
 }
 
-/// Records each incoming note the clock has not seen, at `now` (restored
-/// until the first scan completes), and with `scanned` marks that scan
-/// complete. The newest time of an incoming note, the earlier of its
-/// first sight and its row's `created_at`; `None` until the first scan
-/// has completed.
+/// Records each unspent own note, and each incoming row's note, the clock
+/// has not seen, at `now` (restored until the first scan completes; ruling
+/// M2b), and with `scanned` marks that scan complete. The newest time of
+/// those notes, the earlier of its first sight and any row's `created_at`;
+/// `None` until the first scan has completed.
 pub(crate) async fn observe_rest(
     lib: &impl ShieldedLib,
     scanned: bool,
     now: u64,
 ) -> Result<Option<Option<u64>>, PlatformError> {
     let mut clock = lib.rest_clock().await?;
-    let (mut new, mut latest) = (Vec::new(), None);
+    let mut keys: HashSet<[u8; 32]> = (lib.unspent().await?.iter()).map(|n| n.cmx).collect();
+    let mut created: HashMap<[u8; 32], u64> = HashMap::new();
     let mut offset = 0;
     loop {
         let page = lib.activity(offset, MAX_HISTORY).await?;
-        for row in page.iter().filter(|e| matches!(e.direction, Direction::In)) {
-            let keys = if row.note_cmxs.is_empty() {
+        for row in &page {
+            let cmxs = if row.note_cmxs.is_empty() {
                 vec![row.id]
             } else {
                 row.note_cmxs.clone()
             };
-            for key in keys {
-                let seen = *clock.seen.entry(key).or_insert_with(|| {
-                    let at = if clock.scanned { now } else { 0 };
-                    new.push((key, at));
-                    at
-                });
-                let times = [row.created_at_ms / 1000, seen]
-                    .into_iter()
-                    .filter(|&t| t != 0);
-                latest = latest.max(times.min());
+            if row.created_at_ms / 1000 != 0 {
+                for cmx in &cmxs {
+                    let at = created.entry(*cmx).or_insert(u64::MAX);
+                    *at = (*at).min(row.created_at_ms / 1000);
+                }
+            }
+            if matches!(row.direction, Direction::In) {
+                keys.extend(cmxs);
             }
         }
         if page.len() < MAX_HISTORY as usize {
@@ -712,10 +718,20 @@ pub(crate) async fn observe_rest(
         }
         offset += MAX_HISTORY;
     }
+    let new: Vec<_> = (keys.iter())
+        .filter(|k| !clock.seen.contains_key(*k))
+        .copied()
+        .collect();
     if !new.is_empty() || (scanned && !clock.scanned) {
-        lib.record_rest(new, scanned).await?;
+        let at = if clock.scanned { now } else { 0 };
+        lib.record_rest(new, (at, now), scanned).await?;
+        clock = lib.rest_clock().await?;
     }
-    Ok((clock.scanned || scanned).then_some(latest))
+    let time = |k: &[u8; 32]| {
+        let times = [created.get(k), clock.seen.get(k)].into_iter().flatten();
+        times.copied().filter(|&t| t != 0).min()
+    };
+    Ok(clock.scanned.then(|| keys.iter().filter_map(time).max()))
 }
 
 pub(crate) async fn receive_address(
@@ -2448,11 +2464,12 @@ impl ShieldedLib for PwShielded {
 
     async fn record_rest(
         &self,
-        seen: Vec<([u8; 32], u64)>,
+        seen: Vec<[u8; 32]>,
+        at: (u64, u64),
         scanned: bool,
     ) -> Result<(), PlatformError> {
         let wallet = self.pw.wallet_id;
-        (self.on_appdb(move |db| write_rest_clock(db, wallet, &seen, scanned))).await
+        (self.on_appdb(move |db| write_rest_clock(db, wallet, &seen, at, scanned))).await
     }
 
     async fn held_spends(&self) -> Result<HashSet<[u8; 32]>, PlatformError> {
