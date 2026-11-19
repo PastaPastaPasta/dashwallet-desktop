@@ -392,7 +392,10 @@ fn window_purpose(purpose: &GrantPurpose) -> bool {
     )
 }
 
+/// Opens a new window. An earlier one that has already ended is settled
+/// first, so its grants do not carry over.
 fn arm_signing_window(inner: &mut Inner, now: Instant) {
+    settle_window(inner, now);
     inner.signing_deadline = Some(now + Duration::from_secs(SIGNING_WINDOW_SECS));
     inner.window_charged = 0;
     inner.sleep_sample = Some(SleepSample {
@@ -1529,14 +1532,17 @@ impl Vault {
     }
 
     /// Checks that `grant_id` is live, of kind `expected` and bound to
-    /// `wallet` (`None` for vault-wide purposes).
+    /// `wallet` (`None` for vault-wide purposes). The signing window is
+    /// settled first, so a grant it issued ends with it.
     fn valid_grant<'a>(
         inner: &'a mut Inner,
         grant_id: &str,
         expected: GrantKind,
         wallet: Option<&WalletId>,
         now: u64,
+        mono: Instant,
     ) -> Result<&'a IssuedGrant, VaultError> {
+        settle_window(inner, mono);
         inner.drop_expired_grants(now);
         let issued = inner.grants.get(grant_id).ok_or(VaultError::GrantInvalid)?;
         if issued.grant.purpose.kind() != expected || issued.grant.wallet.as_ref() != wallet {
@@ -1570,8 +1576,15 @@ impl Vault {
         let now = self.now();
         let mut inner = self.inner();
         let state = Self::state_of(&inner);
-        let found = Self::valid_grant(&mut inner, grant_id, expected, wallet, now)
-            .map(|issued| (issued.key.is_some(), issued.grant.purpose));
+        let found = Self::valid_grant(
+            &mut inner,
+            grant_id,
+            expected,
+            wallet,
+            now,
+            self.clock_mono(),
+        )
+        .map(|issued| (issued.key.is_some(), issued.grant.purpose));
         match found {
             Ok((true, purpose)) => return Ok(purpose),
             // A missing grant on a locked vault was most likely revoked by
@@ -1599,7 +1612,14 @@ impl Vault {
     ) -> Result<GrantToken, VaultError> {
         let now = self.now();
         let mut inner = self.inner();
-        Self::valid_grant(&mut inner, grant_id, expected, wallet, now)?;
+        Self::valid_grant(
+            &mut inner,
+            grant_id,
+            expected,
+            wallet,
+            now,
+            self.clock_mono(),
+        )?;
         let issued = inner
             .grants
             .remove(grant_id)
@@ -1698,6 +1718,7 @@ impl Vault {
                 GrantKind::PlatformOp,
                 Some(wallet),
                 self.now(),
+                self.clock_mono(),
             )
             .map(|issued| issued.key.as_ref().map(|key| Zeroizing::new(**key)))
         };
@@ -2812,9 +2833,7 @@ impl Vault {
     pub fn signing_window_remaining(&self) -> Option<u64> {
         let mut inner = self.inner();
         settle_window(&mut inner, self.clock_mono());
-        if inner.signing_deadline.is_none() {
-            return None;
-        }
+        inner.signing_deadline?;
         let limit = sealed_spend_limit(&inner).ok()?;
         Some(limit.saturating_sub(inner.window_charged))
     }
@@ -2829,7 +2848,8 @@ impl Vault {
     /// issued do not add up past the sealed spend limit. A passphrase grant
     /// is not counted. Missing ids are left to the redeem that follows.
     pub fn window_lease_allowed(&self, ids: &[String]) -> Result<(), VaultError> {
-        let inner = self.inner();
+        let mut inner = self.inner();
+        settle_window(&mut inner, self.clock_mono());
         let mut total = 0u64;
         let mut any = false;
         for id in ids {

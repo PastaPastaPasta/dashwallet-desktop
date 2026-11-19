@@ -87,7 +87,7 @@ fn listen_logind<R: Runtime>(app: AppHandle<R>) {
     ) else {
         return;
     };
-    let Ok(mut signals) = proxy.receive_signal("PrepareForSleep") else {
+    let Ok(signals) = proxy.receive_signal("PrepareForSleep") else {
         return;
     };
     for message in signals {

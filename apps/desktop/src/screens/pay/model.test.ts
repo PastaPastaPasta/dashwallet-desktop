@@ -4,6 +4,7 @@ import type { LockStatus } from "../../api/generated/LockStatus";
 import type { PreparedTxSummary } from "../../api/generated/PreparedTxSummary";
 import type { PsbtAnalysis } from "../../api/generated/PsbtAnalysis";
 import {
+  acceptAndPayValue,
   addressProblem,
   authRefusal,
   availableLabel,
@@ -182,6 +183,21 @@ describe("the payment policy (E0-13 D11, U-03 D3)", () => {
     expect(credentialPrompt(lock(), false, covered)).toBe("none");
     expect(credentialPrompt(lock(), false, { open: true, limitDuffs: 50_000_000, amount: 50_000_000 })).toBe("none");
     expect(credentialPrompt(lock({ encrypted: false }), true, null)).toBe("none");
+  });
+
+  it("counts Accept and pay's quoted credits exactly, rounded up to whole duffs", () => {
+    expect(acceptAndPayValue(1_000, { maxDuffs: 5, maxCredits: "1" })).toBe(1_006n);
+    expect(acceptAndPayValue(0, { maxDuffs: 0, maxCredits: "150000000" })).toBe(150_000n);
+    // Above 2^53 a Number rounds this to a whole number of duffs and drops the partial one.
+    const credits = "9007199254741001";
+    expect(Math.ceil(Number(credits) / 1000)).toBe(9_007_199_254_741);
+    expect(acceptAndPayValue(0, { maxDuffs: 0, maxCredits: credits })).toBe(9_007_199_254_742n);
+    // Past 2^53 duffs too: one duff over the window is still over.
+    const limit = 2 ** 53;
+    const over = { open: true, limitDuffs: limit, amount: acceptAndPayValue(limit, { maxDuffs: 0, maxCredits: "1" }) };
+    expect(credentialPrompt(lock(), false, over)).toBe("passphrase");
+    const at = { open: true, limitDuffs: limit, amount: acceptAndPayValue(limit, { maxDuffs: 0, maxCredits: "0" }) };
+    expect(credentialPrompt(lock(), false, at)).toBe("none");
   });
 
   it("reads authorize's refusals", () => {

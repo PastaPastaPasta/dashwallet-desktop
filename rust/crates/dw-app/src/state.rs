@@ -91,7 +91,7 @@ pub struct AppState {
     /// Test seam: a payment `authorize` runs it on the vault after the
     /// payment check and before the grant is issued.
     #[cfg(test)]
-    pub(crate) before_payment_issue: StdMutex<Option<Box<dyn FnOnce(&dw_vault::Vault) + Send>>>,
+    pub(crate) before_payment_issue: StdMutex<Option<BeforePaymentIssue>>,
     /// Test seam: the endpoints `switch_network` and `open_network(null)`
     /// open the window network with, instead of the launch's (tests reach
     /// no public DAPI or quorum service).
@@ -200,6 +200,10 @@ impl SeamHandle {
         }
     }
 }
+
+/// [`AppState::before_payment_issue`]'s hook.
+#[cfg(test)]
+pub(crate) type BeforePaymentIssue = Box<dyn FnOnce(&dw_vault::Vault) + Send>;
 
 /// Where [`AppState::payment_set_pause`] stops the setter.
 #[cfg(test)]

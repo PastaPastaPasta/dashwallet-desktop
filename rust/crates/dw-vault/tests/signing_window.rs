@@ -103,7 +103,10 @@ fn two_grants_cannot_add_up_past_the_sealed_limit() {
     let grant = v
         .authorize(spend(left), Some(&w), Credential::None)
         .unwrap();
-    assert!(v.window_lease_allowed(&[grant.id.clone()]).is_ok());
+    assert!(
+        v.window_lease_allowed(std::slice::from_ref(&grant.id))
+            .is_ok()
+    );
     v.end_signing_window();
     assert!(
         v.check_grant(&grant.id, GrantKind::Spend, Some(&w))
@@ -227,8 +230,14 @@ fn a_lease_cannot_compose_window_grants_past_the_sealed_limit() {
             Credential::None,
         )
         .unwrap();
-    assert!(v.window_lease_allowed(&[first.id.clone()]).is_ok());
-    assert!(v.window_lease_allowed(&[platform.id.clone()]).is_ok());
+    assert!(
+        v.window_lease_allowed(std::slice::from_ref(&first.id))
+            .is_ok()
+    );
+    assert!(
+        v.window_lease_allowed(std::slice::from_ref(&platform.id))
+            .is_ok()
+    );
     assert!(matches!(
         v.window_lease_allowed(&[platform.id.clone(), first.id.clone()]),
         Err(VaultError::CredentialRequired)
@@ -241,4 +250,74 @@ fn a_lease_cannot_compose_window_grants_past_the_sealed_limit() {
         )
         .unwrap();
     assert!(v.window_lease_allowed(&[platform.id, typed.id]).is_ok());
+}
+
+/// A window grant issued just before the deadline, still inside its TTL
+/// after it.
+fn grant_at_the_deadline(fx: &Fixture, v: &dw_vault::Vault, credential: Credential<'_>) -> String {
+    fx.clock.advance(SIGNING_WINDOW_SECS - 1);
+    let grant = v.authorize(spend(1), Some(&wallet(1)), credential).unwrap();
+    fx.clock.advance(2);
+    grant.id
+}
+
+fn unlocked_with_wallet(fx: &Fixture) -> dw_vault::Vault {
+    let v = fx.open();
+    v.create(Some(PASS)).unwrap();
+    v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
+    v
+}
+
+#[test]
+fn a_window_grant_ends_with_the_window_though_nothing_asked_about_it() {
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    let id = grant_at_the_deadline(&fx, &v, Credential::None);
+    assert!(matches!(
+        v.check_grant(&id, GrantKind::Spend, Some(&w)),
+        Err(VaultError::GrantInvalid)
+    ));
+    assert!(matches!(
+        v.redeem_grant(&id, GrantKind::Spend, Some(&w)),
+        Err(VaultError::GrantInvalid)
+    ));
+}
+
+#[test]
+fn a_lease_check_after_the_deadline_does_not_keep_a_window_grant() {
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    let id = grant_at_the_deadline(&fx, &v, Credential::None);
+    assert!(v.window_lease_allowed(std::slice::from_ref(&id)).is_ok());
+    assert!(matches!(
+        v.redeem_grant(&id, GrantKind::Spend, Some(&w)),
+        Err(VaultError::GrantInvalid)
+    ));
+}
+
+#[test]
+fn a_passphrase_grant_outlives_the_window() {
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    let id = grant_at_the_deadline(&fx, &v, Credential::Passphrase(PASS));
+    assert!(!v.signing_window_open());
+    v.check_grant(&id, GrantKind::Spend, Some(&w)).unwrap();
+    assert!(v.window_lease_allowed(std::slice::from_ref(&id)).is_ok());
+    v.redeem_grant(&id, GrantKind::Spend, Some(&w)).unwrap();
+}
+
+#[test]
+fn an_unlock_after_an_unsettled_deadline_does_not_carry_its_grants_over() {
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    let id = grant_at_the_deadline(&fx, &v, Credential::None);
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert!(matches!(
+        v.redeem_grant(&id, GrantKind::Spend, Some(&w)),
+        Err(VaultError::GrantInvalid)
+    ));
 }

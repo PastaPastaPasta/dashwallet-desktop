@@ -27,6 +27,7 @@ import { Avatar } from "../contacts/Avatar";
 import { useActionToast } from "../contacts/afterAction";
 import { AcceptFailed, acceptFailedText, acceptUnderLease, acceptedText, type Payee } from "./contact";
 import {
+  acceptAndPayValue,
   authRefusal,
   broadcastFailure,
   credentialPrompt,
@@ -151,10 +152,7 @@ export function ConfirmSheet({
   const policyKnown =
     !policy.isPending && (!windowNeeded || quick.isSuccess || quick.isError) && (!contact?.acceptsToo || acceptQuote.isSuccess || acceptQuote.isError);
   // Accept and pay also spends the quoted platform value. Until that quote is known, ask.
-  const platformDuffs = acceptQuote.isSuccess
-    ? acceptQuote.data.maxDuffs + Math.ceil(Number(acceptQuote.data.maxCredits) / 1000)
-    : null;
-  const coveredAmount = contact?.acceptsToo ? (platformDuffs === null ? Number.MAX_SAFE_INTEGER : total + platformDuffs) : total;
+  const coveredAmount = !contact?.acceptsToo ? total : acceptQuote.isSuccess ? acceptAndPayValue(total, acceptQuote.data) : Number.MAX_SAFE_INTEGER;
   const cover = quick.isSuccess
     ? { open: quick.data.signingWindowOpen, limitDuffs: quick.data.signingWindowRemainingDuffs ?? 0, amount: coveredAmount }
     : null;

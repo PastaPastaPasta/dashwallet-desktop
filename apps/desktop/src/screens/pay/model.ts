@@ -4,6 +4,7 @@
 // DashPay contact (DP3-06) shares all of it; its own parts are in contact.ts.
 
 import { hasCode, isAppError, retryAfterSecs } from "../../api/backend";
+import { CREDITS_PER_DUFF } from "../../api/pending";
 import { RESCAN_INTERRUPTED, RESCAN_RUNNING } from "../../app/rescan";
 import type { AddressClass } from "../../api/generated/AddressClass";
 import type { AppError } from "../../api/generated/AppError";
@@ -273,10 +274,18 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
 /** What the signing window would cover for this payment. `null` when it has not been read. */
 export interface SigningCover {
   open: boolean;
-  /** The quick-unlock spend limit, in duffs. */
+  /** What the window can still authorize, in duffs. */
   limitDuffs: number;
   /** What this payment counts against that limit, in duffs. */
-  amount: number;
+  amount: number | bigint;
+}
+
+/** What "Accept and pay" counts against the window: the payment and the accept's quoted Platform
+ * value, its credits rounded up to whole duffs as dw-vault's `quick_unlock_value` does. Exact
+ * past 2^53. */
+export function acceptAndPayValue(total: number, quote: { maxDuffs: number; maxCredits: string }): bigint {
+  const credits = BigInt(quote.maxCredits);
+  return BigInt(total) + BigInt(quote.maxDuffs) + (credits + CREDITS_PER_DUFF - 1n) / CREDITS_PER_DUFF;
 }
 
 /** The credential the confirm sheet asks for. An encrypted vault asks when "Ask for my passphrase
@@ -290,7 +299,7 @@ export function credentialPrompt(
   if (lock === undefined) return "passphrase";
   if (!lock.encrypted) return "none";
   if (paymentAuth !== false) return "passphrase";
-  if (!cover || !cover.open || cover.amount > cover.limitDuffs) return "passphrase";
+  if (!cover || !cover.open || BigInt(cover.amount) > BigInt(cover.limitDuffs)) return "passphrase";
   return "none";
 }
 
