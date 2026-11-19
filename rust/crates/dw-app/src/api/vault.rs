@@ -33,6 +33,34 @@ use crate::state::{AppState, parse_wallet_id};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
+        "Vault::signing_window_open",
+        "internal: `quick_unlock_policy` reports it; the host does not call it",
+    ),
+    (
+        "Vault::signing_window_covers",
+        "internal: `authorize_set` decides the window under the same lock as the grant insert",
+    ),
+    (
+        "Vault::signing_window_remaining",
+        "internal: `quick_unlock_policy` reports the duff still left in the window",
+    ),
+    (
+        "Vault::window_lease_allowed",
+        "internal: the engine's lease checks a composed set of window grants against the sealed limit",
+    ),
+    (
+        "NetworkSession::adopt_signing_window_default",
+        "internal: `create_vault` and `recover_with_mnemonic` store the signing window for the new vault they made",
+    ),
+    (
+        "NetworkSession::set_payment_auth_row_for_test",
+        "test-only (`test-support`): writes a legacy payment-auth row to prove an upgrade still asks",
+    ),
+    (
+        "Vault::end_signing_window",
+        "internal: a sleep in this process ends the window; lock drops it with the key",
+    ),
+    (
         "Vault::stash_link",
         "internal: the engine's `NetworkSession::stash_link` calls it after classifying the link itself (DP5-01 D3)",
     ),
@@ -63,18 +91,6 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     (
         "NetworkSession::lock_vault_sync",
         "internal: superseded by `lock` (`lock_vault`, async, awaits the lease drain); dw-ffi's synchronous `Vault::lock` maps to it for the frozen Swift shells, and the console and the relock timer use it",
-    ),
-    (
-        "NetworkSession::masternode_keys",
-        "deferred (MG): masternode key export is bound with the Masternodes domain",
-    ),
-    (
-        "NetworkSession::reveal_masternode_key",
-        "deferred (MG): masternode key reveal is bound with the Masternodes domain",
-    ),
-    (
-        "NetworkSession::masternodes",
-        "deferred (MG): the masternodes facade (mn-engine.md) is bound with the Masternodes domain (MG-03 D8); its evonode credit withdrawal calls (mn-engine.md §2.5: `withdrawal_quote`, `withdraw_credits`, `retry_withdrawal`, `withdrawals`, `recheck_withdrawal`, `mark_withdrawal`) are deferred (MG-10), MG-13 P14",
     ),
     (
         "Vault::with_revealed_seed",
@@ -423,14 +439,20 @@ impl From<CredentialSpec> for OwnedCredential {
     }
 }
 
-/// "Require authentication for every payment" at the IPC boundary: while
-/// it is on, an unlocked encrypted vault issues `spend`, `platformOp`,
-/// `masternodeOp` and `governance` grants only against the passphrase or
-/// the quick-unlock key, never `unencrypted`, so a compromised renderer
-/// cannot obtain a payment or voting grant without a prompt (MG-05 D11).
-/// The vault itself takes `Credential::None` for them once unlocked
-/// (dash-qt behaviour, the setting off); a locked vault refuses it itself
-/// (`vault.locked`).
+/// "Ask for my passphrase for every payment" at the IPC boundary.
+///
+/// While it is on, an unlocked encrypted vault issues `spend`,
+/// `platformOp`, `masternodeOp` and `governance` grants only against the
+/// passphrase or the quick-unlock key, never `unencrypted` (MG-05 D11).
+/// While it is off, `unencrypted` reaches the vault, which accepts those
+/// purposes only inside the signing window and only until the sealed spend
+/// limit for the whole window is used up. The check and the grant insert
+/// happen under one lock. A purpose the window never issues (reveal, wipe,
+/// a credential change) is refused by the vault. A locked vault refuses it
+/// itself (`vault.locked`). A mixing-only vault is left to the vault
+/// (`vault.mixing_only`) when the setting is off, and is
+/// `vault.credential_required` when it is on. A vault with no stored choice
+/// is on; a vault this build creates stores the window.
 fn check_payment_auth(
     vault: &dw_vault::Vault,
     credential: &OwnedCredential,
@@ -450,12 +472,15 @@ fn check_payment_auth(
 /// Issues grants through `issue` under "require authentication for every
 /// payment" (D11). The setting and its generation are read together under
 /// [`PaymentPolicy::gate`](crate::state::PaymentPolicy); once the grants
-/// exist the generation is compared again. If it moved (the setter
-/// advances it before it writes, under the same gate) or the vault is no
-/// longer the one the setting was read for, the stricter rule decides, and
-/// a refusal revokes what was issued before the call fails (Sol r2/r3
-/// F1b). So a grant issued once "on" is readable was not judged under
-/// "off"; one issued before the change keeps its 120 s, as D11 says.
+/// exist the setting is checked again against the vault as it is now. If
+/// it is on, or it moved (the setter advances the generation before it
+/// writes, under the same gate), or the vault is no longer the one the
+/// setting was read for, the stricter rule decides, and a refusal revokes
+/// what was issued before the call fails (Sol r2/r3 F1b). So a grant
+/// issued once "on" is readable was not judged under "off", and an unlock
+/// between the first check and the issue does not let the signing window
+/// stand in for "on". One issued before the change keeps its 120 s, as D11
+/// says.
 async fn issue_grants(
     state: &AppState,
     session: Arc<NetworkSession>,
@@ -479,12 +504,19 @@ async fn issue_grants(
     if policy.is_some() {
         crate::state::Seam::pass_slot(&state.payment_seam).await;
     }
+    #[cfg(test)]
+    let before_issue = state.before_payment_issue.lock().unwrap().take();
     let grants = session
         .vault_op(move |v| {
             check_payment_auth(v, &credential, policy.as_ref().is_some_and(|p| p.on))?;
+            #[cfg(test)]
+            if let Some(hook) = before_issue {
+                hook(v);
+            }
             let grants = issue(v, credential.as_credential())?;
             if let Some(policy) = &policy
-                && (payment_policy.generation.load(Ordering::SeqCst) != read_at
+                && (policy.on
+                    || payment_policy.generation.load(Ordering::SeqCst) != read_at
                     || v.vault_id() != policy.vault_id)
                 && let Err(e) = check_payment_auth(v, &credential, true)
             {
@@ -500,8 +532,8 @@ async fn issue_grants(
 }
 
 /// Whether the setting applies: a purpose that moves funds (`spend`,
-/// `platformOp`, `masternodeOp`) among `purposes`, or casts votes
-/// (`governance`: MG-00's "N votes, one passphrase", MG-05 D11).
+/// `platformOp`, `masternodeOp`, `masternodeWithdraw`) among `purposes`, or
+/// casts votes (`governance`: MG-00's "N votes, one passphrase", MG-05 D11).
 fn pays(purposes: &[GrantPurpose]) -> bool {
     purposes.iter().any(|p| {
         matches!(
@@ -509,6 +541,7 @@ fn pays(purposes: &[GrantPurpose]) -> bool {
             GrantPurpose::Spend { .. }
                 | GrantPurpose::PlatformOp { .. }
                 | GrantPurpose::MasternodeOp { .. }
+                | GrantPurpose::MasternodeWithdraw { .. }
                 | GrantPurpose::Governance
         )
     })
@@ -598,9 +631,12 @@ impl RevealedMnemonic {
     }
 }
 
-/// The biometric quick-unlock rules (IOS-011/016): a quick-unlock
-/// credential issues a grant only up to `spendLimitDuffs`, and only while
-/// the passphrase was entered within `passphraseMaxAgeSecs`.
+/// The biometric quick-unlock rules (IOS-011/016), plus the post-unlock
+/// signing window. A quick-unlock credential issues a grant only up to
+/// `spendLimitDuffs`, and only while the passphrase was entered within
+/// `passphraseMaxAgeSecs`. The signing window is the same limit for five
+/// minutes after a passphrase unlock, with no biometric key: it is open
+/// only in this process, and ends at lock, sleep or quit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct QuickUnlockPolicy {
@@ -609,21 +645,27 @@ pub struct QuickUnlockPolicy {
     pub passphrase_max_age_secs: u64,
     /// UNIX seconds of the last successful passphrase entry.
     pub last_passphrase_at: Option<u64>,
+    /// A passphrase unlock in this process still covers payments, up to
+    /// `spendLimitDuffs` in total for the window.
+    pub signing_window_open: bool,
+    /// Duff still authorizable from the open window. Absent when it is
+    /// closed or the sealed policy does not authenticate.
+    pub signing_window_remaining_duffs: Option<u64>,
+    /// How long that window lasts, in seconds.
+    pub signing_window_secs: u64,
 }
 
-impl From<dw_vault::QuickUnlockPolicy> for QuickUnlockPolicy {
-    fn from(p: dw_vault::QuickUnlockPolicy) -> Self {
-        let dw_vault::QuickUnlockPolicy {
-            enrolled,
-            spend_limit_duffs,
-            passphrase_max_age_secs,
-            last_passphrase_at,
-        } = p;
-        QuickUnlockPolicy {
-            enrolled,
-            spend_limit_duffs,
-            passphrase_max_age_secs,
-            last_passphrase_at,
+impl QuickUnlockPolicy {
+    fn of(vault: &dw_vault::Vault) -> Self {
+        let p = vault.quick_unlock_policy();
+        Self {
+            enrolled: p.enrolled,
+            spend_limit_duffs: p.spend_limit_duffs,
+            passphrase_max_age_secs: p.passphrase_max_age_secs,
+            last_passphrase_at: p.last_passphrase_at,
+            signing_window_open: vault.signing_window_open(),
+            signing_window_remaining_duffs: vault.signing_window_remaining(),
+            signing_window_secs: dw_vault::SIGNING_WINDOW_SECS,
         }
     }
 }
@@ -810,6 +852,7 @@ commands! {
         let status = session
             .vault_op(move |v| v.create(passphrase.as_ref().map(|p| &p[..])))
             .await?;
+        session.adopt_signing_window_default().await?;
         Ok(status.into())
     }
 
@@ -1003,14 +1046,15 @@ commands! {
         Ok(status.into())
     }
 
-    /// The quick-unlock rules. In-memory read; works while locked.
+    /// The quick-unlock rules and the post-unlock signing window. In-memory
+    /// read; works while locked (the window is then closed).
     #[facade("NetworkSession::vault", "Vault::quick_unlock_policy")]
     fn quick_unlock_policy(state) -> QuickUnlockPolicy {
-        Ok(state.session().await?.vault().quick_unlock_policy().into())
+        Ok(QuickUnlockPolicy::of(state.session().await?.vault()))
     }
 
-    /// "Require authentication for every payment" (default on), as stored
-    /// for this network next to its vault.
+    /// "Ask for my passphrase for every payment". Off (the default) is the
+    /// post-unlock signing window. Stored for this network next to its vault.
     #[facade("NetworkSession::payment_authentication")]
     fn payment_authentication(state) -> bool {
         let session = state.session().await?;
@@ -1039,8 +1083,9 @@ commands! {
         Ok(())
     }
 
-    /// Sets the biometric spending limit (IOS-016) to one of 0, 0.1, 0.5, 1
-    /// or 5 DASH in duffs. Needs a `changeCredential` grant.
+    /// Sets the spending limit (IOS-016) to one of 0, 0.1, 0.5, 1 or 5 DASH
+    /// in duffs. The signing window and quick unlock both use it. Needs a
+    /// `changeCredential` grant. Works whether or not quick unlock is enrolled.
     #[facade("NetworkSession::vault_op", "Vault::set_quick_unlock_spend_limit")]
     fn set_quick_unlock_spend_limit(
         state,
@@ -1048,10 +1093,10 @@ commands! {
         spend_limit_duffs: u64
     ) -> QuickUnlockPolicy {
         let session = state.session().await?;
-        let policy = session
+        session
             .vault_op(move |v| v.set_quick_unlock_spend_limit(&grant_id, spend_limit_duffs))
             .await?;
-        Ok(policy.into())
+        Ok(QuickUnlockPolicy::of(session.vault()))
     }
 
     /// Forgot passphrase (IOS-014): checks that the phrase and BIP39
@@ -1079,6 +1124,7 @@ commands! {
                 v.recover_with_mnemonic(&id.0, &mnemonic, &bip39_passphrase, &new_passphrase)
             })
             .await?;
+        session.adopt_signing_window_default().await?;
         Ok(VaultRecovery {
             status: session.vault().status().into(),
             wallets_without_secrets: lost.iter().map(hex::encode).collect(),
@@ -1121,6 +1167,18 @@ mod tests {
     use super::*;
 
     const ABANDON_12: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    #[test]
+    fn ask_every_payment_covers_an_evonode_credit_withdrawal() {
+        let withdraw = GrantPurpose::MasternodeWithdraw {
+            pro_tx_hash: [7; 32],
+            max_credits: 1,
+            destination: None,
+        };
+        assert!(pays(&[withdraw]));
+        assert!(pays(&[GrantPurpose::SignMessage, withdraw]));
+        assert!(!pays(&[GrantPurpose::SignMessage, GrantPurpose::IdentityScan]));
+    }
 
     #[test]
     fn grant_purposes_round_trip_with_credits_as_strings() {

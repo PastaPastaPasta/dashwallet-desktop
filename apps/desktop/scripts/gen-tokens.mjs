@@ -5,22 +5,20 @@
 //   node scripts/gen-tokens.mjs           write the outputs
 //   node scripts/gen-tokens.mjs --check   exit 1 when an output is stale (build and CI)
 //
-// Inputs (the same sources the Swift toolkits read; never hand-copy a value):
-//   Resources/Tokens/tokens.json            colours, type scale, icon list (scripts/gen-tokens.swift output)
-//   Sources/DesignTokens/Roles.swift        semantic colour roles (UX-SPEC §2.1) and DashOpacity
-//   Sources/DesignTokens/Spacing.swift      DashSpacing
-//   Sources/DesignTokens/Radii.swift        DashRadius
-//   Sources/DesignTokens/Layout.swift       DashLayout, DashMotion, DashElevation, DashRadius.group
-//   Sources/DesignTokens/ComponentMetrics.swift  DashButtonMetrics
+// Inputs (Resources/Tokens; never hand-copy a value into the renderer):
+//   tokens.json              colours, type scale, icon list (scripts/gen-tokens.swift output)
+//   roles.json               semantic colour roles (UX-SPEC §2.1, §2.1a), DashOpacity, DashOpacityAA
+//   spacing.json             DashSpacing
+//   radii.json               DashRadius
+//   layout.json              DashLayout, DashMotion, DashElevation
+//   component-metrics.json   DashButtonMetrics
 //
 // Outputs (relative to apps/desktop):
 //   src/styles/tokens.generated.css   :root (light) and dark blocks of --dw-* properties
 //   src/styles/tokens.generated.ts    the same values as data, for computed-style tests
 //
-// The Swift files are parsed, not executed: only `public static let name[: Double] = <number>`,
-// role aliases (`DashColor.<token>`, `DashColor.App.<token>`, `DashColor(light: …, dark: …)`,
-// `RGBA(red:green:blue:alpha:)`) and `Type(label: value, …)` constructors are understood. Anything
-// else in a parsed block fails the script instead of being skipped.
+// A role colour is a palette reference ("DashColor.<token>", "DashColor.App.<token>"), "#RRGGBB" or
+// [r, g, b, a] (0…1); a role is one colour or { light, dark }. Anything else fails the script.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -28,7 +26,7 @@ import { fileURLToPath } from "node:url";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repo = resolve(appDir, "../..");
-const tokensDir = join(repo, "Sources/DesignTokens");
+const tokensDir = join(repo, "Resources/Tokens");
 const outCss = join(appDir, "src/styles/tokens.generated.css");
 const outTs = join(appDir, "src/styles/tokens.generated.ts");
 
@@ -39,7 +37,7 @@ function fail(msg) {
 
 // ---------------------------------------------------------------- colours (tokens.json)
 
-const tokens = JSON.parse(readFileSync(join(repo, "Resources/Tokens/tokens.json"), "utf8"));
+const tokens = JSON.parse(readFileSync(join(tokensDir, "tokens.json"), "utf8"));
 
 /** `{ light, dark }` RGBA tuples (0…1) per catalog token. */
 const palette = { DashColor: new Map(), "DashColor.App": new Map() };
@@ -67,140 +65,62 @@ function css(rgba) {
   return `rgb(${to8(r)} ${to8(g)} ${to8(b)} / ${round(a, 3)})`;
 }
 
-// ---------------------------------------------------------------- Swift parsing
+// ---------------------------------------------------------------- hand-written tokens (JSON)
 
-/** Statements (joined across lines until parentheses balance) inside each named block. */
-function swiftBlocks(file) {
-  const text = readFileSync(join(tokensDir, file), "utf8");
-  const blocks = new Map();
-  // One entry per open brace: a type name for enum/struct/extension bodies, null for any
-  // other body (init, func, computed property), whose statements are not tokens.
-  const stack = [];
-  let pending = "";
-  for (const raw of text.split("\n")) {
-    const line = raw.replace(/\/\/.*$/, "").trim();
-    if (!line) continue;
-    if (!pending) {
-      const open = /^(?:public\s+)?(?:enum|struct|extension)\s+([\w.]+)[^{]*\{$/.exec(line);
-      if (open) {
-        stack.push(open[1]);
-        continue;
-      }
-      if (line === "}") {
-        stack.pop();
-        continue;
-      }
-      if (line.endsWith("{")) {
-        stack.push(null);
-        continue;
-      }
-    }
-    pending = pending ? `${pending} ${line}` : line;
-    const depth = (pending.match(/[([]/g) ?? []).length - (pending.match(/[)\]]/g) ?? []).length;
-    if (depth > 0) continue;
-    if (!stack.includes(null)) {
-      const name = stack.join(".");
-      if (!blocks.has(name)) blocks.set(name, []);
-      blocks.get(name).push(pending);
-    }
-    pending = "";
-  }
-  return blocks;
-}
+const source = (file) => JSON.parse(readFileSync(join(tokensDir, file), "utf8"));
+const block = (obj, file, name) => obj[name] ?? fail(`${file}: no ${name}`);
 
-const STATIC_NUMBER = /^public static let (\w+)(?:: Double)? = (-?[\d.]+)$/;
-
-/** Numeric `public static let` members of `block`; other `public static let`s fail unless skipped. */
-function numbers(blocks, block, { skip = [] } = {}) {
-  const out = {};
-  for (const stmt of blocks.get(block) ?? fail(`no block ${block}`)) {
-    if (!stmt.startsWith("public static let")) continue;
-    const m = STATIC_NUMBER.exec(stmt);
-    if (m) out[m[1]] = Number(m[2]);
-    else if (!skip.some((s) => stmt.startsWith(`public static let ${s}`))) fail(`${block}: cannot read ${stmt}`);
-  }
+function numbers(obj, file, name) {
+  const out = block(obj, file, name);
+  for (const [k, v] of Object.entries(out)) if (typeof v !== "number") fail(`${file}: ${name}.${k} is not a number`);
   return out;
 }
 
-/** `Type(label: value, …)` → `{ label: value }`; values are numbers, booleans or raw text. */
-function constructorArgs(text, type) {
-  const m = new RegExp(`^${type}\\((.*)\\)$`).exec(text.trim());
-  if (!m) fail(`not a ${type}(…) constructor: ${text}`);
-  const args = {};
-  let depth = 0;
-  let current = "";
-  for (const ch of m[1] + ",") {
-    if (ch === "(") depth++;
-    if (ch === ")") depth--;
-    if (ch === "," && depth === 0) {
-      const [label, ...rest] = current.split(":");
-      const value = rest.join(":").trim();
-      args[label.trim()] = /^-?[\d.]+$/.test(value) ? Number(value) : value === "true" ? true : value === "false" ? false : value;
-      current = "";
-    } else current += ch;
-  }
-  return args;
-}
-
-function rgbaOf(text) {
-  const a = constructorArgs(text, "RGBA");
-  if (a.hex !== undefined) {
-    const m = /^0x([0-9A-Fa-f]{6})$/.exec(a.hex) ?? fail(`not an RGBA hex: ${a.hex}`);
+function sideColor(value, which) {
+  if (typeof value === "string" && value.startsWith("DashColor.")) return paletteColor(value)[which];
+  if (typeof value === "string") {
+    const m = /^#([0-9A-Fa-f]{6})$/.exec(value) ?? fail(`not a colour: ${value}`);
     const n = parseInt(m[1], 16);
-    return [((n >> 16) & 0xff) / 255, ((n >> 8) & 0xff) / 255, (n & 0xff) / 255, a.alpha ?? 1];
+    return [((n >> 16) & 0xff) / 255, ((n >> 8) & 0xff) / 255, (n & 0xff) / 255, 1];
   }
-  return [a.red, a.green, a.blue, a.alpha ?? 1];
+  if (Array.isArray(value) && value.length === 4 && value.every((v) => typeof v === "number")) return value;
+  fail(`not a colour: ${JSON.stringify(value)}`);
 }
 
-/** A role's value: `DashColor.<t>`, `DashColor(light: X.light, dark: Y.dark)` or with RGBA(…) sides. */
-function roleColor(expr) {
-  if (/^DashColor\.[\w.]+$/.test(expr)) return paletteColor(expr);
-  const args = constructorArgs(expr, "DashColor");
-  const side = (value, which) => {
-    if (value.startsWith("RGBA(")) return rgbaOf(value);
-    const m = new RegExp(`^(DashColor\\.[\\w.]+)\\.${which}$`).exec(value);
-    if (!m) fail(`role side not understood: ${value}`);
-    return paletteColor(m[1])[which];
-  };
-  return { light: side(args.light, "light"), dark: side(args.dark, "dark") };
-}
-
-const roleBlocks = swiftBlocks("Roles.swift");
-
-/** `public static let name = <colour>` members of a role block, without the `all` list. */
-function roleMembers(block) {
+function roleMembers(obj, name) {
   const out = {};
-  for (const stmt of roleBlocks.get(block) ?? fail(`no ${block} block`)) {
-    const m = /^public static let (\w+) = (.+)$/.exec(stmt);
-    if (m && m[1] !== "all") out[m[1]] = roleColor(m[2]);
+  for (const [role, value] of Object.entries(block(obj, "roles.json", name))) {
+    const sides = typeof value === "object" && !Array.isArray(value) ? value : { light: value, dark: value };
+    out[role] = { light: sideColor(sides.light, "light"), dark: sideColor(sides.dark, "dark") };
   }
   return out;
 }
 
+const roleSource = source("roles.json");
 // The WCAG AA variants (UX-SPEC §2.1a, DEC-36) replace the iOS values: the renderer draws only these.
-const opacity = { ...numbers(roleBlocks, "DashOpacity"), ...numbers(roleBlocks, "DashOpacityAA") };
-const roles = { ...roleMembers("DashColor.Role"), ...roleMembers("DashColor.RoleAA") };
+const opacity = { ...numbers(roleSource, "roles.json", "DashOpacity"), ...numbers(roleSource, "roles.json", "DashOpacityAA") };
+const roles = { ...roleMembers(roleSource, "Role"), ...roleMembers(roleSource, "RoleAA") };
 
-const spacing = numbers(swiftBlocks("Spacing.swift"), "DashSpacing");
-const radius = numbers(swiftBlocks("Radii.swift"), "DashRadius");
-const layoutBlocks = swiftBlocks("Layout.swift");
-const layout = numbers(layoutBlocks, "DashLayout");
-const motion = numbers(layoutBlocks, "DashMotion");
-Object.assign(radius, numbers(layoutBlocks, "DashRadius"));
+const spacing = numbers(source("spacing.json"), "spacing.json", "DashSpacing");
+const radius = numbers(source("radii.json"), "radii.json", "DashRadius");
+const layoutSource = source("layout.json");
+const layout = numbers(layoutSource, "layout.json", "DashLayout");
+const motion = numbers(layoutSource, "layout.json", "DashMotion");
 
 const elevation = {};
-for (const stmt of layoutBlocks.get("DashElevation") ?? []) {
-  const m = /^public static let (\w+) = (DashElevation\(.+\))$/.exec(stmt);
-  if (!m) continue;
-  const a = constructorArgs(m[2], "DashElevation");
-  if (a.color !== "DashColor.Role.shadow") fail(`elevation ${m[1]}: unexpected colour ${a.color}`);
-  elevation[m[1]] = { radius: a.radius, y: a.y, borderInDark: a.borderInDark };
+for (const [name, e] of Object.entries(block(layoutSource, "layout.json", "DashElevation"))) {
+  if (typeof e.radius !== "number" || typeof e.y !== "number" || typeof e.borderInDark !== "boolean") {
+    fail(`layout.json: DashElevation.${name} needs radius, y and borderInDark`);
+  }
+  elevation[name] = { radius: e.radius, y: e.y, borderInDark: e.borderInDark };
 }
 
+const buttonFields = ["horizontalPadding", "verticalPadding", "gap", "cornerRadius", "fontSize"];
 const buttons = {};
-for (const stmt of swiftBlocks("ComponentMetrics.swift").get("DashButtonMetrics") ?? []) {
-  const m = /^public static let (\w+) = (DashButtonMetrics\(.+\))$/.exec(stmt);
-  if (m) buttons[m[1]] = constructorArgs(m[2], "DashButtonMetrics");
+for (const [name, b] of Object.entries(block(source("component-metrics.json"), "component-metrics.json", "DashButtonMetrics"))) {
+  buttons[name] = Object.fromEntries(
+    buttonFields.map((f) => [f, typeof b[f] === "number" ? b[f] : fail(`component-metrics.json: DashButtonMetrics.${name}.${f} is not a number`)]),
+  );
 }
 
 const weights = { regular: 400, medium: 500, semibold: 600, bold: 700 };

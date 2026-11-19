@@ -16,6 +16,7 @@
 
 mod engine;
 mod governance;
+mod masternodes;
 mod nested;
 mod platform;
 mod rates;
@@ -31,6 +32,7 @@ use crate::dto::platform::{
 
 pub use engine::{EngineCode, VaultCode};
 pub use governance::GovernanceCode;
+pub use masternodes::MasternodesCode;
 pub use nested::{
     BackupCode, CoinJoinCode, CompatCode, ConsoleCode, LabelsCode, MasternodeCode, PsbtCode,
     SendCode, SignerCode, UriCode,
@@ -81,6 +83,7 @@ pub enum ErrorCode {
     Credits(CreditsCode),
     Shielded(ShieldedCode),
     Governance(GovernanceCode),
+    Masternodes(MasternodesCode),
     Rates(RatesCode),
 }
 
@@ -345,8 +348,18 @@ pub enum ErrorData {
     /// `governance.not_a_contender`: the identity id (base58) the poll does
     /// not list (MG-07 D13).
     Contender { identity: String },
+    /// `masternodes.key_mismatch`: the role the key was given for.
+    MasternodeKey {
+        role: crate::dto::masternodes::AttachedKeyRoleName,
+    },
+    /// `masternodes.unsupported`: what the call needs that the libraries
+    /// lack, and the field that needs it.
+    Unsupported {
+        feature: String,
+        field: Option<String>,
+    },
     /// `platform.not_implemented`, `governance.not_implemented`,
-    /// `not_implemented`: the call that is not.
+    /// `masternodes.not_implemented`, `not_implemented`: the call that is not.
     Call { call: String },
     /// `send.broadcast_rejected`, `send.broadcast_unknown` and their `psbt.*` and
     /// `coinjoin.broadcast_rejected` twins: the peer's or library's reason;
@@ -550,6 +563,7 @@ into_code!(
     Credits(CreditsCode),
     Shielded(ShieldedCode),
     Governance(GovernanceCode),
+    Masternodes(MasternodesCode),
     Rates(RatesCode),
 );
 

@@ -76,6 +76,8 @@ const SAMPLES: Samples = {
   contestLabel: { code: "governance.contest_closed", data: { kind: "contestLabel", label: "a11ce" } },
   contender: { code: "governance.not_a_contender", data: { kind: "contender", identity: "8ZtWrmgDwJHJnwyoNNsCs5CbE5LedD8eKzmTzpRzR97P" } },
   call: { code: "platform.not_implemented", data: { kind: "call", call: "create_invitation" } },
+  masternodeKey: { code: "masternodes.key_mismatch", data: { kind: "masternodeKey", role: "owner" } },
+  unsupported: { code: "masternodes.unsupported", data: { kind: "unsupported", feature: "shared_masternodes", field: null } },
   reason: { code: "send.broadcast_rejected", data: { kind: "reason", reason: "bad-txns-inputs-missingorspent" } },
   txAction: { code: "tx_action_refused", data: { kind: "txAction", refusal: "instantLocked" } },
   number: { code: "height_out_of_range", data: { kind: "number", value: 9_999_999 } },

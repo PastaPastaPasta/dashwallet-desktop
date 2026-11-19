@@ -134,8 +134,18 @@ impl Fixture {
             .id
     }
 
+    /// The passphrase on an encrypted vault (these grants are over the
+    /// signing window's limit), else no credential.
+    fn credential(&self) -> Credential<'static> {
+        if self.session.vault().status().encrypted {
+            Credential::Passphrase(PASS)
+        } else {
+            Credential::None
+        }
+    }
+
     fn lease(&self) -> Lease {
-        let g = self.grant(COIN, 10 * COIN * 1000, Credential::None);
+        let g = self.grant(COIN, 10 * COIN * 1000, self.credential());
         self.engine
             .block_on(
                 self.session

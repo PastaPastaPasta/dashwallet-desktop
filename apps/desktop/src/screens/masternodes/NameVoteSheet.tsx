@@ -138,7 +138,7 @@ function NameVoteForm({
     return () => clearTimeout(t);
   }, [contest.endsAt, woke]);
   const closed = isClosed(contest, Math.max(now, Math.floor(Date.now() / 1000)));
-  const credential = useCredential(wallet.walletId, "Enter your passphrase to vote.");
+  const credential = useCredential(wallet.walletId, "Enter your passphrase to vote.", null);
   const toggle = (hash: string) =>
     setChecked((s) => {
       const next = new Set(s);
