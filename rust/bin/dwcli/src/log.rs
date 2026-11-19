@@ -1,9 +1,9 @@
 //! `DWCLI_LOG=<EnvFilter>` logs the engine, dash-spv and the SDK to stderr,
 //! with links redacted (dw-uri, DP5-01 D14) for every command.
-//! For an `mn` command every global option's value is also replaced in
-//! each line: a library may quote one (the SDK's quorum fetch logs its
-//! URL), and no `mn` output may repeat a value (MG-03 D32, D33). Every
-//! non-empty value is, in the forms a library prints it: as given,
+//! For an `mn` or `gov` command every global option's value is also replaced
+//! in each line: a library may quote one (the SDK's quorum fetch logs its
+//! URL), and no `mn` or `gov` output may repeat a value (MG-03 D32, D33).
+//! Every non-empty value is, in the forms a library prints it: as given,
 //! `{:?}`-quoted, and for a URL as parsed, with its user name, password,
 //! host and path apart; in any ASCII case, and in one pass, so overlapping
 //! values go together. A list value is split as its reader splits it, each
@@ -53,6 +53,7 @@ fn option_values(cli: &Cli) -> Vec<String> {
         .iter()
         .chain(&cli.dapi)
         .chain(&cli.quorum_url)
+        .chain(&cli.collateral_rpc)
         .cloned()
         .chain(
             [
