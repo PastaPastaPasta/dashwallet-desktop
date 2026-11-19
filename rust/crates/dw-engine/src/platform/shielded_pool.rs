@@ -440,6 +440,26 @@ pub(super) async fn priced_gate(
     rules_at(active(lib.refresh_protocol_version().await)?)
 }
 
+/// The pool's gates for a shield from the Platform addresses (C-routes
+/// C1-6), before anything else is read: [`priced_gate`], then the
+/// account's viewing keys bound (`shielded.not_synced{account}`).
+pub(super) async fn platform_shield_gate(
+    lib: &impl ShieldedLib,
+) -> Result<&'static PlatformVersion, ShieldedError> {
+    let version = priced_gate(lib).await?;
+    if !lib.bind().await? {
+        return Err(ShieldedError::not_synced(Wait::Account));
+    }
+    Ok(version)
+}
+
+/// The flat fee platform-wallet's `shield_to` adds to input 0's claim:
+/// the minimum shielded fee of a one-output bundle, which Orchard pads to
+/// two actions.
+pub(super) fn platform_shield_fee(version: &PlatformVersion) -> Result<u64, ShieldedError> {
+    compute_minimum_shielded_fee(MIN_ACTIONS, version).map_err(internal)
+}
+
 fn active(protocol_version: u32) -> Result<u32, ShieldedError> {
     if protocol_version < SHIELDED_ACTIVATION_VERSION {
         return Err(ShieldedError::NotActive {

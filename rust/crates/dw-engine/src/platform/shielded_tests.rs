@@ -1225,6 +1225,33 @@ fn the_gate_refuses_below_the_activation_after_a_proved_read() {
     assert_eq!(held.refreshes.load(Ordering::SeqCst), 0);
 }
 
+/// A shield from the Platform addresses passes the pool's gates before
+/// anything else (C-routes C1-6): active after a proved read, then the
+/// account's viewing keys bound; its rules are the proved version's.
+#[test]
+fn the_platform_shield_gate_is_active_then_bound() {
+    let fx = Fixture::new(0);
+    let gate = |lib: FakeShielded| {
+        run(&fx, &Arc::new(lib), |_, lib| async move {
+            (pool::platform_shield_gate(&*lib).await).map(|v| v.protocol_version)
+        })
+    };
+    let below_unbound = FakeShielded {
+        bound: false,
+        ..FakeShielded::at(11, 11)
+    };
+    assert_eq!(code(gate(below_unbound)), "shielded.not_active");
+    let unbound = FakeShielded {
+        bound: false,
+        ..FakeShielded::at(11, 12)
+    };
+    assert_eq!(
+        gate(unbound),
+        Err(ShieldedError::not_synced(ShieldedSyncWait::Account))
+    );
+    assert_eq!(gate(FakeShielded::at(11, 12)), Ok(12));
+}
+
 #[test]
 fn the_status_reads_the_ledger_pending_rows_and_open_shields() {
     let fx = Fixture::new(0);
