@@ -138,7 +138,21 @@ pub enum CloseFence {
     Operation,
 }
 
-/// Holds `fence` of `session` until the returned sender is dropped, so an
+/// A fence held by [`hold_close_fence`]. Dropping it returns once the fence
+/// is released, so a close asked right after is not refused by it.
+pub struct HeldCloseFence {
+    release: Option<tokio::sync::oneshot::Sender<()>>,
+    released: std::sync::mpsc::Receiver<()>,
+}
+
+impl Drop for HeldCloseFence {
+    fn drop(&mut self) {
+        drop(self.release.take());
+        let _ = self.released.recv();
+    }
+}
+
+/// Holds `fence` of `session` until the returned guard is dropped, so an
 /// in-app close of it is refused: `wallet` once it waited `load_wait`,
 /// `shielded_spend_unresolved`, or (a switch's close) not drained. Call it
 /// off the engine's runtime.
@@ -146,9 +160,10 @@ pub fn hold_close_fence(
     session: &std::sync::Arc<NetworkSession>,
     fence: CloseFence,
     load_wait: std::time::Duration,
-) -> tokio::sync::oneshot::Sender<()> {
+) -> HeldCloseFence {
     *session.close_load_wait.lock().unwrap() = Some(load_wait);
     let (held_tx, held) = std::sync::mpsc::channel();
+    let (done_tx, done) = std::sync::mpsc::channel::<()>();
     let (release, released) = tokio::sync::oneshot::channel::<()>();
     let s = std::sync::Arc::clone(session);
     session.rt.spawn(async move {
@@ -163,9 +178,14 @@ pub fn hold_close_fence(
         };
         let _ = held_tx.send(());
         let _ = released.await;
+        drop((_fence, _op));
+        drop(done_tx);
     });
     held.recv().expect("the fence is held");
-    release
+    HeldCloseFence {
+        release: Some(release),
+        released: done,
+    }
 }
 
 /// Marks `wallet` mixing (or not) without starting its loop.
