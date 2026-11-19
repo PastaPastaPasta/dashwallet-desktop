@@ -1,7 +1,8 @@
 # C-funding: registration from Platform or Shielded (D-C4), and paying a contact from any balance (D-C5)
 
 Design notes for PLAN-1.0 lane C, items 4 and 5. They settle what the engine slices C4a, C4b, C5a, C5b and the renderer
-slices C4c, C5c build (split as the "Slices" section lists). D-C4 is an addendum to [DP1-02](DP1-02-ownership-model.md) and
+slices C4c, C5c build (split as the "Slices" section lists). D-C4 is an addendum to
+[DP1-02](DP1-02-ownership-model.md) and
 [DP1-09](DP1-09-registration-wizard.md). D-C5 is an addendum to [DP3-01](DP3-01-notes.md) and
 [DP3-06](DP3-06-pay-to-contact.md). Nothing here changes a decision of those documents for the Dash wallet (Core)
 source.
@@ -99,7 +100,7 @@ The DP1-02 bar: a kill at any transition loses nothing, and a relaunch never pay
 | Kill point | Platform addresses | Shielded |
 |---|---|---|
 | Before the plan or artifact is written | Nothing happened. The row is `KeysPrepared`; a resume plans afresh. | Same. |
-| After the record, when the process cannot say whether a signature left | The same as the next row. The record was stored `pending` and able to land before signing (`P/platform_moves.rs:2540-2545`), and a restart reads every such record that way (`:76-82`). The row keeps its plan and re-signs only that plan; F10 settles it. It never plans again here. | The artifact is registered. Item 0's load sort decides: an artifact with no send is abandoned (A4b, STOP-8) and the row returns to `KeysPrepared` only once A5 reads it definitely unsent. Until then, `PaymentUnknown`. |
+| After the record, when the process cannot say whether a signature left | The same as the next row. The record was stored `pending` and able to land before signing (`P/platform_moves.rs:2540-2545`), and a restart reads every such record that way (`:75-81`). The row keeps its plan and re-signs only that plan; F10 settles it. It never plans again here. | The artifact is registered. Item 0's load sort decides: an artifact with no send is abandoned (A4b, STOP-8) and the row returns to `KeysPrepared` only once A5 reads it definitely unsent. Until then, `PaymentUnknown`. |
 | After a signature, outcome unknown | `PaymentUnknown`. The next proved read decides (F10). The row re-signs only its stored plan. | `PaymentUnknown`. The journal's disposition and the nullifier scan decide (F12). No second create runs meanwhile. |
 | After Platform executed, before the row was written | The read shows the nonces taken and the planned identity present: the row adopts it. | The disposition is executed and the seed's identity is at the row's index: the row adopts it. |
 | After `IdentityRegistered` | DP1-02 unchanged. | DP1-02 unchanged. |
