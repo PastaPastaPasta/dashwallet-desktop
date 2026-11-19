@@ -1877,7 +1877,7 @@ impl HookFence {
         self.closing.store(true, Ordering::SeqCst);
     }
 
-    fn refusal(&self) -> Option<&'static str> {
+    pub(crate) fn refusal(&self) -> Option<&'static str> {
         if self.closing.load(Ordering::SeqCst) {
             Some("the network session is closing")
         } else if self.draining.load(Ordering::SeqCst) > 0 {

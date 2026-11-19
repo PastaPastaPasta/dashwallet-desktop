@@ -929,6 +929,56 @@ fn a_quit_begun_mid_dispatch_refuses_it_before_the_artifact() {
     });
 }
 
+/// A quit fences every open network's hook before it closes the first: with
+/// two networks open and the first close held at its first step, both hooks
+/// already refuse.
+#[test]
+fn a_quit_fences_every_network_before_it_closes_the_first() {
+    use super::super::runtime::{Supervisor, guard};
+    let f = topup_tests::fixture(true);
+    let testnet = (f.engine)
+        .block_on(f.engine.open_network(DashNetwork::Testnet, options()))
+        .unwrap();
+    let sessions = [Arc::clone(&f.session), testnet];
+    let (reached_tx, reached) = std::sync::mpsc::channel();
+    let mut receivers = Vec::new();
+    let releases: Vec<_> = (sessions.iter())
+        .map(|s| {
+            let release = Arc::new(tokio::sync::Notify::new());
+            let (cancel, mut cancelled) = tokio::sync::watch::channel(false);
+            let (signals, receiver) = tokio::sync::mpsc::unbounded_channel();
+            receivers.push(receiver);
+            let (reached_tx, wait) = (reached_tx.clone(), Arc::clone(&release));
+            let task = s.rt.spawn(async move {
+                let _ = cancelled.changed().await;
+                let _ = reached_tx.send(());
+                wait.notified().await;
+            });
+            *guard(&s.platform.supervisor) = Some(Supervisor {
+                cancel,
+                signals,
+                task: Some(task),
+                running: true,
+            });
+            release
+        })
+        .collect();
+    let fenced = std::thread::scope(|scope| {
+        let quit = scope.spawn(|| f.engine.block_on(f.engine.shutdown()));
+        let began = reached.recv_timeout(Duration::from_secs(30));
+        let fenced: Vec<_> = (sessions.iter())
+            .map(|s| s.platform.hook_fence.refusal())
+            .collect();
+        for release in &releases {
+            release.notify_one();
+        }
+        quit.join().unwrap().unwrap();
+        began.expect("the quit never began");
+        fenced
+    });
+    assert_eq!(fenced, [Some("the network session is closing"); 2]);
+}
+
 /// The hook is set by every open of the shielded store, before the
 /// coordinator is handed out: the facade's first shielded call, the
 /// Platform start, and each again after the session was closed and
