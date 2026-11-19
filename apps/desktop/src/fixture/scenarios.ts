@@ -1196,7 +1196,8 @@ const SCENARIOS = {
     ];
     return w;
   },
-  /** The funded wallet watch-only: Pay's confirm sheet offers Create Unsigned only (U-05 D18). */
+  /** The funded wallet watch-only: Pay opens Advanced: unsigned transaction (PSBT), Review makes a
+   * PSBT, and the confirm sheet offers Create Unsigned only (P15, U-05 D18). */
   "watch-only": (t) => {
     const w = base(t);
     w.wallets[0].summary = { ...w.wallets[0].summary, watchOnly: true };

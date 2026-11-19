@@ -1,11 +1,12 @@
 // Pay ▸ To an address (U-03, UX-SPEC §4.7 on the mobile layout): one recipient, Max, subtract
-// fee, label and message; the live fee from the engine's draft; Advanced holds coin control;
-// Review opens the confirm sheet, which authenticates, signs and sends; the result follows.
+// fee, label and message; the live fee from the engine's draft; Advanced holds coin control and
+// the unsigned transaction (P15); Review opens the confirm sheet, which authenticates, signs and
+// sends; the result follows. A watch-only wallet's Review makes the PSBT.
 
 import { useCallback, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useBackend, useLockStatus } from "../../api/queries";
+import { useBackend, useLockStatus, useWallets } from "../../api/queries";
 import { ui, type PayPrefill } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton } from "../../components/basics";
@@ -14,9 +15,10 @@ import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { PayFromPlatform } from "./PayFromPlatform";
-import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
+import { AmountFields, draftSpec, FormField, PAY_CHECKING, PAY_INCOMPLETE, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
 import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, type Advanced } from "./model";
 import { ResultSheet } from "./ResultSheet";
+import { UnsignedPsbt } from "./UnsignedPsbt";
 import { useDraft } from "./useDraft";
 
 export function PayToAddress({
@@ -35,6 +37,7 @@ export function PayToAddress({
   const shown = useDisplay(network);
   const locked = useLockStatus().data?.state === "locked";
   const draft = useDraft(walletId, locked);
+  const watchOnly = useWallets().data?.find((w) => w.walletId === walletId)?.watchOnly === true;
 
   const [address, setAddress] = useState(prefill?.address ?? "");
   const amount = usePayAmount(shown, prefill?.amount ? shown.full(prefill.amount) : "");
@@ -97,8 +100,8 @@ export function PayToAddress({
     setSubtractFee(true);
   });
 
-  const review = () => {
-    if (ready && estimate.data && spec) sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change), spec);
+  const review = (unsigned: boolean) => {
+    if (ready && estimate.data && spec) sheets.review(confirmedOf(spec.recipient, estimate.data, spec.change), spec, unsigned);
   };
 
   return (
@@ -109,7 +112,7 @@ export function PayToAddress({
         aria-label="Pay to an address"
         onSubmit={(e) => {
           e.preventDefault();
-          review();
+          review(watchOnly);
         }}
       >
         {prefill?.username && (
@@ -163,7 +166,8 @@ export function PayToAddress({
         {!platform && (
           <>
             <CoinControl walletId={walletId} network={network} advanced={advanced} onChange={setAdvanced} payAmount={typeof duffs === "number" ? duffs : null} />
-            <PayFooter problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
+            <UnsignedPsbt watchOnly={watchOnly} why={ready ? null : (generalError ?? (spec ? PAY_CHECKING : PAY_INCOMPLETE))} onCreate={() => review(true)} />
+            <PayFooter reviewLabel={watchOnly ? "Review PSBT" : "Review"} problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
           </>
         )}
       </form>
@@ -176,6 +180,7 @@ export function PayToAddress({
           walletId={walletId}
           network={network}
           draft={draft}
+          unsigned={phase.unsigned}
           returnFocus={backToForm}
           onCancel={sheets.cancel}
           onOutcome={sheets.outcome}

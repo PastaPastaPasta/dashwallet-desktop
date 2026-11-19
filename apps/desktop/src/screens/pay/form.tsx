@@ -20,7 +20,7 @@ export const SETTLE_MS = 300;
 type Shown = ReturnType<typeof useDisplay>;
 
 /** Where a form is: editing, confirming, or showing the result. */
-export type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec } | { kind: "result"; outcome: Outcome };
+export type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec; unsigned: boolean } | { kind: "result"; outcome: Outcome };
 
 /** A Pay form's sheets (U-03): Review's confirm, then the result. While either is up the form
  * estimates nothing (`held`), so the payment's own events re-check nothing behind them. A payment
@@ -46,7 +46,7 @@ export function usePaySheets(walletId: string, draft: DraftApi, clear: () => voi
   return {
     phase,
     held: phase.kind === "confirm" || (phase.kind === "result" && phase.outcome.kind !== "failed"),
-    review: (confirmed: Confirmed, spec: DraftSpec) => setPhase({ kind: "confirm", confirmed, spec }),
+    review: (confirmed: Confirmed, spec: DraftSpec, unsigned = false) => setPhase({ kind: "confirm", confirmed, spec, unsigned }),
     cancel: () => setPhase({ kind: "editing" }),
     outcome,
     done,
@@ -261,8 +261,8 @@ export function AmountFields({
   );
 }
 
-const PAY_INCOMPLETE = "Enter an address and an amount first.";
-const PAY_CHECKING = "Checking the payment…";
+export const PAY_INCOMPLETE = "Enter an address and an amount first.";
+export const PAY_CHECKING = "Checking the payment…";
 
 /** The fee line, or what holds the payment back; then Review. */
 export function PayFooter({
@@ -273,7 +273,9 @@ export function PayFooter({
   incomplete,
   reviewRef,
   offer,
+  reviewLabel = "Review",
 }: {
+  reviewLabel?: string;
   problem: string | null;
   /** Subtract fee would send this amount; its button turns it on (MX-FEE). Pass it only for settled fields. */
   offer?: { amount: number; accept: () => void } | null;
@@ -315,7 +317,7 @@ export function PayFooter({
         ) : null}
       </div>
       <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready} why={problem ?? waiting} whyId="pay-reason">
-        Review
+        {reviewLabel}
       </DashButton>
     </div>
   );

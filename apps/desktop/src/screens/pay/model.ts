@@ -278,6 +278,13 @@ export function credentialPrompt(lock: LockStatus | undefined, paymentAuth: bool
   return lock.encrypted && paymentAuth !== false ? "passphrase" : "none";
 }
 
+/** What the confirm sheet offers (P15, U-05 D18). Advanced's unsigned path, or a wallet that
+ * cannot sign, makes a PSBT and nothing else; Send waits until the wallet is known to sign. */
+export function confirmActions(unsignedAsked: boolean, watchOnly: boolean | undefined): { send: boolean; credential: boolean; unsignedFirst: boolean } {
+  const send = !unsignedAsked && watchOnly === false;
+  return { send, credential: send, unsignedFirst: unsignedAsked || watchOnly === true };
+}
+
 /** What an `authorize` refusal means for the confirm sheet. */
 export type AuthRefusal =
   | { kind: "needsPassphrase" }

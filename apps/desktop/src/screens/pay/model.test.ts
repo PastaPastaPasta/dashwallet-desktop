@@ -10,6 +10,7 @@ import {
   broadcastFailure,
   changePolicy,
   coinSource,
+  confirmActions,
   confirmedOf,
   credentialPrompt,
   DEFAULT_ADVANCED,
@@ -299,5 +300,24 @@ describe("Create Unsigned keeps the sheet's promise (U-05 D37)", () => {
     expect(unsignedKeepsPromise(confirmed, unsigned({ outputs: [pay, change, { address: "yOther", amount: 5, isMine: false }] }))).toBe(false);
     expect(unsignedKeepsPromise(confirmed, unsigned({ outputs: [pay, { ...change, isMine: false }] }))).toBe(false);
     expect(unsignedKeepsPromise(confirmed, unsigned({ fee: null }))).toBe(false);
+  });
+});
+
+describe("what the confirm sheet offers (P15)", () => {
+  it("sends, under a credential, from a wallet that signs", () => {
+    expect(confirmActions(false, false)).toEqual({ send: true, credential: true, unsignedFirst: false });
+  });
+
+  it("makes only a PSBT when Advanced asked for one, even from a wallet that signs", () => {
+    expect(confirmActions(true, false)).toEqual({ send: false, credential: false, unsignedFirst: true });
+  });
+
+  it("makes only a PSBT from a watch-only wallet, asked or not", () => {
+    expect(confirmActions(false, true)).toEqual({ send: false, credential: false, unsignedFirst: true });
+    expect(confirmActions(true, true)).toEqual({ send: false, credential: false, unsignedFirst: true });
+  });
+
+  it("holds Send while the wallet is not known", () => {
+    expect(confirmActions(false, undefined)).toEqual({ send: false, credential: false, unsignedFirst: false });
   });
 });
