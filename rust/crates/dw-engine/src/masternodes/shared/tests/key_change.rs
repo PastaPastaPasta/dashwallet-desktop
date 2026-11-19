@@ -574,6 +574,51 @@ fn test_QT_127_a_sent_key_change_is_resent() {
     assert_eq!(out[0].txid(), out[1].txid());
 }
 
+/// MG-10 §4.4 change 1 (Opus r3 m1, Sol r3 m3): as a registration's
+/// (D72), an abandoned key change is never handed off again, also once a
+/// restart has dropped the abandon's pending spend.
+#[test]
+fn test_an_abandoned_key_change_is_never_resent() {
+    let mut f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    let fee = f.session_of(0, &id).fee.unwrap();
+    send(&f, 0, &id, fee).unwrap();
+    abandon(&f, 0, &id, COIN).unwrap();
+    assert_eq!(f.net.sent().len(), 2);
+    let mined = f.seam.shared_mined.lock().unwrap().clone();
+    let list = f.seam.list.lock().unwrap().clone();
+    f.restart();
+    *f.seam.shared_mined.lock().unwrap() = mined;
+    *f.seam.list.lock().unwrap() = list;
+    let e = send(&f, 0, &id, fee).unwrap_err();
+    assert!(
+        matches!(&e, MasternodesError::SharedStage { stage } if stage == "abandoned"),
+        "{e:?}"
+    );
+    assert_eq!(f.net.sent().len(), 2);
+}
+
+/// The control: a key change nobody abandoned is resent, the resend marked
+/// before its hand-off and its outcome then recorded (R2).
+#[test]
+fn test_a_key_change_with_no_abandon_is_resent_and_marked() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let (id, _) = complete(&f, txid);
+    let fee = f.session_of(0, &id).fee.unwrap();
+    f.net.reject_next();
+    send(&f, 0, &id, fee).unwrap();
+    assert!(f.net.sent().is_empty());
+    let row = f.row(0, &id);
+    assert!(!row.resend_marked && row.last_error.is_some());
+    send(&f, 0, &id, fee).unwrap();
+    assert_eq!(f.net.sent().len(), 1);
+    let row = f.row(0, &id);
+    assert!(row.resend_marked);
+    assert_eq!(row.last_error, None);
+}
+
 /// D99: an open key change's keys are in use: the keychain's next unused
 /// operator key skips its key, and naming it is `protx-dup` naming the
 /// session (MG-04 D51), as Core's mempool indexes it.
