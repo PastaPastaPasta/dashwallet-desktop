@@ -22,7 +22,7 @@ use dw_engine::platform::{BearerSecret, FlowKind};
 
 use self::credits::{
     CostTable, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, WithdrawAmount,
-    WithdrawOutcome, WithdrawQuote, Withdrawal,
+    WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal,
 };
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
@@ -415,6 +415,39 @@ commands! {
     ) -> WithdrawOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.withdraw(identity, to, amount.into(), grant).await?.into())
+    }
+
+    /// What moving credits to the wallet's own Platform address takes.
+    #[facade("DashPay::withdraw_to_platform_quote")]
+    fn credits_withdraw_to_platform_quote(
+        state,
+        wallet_id: String,
+        identity: String,
+        amount: WithdrawAmount,
+    ) -> WithdrawToPlatformQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay
+            .withdraw_to_platform_quote(identity, amount.into())
+            .await?
+            .into())
+    }
+
+    /// Moves credits to `to`, one of the wallet's own Platform addresses,
+    /// under `grant`.
+    #[facade("DashPay::withdraw_to_platform")]
+    fn credits_withdraw_to_platform(
+        state,
+        wallet_id: String,
+        identity: String,
+        to: String,
+        amount: WithdrawAmount,
+        grant: String,
+    ) -> WithdrawToPlatformOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let out = dashpay
+            .withdraw_to_platform(identity, to, amount.into(), grant)
+            .await?;
+        Ok(out.into())
     }
 
     /// The identity's recent withdrawals on Platform, the most recently
