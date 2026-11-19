@@ -127,6 +127,7 @@ short=${sha:0:7}
 files=("$DIST"/dash-wallet-"$VERSION"-*)
 [[ -e "${files[0]}" && -f "$DIST/SHA256SUMS" ]] || die "no bundles or no SHA256SUMS in $DIST"
 [[ ${#files[@]} -eq 4 ]] || die "expected 4 bundles in $DIST, found ${#files[@]}"
+nassets=$(( ${#files[@]} + 1 )) # a release's assets: the bundles and SHA256SUMS
 cont_prefix=DashWallet-continuous
 
 if [[ "$kind" == main ]]; then
@@ -172,7 +173,7 @@ publish)
     version=${tag#v}
     notes=(--notes "Release $tag. $verify_note")
     [[ ! -f "$here/../../docs/release/${version%%-*}-notes.md" ]] || notes=(--notes-file "$here/../../docs/release/${version%%-*}-notes.md")
-    if complete_release "$tag" $((5 + ${#feed[@]})); then
+    if complete_release "$tag" $((nassets + ${#feed[@]})); then
       echo "release-publish: release $tag exists and is complete; leaving it as it is"
     else
       # The tag exists (it triggered this run). A version (vX.Y.Z) is a full release, and GitHub picks
@@ -299,7 +300,7 @@ publish)
   }
 
   # ---- the reads that decide what to write come first: a failed one stops the script before any write
-  if complete_release "$tag" 5; then imm=1; else imm=0; fi
+  if complete_release "$tag" "$nassets"; then imm=1; else imm=0; fi
   if probe gh api "repos/$repo/git/ref/tags/continuous" --jq .object.sha; then cur=$PROBE_OUT; else cur=; fi
   release_row continuous
   cont_id=

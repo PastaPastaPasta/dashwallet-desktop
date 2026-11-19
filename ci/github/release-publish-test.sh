@@ -143,6 +143,9 @@ mkdir -p "$dist"
 ver=0.1.0-dev.7.g${c2:0:7}
 for s in macos-universal.dmg windows-x64-setup.exe linux-x86_64.AppImage linux-amd64.deb; do echo "$s" > "$dist/dash-wallet-$ver-$s"; done
 (cd "$dist" && sha256sum dash-wallet-* > SHA256SUMS)
+# A complete release: the bundles and SHA256SUMS (a full release adds latest.json), as the script derives it.
+assets=$(( $(find "$dist" -name 'dash-wallet-*' | wc -l) + 1 ))
+export FAKE_ASSET_COUNT=$assets
 export DIST=$dist OUT=$work/publish GITHUB_REPOSITORY=o/r GITHUB_RUN_NUMBER=7 GITHUB_RUN_ID=99 GITHUB_SERVER_URL=https://github.com GH_TOKEN=x
 CN=(DashWallet-continuous-macos-universal.dmg DashWallet-continuous-windows-x64-setup.exe DashWallet-continuous-linux-x86_64.AppImage DashWallet-continuous-linux-amd64.deb SHA256SUMS)
 
@@ -239,10 +242,10 @@ check "tag v0.1.0: latest.json (the update feed) names the version, a UTC time a
   '[[ -f "$feed" && $(jq -r .version "$feed") == 0.1.0 && $(jq -r .notes_url "$feed") == https://github.com/o/r/releases/tag/v0.1.0 ]] &&
    jq -e ".pub_date | test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$\")" "$feed" > /dev/null'
 check "tag v0.1.0: latest.json is uploaded with the release" 'log_has "SHA256SUMS $feed --repo"'
-FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=6 DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
-check "tag v0.1.0 rerun: six assets (with latest.json) is complete, nothing created" '[[ $status -eq 0 ]] && ! log_has "release create"'
-FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=5 DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
-check "tag v0.1.0 rerun: five assets (no latest.json) is incomplete and refused" '[[ $status -ne 0 ]] && ! log_has "release create"'
+FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=$((assets + 1)) DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 rerun: the bundles, SHA256SUMS and latest.json is complete, nothing created" '[[ $status -eq 0 ]] && ! log_has "release create"'
+FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=$assets DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 rerun: without latest.json it is incomplete and refused" '[[ $status -ne 0 ]] && ! log_has "release create"'
 tag_bundles 0.1.0-rc.1; fs_reset
 DIST=$work/tagdist run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
 check "tag v0.1.0-rc.1: a prerelease, not Latest" \
