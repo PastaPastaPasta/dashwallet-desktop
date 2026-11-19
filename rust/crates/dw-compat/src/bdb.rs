@@ -247,9 +247,14 @@ fn read_items<'a>(
     Ok(items)
 }
 
+/// `seen` is shared by every page the read visits: in a real file each
+/// overflow page belongs to one item's chain, so a page used twice (a cycle,
+/// or two items sharing a chain) is refused and the whole read visits each
+/// page at most once.
 fn overflow_bytes(
     file: &[u8],
     meta: &Meta,
+    seen: &mut [bool],
     first: u32,
     item_len: u32,
 ) -> Result<Zeroizing<Vec<u8>>, WalletDatError> {
@@ -259,19 +264,20 @@ fn overflow_bytes(
     }
     let mut out = Zeroizing::new(Vec::with_capacity(want));
     let mut next = first;
-    let mut seen = vec![false; meta.last_page as usize + 1];
     while next != 0 {
         if out.len() == want {
             break;
         }
-        if next > meta.last_page || seen[next as usize] {
-            return Err(corrupt(if next > meta.last_page {
-                "overflow page past end of file"
-            } else {
-                "overflow page cycle"
-            }));
+        if next > meta.last_page {
+            return Err(corrupt("overflow page past end of file"));
         }
-        seen[next as usize] = true;
+        let slot = seen
+            .get_mut(next as usize)
+            .ok_or_else(|| corrupt("overflow page past end of file"))?;
+        if *slot {
+            return Err(corrupt("overflow page used twice"));
+        }
+        *slot = true;
         let page = page(file, meta.pagesize, next)?;
         lsn_is_reset(page, meta.other_endian)?;
         let head = read_head(page, next, meta.other_endian)?;
@@ -279,6 +285,9 @@ fn overflow_bytes(
             return Err(corrupt("bad overflow record page type"));
         }
         let n = head.hf_offset as usize;
+        if n == 0 {
+            return Err(corrupt("empty overflow page"));
+        }
         if PAGE_HEADER + n > page.len() {
             return Err(corrupt("overflow data extends past page"));
         }
@@ -307,6 +316,7 @@ fn item_len(item: &Item<'_>) -> Result<Option<usize>, WalletDatError> {
 fn item_bytes(
     file: &[u8],
     meta: &Meta,
+    seen: &mut [bool],
     item: &Item<'_>,
 ) -> Result<Option<Zeroizing<Vec<u8>>>, WalletDatError> {
     match item {
@@ -317,7 +327,9 @@ fn item_bytes(
             }
             Ok(Some(Zeroizing::new(data.to_vec())))
         }
-        Item::Overflow { page, len, .. } => Ok(Some(overflow_bytes(file, meta, *page, *len)?)),
+        Item::Overflow { page, len, .. } => {
+            Ok(Some(overflow_bytes(file, meta, seen, *page, *len)?))
+        }
         Item::Child { .. } => Err(corrupt("internal record on a leaf page")),
     }
 }
@@ -454,8 +466,8 @@ pub(crate) fn read_pairs(file: &[u8]) -> Result<Vec<Record>, WalletDatError> {
                         return Err(corrupt("too many wallet records"));
                     }
                     let (Some(key), Some(value)) = (
-                        item_bytes(file, &outer, key_item)?,
-                        item_bytes(file, &outer, val_item)?,
+                        item_bytes(file, &outer, &mut seen, key_item)?,
+                        item_bytes(file, &outer, &mut seen, val_item)?,
                     ) else {
                         continue;
                     };

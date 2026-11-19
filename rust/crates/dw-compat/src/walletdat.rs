@@ -916,21 +916,42 @@ pub fn read_bdb(path: &Path) -> Result<SqliteWallet, WalletDatError> {
             path.display()
         )));
     }
-    // One handle, and a cap on how many bytes it can yield. Checking
-    // `metadata` and then reading a newly opened file would follow a
-    // replacement that grew past the cap.
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take(crate::bdb::MAX_FILE as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
-    if bytes.len() > crate::bdb::MAX_FILE {
+    if meta.len() > crate::bdb::MAX_FILE as u64 {
         return Err(WalletDatError::Unreadable(format!(
             "{} is over {} bytes",
             path.display(),
             crate::bdb::MAX_FILE
         )));
     }
+    let bytes = read_into_fixed(file, meta.len() as usize)?;
     read_bdb_bytes(&bytes)
+}
+
+/// Reads `source` into one zeroizing buffer sized before the first byte,
+/// so no reallocation leaves an unwiped copy of the plaintext behind. A
+/// source longer than `expected` (a file that grew after its size was
+/// read) is refused rather than grown into.
+fn read_into_fixed(
+    mut source: impl Read,
+    expected: usize,
+) -> Result<Zeroizing<Vec<u8>>, WalletDatError> {
+    let mut buf = Zeroizing::new(vec![0u8; expected + 1]);
+    let mut filled = 0;
+    while filled < buf.len() {
+        match source.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(WalletDatError::Unreadable(e.to_string())),
+        }
+    }
+    if filled > expected {
+        return Err(WalletDatError::Unreadable(
+            "the file changed while it was read".into(),
+        ));
+    }
+    buf.truncate(filled);
+    Ok(buf)
 }
 
 /// [`read_bdb`] over bytes already in memory.
@@ -1210,6 +1231,21 @@ fn parse_record(
             if child.pubkey.as_slice() != pubkey.as_slice() {
                 return Err(corrupt("hdpubkey does not match its key"));
             }
+            // Refused here, before any key is derived, as the import would
+            // refuse them later.
+            if child.account != 0 {
+                return Err(WalletDatError::Unsupported(format!(
+                    "HD account {} cannot be restored; only account 0 is",
+                    child.account
+                )));
+            }
+            if child.index >= MAX_LEGACY_CHAIN_KEYS
+                || w.hd_children.len() >= 2 * MAX_LEGACY_CHAIN_KEYS as usize
+            {
+                return Err(WalletDatError::Unsupported(
+                    "the wallet's address range is too large to restore".into(),
+                ));
+            }
             g.hd_pubs.insert(pubkey);
             w.hd_children.push(child);
         }
@@ -1230,6 +1266,9 @@ fn parse_record(
 }
 
 const MAX_CHAIN_FIELD: usize = 4096;
+/// Most keys a legacy wallet may have derived on one HD chain, keypool
+/// included. Larger wallets are refused.
+pub const MAX_LEGACY_CHAIN_KEYS: u32 = 10_000;
 
 fn parse_hdchain(v: &mut Reader<'_>) -> Result<LegacyChain, WalletDatError> {
     let _version = v.i32().ok_or_else(|| corrupt("hdchain record"))?;
@@ -1542,14 +1581,19 @@ mod tests {
     }
 
     fn ser_hdpubkey(pubkey: &[u8]) -> Vec<u8> {
+        ser_hdpubkey_at(pubkey, 0, 0, 0)
+    }
+
+    fn ser_hdpubkey_at(pubkey: &[u8], account: u32, change: u32, index: u32) -> Vec<u8> {
         let mut value = Vec::new();
         value.extend_from_slice(&1i32.to_le_bytes());
         let mut ext = vec![0u8; 74];
+        ext[5..9].copy_from_slice(&index.to_be_bytes());
         ext[41..41 + pubkey.len()].copy_from_slice(pubkey);
         ser_bytes(&mut value, &ext);
         value.extend_from_slice(&[0u8; 32]);
-        value.extend_from_slice(&0u32.to_le_bytes());
-        value.extend_from_slice(&0u32.to_le_bytes());
+        value.extend_from_slice(&account.to_le_bytes());
+        value.extend_from_slice(&change.to_le_bytes());
         value
     }
 
@@ -1875,6 +1919,67 @@ mod tests {
     }
 
     #[test]
+    fn two_items_sharing_an_overflow_chain_are_refused() {
+        let items = vec![
+            build::data_item(b"k1", false, false),
+            build::overflow_item(4, 3, false),
+            build::data_item(b"k2", false, false),
+            build::overflow_item(4, 3, false),
+        ];
+        let leaf = build::pack(3, &items, TYPE_LEAF, 1, 0, false);
+        let overflow = build::overflow_page(4, b"abc", 0, false);
+        let file = build::assemble(&[leaf, overflow], false);
+        let err = crate::bdb::read_pairs(&file).err().unwrap();
+        assert!(
+            matches!(err, WalletDatError::Corrupt(ref d) if d.contains("used twice")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_overflow_page_is_refused() {
+        let items = vec![
+            build::data_item(b"k", false, false),
+            build::overflow_item(4, 1, false),
+        ];
+        let leaf = build::pack(3, &items, TYPE_LEAF, 1, 0, false);
+        let empty = build::overflow_page(4, b"", 5, false);
+        let last = build::overflow_page(5, b"x", 0, false);
+        let file = build::assemble(&[leaf, empty, last], false);
+        let err = crate::bdb::read_pairs(&file).err().unwrap();
+        assert!(
+            matches!(err, WalletDatError::Corrupt(ref d) if d.contains("empty overflow page")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn hd_keys_the_import_would_refuse_are_refused_before_any_derivation() {
+        let seed = [0x5au8; 64];
+        let chain = ser_chain(&sha256d(&seed), false, &seed, b"", b"", 1, 0);
+        let pubkey = [0x02u8; 33];
+        for (account, index, want) in [(1, 0, "account 1"), (0, MAX_LEGACY_CHAIN_KEYS, "too large")]
+        {
+            let pairs = [
+                (db_key("hdchain"), chain.clone()),
+                (
+                    db_key_pub("hdpubkey", &pubkey),
+                    ser_hdpubkey_at(&pubkey, account, 0, index),
+                ),
+            ];
+            let refs: Vec<(&[u8], &[u8])> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                .collect();
+            let err = read_bdb_bytes(&build::pairs(&refs, false)).err().unwrap();
+            assert!(
+                matches!(err, WalletDatError::Unsupported(ref d) if d.contains(want)),
+                "{err:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_dirty_last_page_is_not_a_flushed_wallet() {
         let payload = b"k";
         let items = vec![
@@ -2038,6 +2143,20 @@ mod tests {
         assert!(
             matches!(err, WalletDatError::Corrupt(ref d) if d.contains("does not match the wallet seed")),
             "{err:?}"
+        );
+    }
+
+    #[test]
+    fn the_file_image_is_read_into_one_fixed_buffer() {
+        let read = read_into_fixed(&b"wallet"[..], 6).unwrap();
+        assert_eq!(&read[..], b"wallet");
+        assert_eq!(read.capacity(), 7, "the buffer was reallocated");
+        let short = read_into_fixed(&b"wal"[..], 6).unwrap();
+        assert_eq!(&short[..], b"wal");
+        let grown = read_into_fixed(&b"wallet and more"[..], 6).err().unwrap();
+        assert!(
+            matches!(grown, WalletDatError::Unreadable(ref d) if d.contains("changed")),
+            "{grown:?}"
         );
     }
 

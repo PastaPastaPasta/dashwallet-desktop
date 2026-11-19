@@ -409,7 +409,7 @@ def test_psbt_round_trips_with_dashd(tmp_path, regtest_node, funded_miner, ours)
 def test_restore_legacy_bdb_past_the_gap(tmp_path, regtest_node, funded_miner):
     """A legacy wallet's receive index past the gap cap, and its change, survive import."""
     node = regtest_node
-    w = create_hd(node, "r_bdb_gap", ABANDON, "", None, descriptors=False)
+    w = create_hd(node, "r_bdb_gap", LEGAL, "bdb gap", None, descriptors=False)
     last = None
     for _ in range(1001):
         last = w.getnewaddress()

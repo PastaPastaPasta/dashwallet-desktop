@@ -43,7 +43,7 @@ use crate::{
 const MAX_DUMP_BYTES: u64 = 256 * 1024 * 1024;
 /// Most keys one legacy chain may have derived, keypool included. Past this
 /// the pool would be too large to build, so the file is refused.
-const MAX_ISSUED: u32 = 10_000;
+const MAX_ISSUED: u32 = walletdat::MAX_LEGACY_CHAIN_KEYS;
 /// Bytes read to recognise a file.
 const SNIFF_BYTES: usize = 4096;
 
@@ -677,13 +677,22 @@ impl NetworkSession {
                 .await?
             })
             .await?;
-        let report = self.import_core_root(root, options).await?;
-        if let Some(issued) = issued {
-            self.cover_issued(&*self.manager()?, report.wallet_id, issued)
-                .await?;
-            self.store_issued(report.wallet_id, issued).await?;
-        }
-        self.install_imported_locks(report.wallet_id, locks).await?;
+        let report = match self.import_core_root(root, options).await {
+            // The wallet is there already, perhaps from an import that failed
+            // after registering it. The range and locks are applied again
+            // (all idempotent) so a retry finishes it; the caller still hears
+            // that it exists.
+            Err(EngineError::WalletAlreadyExists(id)) => {
+                if let Ok(wallet_id) = id.parse::<WalletId>() {
+                    self.apply_wallet_dat_state(wallet_id, issued, locks)
+                        .await?;
+                }
+                return Err(EngineError::WalletAlreadyExists(id));
+            }
+            report => report?,
+        };
+        self.apply_wallet_dat_state(report.wallet_id, issued, locks)
+            .await?;
         // The wallet keeps Dash Core's salt, so the same coins count as
         // fully mixed (QT-043, m3-engine.md §5).
         if let Some(salt) = coinjoin_salt {
@@ -973,6 +982,29 @@ impl NetworkSession {
                 .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
         }
         managed.bump_monitor_revision();
+        Ok(())
+    }
+
+    /// What a legacy file carries beyond its root: the stored range and
+    /// Core's coin locks first (durable, read again at every load), then the
+    /// range on the loaded wallet. A wallet that is not loaded gets the range
+    /// when it loads.
+    async fn apply_wallet_dat_state(
+        self: &Arc<Self>,
+        id: WalletId,
+        issued: Option<(u32, u32)>,
+        locks: Vec<dashcore::OutPoint>,
+    ) -> Result<(), EngineError> {
+        if let Some(issued) = issued {
+            self.store_issued(id, issued).await?;
+        }
+        self.install_imported_locks(id, locks).await?;
+        if let Some(issued) = issued {
+            let manager = self.manager()?;
+            if manager.get_wallet(&id.0).await.is_some() {
+                self.cover_issued(&manager, id, issued).await?;
+            }
+        }
         Ok(())
     }
 
