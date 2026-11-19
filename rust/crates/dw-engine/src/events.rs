@@ -556,16 +556,15 @@ pub(crate) struct SessionHub {
 }
 
 #[cfg(test)]
-pub(crate) type PublishedHook = Box<dyn FnOnce(crate::WalletId) + Send>;
+pub(crate) type PublishedHook = Box<dyn FnOnce(crate::WalletId) -> bool + Send>;
 
 impl SessionHub {
-    /// Tests: runs [`Self::on_published`], if set, for wallet `id`.
+    /// Tests: runs [`Self::on_published`], if set, for wallet `id`. A load
+    /// stops there, as a quit would, when it returns `true`.
     #[cfg(test)]
-    pub(crate) fn run_on_published(&self, id: crate::WalletId) {
+    pub(crate) fn run_on_published(&self, id: crate::WalletId) -> bool {
         let hook = self.on_published.lock().unwrap().take();
-        if let Some(hook) = hook {
-            hook(id);
-        }
+        hook.is_some_and(|hook| hook(id))
     }
 
     pub(crate) fn set_rates(&self, rates: std::sync::Weak<crate::rates::RatesHub>) {

@@ -733,8 +733,15 @@ impl NetworkSession {
         }
 
         let default_name = self.next_default_name();
-        // Before SPV can match a batch with the pools it publishes.
+        // Before SPV can match a batch with the pools it publishes; put back
+        // if nothing is registered.
+        let previous = self.wide_scan(wallet_id).await.ok();
         self.set_wide_scan(wallet_id, Some(WideScan::Birth)).await;
+        let unmark = || async move {
+            if let Some(previous) = previous {
+                self.set_wide_scan(wallet_id, previous).await;
+            }
+        };
         let was_unloaded = self.hub.admit(wallet_id);
         let registered = if registration_refused(self.data_dir()) {
             Err(EngineError::Internal("test: registration refused".into()))
@@ -763,6 +770,7 @@ impl NetworkSession {
             Ok(wallet) if wallet.wallet_id() == wallet_id.0 => wallet,
             Ok(wallet) => {
                 self.unadmit(&manager, wallet_id, was_unloaded).await;
+                unmark().await;
                 return Err(EngineError::Internal(format!(
                     "platform-wallet registered {} for the seed of {wallet_id}",
                     hex::encode(wallet.wallet_id())
@@ -770,6 +778,7 @@ impl NetworkSession {
             }
             Err(e) => {
                 self.unadmit(&manager, wallet_id, was_unloaded).await;
+                unmark().await;
                 // A registration that exists keeps the stored seed: only
                 // our own failure is rolled back.
                 if !matches!(e, EngineError::WalletAlreadyExists(_)) {
@@ -872,12 +881,19 @@ impl NetworkSession {
         id: WalletId,
     ) {
         let lookahead = self.stored_lookahead(id).await;
-        let restored = match lookahead {
-            Some(gap) => self.raise_lookahead(manager, id, gap).await,
-            None => self.restore_coins(manager, id).await.map(|_| ()),
+        let raised = match lookahead {
+            Some(gap) => match manager.get_wallet(&id.0).await {
+                Some(wallet) => apply_lookahead(&wallet, gap).await,
+                None => Err(EngineError::WalletNotFound(id.to_string())),
+            },
+            None => Ok(()),
         };
-        if let Err(e) = &restored {
-            tracing::warn!(wallet_id = %id, error = %e, "could not restore the loaded wallet's lookahead or coins");
+        if let Err(e) = &raised {
+            tracing::warn!(wallet_id = %id, error = %e, "could not raise the loaded wallet's lookahead");
+        }
+        // A partial raise still grew some pools, so the restore runs either way.
+        if let Err(e) = self.restore_coins(manager, id).await {
+            tracing::warn!(wallet_id = %id, error = %e, "could not restore the loaded wallet's coins");
         }
         let loaded_at = self
             .live()
@@ -900,8 +916,7 @@ impl NetworkSession {
                 .inspect_err(|e| tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap"))
                 .is_ok(),
         };
-        let raised = lookahead.is_none() || restored.is_ok();
-        if widened && raised && matches!(marker, Ok(m) if m != Some(WideScan::Done)) {
+        if widened && raised.is_ok() && matches!(marker, Ok(m) if m != Some(WideScan::Done)) {
             self.set_wide_scan(id, Some(WideScan::Done)).await;
         }
     }
@@ -942,6 +957,20 @@ impl NetworkSession {
             tracing::warn!(wallet_id = %id, error = %e, "could not read whether the wallet was scanned with wide CoinJoin pools");
         }
         Ok(read?.as_deref().map(WideScan::parse))
+    }
+
+    /// Notes that wallet `id`'s blocks above `checkpoint` (its birth's when
+    /// `None`) may be matched with narrow pools, unless its marker already
+    /// names a lower start.
+    pub(crate) async fn note_narrow_from(&self, id: WalletId, checkpoint: Option<u32>) {
+        let lower = match (self.wide_scan(id).await, checkpoint) {
+            (Ok(Some(WideScan::Done)), Some(h)) => WideScan::From(h),
+            (Ok(Some(WideScan::From(old))), Some(h)) if h < old => WideScan::From(h),
+            (Ok(Some(WideScan::Done | WideScan::From(_))) | Err(_), None) => WideScan::Birth,
+            (Err(_), Some(h)) => WideScan::From(h),
+            _ => return,
+        };
+        self.set_wide_scan(id, Some(lower)).await;
     }
 
     /// Stores wallet `id`'s [`WIDE_SCAN_SETTING`]; a failure is logged.

@@ -276,6 +276,28 @@ impl PlatformWalletPersistence for WalletStore {
     }
 }
 
+/// Wallet `id`'s filter checkpoint as `wallet.sqlite` holds it (read-only);
+/// `None` when it has none.
+pub(crate) fn stored_synced_height(
+    db_path: &std::path::Path,
+    id: &RawWalletId,
+) -> Result<Option<u32>, rusqlite::Error> {
+    use rusqlite::OptionalExtension;
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let height: Option<Option<i64>> = conn
+        .query_row(
+            "SELECT synced_height FROM core_sync_state WHERE wallet_id = ?1",
+            [&id[..]],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(height.flatten().and_then(|h| u32::try_from(h).ok()))
+}
+
 /// Ids of every wallet registered in `wallet.sqlite` (read-only).
 pub(crate) fn registered_wallet_ids(
     db_path: &std::path::Path,

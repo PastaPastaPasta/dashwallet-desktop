@@ -295,6 +295,13 @@ impl NetworkSession {
             let _barrier = this
                 .revoke_wallet(id, crate::platform::RevokeCause::WalletClosed)
                 .await;
+            // Its next load publishes narrow CoinJoin pools again; what SPV
+            // matches above this checkpoint before they are widened is
+            // replayed, across a crash too. Put back if it stays loaded.
+            let marked = this.wide_scan(id).await.ok();
+            if let Some(synced) = synced {
+                this.note_narrow_from(id, Some(synced)).await;
+            }
             // Marked first, so a concurrent load cannot bring it back.
             live.store.set_unloaded(id.0, true);
             // Its discoveries end first, as for a removal: none may apply
@@ -310,20 +317,15 @@ impl NetworkSession {
                 .await
             {
                 live.store.set_unloaded(id.0, false);
+                if let Some(marked) = marked {
+                    this.set_wide_scan(id, marked).await;
+                }
                 // The revocation dropped its background lease, without
                 // which every shielded pass of the network is held back.
                 this.spawn_ensure_background();
                 return Err(e);
             }
             this.hub.unload_wallet(&id);
-            // Its next load publishes narrow CoinJoin pools again; what SPV
-            // matches above this checkpoint before they are widened is
-            // replayed, across a crash too.
-            if let (Ok(Some(crate::keys::WideScan::Done)), Some(synced)) =
-                (this.wide_scan(id).await, synced)
-            {
-                (this.set_wide_scan(id, Some(crate::keys::WideScan::From(synced)))).await;
-            }
             this.spends.forget_wallet(&id);
             this.coin_fences.forget(&id);
             this.platform.forget(&id);
@@ -361,6 +363,17 @@ impl NetworkSession {
             // (`ReplayRecords::committed`).
             this.hub.admit(id);
             this.hub.update_wallet_state(id, |s| s.loading = true);
+            // A wallet the session opened unloaded (not on the startup list)
+            // has had no unload to note its checkpoint.
+            let stored = {
+                let db_path = this.data_dir().join(crate::session::WALLET_DB_FILE);
+                tokio::task::spawn_blocking(move || {
+                    crate::store::stored_synced_height(&db_path, &id.0)
+                })
+                .await
+            };
+            this.note_narrow_from(id, stored.ok().and_then(Result::ok).flatten())
+                .await;
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
                 live.store.set_unloaded(id.0, true);
@@ -375,7 +388,9 @@ impl NetworkSession {
             }
             drop(passes);
             #[cfg(test)]
-            this.hub.run_on_published(id);
+            if this.hub.run_on_published(id) {
+                return Err(EngineError::Internal("test: quit after the publish".into()));
+            }
             this.restore_loaded_wallet(&live.manager, id).await;
             #[cfg(test)]
             let pause = this.hub.pause_load.lock().unwrap().take();

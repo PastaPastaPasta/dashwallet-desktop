@@ -567,6 +567,13 @@ impl crate::NetworkSession {
             for id in &ids {
                 if let Err(e) = crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await {
                     tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap before the rescan");
+                    // Its next load replays what this rescan matches narrow.
+                    let start = match from {
+                        RescanFrom::WalletBirth => None,
+                        RescanFrom::Genesis => Some(0),
+                        RescanFrom::Height(h) => Some(h),
+                    };
+                    this.note_narrow_from(*id, start).await;
                 }
             }
             let from_height = match from {

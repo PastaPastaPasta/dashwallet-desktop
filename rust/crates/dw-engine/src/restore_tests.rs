@@ -1688,6 +1688,7 @@ fn load_wallet_rescans_a_batch_spv_committed_before_it_widened_the_pools() {
             );
             wm.update_wallet_synced_height(&wallet.0, HEIGHT + 50);
             wm.update_wallet_last_processed_height(&wallet.0, HEIGHT + 50);
+            false
         }));
     }
 
@@ -1724,6 +1725,7 @@ fn a_watch_only_import_rescans_a_batch_committed_before_its_lookahead_was_raised
             let mut wm = wm.try_write().expect("published, the manager unlocked");
             wm.update_wallet_synced_height(&wallet.0, HEIGHT);
             wm.update_wallet_last_processed_height(&wallet.0, HEIGHT);
+            false
         }));
     }
 
@@ -1854,4 +1856,121 @@ fn a_removed_wallets_loaded_checkpoint_is_pruned() {
 
     assert_eq!(live.store.loaded_checkpoint(&id.0), None);
     assert!(live.store.loaded_checkpoint(&kept.0).is_some());
+}
+
+/// A wallet off the load-on-startup list opens unloaded with no unload to
+/// note its checkpoint. A load that published it, saw SPV store a batch
+/// above that checkpoint and quit before its rewind is replayed from the
+/// checkpoint at the next load.
+#[test]
+fn a_wallet_opened_unloaded_and_quit_mid_load_is_replayed_at_the_next_load() {
+    use platform_wallet::changeset::{
+        CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+    };
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let (_dir, engine, session, id) = engine_wallet();
+    let _stays_on_the_list = engine
+        .block_on(session.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    engine
+        .block_on(session.set_load_on_startup(id, false))
+        .unwrap();
+    let session = reopen(&engine, session);
+    assert!(session.live().unwrap().store.is_unloaded(&id.0));
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+    {
+        let live = session.live().unwrap();
+        let wm = live.manager.wallet_manager_arc();
+        let store = Arc::clone(&live.store);
+        *session.hub.on_published.lock().unwrap() = Some(Box::new(move |wallet| {
+            {
+                let mut wm = wm.try_write().expect("published, the manager unlocked");
+                wm.update_wallet_synced_height(&wallet.0, HEIGHT + 50);
+                wm.update_wallet_last_processed_height(&wallet.0, HEIGHT + 50);
+            }
+            let core = CoreChangeSet {
+                last_processed_height: Some(HEIGHT + 50),
+                synced_height: Some(HEIGHT + 50),
+                ..Default::default()
+            };
+            let changeset = PlatformWalletChangeSet {
+                core: Some(core),
+                ..Default::default()
+            };
+            store.store(wallet.0, changeset).unwrap();
+            store.flush(wallet.0).unwrap();
+            true
+        }));
+    }
+    assert!(engine.block_on(session.load_wallet(id)).is_err());
+
+    let session = reopen(&engine, session);
+    engine.block_on(session.load_wallet(id)).unwrap();
+
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((HEIGHT, HEIGHT + 50))
+    );
+}
+
+/// A rescan that cannot widen a wallet's pools leaves it a marker from the
+/// rescan's start, so the next load widens and replays from there.
+#[test]
+fn a_rescan_that_cannot_widen_a_wallet_marks_it_for_the_next_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let w = engine
+        .block_on(session.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    start_offline_spv(&engine, &session);
+    crate::keys::FAIL_WIDEN.lock().unwrap().push(w.0);
+
+    let rescanned = engine.block_on(session.rescan(crate::RescanFrom::Height(0)));
+
+    crate::keys::FAIL_WIDEN
+        .lock()
+        .unwrap()
+        .retain(|x| *x != w.0);
+    rescanned.unwrap();
+    assert_eq!(
+        wide_scan(&engine, &session, w),
+        Some(crate::keys::WideScan::From(0))
+    );
+}
+
+/// A seed import whose registration fails puts the wallet's marker back as
+/// it was before the import wrote its own.
+#[test]
+fn an_import_whose_registration_fails_puts_the_marker_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id: WalletId = {
+        let seed = dw_vault::mnemonic::derive_secret(PHRASE, b"", false).unwrap();
+        WalletId(
+            dw_vault::mnemonic::wallet_id_for_seed(&seed.seed, dashcore::Network::Regtest).unwrap(),
+        )
+    };
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
+    (crate::keys::FAIL_REGISTRATION_IN.lock().unwrap()).push(session.data_dir().to_path_buf());
+
+    let refused = engine.block_on(session.import_wallet(
+        zeroize::Zeroizing::new(PHRASE.to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions::default(),
+    ));
+
+    assert!(refused.is_err());
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
 }
