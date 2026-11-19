@@ -59,8 +59,8 @@ pub enum EngineEvent {
         network: DashNetwork,
         snapshot: SyncSnapshot,
     },
-    /// The wallet's balance buckets changed. `None` while the balance is not
-    /// known yet (the scan has not reached the birth height).
+    /// The wallet's balance buckets changed, or whether it is still
+    /// catching up (`WalletBalances::catching_up`).
     Balances {
         network: DashNetwork,
         wallet_id: WalletId,
@@ -351,12 +351,16 @@ impl WalletState {
         };
     }
 
-    /// Balances are known once the scan has processed the birth block
-    /// (review M-3): before that a zero would be a guess.
-    pub fn balances(&self) -> Option<WalletBalances> {
-        if self.synced_height == 0 || self.synced_height < self.birth_height {
-            return None;
-        }
+    /// The scan has not processed the birth block yet (review M-3): the
+    /// balance holds what the wallet has seen so far, which can miss coins
+    /// in blocks not scanned yet.
+    pub fn catching_up(&self) -> bool {
+        self.synced_height == 0 || self.synced_height < self.birth_height
+    }
+
+    /// The balance known so far: confirmed coins the scan found, and the
+    /// mempool and InstantSend payments seen while it runs.
+    pub fn balances(&self) -> WalletBalances {
         let b = &self.balance;
         // Before the CoinJoin view is computed: the CoinJoin accounts'
         // spendable balance (an upper bound of the fully mixed one).
@@ -367,14 +371,15 @@ impl WalletState {
                 .map(|(_, b)| b.confirmed().saturating_add(b.unconfirmed()))
                 .sum()
         });
-        Some(WalletBalances {
+        WalletBalances {
             confirmed: b.confirmed(),
             unconfirmed: b.unconfirmed(),
             immature: b.immature(),
             locked: b.locked(),
             total: b.total(),
             coinjoin,
-        })
+            catching_up: self.catching_up(),
+        }
     }
 
     /// Best height the wallet has seen, used as the tip for confirmations.
@@ -1025,12 +1030,12 @@ impl SessionHub {
         }
     }
 
-    /// Advances the wallet's scan heights. Returns whether the balances
-    /// became known or unknown.
+    /// Advances the wallet's scan heights. Returns whether the wallet
+    /// started or stopped catching up.
     fn update_heights(&self, id: WalletId, synced: Option<u32>, processed: Option<u32>) -> bool {
         let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
         let state = map.entry(id).or_default();
-        let known_before = state.balances().is_some();
+        let catching_up = state.catching_up();
         if let Some(h) = synced {
             state.synced_height = h;
             state.scan_target = state.scan_target.max(h);
@@ -1038,7 +1043,7 @@ impl SessionHub {
         if let Some(h) = processed {
             state.processed_height = state.processed_height.max(h);
         }
-        known_before != state.balances().is_some()
+        catching_up != state.catching_up()
     }
 
     /// A fork truncated wallet `id` to `height`: the wallet dropped what
@@ -1075,7 +1080,7 @@ impl SessionHub {
             }
             let news = !heard && (!found.detected || state.processed_height > height);
             news.then(|| {
-                let known_before = state.balances().is_some();
+                let catching_up = state.catching_up();
                 let from = state.scan_target.max(state.processed_height);
                 let checkpoint_lowered = height < state.synced_height;
                 state.synced_height = state.synced_height.min(height);
@@ -1084,11 +1089,7 @@ impl SessionHub {
                 if found.detected {
                     state.detected = Some(height);
                 }
-                (
-                    from,
-                    known_before != state.balances().is_some(),
-                    checkpoint_lowered,
-                )
+                (from, catching_up != state.catching_up(), checkpoint_lowered)
             })
         };
         let Some((from, flipped, checkpoint_lowered)) = lowered else {
@@ -1575,7 +1576,7 @@ impl PumpTarget for SessionPump {
             self.hub.emit(EngineEvent::Balances {
                 network: self.hub.network.clone(),
                 wallet_id,
-                balances: state.balances(),
+                balances: Some(state.balances()),
             });
         }
     }
@@ -1912,10 +1913,7 @@ mod tests {
         hub.pump.take_wallet_marks();
 
         hub.publish_core_balance(W, &WalletCoreBalance::new(1_000, 0, 0, 0), &BTreeMap::new());
-        assert_eq!(
-            hub.wallet_state(&W).unwrap().balances().unwrap().confirmed,
-            1_000
-        );
+        assert_eq!(hub.wallet_state(&W).unwrap().balances().confirmed, 1_000);
         assert!(hub.pump.take_wallet_marks().0.contains(&W));
         hub.publish_core_balance(W, &WalletCoreBalance::new(1_000, 0, 0, 0), &BTreeMap::new());
         assert!(
@@ -1979,7 +1977,7 @@ mod tests {
 
         let state = hub.wallet_state(&W).unwrap();
         assert_eq!((state.synced_height, state.processed_height), (105, 105));
-        assert_eq!(state.balances().unwrap().confirmed, 2_000);
+        assert_eq!(state.balances().confirmed, 2_000);
         assert!(hub.history.get(&W, &removed.txid()).is_none());
         let entry = hub.history.get(&W, &locked.txid()).unwrap();
         assert_eq!(entry.context, TransactionContext::Mempool);
@@ -1992,10 +1990,10 @@ mod tests {
         };
         assert!(changed.contains(&removed.txid()) && changed.contains(&locked.txid()));
 
-        // Truncated below the first scanned block: the balance is unknown again, so
-        // hosts hear of it although the amount didn't change.
+        // Truncated below the first scanned block: the wallet is catching up again,
+        // so hosts hear of it although the amount didn't change.
         hub.apply_wallet_event(&truncated(0, Vec::new(), Vec::new(), 2_000));
-        assert!(hub.wallet_state(&W).unwrap().balances().is_none());
+        assert!(hub.wallet_state(&W).unwrap().balances().catching_up);
         assert!(hub.pump.take_wallet_marks().0.contains(&W));
     }
 
