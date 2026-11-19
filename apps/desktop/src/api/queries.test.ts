@@ -1,9 +1,10 @@
 // Platform activity is read again while a move or send is held.
 
 import { describe, expect, it } from "vitest";
+import type { Balances } from "./generated/Balances";
 import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
-import { PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, shieldedReading } from "./queries";
+import { PENDING_MOVE_REFETCH_MS, platformActivityRefetchMs, poolReading, settledBalance, shieldedReading } from "./queries";
 
 const row = (over: Partial<PlatformActivity>): PlatformActivity => ({
   id: "r",
@@ -58,5 +59,15 @@ describe("Home's reading of a pool query", () => {
     expect(shieldedReading({ ...status, ready: false })).toBe("loading");
     expect(shieldedReading(status)).toBe(125_000_000);
     expect(shieldedReading({ ...status, balance: "0" })).toBe(0);
+  });
+});
+
+describe("the wallet balance the screens read", () => {
+  const known: Balances = { confirmed: 5, unconfirmed: 1, immature: 0, locked: 0, total: 6, coinjoin: 0, catchingUp: false };
+
+  it("is withheld while the wallet is catching up, and passed on once it is not", () => {
+    expect(settledBalance({ ...known, catchingUp: true })).toBeNull();
+    expect(settledBalance(known)).toBe(known);
+    expect(settledBalance(null)).toBeNull();
   });
 });
