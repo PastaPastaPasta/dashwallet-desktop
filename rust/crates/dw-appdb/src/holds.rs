@@ -137,6 +137,10 @@ mod tests {
             created_at: 1,
             updated_at: 1,
             last_error: None,
+            abandon_tx: None,
+            abandon_log: None,
+            legacy_bound: false,
+            resend_marked: false,
         }
     }
 

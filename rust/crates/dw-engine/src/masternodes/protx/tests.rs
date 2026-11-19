@@ -1227,6 +1227,10 @@ fn mg04_a_confirmed_registration_settles_and_its_collateral_lock_follows_the_use
         created_at: 1,
         updated_at: 1,
         last_error: None,
+        abandon_tx: None,
+        abandon_log: None,
+        legacy_bound: false,
+        resend_marked: false,
     };
     (f.db())
         .insert_shared_session_durable(&f.wallet.to_string(), &session, 1)

@@ -2475,6 +2475,162 @@ fn test_QT_126_abandon_spends_a_reserved_coin_and_releases_once_buried() {
     assert_eq!(f.row(1, &id).reserved, "[]");
 }
 
+/// `(txid, outcome, code)` of each entry of a row's abandon log.
+fn abandon_log(row: &dw_appdb::SharedSessionRow) -> Vec<(String, Option<String>, Option<String>)> {
+    let log: Vec<serde_json::Value> =
+        serde_json::from_str(row.abandon_log.as_deref().unwrap_or("[]")).unwrap();
+    let text = |v: &serde_json::Value| v.as_str().map(str::to_string);
+    log.iter()
+        .map(|e| {
+            (
+                text(&e["txid"]).unwrap(),
+                text(&e["outcome"]),
+                text(&e["code"]),
+            )
+        })
+        .collect()
+}
+
+/// A participant's abandon of its out session, as QT-126's.
+fn abandoned_participant(f: &Fx) -> String {
+    let id = three_approved(f);
+    f.imported(1, &f.message(0, &id));
+    f.sign(1, &id, 301 * COIN).unwrap();
+    id
+}
+
+/// MG-10 §4.4 change 4: the abandon spend's bytes and its log entry are
+/// saved before the hand-off, and the hand-off's outcome is recorded in
+/// that entry.
+#[test]
+fn test_an_abandon_spend_is_stored_with_its_outcome() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.abandon(1, &id).unwrap();
+    let spend = f.net.sent()[0].clone();
+    let row = f.row(1, &id);
+    assert_eq!(row.abandon_tx, Some(dashcore::consensus::serialize(&spend)));
+    let txid = spend.txid().to_string();
+    assert_eq!(abandon_log(&row), [(txid, Some("sent".into()), None)]);
+    let log: serde_json::Value = serde_json::from_str(row.abandon_log.as_deref().unwrap()).unwrap();
+    let input = spend.input[0].previous_output;
+    assert_eq!(
+        log[0]["inputs"],
+        serde_json::json!([format!("{}:{}", input.txid, input.vout)])
+    );
+    let fee = crate::send::plan::fee_for(
+        key_wallet::wallet::managed_wallet_info::fee::FeeRate::new(crate::send::MIN_FEE_PER_KB),
+        super::super::protx::build::tx_size(1, &[spend.output[0].script_pubkey.len()], 0),
+    );
+    assert_eq!(log[0]["fee"].as_u64(), fee);
+    assert_eq!(log[0]["legacy"], serde_json::json!(false));
+    assert!(!row.legacy_bound && !row.resend_marked);
+    assert_eq!(row.last_error, None);
+}
+
+/// R2: a definite refusal of the spend's first hand-off is `not_sent`, an
+/// unknown outcome `maybe_sent`; each keeps its code.
+#[test]
+fn test_an_abandon_hand_off_records_a_refusal_and_an_unknown_outcome() {
+    for (unknown, outcome) in [(false, "not_sent"), (true, "maybe_sent")] {
+        let f = fx(3, true);
+        let id = abandoned_participant(&f);
+        if unknown {
+            f.net.unconfirm_next();
+        } else {
+            f.net.reject_next();
+        }
+        f.abandon(1, &id).unwrap();
+        assert!(f.net.sent().is_empty());
+        let row = f.row(1, &id);
+        let log = abandon_log(&row);
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].1.as_deref(), Some(outcome));
+        assert!(log[0].2.is_some());
+        assert_eq!(log[0].2, row.last_error);
+        assert!(row.abandon_tx.is_some());
+    }
+}
+
+/// R2, the Sol r4 seam: a spend handed off and the engine gone before its
+/// outcome is written keeps its bytes and id, with no outcome.
+#[test]
+fn test_an_abandon_crash_after_its_hand_off_keeps_the_spend_without_an_outcome() {
+    let mut f = fx(3, true);
+    let id = abandoned_participant(&f);
+    *f.seam.crash.lock().unwrap() = Some(CrashPoint::HandedOff);
+    assert!(f.abandon(1, &id).is_err());
+    *f.seam.crash.lock().unwrap() = None;
+    f.restart();
+    let spend = f.net.sent()[0].clone();
+    let row = f.row(1, &id);
+    assert_eq!(row.abandon_tx, Some(dashcore::consensus::serialize(&spend)));
+    assert_eq!(abandon_log(&row), [(spend.txid().to_string(), None, None)]);
+}
+
+/// R2 (Opus r5 m5, r6 n3): a resend is marked before its hand-off, so a
+/// crash in it reads the marker after a restart, never the earlier refusal.
+#[test]
+fn test_a_resend_crash_in_its_hand_off_reads_the_marker() {
+    let mut f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    assert!(!f.row(0, &id).resend_marked);
+    *f.seam.crash.lock().unwrap() = Some(CrashPoint::HandedOff);
+    assert!(f.send(0, &id, 400 * COIN + FEE).is_err());
+    *f.seam.crash.lock().unwrap() = None;
+    f.restart();
+    let row = f.row(0, &id);
+    assert_eq!(
+        row.last_error.as_deref(),
+        Some(dw_appdb::RESEND_IN_PROGRESS)
+    );
+    assert!(row.resend_marked);
+    assert_eq!(f.net.sent().len(), 1);
+}
+
+/// A refused resend records its own outcome's code in place of the
+/// marker (a replay's rejection is never definite), and the mark stays, so
+/// the read can tell it from a first refusal (Opus r6 n3).
+#[test]
+fn test_a_refused_resend_records_its_own_code_and_keeps_the_mark() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    assert_eq!(
+        f.row(0, &id).last_error.as_deref(),
+        Some("send.broadcast_rejected")
+    );
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    let row = f.row(0, &id);
+    assert!(row.resend_marked);
+    assert_eq!(row.last_error.as_deref(), Some("send.broadcast_unknown"));
+}
+
+/// The marker sits after the resend's guards and charge: a resend refused
+/// there leaves the earlier code and no mark.
+#[test]
+fn test_a_resend_refused_before_its_hand_off_leaves_the_earlier_code() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.net.reject_next();
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    let first = f.row(0, &id).last_error;
+    assert_eq!(
+        send_code(&f.send(0, &id, FEE).unwrap_err()),
+        "send.grant_exceeded"
+    );
+    let row = f.row(0, &id);
+    assert!(!row.resend_marked);
+    assert_eq!(row.last_error, first);
+}
+
 /// NIT-4: a ChainLocked conflict is buried at any depth.
 #[test]
 fn test_QT_126_a_chainlocked_conflict_releases_at_once() {

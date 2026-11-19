@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut};
+use dw_appdb::AbandonOutcome;
 use dw_protx::shared::session::Stage;
 use dw_protx::shared::{ProRegTxV3, SpecialTx};
 use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
@@ -17,7 +18,7 @@ use key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use super::super::MasternodesError;
 use super::super::protx::build::{Context, SEQUENCE, to_sign, tx_size};
 use super::super::protx::charge_fee;
-use super::super::protx::ops::error_code;
+use super::super::protx::ops::{encode_inputs, error_code};
 use super::super::shared_records::SharedStage;
 use super::build::sign_own_inputs;
 use super::store::{
@@ -25,9 +26,13 @@ use super::store::{
 };
 use crate::coinjoin::{SIGHASH_ALL, sign_p2pkh_inputs};
 use crate::coins::{CoinFence, now_secs, own_address_info, read_coins};
+use crate::platform::lease::Outcome;
 use crate::send::plan::dust_threshold;
 use crate::send::plan::fee_for;
-use crate::send::{MIN_FEE_PER_KB, PreparedSummary, SendFailure, SpendCharge, l1_address};
+use crate::send::{
+    BroadcastOutcome, MIN_FEE_PER_KB, PreparedSummary, SendFailure, SpendCharge, TxDraft,
+    attempt_outcome, l1_address,
+};
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// A refusal past `out_at` names the stage it reads (D17).
@@ -42,7 +47,9 @@ impl NetworkSession {
     /// fenced hand-off, the outcome's code kept as the row's `last_error`.
     /// `out_at` is never cleared: whoever holds the other signatures may
     /// have the bytes too (D17), so a failed first attempt is resent or
-    /// abandoned, never discarded. `maybe_out`: a resend (MG-04 D7).
+    /// abandoned, never discarded. `maybe_out`: a resend (MG-04 D7), whose
+    /// row reads [`dw_appdb::RESEND_IN_PROGRESS`] from just before its
+    /// hand-off until its outcome is written (MG-10 §4.4 change 4).
     #[expect(clippy::too_many_arguments, reason = "one hand-off")]
     pub(super) async fn deliver_shared(
         self: &Arc<Self>,
@@ -55,6 +62,94 @@ impl NetworkSession {
         maybe_out: bool,
     ) -> Result<(), MasternodesError> {
         let draft = self.new_draft(wallet, HashSet::new(), false)?;
+        if maybe_out {
+            let (w, id) = (wallet.to_string(), id.to_string());
+            if !self
+                .appdb_op(move |db| db.mark_shared_session_resend_durable(&w, &id))
+                .await?
+            {
+                return Err(MasternodesError::SharedSessionNotFound);
+            }
+        }
+        let outcome = self
+            .hand_off(&draft, tx, summary, charge, fence, maybe_out)
+            .await;
+        #[cfg(test)]
+        super::super::protx::ops::crash_at(self, super::super::protx::ops::CrashPoint::HandedOff)?;
+        let error = outcome.as_ref().err().map(error_code);
+        let (w, id) = (wallet.to_string(), id.to_string());
+        self.appdb_op(move |db| db.record_shared_session_attempt(&w, &id, error.as_deref()))
+            .await?;
+        self.masternodes.local_change();
+        self.hub.pump.mark_balances(wallet);
+        Ok(())
+    }
+
+    /// Hands an abandon spend off, its bytes and `abandon_log` entry saved
+    /// first (MG-10 §4.4 change 4): as [`Self::deliver_shared`], but the
+    /// attempt's outcome is folded into that entry with its code as
+    /// `last_error`, synced, and returned. `first`: the spend's first
+    /// hand-off, the only one whose definite refusal shows its bytes never
+    /// left; an error before any hand-off is such a refusal. A replay is
+    /// run as a resend of bytes that may be out.
+    #[expect(clippy::too_many_arguments, reason = "one hand-off")]
+    pub(super) async fn deliver_abandon(
+        self: &Arc<Self>,
+        wallet: WalletId,
+        id: &str,
+        tx: Transaction,
+        summary: PreparedSummary,
+        charge: SpendCharge,
+        fence: CoinFence,
+        first: bool,
+    ) -> Result<Outcome, MasternodesError> {
+        let txid = tx.txid().to_string();
+        let result = match self.new_draft(wallet, HashSet::new(), false) {
+            Ok(draft) => {
+                self.hand_off(&draft, tx, summary, charge, fence, !first)
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        #[cfg(test)]
+        super::super::protx::ops::crash_at(self, super::super::protx::ops::CrashPoint::HandedOff)?;
+        let outcome = attempt_outcome(&result);
+        let code = result.as_ref().err().map(error_code);
+        let logged = match outcome {
+            Outcome::Sent => AbandonOutcome::Sent,
+            Outcome::NotSent => AbandonOutcome::NotSent,
+            Outcome::MaybeSent => AbandonOutcome::MaybeSent,
+        };
+        let (w, id) = (wallet.to_string(), id.to_string());
+        let recorded = self
+            .appdb_op(move |db| {
+                db.record_shared_abandon_outcome_durable(
+                    &w,
+                    &id,
+                    &txid,
+                    logged,
+                    code.as_deref(),
+                    first,
+                )
+            })
+            .await?;
+        self.masternodes.local_change();
+        self.hub.pump.mark_balances(wallet);
+        if !recorded {
+            return Err(MasternodesError::SharedSessionNotFound);
+        }
+        Ok(outcome)
+    }
+
+    async fn hand_off(
+        &self,
+        draft: &Arc<TxDraft>,
+        tx: Transaction,
+        summary: PreparedSummary,
+        charge: SpendCharge,
+        fence: CoinFence,
+        maybe_out: bool,
+    ) -> Result<BroadcastOutcome, EngineError> {
         #[cfg(test)]
         if let Some(seam) = self.masternodes.protx_seam() {
             *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&seam.broadcaster));
@@ -64,13 +159,7 @@ impl NetworkSession {
         if maybe_out {
             prepared.refund_unadmitted();
         }
-        let error = outcome.as_ref().err().map(error_code);
-        let (w, id) = (wallet.to_string(), id.to_string());
-        self.appdb_op(move |db| db.record_shared_session_attempt(&w, &id, error.as_deref()))
-            .await?;
-        self.masternodes.local_change();
-        self.hub.pump.mark_balances(wallet);
-        Ok(())
+        outcome
     }
 
     /// The summary a hand-off shows, read under `fence`: this wallet's
@@ -199,10 +288,11 @@ impl NetworkSession {
 
     /// The exit from an out session (§9.3, D26): the largest of its
     /// reserved coins the wallet still holds unspent and no other pending
-    /// spend holds, spent whole to a
-    /// fresh change address of its own (charged the fee), `abandon_txid`
-    /// saved before the hand-off. The row and its locks stay until a block
-    /// settles the session (`confirmed`, or `conflicted` by this spend).
+    /// spend holds, spent whole to a fresh change address of its own
+    /// (charged the fee), `abandon_txid`, its bytes and its `abandon_log`
+    /// entry saved before the hand-off. The row and its locks stay until a
+    /// block settles the session (`confirmed`, or `conflicted` by this
+    /// spend).
     /// A coordinator whose registration the wallet recorded holds none
     /// unspent until that transaction is abandoned (QT-091, as MG-04 D49).
     /// With no such coin it refuses `shared_stage` naming the caller's
@@ -279,9 +369,21 @@ impl NetworkSession {
             sign_p2pkh_inputs(&signer, &mut tx, &inputs, SIGHASH_ALL).await?;
             let txid = tx.txid().to_string();
             let (w_id, id) = (wallet.to_string(), row.id.clone());
+            let (bytes, inputs) = (
+                dashcore::consensus::serialize(&tx),
+                encode_inputs(&[outpoint]),
+            );
             let saved = self
                 .appdb_op(move |db| {
-                    db.set_shared_session_abandon_durable(&w_id, &id, &txid, now_secs())
+                    db.set_shared_session_abandon_durable(
+                        &w_id,
+                        &id,
+                        &txid,
+                        &bytes,
+                        fee,
+                        &inputs,
+                        now_secs(),
+                    )
                 })
                 .await?;
             if !saved {
@@ -290,8 +392,9 @@ impl NetworkSession {
             let summary = self
                 .summary_of(&w, &tx, std::slice::from_ref(&utxo), fee, Some(&address))
                 .await;
-            self.deliver_shared(wallet, &row.id, tx, summary, charge, fence, false)
+            self.deliver_abandon(wallet, &row.id, tx, summary, charge, fence, true)
                 .await
+                .map(drop)
         }
         .await;
         lease.end();
