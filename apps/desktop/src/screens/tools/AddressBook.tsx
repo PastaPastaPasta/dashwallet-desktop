@@ -229,7 +229,7 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
     <div className="tool-stack" data-testid="tools-addressBook">
       <div className="tool-actions">
         <PurposeSwitch model={model} />
-        {model.canCreate && (model.all ?? []).some((e) => e.purpose === model.purpose) && (
+        {model.canCreate && (model.all === null || model.search !== "" || model.all.some((e) => e.purpose === model.purpose)) && (
           <DashButton variant="tintedBlue" size="small" data-testid="address-book-new" onClick={() => edit(null)}>
             New
           </DashButton>

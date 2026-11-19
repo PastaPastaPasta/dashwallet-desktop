@@ -9,13 +9,13 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCategoryName } from "../api/generated/TxCategoryName";
 import type { TxRow } from "../api/generated/TxRow";
 import { errorMessage } from "../api/backend";
-import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, useSyncStatus, useWalletScanHeight, type HistoryFilter } from "../api/queries";
+import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, useWalletCatchUp, type HistoryFilter } from "../api/queries";
 import { fileErrorText } from "../app/files";
 import { navigate } from "../app/ui";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
-import { activityFiltersApplied, catchUpArrival, EMPTY, historyEmptyCopy, listDisplay, listShowsCount, optionalHistorySource, sourceGap, type ListSource } from "../components/emptyStates";
+import { activityFiltersApplied, EMPTY, historyEmptyCopy, listDisplay, listShowsCount, optionalHistorySource, sourceGap, type ListSource } from "../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
@@ -99,15 +99,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     focusWhenIdle(searchRef);
   };
   // The engine's own reading, not the display's hold, plus this wallet's filter checkpoint.
-  const sync = useSyncStatus();
-  const scan = useWalletScanHeight(walletId);
-  const arrival = catchUpArrival({
-    status: sync.raw,
-    failed: sync.isError,
-    scanPending: scan.isPending,
-    scanFailed: scan.isError,
-    scanHeight: scan.data,
-  });
+  const { arrival, recheck } = useWalletCatchUp(walletId);
   const platformCount = extraShown.filter((r) => rowSource(r) === "platform").length;
   const shieldedCount = extraShown.filter((r) => rowSource(r) === "shielded").length;
   type Retryable = { error: unknown; refetch: () => unknown };
@@ -122,6 +114,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     pending: history.isPending,
     failed: history.isError,
     hasSnapshot: history.data !== undefined,
+    refreshing: history.isFetching,
     arrival,
     extras: optional.map((x) => x.source),
   });
@@ -279,13 +272,13 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
           <TxTable rows={rows} ctx={ctx} onOpen={onOpen} sort={sort} onSort={setSort} />
         ) : historyList.kind === "failed" ? null : (
           <EmptyState
-            testId={empty.action ? "tx-empty" : "tx-syncing"}
+            testId={historyList.kind === "empty" ? "tx-empty" : "tx-syncing"}
             art={empty.art}
             title={empty.title}
             message={empty.message}
             action={
               empty.action && (
-                <DashButton variant="filledBlue" data-testid={empty.action.testId} onClick={() => (filtered ? clearFilters() : navigate("receive"))}>
+                <DashButton variant="filledBlue" data-testid={empty.action.testId} onClick={() => (historyList.kind !== "empty" ? recheck() : filtered ? clearFilters() : navigate("receive"))}>
                   {empty.action.label}
                 </DashButton>
               )

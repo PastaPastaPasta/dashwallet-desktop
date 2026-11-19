@@ -45,7 +45,7 @@ describe("list display", () => {
   const extra = { pending: false, failed: false, hasSnapshot: true, rowCount: 0 };
 
   it("keeps rows, waits while anything is still out, and confirms empty only then", () => {
-    expect(listDisplay({ ...base, rowCount: 3, failed: true })).toEqual({ kind: "rows", incomplete: false });
+    expect(listDisplay({ ...base, rowCount: 3 })).toEqual({ kind: "rows", incomplete: false });
     expect(listDisplay({ ...base, pending: true, hasSnapshot: false })).toEqual({ kind: "arriving", why: "pending" });
     expect(listDisplay({ ...base, failed: true, hasSnapshot: false })).toEqual({ kind: "failed" });
     expect(listDisplay({ ...base, arrival: "syncing" })).toEqual({ kind: "arriving", why: "syncing" });
@@ -65,9 +65,31 @@ describe("list display", () => {
     // Rows in hand stay, with the failed source beside them.
     expect(listDisplay({ ...base, rowCount: 2, extras: [{ ...extra, failed: true }] })).toEqual({ kind: "rows", incomplete: true });
     expect(listDisplay({ ...base, failed: true, extras: [{ ...extra, rowCount: 1 }] })).toEqual({ kind: "rows", incomplete: true });
-    // A failed refetch of a source that has rows leaves nothing missing that was shown before.
-    expect(listDisplay({ ...base, rowCount: 2, failed: true })).toEqual({ kind: "rows", incomplete: false });
+    // A failed refetch of a source that has rows keeps them, but they are not a count to show.
+    expect(listDisplay({ ...base, rowCount: 2, failed: true })).toEqual({ kind: "rows", incomplete: true });
+    expect(listDisplay({ ...base, rowCount: 2, extras: [{ ...extra, rowCount: 1, failed: true }] })).toEqual({ kind: "rows", incomplete: true });
     expect(sourceGap({ ...extra, failed: true, rowCount: 3 })).toBe(false);
+  });
+
+  it("does not count rows found while the wallet is still catching up", () => {
+    // A restore that has found its first payment is still scanning for the rest.
+    for (const arrival of ["starting", "syncing", "stopped", "unreadable"] as const) {
+      const display = listDisplay({ ...base, rowCount: 1, arrival });
+      expect(display).toEqual({ kind: "rows", incomplete: true });
+      expect(listShowsCount(display, false)).toBe(false);
+    }
+    expect(listShowsCount(listDisplay({ ...base, rowCount: 1 }), false)).toBe(true);
+  });
+
+  it("does not offer an empty snapshot that is being read again as empty", () => {
+    // A payment arrived: history and coins are stale until their reads are back.
+    expect(listDisplay({ ...base, refreshing: true })).toEqual({ kind: "arriving", why: "pending" });
+    expect(listDisplay({ ...base, extras: [{ ...extra, refreshing: true }] })).toEqual({ kind: "arriving", why: "pending" });
+    expect(listShowsCount(listDisplay({ ...base, refreshing: true }), true)).toBe(false);
+    // While catching up the syncing card stays as it is, and a list with rows does not flicker.
+    expect(listDisplay({ ...base, refreshing: true, arrival: "syncing" })).toEqual({ kind: "arriving", why: "syncing" });
+    expect(listDisplay({ ...base, rowCount: 2, refreshing: true })).toEqual({ kind: "rows", incomplete: false });
+    expect(listDisplay({ ...base, refreshing: false })).toEqual({ kind: "empty" });
   });
 
   it("does not call a rejected optional read empty, and keeps a failed first read beside usable rows", () => {
@@ -80,32 +102,34 @@ describe("list display", () => {
   });
 
   it("omits absent commands and unsupported optional pools, and flags real read failures", () => {
-    expect(optionalHistorySource({ isPending: false, isError: false, isSuccess: true, data: null }, 0)).toBeNull();
+    expect(optionalHistorySource({ isPending: false, isError: false, isSuccess: true, isFetching: false, data: null }, 0)).toBeNull();
     for (const code of ["shielded.not_active", "platform.feature_off", "not_implemented", "platform.not_implemented"]) {
       expect(
         optionalHistorySource(
-          { isPending: false, isError: true, isSuccess: false, data: undefined, error: { code, message: code, data: null } },
+          { isPending: false, isError: true, isSuccess: false, isFetching: false, data: undefined, error: { code, message: code, data: null } },
           0,
         ),
       ).toBeNull();
     }
     expect(
       optionalHistorySource(
-        { isPending: false, isError: true, isSuccess: false, data: undefined, error: { code: "internal", message: "boom", data: null } },
+        { isPending: false, isError: true, isSuccess: false, isFetching: false, data: undefined, error: { code: "internal", message: "boom", data: null } },
         0,
       ),
-    ).toEqual({ pending: false, failed: true, hasSnapshot: false, rowCount: 0 });
-    expect(optionalHistorySource({ isPending: true, isError: false, isSuccess: false, data: undefined }, 0)).toEqual({
+    ).toEqual({ pending: false, failed: true, hasSnapshot: false, rowCount: 0, refreshing: false });
+    expect(optionalHistorySource({ isPending: true, isError: false, isSuccess: false, isFetching: true, data: undefined }, 0)).toEqual({
       pending: true,
       failed: false,
       hasSnapshot: false,
       rowCount: 0,
+      refreshing: true,
     });
-    expect(optionalHistorySource({ isPending: false, isError: false, isSuccess: true, data: [{ id: "1" }] }, 1)).toEqual({
+    expect(optionalHistorySource({ isPending: false, isError: false, isSuccess: true, isFetching: true, data: [{ id: "1" }] }, 1)).toEqual({
       pending: false,
       failed: false,
       hasSnapshot: true,
       rowCount: 1,
+      refreshing: true,
     });
   });
 
@@ -147,10 +171,13 @@ describe("history empty", () => {
     });
     expect(historyEmptyCopy({ arrival: "syncing", home: true })).toBe(syncing);
     const waiting: ListArrival[] = ["starting", "syncing", "stopped", "unreadable"];
-    for (const arrival of waiting) {
+    for (const arrival of ["starting", "syncing", "stopped"] as const) {
       expect(historyEmptyCopy({ arrival, home: true }).action).toBeNull();
       expect(historyEmptyCopy({ arrival, home: false }).action).toBeNull();
     }
+    // A catch-up that could not be read is read again, never Receive.
+    expect(historyEmptyCopy({ arrival: "unreadable", home: true }).action).toEqual({ label: "Try again", testId: "history-recheck" });
+    expect(historyEmptyCopy({ arrival: "unreadable", home: false }).action).toEqual({ label: "Try again", testId: "tx-recheck" });
     expect(new Set(waiting.map((arrival) => historyEmptyCopy({ arrival, home: false }).title)).size).toBe(waiting.length);
     expect(historyEmptyCopy({ arrival: "starting", home: true }).title).toBe("The wallet is still starting");
     expect(historyEmptyCopy({ arrival: "stopped", home: false }).title).toBe("Syncing has stopped");
@@ -163,7 +190,8 @@ describe("history empty", () => {
 describe("coins empty", () => {
   it("offers Receive Dash only once caught up, and names each earlier state", () => {
     const waiting: ListArrival[] = ["starting", "syncing", "stopped", "unreadable"];
-    for (const arrival of waiting) expect(coinsEmptyCopy(arrival).action).toBeNull();
+    for (const arrival of ["starting", "syncing", "stopped"] as const) expect(coinsEmptyCopy(arrival).action).toBeNull();
+    expect(coinsEmptyCopy("unreadable").action).toEqual({ label: "Try again", testId: "coins-recheck" });
     expect(new Set(waiting.map((arrival) => coinsEmptyCopy(arrival).title)).size).toBe(waiting.length);
     expect(coinsEmptyCopy("syncing")).toMatchObject({
       title: "Coins are still syncing",

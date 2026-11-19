@@ -22,6 +22,7 @@ import { hasPendingMove } from "../platform/move";
 import type { PoolReading } from "../format/homeBalance";
 import { reconcileLockReport } from "./lockReport";
 import { isChangingUsernameInRequests } from "./username";
+import { catchUpArrival } from "../components/emptyStates";
 
 /** A history query without its paging fields. */
 export type HistoryFilter = Omit<HistoryRequest, "cursor" | "limit">;
@@ -333,10 +334,51 @@ export function useSyncStatus() {
   return { ...query, data: shown ?? raw, raw };
 }
 
-/** This wallet's filter checkpoint. A sync event reads it again. */
+/** How many times events made every scan-height read of a backend stale (`scanHeightsStale`). */
+const scanStale = new WeakMap<object, number>();
+
+/** An event made every scan-height read of `owner` stale (api/events.ts). */
+export function scanHeightsStale(owner: object) {
+  scanStale.set(owner, (scanStale.get(owner) ?? 0) + 1);
+}
+
+/** This wallet's filter checkpoint. A sync event reads it again. A read with no answer cached yet
+ * is not restarted by an invalidation (TanStack hands it the read already out), so a read that an
+ * event overtook reads once more after it settles. */
 export function useWalletScanHeight(walletId: string) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.scanHeight(walletId), queryFn: () => b.walletScanHeight(walletId), retry: false });
+  const client = useQueryClient();
+  return useQuery({
+    queryKey: keys.scanHeight(walletId),
+    queryFn: async ({ signal }) => {
+      const asked = scanStale.get(b) ?? 0;
+      try {
+        return await b.walletScanHeight(walletId);
+      } finally {
+        if (!signal.aborted && (scanStale.get(b) ?? 0) !== asked) setTimeout(() => void client.invalidateQueries({ queryKey: keys.scanHeight(walletId) }), 0);
+      }
+    },
+    retry: false,
+  });
+}
+
+/** Whether this wallet's empty lists are final (`catchUpArrival`), and the way to read again what
+ * could not be read. */
+export function useWalletCatchUp(walletId: string) {
+  const sync = useSyncStatus();
+  const scan = useWalletScanHeight(walletId);
+  const arrival = catchUpArrival({
+    status: sync.raw,
+    failed: sync.isError,
+    scanPending: scan.isPending,
+    scanFailed: scan.isError,
+    scanHeight: scan.data,
+  });
+  const recheck = () => {
+    if (sync.isError) void sync.refetch();
+    if (scan.isError) void scan.refetch();
+  };
+  return { arrival, recheck };
 }
 
 /** Pages of `limit` records; `fetchNextPage` follows the engine's keyset cursor. */

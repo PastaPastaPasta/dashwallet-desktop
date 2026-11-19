@@ -10,9 +10,9 @@ import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { errorMessage } from "../api/backend";
-import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, useWalletScanHeight, type HistoryFilter } from "../api/queries";
+import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
-import { catchUpArrival, historyEmptyCopy, listDisplay, type ListArrival } from "../components/emptyStates";
+import { historyEmptyCopy, listDisplay, type ListArrival } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
@@ -212,17 +212,17 @@ function HomeFrequentOf({ walletId, identity }: { walletId: string; identity: st
 }
 
 /** Recent history with nothing in it yet. Only a caught-up wallet offers Receive. */
-function HistoryEmpty({ arrival }: { arrival: ListArrival }) {
+function HistoryEmpty({ arrival, recheck }: { arrival: ListArrival; recheck: () => void }) {
   const copy = historyEmptyCopy({ arrival, home: true });
   return (
     <EmptyState
-      testId={copy.action ? "history-empty" : "history-syncing"}
+      testId={arrival === "settled" ? "history-empty" : "history-syncing"}
       art={copy.art}
       title={copy.title}
       message={copy.message}
       action={
         copy.action && (
-          <DashButton variant="filledBlue" data-testid={copy.action.testId} onClick={() => navigate("receive")}>
+          <DashButton variant="filledBlue" data-testid={copy.action.testId} onClick={() => (arrival === "settled" ? navigate("receive") : recheck())}>
             {copy.action.label}
           </DashButton>
         )
@@ -235,23 +235,17 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   const balance = useBalance(walletId);
   const pools = usePoolBalances(walletId);
   const sync = useSyncStatus();
-  const scan = useWalletScanHeight(walletId);
+  const { arrival, recheck } = useWalletCatchUp(walletId);
   const recent = useHistory(walletId, RECENT_FILTER, RECENT_COUNT);
   const discreet = useUi((s) => s.discreet);
   const rows = recent.data?.pages[0]?.rows ?? [];
   const ctx = useRowContext(network);
-  const arrival = catchUpArrival({
-    status: sync.raw,
-    failed: sync.isError,
-    scanPending: scan.isPending,
-    scanFailed: scan.isError,
-    scanHeight: scan.data,
-  });
   const historyList = listDisplay({
     rowCount: rows.length,
     pending: recent.isPending,
     failed: recent.isError,
     hasSnapshot: recent.data !== undefined,
+    refreshing: recent.isFetching,
     arrival,
   });
   const syncing = !!sync.data && isSyncing(sync.data);
@@ -304,9 +298,9 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         ) : historyList.kind === "arriving" && historyList.why === "pending" ? (
           <LoadingState testId="history-loading" text="Loading transactions" />
         ) : historyList.kind === "arriving" && historyList.why !== "pending" ? (
-          <HistoryEmpty arrival={historyList.why} />
+          <HistoryEmpty arrival={historyList.why} recheck={recheck} />
         ) : historyList.kind === "empty" ? (
-          <HistoryEmpty arrival="settled" />
+          <HistoryEmpty arrival="settled" recheck={recheck} />
         ) : (
           <>
             <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="overview" />

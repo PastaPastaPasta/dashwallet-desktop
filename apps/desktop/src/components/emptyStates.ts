@@ -52,7 +52,13 @@ export const EMPTY = {
     art: "activity",
     title: "Could not tell whether the wallet has caught up",
     message: "Payments show up here once that can be checked.",
-    action: null,
+    action: { testId: "history-recheck", label: "Try again" },
+  },
+  activityUnreadable: {
+    art: "activity",
+    title: "Could not tell whether the wallet has caught up",
+    message: "Payments show up here once that can be checked.",
+    action: { testId: "tx-recheck", label: "Try again" },
   },
   activityFiltered: {
     art: "search",
@@ -124,7 +130,7 @@ export const EMPTY = {
     art: "coins",
     title: "Could not tell whether the wallet has caught up",
     message: "Coins show up here once that can be checked.",
-    action: null,
+    action: { testId: "coins-recheck", label: "Try again" },
   },
   coinsHidden: {
     art: "coins",
@@ -197,6 +203,8 @@ export type ListSource = {
   failed: boolean;
   hasSnapshot: boolean;
   rowCount: number;
+  /** A read is out for a source that has a snapshot: an event made it stale, or a retry. */
+  refreshing?: boolean;
 };
 
 export function isUnsupportedOptionalSource(error: unknown): boolean {
@@ -209,7 +217,7 @@ export function isUnsupportedOptionalSource(error: unknown): boolean {
 }
 
 export function optionalHistorySource(
-  q: { isPending: boolean; isError: boolean; isSuccess: boolean; data: unknown; error?: unknown },
+  q: { isPending: boolean; isError: boolean; isSuccess: boolean; isFetching: boolean; data: unknown; error?: unknown },
   rowCount: number,
 ): ListSource | null {
   if (q.isSuccess && q.data === null) return null;
@@ -219,11 +227,13 @@ export function optionalHistorySource(
     failed: q.isError,
     hasSnapshot: q.data !== undefined,
     rowCount: q.data == null ? 0 : rowCount,
+    refreshing: q.isFetching,
   };
 }
 
 /** One list, decided once, for the body and every control that depends on it.
- * `incomplete` rows are usable, but a visible source has not answered yet or its first read failed. */
+ * `incomplete` rows are usable, but the wallet has not caught up, a visible source has not answered
+ * yet, or a source's last read failed. */
 export type ListDisplay =
   | { kind: "rows"; incomplete: boolean }
   | { kind: "arriving"; why: "pending" | ListArrival }
@@ -239,12 +249,15 @@ export const sourceGap = (s: ListSource) => s.failed && (!s.hasSnapshot || s.row
  * with them. A confirmed empty result — every visible source answered, and the wallet has caught
  * up — is the only kind that may offer the empty card or a count. An optional source still out
  * is still arriving. A rejected read with no snapshot is a failure, not an empty list, and so is
- * an empty snapshot whose last read failed: the read that failed may be the one with the rows. */
+ * an empty snapshot whose last read failed: the read that failed may be the one with the rows. An
+ * empty snapshot being read again (an event said it changed) is still arriving until that read is
+ * back. */
 export function listDisplay(input: {
   rowCount: number;
   pending: boolean;
   failed: boolean;
   hasSnapshot: boolean;
+  refreshing?: boolean;
   arrival: ListArrival;
   /** Optional sources that are actually on this list. Omit a missing command (`null`). */
   extras?: ListSource[];
@@ -254,22 +267,25 @@ export function listDisplay(input: {
     failed: input.failed,
     hasSnapshot: input.hasSnapshot,
     rowCount: input.hasSnapshot ? input.rowCount : 0,
+    refreshing: input.refreshing,
   };
   const sources = [primary, ...(input.extras ?? [])];
   const rows = sources.reduce((n, s) => n + (s.hasSnapshot ? s.rowCount : 0), 0);
-  if (rows > 0) return { kind: "rows", incomplete: sources.some((s) => !s.hasSnapshot || sourceGap(s)) };
+  if (rows > 0) return { kind: "rows", incomplete: input.arrival !== "settled" || sources.some((s) => !s.hasSnapshot || s.failed) };
   if (sources.some(sourceGap)) return { kind: "failed" };
   if (sourceWaiting(primary)) return { kind: "arriving", why: "pending" };
   if (sources.some(sourceWaiting) || input.arrival !== "settled") {
     const why = sources.some(sourceWaiting) && input.arrival === "settled" ? "syncing" : input.arrival;
     return { kind: "arriving", why: why === "settled" ? "syncing" : why };
   }
+  if (sources.some((s) => s.refreshing)) return { kind: "arriving", why: "pending" };
   return { kind: "empty" };
 }
 
 /** The zero count and the "nothing to export" line are real only for a complete row list, or for
  * a filter that matched nothing after every source had answered. An unfiltered empty card already
- * says so. A list with a source still out, or whose first read failed, is not counted. */
+ * says so. A list still catching up, with a source still out, or whose last read failed, is not
+ * counted. */
 export function listShowsCount(display: ListDisplay, filtered: boolean): boolean {
   return (display.kind === "rows" && !display.incomplete) || (display.kind === "empty" && filtered);
 }
@@ -312,8 +328,10 @@ const COINS_WAITING = {
   unreadable: EMPTY.coinsUnreadable,
 } as const satisfies Record<Exclude<ListArrival, "settled">, EmptyCopy>;
 
-/** Home or Activity with nothing in history yet. Only a caught-up wallet offers Receive. */
+/** Home or Activity with nothing in history yet. Only a caught-up wallet offers Receive; one whose
+ * catch-up could not be read offers to read it again. */
 export function historyEmptyCopy(input: { arrival: ListArrival; home: boolean }): EmptyCopy {
+  if (input.arrival === "unreadable" && !input.home) return EMPTY.activityUnreadable;
   if (input.arrival !== "settled") return HISTORY_WAITING[input.arrival];
   return input.home ? EMPTY.homeHistory : EMPTY.activity;
 }

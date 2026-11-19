@@ -18,7 +18,7 @@ import { announceReceived } from "../payments/received";
 import { onMoveSettled } from "../platform/move";
 import { onRecoverySettled } from "../recovery/model";
 import { onShieldedSettled } from "../shielded/flow";
-import { keys } from "./queries";
+import { keys, scanHeightsStale } from "./queries";
 import { announceable, feedSync } from "./syncDisplay";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
@@ -191,6 +191,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
       client.setQueryData(keys.lockDrain, progress.kind === "draining" ? progress : null);
     }
     const stale = invalidationsFor(event);
+    if (stale === "all" || stale.includes(keys.scanHeightAll)) scanHeightsStale(backend);
     if (stale === "all") {
       stopReconcile();
       void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== keys.network[0] });

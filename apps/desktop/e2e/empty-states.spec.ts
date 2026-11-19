@@ -192,6 +192,26 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("address-book-editor")).toBeVisible();
   });
 
+  test(`an address book that could not be read, or a search of an empty one, keeps New (${theme})`, async ({ page }) => {
+    const errors = await open(page, "funded", theme, "&fail=address_book:none");
+    await tools(page, "addressBook");
+    await expect(page.getByTestId("address-book-problem")).toBeVisible();
+    await expect(page.getByTestId("address-book-empty-add")).toHaveCount(0);
+    await page.getByTestId("address-book-new").click();
+    await expect(page.getByTestId("address-book-editor")).toBeVisible();
+    await page.goto("about:blank");
+    await open(page, "funded", theme);
+    await page.evaluate((id) => {
+      window.__dwFixture!.world.tools.addressBook[id] = [];
+    }, WALLET);
+    await tools(page, "addressBook");
+    await expect(page.getByTestId("address-book-empty-add")).toBeVisible();
+    await page.getByTestId("address-book-search").fill("rent");
+    await expect(page.getByTestId("address-book-empty-clear")).toBeVisible();
+    await expect(page.getByTestId("address-book-new")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
   test(`an empty receiving address book offers Receive Dash (${theme})`, async ({ page }) => {
     const errors = await open(page, "funded", theme);
     await page.evaluate((id) => {
@@ -512,6 +532,103 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("history-empty-receive")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
+
+  test(`a sync event during the first scan-height read is read again (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty", theme);
+    await expect(page.getByTestId("history-empty-receive")).toBeVisible();
+    await page.evaluate((walletId) => {
+      const f = window.__dwFixture!;
+      (f.world.wallets[0] as { scanHeight?: number | null }).scanHeight = 1;
+      (window as unknown as { __release: () => void }).__release = f.hold("wallet_scan_height");
+      f.emit({ kind: "walletLoadChanged", network: f.world.launch.network.dirName, walletId, loaded: true });
+    }, WALLET);
+    await expect(page.getByTestId("history-syncing")).toContainText("The wallet is still starting");
+    const before = await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      delete (f.world.wallets[0] as { scanHeight?: number | null }).scanHeight;
+      const n = f.calls.length;
+      f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync });
+      return n;
+    });
+    // The event's own reads have started, so its invalidation met the held read.
+    await expect.poll(() => page.evaluate((n) => window.__dwFixture!.calls.slice(n).includes("sync_status"), before)).toBe(true);
+    await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+    await expect(page.getByTestId("history-empty-receive")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`activity keeps rows found while catching up, but does not count them (${theme})`, async ({ page }) => {
+    const errors = await open(page, "funded", theme);
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId("tx-footer")).toContainText("transactions");
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      (f.world.wallets[0] as { scanHeight?: number | null }).scanHeight = 1;
+      f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync });
+    });
+    await expect(page.getByTestId("tx-footer")).toHaveCount(0);
+    await expect(page.getByTestId("tx-list")).toBeVisible();
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      delete (f.world.wallets[0] as { scanHeight?: number | null }).scanHeight;
+      f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync });
+    });
+    await expect(page.getByTestId("tx-footer")).toContainText("transactions");
+    expect(errors).toEqual([]);
+  });
+
+  test(`an empty list being read again after a payment does not offer Receive (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty-activity", theme);
+    await expect(page.getByTestId("history-empty-receive")).toBeVisible();
+    const changed = (command: "history_page" | "utxos") =>
+      page.evaluate(
+        ({ walletId, command }) => {
+          const f = window.__dwFixture!;
+          (window as unknown as { __release: () => void }).__release = f.hold(command);
+          f.emit({ kind: "historyChanged", network: f.world.launch.network.dirName, walletId, txids: [] });
+        },
+        { walletId: WALLET, command },
+      );
+    const release = () => page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+    await changed("history_page");
+    await expect(page.getByTestId("history-loading")).toBeVisible();
+    await expect(page.getByTestId("history-empty-receive")).toHaveCount(0);
+    await release();
+    await expect(page.getByTestId("history-empty-receive")).toBeVisible();
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId("tx-empty-receive")).toBeVisible();
+    await changed("history_page");
+    await expect(page.getByTestId("tx-loading")).toBeVisible();
+    await expect(page.getByTestId("tx-empty-receive")).toHaveCount(0);
+    await release();
+    await expect(page.getByTestId("tx-empty-receive")).toBeVisible();
+    await tools(page, "coinSelection");
+    await expect(page.getByTestId("coins-empty-receive")).toBeVisible();
+    await changed("utxos");
+    await expect(page.getByTestId("coins-loading")).toBeVisible();
+    await expect(page.getByTestId("coins-empty-receive")).toHaveCount(0);
+    await release();
+    await expect(page.getByTestId("coins-empty-receive")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  for (const [where, prefix, receive, card] of [
+    ["home", "history", "history-empty-receive", "history-syncing"],
+    ["activity", "tx", "tx-empty-receive", "tx-syncing"],
+    ["coin selection", "coins", "coins-empty-receive", "coins-none"],
+  ] as const) {
+    test(`a catch-up that could not be read offers Try again on ${where}, which reads it again (${theme})`, async ({ page }) => {
+      const errors = await open(page, "empty-activity", theme, "&fail=wallet_scan_height:none");
+      if (where === "activity") await page.getByTestId("sidebar-activity").click();
+      if (where === "coin selection") await tools(page, "coinSelection");
+      await expect(page.getByTestId(card)).toContainText("Could not tell whether the wallet has caught up");
+      await expect(page.getByTestId(receive)).toHaveCount(0);
+      await page.evaluate(() => window.__dwFixture!.fail("wallet_scan_height", null));
+      await page.getByTestId(`${prefix}-recheck`).click();
+      await expect(page.getByTestId(receive)).toBeVisible();
+      expect(errors).toEqual([]);
+    });
+  }
 
   test(`home, activity and coin selection wait while Core is scanning (${theme})`, async ({ page }) => {
     const errors = await open(page, "empty-syncing", theme);

@@ -7,11 +7,11 @@ import type { QueryClient } from "@tanstack/react-query";
 import { errorMessage, type Backend } from "../../api/backend";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { Utxo } from "../../api/generated/Utxo";
-import { keys, useSyncStatus, useUtxos, useWalletScanHeight } from "../../api/queries";
+import { keys, useUtxos, useWalletCatchUp } from "../../api/queries";
 import { navigate, openPayForm } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CoinSummary, CoinTable } from "../../components/coins";
-import { catchUpArrival, coinsEmptyCopy, EMPTY, listDisplay } from "../../components/emptyStates";
+import { coinsEmptyCopy, EMPTY, listDisplay } from "../../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import type { Unit } from "../../format/amount";
 import { useDisplay } from "../../format/display";
@@ -48,20 +48,13 @@ export function newCoinSelection(b: Backend, client: QueryClient, walletId: stri
 
 export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
   const utxos = useUtxos(walletId, true);
-  const sync = useSyncStatus();
-  const scan = useWalletScanHeight(walletId);
-  const arrival = catchUpArrival({
-    status: sync.raw,
-    failed: sync.isError,
-    scanPending: scan.isPending,
-    scanFailed: scan.isError,
-    scanHeight: scan.data,
-  });
+  const { arrival, recheck } = useWalletCatchUp(walletId);
   const coins = listDisplay({
     rowCount: utxos.data?.length ?? 0,
     pending: utxos.isPending,
     failed: utxos.isError,
     hasSnapshot: utxos.data !== undefined,
+    refreshing: utxos.isFetching,
     arrival,
   });
   const shown = useDisplay(network);
@@ -123,7 +116,7 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
             message={coinCopy.message}
             action={
               coinCopy.action && (
-                <DashButton variant="filledBlue" data-testid={coinCopy.action.testId} onClick={() => navigate("receive")}>
+                <DashButton variant="filledBlue" data-testid={coinCopy.action.testId} onClick={() => (coins.kind === "empty" ? navigate("receive") : recheck())}>
                   {coinCopy.action.label}
                 </DashButton>
               )
