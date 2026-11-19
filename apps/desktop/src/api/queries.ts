@@ -10,7 +10,7 @@ import type { SyncStatus } from "./generated/SyncStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import { creditsToDuffs } from "./pending";
-import { feedSync, rawSync, readTicket, useShownSync } from "./syncDisplay";
+import { feedSync, rawSync, readTicket, useRawSync, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
@@ -325,9 +325,10 @@ export function useSyncStatus() {
     },
   });
   const shown = useShownSync(b);
-  const raw = query.data;
   // `data` is the smoothed display. `raw` is the engine's own reading: an empty list follows that,
-  // not a hold that keeps `caughtUp` true for a new block.
+  // not a hold that keeps `caughtUp` true for a new block. It comes from the store an event feeds,
+  // so it is the event's reading even while the read that follows is out or has failed.
+  const raw = useRawSync(b) ?? query.data;
   if (raw === undefined) return { ...query, raw: undefined as SyncStatus | undefined };
   return { ...query, data: shown ?? raw, raw };
 }

@@ -15,7 +15,7 @@ import { navigate } from "../app/ui";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
-import { activityFiltersApplied, catchUpArrival, EMPTY, historyEmptyCopy, listDisplay, listShowsCount, optionalHistorySource, type ListSource } from "../components/emptyStates";
+import { activityFiltersApplied, catchUpArrival, EMPTY, historyEmptyCopy, listDisplay, listShowsCount, optionalHistorySource, sourceGap, type ListSource } from "../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
@@ -125,10 +125,8 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     arrival,
     extras: optional.map((x) => x.source),
   });
-  const gaps: Retryable[] = [
-    ...(history.isError && history.data === undefined ? [history] : []),
-    ...optional.filter((x) => x.source.failed && !x.source.hasSnapshot).map((x) => x.query),
-  ];
+  const coreSource: ListSource = { pending: history.isPending, failed: history.isError, hasSnapshot: history.data !== undefined, rowCount: coreRows.length };
+  const gaps: Retryable[] = [...(sourceGap(coreSource) ? [history] : []), ...optional.filter((x) => sourceGap(x.source)).map((x) => x.query)];
   const retryGaps = () => {
     for (const q of gaps) void q.refetch();
   };

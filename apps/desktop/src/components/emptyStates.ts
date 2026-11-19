@@ -231,12 +231,15 @@ export type ListDisplay =
   | { kind: "empty" };
 
 const sourceWaiting = (s: ListSource) => !s.hasSnapshot && !s.failed;
-const sourceGap = (s: ListSource) => s.failed && !s.hasSnapshot;
+/** A source whose last read failed and that has nothing to show for it: no snapshot, or an empty
+ * one that the failed read might have filled. */
+export const sourceGap = (s: ListSource) => s.failed && (!s.hasSnapshot || s.rowCount === 0);
 
 /** Rows already in hand stay, including after a refetch fails, and a first-read failure stays
  * with them. A confirmed empty result — every visible source answered, and the wallet has caught
  * up — is the only kind that may offer the empty card or a count. An optional source still out
- * is still arriving. A rejected read with no snapshot is a failure, not an empty list. */
+ * is still arriving. A rejected read with no snapshot is a failure, not an empty list, and so is
+ * an empty snapshot whose last read failed: the read that failed may be the one with the rows. */
 export function listDisplay(input: {
   rowCount: number;
   pending: boolean;
@@ -254,7 +257,7 @@ export function listDisplay(input: {
   };
   const sources = [primary, ...(input.extras ?? [])];
   const rows = sources.reduce((n, s) => n + (s.hasSnapshot ? s.rowCount : 0), 0);
-  if (rows > 0) return { kind: "rows", incomplete: sources.some((s) => !s.hasSnapshot) };
+  if (rows > 0) return { kind: "rows", incomplete: sources.some((s) => !s.hasSnapshot || sourceGap(s)) };
   if (sources.some(sourceGap)) return { kind: "failed" };
   if (sourceWaiting(primary)) return { kind: "arriving", why: "pending" };
   if (sources.some(sourceWaiting) || input.arrival !== "settled") {

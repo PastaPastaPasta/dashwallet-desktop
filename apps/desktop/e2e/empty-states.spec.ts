@@ -451,6 +451,55 @@ for (const theme of THEMES) {
     expect(errors).toEqual([]);
   });
 
+  test(`an event that says behind is followed though the read after it fails (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty-activity", theme);
+    await expect(page.getByTestId("history-empty-receive")).toBeVisible();
+    await page.evaluate(() => {
+      const f = window.__dwFixture!;
+      const s = f.world.sync;
+      f.fail("sync_status", "none");
+      f.world.sync = {
+        ...s,
+        running: true,
+        caughtUp: false,
+        activePhase: "filters",
+        phases: s.phases.map((p) => ({ ...p, currentHeight: (p.targetHeight ?? 1) - 1, done: false })),
+      };
+      f.emit({ kind: "sync", network: f.world.launch.network.dirName, status: f.world.sync });
+    });
+    await expect(page.getByTestId("history-syncing")).toContainText("Your history is still syncing");
+    await expect(page.getByTestId("history-empty-receive")).toHaveCount(0);
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId("tx-syncing")).toContainText("Your history is still syncing");
+    await expect(page.getByTestId("tx-empty-receive")).toHaveCount(0);
+    await tools(page, "coinSelection");
+    await expect(page.getByTestId("coins-none")).toContainText("Coins are still syncing");
+    await expect(page.getByTestId("coins-empty-receive")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test(`an empty history whose next read fails asks to retry, not to receive (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty-activity", theme);
+    await expect(page.getByTestId("history-empty-receive")).toBeVisible();
+    await page.evaluate((walletId) => {
+      const f = window.__dwFixture!;
+      f.fail("history_page", "none");
+      f.emit({ kind: "historyChanged", network: f.world.launch.network.dirName, walletId, txids: [] });
+    }, WALLET);
+    const failed = page.getByTestId("history-error");
+    await expect(failed).toContainText("Could not load transactions");
+    await expect(page.getByTestId("history-empty-receive")).toHaveCount(0);
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId("tx-retry")).toBeVisible();
+    await expect(page.getByTestId("tx-empty-receive")).toHaveCount(0);
+    await page.evaluate(() => window.__dwFixture!.fail("history_page", null));
+    await page.getByTestId("tx-retry").click();
+    await expect(page.getByTestId("tx-empty-receive")).toBeVisible();
+    await page.getByTestId("sidebar-home").click();
+    await expect(page.getByTestId("history-empty-receive")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
   test(`a wallet whose scan is behind the tip is not an empty wallet (${theme})`, async ({ page }) => {
     const errors = await open(page, "empty", theme);
     await expect(page.getByTestId("history-empty-receive")).toBeVisible();

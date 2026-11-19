@@ -1373,11 +1373,12 @@ impl SessionHub {
                 if self.update_heights(id, Some(*height), Some(*height)) {
                     self.pump.mark_balances(id);
                 }
-                if let Some(rescan) = self.rescan().as_mut()
-                    && rescan.note_height(&id, *height)
-                {
-                    self.pump.mark_sync();
+                if let Some(rescan) = self.rescan().as_mut() {
+                    rescan.note_height(&id, *height);
                 }
+                // A reader of the wallet's checkpoint is told of every advance:
+                // the last one can come after the last progress report.
+                self.pump.mark_sync();
                 self.mark_young(id);
                 self.schedule_reconcile(id);
             }
@@ -1753,6 +1754,20 @@ mod tests {
             balance: WalletCoreBalance::new(balance, 0, 0, 0),
             account_balances: BTreeMap::new(),
         }
+    }
+
+    /// A checkpoint advance outside a rescan tells whoever reads the
+    /// wallet's scan height: the last advance can come after the last
+    /// progress report, and nothing else would announce it.
+    #[test]
+    fn a_checkpoint_advance_marks_sync_without_a_rescan() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        assert!(!hub.pump.sync_marked());
+        hub.apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
+            wallet_id: W.0,
+            height: 100,
+        });
+        assert!(hub.pump.sync_marked());
     }
 
     /// A wallet's block events start its duplicate-coin reconcile (`restore`)

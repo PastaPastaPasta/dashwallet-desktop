@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addressBookEmpty, activityFiltersApplied, catchUpArrival, coinsEmptyCopy, contactsDisplay, contactsHeaderAdd, EMPTY, historyEmptyCopy, listArrival, listDisplay, listShowsCount, optionalHistorySource, walletListGate, walletReadyToOpen, type ListArrival } from "./emptyStates";
+import { addressBookEmpty, activityFiltersApplied, catchUpArrival, coinsEmptyCopy, contactsDisplay, contactsHeaderAdd, EMPTY, historyEmptyCopy, listArrival, listDisplay, listShowsCount, optionalHistorySource, sourceGap, walletListGate, walletReadyToOpen, type ListArrival } from "./emptyStates";
 
 const reading = (over: Partial<{ running: boolean; caughtUp: boolean; tipHeight: number | null }> = {}) => ({
   running: false,
@@ -55,8 +55,19 @@ describe("list display", () => {
     expect(listDisplay({ ...base, extras: [{ ...extra, pending: true, hasSnapshot: false }] })).toEqual({ kind: "arriving", why: "syncing" });
     expect(listDisplay({ ...base, arrival: "stopped", extras: [{ ...extra, pending: true, hasSnapshot: false }] })).toEqual({ kind: "arriving", why: "stopped" });
     expect(listDisplay(base)).toEqual({ kind: "empty" });
-    // A failed refetch of a confirmed empty snapshot is still that snapshot.
-    expect(listDisplay({ ...base, failed: true })).toEqual({ kind: "empty" });
+  });
+
+  it("does not call an empty snapshot empty once a later read of it has failed", () => {
+    // The read that failed may be the one that had the rows: retry, not Receive.
+    expect(listDisplay({ ...base, failed: true })).toEqual({ kind: "failed" });
+    expect(listDisplay({ ...base, extras: [{ ...extra, failed: true }] })).toEqual({ kind: "failed" });
+    expect(listShowsCount(listDisplay({ ...base, failed: true }), true)).toBe(false);
+    // Rows in hand stay, with the failed source beside them.
+    expect(listDisplay({ ...base, rowCount: 2, extras: [{ ...extra, failed: true }] })).toEqual({ kind: "rows", incomplete: true });
+    expect(listDisplay({ ...base, failed: true, extras: [{ ...extra, rowCount: 1 }] })).toEqual({ kind: "rows", incomplete: true });
+    // A failed refetch of a source that has rows leaves nothing missing that was shown before.
+    expect(listDisplay({ ...base, rowCount: 2, failed: true })).toEqual({ kind: "rows", incomplete: false });
+    expect(sourceGap({ ...extra, failed: true, rowCount: 3 })).toBe(false);
   });
 
   it("does not call a rejected optional read empty, and keeps a failed first read beside usable rows", () => {
