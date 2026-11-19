@@ -8,4 +8,13 @@ export type Balances = { confirmed: number, unconfirmed: number, immature: numbe
  * The fully mixed CoinJoin balance once computed; before that, the
  * spendable balance of the CoinJoin accounts.
  */
-coinjoin: number, };
+coinjoin: number,
+/**
+ * The wallet is still catching up (its scan has not reached the birth
+ * block): the buckets hold what it has seen so far, payments seen in
+ * the mempool or locked by InstantSend included, and can miss coins in
+ * blocks not scanned yet. `false` says only that the birth block was
+ * scanned: a wallet born long ago is still behind the tip while the
+ * sync status says so.
+ */
+catchingUp: boolean, };

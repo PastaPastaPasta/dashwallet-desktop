@@ -245,27 +245,43 @@ commands! {
     /// The settings and the chosen currency's price and state now.
     #[facade("Engine::rates", "Rates::status")]
     fn rates_status(state) -> RatesView {
-        Ok(state.engine.rates().status().into())
+        let engines = state.engine.clone();
+        Ok(engines.wait().await?.rates().status().into())
     }
 
     /// Every currency with a price that has not expired, for the picker;
     /// empty while prices are off.
     #[facade("Engine::rates", "Rates::currencies")]
     fn rates_currencies(state) -> Vec<CurrencyRate> {
-        Ok(state.engine.rates().currencies().into_iter().map(Into::into).collect())
+        let engines = state.engine.clone();
+        Ok(engines
+            .wait()
+            .await?
+            .rates()
+            .currencies()
+            .into_iter()
+            .map(Into::into)
+            .collect())
     }
 
     /// Saves and applies the settings: off stops every request at once.
     /// `rates.invalid_currency` for a code that is not three capital letters.
     #[facade("Engine::rates", "Rates::set_settings")]
     fn set_rates_settings(state, settings: RatesSettings) -> RatesView {
-        Ok(state.engine.rates().set_settings(settings.into())?.into())
+        let engines = state.engine.clone();
+        Ok(engines
+            .wait()
+            .await?
+            .rates()
+            .set_settings(settings.into())?
+            .into())
     }
 
     /// "Update now": one attempt; `rates.off` while no request may be made,
     /// `rates.throttled` within 30 seconds of the last attempt.
     #[facade("Engine::rates", "Rates::refresh")]
     fn refresh_rates(state) -> RatesView {
-        Ok(state.engine.rates().refresh().await?.into())
+        let engines = state.engine.clone();
+        Ok(engines.wait().await?.rates().refresh().await?.into())
     }
 }

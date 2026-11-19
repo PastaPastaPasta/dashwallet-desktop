@@ -277,6 +277,8 @@ export interface Backend {
   /** Applies a pending lock (`resume_platform_fund`). */
   resumePlatformFund(walletId: string, txid: string, grant: string): Promise<PlatformFundOutcome>;
   syncStatus(): Promise<SyncStatus>;
+  /** Height up to which this wallet's compact filters were scanned; `null` when it has no scan state. */
+  walletScanHeight(walletId: string): Promise<number | null>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
   /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);
    * `typeNames` empty: dash-qt's English type names. */

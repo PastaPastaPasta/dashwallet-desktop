@@ -208,7 +208,7 @@ impl EngineEvent {
             } => Self::Balances {
                 network: network.into(),
                 wallet_id: wallet_id.to_string(),
-                balances: balances.map(Into::into),
+                balances: balances.and_then(WalletBalances::known),
             },
             E::HistoryChanged {
                 network,
