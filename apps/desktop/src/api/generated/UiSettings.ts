@@ -41,4 +41,10 @@ showMasternodes: boolean,
  * The 0.1 pre-release notice was dismissed: it is shown once, on the
  * first run.
  */
-preReleaseNoticeDismissed: boolean, };
+preReleaseNoticeDismissed: boolean,
+/**
+ * The user interface language as a BCP 47 tag (`"en"`, `"pt-BR"`);
+ * `null` follows the system (MP-14). The renderer decides which tags it
+ * has a catalog for.
+ */
+language: string | null, };

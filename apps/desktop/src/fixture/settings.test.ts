@@ -33,10 +33,10 @@ async function events() {
 describe("fixture settings engine", () => {
   it("keeps the display settings with dw-app's bounds", async () => {
     expect(await cmd.uiSettings()).toEqual(DEFAULT_UI_SETTINGS);
-    const s = { ...DEFAULT_UI_SETTINGS, unit: "milliDash", decimalDigits: 8, autoLockSecs: 300 } as const;
+    const s = { ...DEFAULT_UI_SETTINGS, unit: "milliDash", decimalDigits: 8, autoLockSecs: 300, language: "pt-BR" } as const;
     expect(await cmd.setUiSettings(s)).toEqual(s);
     expect(await cmd.uiSettings()).toEqual(s);
-    for (const bad of [{ decimalDigits: 1 }, { decimalDigits: 9 }, { autoLockSecs: 0 }, { autoLockSecs: 86_401 }])
+    for (const bad of [{ decimalDigits: 1 }, { decimalDigits: 9 }, { autoLockSecs: 0 }, { autoLockSecs: 86_401 }, { language: "" }, { language: "en_US" }, { language: `en-${"a".repeat(40)}` }])
       await expect(cmd.setUiSettings({ ...s, ...bad })).rejects.toMatchObject({ code: "invalid_argument" });
     expect(await cmd.uiSettings()).toEqual(s);
   });

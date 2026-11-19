@@ -4,6 +4,7 @@
 import { useId, type ButtonHTMLAttributes, type CSSProperties, type ReactNode, type Ref } from "react";
 import { useAppearance } from "../app/theme";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import { useT } from "../i18n";
 import { iconFiles, type IconFiles, type UsedIcon } from "./icons";
 
 export function Icon({ id, size, className }: { id: UsedIcon; size: number; className?: string }) {
@@ -21,19 +22,21 @@ export function DashLogo({ className }: { className: string }) {
 
 /** The orange capsule naming a non-mainnet network (Overview hero, lock screen). */
 export function NetworkCapsule({ network, testId }: { network: NetworkInfo; testId?: string }) {
+  const t = useT();
   if (network.kind === "mainnet") return null;
   return (
     <span className="network-capsule" data-testid={testId}>
-      {(network.kind === "devnet" ? network.dirName : network.kind).toUpperCase()}
+      {(network.kind === "devnet" ? network.dirName : t(`network.${network.kind}`)).toLocaleUpperCase(t.language.tag)}
     </span>
   );
 }
 
 /** "Experimental", beside the name of a feature that is not release quality yet (CoinJoin in 0.1). */
 export function ExperimentalBadge({ testId }: { testId?: string }) {
+  const t = useT();
   return (
     <span className="experimental-badge" data-testid={testId}>
-      Experimental
+      {t("shell.experimental")}
     </span>
   );
 }

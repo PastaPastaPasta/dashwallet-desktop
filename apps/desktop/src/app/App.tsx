@@ -44,6 +44,7 @@ import { useShellBridge } from "./shellBridge";
 import { openFailure, type OpenFailure } from "./openFailure";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
+import { useLanguageAttributes } from "../i18n";
 import { savePrefs } from "../settings/prefs";
 import { navigate, ui, useUi } from "./ui";
 
@@ -311,6 +312,9 @@ function Shell() {
 
 export function App() {
   useThemeAttribute();
+  // The whole tree renders again in a new language: the screens' text and the formats that read
+  // the locale (`Backend.locale`).
+  useLanguageAttributes();
   // Opening the network loads the wallet database; the splash is up meanwhile.
   const network = useOpenNetwork();
   useEffect(() => mark("shell"), []);

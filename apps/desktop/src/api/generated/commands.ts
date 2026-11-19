@@ -252,7 +252,8 @@ export function uiSettings(): Promise<UiSettings> {
 
 /**
  * Checks and saves the display settings (decimal digits 2-8, auto lock
- * 1 s to 24 hours; `invalid_argument` otherwise), and gives the main
+ * 1 s to 24 hours, a BCP 47 language tag; `invalid_argument`
+ * otherwise), and gives the main
  * window the chosen appearance unless `--theme` forced one (U-04 D3).
  */
 export function setUiSettings(settings: UiSettings): Promise<UiSettings> {

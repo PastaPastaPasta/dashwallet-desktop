@@ -127,6 +127,7 @@ export const DEFAULT_PREFS: UiSettings = {
   subtractFeeByDefault: false,
   showMasternodes: false,
   preReleaseNoticeDismissed: false,
+  language: null,
 };
 
 let state: UiState = {

@@ -215,7 +215,7 @@ input[type="radio"]:disabled {
   /* 20 px: the chip's 28 px less a 4 px ring above and below. */
   width: 20px;
   height: 20px;
-  margin-left: calc(-1 * var(--dw-space-xxs));
+  margin-inline-start: calc(-1 * var(--dw-space-xxs));
   border-radius: var(--dw-radius-capsule);
   background: var(--dw-role-accent);
   color: var(--dw-role-text-on-hero);
@@ -249,7 +249,7 @@ input[type="radio"]:disabled {
 .toolbar-badge {
   position: absolute;
   top: calc(-1 * var(--dw-space-xxxs));
-  right: calc(-1 * var(--dw-space-xxs));
+  inset-inline-end: calc(-1 * var(--dw-space-xxs));
 }
 
 .toolbar-button {
@@ -295,7 +295,7 @@ input[type="radio"]:disabled {
 .sidebar {
   width: var(--dw-layout-sidebar-ideal-width);
   padding: var(--dw-space-sm);
-  border-right: 1px solid var(--dw-role-separator);
+  border-inline-end: 1px solid var(--dw-role-separator);
   background: var(--dw-role-canvas);
   overflow: auto;
   display: flex;
@@ -327,7 +327,7 @@ input[type="radio"]:disabled {
   border-radius: var(--dw-radius-small);
   background: transparent;
   color: var(--dw-role-text-primary);
-  text-align: left;
+  text-align: start;
   cursor: default;
   transition: background-color var(--dw-motion-hover);
 }
@@ -675,7 +675,7 @@ input[type="radio"]:disabled {
   content: "";
   border-top: 4px solid transparent;
   border-bottom: 4px solid transparent;
-  border-left: 5px solid currentColor;
+  border-inline-start: 5px solid currentColor;
   transition: transform var(--dw-motion-hover);
 }
 
@@ -838,7 +838,7 @@ input[type="radio"]:disabled {
   /* glyph-dash-currency is 72 × 54 px @2x: width = height × 4/3 */
   height: calc(1em * var(--glyph-factor, 1));
   width: calc(1em * var(--glyph-factor, 1) * 4 / 3);
-  margin-left: var(--dw-space-xxxs);
+  margin-inline-start: var(--dw-space-xxxs);
   background-color: currentColor;
   -webkit-mask: var(--glyph-url) center / contain no-repeat;
   mask: var(--glyph-url) center / contain no-repeat;
@@ -1336,7 +1336,7 @@ input[type="radio"]:disabled {
 }
 
 .history-title {
-  padding-left: var(--dw-space-xxs);
+  padding-inline-start: var(--dw-space-xxs);
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-subhead-size);
   font-weight: var(--dw-type-subhead-weight);
@@ -1414,7 +1414,7 @@ input[type="radio"]:disabled {
   border: 0;
   border-radius: var(--dw-radius-group);
   background: transparent;
-  text-align: left;
+  text-align: start;
   cursor: default;
   transition: background-color var(--dw-motion-hover);
 }
@@ -1967,7 +1967,7 @@ input[type="radio"]:disabled {
 .inline-field-column {
   display: flex;
   gap: var(--dw-space-s);
-  margin-left: calc(16px + var(--dw-space-s)); /* under the radio's label */
+  margin-inline-start: calc(16px + var(--dw-space-s)); /* under the radio's label */
   font-size: var(--dw-type-footnote-size);
   line-height: var(--dw-type-footnote-line);
 }
@@ -1982,7 +1982,7 @@ input[type="radio"]:disabled {
 }
 
 .inline-field-column .inline-field {
-  margin-left: 0;
+  margin-inline-start: 0;
 }
 
 .table-card {
@@ -2002,7 +2002,7 @@ input[type="radio"]:disabled {
   border-bottom: 1px solid var(--dw-role-separator);
   color: var(--dw-role-text-secondary);
   font-weight: var(--dw-type-footnote-medium-weight);
-  text-align: left;
+  text-align: start;
   white-space: nowrap;
 }
 
@@ -2016,13 +2016,13 @@ input[type="radio"]:disabled {
 }
 
 .data-table .num {
-  text-align: right;
+  text-align: end;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .row-actions {
-  text-align: right;
+  text-align: end;
   white-space: nowrap;
 }
 
@@ -2262,8 +2262,8 @@ input[type="radio"]:disabled {
 
 /* Flush with the card's edge, as the picker's line under the search. */
 .pay-found-address > .dash-button-plainBlue {
-  padding-left: 0;
-  padding-right: 0;
+  padding-inline-start: 0;
+  padding-inline-end: 0;
 }
 
 .pay-banner {
@@ -2559,7 +2559,7 @@ input[type="radio"]:disabled {
 
 .table-open {
   color: var(--dw-role-text-link);
-  text-align: left;
+  text-align: start;
   white-space: nowrap;
 }
 
@@ -2693,7 +2693,7 @@ input[type="radio"]:disabled {
 
 .lock-report-flows {
   margin: 0;
-  padding-left: var(--dw-space-l);
+  padding-inline-start: var(--dw-space-l);
 }
 
 .lock-report-note {
@@ -2935,7 +2935,7 @@ input[type="radio"]:disabled {
   color: var(--dw-role-text-tertiary);
   font-size: var(--dw-type-footnote-size);
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: end;
 }
 
 .phrase-word {
@@ -3054,7 +3054,7 @@ input[type="radio"]:disabled {
 }
 
 .scan-input {
-  margin-left: calc(16px + var(--dw-space-s)); /* under the radio's label */
+  margin-inline-start: calc(16px + var(--dw-space-s)); /* under the radio's label */
   padding: var(--dw-space-xs) var(--dw-space-m);
   border: 1px solid var(--dw-role-field-stroke);
   border-radius: var(--dw-radius-text-field);
@@ -3079,7 +3079,7 @@ input[type="radio"]:disabled {
   background: transparent;
   color: var(--dw-role-text-primary);
   font: inherit;
-  text-align: left;
+  text-align: start;
 }
 
 .choice-row:last-child {
@@ -3110,8 +3110,8 @@ input[type="radio"]:disabled {
 
 .settings-card > .dash-button-plainBlue,
 .settings-card > .dash-button-plainRed {
-  padding-left: 0;
-  padding-right: 0;
+  padding-inline-start: 0;
+  padding-inline-end: 0;
 }
 
 /* The card's width, not its longest line: a refusal under the picker wraps there and leaves the
@@ -3252,7 +3252,7 @@ input[type="radio"]:disabled {
 
 .settings-list {
   margin: 0;
-  padding-left: var(--dw-space-xl);
+  padding-inline-start: var(--dw-space-xl);
   color: var(--dw-role-text-secondary);
   font-size: var(--dw-type-footnote-size);
   line-height: var(--dw-type-footnote-line);
@@ -3549,8 +3549,8 @@ input[type="radio"]:disabled {
 }
 
 .console-warning {
-  padding-left: var(--dw-space-xs);
-  border-left: 3px solid var(--dw-role-caution);
+  padding-inline-start: var(--dw-space-xs);
+  border-inline-start: 3px solid var(--dw-role-caution);
 }
 
 .console-input {
@@ -3565,7 +3565,7 @@ input[type="radio"]:disabled {
 
 .peers-table .table-open {
   cursor: pointer;
-  text-align: left;
+  text-align: start;
 }
 
 .tool-row-actions {
@@ -3626,11 +3626,11 @@ input[type="radio"]:disabled {
 }
 
 .coin-child td:nth-child(2) {
-  padding-left: var(--dw-space-l);
+  padding-inline-start: var(--dw-space-l);
 }
 
 .coin-actions {
-  text-align: right;
+  text-align: end;
 }
 
 .row-menu {
@@ -3653,7 +3653,7 @@ input[type="radio"]:disabled {
 
 .row-menu-items {
   position: absolute;
-  right: 0;
+  inset-inline-end: 0;
   z-index: 10;
   display: flex;
   flex-direction: column;
@@ -3671,7 +3671,7 @@ input[type="radio"]:disabled {
   background: none;
   color: var(--dw-role-text-primary);
   font: inherit;
-  text-align: left;
+  text-align: start;
 }
 
 .row-menu-items button:hover:not(:disabled),
@@ -3701,7 +3701,7 @@ input[type="radio"]:disabled {
   display: flex;
   flex: none;
   gap: var(--dw-space-xs);
-  padding-right: var(--dw-space-s);
+  padding-inline-end: var(--dw-space-s);
 }
 
 .contacts-enable-text {
@@ -3763,7 +3763,7 @@ input[type="radio"]:disabled {
 .bell-popover {
   position: absolute;
   top: calc(100% + var(--dw-space-xs));
-  right: 0;
+  inset-inline-end: 0;
   z-index: 10;
   display: flex;
   flex-direction: column;
@@ -3818,7 +3818,7 @@ input[type="radio"]:disabled {
   background: none;
   color: var(--dw-role-text-primary);
   font: inherit;
-  text-align: left;
+  text-align: start;
 }
 
 button.bell-row-open:hover,
@@ -4248,7 +4248,7 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-neutral-tint);
   color: var(--dw-role-text-primary);
   font: inherit;
-  text-align: left;
+  text-align: start;
   cursor: default;
   transition: background-color var(--dw-motion-hover);
 }
@@ -4444,7 +4444,7 @@ button.bell-row-open:focus-visible {
   background: transparent;
   color: var(--dw-role-text-primary);
   font: inherit;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 
@@ -4500,7 +4500,7 @@ button.bell-row-open:focus-visible {
   background: var(--dw-role-field-fill);
   color: var(--dw-role-text-primary);
   font: inherit;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 
@@ -4596,7 +4596,7 @@ button.bell-row-open:focus-visible {
   font-family: inherit;
   font-size: var(--dw-type-subhead-medium-size);
   font-weight: var(--dw-type-subhead-medium-weight);
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 
@@ -4752,7 +4752,7 @@ button.bell-row-open:focus-visible {
   background: transparent;
   color: inherit;
   font: inherit;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 
@@ -5343,7 +5343,7 @@ button.bell-row-open:focus-visible {
   background: transparent;
   color: inherit;
   font: inherit;
-  text-align: left;
+  text-align: start;
 }
 
 .mg-row-wide {
@@ -5538,7 +5538,7 @@ button.bell-row-open:focus-visible {
   display: inline-block;
   width: 8px;
   height: 8px;
-  margin-right: var(--dw-space-xxs);
+  margin-inline-end: var(--dw-space-xxs);
   border-radius: 2px;
   vertical-align: 0;
 }
@@ -5842,12 +5842,12 @@ button.bell-row-open:focus-visible {
 }
 
 .mg-node-weight {
-  text-align: right;
+  text-align: end;
   font-variant-numeric: tabular-nums;
 }
 
 .mg-node-result {
-  text-align: right;
+  text-align: end;
 }
 
 /* A "More" button's menu (mg-00.css's .mg-menu, with real menu items). */
@@ -5859,7 +5859,7 @@ button.bell-row-open:focus-visible {
 .mg-menu {
   position: absolute;
   top: calc(100% + var(--dw-space-xxs));
-  right: 0;
+  inset-inline-end: 0;
   z-index: 2;
   min-width: 248px;
   margin: 0;
@@ -5882,7 +5882,7 @@ button.bell-row-open:focus-visible {
   background: none;
   color: var(--dw-role-text-primary);
   font: inherit;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 

@@ -49,6 +49,10 @@ pub struct UiSettings {
     /// The 0.1 pre-release notice was dismissed: it is shown once, on the
     /// first run.
     pub pre_release_notice_dismissed: bool,
+    /// The user interface language as a BCP 47 tag (`"en"`, `"pt-BR"`);
+    /// `null` follows the system (MP-14). The renderer decides which tags it
+    /// has a catalog for.
+    pub language: Option<String>,
 }
 
 impl Default for UiSettings {
@@ -62,8 +66,23 @@ impl Default for UiSettings {
             subtract_fee_by_default: false,
             show_masternodes: false,
             pre_release_notice_dismissed: false,
+            language: None,
         }
     }
+}
+
+/// The longest language tag a file may hold.
+const MAX_LANGUAGE_LEN: usize = 35;
+
+/// A BCP 47 tag's shape: a 2–3 letter language, then subtags of 1–8 letters
+/// or digits.
+fn is_language_tag(tag: &str) -> bool {
+    let mut parts = tag.split('-');
+    let lang = parts.next().unwrap_or_default();
+    tag.len() <= MAX_LANGUAGE_LEN
+        && (2..=3).contains(&lang.len())
+        && lang.bytes().all(|b| b.is_ascii_alphabetic())
+        && parts.all(|p| (1..=8).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
 impl UiSettings {
@@ -78,6 +97,13 @@ impl UiSettings {
             return Err(AppError::invalid_argument(
                 "auto lock must be 1 s to 24 hours",
             ));
+        }
+        if self
+            .language
+            .as_deref()
+            .is_some_and(|l| !is_language_tag(l))
+        {
+            return Err(AppError::invalid_argument("language must be a BCP 47 tag"));
         }
         Ok(())
     }
@@ -94,6 +120,13 @@ impl UiSettings {
             .is_some_and(|s| !AUTO_LOCK_SECS.contains(&s))
         {
             self.auto_lock_secs = defaults.auto_lock_secs;
+        }
+        if self
+            .language
+            .as_deref()
+            .is_some_and(|l| !is_language_tag(l))
+        {
+            self.language = defaults.language;
         }
         self
     }
@@ -154,6 +187,7 @@ mod tests {
             subtract_fee_by_default: true,
             show_masternodes: true,
             pre_release_notice_dismissed: true,
+            language: Some("pt-BR".into()),
         };
         write(dir.path(), &s).unwrap();
         assert_eq!(read(dir.path()), s);
@@ -176,6 +210,21 @@ mod tests {
     }
 
     #[test]
+    fn a_language_tag_is_kept_and_a_missing_one_follows_the_system() {
+        let dir = root();
+        std::fs::write(path(dir.path()), r#"{"unit":"duffs"}"#).unwrap();
+        assert_eq!(read(dir.path()).language, None);
+        for tag in ["en", "pt-BR", "zh-Hans", "ar-XB", "es-419"] {
+            let s = UiSettings {
+                language: Some(tag.into()),
+                ..Default::default()
+            };
+            write(dir.path(), &s).unwrap();
+            assert_eq!(read(dir.path()).language.as_deref(), Some(tag));
+        }
+    }
+
+    #[test]
     fn out_of_range_values_are_refused() {
         let dir = root();
         for bad in [
@@ -195,6 +244,22 @@ mod tests {
                 auto_lock_secs: Some(MAX_AUTO_LOCK_SECS + 1),
                 ..Default::default()
             },
+            UiSettings {
+                language: Some(String::new()),
+                ..Default::default()
+            },
+            UiSettings {
+                language: Some("en_US".into()),
+                ..Default::default()
+            },
+            UiSettings {
+                language: Some("e".into()),
+                ..Default::default()
+            },
+            UiSettings {
+                language: Some(format!("en-{}", "a".repeat(40))),
+                ..Default::default()
+            },
         ] {
             let e = write(dir.path(), &bad).unwrap_err();
             assert_eq!(e.code_str(), "invalid_argument");
@@ -210,7 +275,7 @@ mod tests {
         // Unknown fields are ignored, missing ones default, bad values reset.
         std::fs::write(
             path(dir.path()),
-            r#"{"unit":"duffs","decimalDigits":12,"autoLockSecs":0,"future":1}"#,
+            r#"{"unit":"duffs","decimalDigits":12,"autoLockSecs":0,"language":"../x","future":1}"#,
         )
         .unwrap();
         assert_eq!(

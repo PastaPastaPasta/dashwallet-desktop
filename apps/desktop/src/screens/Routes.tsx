@@ -8,26 +8,11 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { ui, useUi, type PayTab, type Route } from "../app/ui";
 import { LoadingState } from "../components/history";
+import { useT } from "../i18n";
 import { useDefaultPayTab } from "./pay/contactQueries";
 import { PayToAddress } from "./pay/PayToAddress";
 import { PayToContact } from "./pay/PayToContact";
 import { ShieldedSendLink } from "./ShieldedSheet";
-
-const TITLES: Record<Route, string> = {
-  home: "Home",
-  pay: "Pay",
-  receive: "Receive",
-  contacts: "Contacts",
-  activity: "Activity",
-  coinJoin: "CoinJoin",
-  explore: "Explore",
-  masternodes: "Masternodes",
-  notifications: "Notifications",
-  profile: "My Profile",
-  settings: "Settings",
-  tools: "Tools",
-  joinDashPay: "Join DashPay",
-};
 
 /** The placeholder text of each route that `Placeholder` renders. */
 const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "coinJoin" | "tools" | "settings" | "notifications" | "joinDashPay" | "profile" | "masternodes">, string> = {
@@ -36,12 +21,13 @@ const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "
 
 /** `wide`: the page's tables take the window's width, as Activity's table mode does. */
 export function Page({ route, wide = false, badge, children }: { route: Route; wide?: boolean; badge?: ReactNode; children?: ReactNode }) {
+  const t = useT();
   return (
     <main className={wide ? "page page-wide" : "page"} data-testid={`page-${route}`}>
       <div className="page-column">
         <header className="top-intro">
           <h1 className="top-intro-title">
-            {TITLES[route]}
+            {t(`routes.${route}`)}
             {badge && " "}
             {badge}
           </h1>

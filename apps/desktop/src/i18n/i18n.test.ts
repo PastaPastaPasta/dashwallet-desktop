@@ -1,0 +1,168 @@
+import { afterEach, describe, expect, it } from "vitest";
+import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
+import { DEFAULT_PREFS, ui } from "../app/ui";
+import { build, fill, flatten, pluralForm, pseudoCatalog, tokenize, type Catalog } from "./core";
+import { en } from "./en";
+import { formatLocale, isComplete, LANGUAGES, resolveLanguage, systemLanguage, t, type Language } from "./index";
+
+const choose = (language: string | null) => ui.set({ prefs: { ...DEFAULT_PREFS, language } });
+afterEach(() => choose(null));
+
+/** The text a rich message renders to, with each element's children inlined in brackets. */
+function text(node: ReactNode): string {
+  if (Array.isArray(node)) return node.map(text).join("");
+  if (isValidElement(node)) {
+    const el = node as ReactElement<{ children?: ReactNode }>;
+    const inner = text(el.props.children);
+    return typeof el.type === "string" ? `[${el.type}:${inner}]` : inner;
+  }
+  return node === null || node === undefined || typeof node === "boolean" ? "" : String(node);
+}
+
+describe("t", () => {
+  it("fills named placeholders and formats numbers for the locale", () => {
+    expect(t("network.confirmTitle", { network: "Testnet" })).toBe("Switch to Testnet?");
+    expect(fill("{a} of {b}", { a: 1234.5, b: "x" }, { locale: "de-DE", isolate: false })).toBe("1.234,5 of x");
+    expect(fill("{a} of {b}", { a: 1234.5, b: "x" }, { locale: "en-US", isolate: false })).toBe("1,234.5 of x");
+  });
+
+  it("chooses the plural form by count through Intl.PluralRules", () => {
+    expect(t("shell.status.peers", { count: 1 })).toBe("1 peer");
+    expect(t("shell.status.peers", { count: 0 })).toBe("0 peers");
+    expect(t("shell.status.peers", { count: 8 })).toBe("8 peers");
+    const ru = { one: "{count} пир", few: "{count} пира", many: "{count} пиров", other: "{count} пира" };
+    expect([1, 3, 5, 21, 1.5].map((n) => fill(pluralForm(ru, n, "ru"), { count: n }, { locale: "ru", isolate: false }))).toEqual(["1 пир", "3 пира", "5 пиров", "21 пир", "1,5 пира"]);
+    expect(pluralForm({ other: "x" }, 1, "en")).toBe("x");
+  });
+
+  it("falls back to English for a key a language lacks", () => {
+    const partial: Language = { tag: "xx", name: "X", dir: "ltr", messages: new Map([["shell.status.synced", "Synkd"]]) };
+    LANGUAGES.push(partial);
+    try {
+      choose("xx");
+      expect(t("shell.status.synced")).toBe("Synkd");
+      expect(t("shell.status.offline")).toBe("Offline");
+      expect(isComplete(partial)).toBe(false);
+    } finally {
+      LANGUAGES.pop();
+    }
+  });
+
+  it("renders rich text: tags through their renderers, placeholders as elements, no concatenation", () => {
+    const parts = build<string>("Read <b>the {doc}</b> and <link>open {n}</link>.", { doc: "terms", n: 2 }, { locale: "en", isolate: false }, (tag, c) => `[${tag}:${c.join("")}]`);
+    expect(parts.join("")).toBe("Read [b:the terms] and [link:open 2].");
+    expect(build<string>("<b>unclosed", {}, { locale: "en", isolate: false }, (tag, c) => `[${tag}:${c.join("")}]`).join("")).toBe("[b:unclosed]");
+    const node = t.rich("settings.privacy.usernameInRequestsHint", { wallet: createElement("strong", null, "Main") });
+    expect(text(node)).toContain("payment requests of “[strong:Main]” show");
+    expect(tokenize("a {b} <c>d</c>")).toEqual([
+      { kind: "text", text: "a " },
+      { kind: "param", name: "b" },
+      { kind: "text", text: " " },
+      { kind: "open", tag: "c" },
+      { kind: "text", text: "d" },
+      { kind: "close", tag: "c" },
+    ]);
+  });
+
+  it("types keys and parameters from the English catalog", () => {
+    // @ts-expect-error: not a key
+    expect(t("shell.status.nope")).toBe("shell.status.nope");
+    // @ts-expect-error: the message takes `network`
+    t("network.confirmTitle");
+    // @ts-expect-error: a plural takes `count`
+    t("shell.status.peers", {});
+    // @ts-expect-error: no placeholder named `who`
+    t("network.confirmTitle", { who: "x" });
+    const ok: Catalog<typeof en> = { shell: { status: { synced: "Synkd", peers: { one: "a", other: "b" } } } };
+    // @ts-expect-error: a key English does not have fails tsc
+    const extra: Catalog<typeof en> = { shell: { status: { syncd: "Synkd" } } };
+    expect([ok, extra]).toHaveLength(2);
+  });
+});
+
+describe("the language in use", () => {
+  const real = LANGUAGES.filter((l) => !l.pseudo);
+  const es: Language = { tag: "es", name: "Español", dir: "ltr", messages: new Map(flatten(en)) };
+  const ptPartial: Language = { tag: "pt-BR", name: "Português (Brasil)", dir: "ltr", messages: new Map([["routes.home", "Início"]]) };
+
+  it("follows the system's first language with a complete catalog, by tag then by language", () => {
+    const shipped = [...real, es, ptPartial];
+    expect(systemLanguage(["es-MX", "en-US"], shipped).tag).toBe("es");
+    expect(systemLanguage(["pt-BR", "es"], shipped).tag).toBe("es");
+    expect(systemLanguage(["de-DE", "fr"], shipped).tag).toBe("en");
+    expect(systemLanguage([], shipped).tag).toBe("en");
+  });
+
+  it("never takes a pseudo-locale from the system", () => {
+    expect(systemLanguage(["en-XA", "ar-XB", "ar"]).tag).toBe("en");
+  });
+
+  it("takes a saved choice the build ships, and follows the system for one it does not", () => {
+    expect(resolveLanguage("en-XA", ["en"]).tag).toBe("en-XA");
+    expect(resolveLanguage("ar-xb", ["en"]).dir).toBe("rtl");
+    expect(resolveLanguage("tlh", ["en-GB"]).tag).toBe("en");
+    expect(resolveLanguage(null, ["fr-FR"]).tag).toBe("en");
+  });
+
+  it("formats with the base locale unless another language is chosen", () => {
+    expect(formatLocale("en-US", null, ["de"])).toBe("en-US");
+    expect(formatLocale(undefined, null, ["de"])).toBe(undefined);
+    expect(formatLocale("en-US", "en", ["en-US"])).toBe("en-US");
+    expect(formatLocale(undefined, "en", ["en-GB"])).toBe(undefined);
+    expect(formatLocale(undefined, "en", ["de-DE"])).toBe("en");
+    expect(formatLocale("en-US", "ar-XB", ["en-US"])).toBe("ar-XB");
+    expect(formatLocale("en-US", "tlh", ["en-US"])).toBe("en-US");
+  });
+});
+
+describe("pseudo-locales", () => {
+  const messages = flatten(en);
+  const long = pseudoCatalog(messages, "long");
+  const rtl = pseudoCatalog(messages, "rtl");
+
+  it("cover every key, so they count as complete", () => {
+    for (const l of LANGUAGES) expect(isComplete(l)).toBe(true);
+  });
+
+  it("bracket, accent and lengthen every message, leaving placeholders and tags", () => {
+    const m = long.get("network.confirmTitle") as string;
+    expect(m.startsWith("⟦") && m.endsWith("⟧")).toBe(true);
+    expect(m).toContain("{network}");
+    expect(m).not.toContain("Switch");
+    expect(m.replace(/\{\w+\}/g, "")).not.toMatch(/[A-Za-z]/);
+    const literal = (x: string) => x.replace(/\{\w+\}/g, "").length;
+    for (const [key, source] of messages)
+      if (typeof source === "string") expect(literal(long.get(key) as string), key).toBeGreaterThanOrEqual(literal(source) * 1.3);
+    expect(fill(m, { network: "Testnet" }, { locale: "en", isolate: false })).toContain("Testnet");
+    expect(long.get("shell.status.peers")).toMatchObject({ one: expect.stringContaining("{count}"), other: expect.stringContaining("{count}") });
+  });
+
+  it("draw each literal run right to left and leave placeholder values as they read", () => {
+    const m = rtl.get("network.confirmTitle") as string;
+    expect(m).toBe("‮Switch to ‬{network}‮?‬");
+  });
+
+  it("read through t once chosen", () => {
+    choose("en-XA");
+    expect(t("shell.status.synced")).toMatch(/^⟦Šýñçéð·+⟧$/);
+    choose("ar-XB");
+    expect(t.language.dir).toBe("rtl");
+    expect(t("network.confirmTitle", { network: "@alice" })).toBe("\u202eSwitch to \u202c\u2068@alice\u2069\u202e?\u202c");
+  });
+});
+
+describe("other catalogs", () => {
+  /** Placeholders and tags a message uses. */
+  const marks = (m: string | object) =>
+    [...new Set((typeof m === "string" ? [m] : Object.values(m)).flatMap((s: string) => s.match(/\{\w+\}|<\/?\w+>/g) ?? []))].sort();
+
+  it("use only English's placeholders and tags in each message", () => {
+    const english = flatten(en);
+    for (const l of LANGUAGES)
+      for (const [key, m] of l.messages) {
+        const source = english.get(key);
+        expect(source, `${l.tag} ${key}`).toBeDefined();
+        expect(marks(m).filter((x) => !marks(source!).includes(x)), `${l.tag} ${key}`).toEqual([]);
+      }
+  });
+});
