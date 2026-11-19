@@ -8,19 +8,23 @@
 // receive request and every setting the release keeps are set to non-defaults. The app is closed.
 // Phase 2, offline: the app opens the data root again, is unlocked, and its answers to the read
 // commands are recorded in expected.json, after they are checked against dashd. The app is closed
-// and the data root is copied to $DW_UPGRADE_OUT/data.
+// and the data root is copied to $DW_UPGRADE_OUT/data, by way of a staging directory beside it; an
+// existing $DW_UPGRADE_OUT is refused before anything starts.
 //
-//   DW_APP=<extracted release>/usr/bin/dash-wallet DW_UPGRADE_VERSION=v0.1.0 DW_UPGRADE_OUT=<dir> \
-//     DWCLI=/bin/false DASHD=<dir>/dashd node e2e-tauri/upgrade-fixture.ts
-// `scripts/upgrade-fixture.sh <tag>` downloads and verifies the release and runs this under a private
-// X display and session bus.
+// Run it only through `scripts/upgrade-fixture.sh <tag>`, which downloads and verifies the release
+// and starts this under a fresh session bus and Xvfb display; run directly, it refuses.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { Dashd, freePort, paysTo, type RawTx } from "./dashd.ts";
 import { APP, CHAIN, driverGone, env, poll, startDriver, stopDriver, WebDriver } from "./driver.ts";
+
+if (process.env.DW_UPGRADE_PRIVATE_SESSION !== "1" || process.env.GDK_BACKEND !== "x11" || process.env.WAYLAND_DISPLAY) {
+  console.error("upgrade-fixture: run it through scripts/upgrade-fixture.sh, which gives it a private X display and session bus");
+  process.exit(2);
+}
 
 const VERSION = env("DW_UPGRADE_VERSION");
 const OUT = resolve(env("DW_UPGRADE_OUT"));
@@ -42,6 +46,17 @@ type Call = { cmd: string; args: Record<string, unknown>; result: unknown };
 let driver: ChildProcess | undefined;
 let node: Dashd | undefined;
 let work: string | undefined;
+/** The staging directory this run created, removed unless it was renamed into place. */
+let staging: string | undefined;
+
+const present = (path: string) => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 function step(s: string) {
   console.log(`upgrade-fixture: ${s}`);
@@ -93,6 +108,9 @@ async function close(wd: WebDriver, dataRoot: string) {
 }
 
 async function main() {
+  if (present(OUT)) throw new Error(`${OUT} exists: remove it or choose another destination`);
+  const stage = join(dirname(OUT), `.${basename(OUT)}.staging-${process.pid}`);
+  if (present(stage)) throw new Error(`${stage} exists`);
   mkdirSync(LOGS, { recursive: true });
   work = mkdtempSync(join(tmpdir(), "dw-upgrade-fixture-"));
   const dataRoot = join(work, "data");
@@ -168,7 +186,7 @@ async function main() {
   await invoke("set_username_in_requests", { walletId: main, on: false });
   await invoke("set_dust_protection", { threshold: 12_345 });
   await invoke("set_backup_policy", { keep: 7 });
-  await invoke("set_network_choice", { network: "testnet" });
+  await invoke(launched.appVersion === "0.1.0" ? "set_network_choice" : "switch_network", { network: "testnet" });
   const cj = await invoke<Record<string, unknown>>("coinjoin_settings");
   await invoke("set_coinjoin_settings", { settings: { ...cj, multiSession: true, maxSessions: 3, rounds: 6, targetAmountDash: 25 } });
   await invoke("set_ui_settings", {
@@ -228,9 +246,10 @@ async function main() {
   step(`recorded ${calls.length} answers; balances ${balances.join(", ")} duffs agree with dashd; ${txids.size} transactions`);
 
   // ---------------------------------------------------------------- the fixture
-  rmSync(OUT, { recursive: true, force: true });
-  mkdirSync(OUT, { recursive: true });
-  cpSync(dataRoot, join(OUT, "data"), { recursive: true, filter: (src) => !src.endsWith("instance.lock") });
+  mkdirSync(dirname(OUT), { recursive: true });
+  mkdirSync(stage);
+  staging = stage;
+  cpSync(dataRoot, join(stage, "data"), { recursive: true, filter: (src) => !src.endsWith("instance.lock") });
   const expected = {
     version: VERSION,
     appVersion: launched.appVersion,
@@ -243,7 +262,10 @@ async function main() {
     signatures,
     calls: JSON.parse(JSON.stringify(calls).replaceAll(JSON.stringify(dataRoot).slice(1, -1), "$DATA_ROOT")),
   };
-  writeFileSync(join(OUT, "expected.json"), `${JSON.stringify(expected, null, 2)}\n`);
+  writeFileSync(join(stage, "expected.json"), `${JSON.stringify(expected, null, 2)}\n`);
+  if (present(OUT)) throw new Error(`${OUT} appeared during the run; the capture is not kept`);
+  renameSync(stage, OUT);
+  staging = undefined;
   const files = (dir: string): string[] =>
     readdirSync(dir).flatMap((f) => {
       const p = join(dir, f);
@@ -261,4 +283,5 @@ main()
     stopDriver(driver);
     await node?.stop();
     if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
+    if (staging) rmSync(staging, { recursive: true, force: true, maxRetries: 3 });
   });

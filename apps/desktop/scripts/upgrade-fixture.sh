@@ -2,9 +2,13 @@
 # Writes testdata/upgrade/<tag>/ with the released Linux app of <tag> (e2e-tauri/upgrade-fixture.ts).
 # The .deb and SHA256SUMS are downloaded into a new empty directory, the .deb is checked against
 # SHA256SUMS and unpacked into another; nothing runs from either but the release's own binary.
+# The writer always runs under a fresh session bus (dbus-run-session) and a new Xvfb display
+# (xvfb-run -a), with the caller's DISPLAY, WAYLAND_DISPLAY, XAUTHORITY and session bus removed and GTK
+# held to X11, so no window can reach a real screen; it refuses to run any other way. An existing
+# testdata/upgrade/<tag> is refused before anything is downloaded.
 # Linux x86_64 only. Needs gh (or DW_UPGRADE_ASSETS=<dir> holding the two files), dpkg-deb, node 24,
-# WebKitWebDriver, tauri-driver, dbus-run-session, xvfb-run (or a private $DISPLAY) and a dashd with
-# dash-cli next to it ($DASHD, else $DASHD_PATH, else dashd on PATH).
+# WebKitWebDriver, tauri-driver, dbus-run-session, xvfb-run and a dashd with dash-cli next to it
+# ($DASHD, else $DASHD_PATH, else dashd on PATH).
 #
 #   scripts/upgrade-fixture.sh v0.1.0
 set -euo pipefail
@@ -14,15 +18,13 @@ cd "$(dirname "$0")/.."
 desktop=$PWD
 repo=$(cd ../.. && pwd)
 
-if [[ -z "${DW_E2E_PRIVATE_BUS:-}" ]]; then
-  command -v dbus-run-session >/dev/null || { echo "upgrade-fixture: dbus-run-session not found (apt install dbus)" >&2; exit 2; }
-  export DW_E2E_PRIVATE_BUS=1
-  if [[ -z "${DISPLAY:-}" ]]; then
-    exec dbus-run-session -- xvfb-run -a "$desktop/scripts/upgrade-fixture.sh" "$@"
-  fi
-  exec dbus-run-session -- "$desktop/scripts/upgrade-fixture.sh" "$@"
+out="$repo/testdata/upgrade/$tag"
+if [[ -e "$out" || -L "$out" ]]; then
+  echo "upgrade-fixture: $out exists; remove it or keep it, nothing was written" >&2
+  exit 2
 fi
-
+command -v dbus-run-session >/dev/null || { echo "upgrade-fixture: dbus-run-session not found (apt install dbus)" >&2; exit 2; }
+command -v xvfb-run >/dev/null || { echo "upgrade-fixture: xvfb-run not found (apt install xvfb)" >&2; exit 2; }
 command -v WebKitWebDriver >/dev/null || { echo "upgrade-fixture: WebKitWebDriver not found (apt install webkit2gtk-driver)" >&2; exit 2; }
 driver=${TAURI_DRIVER:-$(command -v tauri-driver || true)}
 [[ -x "$driver" ]] || { echo "upgrade-fixture: tauri-driver not found; set TAURI_DRIVER" >&2; exit 2; }
@@ -47,7 +49,8 @@ app="$work/release/usr/bin/dash-wallet"
 [[ -x "$app" ]] || { echo "upgrade-fixture: $deb has no usr/bin/dash-wallet" >&2; exit 1; }
 echo "upgrade-fixture: $deb sha256 $got (SHA256SUMS of $tag)"
 
-out="$repo/testdata/upgrade/$tag"
-DW_APP="$app" DWCLI=/bin/false TAURI_DRIVER="$driver" DASHD="$dashd" DW_UPGRADE_VERSION="$tag" DW_UPGRADE_OUT="$out" \
+env -u DISPLAY -u WAYLAND_DISPLAY -u XAUTHORITY -u DBUS_SESSION_BUS_ADDRESS \
+  GDK_BACKEND=x11 DW_UPGRADE_PRIVATE_SESSION=1 \
+  DW_APP="$app" DWCLI=/bin/false TAURI_DRIVER="$driver" DASHD="$dashd" DW_UPGRADE_VERSION="$tag" DW_UPGRADE_OUT="$out" \
   DW_UPGRADE_ASSET="$deb" DW_UPGRADE_ASSET_SHA256="$got" \
-  node "$desktop/e2e-tauri/upgrade-fixture.ts"
+  dbus-run-session -- xvfb-run -a node "$desktop/e2e-tauri/upgrade-fixture.ts"
