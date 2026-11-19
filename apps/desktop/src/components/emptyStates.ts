@@ -248,10 +248,10 @@ export const sourceGap = (s: ListSource) => s.failed && (!s.hasSnapshot || s.row
 /** Until the primary source first answers, the list is loading. Rows already in hand stay,
  * including after a refetch fails, and a first-read failure stays with them. A confirmed empty
  * result — every visible source answered, and the wallet has caught up — is the only kind that
- * may offer the empty card or a count. An optional source still out is still arriving. A rejected read with no snapshot is a failure, not an empty list, and so is
- * an empty snapshot whose last read failed: the read that failed may be the one with the rows. An
- * empty snapshot being read again (an event said it changed) is still arriving until that read is
- * back. */
+ * may offer the empty card or a count. An optional source still out is still arriving. A rejected
+ * read with no snapshot is a failure, not an empty list, and so is an empty snapshot whose last
+ * read failed: the read that failed may be the one with the rows. An empty snapshot being read
+ * again (an event said it changed) is still arriving until that read is back. */
 export function listDisplay(input: {
   rowCount: number;
   pending: boolean;
