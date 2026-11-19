@@ -298,6 +298,9 @@ pub struct CoinJoinBalances {
     /// Fully mixed by the QT-043 rule: the panel's "CoinJoin Balance" and
     /// what the CoinJoin send page may spend.
     pub fully_mixed: u64,
+    /// Denominated, not fully mixed, on the CoinJoin account: mixing here
+    /// can still finish them. Restored BIP44 denominations are not included.
+    pub mixable_unfinished: u64,
     /// Every free coin of the CoinJoin account, mixed or not: the move card
     /// shows while it is above zero.
     pub coinjoin_account: u64,
@@ -310,6 +313,7 @@ impl From<EngineBalances> for CoinJoinBalances {
             denominated,
             normalized_anonymized,
             fully_mixed,
+            mixable_unfinished,
             coinjoin_account,
         } = b;
         CoinJoinBalances {
@@ -317,6 +321,7 @@ impl From<EngineBalances> for CoinJoinBalances {
             denominated,
             normalized_anonymized,
             fully_mixed,
+            mixable_unfinished,
             coinjoin_account,
         }
     }

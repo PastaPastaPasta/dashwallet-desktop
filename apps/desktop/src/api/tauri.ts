@@ -78,6 +78,7 @@ export class IpcBackend implements Backend {
   dispatchStatus = cmd.dispatchStatus;
   balance = (walletId: string) => cmd.balance(walletId);
   syncStatus = () => cmd.syncStatus();
+  walletScanHeight = (walletId: string) => cmd.walletScanHeight(walletId);
   historyPage = cmd.historyPage;
   exportHistoryCsv = cmd.exportHistoryCsv;
   txNotices = cmd.txNotices;

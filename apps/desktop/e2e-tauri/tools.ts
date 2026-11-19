@@ -170,7 +170,7 @@ async function main() {
     const payee = chain.cli("-rpcwallet=miner", "getnewaddress");
     evidence.payee = payee;
     await tools("addressBook");
-    await wd.press(tid("address-book-new"));
+    await wd.press(tid("address-book-empty-add"));
     await wd.fill(tid("address-book-label"), "Miner");
     await wd.fill(tid("address-book-address"), payee);
     await wd.press(tid("address-book-save"));

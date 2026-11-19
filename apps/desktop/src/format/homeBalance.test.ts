@@ -4,7 +4,7 @@ import { compact, masked } from "./amount";
 import { breakdownRows, coreSubtitle, heroDigits, homeBalance, POOL_ROWS, type PoolReading } from "./homeBalance";
 
 const COIN = 100_000_000;
-const core: Balances = { confirmed: 3 * COIN, unconfirmed: COIN, immature: 0, locked: 0, total: 4 * COIN, coinjoin: 2 * COIN };
+const core: Balances = { confirmed: 3 * COIN, unconfirmed: COIN, immature: 0, locked: 0, total: 4 * COIN, coinjoin: 2 * COIN, catchingUp: false };
 const fmt = (duffs: number) => (duffs / COIN).toFixed(2);
 
 describe("Home's balance", () => {
@@ -25,7 +25,7 @@ describe("Home's balance", () => {
   });
 
   it("counts only what can be spent: immature and locked funds stay out of the hero and the Core row", () => {
-    const b = homeBalance({ confirmed: COIN, unconfirmed: 0, immature: 2 * COIN, locked: 3 * COIN, total: 6 * COIN, coinjoin: 0 }, 0, 0);
+    const b = homeBalance({ confirmed: COIN, unconfirmed: 0, immature: 2 * COIN, locked: 3 * COIN, total: 6 * COIN, coinjoin: 0, catchingUp: false }, 0, 0);
     expect(b.total).toBe(COIN);
     expect(b.pools.core).toBe(COIN);
   });
