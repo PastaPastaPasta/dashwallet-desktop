@@ -9,6 +9,7 @@ import type { DashPayStatus } from "../api/generated/DashPayStatus";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { InvitationStatus } from "../api/generated/InvitationStatus";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
+import type { ProtocolCompatibility } from "../api/generated/ProtocolCompatibility";
 import type { QuorumSource } from "../api/generated/QuorumSource";
 import type { DispatchStateName } from "../api/generated/DispatchStateName";
 import type { FlowKindName } from "../api/generated/FlowKindName";
@@ -111,6 +112,10 @@ export interface World {
   shellSync: ShellSync | null;
   /** Txids `open_tx_in_explorer` accepted, in call order. The command takes no network. */
   explorerOpened?: string[];
+  /** How many times `open_releases_page` was called. */
+  releasesOpened?: number;
+  /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
+  protocolCompatibility?: ProtocolCompatibility;
   /** "Require authentication for every payment" (E0-13 D11; on by default). */
   paymentAuth: boolean;
   /** "Load contact pictures" (DP4-02 D17); absent: on. */
@@ -1338,6 +1343,12 @@ const SCENARIOS = {
   "fiat-first-run": (t): World => onMainnet(buildWorld("no-wallet", t)),
   /** `dashpay-registered` with prices: paying a contact with the fiat toggle. */
   "fiat-contacts": (t): World => withPrices(buildWorld("dashpay-registered", t)),
+  /** Platform protocol version not learned yet (`null`). */
+  "protocol-unknown": (t): World => ({ ...base(t, "default", true), protocolCompatibility: { networkVersion: null, supportedVersion: 15 } }),
+  /** Platform protocol version equal to this build's supported version (`15`). */
+  "protocol-equal": (t): World => ({ ...base(t, "default", true), protocolCompatibility: { networkVersion: 15, supportedVersion: 15 } }),
+  /** Platform runs a newer protocol version (`16` > `15`): Home shows the advisory banner. */
+  "protocol-upgraded": (t): World => ({ ...base(t, "default", true), protocolCompatibility: { networkVersion: 16, supportedVersion: 15 } }),
 } satisfies Record<string, (theme: ThemeName | null) => World>;
 
 export type ScenarioName = keyof typeof SCENARIOS;
