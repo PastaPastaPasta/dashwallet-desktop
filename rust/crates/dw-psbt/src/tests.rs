@@ -72,6 +72,29 @@ fn paths(psbt: &PartiallySignedTransaction) -> KeyPaths {
         .collect()
 }
 
+/// A PSBT of a special transaction is written with its payload's length
+/// prefix, and a version 2 transaction's type bytes carry no payload (as
+/// Core reads them), so both read back as written.
+#[test]
+fn special_transaction_psbts_read_back() {
+    use dashcore::transaction::special_transaction::TransactionPayload;
+    let base = parse(vector("psbt/unsigned.b64").as_bytes()).unwrap();
+    let cases = [
+        (3, TransactionPayload::RawPayloadType(10, vec![1, 2, 3])),
+        (
+            2,
+            TransactionPayload::ClassicalWithNonStandardVersionTypeBytesPayloadType(10),
+        ),
+    ];
+    for (version, payload) in cases {
+        let mut psbt = base.clone();
+        psbt.unsigned_tx.version = version;
+        psbt.unsigned_tx.special_transaction_payload = Some(payload);
+        let again = parse(&to_bytes(&psbt));
+        assert_eq!(again.as_ref().ok(), Some(&psbt), "{again:?}");
+    }
+}
+
 #[test]
 fn test_qt_078_parses_dashd_psbts_and_writes_them_back() {
     for name in ["psbt/unsigned.b64", "psbt/signed.b64"] {
