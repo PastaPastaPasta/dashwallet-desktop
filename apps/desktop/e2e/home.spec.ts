@@ -133,13 +133,15 @@ for (const theme of THEMES) {
 }
 
 /** Core's balances, replaced in the world and announced as the engine would. */
-const setCore = (page: Page, over: Record<string, number>) =>
-  page.evaluate((over) => {
+const setCore = async (page: Page, over: Record<string, number>) => {
+  await page.waitForFunction(() => !!window.__dwFixture);
+  await page.evaluate((over) => {
     const f = window.__dwFixture!;
     const w = f.world.wallets[0];
     w.summary = { ...w.summary, balances: { ...w.summary.balances!, ...over } };
     f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId: w.summary.walletId, balances: w.summary.balances });
   }, over);
+};
 
 const bandHeight = async (page: Page) => (await page.getByTestId("hero-band").boundingBox())!.height;
 
