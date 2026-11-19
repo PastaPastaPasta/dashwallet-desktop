@@ -3,7 +3,7 @@
 // DP2-08 (Add Contact) and DP2-09 (the contact's pane) fill. DP2-09 adds the Enable DashPay banner
 // and a request row's Accept and Ignore. Copy follows the mobile wallets.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ContactSortName } from "../../api/generated/ContactSortName";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -12,7 +12,8 @@ import { useBackend, useLockStatus } from "../../api/queries";
 import { navigate, ui, useUi, type AddContactIntent } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { DashButton, Icon, VisuallyHidden } from "../../components/basics";
-import { EmptyState, LoadingState } from "../../components/history";
+import { contactsDisplay, contactsHeaderAdd, EMPTY } from "../../components/emptyStates";
+import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import {
   findContact,
   groups as toGroups,
@@ -45,6 +46,8 @@ export function ContactsPage({ walletId, network }: { walletId: string; network:
   // A `dashpay://user` link shows the same Add contact section, though the button stays enabled.
   const linkOpen = useUi((s) => s.contactPrefill !== null);
   const { owner, retry } = useContactsOwner(walletId);
+  // The empty card that carries Add contact is the only reason to hide the header's button.
+  const [emptyCard, setEmptyCard] = useState(false);
   // Opening Contacts asks for a DashPay pass soon (D9); a refused ask leaves the engine's schedule.
   useEffect(() => {
     backend.dashpaySyncSoon().catch(() => undefined);
@@ -54,27 +57,32 @@ export function ContactsPage({ walletId, network }: { walletId: string; network:
       <div className="page-column">
         <header className="top-intro top-intro-row">
           <h1 className="top-intro-title">Contacts</h1>
-          {owner.kind === "identity" && (
-            <DashButton
-              variant="filledBlue"
-              size="small"
-              data-testid="contacts-add"
-              disabled={addOpen}
-              aria-expanded={addOpen || linkOpen}
-              why="Add a New Contact is already open."
-              whyId="add-contact-title"
-              onClick={() => openAdd({ walletId, query: "", hit: null })}>
-              Add contact
-            </DashButton>
-          )}
+          {owner.kind === "identity" && !emptyCard && <HeaderAdd walletId={walletId} addOpen={addOpen} linkOpen={linkOpen} />}
         </header>
         {owner.kind === "identity" ? (
-          <ContactsView walletId={walletId} identity={owner.identity} network={network} />
+          <ContactsView walletId={walletId} identity={owner.identity} network={network} onEmptyCard={setEmptyCard} />
         ) : (
           <NoContacts walletId={walletId} owner={owner} retry={retry} />
         )}
       </div>
     </main>
+  );
+}
+
+/** The header's Add contact. The page hides it only while the empty card shows the same action. */
+function HeaderAdd({ walletId, addOpen, linkOpen }: { walletId: string; addOpen: boolean; linkOpen: boolean }) {
+  return (
+    <DashButton
+      variant="filledBlue"
+      size="small"
+      data-testid="contacts-add"
+      disabled={addOpen}
+      aria-expanded={addOpen || linkOpen}
+      why="Add a New Contact is already open."
+      whyId="add-contact-title"
+      onClick={() => openAdd({ walletId, query: "", hit: null })}>
+      Add contact
+    </DashButton>
   );
 }
 
@@ -113,6 +121,7 @@ function NoContacts({ walletId, owner, retry }: { walletId: string; owner: Exclu
       body = (
         <EmptyState
           testId="contacts-join"
+          art={EMPTY.join.art}
           title="Join DashPay"
           message={JOIN_MESSAGES[owner.reason ?? "none"]}
           action={
@@ -141,8 +150,9 @@ function NoContacts({ walletId, owner, retry }: { walletId: string; owner: Exclu
   );
 }
 
-function ContactsView({ walletId, identity, network }: { walletId: string; identity: string; network: NetworkInfo }) {
+function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: string; identity: string; network: NetworkInfo; onEmptyCard: (shown: boolean) => void }) {
   const [search, setSearch] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
   const [hiddenOpen, setHiddenOpen] = useState(false);
   const sort = useUi((s) => s.contactSort);
   const selectedId = useUi((s) => s.contact);
@@ -177,6 +187,18 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
   const hint = setupHint(pending.data, lock.data?.state);
   const hits = networkHits(net.data, all.data);
   const updating = list.data?.updating === true;
+  const display = contactsDisplay({
+    pending: list.isPending,
+    failed: list.isError,
+    hasSnapshot: list.data !== undefined,
+    rowCount: groups.length,
+    updating,
+    searching: text !== "",
+  });
+  useLayoutEffect(() => {
+    onEmptyCard(!contactsHeaderAdd(display));
+    return () => onEmptyCard(false);
+  }, [display.kind, onEmptyCard]);
   const select = (contact: string) => ui.set({ contact, addContact: null, contactPrefill: null });
   // A row's Accept or Ignore: the pane says its own contact's outcome, a toast another's; focus
   // goes to the request now in the row's place, else to the page's heading (D28).
@@ -203,8 +225,8 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
   };
 
   let body;
-  if (list.isPending) body = <LoadingState testId="contacts-loading" text="Loading contacts…" />;
-  else if (list.isError && !list.data)
+  if (display.kind === "arriving" && list.isPending) body = <LoadingState testId="contacts-loading" text="Loading contacts…" />;
+  else if (display.kind === "failed")
     body = (
       <EmptyState
         testId="contacts-error"
@@ -217,17 +239,38 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
         }
       />
     );
-  else if (groups.length === 0 && updating) body = <LoadingState testId="contacts-updating" text="Updating contacts…" />;
-  else if (groups.length === 0 && text !== "") body = <EmptyState testId="contacts-no-match" title={`There are no contacts that match “${text}”`} />;
-  else if (groups.length === 0)
+  else if (display.kind === "arriving") body = <LoadingState testId="contacts-updating" text="Updating contacts…" />;
+  else if (display.kind === "search")
+    body = (
+      <EmptyState
+        testId="contacts-no-match"
+        art="search"
+        title={`There are no contacts that match “${text}”`}
+        message="Try another name."
+        action={
+          <DashButton
+            variant="filledBlue"
+            data-testid="contacts-no-match-clear"
+            onClick={() => {
+              setSearch("");
+              focusWhenIdle(searchRef);
+            }}
+          >
+            Clear search
+          </DashButton>
+        }
+      />
+    );
+  else if (display.kind === "empty")
     body = (
       <EmptyState
         testId="contacts-empty"
-        title="No contacts yet"
-        message="Search for a user by their username to send them a contact request."
+        art={EMPTY.contacts.art}
+        title={EMPTY.contacts.title}
+        message={EMPTY.contacts.message}
         action={
-          <DashButton variant="filledBlue" data-testid="contacts-empty-search" onClick={() => openAdd({ walletId, query: "", hit: null })}>
-            Search for a User
+          <DashButton variant="filledBlue" data-testid={EMPTY.contacts.action.testId} onClick={() => openAdd({ walletId, query: "", hit: null })}>
+            {EMPTY.contacts.action.label}
           </DashButton>
         }
       />
@@ -252,12 +295,15 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
       </>
     );
 
+  const noContacts = display.kind === "empty";
+  const solo = noContacts && !prefill && !add;
   return (
     <>
       <div className="tx-filter-bar">
         <label className="search-field" data-testid="contacts-search">
           <Icon id="searchMagnifyingGlass" size={16} className="search-icon" />
           <input
+            ref={searchRef}
             type="search"
             value={search}
             placeholder="Search contacts or a username"
@@ -293,7 +339,7 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
           )}
         </div>
       )}
-      <div className="contacts-split">
+      <div className={solo ? "contacts-split is-solo" : "contacts-split"} data-testid="contacts-split">
         <div className="contacts-list" data-testid="contacts-list">
           {body}
           {prefix !== null && typedPrefix !== null && (
@@ -308,20 +354,22 @@ function ContactsView({ walletId, identity, network }: { walletId: string; ident
             />
           )}
         </div>
-        <ContactPane
-          adding={
-            (prefill || add) && (
-              <AddContact
-                key={walletId}
-                ctx={{ walletId, owner: { kind: "identity", identity }, actions, listed: listedNow(all.data) }}
-                intent={add}
-                link={prefill}
-              />
-            )
-          }
-          selected={selected}
-          pane={{ walletId, identity, network, actions, hasKeys }}
-        />
+        {!solo && (
+          <ContactPane
+            adding={
+              (prefill || add) && (
+                <AddContact
+                  key={walletId}
+                  ctx={{ walletId, owner: { kind: "identity", identity }, actions, listed: listedNow(all.data) }}
+                  intent={add}
+                  link={prefill}
+                />
+              )
+            }
+            selected={selected}
+            pane={{ walletId, identity, network, actions, hasKeys }}
+          />
+        )}
       </div>
       {/* The detail slot's change, said once (DP2-09 D14). */}
       <VisuallyHidden>

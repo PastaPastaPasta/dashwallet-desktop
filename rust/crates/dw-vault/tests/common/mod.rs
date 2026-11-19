@@ -21,19 +21,33 @@ pub const TTL: u64 = 120;
 /// Start time of the test clock (UNIX seconds).
 pub const T0: u64 = 1_800_000_000;
 
-/// A clock the test moves by hand.
-#[derive(Debug)]
-pub struct TestClock(AtomicU64);
+/// A clock the test moves by hand. `advance` moves the wall clock and the
+/// monotonic clock together. `rewind_wall` moves only the wall clock, so a
+/// test can show that a deadline does not follow it.
+pub struct TestClock {
+    wall: AtomicU64,
+    origin: std::time::Instant,
+    mono: AtomicU64,
+}
 
 impl TestClock {
     pub fn advance(&self, secs: u64) {
-        self.0.fetch_add(secs, Ordering::SeqCst);
+        self.wall.fetch_add(secs, Ordering::SeqCst);
+        self.mono.fetch_add(secs, Ordering::SeqCst);
+    }
+
+    pub fn rewind_wall(&self, secs: u64) {
+        self.wall.fetch_sub(secs, Ordering::SeqCst);
     }
 }
 
 impl Clock for TestClock {
     fn now_secs(&self) -> u64 {
-        self.0.load(Ordering::SeqCst)
+        self.wall.load(Ordering::SeqCst)
+    }
+
+    fn monotonic(&self) -> std::time::Instant {
+        self.origin + std::time::Duration::from_secs(self.mono.load(Ordering::SeqCst))
     }
 }
 
@@ -52,7 +66,11 @@ impl Fixture {
     pub fn with_kdf(kdf: KdfParams) -> Self {
         Self {
             dir: tempfile::tempdir().expect("temp dir"),
-            clock: Arc::new(TestClock(AtomicU64::new(T0))),
+            clock: Arc::new(TestClock {
+                wall: AtomicU64::new(T0),
+                origin: std::time::Instant::now(),
+                mono: AtomicU64::new(0),
+            }),
             os: Arc::new(MemoryOsStore::new()),
             kdf,
         }

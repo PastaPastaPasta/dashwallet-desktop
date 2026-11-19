@@ -89,12 +89,12 @@ fn signer_of(sig: &[u8; 65], vote: &FundingVote, v: &Vault) -> [u8; 20] {
 // MARK: The purposes (§1, D2)
 
 #[test]
-fn the_purposes_are_wallet_bound_spend_column_with_their_quick_unlock_values() {
+fn the_purposes_are_wallet_bound_ask_for_the_passphrase_and_keep_their_quick_unlock_values() {
     assert_eq!(GOV.kind(), GrantKind::Governance);
     assert_eq!(MN_OP.kind(), GrantKind::MasternodeOp);
     for p in [GOV, MN_OP] {
         assert!(p.wallet_scoped(), "{p:?}");
-        assert!(!p.requires_credential(), "{p:?}");
+        assert!(p.requires_credential(), "{p:?}");
     }
     assert_eq!(GOV.quick_unlock_value(), Some(0));
     assert_eq!(MN_OP.quick_unlock_value(), Some(1_000));
@@ -103,18 +103,33 @@ fn the_purposes_are_wallet_bound_spend_column_with_their_quick_unlock_values() {
     let v = encrypted(&fx);
     // Bound to the acting wallet: no grant without one.
     for p in [GOV, MN_OP] {
-        assert!(v.authorize(p, None, Credential::None).is_err(), "{p:?}");
+        assert!(
+            v.authorize(p, None, Credential::Passphrase(PASS)).is_err(),
+            "{p:?}"
+        );
     }
-    // The `Spend` column: no credential while unlocked with scope Full.
-    let t = token(&v, MN_OP, Credential::None);
+    // Not the `Spend` column: the passphrase even while unlocked with scope
+    // Full, inside the signing window.
+    assert!(v.signing_window_open());
+    for p in [GOV, MN_OP] {
+        assert_eq!(
+            v.authorize(p, Some(&wallet(1)), Credential::None).map(drop),
+            Err(VaultError::CredentialRequired),
+            "{p:?}"
+        );
+    }
+    let t = token(&v, MN_OP, Credential::Passphrase(PASS));
     assert_eq!(t.max_duffs(), Some(1_000));
-    assert_eq!(token(&v, GOV, Credential::None).max_duffs(), None);
+    assert_eq!(
+        token(&v, GOV, Credential::Passphrase(PASS)).max_duffs(),
+        None
+    );
     // Locked, the passphrase is asked for.
     v.lock();
     assert_eq!(
         v.authorize(GOV, Some(&wallet(1)), Credential::None)
             .map(drop),
-        Err(VaultError::Locked)
+        Err(VaultError::CredentialRequired)
     );
     v.authorize(GOV, Some(&wallet(1)), Credential::Passphrase(PASS))
         .unwrap();
@@ -166,16 +181,16 @@ fn each_signer_takes_its_own_purpose_only() {
         GrantPurpose::IdentityScan,
     ];
     for p in others.into_iter().chain([MN_OP]) {
-        let t = token(&v, p, Credential::None);
+        let t = token(&v, p, Credential::Passphrase(PASS));
         assert_eq!(v.vote_signer(&w, &t).map(drop), mismatch, "{p:?}");
     }
     for p in others.into_iter().chain([GOV]) {
-        let t = token(&v, p, Credential::None);
+        let t = token(&v, p, Credential::Passphrase(PASS));
         assert_eq!(v.masternode_signer(&w, &t).map(drop), mismatch, "{p:?}");
     }
     // Neither grant gets a full signer or a Platform one.
     for p in [GOV, MN_OP] {
-        let t = token(&v, p, Credential::None);
+        let t = token(&v, p, Credential::Passphrase(PASS));
         assert_eq!(v.signer(&w, &t).map(drop), mismatch, "{p:?}");
         assert_eq!(
             v.platform_signer(&w, &t, SignerScope::PlatformIdentity)
@@ -185,7 +200,7 @@ fn each_signer_takes_its_own_purpose_only() {
         );
     }
     // `platform_signer` issues neither scope, whatever the grant.
-    let t = token(&v, platform, Credential::None);
+    let t = token(&v, platform, Credential::Passphrase(PASS));
     for scope in [SignerScope::MasternodeVoting, SignerScope::MasternodeOwner] {
         assert!(
             matches!(
@@ -198,7 +213,9 @@ fn each_signer_takes_its_own_purpose_only() {
     // Another wallet's grant issues nothing for wallet 1.
     v.store_wallet_secret(&wallet(2), &secret(2)).unwrap();
     for p in [GOV, MN_OP] {
-        let grant = v.authorize(p, Some(&wallet(2)), Credential::None).unwrap();
+        let grant = v
+            .authorize(p, Some(&wallet(2)), Credential::Passphrase(PASS))
+            .unwrap();
         let t = v
             .redeem_grant(&grant.id, p.kind(), Some(&wallet(2)))
             .unwrap();
@@ -206,7 +223,7 @@ fn each_signer_takes_its_own_purpose_only() {
         assert_eq!(v.masternode_signer(&w, &t).map(drop), mismatch);
     }
     assert_eq!(
-        v.masternode_signer(&w, &token(&v, MN_OP, Credential::None))
+        v.masternode_signer(&w, &token(&v, MN_OP, Credential::Passphrase(PASS)))
             .unwrap()
             .scope(),
         SignerScope::MasternodeOwner
@@ -220,7 +237,7 @@ async fn the_owner_signer_signs_addresses_and_no_owner_digest() {
     let fx = Fixture::new();
     let v = encrypted(&fx);
     let s = v
-        .masternode_signer(&wallet(1), &token(&v, MN_OP, Credential::None))
+        .masternode_signer(&wallet(1), &token(&v, MN_OP, Credential::Passphrase(PASS)))
         .unwrap();
     s.sign_ecdsa(&path(BIP44), [3; 32]).await.unwrap();
     s.sign_message(&path(BIP44), b"collateral").await.unwrap();
@@ -249,7 +266,7 @@ async fn the_owner_signer_signs_addresses_and_no_owner_digest() {
 // MARK: The vote signer (§3, D1, D3)
 
 fn vote_signer(v: &Vault) -> VoteSigner {
-    v.vote_signer(&wallet(1), &token(v, GOV, Credential::None))
+    v.vote_signer(&wallet(1), &token(v, GOV, Credential::Passphrase(PASS)))
         .unwrap()
 }
 
@@ -388,7 +405,7 @@ async fn own_key_grants_sign_through_a_hold_until_it_drops() {
 // MARK: The owner payload signer (MG-04 D11, D12, D38)
 
 fn owner_signer(v: &Vault) -> dw_vault::VaultSigner {
-    v.masternode_signer(&wallet(1), &token(v, MN_OP, Credential::None))
+    v.masternode_signer(&wallet(1), &token(v, MN_OP, Credential::Passphrase(PASS)))
         .unwrap()
 }
 
@@ -525,10 +542,11 @@ fn only_a_masternode_op_grant_signs_owner_payloads() {
 }
 
 /// D50: a full signer (a `Spend` or `SignMessage` grant's) makes no
-/// signature at a keychain owner key. A ProUpRegTx's owner signature is
-/// a plain ECDSA one over the payload's hash, so `sign_ecdsa` there would
-/// forge one past the `MasternodeOp` grant. Voting and address keys still
-/// sign.
+/// signature at a keychain owner key or a voting key. A ProUpRegTx's owner
+/// signature is a plain ECDSA one over the payload's hash, so `sign_ecdsa`
+/// there would forge one past the `MasternodeOp` grant. Off testnet a vote
+/// is a `signmessage` signature, so the same refusal covers a voting key.
+/// Address keys still sign. A vote itself still goes through `VoteSigner`.
 #[tokio::test]
 async fn a_full_signer_signs_nothing_at_an_owner_key() {
     let fx = Fixture::new();
@@ -543,28 +561,34 @@ async fn a_full_signer_signs_nothing_at_an_owner_key() {
             .signer(&wallet(1), &token(&v, purpose, Credential::None))
             .unwrap();
         assert_eq!(full.scope(), SignerScope::Full);
-        for owner in ["m/9'/1'/3'/2'/0", "m/9'/1'/3'/2'/19"] {
+        for refused in [
+            "m/9'/1'/3'/2'/0",
+            "m/9'/1'/3'/2'/19",
+            "m/9'/1'/3'/1'/0",
+            "m/9'/1'/3'/1'/19",
+        ] {
             assert!(
                 matches!(
-                    full.sign_ecdsa(&path(owner), digest).await,
+                    full.sign_ecdsa(&path(refused), digest).await,
                     Err(SignerError::PathNotAllowed(_))
                 ),
-                "{purpose:?} {owner}"
+                "{purpose:?} {refused}"
             );
             assert!(
                 matches!(
-                    full.sign_message(&path(owner), b"owner").await,
+                    full.sign_message(&path(refused), b"refused").await,
                     Err(SignerError::PathNotAllowed(_))
                 ),
-                "{purpose:?} {owner}"
+                "{purpose:?} {refused}"
             );
-            full.public_key(&path(owner)).await.unwrap();
+            full.public_key(&path(refused)).await.unwrap();
         }
-        for other in [BIP44, "m/9'/1'/3'/1'/0"] {
-            full.sign_ecdsa(&path(other), digest).await.unwrap();
-            full.sign_message(&path(other), b"other").await.unwrap();
-        }
+        full.sign_ecdsa(&path(BIP44), digest).await.unwrap();
+        full.sign_message(&path(BIP44), b"other").await.unwrap();
     }
+    vote_signer(&v)
+        .sign_vote(&VotingKey::Keychain { index: 0 }, &vote(1))
+        .unwrap();
 }
 
 /// dashd's own ProUpRegTx payloads (testdata/protx_update_registrar.json,

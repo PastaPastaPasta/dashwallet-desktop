@@ -204,12 +204,12 @@ fn test_qt_145_console_answers_wallet_commands_offline() {
         }
         other => panic!("{other:?}"),
     }
-    assert!(
-        matches!(
-            run(&mut ctx, "getbalance"),
-            Err(ConsoleFailure::Rpc { code: -4, .. })
-        ),
-        "balance unknown before any scan"
+    // Before any scan the wallet answers what it knows, as dash-qt does while
+    // it syncs.
+    assert_eq!(
+        run(&mut ctx, "getbalance").unwrap().result,
+        "0.00000000",
+        "the balance known before any scan"
     );
     engine.block_on(engine.shutdown()).unwrap();
 }

@@ -11,6 +11,7 @@ import type { AddressPurposeName } from "./AddressPurposeName";
 import type { AmountStyle } from "./AmountStyle";
 import type { AppError } from "./AppError";
 import type { AppEvent } from "./AppEvent";
+import type { AttachedKeyRoleName } from "./AttachedKeyRoleName";
 import type { AuthGrant } from "./AuthGrant";
 import type { AvatarCandidateInfo } from "./AvatarCandidateInfo";
 import type { AvatarSizeName } from "./AvatarSizeName";
@@ -60,6 +61,7 @@ import type { DispatchStateName } from "./DispatchStateName";
 import type { DisplayUnit } from "./DisplayUnit";
 import type { EligibilityName } from "./EligibilityName";
 import type { ErrorCode } from "./ErrorCode";
+import type { EvonodeCredits } from "./EvonodeCredits";
 import type { FaucetLockKey } from "./FaucetLockKey";
 import type { FeeMode } from "./FeeMode";
 import type { FeePolicy } from "./FeePolicy";
@@ -83,15 +85,23 @@ import type { IdentitySummary } from "./IdentitySummary";
 import type { ImportOptions } from "./ImportOptions";
 import type { InvitationStatus } from "./InvitationStatus";
 import type { JsonValue } from "./serde_json/JsonValue";
+import type { KeyCheckName } from "./KeyCheckName";
 import type { KeyMaterialInput } from "./KeyMaterialInput";
 import type { LaunchInfo } from "./LaunchInfo";
 import type { Lease } from "./Lease";
 import type { LinkRoute } from "./LinkRoute";
+import type { ListedMasternode } from "./ListedMasternode";
 import type { LockFinish } from "./LockFinish";
 import type { LockKind } from "./LockKind";
 import type { LockOutcome } from "./LockOutcome";
 import type { LockResolutionName } from "./LockResolutionName";
 import type { LockStatus } from "./LockStatus";
+import type { MasternodeDetail } from "./MasternodeDetail";
+import type { MasternodeKeyInfo } from "./MasternodeKeyInfo";
+import type { MasternodeKeyRoleName } from "./MasternodeKeyRoleName";
+import type { MasternodeListState } from "./MasternodeListState";
+import type { MasternodeOverview } from "./MasternodeOverview";
+import type { MasternodePayout } from "./MasternodePayout";
 import type { MixedCoinsConsolidationPlan } from "./MixedCoinsConsolidationPlan";
 import type { MixedCoinsDestination } from "./MixedCoinsDestination";
 import type { MixedCoinsResend } from "./MixedCoinsResend";
@@ -138,6 +148,7 @@ import type { ProposalDraft } from "./ProposalDraft";
 import type { ProposalPreview } from "./ProposalPreview";
 import type { ProposalQuery } from "./ProposalQuery";
 import type { ProposalRow } from "./ProposalRow";
+import type { ProtocolCompatibility } from "./ProtocolCompatibility";
 import type { PsbtAnalysis } from "./PsbtAnalysis";
 import type { PublishStateName } from "./PublishStateName";
 import type { QrMatrix } from "./QrMatrix";
@@ -153,6 +164,7 @@ import type { RegistrationRequest } from "./RegistrationRequest";
 import type { RegistrationStatus } from "./RegistrationStatus";
 import type { RescanStart } from "./RescanStart";
 import type { RescanStatus } from "./RescanStatus";
+import type { RevealedMasternodeKey } from "./RevealedMasternodeKey";
 import type { RevealedMnemonic } from "./RevealedMnemonic";
 import type { ScannedContactInfo } from "./ScannedContactInfo";
 import type { ScreenScanMode } from "./ScreenScanMode";
@@ -184,6 +196,7 @@ import type { TxNoticeRow } from "./TxNoticeRow";
 import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
+import type { UntrackOutcome } from "./UntrackOutcome";
 import type { UriParse } from "./UriParse";
 import type { UserHit } from "./UserHit";
 import type { UsernameCheck } from "./UsernameCheck";
@@ -259,6 +272,15 @@ export function uiSettings(): Promise<UiSettings> {
  */
 export function setUiSettings(settings: UiSettings): Promise<UiSettings> {
   return invoke<UiSettings>("set_ui_settings", { settings });
+}
+
+/**
+ * Opens this repository's GitHub releases page in the system browser
+ * (the protocol-compatibility advisory banner). Only [`RELEASES_URL`]
+ * may be opened.
+ */
+export function openReleasesPage(): Promise<null> {
+  return invoke<null>("open_releases_page");
 }
 
 /**
@@ -497,15 +519,16 @@ export function removeQuickUnlock(): Promise<LockStatus> {
 }
 
 /**
- * The quick-unlock rules. In-memory read; works while locked.
+ * The quick-unlock rules and the post-unlock signing window. In-memory
+ * read; works while locked (the window is then closed).
  */
 export function quickUnlockPolicy(): Promise<QuickUnlockPolicy> {
   return invoke<QuickUnlockPolicy>("quick_unlock_policy");
 }
 
 /**
- * "Require authentication for every payment" (default on), as stored
- * for this network next to its vault.
+ * "Ask for my passphrase for every payment". Off (the default) is the
+ * post-unlock signing window. Stored for this network next to its vault.
  */
 export function paymentAuthentication(): Promise<boolean> {
   return invoke<boolean>("payment_authentication");
@@ -523,8 +546,9 @@ export function setPaymentAuthentication(on: boolean, grantId: string): Promise<
 }
 
 /**
- * Sets the biometric spending limit (IOS-016) to one of 0, 0.1, 0.5, 1
- * or 5 DASH in duffs. Needs a `changeCredential` grant.
+ * Sets the spending limit (IOS-016) to one of 0, 0.1, 0.5, 1 or 5 DASH
+ * in duffs. The signing window and quick unlock both use it. Needs a
+ * `changeCredential` grant. Works whether or not quick unlock is enrolled.
  */
 export function setQuickUnlockSpendLimit(grantId: string, spendLimitDuffs: number): Promise<QuickUnlockPolicy> {
   return invoke<QuickUnlockPolicy>("set_quick_unlock_spend_limit", { grantId, spendLimitDuffs });
@@ -579,7 +603,8 @@ export function walletInfo(walletId: string): Promise<WalletSummary> {
 }
 
 /**
- * Balance buckets; `null` until the scan reaches the birth height.
+ * Balance buckets known so far; `catchingUp` is true before the scan reaches
+ * the wallet's birth height. `null` means the wallet state has not been read.
  */
 export function balance(walletId: string): Promise<Balances | null> {
   return invoke<Balances | null>("balance", { walletId });
@@ -1991,6 +2016,14 @@ export function dashpaySyncStatus(walletId: string): Promise<DashPaySyncStatus> 
 }
 
 /**
+ * Platform protocol compatibility of the open network (the Home advisory
+ * banner when `networkVersion > supportedVersion`).
+ */
+export function protocolCompatibility(): Promise<ProtocolCompatibility> {
+  return invoke<ProtocolCompatibility>("protocol_compatibility");
+}
+
+/**
  * Where Platform proofs get their quorum keys now (Tools ▸ Information).
  */
 export function quorumSource(): Promise<QuorumSource> {
@@ -2692,6 +2725,103 @@ export function governanceSubmitProposal(walletId: string, hash: string): Promis
 }
 
 /**
+ * Whether the SPV masternode list is synced, and its height.
+ */
+export function mnListState(): Promise<MasternodeListState> {
+  return invoke<MasternodeListState>("mn_list_state");
+}
+
+/**
+ * The wallet's own masternodes, then the tracked ones, with the
+ * collateral-shaped coins and the 30-day payouts.
+ */
+export function mnList(walletId: string): Promise<MasternodeOverview> {
+  return invoke<MasternodeOverview>("mn_list", { walletId });
+}
+
+/**
+ * One masternode the wallet owns or tracks, or the synced list holds.
+ */
+export function mnMasternode(walletId: string, proTxHash: string): Promise<MasternodeDetail> {
+  return invoke<MasternodeDetail>("mn_masternode", { walletId, proTxHash });
+}
+
+/**
+ * Its payouts to the wallet, newest first; with `since` (Unix
+ * seconds), only those at or after it.
+ */
+export function mnPayouts(walletId: string, proTxHash: string, since: number | null): Promise<Array<MasternodePayout>> {
+  return invoke<Array<MasternodePayout>>("mn_payouts", { walletId, proTxHash, since });
+}
+
+/**
+ * The synced list's entries matching a ProTx hash or `ip[:port]`.
+ */
+export function mnFind(query: string): Promise<Array<ListedMasternode>> {
+  return invoke<Array<ListedMasternode>>("mn_find", { query });
+}
+
+/**
+ * An evonode's claimable credits, read from Platform with a proof.
+ */
+export function mnEvonodeCredits(proTxHash: string): Promise<EvonodeCredits> {
+  return invoke<EvonodeCredits>("mn_evonode_credits", { proTxHash });
+}
+
+/**
+ * Tracks a masternode of the synced list, for every wallet.
+ */
+export function mnTrack(proTxHash: string, label: string | null): Promise<ListedMasternode> {
+  return invoke<ListedMasternode>("mn_track", { proTxHash, label });
+}
+
+/**
+ * Stops tracking; its attached keys are deleted first.
+ */
+export function mnUntrack(proTxHash: string): Promise<UntrackOutcome> {
+  return invoke<UntrackOutcome>("mn_untrack", { proTxHash });
+}
+
+/**
+ * Names a masternode; `null` or blank clears the name.
+ */
+export function mnSetLabel(proTxHash: string, label: string | null): Promise<null> {
+  return invoke<null>("mn_set_label", { proTxHash, label });
+}
+
+/**
+ * Attaches a private key (WIF or 64 hex) of `role` to a tracked
+ * masternode, checked as far as the wallet can. Needs an unlocked
+ * vault; no grant. The key is never echoed.
+ */
+export function mnAttachKey(proTxHash: string, role: AttachedKeyRoleName, key: string): Promise<KeyCheckName> {
+  return invoke<KeyCheckName>("mn_attach_key", { proTxHash, role, key });
+}
+
+/**
+ * Deletes the key attached for `role`; `false` when none was.
+ */
+export function mnDetachKey(proTxHash: string, role: AttachedKeyRoleName): Promise<boolean> {
+  return invoke<boolean>("mn_detach_key", { proTxHash, role });
+}
+
+/**
+ * The wallet's derived provider keys of `role`, `start..start+count`
+ * (count ≤ 100). Public data only.
+ */
+export function mnKeys(walletId: string, role: MasternodeKeyRoleName, start: number, count: number): Promise<Array<MasternodeKeyInfo>> {
+  return invoke<Array<MasternodeKeyInfo>>("mn_keys", { walletId, role, start, count });
+}
+
+/**
+ * One provider private key of the wallet. Needs a `revealSecret`
+ * grant for it, which the call consumes. The result is secret.
+ */
+export function mnRevealKey(walletId: string, role: MasternodeKeyRoleName, index: number, grant: string): Promise<RevealedMasternodeKey> {
+  return invoke<RevealedMasternodeKey>("mn_reveal_key", { walletId, role, index, grant });
+}
+
+/**
  * The settings and the chosen currency's price and state now.
  */
 export function ratesStatus(): Promise<RatesView> {
@@ -2783,6 +2913,7 @@ export type CommandArgs = {
   startup_mark: { mark: string };
   ui_settings: {  };
   set_ui_settings: { settings: UiSettings };
+  open_releases_page: {  };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   switch_network: { network: ChosenNetwork };
@@ -2995,6 +3126,7 @@ export type CommandArgs = {
   dashpay_status: { walletId: string };
   dashpay_sync_now: { walletId: string };
   dashpay_sync_status: { walletId: string };
+  protocol_compatibility: {  };
   quorum_source: {  };
   trusted_quorums_only: {  };
   set_trusted_quorums_only: { on: boolean };
@@ -3080,6 +3212,19 @@ export type CommandArgs = {
   governance_create_proposal: { walletId: string; draft: ProposalDraft; grant: string };
   governance_my_proposals: { walletId: string };
   governance_submit_proposal: { walletId: string; hash: string };
+  mn_list_state: {  };
+  mn_list: { walletId: string };
+  mn_masternode: { walletId: string; proTxHash: string };
+  mn_payouts: { walletId: string; proTxHash: string; since: number | null };
+  mn_find: { query: string };
+  mn_evonode_credits: { proTxHash: string };
+  mn_track: { proTxHash: string; label: string | null };
+  mn_untrack: { proTxHash: string };
+  mn_set_label: { proTxHash: string; label: string | null };
+  mn_attach_key: { proTxHash: string; role: AttachedKeyRoleName; key: string };
+  mn_detach_key: { proTxHash: string; role: AttachedKeyRoleName };
+  mn_keys: { walletId: string; role: MasternodeKeyRoleName; start: number; count: number };
+  mn_reveal_key: { walletId: string; role: MasternodeKeyRoleName; index: number; grant: string };
   rates_status: {  };
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
@@ -3099,6 +3244,7 @@ export type CommandResults = {
   startup_mark: number;
   ui_settings: UiSettings;
   set_ui_settings: UiSettings;
+  open_releases_page: null;
   probe_unlisted: string;
   open_network: OpenedNetwork;
   switch_network: NetworkSwitch;
@@ -3311,6 +3457,7 @@ export type CommandResults = {
   dashpay_status: DashPayStatus;
   dashpay_sync_now: SyncPassReport;
   dashpay_sync_status: DashPaySyncStatus;
+  protocol_compatibility: ProtocolCompatibility;
   quorum_source: QuorumSource;
   trusted_quorums_only: boolean;
   set_trusted_quorums_only: null;
@@ -3396,6 +3543,19 @@ export type CommandResults = {
   governance_create_proposal: MyProposal;
   governance_my_proposals: Array<MyProposal>;
   governance_submit_proposal: MyProposal;
+  mn_list_state: MasternodeListState;
+  mn_list: MasternodeOverview;
+  mn_masternode: MasternodeDetail;
+  mn_payouts: Array<MasternodePayout>;
+  mn_find: Array<ListedMasternode>;
+  mn_evonode_credits: EvonodeCredits;
+  mn_track: ListedMasternode;
+  mn_untrack: UntrackOutcome;
+  mn_set_label: null;
+  mn_attach_key: KeyCheckName;
+  mn_detach_key: boolean;
+  mn_keys: Array<MasternodeKeyInfo>;
+  mn_reveal_key: RevealedMasternodeKey;
   rates_status: RatesView;
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
@@ -3417,6 +3577,7 @@ export const COMMANDS: Record<CommandName, string> = {
   startup_mark: "app",
   ui_settings: "app",
   set_ui_settings: "app",
+  open_releases_page: "app",
   probe_unlisted: "app",
   open_network: "network",
   switch_network: "network",
@@ -3629,6 +3790,7 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_status: "identity",
   dashpay_sync_now: "identity",
   dashpay_sync_status: "identity",
+  protocol_compatibility: "identity",
   quorum_source: "identity",
   trusted_quorums_only: "identity",
   set_trusted_quorums_only: "identity",
@@ -3714,6 +3876,19 @@ export const COMMANDS: Record<CommandName, string> = {
   governance_create_proposal: "governance",
   governance_my_proposals: "governance",
   governance_submit_proposal: "governance",
+  mn_list_state: "masternodes",
+  mn_list: "masternodes",
+  mn_masternode: "masternodes",
+  mn_payouts: "masternodes",
+  mn_find: "masternodes",
+  mn_evonode_credits: "masternodes",
+  mn_track: "masternodes",
+  mn_untrack: "masternodes",
+  mn_set_label: "masternodes",
+  mn_attach_key: "masternodes",
+  mn_detach_key: "masternodes",
+  mn_keys: "masternodes",
+  mn_reveal_key: "masternodes",
   rates_status: "rates",
   rates_currencies: "rates",
   set_rates_settings: "rates",
@@ -3748,6 +3923,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.network_busy",
   "app.network_switch_failed",
   "app.explorer_open",
+  "app.browser_open",
   "invalid_config",
   "invalid_argument",
   "network_not_open",
@@ -3989,6 +4165,46 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "governance.contest_closed",
   "governance.not_a_contender",
   "governance.not_implemented",
+  "masternodes.list_unavailable",
+  "masternodes.not_found",
+  "masternodes.already_tracked",
+  "masternodes.not_tracked",
+  "masternodes.key_mismatch",
+  "masternodes.not_evonode",
+  "masternodes.no_identity",
+  "masternodes.platform_unavailable",
+  "masternodes.unsupported",
+  "masternodes.not_implemented",
+  "masternodes.protx_refused",
+  "masternodes.collateral_unavailable",
+  "masternodes.signature_mismatch",
+  "masternodes.operation_not_found",
+  "masternodes.operation_state",
+  "masternodes.in_flight",
+  "masternodes.keys_exhausted",
+  "masternodes.no_owner_key",
+  "masternodes.update_pending",
+  "masternodes.update_superseded",
+  "masternodes.shared_session_not_found",
+  "masternodes.shared_stage",
+  "masternodes.shared_message",
+  "masternodes.shared_funding_mismatch",
+  "masternodes.share_not_mine",
+  "masternodes.shared_too_early",
+  "masternodes.shared_registration_unknown",
+  "masternodes.shared_actor_fee",
+  "masternodes.withdrawal_key_missing",
+  "masternodes.withdrawal_shared",
+  "masternodes.withdrawal_no_payout_key",
+  "masternodes.withdrawal_destination_checking",
+  "masternodes.withdrawal_pending",
+  "masternodes.withdrawal_unverified",
+  "masternodes.withdrawal_retry_state",
+  "masternodes.withdraw_target_mismatch",
+  "masternodes.withdrawal_mark_state",
+  "masternodes.withdrawal_not_found",
+  "masternodes.withdrawal_amount_out_of_range",
+  "masternodes.withdrawal_amount_insufficient",
   "rates.invalid_currency",
   "rates.throttled",
   "rates.off",

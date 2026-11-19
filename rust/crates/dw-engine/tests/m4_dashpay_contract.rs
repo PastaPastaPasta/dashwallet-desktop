@@ -57,6 +57,8 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.dispatch_status",
     // E0-10b: the status card's quorum source.
     "DashPay.sync_status",
+    // 1.0 C2: Platform protocol compatibility.
+    "NetworkSession.protocol_compatibility",
     // DP2-01: the contacts read model.
     "DashPay.contacts",
     "DashPay.contact",
@@ -1447,6 +1449,11 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
 
         assert_eq!(dp.status().unwrap_err().code(), "wallet_not_found");
         assert_eq!(dp.sync_status().unwrap_err().code(), "wallet_not_found");
+        assert_eq!(
+            session.protocol_compatibility().unwrap().network_version,
+            None
+        );
+        assert!(session.protocol_compatibility().unwrap().supported_version >= 13);
         c.stub(dp.sync_now().await);
         // DP6-01's calls are implemented: an unknown wallet is refused.
         for refused in [

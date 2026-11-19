@@ -178,8 +178,8 @@ enum Command {
         #[arg(long)]
         bip39_passphrase_file: Option<PathBuf>,
     },
-    /// List wallets with names and balances (duffs; `unknown` before the
-    /// first scan).
+    /// List wallets with names and balances (duffs; `catching_up=true` until
+    /// the scan reaches the birth block, `unknown` before the wallet is read).
     List,
     /// The network the desktop app opens (release 0.1), kept in the data
     /// root's `network.json`; `set` takes effect at the app's next start.
@@ -346,8 +346,14 @@ fn print_wallets(session: &Arc<NetworkSession>) -> Result<(), EngineError> {
     for w in session.wallet_infos()? {
         let balances = match w.balances {
             Some(b) => format!(
-                "confirmed={} unconfirmed={} immature={} locked={} total={} coinjoin={}",
-                b.confirmed, b.unconfirmed, b.immature, b.locked, b.total, b.coinjoin
+                "confirmed={} unconfirmed={} immature={} locked={} total={} coinjoin={} catching_up={}",
+                b.confirmed,
+                b.unconfirmed,
+                b.immature,
+                b.locked,
+                b.total,
+                b.coinjoin,
+                b.catching_up
             ),
             None => "balance=unknown".to_string(),
         };

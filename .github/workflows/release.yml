@@ -1,6 +1,7 @@
 # Release artifacts and continuous delivery (0.1: RELEASE-PLAN §1, PK-01/PK-02, DEC-1058).
 #
-# Every trigger builds the Tauri app in release mode, without the `selftest` feature, one job per OS:
+# Every trigger but a pull request builds the Tauri app in release mode, without the `selftest` feature, one
+# job per OS:
 #   macos    a universal .dmg (aarch64 + x86_64), ad-hoc signed, not notarized;
 #   windows  an unsigned NSIS .exe installer;
 #   linux    an x86_64 AppImage and .deb.
@@ -16,17 +17,20 @@
 # time.
 #
 # Bundles are staged under stable names, dash-wallet-<version>-<os-arch>.<ext>, and uploaded as
-# `dist-<os>`. The `checksums` job gathers them, writes SHA256SUMS (sha256sum format, file names
-# only) and uploads one artifact, `release-v<version>`.
+# `dist-<os>`. The `sbom` job writes two CycloneDX JSON SBOMs, dash-wallet-<version>-sbom-rust.cdx.json
+# (the app crate's dependencies, every target) and -sbom-npm.cdx.json (the renderer's production
+# dependencies), uploaded as `dist-sbom` (ci/github/release-sbom.sh). The `checksums` job gathers all
+# six files, writes SHA256SUMS (sha256sum format, file names only) and uploads one artifact,
+# `release-v<version>`.
 #
 # What publishes, by trigger (ci/github/release-publish.sh has the logic and refuses anything else;
 # ci/github/release-publish-test.sh tests it on every run):
 #   push to main          an immutable prerelease v<version>-dev.<run>+<short sha> and the rolling
 #                         prerelease `continuous` (stable asset names, replaced in place);
 #   push of a tag vX.Y.Z[-rc.N]  that tag's release: full for vX.Y.Z, a prerelease for -rc.N;
-#   anything else         builds and uploads CI artifacts only: pull requests (forks
-#                         included) and workflow_dispatch. They never reach the publish job.
-# Every published file and both SHA256SUMS are attested with actions/attest-build-provenance
+#   anything else         builds and uploads CI artifacts only: the schedule and workflow_dispatch.
+#                         Pull requests (forks included) build nothing. None reaches the publish job.
+# Every published file (bundles and SBOMs) and both SHA256SUMS are attested with actions/attest-build-provenance
 # (`gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop`, docs/release/verifying.md).
 # No GPG until 1.0.
 #
@@ -40,6 +44,8 @@
 # (v0.0.0-rel<N>) build only and never start the publish job.
 # `decide` also skips the three build jobs for a branch push or pull request that changes only docs
 # and files no bundle is built from; a new push cancels that ref's running build (never main or tags).
+# Pull requests run script-tests and decide only: the bundles and SBOMs build on pushes to main, tags, the
+# 02:47 UTC schedule (on main; builds only, never publishes) and dispatches (`gh workflow run release.yml --ref <branch>` builds them for a branch).
 # Repository setting: "Immutable releases" must stay off (`continuous` renames assets, moves its tag).
 name: Release
 
@@ -52,6 +58,8 @@ on:
     # hand-pushed one from starting one either.
     tags: ["v*", "!v*-dev.*"]
   pull_request:
+  schedule:
+    - cron: "47 2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -61,9 +69,10 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its branch's running build; main and tags are never cancelled.
+# A new push cancels its branch's running build; main and tags are never cancelled. Main builds one at a
+# time: a newer main run replaces a pending one, so a burst of merges builds and publishes the newest commit.
 concurrency:
-  group: release-build-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  group: release-build-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
 
 env:
@@ -83,6 +92,7 @@ jobs:
         with:
           persist-credentials: false
       - run: ci/github/release-publish-test.sh
+      - run: ci/github/linux-host-deps-test.sh
 
   # Read-only: what this run builds and whether it may publish. Gates the builds (docs-only branch and
   # pull-request changes skip them) and the publish job (a release tag outside main never starts it).
@@ -107,7 +117,7 @@ jobs:
     name: macOS universal .dmg
     runs-on: macos-latest
     needs: decide
-    if: ${{ needs.decide.outputs.build == 'true' }}
+    if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -184,7 +194,7 @@ jobs:
     name: Windows NSIS .exe
     runs-on: windows-latest
     needs: decide
-    if: ${{ needs.decide.outputs.build == 'true' }}
+    if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 120
     env:
       # rs-x11-hash includes <unistd.h>, which MSVC lacks (ci/windows/unistd-shim/unistd.h).
@@ -269,7 +279,7 @@ jobs:
     name: Linux AppImage and .deb
     runs-on: ubuntu-24.04
     needs: decide
-    if: ${{ needs.decide.outputs.build == 'true' }}
+    if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 90
     env:
       # The runner has no FUSE: the AppImage tools (linuxdeploy) run extracted.
@@ -314,6 +324,15 @@ jobs:
       # catches a broken pass-through on the next main push, before any tag.
       - name: The binary carries this run's build version
         run: grep -aqF "$VERSION" rust/target/release/dash-wallet || { echo "::error::build version $VERSION is not in dash-wallet" >&2; exit 1; }
+      # dw-app's portal.rs: without these, a desktop whose portal cannot start shows no window for ~30 s.
+      - name: The binary keeps the desktop-portal interposers
+        run: |
+          exported=$(nm -D --defined-only rust/target/release/dash-wallet)
+          defined=$(nm --defined-only rust/target/release/dash-wallet)
+          for s in g_dbus_proxy_new_sync g_dbus_proxy_new_for_bus_sync; do
+            grep -qw "$s" <<<"$exported" || { echo "::error::dash-wallet does not export $s" >&2; exit 1; }
+          done
+          grep -qw __wrap_dbus_connection_send_with_reply_and_block <<<"$defined" || { echo "::error::dash-wallet does not wrap libdbus" >&2; exit 1; }
       - name: Stage the bundles
         run: |
           appimage=$(ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" linux-x86_64.AppImage 'release/bundle/appimage/*.AppImage')
@@ -336,9 +355,39 @@ jobs:
           path: ${{ runner.temp }}/launch/
           if-no-files-found: warn
 
+  sbom:
+    name: SBOMs (CycloneDX)
+    runs-on: ubuntu-24.04
+    needs: decide
+    if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: ci/github/release-version.sh
+      - name: Rust toolchain (rust-toolchain.toml)
+        working-directory: rust
+        run: rustup toolchain install && rustc --version
+      - name: cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx --version 0.5.9
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - name: Write the SBOMs
+        run: ci/github/release-sbom.sh "$RUNNER_TEMP/dist" "$VERSION"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-sbom
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+
   checksums:
     name: SHA256SUMS
-    needs: [macos, windows, linux]
+    needs: [macos, windows, linux, sbom]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -355,7 +404,7 @@ jobs:
         working-directory: ${{ runner.temp }}/release
         run: |
           ls -l
-          [[ $(ls | wc -l) -eq 4 ]] || { echo "::error::expected 4 bundles (dmg, exe, AppImage, deb)"; exit 1; }
+          [[ $(ls | wc -l) -eq 6 ]] || { echo "::error::expected 6 files (dmg, exe, AppImage, deb, two SBOMs)"; exit 1; }
           # The list is taken before the redirect creates SHA256SUMS.
           files=$(LC_ALL=C ls)
           sha256sum $files > SHA256SUMS

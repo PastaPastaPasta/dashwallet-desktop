@@ -18,6 +18,7 @@ import type { PlatformFundOutcome } from "./generated/PlatformFundOutcome";
 import type { PlatformFundQuote } from "./generated/PlatformFundQuote";
 import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
+import type { QuickUnlockPolicy } from "./generated/QuickUnlockPolicy";
 import type { ChosenNetwork } from "./generated/ChosenNetwork";
 import type { NetworkChoiceView } from "./generated/NetworkChoiceView";
 import type { NetworkSwitch } from "./generated/NetworkSwitch";
@@ -180,6 +181,7 @@ import type { PublishStateName } from "./generated/PublishStateName";
 import type { FoundIdentity } from "./generated/FoundIdentity";
 import type { IdentityDetail } from "./generated/IdentityDetail";
 import type { IdentityRefresh } from "./generated/IdentityRefresh";
+import type { ProtocolCompatibility } from "./generated/ProtocolCompatibility";
 
 export interface Backend {
   readonly kind: "tauri" | "fixture";
@@ -278,6 +280,8 @@ export interface Backend {
   /** Applies a pending lock (`resume_platform_fund`). */
   resumePlatformFund(walletId: string, txid: string, grant: string): Promise<PlatformFundOutcome>;
   syncStatus(): Promise<SyncStatus>;
+  /** Height up to which this wallet's compact filters were scanned; `null` when it has no scan state. */
+  walletScanHeight(walletId: string): Promise<number | null>;
   historyPage(walletId: string, request: HistoryRequest): Promise<HistoryRows>;
   /** dash-qt's CSV of the history `filter` and `sort` select (every field quoted, `\n` ends);
    * `typeNames` empty: dash-qt's English type names. */
@@ -293,6 +297,10 @@ export interface Backend {
   resendTransaction(walletId: string, txid: string): Promise<null>;
   /** Opens this transaction on Insight in the system browser. The app picks the network. */
   openTxInExplorer(txid: string): Promise<null>;
+  /** Opens the GitHub releases page in the system browser. */
+  openReleasesPage(): Promise<null>;
+  /** The network's observed Platform protocol version and the version this build supports. */
+  protocolCompatibility(): Promise<ProtocolCompatibility>;
   // Receive (U-03 D11).
   currentReceiveAddress(walletId: string): Promise<AddressInfo>;
   nextReceiveAddress(walletId: string, label: string | null): Promise<AddressInfo>;
@@ -328,8 +336,12 @@ export interface Backend {
   feePolicy(): Promise<FeePolicy>;
   utxos(walletId: string, filter: UtxoFilter): Promise<Utxo[]>;
   coinSelectionSummary(walletId: string, outpoints: OutPoint[], payAmounts: number[], fee: FeeMode): Promise<CoinSelectionSummary>;
-  /** "Require authentication for every payment" (E0-13 D11). */
+  /** "Ask for my passphrase for every payment". Off is the post-unlock signing window. */
   paymentAuthentication(): Promise<boolean>;
+  /** The spend limit and whether the post-unlock signing window is open. */
+  quickUnlockPolicy(): Promise<QuickUnlockPolicy>;
+  /** Sets the spend limit the signing window and quick unlock share. Needs a `changeCredential` grant. */
+  setQuickUnlockSpendLimit(grantId: string, spendLimitDuffs: number): Promise<QuickUnlockPolicy>;
   // Settings (U-04). Passphrases and key material are secret, as in onboarding.
   /** The display settings in the data root (U-04 D2); the defaults when there is no file. */
   uiSettings(): Promise<UiSettings>;

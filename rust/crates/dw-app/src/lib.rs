@@ -20,6 +20,10 @@ mod ipc;
 #[cfg(test)]
 mod ipc_tests;
 pub mod launch;
+#[cfg(test)]
+mod masternodes_tests;
+#[cfg(target_os = "linux")]
+mod portal;
 pub mod settings;
 pub mod shell;
 pub mod state;
@@ -159,6 +163,15 @@ pub fn install_logging(filter: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// One startup phase, milliseconds from `run`. The same line the cold-start
+/// harness reads (`dw-app: startup <phase> <ms>`), and an info log when
+/// `DW_LOG` is set.
+pub(crate) fn startup_phase(started: Instant, phase: &str) {
+    let ms = started.elapsed().as_millis();
+    tracing::info!(phase, elapsed_ms = ms as u64, "startup");
+    eprintln!("dw-app: startup {phase} {ms}");
+}
+
 /// The line an argument error prints: redacted, though no launch error
 /// quotes a value (D30), in case one ever does: the OS may pass a link
 /// after an option or inside one.
@@ -199,6 +212,7 @@ pub fn run() {
             std::process::exit(2);
         }
     };
+    startup_phase(started, "args");
     let context = tauri::generate_context!();
     // The data root first, created and canonical: the instance name, its
     // lock, the window-state file and the engine all take this one path.
@@ -217,11 +231,13 @@ pub fn run() {
         std::process::exit(1);
     });
     launch.data_dir = Some(root.clone());
+    startup_phase(started, "data-root");
     // The instance lock ends a second launch on this root that cannot hand
     // its links over; it is taken before the main window, webview or tray
-    // icon exists (those, and the setup hook that opens the engine, come with
-    // `run`, where a setup error would panic). With the single-instance
-    // plugin it waits for the build, during which the plugin forwards and
+    // icon exists (those come with `run`). The setup hook shows the window
+    // and returns before the engine is built: it runs on the event loop's
+    // Ready, and the window cannot paint until that hook returns. With the
+    // single-instance plugin it waits for the build, during which the plugin forwards and
     // exits where it can. Without it (macOS, or Linux without a session
     // bus) it comes first, so a refused launch ends before GTK starts and
     // GLib autolaunches a session bus of its own.
@@ -235,10 +251,22 @@ pub fn run() {
     };
     let mut base = tauri::Builder::<tauri::Wry>::new();
     let single_instance = shell::native::single_instance(&root);
-    let early_lock = single_instance.is_none().then(take_lock);
+    let lock_and_mark = || {
+        let lock = take_lock();
+        startup_phase(started, "instance");
+        lock
+    };
+    let early_lock = single_instance.is_none().then(lock_and_mark);
     if let Some(single_instance) = single_instance {
         base = base.plugin(single_instance);
     }
+    // Before `build`, which registers the GTK application. A portal that
+    // cannot start would otherwise be activated from that register and the
+    // window would not exist until the activation gave up.
+    #[cfg(target_os = "linux")]
+    portal::skip_portal_autostart_if_unavailable();
+    #[cfg(target_os = "linux")]
+    startup_phase(started, "portal");
     if let Some(window_state) = shell::native::window_state(&launch) {
         base = base.plugin(window_state);
     }
@@ -251,13 +279,15 @@ pub fn run() {
             eprintln!("dash-wallet: could not start: {e}");
             std::process::exit(1);
         });
-    app.manage(early_lock.unwrap_or_else(take_lock));
+    startup_phase(started, "built");
+    app.manage(early_lock.unwrap_or_else(lock_and_mark));
     // The self-test's grant, outside `capabilities/` so that no other build
     // embeds it (build.rs, E0-13 D17). Tauri panics on one it cannot parse
     // or resolve (`api::selftest` tests it parses; every permission exists).
     #[cfg(feature = "selftest")]
     app.add_capability(api::selftest::CAPABILITY)
         .expect("the self-test capability");
+    shell::sleep::install(app.handle());
     shell::protect_secrets(app.handle());
     shell::files::install(app.handle());
     if let Err(e) = shell::tray::install(app.handle()) {
@@ -277,7 +307,7 @@ pub fn run() {
             && let Some(state) = handle.try_state::<AppState>()
         {
             // Flush and release every wallet database before the process ends.
-            if let Err(e) = tauri::async_runtime::block_on(state.engine.shutdown()) {
+            if let Err(e) = tauri::async_runtime::block_on(state.shutdown_engine()) {
                 eprintln!("dash-wallet: engine shutdown: {e}");
             }
         }
@@ -317,11 +347,11 @@ fn app_builder<R: Runtime>(
                 tauri::webview::PageLoadEvent::Started => "page-load-started",
                 tauri::webview::PageLoadEvent::Finished => "page-load-finished",
             };
-            eprintln!("dw-app: startup {mark} {}", started.elapsed().as_millis());
+            startup_phase(started, mark);
         })
         .invoke_handler(api::invoke)
         .setup(move |app| {
-            eprintln!("dw-app: startup setup {}", started.elapsed().as_millis());
+            startup_phase(started, "setup");
             // `--theme` wins; otherwise the appearance Settings saved (U-04 D3).
             let theme = launch.theme.or_else(|| {
                 launch
@@ -330,8 +360,11 @@ fn app_builder<R: Runtime>(
                     .and_then(|root| settings::read(root).theme)
             });
             let window_size = launch.window_size;
-            let handle = app.handle();
-            let state = AppState::new(handle, launch, started, vault, || {
+            let handle = app.handle().clone();
+            // No engine yet. This hook is the event loop's Ready: it has
+            // already created the window, and nothing paints until it
+            // returns. The build (runtime, rates client) runs afterwards.
+            let state = AppState::pending(&handle, launch, started, vault, || {
                 handle
                     .path()
                     .app_data_dir()
@@ -339,7 +372,6 @@ fn app_builder<R: Runtime>(
             })?;
             // After the state: it resolves the saved network choice.
             let title = window_title(&state.window_network());
-            app.manage(state);
             if let Some(window) = app.get_webview_window("main") {
                 window.set_title(&title)?;
                 if let Some(theme) = theme {
@@ -351,8 +383,19 @@ fn app_builder<R: Runtime>(
                     // otherwise leave the resized window partly off-screen.
                     window.center()?;
                 }
+                window.show()?;
             }
-            exit_on_signal(handle.clone());
+            startup_phase(started, "window-ready");
+            app.manage(state);
+            #[cfg(test)]
+            if let Some(hook) = crate::state::take_engine_start_hook() {
+                app.state::<AppState>().start_engine_after(hook);
+            } else {
+                app.state::<AppState>().start_engine();
+            }
+            #[cfg(not(test))]
+            app.state::<AppState>().start_engine();
+            exit_on_signal(handle);
             Ok(())
         })
 }
@@ -405,7 +448,7 @@ mod tests {
             || unreachable!("--datadir given"),
         )
         .unwrap();
-        assert_eq!(state.engine.config().data_root, root);
+        assert_eq!(state.engine.ready().unwrap().config().data_root, root);
         assert!(root.is_dir());
     }
 
@@ -483,6 +526,188 @@ mod tests {
             || unreachable!("--datadir given"),
         )
         .expect("the state opens under the lock run took");
+    }
+
+    /// A panic in the build hook reaches every waiter that was already
+    /// parked, `spv_state` stops saying `starting`, and Retry builds the engine.
+    #[test]
+    fn a_panicked_engine_build_fails_then_retries() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        use crate::api::chain::spv_state_of;
+
+        let app = tauri::test::mock_app();
+        let dir = dw_testutil::private_tempdir();
+        let opts = LaunchOptions {
+            data_dir: Some(dir.path().join("data")),
+            ..LaunchOptions::default()
+        };
+        let state = AppState::pending(
+            app.handle(),
+            opts,
+            Instant::now(),
+            Default::default(),
+            || unreachable!("--datadir given"),
+        )
+        .unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel();
+        state.start_engine_after(move || {
+            let _ = entered_tx.send(());
+            let _ = go_rx.recv();
+            panic!("engine build failed");
+        });
+        assert!(
+            entered_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the build thread did not start"
+        );
+
+        let mut waiters = Vec::new();
+        for _ in 0..3 {
+            let engine = state.engine.clone();
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                let result = tauri::async_runtime::block_on(engine.wait())
+                    .map(|_| ())
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(result);
+            });
+            waiters.push(rx);
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.engine.parked_waiters() < 3 {
+            assert!(
+                Instant::now() < deadline,
+                "waiters did not park before the failure"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        go_tx.send(()).unwrap();
+
+        for rx in waiters {
+            let err = rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("a parked waiter did not hear the failure")
+                .expect_err("a panicked build installed an engine");
+            assert!(err.contains("stopped while starting"), "{err}");
+        }
+        let spv = tauri::async_runtime::block_on(spv_state_of(&state));
+        assert!(spv.is_err(), "spv_state still reports a build: {spv:?}");
+        state.retry_engine_if_failed();
+        let engine = tauri::async_runtime::block_on(state.engine.wait()).expect("retried");
+        assert!(tauri::async_runtime::block_on(engine.existing_networks()).is_ok());
+        assert!(tauri::async_runtime::block_on(state.shutdown_engine()).is_ok());
+    }
+
+    /// Idle does not admit a retry, and two retries of one failure admit one build.
+    #[test]
+    fn two_retries_of_a_failed_build_start_one_engine() {
+        let app = tauri::test::mock_app();
+        let dir = dw_testutil::private_tempdir();
+        let opts = LaunchOptions {
+            data_dir: Some(dir.path().join("data")),
+            ..LaunchOptions::default()
+        };
+        let state = AppState::pending(
+            app.handle(),
+            opts,
+            Instant::now(),
+            Default::default(),
+            || unreachable!("--datadir given"),
+        )
+        .unwrap();
+        state.retry_engine_if_failed();
+        assert_eq!(state.engine.builds_started(), 0);
+        state.start_engine_after(|| panic!("engine build failed"));
+        let _ = tauri::async_runtime::block_on(state.engine.wait());
+        let started = state.engine.builds_started();
+        std::thread::scope(|scope| {
+            scope.spawn(|| state.retry_engine_if_failed());
+            scope.spawn(|| state.retry_engine_if_failed());
+        });
+        tauri::async_runtime::block_on(state.engine.wait()).expect("one retry");
+        assert_eq!(state.engine.builds_started(), started + 1);
+    }
+
+    /// Quit while the build is held wakes parked waiters and returns without
+    /// waiting on the build or publishing a late engine.
+    #[test]
+    fn a_quit_during_startup_does_not_wait_for_the_build() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let app = tauri::test::mock_app();
+        let dir = dw_testutil::private_tempdir();
+        let opts = LaunchOptions {
+            data_dir: Some(dir.path().join("data")),
+            ..LaunchOptions::default()
+        };
+        let state = AppState::pending(
+            app.handle(),
+            opts,
+            Instant::now(),
+            Default::default(),
+            || unreachable!("--datadir given"),
+        )
+        .unwrap();
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        state.start_engine_after(move || {
+            let _ = entered_tx.send(());
+            let _ = go_rx.recv();
+            let _ = done_tx.send(());
+        });
+        assert!(entered_rx.recv_timeout(Duration::from_secs(5)).is_ok());
+
+        let waiter_engine = state.engine.clone();
+        let (waiter_tx, waiter_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let res = tauri::async_runtime::block_on(waiter_engine.wait())
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            let _ = waiter_tx.send(res);
+        });
+        let park_deadline = Instant::now() + Duration::from_secs(5);
+        while state.engine.parked_waiters() < 1 {
+            assert!(Instant::now() < park_deadline, "waiter did not park");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The build is still held: a quit that waited on it would never
+        // return here.
+        let quit = std::thread::scope(|scope| {
+            let (quit_tx, quit_rx) = mpsc::channel();
+            let state = &state;
+            scope.spawn(move || {
+                let _ = quit_tx.send(tauri::async_runtime::block_on(state.shutdown_engine()));
+            });
+            let quit = quit_rx.recv_timeout(Duration::from_secs(10));
+            go_tx.send(()).unwrap();
+            quit
+        });
+        assert!(
+            quit.expect("quit waited on the build").is_ok(),
+            "quit during startup failed"
+        );
+        let waiter_err = waiter_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("parked waiter was not woken on quit")
+            .expect_err("waiter succeeded after quit");
+        assert!(waiter_err.contains("quit while the engine was still starting"));
+
+        assert!(done_rx.recv_timeout(Duration::from_secs(5)).is_ok());
+        let settle_deadline = Instant::now() + Duration::from_secs(60);
+        while state.engine.builds_settled() < 1 {
+            assert!(Instant::now() < settle_deadline, "the build did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !state.engine.is_ready(),
+            "a late build was published after quit"
+        );
+        state.retry_engine_if_failed();
+        assert_eq!(state.engine.builds_started(), 1);
     }
 
     #[test]
