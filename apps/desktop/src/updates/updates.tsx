@@ -5,6 +5,7 @@
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import type { Backend } from "../api/backend";
+import { navigate } from "../app/ui";
 import { keys, useBackend } from "../api/queries";
 import { failureText } from "../onboarding/model";
 import { Hint, Problem } from "../screens/settings/parts";
@@ -47,14 +48,30 @@ export function useOpenReleaseNotes() {
     );
 }
 
-/** The status bar's quiet chip, while an update is available. */
+const CHIP_PROBLEM = ["updates", "chipProblem"] as const;
+
+/** Why the chip's last open failed, for About's Updates line; `clear` drops it. */
+export function useChipProblem() {
+  const client = useQueryClient();
+  const { data } = useQuery<string | null>({ queryKey: CHIP_PROBLEM, queryFn: () => null, enabled: false, initialData: null });
+  return { problem: data ?? null, clear: () => client.setQueryData(CHIP_PROBLEM, null) };
+}
+
+/** The status bar's quiet chip, while an update is available. A failed open goes to Settings ▸
+ * About, which shows why beside its own Release notes link. */
 export function UpdateStatusItem() {
+  const client = useQueryClient();
   const { data } = useUpdates();
   const open = useOpenReleaseNotes();
   const version = availableVersion(data);
   if (!version) return null;
+  const click = async () => {
+    const problem = await open();
+    client.setQueryData(CHIP_PROBLEM, problem);
+    if (problem !== null) navigate("settings", { settingsTab: "about" });
+  };
   return (
-    <button type="button" className="status-button" data-testid="status-update" title={`Version ${version} is available: open its release notes`} onClick={() => void open()}>
+    <button type="button" className="status-button" data-testid="status-update" title={`Version ${version} is available: open its release notes`} onClick={() => void click()}>
       Update available
     </button>
   );

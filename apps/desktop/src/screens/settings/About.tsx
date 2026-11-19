@@ -7,7 +7,7 @@ import { useBackupDirectory, useNodeInfo } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { availableVersion, updateText } from "../../updates/model";
-import { useOpenReleaseNotes, useUpdates } from "../../updates/updates";
+import { useChipProblem, useOpenReleaseNotes, useUpdates } from "../../updates/updates";
 import { NotYetRow, pendingText, Problem, SettingsCard } from "./parts";
 
 export function AboutTab() {
@@ -52,6 +52,7 @@ function UpdateRow() {
   const updates = useUpdates();
   const open = useOpenReleaseNotes();
   const [opening, setOpening] = useState(false);
+  const chip = useChipProblem();
   const [problem, setProblem] = useState<string | null>(null);
   const version = availableVersion(updates.data);
   return (
@@ -67,6 +68,7 @@ function UpdateRow() {
             disabled={opening}
             onClick={() => {
               setProblem(null);
+              chip.clear();
               setOpening(true);
               void open().then((p) => {
                 setProblem(p);
@@ -78,7 +80,7 @@ function UpdateRow() {
           </button>
         </>
       )}
-      <Problem text={problem} testId="settings-about-release-notes-problem" />
+      <Problem text={problem ?? chip.problem} testId="settings-about-release-notes-problem" />
     </DetailRow>
   );
 }
