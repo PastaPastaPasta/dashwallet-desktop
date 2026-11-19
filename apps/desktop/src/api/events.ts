@@ -18,7 +18,7 @@ import { announceReceived } from "../payments/received";
 import { onMoveSettled } from "../platform/move";
 import { onRecoverySettled } from "../recovery/model";
 import { onShieldedSettled } from "../shielded/flow";
-import { keys } from "./queries";
+import { keys, scanHeightsStale } from "./queries";
 import { announceable, feedSync } from "./syncDisplay";
 
 /** DP1-09 D28: a status read while a sync pass held the wallet's state is `startupIncomplete` (the
@@ -45,8 +45,9 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // statuses without an identity are re-read (bridgeEvents), `startupIncomplete` too (DP1-09 D28).
     // The Platform loops start and stop with SPV, also without one (DP6-03 D6).
     case "spvStateChanged":
+      return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, keys.protocolCompatibility];
     case "sync":
-      return [keys.sync, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll];
+      return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
       // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).
@@ -175,6 +176,10 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
     // engine may hold another "Include my username in payment requests" for it now, and a
     // cached `true` would draw the name until a refetch (DP3-03b D17).
     if (event.kind === "walletCreated" || event.kind === "walletRemoved") void client.resetQueries({ queryKey: keys.receiveAll(event.walletId) });
+    if (event.kind === "walletCreated" || event.kind === "walletRemoved" || event.kind === "walletLoadChanged")
+      void client.resetQueries({ queryKey: keys.scanHeight(event.walletId) });
+    if (event.kind === "sessionOpened" || event.kind === "sessionClosed" || event.kind === "eventsOverflowed")
+      void client.resetQueries({ queryKey: keys.scanHeightAll });
     if (event.kind === "lockProgress") {
       const { progress } = event;
       // The new report shows with its `done`, never the previous lock's while a refetch runs: a
@@ -187,6 +192,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
       client.setQueryData(keys.lockDrain, progress.kind === "draining" ? progress : null);
     }
     const stale = invalidationsFor(event);
+    if (stale === "all" || stale.includes(keys.scanHeightAll)) scanHeightsStale(backend);
     if (stale === "all") {
       stopReconcile();
       void client.invalidateQueries({ predicate: (q) => q.queryKey[0] !== keys.network[0] });

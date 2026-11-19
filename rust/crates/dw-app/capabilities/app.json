@@ -13,6 +13,7 @@
     "allow-recent-notices",
     "allow-startup-mark",
     "allow-ui-settings",
-    "allow-set-ui-settings"
+    "allow-set-ui-settings",
+    "allow-open-releases-page"
   ]
 }

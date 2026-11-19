@@ -43,6 +43,11 @@ const STATES: State[] = [
       await p.getByTestId("lock-report-omitted").waitFor();
     },
   },
+  {
+    name: "protocol-advisory",
+    scenario: "protocol-upgraded",
+    ready: (p) => p.getByTestId("protocol-advisory-banner").waitFor(),
+  },
 ];
 
 for (const theme of THEMES) {
