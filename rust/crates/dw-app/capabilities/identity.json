@@ -85,6 +85,7 @@
     "allow-forget-invitation",
     "allow-dashpay-status",
     "allow-dashpay-sync-now",
-    "allow-dashpay-sync-status"
+    "allow-dashpay-sync-status",
+    "allow-protocol-compatibility"
   ]
 }
