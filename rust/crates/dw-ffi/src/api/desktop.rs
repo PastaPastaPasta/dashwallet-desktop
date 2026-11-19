@@ -7,8 +7,8 @@
 //! Owner: S1 (desktop services). Contract: docs/contracts/m2-engine.md §2.10.
 //!
 //! The surface is the same on every OS so the generated bindings do not
-//! depend on the build host. Windows code paths in dw-desktop are written
-//! but not built or run yet (no Windows runner).
+//! depend on the build host. The Windows code paths in dw-desktop are
+//! tested on CI's windows-latest runner, except `screen.rs`.
 
 use std::path::PathBuf;
 use std::sync::Arc;

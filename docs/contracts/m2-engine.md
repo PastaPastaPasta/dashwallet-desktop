@@ -80,7 +80,7 @@ screen. Checklist text: research 02 §22 (QT) and research 03 §4 (IOS).
 | QT-145 | console (local) | R1 + V1 | `console_execute`, `console_commands`, `console_redact` |
 | QT-147 | peers table, ban/unban | R1 + V1 | `peers` (M1), `disconnect_peer`, `ban_peer`, `unban_peer`, `banned_peers` |
 | QT-148 | repair: rescan / reset chain data | R1 + V1 | `rescan`, `reset_chain_data` |
-| QT-150 | OS URI registration, Open URI dialog | S1 + V1 | `register_uri_schemes`; Info.plist / `.desktop` / WiX |
+| QT-150 | OS URI registration, Open URI dialog | S1 + V1 | `register_uri_schemes`; Info.plist / `.desktop` / NSIS |
 | QT-153 | help, about, CoinJoin info | V1 | `core_version` (M1), `LaunchOptions.helpText` |
 | IOS-005 | backup reminder 24 h after first funds | V1 | `BackupReminderTracking` (Swift) |
 | IOS-006 | screen-capture guard on Windows/Linux | S1 | `set_window_capture_excluded`; Linux banner |
@@ -274,8 +274,8 @@ unless noted.
 |---|---|---|---|---|
 | `acquire_single_instance(key, InstanceObserver)` | sync, free | `Some(InstanceGuard)` = primary; it delivers later launches' args to `on_forwarded`. `None` = another instance holds `key` (`DashWallet-<network>`): call `forward_to_primary(key, args)` and exit 0. Windows: named pipe; macOS and Linux: a path Unix socket `<key>.sock` in a 0700 directory whose owner is checked (`instance/unix.rs`, §8), not an abstract socket. | `desktop.os_error` | QT-001 |
 | `forward_to_primary(key, args)` | sync, free | `false` when no primary listens. | `desktop.os_error` | QT-001 |
-| `register_uri_schemes(app_id, exec_path, schemes)` | sync, free | Per-user registration for the Linux tarball. Packages register at install time; `desktop.unsupported` on Windows (the NSIS installer registers them) and macOS. | `desktop.os_error` | QT-150, IOS-048 |
-| `autostart_enabled(app_id)` / `set_autostart(AutostartEntry, enabled)` | sync, free | Windows Startup shortcut; Linux XDG autostart (Flatpak: Background portal), launched with `--min --network=<net>`. macOS: hidden (dash-qt). | `desktop.unsupported`, `desktop.os_error` | QT-009 |
+| `register_uri_schemes(app_id, exec_path, schemes)` | sync, free | Per-user registration for the Linux tarball. Packages register at install time; `desktop.unsupported` on Windows (the NSIS installer registers them) and macOS. | `desktop.unsupported`, `desktop.os_error` | QT-150, IOS-048 |
+| `autostart_enabled(app_id)` / `set_autostart(AutostartEntry, enabled)` | sync, free | Windows per-user `Run` value; Linux XDG autostart (Flatpak: Background portal), launched with `--min --network=<net>`. macOS: hidden (dash-qt). | `desktop.unsupported`, `desktop.os_error` | QT-009 |
 | `TrayIcon(TraySpec, TrayObserver)`, `set_tooltip`, `set_items`, `set_visible` | object | Windows `Shell_NotifyIcon` thread; Linux StatusNotifierItem (`ksni`). `desktop.unsupported` when the session has no tray host (GNOME without AppIndicator, disclosed in Options). | `desktop.unsupported` | QT-028…030, IOS-117 |
 | `DesktopNotifier(app_id, NotificationObserver)`, `notify(DesktopNotification)` | object | WinRT toast / D-Bus `org.freedesktop.Notifications` / Flatpak portal; clicks come back with `deep_link`. | `desktop.unsupported`, `desktop.os_error` | QT-031, IOS-116 |
 | `set_window_capture_excluded(hwnd, excluded)` | sync, free | Windows `WDA_EXCLUDEFROMCAPTURE`; returns whether it took effect. Linux: `desktop.unsupported` (the host shows a warning banner). | `desktop.unsupported` | IOS-006 |

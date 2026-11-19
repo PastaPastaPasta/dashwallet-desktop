@@ -121,8 +121,8 @@ public final class DesktopSingleInstance: SingleInstanceCoordinating, @unchecked
 
 // MARK: URI schemes (QT-150, IOS-048)
 
-/// Per-user registration for the Linux tarball and an unpackaged Windows
-/// build; Flatpak and the MSI register at install time.
+/// Per-user registration for the Linux tarball; Flatpak and the Windows
+/// installer register at install time.
 public struct DesktopURISchemeRegistration: URISchemeRegistering {
     private let executable: URL
 
@@ -130,7 +130,13 @@ public struct DesktopURISchemeRegistration: URISchemeRegistering {
         self.executable = executable
     }
 
-    public var registeredAtInstall: Bool { DesktopAppIdentity.isFlatpak }
+    public var registeredAtInstall: Bool {
+        #if os(Windows)
+            true
+        #else
+            DesktopAppIdentity.isFlatpak
+        #endif
+    }
 
     public func register(schemes: [String]) throws(PlatformServiceError) {
         let executable = executable

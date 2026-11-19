@@ -276,7 +276,8 @@ mod toast {
         );
         // Single-quoted PowerShell string: only `'` needs doubling.
         let script = format!(
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;\
+            "$ErrorActionPreference = 'Stop';\
+             [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null;\
              [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null;\
              $x = New-Object Windows.Data.Xml.Dom.XmlDocument; $x.LoadXml('{}');\
              [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{}').Show((New-Object Windows.UI.Notifications.ToastNotification $x))",

@@ -230,8 +230,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn keyring_round_trip_on_windows() {
+        struct Cleanup<'a>(&'a KeyringOsStore, [u8; 32]);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = self.0.delete(&self.1, "dw-test");
+            }
+        }
         let s = KeyringOsStore::new();
         let service = crate::crypto::random_array::<32>().unwrap();
+        let _cleanup = Cleanup(&s, service);
         s.put(&service, "dw-test", b"value").unwrap();
         assert_eq!(&s.get(&service, "dw-test").unwrap().unwrap()[..], b"value");
         s.put(&service, "dw-test", b"other").unwrap();
