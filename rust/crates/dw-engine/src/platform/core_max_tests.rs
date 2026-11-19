@@ -356,8 +356,9 @@ fn kill_after_drain_lock_signed_resumes_same_outpoint() {
 
 /// The read of the wallet's coins: BIP44 account 0's final coins are the
 /// plan's (an InstantSend lock is final), held when locked, reserved, a
-/// denomination Dash Core counts as mixed or off its address paths; one not final yet (or an immature coinbase) is
-/// arriving; every other account's spendable coin is left.
+/// denomination Dash Core counts as mixed or off its address paths; one
+/// not final yet (or an immature coinbase) is arriving; every other
+/// account's spendable coin is left, a mixed denomination too.
 #[test]
 fn core_max_leaves_other_accounts() {
     use crate::coins::{CoinSnapshot, WalletCoin};
@@ -458,5 +459,5 @@ fn core_max_leaves_other_accounts() {
         ]
     );
     assert_eq!(read.arriving_duffs, 2_000 + 7_000);
-    assert_eq!(read.left_duffs, 10_000 + 11_000 + 13_000);
+    assert_eq!(read.left_duffs, 10_000 + 11_000 + 13_000 + 14_000);
 }

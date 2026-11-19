@@ -145,7 +145,7 @@ pub(crate) fn coins_of(
     for c in snapshot.coins {
         let (utxo, value) = (&c.utxo, c.utxo.value());
         let Some(path) = account.get(&utxo.outpoint) else {
-            if c.auto_selectable(height) {
+            if c.trusted_spendable(height) {
                 out.left_duffs += value;
             }
             continue;
