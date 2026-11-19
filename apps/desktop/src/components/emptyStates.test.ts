@@ -101,6 +101,12 @@ describe("list display", () => {
     expect(listDisplay({ ...base, extras: [] })).toEqual({ kind: "empty" });
   });
 
+  it("is loading until the primary source first answers, even with optional rows in hand", () => {
+    // Core's rows would land among them and move the row under the pointer.
+    expect(listDisplay({ ...base, pending: true, hasSnapshot: false, extras: [{ ...extra, rowCount: 2 }] })).toEqual({ kind: "arriving", why: "pending" });
+    expect(listDisplay({ ...base, pending: true, hasSnapshot: false, arrival: "syncing", extras: [{ ...extra, rowCount: 2 }] })).toEqual({ kind: "arriving", why: "pending" });
+  });
+
   it("omits absent commands and unsupported optional pools, and flags real read failures", () => {
     expect(optionalHistorySource({ isPending: false, isError: false, isSuccess: true, isFetching: false, data: null }, 0)).toBeNull();
     for (const code of ["shielded.not_active", "platform.feature_off", "not_implemented", "platform.not_implemented"]) {

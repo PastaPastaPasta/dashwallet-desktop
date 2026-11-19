@@ -698,6 +698,32 @@ for (const theme of THEMES) {
   });
 }
 
+test("activity shows no rows before Core history answers, so the first row opens its detail", async ({ page }) => {
+  const errors = await open(page, "funded", "light");
+  await page.getByTestId("hero").waitFor();
+  await page.evaluate(() => void ((window as unknown as { __release: () => void }).__release = window.__dwFixture!.hold("history_page")));
+  const asked = await page.evaluate(() => window.__dwFixture!.calls.length);
+  await page.getByTestId("sidebar-activity").click();
+  await expect(page.getByTestId("tx-loading")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate((n) => {
+        const calls = window.__dwFixture!.calls;
+        return calls.slice(n).includes("history_page") && ["platform_activity", "shielded_history"].every((c) => calls.includes(c));
+      }, asked),
+    )
+    .toBe(true);
+  // Platform and Shielded have answered and rendered; Core is still held.
+  await page.evaluate(() => new Promise((r) => setTimeout(() => requestAnimationFrame(() => requestAnimationFrame(r)), 0)));
+  expect(await page.locator("[data-txid]").count()).toBe(0);
+  await expect(page.getByTestId("tx-loading")).toBeVisible();
+  await page.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await page.getByTestId("tx-list").waitFor();
+  await page.locator("[data-txid]").first().click();
+  await expect(page.getByTestId("tx-detail-facts")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test("removing a wallet and restoring the same phrase forgets its cached scan height without a sync event", async ({ page }) => {
   const errors = await open(page, "funded", "light");
   await page.evaluate(() => {
