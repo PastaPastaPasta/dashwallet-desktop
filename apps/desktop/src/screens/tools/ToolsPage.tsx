@@ -4,7 +4,7 @@
 // they outlive a tab change (D1, D8). The tabs share one grant model and its passphrase sheet; a
 // switch cancels a request still waiting on it.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
@@ -43,7 +43,8 @@ function useKeyed<T>(key: string, make: () => T): T {
   return next.value;
 }
 
-export function ToolsPage({ wallet, wallets, network }: { wallet: WalletSummary | null; wallets: WalletSummary[]; network: NetworkInfo }) {
+/** `noWallet` stands in for a wallet tool while the wallet list is loading or failed: no offer to create one then. */
+export function ToolsPage({ wallet, wallets, network, noWallet = null }: { wallet: WalletSummary | null; wallets: WalletSummary[]; network: NetworkInfo; noWallet?: ReactNode }) {
   const b = useBackend();
   const client = useQueryClient();
   const tab = useUi((s) => s.toolsTab);
@@ -61,7 +62,7 @@ export function ToolsPage({ wallet, wallets, network }: { wallet: WalletSummary 
   else if (tab === "peers") content = <PeersTab key={key} />;
   // Without a wallet a PSBT still reads: "(But no wallet is loaded.)".
   else if (tab === "psbt") content = <PsbtTab key={key} grants={grants} walletId={wallet?.walletId ?? null} network={network} />;
-  else if (!wallet) content = <NeedsWallet testId={`tools-${tab}-no-wallet`} />;
+  else if (!wallet) content = noWallet ?? <NeedsWallet testId={`tools-${tab}-no-wallet`} />;
   else if (tab === "repair") content = <RepairTab key={key} grants={grants} wallet={wallet} network={network} />;
   else if (tab === "addressBook") content = <AddressBookTab key={key} walletId={wallet.walletId} network={network} />;
   else if (tab === "signVerify") content = <SignVerifyTab key={key} grants={grants} walletId={wallet.walletId} network={network} />;

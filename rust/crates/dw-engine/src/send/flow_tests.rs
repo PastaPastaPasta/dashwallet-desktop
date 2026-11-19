@@ -2379,6 +2379,11 @@ fn a_hidden_rewind_below_a_cancelled_rescan_ends_its_hold() {
         .unwrap();
     f.advance(700);
     assert!(f.engine.block_on(f.session.cancel_rescan()).unwrap());
+    assert_eq!(
+        f.session.wallet_scan_height(&f.wallet),
+        Some(700),
+        "a cancelled replay is not scanned past where it stopped"
+    );
     let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
     let prepare = || {
         f.engine
@@ -2395,6 +2400,7 @@ fn a_hidden_rewind_below_a_cancelled_rescan_ends_its_hold() {
     f.checkpoint(999);
     assert_eq!(refusal(), running);
     f.checkpoint(1_000);
+    assert_eq!(f.session.wallet_scan_height(&f.wallet), Some(1_000));
     prepare().unwrap();
 }
 

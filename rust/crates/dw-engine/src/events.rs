@@ -1082,16 +1082,17 @@ impl SessionHub {
             news.then(|| {
                 let catching_up = state.catching_up();
                 let from = state.scan_target.max(state.processed_height);
+                let checkpoint_lowered = height < state.synced_height;
                 state.synced_height = state.synced_height.min(height);
                 state.scan_target = state.scan_target.min(height);
                 state.processed_height = state.processed_height.min(height);
                 if found.detected {
                     state.detected = Some(height);
                 }
-                (from, catching_up != state.catching_up())
+                (from, catching_up != state.catching_up(), checkpoint_lowered)
             })
         };
-        let Some((from, flipped)) = lowered else {
+        let Some((from, flipped, checkpoint_lowered)) = lowered else {
             return false;
         };
         #[cfg(test)]
@@ -1103,9 +1104,13 @@ impl SessionHub {
         let changed = self
             .history
             .with_wallet(id, |h| h.truncate(found.removed, found.unconfirmed));
-        if let Some(rescan) = self.rescan().as_mut()
-            && rescan.truncate(&id, height)
-        {
+        // A reader of the wallet's checkpoint hears it go down, as it hears
+        // every advance.
+        let rescan_moved = self
+            .rescan()
+            .as_mut()
+            .is_some_and(|rescan| rescan.truncate(&id, height));
+        if rescan_moved || checkpoint_lowered {
             self.pump.mark_sync();
         }
         if let Some(replay) = self.replay.get().and_then(std::sync::Weak::upgrade) {
@@ -1378,11 +1383,12 @@ impl SessionHub {
                 if self.update_heights(id, Some(*height), Some(*height)) {
                     self.pump.mark_balances(id);
                 }
-                if let Some(rescan) = self.rescan().as_mut()
-                    && rescan.note_height(&id, *height)
-                {
-                    self.pump.mark_sync();
+                if let Some(rescan) = self.rescan().as_mut() {
+                    rescan.note_height(&id, *height);
                 }
+                // A reader of the wallet's checkpoint is told of every advance:
+                // the last one can come after the last progress report.
+                self.pump.mark_sync();
                 self.mark_young(id);
                 self.schedule_reconcile(id);
             }
@@ -1760,6 +1766,20 @@ mod tests {
         }
     }
 
+    /// A checkpoint advance outside a rescan tells whoever reads the
+    /// wallet's scan height: the last advance can come after the last
+    /// progress report, and nothing else would announce it.
+    #[test]
+    fn a_checkpoint_advance_marks_sync_without_a_rescan() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        assert!(!hub.pump.sync_marked());
+        hub.apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
+            wallet_id: W.0,
+            height: 100,
+        });
+        assert!(hub.pump.sync_marked());
+    }
+
     /// A wallet's block events start its duplicate-coin reconcile (`restore`)
     /// once per run: while one is started and not yet running, more events
     /// start nothing; once it runs, the next event starts another.
@@ -1900,6 +1920,25 @@ mod tests {
             !hub.pump.take_wallet_marks().0.contains(&W),
             "unchanged: not announced"
         );
+    }
+
+    /// A fork that lowers the checkpoint outside a rescan tells whoever
+    /// read the wallet's scan height; one that leaves it where it was does
+    /// not.
+    #[test]
+    fn a_truncation_that_lowers_the_checkpoint_marks_sync() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        hub.apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
+            wallet_id: W.0,
+            height: 110,
+        });
+        assert!(hub.pump.take_sync_mark());
+        hub.apply_wallet_event(&truncated(120, Vec::new(), Vec::new(), 0));
+        assert_eq!(hub.wallet_state(&W).unwrap().synced_height, 110);
+        assert!(!hub.pump.sync_marked());
+        hub.apply_wallet_event(&truncated(105, Vec::new(), Vec::new(), 0));
+        assert_eq!(hub.wallet_state(&W).unwrap().synced_height, 105);
+        assert!(hub.pump.sync_marked());
     }
 
     /// dash-spv truncated the wallet at a fork: the hub's history, heights and balance

@@ -530,7 +530,7 @@ test.describe("Pay", () => {
       const restored = wallet.coins[0];
       const single = { ...restored, amount: 10_000_100, coinjoinDenominated: true, coinjoinRounds: 2 };
       wallet.coins = [single];
-      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0 };
+      wallet.summary.balances = { confirmed: 10_000_100, unconfirmed: 0, immature: 0, locked: 0, total: 10_000_100, coinjoin: 0, catchingUp: false };
       w.coinjoin.restoredOutpoints = [`${single.outpoint.txid}:${single.outpoint.vout}`];
       w.coinjoin.mixers[wallet.summary.walletId] = {
         state: "idle",
@@ -684,7 +684,7 @@ test.describe("Receive", () => {
   test("creates, shows and removes payment requests", async ({ page }) => {
     await open(page);
     await page.getByTestId("sidebar-receive").click();
-    await expect(page.getByTestId("requests-empty")).toHaveText("No payment requests yet.");
+    await expect(page.getByTestId("requests-empty")).toHaveText("Requests you create show up here.");
     await page.getByTestId("request-label").fill("Rent");
     await page.getByTestId("request-amount").fill("0.25");
     await page.getByTestId("request-create").click();
