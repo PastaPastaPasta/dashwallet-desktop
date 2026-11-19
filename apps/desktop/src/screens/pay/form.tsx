@@ -152,8 +152,9 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
   const normal = spec?.source.kind === "any";
   const mixing = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId), retry: false, enabled: normal });
   // A disabled query keeps its cached data: the hints are for the normal source alone.
-  const { fullyMixed = 0, denominated = 0 } = mixing.data?.balances ?? {};
-  const hints = normal ? { mixed: fullyMixed > 0, mixing: denominated > fullyMixed } : undefined;
+  const { fullyMixed = 0, denominated = 0, mixableUnfinished = 0 } = mixing.data?.balances ?? {};
+  const stalled = denominated > fullyMixed + mixableUnfinished;
+  const hints = normal ? { mixed: fullyMixed > 0, mixing: mixableUnfinished > 0, stalled } : undefined;
   const refusal = estimate.isError ? sendErrorText(estimate.error, chain, amountUnit, hints) : null;
   // A fully mixed payment refused as an absurd fee: offer Subtract fee with what it would send,
   // from the engine's own estimate of it (MX-FEE); a refusal of that too leaves the reason alone.

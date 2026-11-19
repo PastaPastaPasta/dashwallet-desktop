@@ -280,19 +280,21 @@ function checkRate(fee: FeeMode) {
 }
 
 /** The coins `source` may spend, largest first. */
-function sourceCoins(wallet: FixtureWallet, source: CoinSource): Utxo[] {
+function sourceCoins(world: World, wallet: FixtureWallet, source: CoinSource): Utxo[] {
   const coins = wallet.coins.filter((u) => u.spendable && !u.reserved && !u.userLocked);
-  return pickCoins(coins, source).toSorted((a, b) => b.amount - a.amount);
+  return pickCoins(world, coins, source).toSorted((a, b) => b.amount - a.amount);
 }
 
 /** A coin of a funding account (BIP44, BIP32, DashPay), as against the CoinJoin account's. */
 const isSendAccount = (u: Utxo) => !u.coinjoinDenominated && u.coinjoinRounds === null;
 
+const isRestoredDenom = (world: World, u: Utxo) => !!world.coinjoin.restoredOutpoints?.includes(`${u.outpoint.txid}:${u.outpoint.vout}`);
+
 /** The CoinJoin rounds that make a denomination fully mixed (the engine's default target). */
 const MIXED_ROUNDS = 4;
 const isFullyMixed = (u: Utxo) => u.coinjoinRounds !== null && u.coinjoinRounds >= MIXED_ROUNDS;
 
-function pickCoins(coins: Utxo[], source: CoinSource): Utxo[] {
+function pickCoins(world: World, coins: Utxo[], source: CoinSource): Utxo[] {
   switch (source.kind) {
     // A normal payment leaves the CoinJoin account's coins, mixed or still mixing, alone.
     case "any":
@@ -303,7 +305,7 @@ function pickCoins(coins: Utxo[], source: CoinSource): Utxo[] {
       return source.outpoints.map((o) => {
         // Selected coins are send-account coins only: a CoinJoin coin reads as unavailable
         // (dw-engine coins.rs:626-630 collects them `send_account = false`; send/mod.rs:875-881).
-        const u = coins.find((x) => sameOutpoint(x.outpoint, o) && isSendAccount(x));
+        const u = coins.find((x) => sameOutpoint(x.outpoint, o) && (isSendAccount(x) || isRestoredDenom(world, x)));
         if (!u) throw fail("send.outpoint_unavailable", "coin unavailable", { kind: "outpoint", txid: o.txid, vout: o.vout });
         return u;
       });
@@ -332,7 +334,7 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   const rate = rateOf(d.fee);
   const pay = d.recipients.reduce((n, r) => n + r.amount, 0);
   const subtract = d.recipients.some((r) => r.subtractFeeFromAmount);
-  const coins = sourceCoins(wallet, d.source);
+  const coins = sourceCoins(world, wallet, d.source);
   const available = coins.reduce((n, u) => n + u.amount, 0);
   const outputs = d.recipients.length;
   if (pay > available) {
@@ -374,9 +376,9 @@ function build(world: World, wallet: FixtureWallet, d: Draft): Built {
   return { fee, sizeBytes: sizeOf(inputs.length, outputs + (change === null ? 0 : 1)), inputCount: inputs.length, change, totalSent, inputs };
 }
 
-function maxSpendable(wallet: FixtureWallet, source: CoinSource, fee: FeeMode): number {
+function maxSpendable(world: World, wallet: FixtureWallet, source: CoinSource, fee: FeeMode): number {
   checkRate(fee);
-  return sourceCoins(wallet, source).reduce((n, u) => n + u.amount, 0);
+  return sourceCoins(world, wallet, source).reduce((n, u) => n + u.amount, 0);
 }
 
 function txActionRefusal(row: TxRow): TxActionRefusalName | null {
@@ -619,7 +621,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         unavailable: outpoints.filter((_, i) => !found[i]),
       };
     },
-    max_spendable: ({ walletId, source, fee }, { world }) => maxSpendable(wallet(world, walletId), source, fee),
+    max_spendable: ({ walletId, source, fee }, { world }) => maxSpendable(world, wallet(world, walletId), source, fee),
 
     new_tx_draft: ({ walletId }, { world }) => {
       wallet(world, walletId);

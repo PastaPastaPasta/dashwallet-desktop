@@ -729,15 +729,34 @@ fn depth(context: &TransactionContext, tip: u32) -> u32 {
 }
 
 /// One wallet input: its value and address when the wallet owns it.
-fn own_input(view: &ChainView<'_>, entry: &TxEntry, index: usize) -> Option<(u64, Address)> {
-    if let Some((v, a)) = entry.own_inputs.get(&(index as u32)) {
+/// The cached record wins; otherwise the parent output must pay an owned script.
+pub(crate) fn resolve_own_input(
+    cached: Option<&(u64, Address)>,
+    prev: Option<&OutPoint>,
+    history: &HashMap<Txid, TxEntry>,
+    owned: &HashMap<ScriptBuf, Owned>,
+) -> Option<(u64, Address)> {
+    if let Some((v, a)) = cached {
         return Some((*v, a.clone()));
     }
-    let prev = &entry.tx.input.get(index)?.previous_output;
-    let funding = view.history.get(&prev.txid)?;
+    let prev = prev?;
+    let funding = history.get(&prev.txid)?;
     let out = funding.tx.output.get(prev.vout as usize)?;
-    let owned = view.owned.get(&out.script_pubkey)?;
+    let owned = owned.get(&out.script_pubkey)?;
     Some((out.value, owned.address.clone()))
+}
+
+fn own_input(view: &ChainView<'_>, entry: &TxEntry, index: usize) -> Option<(u64, Address)> {
+    resolve_own_input(
+        entry.own_inputs.get(&(index as u32)),
+        entry
+            .tx
+            .input
+            .get(index)
+            .map(|input| &input.previous_output),
+        view.history,
+        view.owned,
+    )
 }
 
 /// Status of a transaction (dash-qt `TransactionRecord::updateStatus`).
@@ -841,6 +860,10 @@ pub(crate) fn depth_of(entry: &TxEntry, tip: u32) -> u32 {
 
 /// dash-qt `TransactionRecord::decomposeTransaction` over one transaction.
 pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
+    decompose_with(entry, view, false)
+}
+
+fn decompose_with(entry: &TxEntry, view: &ChainView<'_>, marked_coinjoin_send: bool) -> Decomposed {
     let tx = &entry.tx;
     let inputs: Vec<Option<(u64, Address)>> = (0..tx.input.len())
         .map(|i| own_input(view, entry, i))
@@ -1014,18 +1037,17 @@ pub(crate) fn decompose(entry: &TxEntry, view: &ChainView<'_>) -> Decomposed {
         {
             return single(TxType::CoinJoinCollateralPayment, -to_i64(debit));
         }
-        // A payment from the CoinJoin send page (QT-051): every input a
-        // denomination of the CoinJoin account. dash-qt marks these with
-        // `mapValue["DS"] = "1"` and shows them as CoinJoin Send
-        // (`TransactionRecord::decomposeTransaction`); the inputs say the
-        // same without a stored mark.
-        let coinjoin_send = inputs.iter().flatten().all(|(v, a)| {
-            is_denominated_amount(*v)
-                && view
-                    .owned
-                    .get(&a.script_pubkey())
-                    .is_some_and(|o| o.coinjoin)
-        });
+        // A payment from the CoinJoin send page (QT-051): marked when sent
+        // from this wallet (`DS=1`), or every input a denomination of the
+        // CoinJoin account.
+        let coinjoin_send = marked_coinjoin_send
+            || inputs.iter().flatten().all(|(v, a)| {
+                is_denominated_amount(*v)
+                    && view
+                        .owned
+                        .get(&a.script_pubkey())
+                        .is_some_and(|o| o.coinjoin)
+            });
         let mut remaining_fee = fee.unwrap_or(0);
         for (vout, out) in tx.output.iter().enumerate() {
             if outputs[vout].is_some() {
@@ -1081,6 +1103,7 @@ pub(crate) struct Labels {
     pub address: HashMap<String, String>,
     pub fiat: HashMap<String, crate::rates::TxFiat>,
     pub purpose: HashMap<String, TxPurpose>,
+    pub coinjoin_sends: HashSet<String>,
 }
 
 /// The asset-lock txids of registrations that took a username, by txid.
@@ -1114,9 +1137,9 @@ pub(crate) fn records_of(
     view: &ChainView<'_>,
     labels: &Labels,
 ) -> (Vec<TxRecord>, Decomposed, TxStatus) {
-    let d = decompose(entry, view);
-    let (status, counts) = status_of(entry, view, d.all_from_me);
     let txid_s = txid.to_string();
+    let d = decompose_with(entry, view, labels.coinjoin_sends.contains(&txid_s));
+    let (status, counts) = status_of(entry, view, d.all_from_me);
     let tx_label = labels.tx.get(&txid_s).cloned();
     let sides = view.payees.sides(txid, &entry.tx, &d.parts);
     let records = d
