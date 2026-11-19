@@ -423,5 +423,5 @@ M1–M5 were ruled as recommended (MG, 2026-11-19 05:1xZ). MG also ruled one cre
    `ToContact` has none: only its exact retry may run, so the wallet's Platform moves are `credits.move_pending` and
    the contact stays locked until a deposit reaches the payout's fee input and the retry lands. Nothing is lost, but
    the user cannot end it from the app.
-8. **Size.** C4b-2 is the largest slice and depends on UP-1, RP-1, A5, A4b and C1b-2. If the date slips, items 4 and 5 are
-   the first cut (lane-C schedule).
+8. **Size.** C4b-2 is the largest slice and depends on UP-1, RP-1, A5, A4b and C1b-2. If the date slips, items 4 and
+   5 are the first cut (lane-C schedule).
