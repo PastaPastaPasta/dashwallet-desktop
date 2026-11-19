@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Mutex;
@@ -101,6 +101,14 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(config: EngineConfig, sink: Arc<dyn EventSink>) -> Result<Self, EngineError> {
+        let started = Instant::now();
+        let mark = |phase: &'static str| {
+            tracing::info!(
+                phase,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "engine start"
+            );
+        };
         if config.data_root.as_os_str().is_empty() {
             return Err(EngineError::InvalidConfig("data_root is empty".into()));
         }
@@ -110,6 +118,7 @@ impl Engine {
             ));
         }
         create_private_dir(&config.data_root)?;
+        mark("data-root");
         let instance =
             dw_fs::instance::InstanceLock::share(&config.data_root).map_err(|e| match e {
                 dw_fs::instance::InstanceError::Busy => EngineError::StorageInUse(format!(
@@ -118,6 +127,7 @@ impl Engine {
                 )),
                 dw_fs::instance::InstanceError::Io(e) => EngineError::from(e),
             })?;
+        mark("instance");
         install_poison_hook();
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         // Applies to the async workers and the blocking pool alike.
@@ -131,6 +141,7 @@ impl Engine {
         let runtime = builder
             .build()
             .map_err(|e| EngineError::Internal(format!("tokio runtime: {e}")))?;
+        mark("runtime");
         let handle = runtime.handle().clone();
         #[cfg(not(test))]
         let rates_config = crate::rates::RatesConfig::production();
@@ -142,6 +153,7 @@ impl Engine {
             Arc::clone(&sink),
             &handle,
         );
+        mark("rates");
         Ok(Self {
             runtime: Some(runtime),
             handle,

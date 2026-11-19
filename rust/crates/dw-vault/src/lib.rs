@@ -69,7 +69,7 @@ pub use crypto::{CALIBRATION_TARGET, KdfParams, KdfPolicy};
 pub use error::{MnemonicError, SignerError, VaultError};
 pub use os_store::{KeyringOsStore, MemoryOsStore, OsSecretStore};
 pub use owner::OwnerKey;
-pub use paths::{is_bip44_path, is_coinjoin_path};
+pub use paths::{is_bip44_address, is_bip44_path, is_coinjoin_path};
 pub use platform::{ContactInfoOpened, ContactInfoSealed, ScanKey};
 pub use shielded::{SHIELDED_ACCOUNT, ShieldedSpendKey};
 pub use signer::{SignerScope, VaultSigner, WalletSigner};
