@@ -2409,7 +2409,7 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
 name = "dw-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "dashcore",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "dw-appdb"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dw-fs",
  "refinery",
@@ -2462,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "dw-coinjoin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dash-pkc",
  "dashcore",
@@ -2475,7 +2475,7 @@ dependencies = [
 
 [[package]]
 name = "dw-compat"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes 0.8.4",
  "cbc",
@@ -2494,7 +2494,7 @@ dependencies = [
 
 [[package]]
 name = "dw-console"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dashcore",
  "dw-engine",
@@ -2512,7 +2512,7 @@ dependencies = [
 
 [[package]]
 name = "dw-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "image",
  "libc",
@@ -2528,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "dw-engine"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2583,7 +2583,7 @@ dependencies = [
 
 [[package]]
 name = "dw-ffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dashcore",
  "dw-coinjoin",
@@ -2607,7 +2607,7 @@ dependencies = [
 
 [[package]]
 name = "dw-fs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dw-testutil",
  "rustix 1.1.6",
@@ -2616,7 +2616,7 @@ dependencies = [
 
 [[package]]
 name = "dw-governance"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dashcore",
  "dw-message",
@@ -2631,7 +2631,7 @@ dependencies = [
 
 [[package]]
 name = "dw-message"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dashcore",
  "dw-uri",
@@ -2642,7 +2642,7 @@ dependencies = [
 
 [[package]]
 name = "dw-p2p"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dashcore",
  "rand 0.8.6",
@@ -2653,7 +2653,7 @@ dependencies = [
 
 [[package]]
 name = "dw-protx"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dashcore",
  "dw-uri",
@@ -2665,7 +2665,7 @@ dependencies = [
 
 [[package]]
 name = "dw-psbt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2679,7 +2679,7 @@ dependencies = [
 
 [[package]]
 name = "dw-testutil"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "tempfile",
@@ -2687,7 +2687,7 @@ dependencies = [
 
 [[package]]
 name = "dw-units"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proptest",
  "serde_json",
@@ -2695,7 +2695,7 @@ dependencies = [
 
 [[package]]
 name = "dw-uri"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dashcore",
  "dw-units",
@@ -2708,7 +2708,7 @@ dependencies = [
 
 [[package]]
 name = "dw-vault"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes 0.8.4",
  "argon2",
@@ -2744,7 +2744,7 @@ dependencies = [
 
 [[package]]
 name = "dwcli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "dashcore",
@@ -9105,7 +9105,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "uniffi",
 ]
