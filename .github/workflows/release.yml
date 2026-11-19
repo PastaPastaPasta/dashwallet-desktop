@@ -43,7 +43,7 @@
 # (v0.0.0-rel<N>) build only and never start the publish job.
 # `decide` also skips the three build jobs for a branch push or pull request that changes only docs
 # and files no bundle is built from; a new push cancels that ref's running build (never main or tags).
-# Pull requests run script-tests and decide only: the bundles build on pushes to main, tags, the
+# Pull requests run script-tests and decide only: the bundles and SBOMs build on pushes to main, tags, the
 # 02:47 UTC schedule (on main; builds only, never publishes) and dispatches (`gh workflow run release.yml --ref <branch>` builds them for a branch).
 # Repository setting: "Immutable releases" must stay off (`continuous` renames assets, moves its tag).
 name: Release
@@ -347,7 +347,7 @@ jobs:
     name: SBOMs (CycloneDX)
     runs-on: ubuntu-24.04
     needs: decide
-    if: ${{ needs.decide.outputs.build == 'true' }}
+    if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
