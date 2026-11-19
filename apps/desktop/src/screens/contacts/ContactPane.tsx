@@ -9,6 +9,7 @@ import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo"
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { errorMessage } from "../../api/backend";
 import { AmountText, DashButton, Icon } from "../../components/basics";
+import { EmptyArt } from "../../components/emptyArt";
 import { CopyValue } from "../../components/detail";
 import { useRowContext } from "../../components/history";
 import { navigate, ui } from "../../app/ui";
@@ -298,8 +299,9 @@ function Activity({ contact, pane }: { contact: string; pane: PaneContext }) {
         </p>
       )}
       {activity.isSuccess && items.length === 0 && (
-        <p className="placeholder-note" data-testid="contact-activity-empty">
-          No payments with this contact yet.
+        <p className="placeholder-note contact-activity-empty" data-testid="contact-activity-empty">
+          <EmptyArt id="activity" size={40} />
+          <span>No payments with this contact yet.</span>
         </p>
       )}
       {items.length > 0 && (

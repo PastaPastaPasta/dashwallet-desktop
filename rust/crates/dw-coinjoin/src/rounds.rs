@@ -61,11 +61,19 @@ pub fn is_collateral_amount(value: u64) -> bool {
     (COLLATERAL_AMOUNT..=MAX_COLLATERAL_AMOUNT).contains(&value)
 }
 
+#[derive(Clone, Copy)]
+enum CachedRounds {
+    InProgress,
+    Exact(i32),
+    AtLeast(i32),
+}
+
 /// The walk over one wallet's transactions, with Core's memo
 /// (`mapOutpointRoundsCache`).
 pub struct RoundsCalculator<'a> {
     txs: &'a HashMap<Txid, WalletTx>,
-    cache: HashMap<OutPoint, i32>,
+    cache: HashMap<(Txid, u32), CachedRounds>,
+    tx_balanced_denoms: HashMap<Txid, bool>,
 }
 
 impl<'a> RoundsCalculator<'a> {
@@ -73,6 +81,7 @@ impl<'a> RoundsCalculator<'a> {
         Self {
             txs,
             cache: HashMap::new(),
+            tx_balanced_denoms: HashMap::new(),
         }
     }
 
@@ -80,70 +89,107 @@ impl<'a> RoundsCalculator<'a> {
     /// mixing output whose shortest own-input chain has `n`, negative for
     /// the special cases above.
     pub fn rounds(&mut self, outpoint: &OutPoint) -> i32 {
-        self.rounds_at(outpoint, 0)
+        self.rounds_at(outpoint, 0).0
     }
 
-    fn rounds_at(&mut self, outpoint: &OutPoint, depth: i32) -> i32 {
-        if depth >= ROUNDS_MAX {
-            return ROUNDS_MAX - 1;
-        }
-        if let Some(r) = self.cache.get(outpoint) {
-            // Includes the -10 placeholder of an outpoint being walked.
-            return *r;
-        }
-        let txs = self.txs;
-        let Some(tx) = txs.get(&outpoint.txid) else {
-            // Not memoized: the wallet may learn the transaction later.
-            return ROUNDS_UNKNOWN_TX;
+    fn rounds_at(&mut self, outpoint: &OutPoint, depth: i32) -> (i32, bool) {
+        let Some(tx) = self.txs.get(&outpoint.txid) else {
+            return (ROUNDS_UNKNOWN_TX, true);
         };
-        self.cache.insert(*outpoint, -10);
-        let result = self.compute(tx, outpoint, depth);
-        self.cache.insert(*outpoint, result);
-        result
-    }
-
-    fn compute(&mut self, tx: &'a WalletTx, outpoint: &OutPoint, depth: i32) -> i32 {
         let Some(&value) = tx.outputs.get(outpoint.vout as usize) else {
-            return ROUNDS_BAD_INDEX;
+            return (ROUNDS_BAD_INDEX, true);
         };
         if is_collateral_amount(value) {
-            return ROUNDS_COLLATERAL;
+            return (ROUNDS_COLLATERAL, true);
         }
         if !is_denominated(value) {
-            return ROUNDS_NOT_DENOMINATED;
+            return (ROUNDS_NOT_DENOMINATED, true);
         }
-        // A denomination next to a non-denominated output: created here.
-        if tx.outputs.iter().any(|v| !is_denominated(*v)) {
-            return 0;
-        }
-        // Not spent in full with zero fee by the wallet: reset.
-        if tx.debit() != tx.credit() {
-            return 0;
+        if !self.balanced_denoms(outpoint.txid, tx) {
+            return (0, true);
         }
         let output_denom = amount_to_denomination(value);
+        let key = (outpoint.txid, output_denom);
+        match self.cache.get(&key).copied() {
+            Some(CachedRounds::InProgress) => return (-10, false),
+            Some(CachedRounds::Exact(r)) => return (r, true),
+            Some(CachedRounds::AtLeast(lb)) if lb >= ROUNDS_MAX - depth => return (lb, false),
+            _ => {}
+        }
+        if depth >= ROUNDS_MAX {
+            return (0, false);
+        }
+        let prev_lb = match self.cache.get(&key) {
+            Some(&CachedRounds::AtLeast(lb)) => Some(lb),
+            _ => None,
+        };
+        self.cache.insert(key, CachedRounds::InProgress);
+        let (rounds, exact, has_cycle) = self.compute(tx, output_denom, depth);
+        if exact {
+            self.cache.insert(key, CachedRounds::Exact(rounds));
+            (rounds, true)
+        } else if !has_cycle {
+            let lb = prev_lb.map_or(rounds, |old| old.max(rounds));
+            self.cache.insert(key, CachedRounds::AtLeast(lb));
+            (lb, false)
+        } else {
+            match prev_lb {
+                Some(lb) => {
+                    self.cache.insert(key, CachedRounds::AtLeast(lb));
+                }
+                None => {
+                    self.cache.remove(&key);
+                }
+            }
+            (rounds, false)
+        }
+    }
+
+    fn balanced_denoms(&mut self, txid: Txid, tx: &WalletTx) -> bool {
+        *self.tx_balanced_denoms.entry(txid).or_insert_with(|| {
+            tx.outputs.iter().all(|v| is_denominated(*v)) && tx.debit() == tx.credit()
+        })
+    }
+
+    fn compute(&mut self, tx: &'a WalletTx, output_denom: u32, depth: i32) -> (i32, bool, bool) {
         let mut shortest: Option<i32> = None;
+        let mut exact_shortest: Option<i32> = None;
+        let mut has_cycle = false;
         for &(prev, own) in &tx.inputs {
             if own.is_none() {
                 continue;
             }
-            // Post-V24 promotion/demotion output: own inputs at another
-            // denomination restart the count (coinjoin.cpp:334-346).
             if let Some(prev_tx) = self.txs.get(&prev.txid)
                 && let Some(prev_value) = prev_tx.outputs.get(prev.vout as usize)
                 && amount_to_denomination(*prev_value) != output_denom
             {
-                return 0;
+                return (0, true, false);
             }
-            let n = self.rounds_at(&prev, depth + 1);
-            if n >= 0 && shortest.is_none_or(|s| n < s) {
-                shortest = Some(n);
+            let (n, child_exact) = self.rounds_at(&prev, depth + 1);
+            if n == -10 {
+                has_cycle = true;
+            }
+            if n >= 0 {
+                if shortest.is_none_or(|s| n < s) {
+                    shortest = Some(n);
+                }
+                if child_exact && exact_shortest.is_none_or(|s| n < s) {
+                    exact_shortest = Some(n);
+                }
             }
         }
-        match shortest {
+        let rounds = match shortest {
             Some(s) if s >= ROUNDS_MAX - 1 => ROUNDS_MAX,
             Some(s) => s + 1,
             None => 0,
-        }
+        };
+        let exact = !has_cycle
+            && (rounds >= ROUNDS_MAX
+                || match shortest {
+                    Some(s) => exact_shortest == Some(s),
+                    None => true,
+                });
+        (rounds, exact, has_cycle)
     }
 }
 
@@ -283,6 +329,128 @@ mod tests {
         assert_eq!(calc.rounds(&OutPoint::new(txid(5), 0)), 5);
         let mut calc = RoundsCalculator::new(&txs);
         assert_eq!(calc.rounds(&OutPoint::new(txid(25), 0)), ROUNDS_MAX);
+    }
+
+    #[test]
+    fn a_depth_capped_walk_does_not_fully_mix_the_shallow_sibling() {
+        let mut txs = HashMap::new();
+        txs.insert(
+            txid(0),
+            WalletTx {
+                outputs: vec![D, D, 5_000_000],
+                outputs_mine: vec![true, true, true],
+                inputs: vec![(OutPoint::new(txid(0xee), 0), Some(2 * D + 5_000_000))],
+            },
+        );
+        txs.insert(
+            txid(1),
+            WalletTx {
+                outputs: vec![D, D],
+                outputs_mine: vec![true, true],
+                inputs: vec![
+                    (OutPoint::new(txid(0), 0), Some(D)),
+                    (OutPoint::new(txid(0), 1), Some(D)),
+                ],
+            },
+        );
+        txs.insert(
+            txid(2),
+            WalletTx {
+                outputs: vec![D, D],
+                outputs_mine: vec![true, true],
+                inputs: vec![
+                    (OutPoint::new(txid(1), 0), Some(D)),
+                    (OutPoint::new(txid(1), 1), Some(D)),
+                ],
+            },
+        );
+        let branch = OutPoint::new(txid(2), 0);
+        let sibling = OutPoint::new(txid(2), 1);
+        let mut prev = branch;
+        for i in 3..(2 + ROUNDS_MAX as u8) {
+            txs.insert(txid(i), mixing(prev));
+            prev = OutPoint::new(txid(i), 0);
+        }
+        let tip = prev;
+        let salt = [0u8; 32];
+        for deep_first in [true, false] {
+            let mut calc = RoundsCalculator::new(&txs);
+            if deep_first {
+                assert_eq!(calc.rounds(&tip), ROUNDS_MAX);
+                assert_eq!(calc.rounds(&sibling), 2);
+                assert_eq!(calc.rounds(&branch), 2);
+            } else {
+                assert_eq!(calc.rounds(&sibling), 2);
+                assert_eq!(calc.rounds(&branch), 2);
+                assert_eq!(calc.rounds(&tip), ROUNDS_MAX);
+            }
+            assert!(!is_fully_mixed(calc.rounds(&sibling), 4, &sibling, &salt));
+        }
+    }
+
+    #[test]
+    fn dense_deep_mixing_dag_stays_linear_and_exact() {
+        const WIDTH: usize = 5;
+        let mut txs = HashMap::new();
+        txs.insert(
+            txid(0),
+            WalletTx {
+                outputs: {
+                    let mut v = vec![D; WIDTH + 1];
+                    v.push(5_000_000);
+                    v
+                },
+                outputs_mine: vec![true; WIDTH + 2],
+                inputs: vec![(
+                    OutPoint::new(txid(0xee), 0),
+                    Some((WIDTH as u64 + 1) * D + 5_000_000),
+                )],
+            },
+        );
+        txs.insert(
+            txid(1),
+            WalletTx {
+                outputs: vec![D; WIDTH + 1],
+                outputs_mine: vec![true; WIDTH + 1],
+                inputs: (0..=WIDTH as u32)
+                    .map(|vout| (OutPoint::new(txid(0), vout), Some(D)))
+                    .collect(),
+            },
+        );
+        txs.insert(
+            txid(2),
+            WalletTx {
+                outputs: vec![D; WIDTH + 1],
+                outputs_mine: vec![true; WIDTH + 1],
+                inputs: (0..=WIDTH as u32)
+                    .map(|vout| (OutPoint::new(txid(1), vout), Some(D)))
+                    .collect(),
+            },
+        );
+        let sibling = OutPoint::new(txid(2), WIDTH as u32);
+        for i in 3..=25u8 {
+            txs.insert(
+                txid(i),
+                WalletTx {
+                    outputs: vec![D; WIDTH],
+                    outputs_mine: vec![true; WIDTH],
+                    inputs: (0..WIDTH as u32)
+                        .map(|vout| (OutPoint::new(txid(i - 1), vout), Some(D)))
+                        .collect(),
+                },
+            );
+        }
+        let tip = OutPoint::new(txid(25), 0);
+        for deep_first in [true, false] {
+            let mut calc = RoundsCalculator::new(&txs);
+            if deep_first {
+                assert_eq!(calc.rounds(&tip), ROUNDS_MAX);
+                assert_eq!(calc.rounds(&sibling), 2);
+            } else {
+                assert_eq!(calc.rounds(&sibling), 2);
+                assert_eq!(calc.rounds(&tip), ROUNDS_MAX);
+            }
+        }
     }
 
     #[test]

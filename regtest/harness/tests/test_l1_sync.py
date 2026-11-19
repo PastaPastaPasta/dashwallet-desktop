@@ -86,6 +86,7 @@ def test_import_sync_receive_and_restart(tmp_path, regtest_node, funded_miner, m
     tip = regtest_node.rpc.getblockcount()
     out = cli.run("sync", "--min-height", str(tip), "--timeout-secs", "240")
     assert "balance=unknown" not in out, out
+    assert "catching_up=false" in wallet_line(out), out
     assert "confirmed=0 " in wallet_line(out), out
 
     txid = funded_miner.sendtoaddress(address, AMOUNT)

@@ -4,12 +4,14 @@
 import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
+import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
+import type { SyncStatus } from "./generated/SyncStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import { creditsToDuffs } from "./pending";
-import { feedSync, rawSync, readTicket, useShownSync } from "./syncDisplay";
+import { feedSync, rawSync, readTicket, useRawSync, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRequest } from "./generated/HistoryRequest";
@@ -21,6 +23,7 @@ import { hasPendingMove } from "../platform/move";
 import type { PoolReading } from "../format/homeBalance";
 import { reconcileLockReport } from "./lockReport";
 import { isChangingUsernameInRequests } from "./username";
+import { catchUpArrival } from "../components/emptyStates";
 
 /** A history query without its paging fields. */
 export type HistoryFilter = Omit<HistoryRequest, "cursor" | "limit">;
@@ -63,6 +66,8 @@ export const keys = {
   platformSendQuote: (walletId: string, to: string, amount: string) => ["platformSendQuote", walletId, to, amount] as const,
   networkChoice: ["networkChoice"] as const,
   sync: ["sync"] as const,
+  scanHeightAll: ["scanHeight"] as const,
+  scanHeight: (walletId: string) => ["scanHeight", walletId] as const,
   historyAll: (walletId: string) => ["history", walletId] as const,
   history: (walletId: string, filter: HistoryFilter, limit: number) => ["history", walletId, filter, limit] as const,
   txDetailAll: (walletId: string) => ["txDetail", walletId] as const,
@@ -139,9 +144,12 @@ export function useWallets() {
   return useQuery({ queryKey: keys.wallets, queryFn: () => b.listWallets() });
 }
 
+/** `null` while the wallet is catching up: no screen shows a partial balance yet. */
+export const settledBalance = (balances: Balances | null): Balances | null => (balances?.catchingUp ? null : balances);
+
 export function useBalance(walletId: string) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.balance(walletId), queryFn: () => b.balance(walletId) });
+  return useQuery({ queryKey: keys.balance(walletId), queryFn: async () => settledBalance(await b.balance(walletId)) });
 }
 
 /** The wallet's Platform addresses; `null` while dw-app has no such command (api/pending.ts). */
@@ -323,8 +331,59 @@ export function useSyncStatus() {
     },
   });
   const shown = useShownSync(b);
-  // The query's own state, with `data` the shown status once there is one.
-  return query.data === undefined ? query : { ...query, data: shown ?? query.data };
+  // `data` is the smoothed display. `raw` is the engine's own reading: an empty list follows that,
+  // not a hold that keeps `caughtUp` true for a new block. It comes from the store an event feeds,
+  // so it is the event's reading even while the read that follows is out or has failed.
+  const raw = useRawSync(b) ?? query.data;
+  if (raw === undefined) return { ...query, raw: undefined as SyncStatus | undefined };
+  return { ...query, data: shown ?? raw, raw };
+}
+
+/** How many times events made every scan-height read of a backend stale (`scanHeightsStale`). */
+const scanStale = new WeakMap<object, number>();
+
+/** An event made every scan-height read of `owner` stale (api/events.ts). */
+export function scanHeightsStale(owner: object) {
+  scanStale.set(owner, (scanStale.get(owner) ?? 0) + 1);
+}
+
+/** This wallet's filter checkpoint. A sync event reads it again. A read with no answer cached yet
+ * is not restarted by an invalidation (TanStack hands it the read already out), so a read that an
+ * event overtook reads once more after it settles. */
+export function useWalletScanHeight(walletId: string) {
+  const b = useBackend();
+  const client = useQueryClient();
+  return useQuery({
+    queryKey: keys.scanHeight(walletId),
+    queryFn: async ({ signal }) => {
+      const asked = scanStale.get(b) ?? 0;
+      try {
+        return await b.walletScanHeight(walletId);
+      } finally {
+        if (!signal.aborted && (scanStale.get(b) ?? 0) !== asked) setTimeout(() => void client.invalidateQueries({ queryKey: keys.scanHeight(walletId) }), 0);
+      }
+    },
+    retry: false,
+  });
+}
+
+/** Whether this wallet's empty lists are final (`catchUpArrival`), and the way to read again what
+ * could not be read. */
+export function useWalletCatchUp(walletId: string) {
+  const sync = useSyncStatus();
+  const scan = useWalletScanHeight(walletId);
+  const arrival = catchUpArrival({
+    status: sync.raw,
+    failed: sync.isError,
+    scanPending: scan.isPending,
+    scanFailed: scan.isError,
+    scanHeight: scan.data,
+  });
+  const recheck = () => {
+    if (sync.isError) void sync.refetch();
+    if (scan.isError) void scan.refetch();
+  };
+  return { arrival, recheck };
 }
 
 /** Pages of `limit` records; `fetchNextPage` follows the engine's keyset cursor. */

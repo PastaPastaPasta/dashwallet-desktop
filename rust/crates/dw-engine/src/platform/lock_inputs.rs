@@ -32,7 +32,6 @@ use dashcore::Transaction;
 use dashcore::secp256k1::{PublicKey, ecdsa};
 use dw_vault::SignerError;
 use key_wallet::bip32::{DerivationPath, ExtendedPubKey};
-use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use key_wallet::{ExtendedPubKeySigner, Signer, SignerMethod, Utxo};
 use platform_wallet::PlatformWallet;
 
@@ -58,11 +57,14 @@ pub(crate) fn too_many(needs: Option<usize>) -> PlatformError {
 pub(crate) async fn check(wallet: &PlatformWallet, duffs: u64) -> Result<(), PlatformError> {
     let values: Vec<u64> = {
         let state = wallet.state().await;
-        state
-            .core_wallet
-            .utxos()
+        let snapshot = crate::coins::read_coins(&state.core_wallet);
+        snapshot
+            .coins
             .iter()
-            .map(|u| u.value())
+            .filter(|c| {
+                c.send_account && c.utxo.is_spendable(snapshot.height) && !c.counted_denomination
+            })
+            .map(|c| c.utxo.value())
             .collect()
     };
     match least(&values, duffs) {

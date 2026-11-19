@@ -327,7 +327,7 @@ impl ConsoleContext {
         self.session.balances(&wallet).rpc()?.ok_or_else(|| {
             rpc(
                 code::WALLET_ERROR,
-                "Balance is not known yet: the scan has not reached the wallet's birth height",
+                "Balance is not known yet: the wallet has not been read",
             )
         })
     }

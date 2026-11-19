@@ -5,7 +5,8 @@
 #
 #   rust          what `cargo build --workspace` needs beyond the runner image: the WebKitGTK
 #                 development packages of the Tauri crate rust/crates/dw-app (G-01; list from
-#                 apps/desktop/README.md), installed before it lands so that merge needs no CI change;
+#                 apps/desktop/README.md), installed before it lands so that merge needs no CI change,
+#                 and dbus-daemon for dw-app's portal tests on a private bus;
 #   tauri         those plus Xvfb, AT-SPI, xdotool, the WebKitGTK WebDriver, D-Bus and xdg-utils for
 #                 the gate harness and the link checks (apps/desktop/README.md);
 #   swiftcrossui  GTK 4, Xvfb and the AT-SPI stack (ci/linux/Dockerfile.swift-gtk).
@@ -16,7 +17,7 @@ webkit=(libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-d
 gui=(xvfb xauth x11-utils x11-apps netpbm dbus-x11 at-spi2-core gir1.2-atspi-2.0 python3-pyatspi python3-gi)
 
 case "${1:?usage: $0 rust|tauri|swiftcrossui}" in
-  rust) packages=("${webkit[@]}") ;;
+  rust) packages=("${webkit[@]}" dbus) ;;
   # Ubuntu 24.04 calls the WebDriver package webkit2gtk-driver (26.04: webkitgtk-webdriver).
   # dbus and xdg-utils: second launches and links the OS opens (U-01, ci/github/deep-links.sh).
   tauri) packages=("${webkit[@]}" "${gui[@]}" xdotool imagemagick webkit2gtk-driver dbus xdg-utils) ;;
