@@ -31,6 +31,8 @@ mod credits;
 mod dashpay;
 mod errors;
 mod flows;
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;
 mod identity;
 mod identity_reads;
 mod identity_writes;

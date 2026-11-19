@@ -8,7 +8,8 @@
 #   tested by PR CI since 0.1 turned it on;
 # - release-check: the release legs of dw-engine's tests/mg04b_release_check.rs (MG-04b D71) and
 #   tests/mix_shield_release_check.rs (dwcli's `mix-shield-test`), which PR CI, testing in debug
-#   only, never runs.
+#   only, never runs;
+# - fuzz: scripts/fuzz.sh, libFuzzer on the parsers of untrusted input (H-02), 10 minutes a target.
 #
 # `schedule` runs only from the repository's default branch. Once the setup steps have passed,
 # every suite step runs even when an earlier one failed, so one run reports them all.
@@ -225,6 +226,53 @@ jobs:
       - name: mix_shield_release_check (release)
         working-directory: rust
         run: cargo test --release -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked
+
+  # Blocking: libFuzzer on the parsers of untrusted input (H-02), 10 minutes a target, from the
+  # previous nights' corpus. What a target finds is uploaded as `fuzz-findings`.
+  fuzz:
+    name: Fuzz the untrusted-input parsers (H-02)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      DW_FUZZ_TOOLCHAIN: nightly-2026-10-09
+      DW_FUZZ_WORK: ${{ github.workspace }}/.fuzz
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Free disk space
+        run: ci/github/linux-free-disk.sh
+      - name: protoc
+        run: ci/github/install-protoc.sh
+      - name: Rust toolchains (rust-toolchain.toml, and the pinned nightly) and cargo-fuzz
+        working-directory: rust
+        run: |
+          rustup toolchain install && rustc --version
+          rustup toolchain install "$DW_FUZZ_TOOLCHAIN" --profile minimal
+          cargo install cargo-fuzz --version 0.13.2 --locked
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: rust -> target
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: scripts/fuzz.sh (10 minutes a target)
+        run: scripts/fuzz.sh "$DW_FUZZ_WORK" 600
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always()
+        with:
+          path: .fuzz/corpus
+          key: fuzz-corpus-${{ github.run_id }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: fuzz-findings
+          path: |
+            .fuzz/artifacts/
+            .fuzz/logs/
+          if-no-files-found: warn
 
   # Non-blocking: on the runner the demo fails 4 AT-SPI checks, two of them known-intermittent
   # (docs/ci.md, "Known gaps"). A red X here does not turn the nightly red; the regtest job does.

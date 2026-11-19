@@ -267,6 +267,42 @@ impl std::fmt::Debug for HdRoot {
 }
 
 impl SqliteWallet {
+    /// The wallet the `(key, value)` rows of its `main` table describe.
+    pub fn from_records<'a>(
+        records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
+    ) -> Result<Self, WalletDatError> {
+        let mut wallet = SqliteWallet {
+            flags: 0,
+            descriptors: Vec::new(),
+            address_book: Vec::new(),
+            active_external: None,
+            active_internal: None,
+            coinjoin_salt: None,
+            master_keys: Vec::new(),
+            keys: Vec::new(),
+        };
+        let mut names: BTreeMap<String, String> = BTreeMap::new();
+        let mut purposes: BTreeMap<String, String> = BTreeMap::new();
+        for (key, value) in records {
+            parse_record(key, value, &mut wallet, &mut names, &mut purposes)?;
+        }
+        for (address, label) in names {
+            let purpose = purposes.remove(&address);
+            wallet.address_book.push(AddressBookEntry {
+                address,
+                label,
+                purpose,
+            });
+        }
+        Ok(wallet)
+    }
+
+    /// The most key derivation rounds a passphrase costs here: the largest
+    /// `mkey` record's (at most [`crypter::MAX_ROUNDS`]).
+    pub fn derivation_rounds(&self) -> u32 {
+        self.master_keys.iter().map(|m| m.rounds).max().unwrap_or(0)
+    }
+
     /// Whether the wallet has a master key record (`encryptwallet` ran).
     pub fn encrypted(&self) -> bool {
         !self.master_keys.is_empty() || self.keys.iter().any(|k| k.encrypted)
@@ -505,32 +541,13 @@ pub fn read_sqlite(path: &Path) -> Result<SqliteWallet, WalletDatError> {
             Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
         })
         .map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
-    let mut wallet = SqliteWallet {
-        flags: 0,
-        descriptors: Vec::new(),
-        address_book: Vec::new(),
-        active_external: None,
-        active_internal: None,
-        coinjoin_salt: None,
-        master_keys: Vec::new(),
-        keys: Vec::new(),
-    };
-    let mut names: BTreeMap<String, String> = BTreeMap::new();
-    let mut purposes: BTreeMap<String, String> = BTreeMap::new();
-    for row in rows {
-        let (key, value) = row.map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
-        let value = Zeroizing::new(value);
-        parse_record(&key, &value, &mut wallet, &mut names, &mut purposes)?;
-    }
-    for (address, label) in names {
-        let purpose = purposes.remove(&address);
-        wallet.address_book.push(AddressBookEntry {
-            address,
-            label,
-            purpose,
-        });
-    }
-    Ok(wallet)
+    let records = rows
+        .map(|row| {
+            let (key, value) = row.map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
+            Ok((key, Zeroizing::new(value)))
+        })
+        .collect::<Result<Vec<_>, WalletDatError>>()?;
+    SqliteWallet::from_records(records.iter().map(|(k, v)| (&k[..], &v[..])))
 }
 
 fn utf8(b: &[u8], what: &str) -> Result<String, WalletDatError> {
