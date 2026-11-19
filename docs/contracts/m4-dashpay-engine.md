@@ -4288,25 +4288,31 @@ renames or reshapes them takes the next version bump:
 88. **Registration from the Shielded balance: the quote and the start's checks (C4b-1; F14, F16, F17).**
     `RegistrationFunding` gains `Shielded{denomination}`, and `RegistrationQuote` gains `readiness:
     Option<ShieldedReadiness>`, set for that funding only. `ShieldedReadiness{denomination, checks, ready_at}`:
-    `denomination` is the smallest member of the protocol version's `shielded_identity_create_denominations` (PV12:
-    0.1, 0.3, 0.5, 1 DASH; PV13 and PV14: 0.03, 0.1, 0.25, 0.5, 1 DASH; credits) that, less the create's fee for the
-    notes the library would select (`compute_shielded_identity_create_fee`, the six registration keys), covers the
-    names and the profile; `None` when none does. `checks` holds every `ShieldedCheckState{check, ready}` in this
-    order, which is the start's: `pool_active` (protocol version 12 or later), `feature_on` (Platform runs),
-    `denomination`, `balance` (the notes cover it), `no_unsettled_spend` (no unrecorded, unresolved or held spend of
-    the wallet, and the dispatch journal read), `synced` (the ledger established and its tree scanned), `rested` (3
-    hours since the latest incoming shielded activity's `created_at`; restored rows, which have none, count as rested
-    once `synced`). `ready_at` is when `rested` will hold. The quote's `grant` is `max_duffs` 0 and `max_credits` the
-    denomination plus the names and the profile; `remaining_credits` is the denomination less the fee, the names and
-    the profile. `start_registration` with `Shielded` runs every check again before anything is read for the ledger,
-    written or redeemed, with no override: `pool_active`, `feature_on` or `denomination` failing is
-    `platform.feature_off{feature: "shielded_registration"}` (no member of the version's set can pay, an empty set
-    included); any other is the new `registration.shielded_not_ready{reason, ready_at}` (`reason` the first check
-    that fails). Then a `denomination` other than the quote's is the new `registration.quote_changed` (C-funding F4).
-    A start that passes both is still `platform.feature_off{feature: "shielded_registration"}`: C4b-2 adds the flow
-    step. The stored `funding` kind `shielded` (`denomination`, `fallback` the wallet's own Platform receive address,
-    and `identity` once known; funding version 1) is decoded, and a row of it reads `registration.unsupported` here:
-    never funded, advanced or discarded until C4b-2.
+    `denomination` is the smallest member of the protocol version's `shielded_identity_create_denominations` (PV12: 0.1,
+    0.3, 0.5, 1 DASH; PV13 and PV14: 0.03, 0.1, 0.25, 0.5, 1 DASH; credits) that, less the create's fee for the notes
+    the library would select (`compute_shielded_identity_create_fee`, the six registration keys), covers the names and
+    the profile; `None` when none does. The fee counted is at least the Core path's create bound, as Platform meters the
+    create's fee. `checks` holds every `ShieldedCheckState{check, ready}` in this order, which is the start's:
+    `pool_active` (protocol version 12 or later), `feature_on` (Platform runs), `denomination`, `balance` (the notes
+    cover it), `no_unsettled_spend` (no unrecorded, unresolved or held spend of the wallet, and the dispatch journal
+    read), `synced` (the ledger established and its tree scanned), `rested` (3 hours since the newest incoming shielded
+    note's time: when the engine first saw it, or its row's earlier non-zero `created_at`. The library stamps no time on
+    a row a scan derives, so the engine keeps its own clock in the wallet's local scope of `app.sqlite`, per note
+    commitment, recorded at each completed sync pass and each quote. The notes first seen in the wallet's first
+    completed shielded scan in this install, after it was created, restored or imported, are restored and count as
+    rested once `synced`. Before that scan completes, or when the clock cannot be read, `rested` is not ready and
+    `ready_at` is `None`). `ready_at` is when `rested` will hold; a `shielded_not_ready` refusal carries it only when
+    `reason` is `rested`. The quote's `grant` is `max_duffs` 0 and `max_credits` the denomination plus the names and the
+    profile; `remaining_credits` is the denomination less the fee, the names and the profile. `start_registration` with
+    `Shielded` runs every check again before anything is read for the ledger, written or redeemed, with no override:
+    `pool_active`, `feature_on` or `denomination` failing is `platform.feature_off{feature: "shielded_registration"}`
+    (no member of the version's set can pay, an empty set included); any other is the new
+    `registration.shielded_not_ready{reason, ready_at}` (`reason` the first check that fails). Then a `denomination`
+    other than the quote's is the new `registration.quote_changed` (C-funding F4). A start that passes both is still
+    `platform.feature_off{feature: "shielded_registration"}`: C4b-2 adds the flow step. The stored `funding` kind
+    `shielded` (`denomination`, `fallback` the wallet's own Platform receive address, which C4b-2's start reads, and
+    `identity` once known; funding version 1) is decoded, and a row of it reads `registration.unsupported` here: never
+    funded, advanced or discarded until C4b-2.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

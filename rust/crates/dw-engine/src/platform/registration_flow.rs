@@ -3543,13 +3543,6 @@ impl RegistrationLib for PwLib {
         {
             return Ok(facts);
         }
-        let net = super::platform_moves::SdkMoves {
-            sdk: Arc::clone(&self.sdk),
-            wallet: Arc::clone(&self.wallet),
-        };
-        let network = self.session.vault.network();
-        facts.fallback =
-            (super::platform_moves::receive_address(&net, &self.wallet, network).await)?.address;
         let pool = super::shielded_pool::PwShielded::open(&self.session, self.wallet_id).await?;
         super::shielded_pool::registration_facts(&self.session, self.wallet_id, &pool, &mut facts)
             .await?;

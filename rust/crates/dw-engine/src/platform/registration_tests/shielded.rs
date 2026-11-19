@@ -37,8 +37,8 @@ fn ready() -> ShieldedFacts {
         synced: true,
         notes: vec![note(0, DASH / 2), note(1, DASH / 2)],
         unsettled: false,
+        rest_known: true,
         latest_incoming: Some(now() - SHIELDED_REST_SECS - 60),
-        fallback: FALLBACK.into(),
     }
 }
 
@@ -156,7 +156,11 @@ fn a_ready_start_checks_the_quoted_denomination_and_writes_nothing() {
     assert_eq!(quote.grant.max_duffs, 0);
     assert_eq!(quote.grant.max_credits, denomination + NAME_CREDITS);
     let fee = denomination - quote.remaining_credits - NAME_CREDITS;
-    assert!(fee > 0 && fee < denomination / 10, "{fee}");
+    assert_eq!(
+        fee,
+        crate::platform::registration_flow::IDENTITY_CREATE_CREDITS,
+        "the Core path's bound"
+    );
     let err = start(&f, &lib, shielded(denomination + 1));
     assert_eq!(err.code(), "registration.quote_changed");
     let err = start(&f, &lib, shielded(denomination));
@@ -204,29 +208,20 @@ fn the_denomination_follows_the_protocol_version() {
 }
 
 #[test]
-fn the_fallback_is_the_wallets_own_receive_address() {
-    let f = fixture(false);
-    let lib = f.fake();
-    lib.w().shielded = ready();
-    // A caller cannot name one: the request has no such field.
+fn a_caller_cannot_name_the_fallback() {
     let req: RegistrationRequest = serde_json::from_value(serde_json::json!({
         "label": PLAIN, "temporary_label": null, "initial_profile": null,
         "funding": {"kind": "shielded", "denomination": 1, "fallback": "tdash1qattacker"},
     }))
     .unwrap();
-    let plan = (f.engine.block_on(registration::plan(&*lib, &req))).unwrap();
-    let Funding::Shielded {
-        fallback, identity, ..
-    } = plan.funding
-    else {
-        panic!("{:?}", plan.funding)
-    };
-    assert_eq!(fallback, FALLBACK);
-    assert_eq!(identity, None);
+    assert_eq!(
+        serde_json::to_value(&req.funding).unwrap(),
+        serde_json::json!({"kind": "shielded", "denomination": 1})
+    );
 }
 
 #[test]
-fn notes_rest_three_hours_and_restored_ones_once_synced() {
+fn notes_rest_three_hours_restored_ones_once_synced_and_none_unknown() {
     let version = version(PROTOCOL_VERSION_13);
     let t = 1_000_000;
     let rested = |facts: &ShieldedFacts, now| {
@@ -240,6 +235,9 @@ fn notes_rest_three_hours_and_restored_ones_once_synced() {
     let end = t + SHIELDED_REST_SECS;
     assert_eq!(rested(&facts, end - 1), (false, Some(end)));
     assert_eq!(rested(&facts, end), (true, None));
+    facts.rest_known = false;
+    assert_eq!(rested(&facts, end - 1), (false, None), "the clock unknown");
+    facts.rest_known = true;
     facts.latest_incoming = None;
     assert_eq!(rested(&facts, t), (true, None), "restored rows, synced");
     facts.synced = false;

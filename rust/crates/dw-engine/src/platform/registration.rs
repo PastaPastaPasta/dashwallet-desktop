@@ -452,8 +452,8 @@ fn invalid(detail: impl Into<String>) -> RegistrationError {
 }
 
 /// What a request costs, as both the quote and the start compute it.
-pub(crate) struct Plan {
-    pub(crate) funding: Funding,
+struct Plan {
+    funding: Funding,
     contested: bool,
     /// The temporary name, kept only for a contested label.
     temp_label: Option<String>,
@@ -472,7 +472,7 @@ pub(crate) struct Plan {
 }
 
 /// What `req` costs and how it is funded, for the quote and the start.
-pub(crate) async fn plan<L: RegistrationLib>(
+async fn plan<L: RegistrationLib>(
     lib: &L,
     req: &RegistrationRequest,
 ) -> Result<Plan, RegistrationError> {
@@ -580,17 +580,20 @@ pub(crate) struct ShieldedFacts {
     /// A spend of the wallet is unrecorded or unresolved, or the dispatch
     /// journal is not read yet.
     pub(crate) unsettled: bool,
-    /// The newest `created_at` of the wallet's incoming shielded activity;
-    /// restored rows have none.
+    /// The rest clock was read and the wallet's first shielded scan in this
+    /// install has completed (`shielded_pool::observe_rest`).
+    pub(crate) rest_known: bool,
+    /// The newest time of the wallet's incoming shielded notes: when the
+    /// engine first saw each, or its earlier `created_at`; none for the
+    /// notes of the first scan (restored).
     pub(crate) latest_incoming: Option<u64>,
-    /// The wallet's Platform receive address (F13).
-    pub(crate) fallback: String,
 }
 
 /// A Shielded-funded plan: the smallest denomination of the version that
 /// pays the create's fee and `base.credits` (the names and the profile),
 /// and the readiness the start checks again. The identity starts with the
 /// denomination less the predicted fee; the change returns to the pool.
+/// The fallback address is read by the start's flow step (C4b-2).
 async fn shielded_plan<L: RegistrationLib>(lib: &L, base: Plan) -> Result<Plan, RegistrationError> {
     let version = lib.platform_version().await;
     let facts = lib.shielded_facts().await?;
@@ -601,7 +604,7 @@ async fn shielded_plan<L: RegistrationLib>(lib: &L, base: Plan) -> Result<Plan, 
     Ok(Plan {
         funding: Funding::Shielded {
             denomination,
-            fallback: facts.fallback,
+            fallback: String::new(),
             identity: None,
         },
         credits_held: denomination.saturating_sub(fee),
@@ -611,8 +614,8 @@ async fn shielded_plan<L: RegistrationLib>(lib: &L, base: Plan) -> Result<Plan, 
 }
 
 /// The smallest member of `version`'s denomination set that, less the
-/// create's fee for the notes it would select, covers `needed`; with that
-/// fee (C-funding F14).
+/// create's fee for the notes it would select (at least the Core path's
+/// bound, as Platform meters it), covers `needed`; with that fee (F14).
 pub(crate) fn denomination(
     version: &PlatformVersion,
     notes: &[ShieldedNote],
@@ -625,7 +628,8 @@ pub(crate) fn denomination(
         .filter_map(|&d| {
             let actions = select_notes(notes, d, 0).map_or(MIN_ACTIONS, |n| n.len());
             let fee = compute_shielded_identity_create_fee(actions.max(MIN_ACTIONS), keys, version)
-                .ok()?;
+                .ok()?
+                .max(flow::IDENTITY_CREATE_CREDITS);
             (d > fee && d - fee >= needed).then_some((d, fee))
         })
         .min()
@@ -640,7 +644,7 @@ pub(crate) fn shielded_readiness(
 ) -> ShieldedReadiness {
     let ready_at = (facts.latest_incoming)
         .map(|at| at.saturating_add(SHIELDED_REST_SECS))
-        .filter(|&at| at > now);
+        .filter(|&at| facts.rest_known && at > now);
     let checks = [
         (
             ShieldedCheck::PoolActive,
@@ -654,8 +658,10 @@ pub(crate) fn shielded_readiness(
         ),
         (ShieldedCheck::NoUnsettledSpend, !facts.unsettled),
         (ShieldedCheck::Synced, facts.synced),
-        // Restored rows have no time: rested once the scan is complete.
-        (ShieldedCheck::Rested, facts.synced && ready_at.is_none()),
+        (
+            ShieldedCheck::Rested,
+            facts.synced && facts.rest_known && ready_at.is_none(),
+        ),
     ];
     ShieldedReadiness {
         denomination,
@@ -688,7 +694,9 @@ fn shielded_start(
         Some(reason) => {
             return Err(RegistrationError::ShieldedNotReady {
                 reason,
-                ready_at: readiness.ready_at,
+                ready_at: readiness
+                    .ready_at
+                    .filter(|_| reason == ShieldedCheck::Rested),
             });
         }
         None => {}
