@@ -1009,9 +1009,46 @@ fn finish(w: &mut SqliteWallet, gather: Gather) -> Result<(), WalletDatError> {
             return Err(corrupt("encrypted wallet has a plaintext key"));
         }
     }
+    if let Some(chain) = &w.legacy {
+        check_chain_range(chain, &w.hd_children)?;
+    }
     // A key Core did not list as `hdpubkey` is not shown to be on the HD
     // chain, including when the file has no `hdpubkey` records at all.
     w.loose_keys = key_pubs.iter().filter(|p| !hd_pubs.contains(*p)).count() as u32;
+    Ok(())
+}
+
+/// The chain's counters are what the import restores, so they must cover
+/// every HD key the file stores. Only account 0 is restored, up to
+/// [`MAX_LEGACY_CHAIN_KEYS`] keys per chain.
+fn check_chain_range(chain: &LegacyChain, children: &[HdChild]) -> Result<(), WalletDatError> {
+    for (&account, &(external, internal)) in &chain.accounts {
+        if account != 0 {
+            return Err(WalletDatError::Unsupported(format!(
+                "HD account {account} cannot be restored; only account 0 is"
+            )));
+        }
+        if external > MAX_LEGACY_CHAIN_KEYS || internal > MAX_LEGACY_CHAIN_KEYS {
+            return Err(WalletDatError::Unsupported(
+                "the wallet's address range is too large to restore".into(),
+            ));
+        }
+    }
+    for child in children {
+        let Some(&(external, internal)) = chain.accounts.get(&child.account) else {
+            return Err(corrupt(
+                "hdpubkey for an account the HD chain does not have",
+            ));
+        };
+        let counter = if child.change == 0 {
+            external
+        } else {
+            internal
+        };
+        if child.index >= counter {
+            return Err(corrupt("hdpubkey past its HD chain's counter"));
+        }
+    }
     Ok(())
 }
 
@@ -1286,7 +1323,9 @@ fn parse_hdchain(v: &mut Reader<'_>) -> Result<LegacyChain, WalletDatError> {
         let index = v.u32().ok_or_else(|| corrupt("hdchain record"))?;
         let external = v.u32().ok_or_else(|| corrupt("hdchain record"))?;
         let internal = v.u32().ok_or_else(|| corrupt("hdchain record"))?;
-        accounts.insert(index, (external, internal));
+        if accounts.insert(index, (external, internal)).is_some() {
+            return Err(corrupt("duplicate hdchain account"));
+        }
     }
     Ok(LegacyChain {
         id,
@@ -1793,7 +1832,7 @@ mod tests {
     fn a_seed_without_a_mnemonic_is_returned_whole() {
         let seed = [0x5au8; 64];
         let id = sha256d(&seed);
-        let chain = ser_chain(&id, false, &seed, b"", b"", 0, 4);
+        let chain = ser_chain(&id, false, &seed, b"", b"", 1, 4);
         let child = {
             let master = ExtendedPrivKey::new_master(Network::Regtest, &seed).unwrap();
             master
@@ -1951,6 +1990,52 @@ mod tests {
             matches!(err, WalletDatError::Corrupt(ref d) if d.contains("empty overflow page")),
             "{err:?}"
         );
+    }
+
+    #[test]
+    fn a_duplicated_hdchain_account_is_refused() {
+        let seed = [0x5au8; 64];
+        let mut chain = ser_chain(&sha256d(&seed), false, &seed, b"", b"", 5000, 2);
+        let n = chain.len();
+        chain[n - 13] = 2;
+        chain.extend_from_slice(&0u32.to_le_bytes());
+        chain.extend_from_slice(&1u32.to_le_bytes());
+        chain.extend_from_slice(&0u32.to_le_bytes());
+        let pairs = [(db_key("hdchain"), chain)];
+        let refs: Vec<(&[u8], &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        let err = read_bdb_bytes(&build::pairs(&refs, false)).err().unwrap();
+        assert!(
+            matches!(err, WalletDatError::Corrupt(ref d) if d.contains("duplicate hdchain account")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn an_hd_key_past_its_chain_counter_is_refused() {
+        let seed = [0x5au8; 64];
+        let chain = ser_chain(&sha256d(&seed), false, &seed, b"", b"", 4, 2);
+        let pubkey = [0x02u8; 33];
+        for (change, index) in [(0, 4), (1, 2)] {
+            let pairs = [
+                (db_key("hdchain"), chain.clone()),
+                (
+                    db_key_pub("hdpubkey", &pubkey),
+                    ser_hdpubkey_at(&pubkey, 0, change, index),
+                ),
+            ];
+            let refs: Vec<(&[u8], &[u8])> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                .collect();
+            let err = read_bdb_bytes(&build::pairs(&refs, false)).err().unwrap();
+            assert!(
+                matches!(err, WalletDatError::Corrupt(ref d) if d.contains("past its HD chain's counter")),
+                "{err:?}"
+            );
+        }
     }
 
     #[test]
@@ -2172,7 +2257,7 @@ mod tests {
     fn locked_utxos_are_kept() {
         let seed = [0x5au8; 64];
         let id = sha256d(&seed);
-        let chain = ser_chain(&id, false, &seed, b"", b"", 0, 0);
+        let chain = ser_chain(&id, false, &seed, b"", b"", 1, 0);
         let child = {
             let master = ExtendedPrivKey::new_master(Network::Regtest, &seed).unwrap();
             master
@@ -2203,7 +2288,7 @@ mod tests {
     fn mkey_rounds_are_capped_across_records() {
         let seed = [0x5au8; 64];
         let id = sha256d(&seed);
-        let chain = ser_chain(&id, true, &seed, b"phrase", b"", 0, 0);
+        let chain = ser_chain(&id, true, &seed, b"phrase", b"", 1, 0);
         let rounds = crypter::MAX_ROUNDS / 2 + 1;
         let mut records = vec![(db_key("chdchain"), chain)];
         for n in 1..=2u32 {
@@ -2427,6 +2512,7 @@ mod tests {
                 ),
                 (db_key_pub("key", &loose_pub), loose_value),
                 (lock_key, b"1".to_vec()),
+                (db_key("cj_salt"), [0x5cu8; 32].to_vec()),
             ];
             let refs: Vec<(&[u8], &[u8])> = pairs
                 .iter()

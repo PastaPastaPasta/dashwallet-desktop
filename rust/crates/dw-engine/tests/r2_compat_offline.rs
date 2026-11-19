@@ -37,6 +37,10 @@ fn manifest() -> serde_json::Value {
 }
 
 fn engine(root: &Path) -> Engine {
+    engine_with(root, Arc::new(Quiet))
+}
+
+fn engine_with(root: &Path, sink: Arc<dyn EventSink>) -> Engine {
     Engine::new(
         EngineConfig {
             data_root: root.to_path_buf(),
@@ -47,7 +51,7 @@ fn engine(root: &Path) -> Engine {
                 ..VaultConfig::default()
             },
         },
-        Arc::new(Quiet),
+        sink,
     )
     .unwrap()
 }
@@ -526,6 +530,9 @@ fn test_qt_106_a_retry_finishes_an_interrupted_wallet_dat_import() {
         .unwrap();
     assert_eq!(id, core_id(abandon, ""));
     assert!(e.block_on(s.locked_outpoints(id)).unwrap().is_empty());
+    // As after a failed salt write: the wallet made its own on first use.
+    let own_salt = e.block_on(s.coinjoin_salt(id)).unwrap();
+    assert_ne!(own_salt, CORE_SALT);
     let again = e.block_on(s.import_wallet_dat(
         testdata("compat/walletdat/bdb_wide_range.dat"),
         None,
@@ -551,6 +558,91 @@ fn test_qt_106_a_retry_finishes_an_interrupted_wallet_dat_import() {
     let locks = e.block_on(s.locked_outpoints(id)).unwrap();
     assert_eq!(locks.len(), 1, "the retry did not install Core's lock");
     assert_eq!(locks[0].vout, 7);
+    assert_eq!(
+        e.block_on(s.coinjoin_salt(id)).unwrap(),
+        CORE_SALT,
+        "the retry did not write Core's CoinJoin salt"
+    );
+}
+
+/// Core's CoinJoin salt in `bdb_wide_range.dat`.
+const CORE_SALT: &str = "5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c";
+
+type Seen = (String, i64, Option<String>, Option<String>);
+
+/// What the app database held for a wallet when `WalletCreated` was
+/// emitted: its open locks, stored range and CoinJoin salt.
+#[derive(Default)]
+struct CreatedProbe {
+    db: std::sync::OnceLock<PathBuf>,
+    seen: std::sync::Mutex<Vec<Seen>>,
+}
+
+impl EventSink for CreatedProbe {
+    fn emit(&self, event: EngineEvent) {
+        let EngineEvent::WalletCreated { wallet_id, .. } = event else {
+            return;
+        };
+        let Some(db) = self.db.get() else {
+            return;
+        };
+        let conn =
+            rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let id = wallet_id.to_string();
+        let locks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM utxo_locks WHERE wallet_id = ?1 AND released_at IS NULL",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let setting = |key: &str| {
+            conn.query_row(
+                "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                [id.as_str(), key],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        };
+        let issued = setting("bip44.legacy_issued");
+        let salt = setting("coinjoin.salt");
+        self.seen.lock().unwrap().push((id, locks, issued, salt));
+    }
+}
+
+/// Nothing hears of an imported legacy wallet before Core's range, coin
+/// locks and salt are stored: `WalletCreated` finds them already there.
+#[test]
+fn test_qt_106_a_legacy_wallet_is_announced_with_its_locks_in_place() {
+    let dir = dw_testutil::private_tempdir();
+    let probe = Arc::new(CreatedProbe::default());
+    let e = engine_with(dir.path(), Arc::clone(&probe) as Arc<dyn EventSink>);
+    let s = open(&e, Some(b"vault pass"));
+    e.block_on(s.vault_op(|v| v.unlock(b"vault pass", UnlockScope::Full)))
+        .unwrap();
+    probe
+        .db
+        .set(s.data_dir().join(dw_appdb::APP_DB_FILE))
+        .unwrap();
+    let report = e
+        .block_on(s.import_wallet_dat(
+            testdata("compat/walletdat/bdb_wide_range.dat"),
+            None,
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    let seen = probe.seen.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        [(
+            report.wallet_id.to_string(),
+            1,
+            Some("1001,2".to_owned()),
+            Some(CORE_SALT.to_owned())
+        )],
+        "what the app database held when the wallet was announced"
+    );
 }
 
 #[test]

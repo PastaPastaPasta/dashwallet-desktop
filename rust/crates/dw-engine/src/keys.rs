@@ -21,6 +21,7 @@ use key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
 use zeroize::Zeroizing;
 
+use crate::compat::ImportedState;
 use crate::gate::Lifecycle;
 use crate::platform::runtime::PlatformSignal;
 use crate::wallets::validate_name;
@@ -403,6 +404,7 @@ impl NetworkSession {
                 move || mnemonic::derive_secret(&secret, b"", false).map_err(mnemonic_error),
                 AutoBackup::Schedule,
                 Origin::CreatedHere,
+                ImportedState::default(),
             )
             .await?;
         // The import took and released the operation guard.
@@ -455,8 +457,30 @@ impl NetworkSession {
     where
         F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
     {
-        self.import_secret_inner(options, make_secret, AutoBackup::Schedule, Origin::Imported)
+        self.import_secret_with_state(options, make_secret, ImportedState::default())
             .await
+    }
+
+    /// [`Self::import_secret_with`] for a wallet that comes with `state`
+    /// from a Dash Core file: stored before the wallet is registered, and
+    /// its range applied before anyone hears of the wallet.
+    pub(crate) async fn import_secret_with_state<F>(
+        self: &Arc<Self>,
+        options: ImportOptions,
+        make_secret: F,
+        state: ImportedState,
+    ) -> Result<WalletId, EngineError>
+    where
+        F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
+    {
+        self.import_secret_inner(
+            options,
+            make_secret,
+            AutoBackup::Schedule,
+            Origin::Imported,
+            state,
+        )
+        .await
     }
 
     /// [`Self::import_secret_with`] with the automatic backup left to the
@@ -469,6 +493,7 @@ impl NetworkSession {
         make_secret: F,
         auto_backup: AutoBackup,
         origin: Origin,
+        state: ImportedState,
     ) -> Result<WalletId, EngineError>
     where
         F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
@@ -481,7 +506,7 @@ impl NetworkSession {
             // lock.
             let secret = tokio::task::spawn_blocking(make_secret).await??;
             let held = this.wallet_lifecycle.hold().await;
-            this.import_secret_locked(&held, checked, secret, auto_backup, origin)
+            this.import_secret_locked(&held, checked, secret, auto_backup, origin, state)
                 .await
         })
         .await
@@ -497,6 +522,7 @@ impl NetworkSession {
         secret: WalletSecret,
         auto_backup: AutoBackup,
         origin: Origin,
+        state: ImportedState,
     ) -> Result<WalletId, EngineError> {
         let Checked {
             name,
@@ -551,6 +577,19 @@ impl NetworkSession {
             }
         };
         self.store_fingerprint(wallet_id, fingerprint).await;
+        // A Dash Core file's range, coin locks and salt are stored before the
+        // wallet is registered, so nothing can see it without them. A
+        // wallet that is already there gets them too: a retry finishes an
+        // import that stopped after registering.
+        if let Err(e) = self.write_imported_state(wallet_id, &state).await {
+            if !had_secret {
+                self.forget_secret(held, wallet_id).await;
+            }
+            if readmitted {
+                self.record_removed_again(held, wallet_id).await;
+            }
+            return Err(e);
+        }
 
         // A closed (unloaded) wallet is registered: open it instead.
         if self.live()?.store.is_unloaded(&wallet_id.0) {
@@ -560,6 +599,7 @@ impl NetworkSession {
             return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
         }
         if manager.get_wallet(&wallet_id.0).await.is_some() {
+            self.cover_imported_range(&manager, wallet_id, &state).await;
             if had_secret {
                 return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
             }
@@ -632,6 +672,7 @@ impl NetworkSession {
             }
             self.store_lookahead(wallet_id, gap).await;
         }
+        self.cover_imported_range(&manager, wallet_id, &state).await;
         self.refresh_wallet_state(&manager, wallet_id).await;
         // The wallet is registered; a failed name write leaves it with
         // the computed default name and is reported in the log only.

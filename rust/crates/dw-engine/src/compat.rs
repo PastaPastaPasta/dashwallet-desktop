@@ -390,6 +390,7 @@ impl NetworkSession {
         self: &Arc<Self>,
         root: CoreRoot,
         options: ImportOptions,
+        state: ImportedState,
     ) -> Result<ImportReport, EngineError> {
         let options = ImportOptions {
             // A restored wallet may have funds anywhere in the chain.
@@ -429,7 +430,9 @@ impl NetworkSession {
             }
             Ok(secret)
         };
-        let wallet_id = self.import_secret_with(options, make_secret).await?;
+        let wallet_id = self
+            .import_secret_with_state(options, make_secret, state)
+            .await?;
         let labels_imported = self.import_labels(wallet_id, labels).await;
         Ok(ImportReport {
             wallet_id,
@@ -549,7 +552,9 @@ impl NetworkSession {
             used_per_chain,
             labels,
         };
-        let report = self.import_core_root(root, options).await?;
+        let report = self
+            .import_core_root(root, options, ImportedState::default())
+            .await?;
         Ok(ImportReport {
             keys_not_imported: report_keys,
             scripts_not_imported: report_scripts,
@@ -569,11 +574,9 @@ impl NetworkSession {
         let network_mainnet = self.network == DashNetwork::Mainnet;
         let WalletDatImport {
             root,
-            coinjoin_salt,
             loose_keys,
             scripts,
-            issued,
-            locks,
+            state,
         } = self
             .on_runtime(async move {
                 tokio::task::spawn_blocking(move || -> Result<WalletDatImport, EngineError> {
@@ -667,40 +670,19 @@ impl NetworkSession {
                             used_per_chain: wallet.next_index(),
                             labels,
                         },
-                        coinjoin_salt: wallet.coinjoin_salt,
                         loose_keys: wallet.loose_keys,
                         scripts: wallet.scripts,
-                        issued,
-                        locks,
+                        state: ImportedState {
+                            issued,
+                            locks,
+                            coinjoin_salt: wallet.coinjoin_salt,
+                        },
                     })
                 })
                 .await?
             })
             .await?;
-        let report = match self.import_core_root(root, options).await {
-            // The wallet is there already, perhaps from an import that failed
-            // after registering it. The range and locks are applied again
-            // (all idempotent) so a retry finishes it; the caller still hears
-            // that it exists.
-            Err(EngineError::WalletAlreadyExists(id)) => {
-                if let Ok(wallet_id) = id.parse::<WalletId>() {
-                    self.apply_wallet_dat_state(wallet_id, issued, locks)
-                        .await?;
-                }
-                return Err(EngineError::WalletAlreadyExists(id));
-            }
-            report => report?,
-        };
-        self.apply_wallet_dat_state(report.wallet_id, issued, locks)
-            .await?;
-        // The wallet keeps Dash Core's salt, so the same coins count as
-        // fully mixed (QT-043, m3-engine.md §5).
-        if let Some(salt) = coinjoin_salt {
-            let this = Arc::clone(self);
-            let id = report.wallet_id;
-            self.on_runtime(async move { this.import_coinjoin_salt(id, salt).await })
-                .await?;
-        }
+        let report = self.import_core_root(root, options, state).await?;
         Ok(ImportReport {
             keys_not_imported: loose_keys,
             scripts_not_imported: scripts,
@@ -783,7 +765,8 @@ impl NetworkSession {
                 }
             }
         };
-        self.import_core_root(root, options).await
+        self.import_core_root(root, options, ImportedState::default())
+            .await
     }
 
     /// The warning for CoinJoin funds a legacy dash-qt wallet would not see.
@@ -918,15 +901,24 @@ impl NetworkSession {
     }
 }
 
+/// What a Dash Core file carries beside its root. It is stored before the
+/// wallet is registered and its range applied before anyone hears of the
+/// wallet.
+#[derive(Default)]
+pub(crate) struct ImportedState {
+    /// How many receive and change keys Core derived on account 0.
+    pub(crate) issued: Option<(u32, u32)>,
+    /// Core's persistent coin locks (`lockedutxo`).
+    pub(crate) locks: Vec<dashcore::OutPoint>,
+    pub(crate) coinjoin_salt: Option<[u8; 32]>,
+}
+
 /// What `import_wallet_dat` carries out of the blocking read.
 struct WalletDatImport {
     root: CoreRoot,
-    coinjoin_salt: Option<[u8; 32]>,
     loose_keys: u32,
     scripts: u32,
-    /// How many receive and change keys Core derived on account 0.
-    issued: Option<(u32, u32)>,
-    locks: Vec<dashcore::OutPoint>,
+    state: ImportedState,
 }
 
 /// dw-appdb setting (wallet scope): `external,internal`, the counters of a
@@ -985,27 +977,38 @@ impl NetworkSession {
         Ok(())
     }
 
-    /// What a legacy file carries beyond its root: the stored range and
-    /// Core's coin locks first (durable, read again at every load), then the
-    /// range on the loaded wallet. A wallet that is not loaded gets the range
-    /// when it loads.
-    async fn apply_wallet_dat_state(
+    /// Stores `state` for wallet `id`: the range setting, Core's coin locks
+    /// and its CoinJoin salt, so the same coins count as fully mixed
+    /// (QT-043, m3-engine.md §5). Each write replaces the last, so a retry
+    /// writes them again.
+    pub(crate) async fn write_imported_state(
         self: &Arc<Self>,
         id: WalletId,
-        issued: Option<(u32, u32)>,
-        locks: Vec<dashcore::OutPoint>,
+        state: &ImportedState,
     ) -> Result<(), EngineError> {
-        if let Some(issued) = issued {
+        if let Some(issued) = state.issued {
             self.store_issued(id, issued).await?;
         }
-        self.install_imported_locks(id, locks).await?;
-        if let Some(issued) = issued {
-            let manager = self.manager()?;
-            if manager.get_wallet(&id.0).await.is_some() {
-                self.cover_issued(&manager, id, issued).await?;
-            }
+        self.install_imported_locks(id, state.locks.clone()).await?;
+        if let Some(salt) = state.coinjoin_salt {
+            self.import_coinjoin_salt(id, salt).await?;
         }
         Ok(())
+    }
+
+    /// Applies the stored range of `state` to registered wallet `id`. A
+    /// failure is logged: the setting is stored, so the next load applies it.
+    pub(crate) async fn cover_imported_range(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        state: &ImportedState,
+    ) {
+        if let Some(issued) = state.issued
+            && let Err(e) = self.cover_issued(manager, id, issued).await
+        {
+            tracing::warn!(wallet_id = %id, error = %e, "could not apply the legacy wallet's address range");
+        }
     }
 
     async fn store_issued(

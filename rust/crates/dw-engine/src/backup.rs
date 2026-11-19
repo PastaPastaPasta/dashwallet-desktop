@@ -656,6 +656,7 @@ impl NetworkSession {
                 secret,
                 AutoBackup::Caller,
                 Origin::Imported,
+                crate::compat::ImportedState::default(),
             )
             .await
         {
