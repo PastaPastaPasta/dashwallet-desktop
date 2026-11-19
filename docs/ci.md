@@ -7,7 +7,7 @@ job's `GITHUB_TOKEN` is read-only (`contents: read`).
 
 | Workflow | Triggers | What it runs |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | pull requests (Linux checks only; none for docs-only changes); push to `main`, 02:47 UTC daily and manual (every job but Windows Swift, which runs only daily and manually) | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
+| [`ci.yml`](../.github/workflows/ci.yml) | pull requests (Linux checks only; for docs-only changes just the `changes` job); push to `main`, 02:47 UTC daily and manual (every job but Windows Swift, which runs only daily and manually) | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
 | [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the shielded prover warm-up; the MG-04b release check; the Linux GUI (AT-SPI) demo |
 | [`gate.yml`](../.github/workflows/gate.yml) | manual only | G-02 / G-03 measurement scripts on the chosen OSes |
 | [`tauri-selftest.yml`](../.github/workflows/tauri-selftest.yml) | manual only | the Tauri app (G-01) built, run with `--selftest` and launched for a screenshot on macOS and Windows |
