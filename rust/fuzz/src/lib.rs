@@ -2,7 +2,7 @@
 //! docs/ci.md "Fuzzing"). Each function feeds one channel of outside data
 //! to the entry points the app calls with it, as the app calls them, and
 //! panics only on a bug: a panic in a parser, or a broken invariant checked
-//! here. `fuzz_targets/` runs them under libFuzzer (`--features libfuzzer`,
+//! here. `fuzz_targets/` runs them under libFuzzer (`--features libfuzzer,engine`,
 //! nightly, scripts/fuzz.sh); `tests/replay.rs` runs every seed and every
 //! saved finding on stable.
 
