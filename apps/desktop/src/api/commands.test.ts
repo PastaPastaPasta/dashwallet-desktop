@@ -67,6 +67,9 @@ const fixture: Fixture = {
       creditLevel: "ok",
     },
   ],
+  // Masternodes
+  mn_evonode_credits: ({ proTxHash }) => ({ proTxHash, credits: "123456789012345678", duffs: 123456789012345, fetchedAt: 1_760_000_000 }),
+  mn_attach_key: ({ role }) => (role === "payout" ? "unchecked" : "matched"),
   // Free functions
   generate_mnemonic: ({ wordCount, language }) => `${language}:${wordCount}`,
   check_username: ({ label }) => ({ valid: true, normalized: label.toLowerCase(), contested: false, rules: [] }),
@@ -109,12 +112,15 @@ describe("generated commands", () => {
     expect((await cmd.identities(WALLET))[0].balance).toBe("123456789012345678");
     expect(await cmd.generateMnemonic(24, "english")).toBe("english:24");
     expect((await cmd.checkUsername("Alice")).normalized).toBe("alice");
+    expect((await cmd.mnEvonodeCredits("ab".repeat(32))).credits).toBe("123456789012345678");
+    expect(await cmd.mnAttachKey("ab".repeat(32), "payout", "key")).toBe("unchecked");
 
     // Every argument is sent, `null` included.
     expect(calls[0]).toEqual(["open_network", { network: "regtest", settings: null }]);
     expect(calls[2]).toEqual(["create_vault", { passphrase: null }]);
     expect(calls).toContainEqual(["new_tx_draft", { walletId: WALLET }]);
     expect(calls).toContainEqual(["generate_mnemonic", { wordCount: 24, language: "english" }]);
+    expect(calls).toContainEqual(["mn_attach_key", { proTxHash: "ab".repeat(32), role: "payout", key: "key" }]);
   });
 
   it("reject with an AppError whose code is in the union", async () => {
@@ -134,7 +140,7 @@ describe("generated commands", () => {
       .sort();
     expect(wrappers).toEqual(Object.keys(cmd.COMMANDS).map(camel).sort());
     expect(new Set(Object.values(cmd.COMMANDS))).toEqual(
-      new Set(["app", "network", "vault", "wallets", "chain", "history", "backup", "send", "coinjoin", "identity", "social", "console", "units", "shell", "files", "scan", "governance", "rates", "selftest"]),
+      new Set(["app", "network", "vault", "wallets", "chain", "history", "backup", "send", "coinjoin", "identity", "social", "console", "units", "shell", "files", "scan", "governance", "masternodes", "rates", "selftest"]),
     );
   });
 });

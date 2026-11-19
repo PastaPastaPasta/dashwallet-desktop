@@ -20,6 +20,8 @@ mod ipc;
 #[cfg(test)]
 mod ipc_tests;
 pub mod launch;
+#[cfg(test)]
+mod masternodes_tests;
 #[cfg(target_os = "linux")]
 mod portal;
 pub mod settings;
@@ -285,6 +287,7 @@ pub fn run() {
     #[cfg(feature = "selftest")]
     app.add_capability(api::selftest::CAPABILITY)
         .expect("the self-test capability");
+    shell::sleep::install(app.handle());
     shell::protect_secrets(app.handle());
     shell::files::install(app.handle());
     if let Err(e) = shell::tray::install(app.handle()) {

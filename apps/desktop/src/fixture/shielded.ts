@@ -43,6 +43,13 @@ export interface ShieldedWorld {
   active: boolean;
   /** Keys bound and the notes scanned. */
   ready: boolean;
+  /** A sync pass is running on a ready account. */
+  scanning?: boolean;
+  /** When the last completed pass ended (Unix seconds); 20 s before the fixture's now if unset. */
+  lastSyncAt?: number;
+  /** The notes the balance is made of (credits): a spend is then priced per action, as the engine's
+   * note selection prices it. Unset: one flat fee. */
+  notes?: string[];
   proverReady: boolean;
   /** Spendable credits. */
   balance: string;
@@ -101,7 +108,7 @@ function shieldedOf(ctx: Ctx, walletId: string, call: string, gated = true): Shi
 function status(s: ShieldedWorld): ShieldedStatus {
   if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false };
   const pending = s.activity.filter((a) => a.status === "pending").reduce((n, a) => n + BigInt(a.credits), 0n);
-  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? NOW - 20 : null, syncing: !s.ready, proverReady: s.proverReady };
+  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? (s.lastSyncAt ?? NOW - 20) : null, syncing: !s.ready || !!s.scanning, proverReady: s.proverReady };
 }
 
 const ready = (s: ShieldedWorld) => {
@@ -180,14 +187,66 @@ function drainQuote(ctx: Ctx, walletId: string, call: string): { quote: MixedShi
   return { quote, coins };
 }
 
+/** A spend's fee per Orchard action, and the fewest actions a bundle has (`MIN_ACTIONS`). */
+export const ACTION_FEE_CREDITS = 10_000_000n;
+const MIN_ACTIONS = 2;
+const actionsFee = (notes: number) => ACTION_FEE_CREDITS * BigInt(Math.max(notes, MIN_ACTIONS));
+
+/** The fee of spending `amount` from `notes`, as rs-platform-wallet's `select_notes_with_fee` works it
+ * out (note_selection.rs): largest notes first, from the fee of `MIN_ACTIONS`, re-selected with the
+ * fee of the notes taken. A shortfall names `amount` plus the fee it had reached, not the fee of every
+ * note. Throws `{ needed }`. */
+export function noteSelectionFee(notes: readonly bigint[], amount: bigint): bigint {
+  const sorted = [...notes].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0));
+  const all = sorted.reduce((n, v) => n + v, 0n);
+  const select = (fee: bigint) => {
+    const required = amount + fee;
+    if (all < required) throw { needed: required };
+    let sum = 0n;
+    let taken = 0;
+    for (const v of sorted) {
+      sum += v;
+      taken++;
+      if (sum >= required) break;
+    }
+    return { sum, taken };
+  };
+  let estimate = actionsFee(MIN_ACTIONS);
+  for (let i = 0; i < 6; i++) {
+    const { sum, taken } = select(estimate);
+    const exact = actionsFee(taken);
+    if (sum >= amount + exact) return exact;
+    estimate = exact;
+  }
+  throw { needed: amount + estimate };
+}
+
+/** The notes of the balance: those set, and any credit added since as one more note. */
+function notesOf(s: ShieldedWorld): bigint[] | null {
+  if (!s.notes) return null;
+  const notes = s.notes.map(BigInt);
+  const extra = BigInt(s.balance) - notes.reduce((n, v) => n + v, 0n);
+  return extra > 0n ? [...notes, extra] : notes;
+}
+
 function spendQuote(ctx: Ctx, walletId: string, credits: string, expected: boolean, call: string): ShieldedSpendQuote {
   const s = shieldedOf(ctx, walletId, call);
   ready(s);
   const c = BigInt(credits);
   if (c <= 0n) raise(SHIELDED_CODES.belowMinimum, "below the minimum", { kind: "number", value: 1 });
-  const total = c + TRANSFER_FEE_CREDITS;
-  if (total > BigInt(s.balance)) raise(SHIELDED_CODES.insufficientFunds, "insufficient funds", { kind: "credits", needed: String(total), available: s.balance });
-  return { credits, feeCredits: String(TRANSFER_FEE_CREDITS), totalCredits: String(total), expectedDuffs: expected ? Number(c / CREDITS_PER_DUFF) : null, grant: grantFor(total) };
+  const short = (needed: bigint) => raise(SHIELDED_CODES.insufficientFunds, "insufficient funds", { kind: "credits", needed: String(needed), available: s.balance });
+  const notes = notesOf(s);
+  let fee = TRANSFER_FEE_CREDITS;
+  if (notes) {
+    try {
+      fee = noteSelectionFee(notes, c);
+    } catch (e) {
+      short((e as { needed: bigint }).needed);
+    }
+  }
+  const total = c + fee;
+  if (total > BigInt(s.balance)) short(total);
+  return { credits, feeCredits: String(fee), totalCredits: String(total), expectedDuffs: expected ? Number(c / CREDITS_PER_DUFF) : null, grant: grantFor(total) };
 }
 
 /** A spend's end: refused, `pending` (it went out and its result is not confirmed: the notes stay
@@ -201,6 +260,7 @@ function endSpend(s: ShieldedWorld, total: bigint, row: Omit<ShieldedActivity, "
     return { state: "pending", unresolved };
   }
   s.balance = String(BigInt(s.balance) - total);
+  if (s.notes) s.notes = s.balance === "0" ? [] : [s.balance];
   addRow(s, { ...row, status: "confirmed" });
   return { state: "done", unresolved: null };
 }

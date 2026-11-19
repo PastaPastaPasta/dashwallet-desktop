@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "masternodes",
+  "description": "My masternodes: the masternode list's state, the wallet's masternodes and their payouts, tracking and attached keys, evonode credits, and the masternode keychain with its reveal (MG-10 S1). Granted to the main window only.",
+  "windows": [
+    "main"
+  ],
+  "local": true,
+  "permissions": [
+    "allow-mn-list-state",
+    "allow-mn-list",
+    "allow-mn-masternode",
+    "allow-mn-payouts",
+    "allow-mn-find",
+    "allow-mn-evonode-credits",
+    "allow-mn-track",
+    "allow-mn-untrack",
+    "allow-mn-set-label",
+    "allow-mn-attach-key",
+    "allow-mn-detach-key",
+    "allow-mn-keys",
+    "allow-mn-reveal-key"
+  ]
+}

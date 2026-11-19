@@ -14,6 +14,7 @@ import { PlatformFundFlow, resetPlatformFunds } from "../platform/fund";
 import { MOVE_COPY, PlatformMoveFlow, resetPlatformMoves } from "../platform/move";
 import { resetShielded, SHIELDED_COPY, ShieldedFlow } from "../shielded/flow";
 import { SHIELDED_SYNCING_TEXT } from "../shielded/syncing";
+import { engineSpendQuote, NOTE_SETS, NOTES_BALANCE } from "../shielded/testNotes";
 import { fakeVault } from "../tools/testApi";
 import { coreFundedMax, defaultRoute, feeText, listedPools, noRouteText, QuoteLine, routeOf, routeWhy, shieldedSpendMax, TRANSFER_COPY, TransferModel, type Pools, type Settled, type Timers } from "./model";
 
@@ -211,6 +212,20 @@ describe("Max", () => {
     const short = appError(SHIELDED_CODES.insufficientFunds, { kind: "credits", needed: "125020000000", available: "125000000000" });
     expect(shieldedSpendMax({ ok: false, error: short }, 125_000_000)).toBe(124_980_000);
     expect(shieldedSpendMax({ ok: false, error: appError(SHIELDED_CODES.poolTooSmall) }, 125_000_000)).toBeNull();
+  });
+
+  it.each([
+    [2, 124_980_000, 2],
+    [3, 124_970_000, 3],
+    [5, 124_950_000, 3],
+  ] as const)("of Shielded → Dash wallet over %i notes derives again from each refusal until a quote takes it", async (n, max, calls) => {
+    const { t, quotes } = model();
+    quotes.unshieldQuote.mockImplementation(async (_w: string, c: string) => engineSpendQuote(NOTE_SETS[n], c));
+    let filled: number | null = null;
+    await t.max("shieldedToCore", Number(NOTES_BALANCE / 1000n), (d) => (filled = d));
+    expect(filled).toBe(max);
+    expect(quotes.unshieldQuote).toHaveBeenCalledTimes(calls);
+    expect(t.lines.shieldedToCore.state).toMatchObject({ kind: "quoted", amount: max, quote: { totalCredits: String(NOTES_BALANCE) } });
   });
 
   it("re-quotes once and fills only from the quote that took it", async () => {
