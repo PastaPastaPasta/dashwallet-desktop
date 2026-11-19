@@ -662,6 +662,7 @@ impl NetworkSession {
         session.hub.attach_leases(&session.leases);
         session.attach_reconcile();
         session.attach_sweep_resend();
+        session.attach_balance_reread();
         session.attach_sweep_news();
         // Only a header the SPV store holds is evidence for a sweep record:
         // absent, unreadable or no SPV, its chunk stays pending.

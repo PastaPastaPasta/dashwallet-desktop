@@ -374,34 +374,18 @@ fn recompute_balances(info: &mut ManagedWalletInfo) -> CoreBalances {
     (info.balance(), info.account_balances())
 }
 
-/// Hands balances key-wallet recomputed outside a wallet event to the hub,
-/// which would otherwise keep the last event's until the next one.
-fn announce_balances(hub: &crate::events::SessionHub, wallet: WalletId, balances: CoreBalances) {
-    let (balance, accounts) = balances;
-    let changed = hub.update_wallet_state(wallet, |s| {
-        let before = s.balances();
-        s.balance = balance;
-        s.accounts.extend(accounts);
-        before != s.balances()
-    });
-    if changed {
-        hub.pump.mark_balances(wallet);
-    }
-}
-
 impl TempUtxoLocks {
+    /// Unlocks the coins and, under the same manager guard, hands the
+    /// recomputed balances to the hub, which would otherwise keep the last
+    /// event's until the next one.
     fn release(
         &self,
         wm: &mut platform_wallet::key_wallet_manager::WalletManager<
             platform_wallet::PlatformWalletInfo,
         >,
-    ) -> Option<CoreBalances> {
-        unlock_temp_utxos(wm, &self.wallet_id, &self.outpoints)
-    }
-
-    fn announce(&self, balances: Option<CoreBalances>) {
-        if let Some(balances) = balances {
-            announce_balances(&self.hub, WalletId(self.wallet_id), balances);
+    ) {
+        if let Some((balance, accounts)) = unlock_temp_utxos(wm, &self.wallet_id, &self.outpoints) {
+            (self.hub).apply_balance_read(WalletId(self.wallet_id), &balance, &accounts);
         }
     }
 }
@@ -451,17 +435,14 @@ impl Drop for CoinFence {
             .take();
         let Some(locks) = locks else { return };
         if let Ok(mut wm) = locks.wm.try_write() {
-            let balances = locks.release(&mut wm);
-            drop(wm);
-            locks.announce(balances);
+            locks.release(&mut wm);
         } else {
             let guard = self.guard.take();
             let rt = locks.rt.clone();
             rt.spawn(async move {
                 let mut wm = locks.wm.write().await;
-                let balances = locks.release(&mut wm);
+                locks.release(&mut wm);
                 drop(wm);
-                locks.announce(balances);
                 drop(guard);
             });
         }
@@ -923,6 +904,33 @@ impl NetworkSession {
         self.coin_snapshot(fence, &wallet).await
     }
 
+    /// Reads wallet `id`'s balances from the manager into the hub, under
+    /// the manager's lock.
+    pub(crate) async fn reread_balances(&self, id: WalletId) {
+        let Ok(manager) = self.manager() else { return };
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        if let Some(info) = wm.get_wallet_info(&id.0) {
+            let core = &info.core_wallet;
+            (self.hub).apply_balance_read(id, &core.balance(), &core.account_balances());
+        }
+    }
+
+    /// Hands the hub what reads a wallet's balances again
+    /// ([`Self::reread_balances`]).
+    pub(crate) fn attach_balance_reread(self: &Arc<Self>) {
+        let weak = Arc::downgrade(self);
+        let rt = self.rt.clone();
+        self.hub.attach_balance_reread(Box::new(move |id| {
+            let weak = weak.clone();
+            rt.spawn(async move {
+                if let Some(session) = weak.upgrade() {
+                    session.reread_balances(id).await;
+                }
+            });
+        }));
+    }
+
     pub(crate) async fn exclude_denominations_under_fence(
         &self,
         fence: &CoinFence,
@@ -936,7 +944,7 @@ impl NetworkSession {
             .collect();
         let wm = self.manager()?.wallet_manager_arc();
         let mut locked = Vec::new();
-        let unlocked = {
+        {
             let mut guard = wm.write().await;
             let info = guard
                 .get_wallet_info_mut(&fence.wallet.0)
@@ -951,7 +959,11 @@ impl NetworkSession {
                     stale = true;
                 }
             }
-            let unlocked = stale.then(|| recompute_balances(&mut info.core_wallet));
+            if stale {
+                let (balance, accounts) = recompute_balances(&mut info.core_wallet);
+                self.hub
+                    .apply_balance_read(fence.wallet, &balance, &accounts);
+            }
             for account in funding_accounts_mut(&mut info.core_wallet.accounts) {
                 for op in &denoms {
                     if let Some(utxo) = account.utxos.get_mut(op)
@@ -962,10 +974,6 @@ impl NetworkSession {
                     }
                 }
             }
-            unlocked
-        };
-        if let Some(balances) = unlocked {
-            announce_balances(&self.hub, fence.wallet, balances);
         }
         if !locked.is_empty() {
             fence.set_temp_locks(TempUtxoLocks {
@@ -1408,6 +1416,86 @@ mod tests {
             .unwrap();
         assert_eq!(during, before - DENOMINATION);
         assert_eq!(after, before);
+    }
+
+    /// A wallet event the library emitted while a funding held its locks,
+    /// delivered from its queue only after the fence dropped, carries the
+    /// balance without the denominations; the app ends with them counted.
+    #[test]
+    fn a_wallet_event_queued_across_the_fence_release_leaves_the_balance_whole() {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let f = crate::platform::lease::session_tests::fixture(false);
+        f.credit(1, 100_000_000);
+        f.credit(2, DENOMINATION);
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        let inner = Arc::clone(&s);
+        let before = f
+            .engine
+            .block_on(s.on_runtime(async move {
+                wallet_event(&inner, w).await;
+                let before = confirmed(&inner, w);
+                let manager = inner.manager()?;
+                let wm = manager.wallet_manager_arc();
+                let mut queue = wm.read().await.subscribe_events();
+                let fence = funding_fence(&inner, w).await;
+                let wallet = inner.wallet(&w).await?;
+                let to = wallet.core().next_receive_address_for_account(0).await?;
+                let tx = dashcore::Transaction {
+                    version: 2,
+                    lock_time: 0,
+                    input: vec![dashcore::TxIn {
+                        previous_output: OutPoint::new(
+                            dashcore::hashes::Hash::from_byte_array([0xee; 32]),
+                            0,
+                        ),
+                        ..Default::default()
+                    }],
+                    output: vec![dashcore::TxOut {
+                        value: 10_000_000,
+                        script_pubkey: to.script_pubkey(),
+                    }],
+                    special_transaction_payload: None,
+                };
+                wm.write()
+                    .await
+                    .process_mempool_transaction(&tx, None)
+                    .await;
+                let queued = queue.try_recv().expect("the library emitted an event");
+                drop(fence);
+                inner.hub.apply_wallet_event(&queued);
+                Ok(before)
+            }))
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while confirmed(&s, w) != before {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "confirmed {} after the queued event, {before} before",
+                confirmed(&s, w)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// A fence released after its wallet was unloaded hands the hub nothing:
+    /// no state comes back for the closed wallet.
+    #[test]
+    fn a_fence_released_after_an_unload_leaves_the_closed_wallet_alone() {
+        let f = crate::platform::lease::session_tests::fixture(false);
+        f.credit(1, 100_000_000);
+        f.credit(2, DENOMINATION);
+        let (s, w) = (Arc::clone(&f.session), f.wallet);
+        let inner = Arc::clone(&s);
+        f.engine
+            .block_on(s.on_runtime(async move {
+                wallet_event(&inner, w).await;
+                let fence = funding_fence(&inner, w).await;
+                inner.hub.unload_wallet(&w);
+                drop(fence);
+                Ok(())
+            }))
+            .unwrap();
+        assert!(s.hub.wallet_state(&w).is_none());
     }
 
     /// A denomination another wallet on the seed spent while a funding held
