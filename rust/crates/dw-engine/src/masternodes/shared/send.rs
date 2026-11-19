@@ -130,6 +130,7 @@ impl NetworkSession {
                     logged,
                     code.as_deref(),
                     first,
+                    now_secs(),
                 )
             })
             .await?;
@@ -373,7 +374,7 @@ impl NetworkSession {
                 dashcore::consensus::serialize(&tx),
                 encode_inputs(&[outpoint]),
             );
-            let saved = self
+            let logged = self
                 .appdb_op(move |db| {
                     db.set_shared_session_abandon_durable(
                         &w_id,
@@ -385,14 +386,12 @@ impl NetworkSession {
                         now_secs(),
                     )
                 })
-                .await?;
-            if !saved {
-                return Err(MasternodesError::SharedSessionNotFound);
-            }
+                .await?
+                .ok_or(MasternodesError::SharedSessionNotFound)?;
             let summary = self
                 .summary_of(&w, &tx, std::slice::from_ref(&utxo), fee, Some(&address))
                 .await;
-            self.deliver_abandon(wallet, &row.id, tx, summary, charge, fence, true)
+            self.deliver_abandon(wallet, &row.id, tx, summary, charge, fence, !logged)
                 .await
                 .map(drop)
         }

@@ -57,6 +57,10 @@ struct Net {
     reject: std::sync::atomic::AtomicBool,
     /// The next hand-off's outcome is unknown (its pending spend stays).
     unconfirm: std::sync::atomic::AtomicBool,
+    /// A stored session read as each hand-off reaches the network.
+    watch: Mutex<Option<(Arc<dw_appdb::AppDb>, String, String)>>,
+    /// `(last_error, resend_marked)` of the watched row, per hand-off.
+    seen: Mutex<Vec<(Option<String>, bool)>>,
 }
 
 impl Net {
@@ -72,6 +76,15 @@ impl Net {
         self.unconfirm
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+
+    /// Reads wallet `w`'s row of session `id` at every later hand-off.
+    fn watch(&self, f: &Fx, w: usize, id: &str) {
+        *self.watch.lock().unwrap() = Some((f.db(), f.wallets[w].to_string(), id.into()));
+    }
+
+    fn seen(&self) -> Vec<(Option<String>, bool)> {
+        self.seen.lock().unwrap().clone()
+    }
 }
 
 impl TestBroadcaster for Net {
@@ -84,6 +97,13 @@ impl TestBroadcaster for Net {
         tx: &Transaction,
         _: bool,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Txid, PlatformWalletError>> + Send>> {
+        if let Some((db, w, id)) = &*self.watch.lock().unwrap() {
+            let row = db.shared_session(w, id).unwrap().expect("a stored session");
+            self.seen
+                .lock()
+                .unwrap()
+                .push((row.last_error, row.resend_marked));
+        }
         if self.reject.swap(false, std::sync::atomic::Ordering::SeqCst) {
             let refused = PlatformWalletError::TransactionBroadcast("bad-txns-test".into());
             return Box::pin(async move { Err(refused) });
@@ -2568,8 +2588,54 @@ fn test_an_abandon_crash_after_its_hand_off_keeps_the_spend_without_an_outcome()
     assert_eq!(abandon_log(&row), [(spend.txid().to_string(), None, None)]);
 }
 
-/// R2 (Opus r5 m5, r6 n3): a resend is marked before its hand-off, so a
-/// crash in it reads the marker after a restart, never the earlier refusal.
+/// Review r1 M1, first probe: a spend handed off and the engine gone, then
+/// signed again after a restart (the same txid) and refused, never reads
+/// `not_sent`: its first hand-off may be out.
+#[test]
+fn test_an_abandon_signed_again_after_a_crash_never_reads_refused() {
+    let mut f = fx(3, true);
+    let id = abandoned_participant(&f);
+    *f.seam.crash.lock().unwrap() = Some(CrashPoint::HandedOff);
+    assert!(f.abandon(1, &id).is_err());
+    *f.seam.crash.lock().unwrap() = None;
+    f.restart();
+    let txid = f.net.sent()[0].txid().to_string();
+    f.net.reject_next();
+    f.abandon(1, &id).unwrap();
+    assert_eq!(f.net.sent().len(), 1, "refused");
+    let log = abandon_log(&f.row(1, &id));
+    assert_eq!(log.len(), 1, "the same spend");
+    assert_eq!(log[0].0, txid);
+    assert_eq!(log[0].1.as_deref(), Some("maybe_sent"));
+}
+
+/// Review r1 M1, second probe: a refused spend signed again (the same
+/// txid) and the engine gone after its new hand-off no longer reads
+/// `not_sent` after a restart.
+#[test]
+fn test_a_refused_abandon_signed_again_reads_maybe_sent_across_a_crash() {
+    let mut f = fx(3, true);
+    let id = abandoned_participant(&f);
+    f.net.reject_next();
+    f.abandon(1, &id).unwrap();
+    assert_eq!(
+        abandon_log(&f.row(1, &id))[0].1.as_deref(),
+        Some("not_sent")
+    );
+    *f.seam.crash.lock().unwrap() = Some(CrashPoint::HandedOff);
+    assert!(f.abandon(1, &id).is_err());
+    *f.seam.crash.lock().unwrap() = None;
+    f.restart();
+    let txid = f.net.sent()[0].txid().to_string();
+    let log = abandon_log(&f.row(1, &id));
+    assert_eq!(log.len(), 1, "the same spend");
+    assert_eq!(log[0].0, txid);
+    assert_eq!(log[0].1.as_deref(), Some("maybe_sent"));
+}
+
+/// R2 (Opus r5 m5, r6 n3): a resend is marked before its hand-off (seen by
+/// the network as the bytes reach it, review r1 n1), so a crash in it reads
+/// the marker after a restart, never the earlier refusal.
 #[test]
 fn test_a_resend_crash_in_its_hand_off_reads_the_marker() {
     let mut f = fx(3, true);
@@ -2578,9 +2644,16 @@ fn test_a_resend_crash_in_its_hand_off_reads_the_marker() {
     f.net.reject_next();
     f.send(0, &id, 400 * COIN + FEE).unwrap();
     assert!(!f.row(0, &id).resend_marked);
+    f.net.watch(&f, 0, &id);
     *f.seam.crash.lock().unwrap() = Some(CrashPoint::HandedOff);
     assert!(f.send(0, &id, 400 * COIN + FEE).is_err());
     *f.seam.crash.lock().unwrap() = None;
+    assert_eq!(
+        f.net.seen(),
+        [(Some(dw_appdb::RESEND_IN_PROGRESS.into()), true)],
+        "marked when its bytes reach the network"
+    );
+    *f.net.watch.lock().unwrap() = None;
     f.restart();
     let row = f.row(0, &id);
     assert_eq!(
@@ -2591,11 +2664,12 @@ fn test_a_resend_crash_in_its_hand_off_reads_the_marker() {
     assert_eq!(f.net.sent().len(), 1);
 }
 
-/// A refused resend records its own outcome's code in place of the
-/// marker (a replay's rejection is never definite), and the mark stays, so
-/// the read can tell it from a first refusal (Opus r6 n3).
+/// A resend the broadcaster refuses is stored as `send.broadcast_unknown`
+/// in place of the marker (a replay's rejection is never definite, so its
+/// reason is not kept), and the mark stays, so the read can tell it from a
+/// first refusal (Opus r6 n3, review r1 n2).
 #[test]
-fn test_a_refused_resend_records_its_own_code_and_keeps_the_mark() {
+fn test_a_resend_refused_by_the_broadcaster_reads_unknown_and_keeps_the_mark() {
     let f = fx(3, true);
     let id = three_approved(&f);
     f.both_signed(&id);

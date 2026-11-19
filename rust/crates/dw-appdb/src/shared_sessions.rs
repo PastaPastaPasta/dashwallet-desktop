@@ -201,7 +201,8 @@ fn abandon_entry(
         .query_row(
             "SELECT e.key, json_extract(e.value, '$.outcome')
              FROM shared_mn_sessions s, json_each(COALESCE(s.abandon_log, '[]')) e
-             WHERE s.wallet_id = ?1 AND s.id = ?2 AND json_extract(e.value, '$.txid') = ?3
+             WHERE s.wallet_id = ?1 AND s.id = ?2 AND s.out_at IS NOT NULL
+               AND json_extract(e.value, '$.txid') = ?3
              ORDER BY e.key LIMIT 1",
             params![wallet_id, id, txid],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -224,12 +225,14 @@ fn set_entry_outcome(
     index: i64,
     outcome: AbandonOutcome,
     code: Option<&str>,
+    now: u64,
 ) -> Result<()> {
     conn.execute(
         "UPDATE shared_mn_sessions SET abandon_log = json_set(abandon_log,
-             '$[' || ?3 || '].outcome', ?4, '$[' || ?3 || '].code', ?5)
-         WHERE wallet_id = ?1 AND id = ?2",
-        params![wallet_id, id, index, outcome.as_str(), code],
+             '$[' || ?3 || '].outcome', ?4, '$[' || ?3 || '].code', ?5),
+             updated_at = MAX(updated_at, ?6)
+         WHERE wallet_id = ?1 AND id = ?2 AND out_at IS NOT NULL",
+        params![wallet_id, id, index, outcome.as_str(), code, sql_u64(now)],
     )?;
     Ok(())
 }
@@ -449,11 +452,14 @@ impl AppDb {
 
     /// Records an out session's abandon spend (MG-04b §9.3, MG-10 §4.4),
     /// synced, before its bytes can leave: `abandon_txid` and `abandon_tx`
-    /// set and an entry appended to `abandon_log` with no outcome (none for
-    /// a txid already logged). `legacy_bound` is cleared when `inputs`, a
-    /// JSON array of `"txid:vout"`, hold every outpoint of the stored
-    /// `reserved`. `false`, and nothing written, when the session is gone or
-    /// isn't out.
+    /// set and an entry appended to `abandon_log` with no outcome. A txid
+    /// already logged keeps its entry, whose missing or `not_sent` outcome
+    /// becomes `maybe_sent`: its bytes leave again, after a hand-off that may
+    /// be out or that a crash may follow. `legacy_bound` is cleared when
+    /// `inputs`, a JSON array of `"txid:vout"`, hold every outpoint of the
+    /// stored `reserved`. `Some(logged)`, whether the txid was already
+    /// logged; `None`, and nothing written, when the session is gone or isn't
+    /// out.
     #[expect(clippy::too_many_arguments, reason = "one abandon spend")]
     pub fn set_shared_session_abandon_durable(
         &self,
@@ -464,7 +470,7 @@ impl AppDb {
         fee: u64,
         inputs: &str,
         now: u64,
-    ) -> Result<bool> {
+    ) -> Result<Option<bool>> {
         self.durably(|conn| {
             let tx = conn.unchecked_transaction()?;
             let reserved: Option<String> = tx
@@ -476,11 +482,12 @@ impl AppDb {
                 )
                 .optional()?;
             let Some(reserved) = reserved else {
-                return Ok(false);
+                return Ok(None);
             };
             let spent = outpoints(&tx, inputs)?;
             let whole = outpoints(&tx, &reserved)?.iter().all(|o| spent.contains(o));
-            let logged = abandon_entry(&tx, wallet_id, id, txid)?.is_some();
+            let entry = abandon_entry(&tx, wallet_id, id, txid)?;
+            let logged = entry.is_some();
             tx.execute(
                 "UPDATE shared_mn_sessions SET abandon_txid = ?3, abandon_tx = ?4,
                      abandon_log = CASE WHEN ?8 THEN abandon_log ELSE json_insert(
@@ -503,27 +510,47 @@ impl AppDb {
                     whole
                 ],
             )?;
+            if let Some((index, None | Some(AbandonOutcome::NotSent))) = entry {
+                set_entry_outcome(
+                    &tx,
+                    wallet_id,
+                    id,
+                    index,
+                    AbandonOutcome::MaybeSent,
+                    None,
+                    now,
+                )?;
+            }
             tx.commit()?;
-            Ok(true)
+            Ok(Some(logged))
         })
     }
 
     /// Before a replay of a logged abandon spend, synced: its entry's
     /// missing outcome becomes `maybe_sent` (a replay's refusal can't show
     /// the first hand-off never left). Any recorded outcome stays. `false`
-    /// when the session or the entry is gone.
+    /// when the session or the entry is gone or the session isn't out.
     pub fn mark_shared_abandon_replay_durable(
         &self,
         wallet_id: &str,
         id: &str,
         txid: &str,
+        now: u64,
     ) -> Result<bool> {
         self.durably(|conn| {
             let Some((index, outcome)) = abandon_entry(conn, wallet_id, id, txid)? else {
                 return Ok(false);
             };
             if outcome.is_none() {
-                set_entry_outcome(conn, wallet_id, id, index, AbandonOutcome::MaybeSent, None)?;
+                set_entry_outcome(
+                    conn,
+                    wallet_id,
+                    id,
+                    index,
+                    AbandonOutcome::MaybeSent,
+                    None,
+                    now,
+                )?;
             }
             Ok(true)
         })
@@ -535,7 +562,8 @@ impl AppDb {
     /// `maybe_sent` and `sent` replace a missing or `not_sent` one, `sent` a
     /// `maybe_sent` one. Any other result (a replay's refusal among them)
     /// leaves the entry as it is. `false` when the session or the entry is
-    /// gone.
+    /// gone or the session isn't out.
+    #[expect(clippy::too_many_arguments, reason = "one hand-off's result")]
     pub fn record_shared_abandon_outcome_durable(
         &self,
         wallet_id: &str,
@@ -544,6 +572,7 @@ impl AppDb {
         outcome: AbandonOutcome,
         code: Option<&str>,
         first: bool,
+        now: u64,
     ) -> Result<bool> {
         self.durably(|conn| {
             let tx = conn.unchecked_transaction()?;
@@ -551,11 +580,12 @@ impl AppDb {
                 return Ok(false);
             };
             if let Some(next) = fold(current, outcome, first) {
-                set_entry_outcome(&tx, wallet_id, id, index, next, code)?;
+                set_entry_outcome(&tx, wallet_id, id, index, next, code, now)?;
             }
             tx.execute(
-                "UPDATE shared_mn_sessions SET last_error = ?3 WHERE wallet_id = ?1 AND id = ?2",
-                params![wallet_id, id, code],
+                "UPDATE shared_mn_sessions SET last_error = ?3, updated_at = MAX(updated_at, ?4)
+                 WHERE wallet_id = ?1 AND id = ?2 AND out_at IS NOT NULL",
+                params![wallet_id, id, code, sql_u64(now)],
             )?;
             tx.commit()?;
             Ok(true)
@@ -1313,7 +1343,7 @@ mod tests {
             .unwrap()
     }
 
-    fn abandon(db: &AppDb, n: u8, txid: &str, ops: &[(&str, u32)]) -> bool {
+    fn abandon(db: &AppDb, n: u8, txid: &str, ops: &[(&str, u32)]) -> Option<bool> {
         db.set_shared_session_abandon_durable(W, &id(n), txid, &[9], 226, &inputs(ops), 40)
             .unwrap()
     }
@@ -1334,14 +1364,14 @@ mod tests {
         let db = AppDb::open_in_memory().unwrap();
         db.insert_shared_session_durable(W, &row(1, &[("t", 0)]), 10)
             .unwrap();
-        assert!(!abandon(&db, 1, "a", &[("t", 0)]), "not out");
-        assert!(!abandon(&db, 2, "a", &[("t", 0)]), "gone");
+        assert_eq!(abandon(&db, 1, "a", &[("t", 0)]), None, "not out");
+        assert_eq!(abandon(&db, 2, "a", &[("t", 0)]), None, "gone");
         let before = db.shared_session(W, &id(1)).unwrap().unwrap();
         assert_eq!(before.abandon_log, None);
         assert_eq!(before.abandon_txid, None);
 
         out(&db, 3, &[("t", 1), ("u", 1)]);
-        assert!(abandon(&db, 3, "a", &[("t", 1)]));
+        assert_eq!(abandon(&db, 3, "a", &[("t", 1)]), Some(false));
         let r = db.shared_session(W, &id(3)).unwrap().unwrap();
         assert_eq!(r.abandon_txid.as_deref(), Some("a"));
         assert_eq!(r.abandon_tx, Some(vec![9]));
@@ -1360,11 +1390,18 @@ mod tests {
             .unwrap();
         assert_eq!(entry, (226, "[\"t:1\"]".into(), 40, false));
 
-        assert!(abandon(&db, 3, "b", &[("t", 1), ("u", 1)]));
-        assert!(abandon(&db, 3, "b", &[("t", 1), ("u", 1)]), "logged once");
+        assert_eq!(abandon(&db, 3, "b", &[("t", 1), ("u", 1)]), Some(false));
+        assert_eq!(
+            abandon(&db, 3, "b", &[("t", 1), ("u", 1)]),
+            Some(true),
+            "logged once"
+        );
         assert_eq!(
             log(&db, 3),
-            [("a".into(), None, None), ("b".into(), None, None)]
+            [
+                ("a".into(), None, None),
+                ("b".into(), Some("maybe_sent".into()), None)
+            ]
         );
         assert_eq!(
             db.shared_session(W, &id(3))
@@ -1399,13 +1436,16 @@ mod tests {
         let db = AppDb::open_in_memory().unwrap();
         out(&db, 1, &[("t", 0), ("u", 1)]);
         set_legacy_bound(&db, 1);
-        assert!(abandon(&db, 1, "a", &[("t", 0)]));
+        assert_eq!(abandon(&db, 1, "a", &[("t", 0)]), Some(false));
         assert!(db.shared_session(W, &id(1)).unwrap().unwrap().legacy_bound);
-        assert!(abandon(&db, 1, "b", &[("u", 1), ("v", 2)]));
+        assert_eq!(abandon(&db, 1, "b", &[("u", 1), ("v", 2)]), Some(false));
         assert!(db.shared_session(W, &id(1)).unwrap().unwrap().legacy_bound);
-        assert!(abandon(&db, 1, "c", &[("u", 1), ("t", 0), ("v", 2)]));
+        assert_eq!(
+            abandon(&db, 1, "c", &[("u", 1), ("t", 0), ("v", 2)]),
+            Some(false)
+        );
         assert!(!db.shared_session(W, &id(1)).unwrap().unwrap().legacy_bound);
-        assert!(abandon(&db, 1, "d", &[("t", 0)]));
+        assert_eq!(abandon(&db, 1, "d", &[("t", 0)]), Some(false));
         assert!(
             !db.shared_session(W, &id(1)).unwrap().unwrap().legacy_bound,
             "never set again"
@@ -1447,10 +1487,10 @@ mod tests {
     fn an_outcome_is_recorded_in_its_entry() {
         let db = AppDb::open_in_memory().unwrap();
         out(&db, 1, &[("t", 0)]);
-        assert!(abandon(&db, 1, "a", &[("t", 0)]));
-        assert!(abandon(&db, 1, "b", &[("t", 0)]));
+        assert_eq!(abandon(&db, 1, "a", &[("t", 0)]), Some(false));
+        assert_eq!(abandon(&db, 1, "b", &[("t", 0)]), Some(false));
         let record = |txid: &str, o, code: Option<&str>, first| {
-            db.record_shared_abandon_outcome_durable(W, &id(1), txid, o, code, first)
+            db.record_shared_abandon_outcome_durable(W, &id(1), txid, o, code, first, 50)
                 .unwrap()
         };
         let last_error = || db.shared_session(W, &id(1)).unwrap().unwrap().last_error;
@@ -1464,7 +1504,8 @@ mod tests {
                 "a",
                 AbandonOutcome::Sent,
                 None,
-                true
+                true,
+                50
             )
             .unwrap()
         );
@@ -1534,10 +1575,10 @@ mod tests {
         let db = AppDb::open_in_memory().unwrap();
         out(&db, 1, &[("t", 0)]);
         for txid in ["a", "b", "c", "d"] {
-            assert!(abandon(&db, 1, txid, &[("t", 0)]));
+            assert_eq!(abandon(&db, 1, txid, &[("t", 0)]), Some(false));
         }
         let record = |txid: &str, o| {
-            db.record_shared_abandon_outcome_durable(W, &id(1), txid, o, None, true)
+            db.record_shared_abandon_outcome_durable(W, &id(1), txid, o, None, true, 50)
                 .unwrap()
         };
         assert!(record("b", AbandonOutcome::NotSent));
@@ -1545,12 +1586,12 @@ mod tests {
         assert!(record("d", AbandonOutcome::MaybeSent));
         for txid in ["a", "b", "c", "d"] {
             assert!(
-                db.mark_shared_abandon_replay_durable(W, &id(1), txid)
+                db.mark_shared_abandon_replay_durable(W, &id(1), txid, 60)
                     .unwrap()
             );
         }
         assert!(
-            !db.mark_shared_abandon_replay_durable(W, &id(1), "z")
+            !db.mark_shared_abandon_replay_durable(W, &id(1), "z", 60)
                 .unwrap()
         );
         let outcomes: Vec<_> = log(&db, 1).into_iter().map(|(_, o, _)| o).collect();
@@ -1563,6 +1604,87 @@ mod tests {
                 Some("maybe_sent".into())
             ]
         );
+    }
+
+    /// Review r1 M1: a spend signed again with a logged txid leaves again,
+    /// so a missing or refused outcome becomes `maybe_sent`; the write says
+    /// it was logged. A later outcome stays.
+    #[test]
+    fn a_relogged_spend_reads_maybe_sent_and_reports_it_was_logged() {
+        let db = AppDb::open_in_memory().unwrap();
+        out(&db, 1, &[("t", 0)]);
+        for txid in ["a", "b", "c", "d"] {
+            assert_eq!(abandon(&db, 1, txid, &[("t", 0)]), Some(false));
+        }
+        let record = |txid: &str, o, code: Option<&str>| {
+            db.record_shared_abandon_outcome_durable(W, &id(1), txid, o, code, true, 50)
+                .unwrap()
+        };
+        assert!(record("b", AbandonOutcome::NotSent, Some("send.no_peers")));
+        assert!(record(
+            "c",
+            AbandonOutcome::MaybeSent,
+            Some("send.broadcast_unknown")
+        ));
+        assert!(record("d", AbandonOutcome::Sent, None));
+        for txid in ["a", "b", "c", "d"] {
+            assert_eq!(abandon(&db, 1, txid, &[("t", 0)]), Some(true), "{txid}");
+        }
+        assert_eq!(
+            log(&db, 1),
+            [
+                ("a".into(), Some("maybe_sent".into()), None),
+                ("b".into(), Some("maybe_sent".into()), None),
+                (
+                    "c".into(),
+                    Some("maybe_sent".into()),
+                    Some("send.broadcast_unknown".into())
+                ),
+                ("d".into(), Some("sent".into()), None),
+            ]
+        );
+    }
+
+    /// Review r1 n3: the entry writes bump `updated_at` like every other
+    /// write, and never move it back.
+    #[test]
+    fn the_entry_writes_bump_updated_at() {
+        let db = AppDb::open_in_memory().unwrap();
+        out(&db, 1, &[("t", 0)]);
+        let at = || db.shared_session(W, &id(1)).unwrap().unwrap().updated_at;
+        assert_eq!(abandon(&db, 1, "a", &[("t", 0)]), Some(false));
+        assert_eq!(at(), 40);
+        assert!(
+            db.mark_shared_abandon_replay_durable(W, &id(1), "a", 60)
+                .unwrap()
+        );
+        assert_eq!(at(), 60);
+        assert!(
+            db.record_shared_abandon_outcome_durable(
+                W,
+                &id(1),
+                "a",
+                AbandonOutcome::Sent,
+                None,
+                false,
+                70
+            )
+            .unwrap()
+        );
+        assert_eq!(at(), 70);
+        assert!(
+            db.record_shared_abandon_outcome_durable(
+                W,
+                &id(1),
+                "a",
+                AbandonOutcome::Sent,
+                None,
+                false,
+                65
+            )
+            .unwrap()
+        );
+        assert_eq!(at(), 70, "never back");
     }
 
     /// R2, Opus r6 n3: the resend mark, on out rows only, and never cleared.
