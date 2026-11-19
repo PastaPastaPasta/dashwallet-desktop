@@ -4,7 +4,7 @@
 
 import type { NetworkKind } from "../api/generated/NetworkKind";
 
-const TXID = /^[0-9a-fA-F]{64}$/;
+const TXID = /^[0-9a-f]{64}$/;
 
 /** The explorer page for `txid` on `kind`, or null when this network has none. */
 export function explorerUrl(kind: NetworkKind, txid: string): string | null {
