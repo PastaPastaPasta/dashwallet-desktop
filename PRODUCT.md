@@ -54,29 +54,37 @@ fixture data) were all walked in light and dark. Every core flow worked. What hu
 
 ## Ranked backlog
 
-Ranked by impact on "people want to use it, and it demos well". **UI** means renderer-only work; **engine**
-means it needs the Rust engine owner.
+Ranked by impact on "people want to use it, and it demos well". The dated plan for everything left before
+1.0 is `docs/PLAN-1.0.md`.
 
-| # | Improvement | User story | Needs |
+**Open**
+
+| # | Improvement | User story | State |
 |---|---|---|---|
-| 1 | **Instant incoming payments** | As someone being paid, I see the payment and my new balance within seconds, even while the wallet is still syncing, so I can hand over the coffee. | engine + UI |
-| 2 | **Activity in plain words** | As a user scanning my history, every row says what happened ("Username @me", "Sent to @bob", "Mixing ×12" grouped) with the right sign and a plain status, so I never meet "Asset lock" or "0/unconfirmed". | UI (small engine field for asset-lock purpose) |
-| 3 | **No developer leftovers** | As a first-time user, I never see task IDs, command-line flags, a network picker that disagrees with the badge, or a "passphrases do not match" error on empty fields. | UI |
-| 4 | **The DashPay welcome moment** | As someone who just got a username, I'm congratulated and offered the next steps (add a photo and name, find friends, share my username QR), so the app feels alive at once. | UI |
-| 5 | **Opens in two seconds** | As anyone launching the app, I see the window and my last-known balance at once, while the engine starts behind it. | engine + UI |
-| 6 | **Pay that never dead-ends** | As a payer with no contacts, Pay opens on "To an address", and typing a username finds the person and offers "Add and pay". | UI |
-| 7 | **Unlock once, then flow** | As a user who just unlocked, I'm not asked for my passphrase again for every send for a few minutes (an option, plus OS biometrics later). | design + engine |
-| 8 | **A cleaner Home** | As a user, Home shows one balance with readable decimals, hides empty Shielded and Platform rows, and asks me to join DashPay once, not four times. | UI |
-| 9 | **Dark mode and layout fit** | As a dark-mode user, checkboxes, the Contacts header and every page render correctly at 1024 px and wider, with no sideways scrolling. | UI |
-| 10 | **Local currency by default on mainnet** | As a mainnet user, I see my balance and each payment in my currency, after a one-line privacy choice at onboarding. | UI |
-| 11 | **Empty states that lead somewhere** | As a new user, each empty screen has its own illustration and one clear next action. | UI |
-| 12 | **Share my username** | As a DashPay user, Profile has a big "share my username" QR and link, so a friend at the table can add me. | UI |
-| 13 | **Transaction details for people** | As a user, a transaction shows who, when and how much in plain words, with "View in explorer", and inputs and outputs folded away. | UI |
-| 14 | **Switch network without a restart** | As a tester or demoer, switching between Mainnet and Testnet takes effect in place. | engine + UI |
-| 15 | **Send with a fiat toggle** | As a payer, I can type the amount in my currency and see the Dash amount, and power options (unsigned PSBT) sit under Advanced. | UI |
+| 1 | **Instant incoming payments** | As someone being paid, I see the payment and my new balance within seconds, even while the wallet is still syncing, so I can hand over the coffee. | engine lane started 11-18 |
+| 5 | **Opens in two seconds** | As anyone launching the app, I see the window and my last-known balance at once, while the engine starts behind it. | shell lane started 11-18 |
+| 7 | **Unlock once, then flow** | As a user who just unlocked, I'm not asked for my passphrase again for every send for a few minutes (an option, plus OS biometrics later). | engine commands exist; the send flow still asks every time |
+| 11 | **Empty states that lead somewhere** | As a new user, each empty screen has its own illustration and one clear next action. | #25, in review |
+| 15 | **Send with a fiat toggle** | As a payer, I can type the amount in my currency and see the Dash amount, and power options (unsigned PSBT) sit under Advanced. | fiat toggle shipped; PSBT still under Tools |
+
+**Shipped**
+
+| # | Improvement | Pull request |
+|---|---|---|
+| 2 | Activity in plain words | #18 |
+| 3 | No developer leftovers | #17 |
+| 4 | The DashPay welcome moment | #19 |
+| 6 | Pay that never dead-ends | #20 |
+| 8 | A cleaner Home | #21 |
+| 9 | Dark mode and layout fit | #22 |
+| 10 | Local currency by default on mainnet | onboarding rates choice (`4f2f03d2`) |
+| 12 | Share my username | #23 |
+| 13 | Transaction details for people | #24 |
+| 14 | Switch network without a restart | #6 |
 
 ## How we ship
 
-One or two items a day, each its own pull request with light and dark before-and-after screenshots on the PR
-and a regression test for every fix. Engine-dependent items (1, 5, 7, 14) are raised with the engine owner
-while the UI half ships behind them.
+Each item is its own pull request, with a regression test for every fix and light and dark before-and-after
+screenshots when it changes what a user sees. A pull request merges as soon as its review and required checks
+are green; unrelated pull requests never wait for each other. Engine and UI halves of an item run as parallel
+lanes.
