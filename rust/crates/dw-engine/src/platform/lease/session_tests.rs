@@ -702,6 +702,40 @@ fn the_facade_lease_handle_begins_ends_and_checks_its_grants() {
     ));
 }
 
+/// The signing window caps the grants a lease composes, not only each
+/// `authorize`: two credential-free grants, each within the sealed limit
+/// but from two windows, do not make one "Accept and pay" above it. A
+/// passphrase grant is not counted.
+#[test]
+fn a_lease_does_not_compose_window_grants_past_the_spend_limit() {
+    const PART: u64 = 6_000_000;
+    let f = fixture(true);
+    let spend = f.grant(GrantPurpose::Spend { max_duffs: PART }, Credential::None);
+    let platform = f.platform_op(0, PART * 1_000);
+    // Both fit 0.5 DASH when issued; together they pass 0.1 DASH.
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            let change = v.authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(PASS),
+            )?;
+            v.set_quick_unlock_spend_limit(&change.id, 10_000_000)
+                .map(drop)
+        }))
+        .unwrap();
+    assert_eq!(
+        f.lease(FlowKind::AcceptAndPay, &[platform.clone(), spend])
+            .unwrap_err(),
+        LeaseError::Invalid
+    );
+    let typed = f.grant(
+        GrantPurpose::Spend { max_duffs: PART },
+        Credential::Passphrase(PASS),
+    );
+    f.lease(FlowKind::AcceptAndPay, &[platform, typed]).unwrap();
+}
+
 #[test]
 fn a_txdraft_under_a_lease_is_charged_fenced_and_refunded() {
     let f = fixture(false);
@@ -4019,10 +4053,19 @@ fn a_shield_drain_lease_signs_coinjoin_inputs_and_its_credit_key_only_while_it_h
     }
 
     // Only a `Spend` grant funds it.
+    let typed = |max_duffs, max_credits| {
+        f.grant(
+            GrantPurpose::PlatformOp {
+                max_duffs,
+                max_credits,
+            },
+            Credential::Passphrase(PASS),
+        )
+    };
     for wrong in [
-        f.platform_op(COIN, 0),
-        f.platform_op(COIN, 1_000),
-        f.grant(GrantPurpose::Governance, Credential::None),
+        typed(COIN, 0),
+        typed(COIN, 1_000),
+        f.grant(GrantPurpose::Governance, Credential::Passphrase(PASS)),
     ] {
         assert_eq!(
             f.lease(FlowKind::ShieldDrain, &[wrong]).unwrap_err(),
@@ -4042,7 +4085,10 @@ fn a_shield_drain_lease_signs_coinjoin_inputs_and_its_credit_key_only_while_it_h
     let l = f
         .lease(
             FlowKind::ShieldDrain,
-            &[f.grant(GrantPurpose::Spend { max_duffs: COIN }, Credential::None)],
+            &[f.grant(
+                GrantPurpose::Spend { max_duffs: COIN },
+                Credential::Passphrase(PASS),
+            )],
         )
         .unwrap();
     let revoked = l.uncounted_funding_signer().unwrap();

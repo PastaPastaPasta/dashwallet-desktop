@@ -252,6 +252,37 @@ fn reopening_and_rerunning_change_nothing() {
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
 }
 
+/// An upgrade that stops between a migration and its history row leaves
+/// the database at the old schema, and the next open finishes it (#93).
+#[test]
+fn an_upgrade_stopped_partway_changes_nothing_and_the_next_open_finishes_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        embedded::migrations::runner()
+            .set_target(Target::Version(SHARED_STANDBY as i32))
+            .run(&mut conn)
+            .unwrap();
+        conn.execute_batch(&format!(
+            "CREATE TRIGGER stop BEFORE INSERT ON refinery_schema_history
+             WHEN NEW.version = {TX_FIAT}
+             BEGIN SELECT RAISE(ABORT, 'stopped'); END;"
+        ))
+        .unwrap();
+    }
+    assert!(AppDb::open(&path).is_err());
+    {
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(*versions(&conn).last().unwrap(), SHARED_STANDBY);
+        assert!(conn.prepare("SELECT 1 FROM tx_fiat").is_err());
+        conn.execute_batch("DROP TRIGGER stop").unwrap();
+    }
+    let db = AppDb::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), MG_WITHDRAWALS);
+    assert!(db.conn().prepare("SELECT 1 FROM tx_fiat").is_ok());
+}
+
 /// MG-13 P16: the upgrade from the previous schema (`V2026111001`) adds
 /// the withdrawal and barrier tables, empty, and keeps the operations the
 /// engine's backfill then reads; it writes no barrier itself (dw-appdb

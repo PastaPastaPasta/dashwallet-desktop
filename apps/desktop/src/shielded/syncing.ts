@@ -11,6 +11,7 @@
 
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import { SHIELDED_CODES } from "../api/pending";
+import { ago } from "../governance/model";
 
 export const SHIELDED_SYNCING_TEXT = "Shielded is still syncing; try again when it finishes.";
 
@@ -27,4 +28,19 @@ const PLATFORM_REFUSALS = ["platform.unavailable", "platform.timeout", "platform
  * status says the account is not established. */
 export function syncingRefusal(code: string, syncing: boolean): boolean {
   return code === SHIELDED_CODES.notSynced || (syncing && PLATFORM_REFUSALS.includes(code));
+}
+
+export const SHIELDED_SYNC_COPY = {
+  scanning: "Scanning…",
+  /** When the last pass ended, whatever its result: the engine stamps a failed pass too. */
+  lastChecked: (when: string) => `Last checked ${when}`,
+} as const;
+
+/** The sheet's sync line at `now` (Unix seconds): "Scanning…" while a pass runs, else when the last
+ * pass ended; `null` before a scan has completed, or while Shielded is off. */
+export function shieldedSyncText(status: ShieldedStatus | null | undefined, now: number): string | null {
+  if (!status?.active) return null;
+  if (status.syncing) return SHIELDED_SYNC_COPY.scanning;
+  if (status.syncedIndex === null || status.lastSyncAt === null) return null;
+  return SHIELDED_SYNC_COPY.lastChecked(ago(status.lastSyncAt, now));
 }

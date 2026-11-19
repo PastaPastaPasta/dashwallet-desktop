@@ -272,9 +272,9 @@ async function main() {
     await wd.press(tid("lock-mixing-only"));
     await unlock(PASSPHRASE);
     await wd.waitGone(tid("lock-screen"), "the lock screen");
-    // The engine itself, not only the UI, refuses to spend for mixing only (review r1-Sol):
-    // first dw-app's "require authentication for every payment" (on by default), then, with it
-    // off, the vault.
+    // The engine itself, not only the UI, refuses to spend for mixing only. A new vault
+    // starts on the signing window, so the vault answers first (`mixing_only`). Strict
+    // mode, turned on here, answers `credential_required` before that.
     const restoredId = (await wallets()).find((w) => w.name === restoredName)?.walletId;
     if (!restoredId) throw new Error("list_wallets has no restored wallet");
     const spend = () =>
@@ -289,11 +289,14 @@ async function main() {
       const set = await invoke("set_payment_authentication", { on, grantId: grant.ok.id });
       if (set.err) throw new Error(`set_payment_authentication(${on}): ${set.err}`);
     };
+    const first = await spend();
+    if (first.err !== "vault.mixing_only") throw new Error(`a spend grant for mixing only, window default: ${first.err ?? "issued"}`);
+    await paymentAuthentication(true);
     const gated = await spend();
-    if (gated.err !== "vault.credential_required") throw new Error(`a spend grant for mixing only: ${gated.err ?? "issued"}`);
+    if (gated.err !== "vault.credential_required") throw new Error(`a spend grant for mixing only, strict: ${gated.err ?? "issued"}`);
     await paymentAuthentication(false);
     const refused = await spend();
-    if (refused.err !== "vault.mixing_only") throw new Error(`a spend grant for mixing only, payment authentication off: ${refused.err ?? "issued"}`);
+    if (refused.err !== "vault.mixing_only") throw new Error(`a spend grant for mixing only, window again: ${refused.err ?? "issued"}`);
     await paymentAuthentication(true);
     await wd.press(tid("status-unlock"));
     await wd.screenshot("08-unlock-sheet");
