@@ -37,7 +37,9 @@ pub struct WalletInfo {
     /// When the wallet was added on this device; `None` for wallets added
     /// before names were stored.
     pub created_at: Option<u64>,
-    /// `None` until the scan has processed the birth block (review M-3).
+    /// The balance known so far (`WalletBalances::catching_up` until the scan
+    /// has processed the birth block, review M-3); `None` before the wallet's
+    /// state was first read.
     pub balances: Option<WalletBalances>,
 }
 
@@ -75,7 +77,7 @@ impl NetworkSession {
             hd: true,
             birth_height: state.as_ref().map(|s| s.birth_height),
             created_at: name.and_then(|n| n.created_at),
-            balances: state.and_then(|s| s.balances()),
+            balances: state.map(|s| s.balances()),
         }
     }
 
@@ -117,11 +119,13 @@ impl NetworkSession {
         self.hub.wallet_state(id).map(|s| s.synced_height)
     }
 
-    /// Balance buckets; `None` while not known yet. In-memory read.
+    /// Balance buckets known so far (`WalletBalances::catching_up` while the
+    /// scan has not reached the birth block); `None` before the wallet's
+    /// state was first read. In-memory read.
     pub fn balances(&self, id: &WalletId) -> Result<Option<WalletBalances>, EngineError> {
         let _op = self.try_enter()?;
         self.require_wallet(id)?;
-        Ok(self.hub.wallet_state(id).and_then(|s| s.balances()))
+        Ok(self.hub.wallet_state(id).map(|s| s.balances()))
     }
 
     /// Stores the name of a wallet in dw-appdb and the in-memory cache.

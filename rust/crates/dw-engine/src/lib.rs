@@ -36,6 +36,8 @@ mod keys;
 mod labels;
 pub mod masternode_keys;
 pub mod masternodes;
+#[cfg(test)]
+mod mempool_sync_tests;
 mod multiwallet;
 mod network;
 pub mod network_choice;

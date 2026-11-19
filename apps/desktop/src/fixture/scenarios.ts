@@ -44,6 +44,7 @@ import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld }
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
+import { COIN } from "../format/amount";
 import { buildRows, caughtUp, FIXTURE_NOW, FUNDED_BALANCES, makeIds, prng, secs, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
 
 export const FIXTURE_PASSPHRASE = "demo";
@@ -999,6 +1000,33 @@ const SCENARIOS = {
    * chip says "@alice · Pending"; Contacts, the bell and the badge stay (BL-153 D11). */
   "dashpay-contest-pending": (t) => contestPending(base(t), 1_900_000_000),
   // DP1-08: the Home card's other banner states (the status read failing is `fail=dashpay_status:none`).
+  /** A new wallet still catching up when a 25 DASH payment arrives: the engine reports it at once,
+   * InstantSend-locked and unconfirmed, in a balance flagged `catchingUp` (PRODUCT backlog 1). */
+  "catching-up-payment": (t) => {
+    const w = base(t, "empty");
+    const paid = 25 * COIN;
+    const main = w.wallets[0];
+    main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, confirmed: paid, total: paid, catchingUp: true } };
+    main.rows = [
+      {
+        txid: "5f0c2a6e9d4b4a3c8e7f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
+        recordIndex: 0,
+        txType: "recvWithAddress",
+        category: "received",
+        status: { kind: "unconfirmed", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
+        timestamp: secs(FIXTURE_NOW),
+        blockHeight: null,
+        amount: paid,
+        fee: null,
+        address: "yXbH3JxbVWgEzq6aZDyEbNQx5PtUfZvvXZ",
+        label: null,
+        countsTowardBalance: true,
+        involvesWatchOnly: false,
+      },
+    ];
+    w.sync = syncing();
+    return w;
+  },
   /** No identity while the wallet syncs: Join DashPay disabled, "Available after sync finishes". */
   "dashpay-waiting-for-sync": (t) => {
     const w = withStatus(base(t), { kind: "noIdentity", reason: "waitingForSync" });
