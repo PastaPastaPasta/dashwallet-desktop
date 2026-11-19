@@ -42,6 +42,10 @@ export interface ShieldedWorld {
   active: boolean;
   /** Keys bound and the notes scanned. */
   ready: boolean;
+  /** A sync pass is running on a ready account. */
+  scanning?: boolean;
+  /** When the last completed pass ended (Unix seconds); 20 s before the fixture's now if unset. */
+  lastSyncAt?: number;
   proverReady: boolean;
   /** Spendable credits. */
   balance: string;
@@ -100,7 +104,7 @@ function shieldedOf(ctx: Ctx, walletId: string, call: string, gated = true): Shi
 function status(s: ShieldedWorld): ShieldedStatus {
   if (!s.active) return { active: false, protocolVersion: 11, activationVersion: 12, ready: false, balance: "0", pending: "0", pendingShields: [], unresolvedSpends: [], unrecordedSpends: [], syncedIndex: null, lastSyncAt: null, syncing: false, proverReady: false };
   const pending = s.activity.filter((a) => a.status === "pending").reduce((n, a) => n + BigInt(a.credits), 0n);
-  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? NOW - 20 : null, syncing: !s.ready, proverReady: s.proverReady };
+  return { active: true, protocolVersion: 13, activationVersion: 12, ready: s.ready, balance: s.balance, pending: String(pending), pendingShields: s.pendingShields, unresolvedSpends: s.unresolved, unrecordedSpends: s.unrecorded, syncedIndex: s.ready ? 4096 : null, lastSyncAt: s.ready ? (s.lastSyncAt ?? NOW - 20) : null, syncing: !s.ready || !!s.scanning, proverReady: s.proverReady };
 }
 
 const ready = (s: ShieldedWorld) => {

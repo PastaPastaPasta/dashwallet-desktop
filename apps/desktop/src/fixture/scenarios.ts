@@ -786,6 +786,24 @@ const SCENARIOS = {
     w.pending.shielded!.balance = "0";
     return w;
   },
+  /** Shielded is ready and a sync pass is running: the send sheet says "Scanning…". */
+  "shielded-scanning": (t) => {
+    const w = base(t);
+    w.pending.shielded!.scanning = true;
+    return w;
+  },
+  /** Shielded's last completed pass ended three hours before the fixture's now. */
+  "shielded-synced-earlier": (t) => {
+    const w = base(t);
+    w.pending.shielded!.lastSyncAt = Math.floor(FIXTURE_NOW.getTime() / 1000) - 3 * 3600;
+    return w;
+  },
+  /** Shielded holds less than a send's fee: Max has nothing to send and says why. */
+  "shielded-below-fee": (t) => {
+    const w = base(t);
+    w.pending.shielded!.balance = "15000000";
+    return w;
+  },
   /** Shielded has too few notes to withdraw from. */
   "shielded-pool-small": (t) => {
     const w = base(t);

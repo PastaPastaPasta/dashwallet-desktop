@@ -1,7 +1,7 @@
 // Shielded funds (shielded/flow.ts): the steps Transfer shows for moves between balances and Pay
 // shows for a send, and the address with its QR that Receive shows.
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
@@ -16,7 +16,10 @@ import { useDisplay } from "../format/display";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
-import { SHIELDED_SYNCING_TEXT, shieldedSyncing } from "../shielded/syncing";
+import { sendMax, sendMaxLine } from "../shielded/sendMax";
+import { SHIELDED_SYNCING_TEXT, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
+import { TRANSFER_COPY } from "../transfer/model";
+import { useNowSecs } from "./masternodes/common";
 import { Qr } from "./Receive";
 import { GrantSheet } from "./tools/common";
 
@@ -33,8 +36,18 @@ export function useFormats(network: NetworkInfo) {
 function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: NetworkInfo; status: ShieldedStatus | null }) {
   const b = useBackend();
   const id = useId();
-  const { shown, duffs: fmt } = useFormats(network);
+  const { shown, duffs: fmt, credits } = useFormats(network);
   const kind = flow.kind === "resume" ? "add" : flow.kind;
+  const now = useNowSecs();
+  const syncLine = kind === "send" ? shieldedSyncText(status, now) : null;
+  const [line] = useState(() => sendMaxLine(b, flow));
+  useModel(line);
+  useEffect(() => () => line.dispose(), [line]);
+  const discreet = useUi((s) => s.discreet);
+  const [maxText, setMaxText] = useState<string | null>(null);
+  // Max's figure is the balance: in discreet mode it shows masked until it is typed over.
+  const mask = shown.masked();
+  const hidden = discreet && flow.text !== "" && maxText === flow.text;
   const text = flow.text.trim();
   const checked = useDebounced(text, 300);
   const parsed = useQuery({ queryKey: ["parseAmount", shown.unit, checked], queryFn: () => b.parseAmount(checked, shown.unit), enabled: checked !== "", staleTime: Infinity });
@@ -46,9 +59,30 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
   const available = shieldedDuffs(status);
   // What Next waits for, said beside it: the same text the card gives while Shielded syncs.
   const syncing = shieldedSyncing(status);
+  const maxRefusal = line.state.kind === "refused" ? shieldedErrorText(line.state.error, credits, fmt, "send", syncing) : null;
+  const maxWhy = syncing ? SHIELDED_SYNCING_TEXT : to === "" ? C.form.why.to : !available ? C.card.why.empty : null;
   const nextWhy = syncing
     ? SHIELDED_SYNCING_TEXT
     : amountProblem ?? (amount === null || amount <= 0 ? C.form.why.amount : kind === "send" && to === "" ? C.form.why.to : memoTooLong ? C.form.why.memo : null);
+  const amountField = (
+    <label className="form-field">
+      {C.form.amount} ({shown.name})
+      <input
+        data-testid="shielded-amount"
+        inputMode="decimal"
+        autoFocus
+        placeholder={shown.placeholder}
+        value={hidden ? mask : flow.text}
+        aria-invalid={amountProblem !== null || maxRefusal !== null}
+        aria-describedby={`${id}-amount-problem`}
+        onFocus={(e) => hidden && e.target.select()}
+        onChange={(e) => {
+          line.set(null);
+          flow.setText(hidden ? e.target.value.split(mask).join("") : e.target.value);
+        }}
+      />
+    </label>
+  );
   return (
     <form
       className="topup-form"
@@ -64,27 +98,63 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
     >
       <p className="sheet-text">{C.form[kind]}</p>
       {kind !== "add" && available !== null && <p className="field-hint">{C.form.available(fmt(available))}</p>}
-      <label className="form-field">
-        {C.form.amount} ({shown.name})
-        <input
-          data-testid="shielded-amount"
-          inputMode="decimal"
-          autoFocus
-          placeholder={shown.placeholder}
-          value={flow.text}
-          aria-invalid={amountProblem !== null}
-          aria-describedby={`${id}-amount-problem`}
-          onChange={(e) => flow.setText(e.target.value)}
-        />
-      </label>
+      {syncLine && (
+        <p className="field-hint" role="status" data-testid="shielded-sync">
+          {syncLine}
+        </p>
+      )}
+      {kind === "send" ? (
+        <div className="transfer-amount-row">
+          {amountField}
+          <DashButton
+            variant="tintedBlue"
+            size="medium"
+            type="button"
+            data-testid="shielded-max"
+            aria-busy={line.maxing}
+            disabled={maxWhy !== null || line.maxing || flow.running}
+            why={maxWhy}
+            whyId={`${id}-max-why`}
+            title={line.maxing ? TRANSFER_COPY.why.max : undefined}
+            onClick={() =>
+              available &&
+              void sendMax(line, available).then((duffs) => {
+                if (duffs === null) return;
+                const filled = shown.full(duffs);
+                setMaxText(filled);
+                flow.setText(filled);
+              })
+            }
+          >
+            {TRANSFER_COPY.max}
+            <span className="spinner" aria-hidden="true" style={{ visibility: line.maxing ? "visible" : "hidden" }} />
+          </DashButton>
+        </div>
+      ) : (
+        amountField
+      )}
+      {kind === "send" && maxWhy && (
+        <p className="field-hint" id={`${id}-max-why`} data-testid="shielded-max-why">
+          {maxWhy}
+        </p>
+      )}
       <p className="form-problem" id={`${id}-amount-problem`} role="alert" data-testid="shielded-amount-problem">
-        {amountProblem}
+        {amountProblem ?? maxRefusal}
       </p>
       {kind === "send" && (
         <>
           <label className="form-field">
             {C.form.to}
-            <input data-testid="shielded-to" spellCheck={false} autoComplete="off" value={flow.to} onChange={(e) => flow.setTo(e.target.value)} />
+            <input
+              data-testid="shielded-to"
+              spellCheck={false}
+              autoComplete="off"
+              value={flow.to}
+              onChange={(e) => {
+                line.set(null);
+                flow.setTo(e.target.value);
+              }}
+            />
           </label>
           <label className="form-field">
             {C.form.memo}
