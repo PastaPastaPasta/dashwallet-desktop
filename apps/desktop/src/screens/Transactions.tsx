@@ -12,6 +12,7 @@ import { errorMessage } from "../api/backend";
 import { useBackend, useHistory, usePlatformActivity, useShieldedHistory, type HistoryFilter } from "../api/queries";
 import { fileErrorText } from "../app/files";
 import { useLocalDay } from "../app/localDay";
+import { ui, useUi, type ActivityFilter } from "../app/ui";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
 import { EmptyState, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
@@ -46,6 +47,14 @@ const CATEGORIES: { id: string; title: string; categories: TxCategoryName[] }[] 
 
 type Mode = "list" | "table";
 
+/** Masternodes' filter (MG-10 §1.9) over the loaded Core rows; the pages keep loading under it. */
+const routeFilterTitle = (f: ActivityFilter) => (f.kind === "generated" ? "Coinbase income" : f.title);
+function keepRow(f: ActivityFilter): (r: TxRow) => boolean {
+  if (f.kind === "generated") return (r) => r.txType === "generated";
+  const txids = new Set(f.txids);
+  return (r) => txids.has(r.txid);
+}
+
 export function Transactions({ walletId, network, onOpen }: { walletId: string; network: NetworkInfo; onOpen: (row: TxRow) => void }) {
   const backend = useBackend();
   const [mode, setMode] = useState<Mode>("list");
@@ -75,13 +84,17 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   // Query keys are hashed structurally, so a fresh filter object per render is fine.
   const filter: HistoryFilter = { categories: category.categories, text: text || null, sort: order, ...range, ...(minAmount ? { minAmount } : {}) };
   const history = useHistory(walletId, filter, PAGE_SIZE);
-  const coreRows = useMemo(() => history.data?.pages.flatMap((p) => p.rows) ?? [], [history.data]);
+  const routeFilter = useUi((s) => s.activityFilter);
+  const coreRows = useMemo(() => {
+    const all = history.data?.pages.flatMap((p) => p.rows) ?? [];
+    return routeFilter ? all.filter(keepRow(routeFilter)) : all;
+  }, [history.data, routeFilter]);
   // Platform-address and Shielded activity join the list under "All" with no search text (they
   // have no type to filter by, and nothing to search); Table mode is the Core columns.
   const platform = usePlatformActivity(walletId);
   const shielded = useShieldedHistory(walletId);
   const extra = useMemo(() => [...(platform.data ?? []).map(platformRow), ...(shielded.data ?? []).map(shieldedRow)], [platform.data, shielded.data]);
-  const withExtra = mode === "list" && category.id === "all" && !text;
+  const withExtra = mode === "list" && category.id === "all" && !text && !routeFilter;
   const extraShown = useMemo(
     () => (withExtra ? filterExtra(extra, { dateFrom: range.dateFrom, dateTo: range.dateTo, minAmount }) : []),
     [withExtra, extra, range.dateFrom, range.dateTo, minAmount],
@@ -89,7 +102,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
   const rows = useMemo(() => mergeActivity(coreRows, !!history.hasNextPage, extraShown), [coreRows, history.hasNextPage, extraShown]);
   const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
   // Every extra row the filters keep counts, loaded or not; Export is the Core history only.
-  const total = coreTotal === null ? null : coreTotal + extraShown.length;
+  const total = routeFilter ? (history.hasNextPage ? null : coreRows.length) : coreTotal === null ? null : coreTotal + extraShown.length;
   const ctx = useRowContext(network);
 
   // Export CSV (QT-093): the records the filters select, all pages; the line under the bar says
@@ -123,14 +136,20 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     return () => io.disconnect();
   }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage]);
 
-  const exportWhy = exporting ? "Exporting…" : !coreTotal ? "There are no transactions to export yet." : null;
+  const exportWhy = exporting
+    ? "Exporting…"
+    : !coreTotal
+      ? "There are no transactions to export yet."
+      : routeFilter
+        ? "Remove the masternode filter to export."
+        : null;
   return (
     <main className={`page page-transactions ${mode === "table" ? "is-table" : ""}`} data-testid="page-activity">
       <div className="page-column">
         <header className="top-intro top-intro-row" data-testid="tx-intro">
           <h1 className="top-intro-title">Activity</h1>
           <div className="tx-intro-actions">
-            <DashButton variant="tintedGray" size="small" data-testid="tx-export-csv" disabled={exporting || !coreTotal} why={exportWhy} whyId="tx-export-why" onClick={() => void exportCsv()}>
+            <DashButton variant="tintedGray" size="small" data-testid="tx-export-csv" disabled={exportWhy !== null} why={exportWhy} whyId="tx-export-why" onClick={() => void exportCsv()}>
               Export CSV
             </DashButton>
             <div className="segmented" role="group" aria-label="View" data-testid="tx-mode">
@@ -206,6 +225,17 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
                 {c.title}
               </button>
             ))}
+            {routeFilter && (
+              <button
+                type="button"
+                className="filter-chip is-selected"
+                aria-label={`Remove the filter ${routeFilterTitle(routeFilter)}`}
+                data-testid="tx-route-filter"
+                onClick={() => ui.set({ activityFilter: null })}
+              >
+                {routeFilterTitle(routeFilter)} <span aria-hidden="true">×</span>
+              </button>
+            )}
           </div>
         </div>
         {history.isPending ? (

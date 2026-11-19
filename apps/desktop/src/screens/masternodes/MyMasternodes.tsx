@@ -1,0 +1,366 @@
+// Masternodes ▸ My masternodes (MG-10 §1.2, S1): the summary, the groups, the read-only pane and
+// the page's states. Setting up, tracking, keys, changing keys, release and withdraw come with
+// later slices; nothing of theirs shows here yet.
+
+import { useState } from "react";
+import type { MasternodeDetail } from "../../api/generated/MasternodeDetail";
+import type { MasternodeRow } from "../../api/generated/MasternodeRow";
+import type { NetworkInfo } from "../../api/generated/NetworkInfo";
+import type { WalletSummary } from "../../api/generated/WalletSummary";
+import { useBackend } from "../../api/queries";
+import { navigate, ui } from "../../app/ui";
+import { AmountText, DashButton } from "../../components/basics";
+import { CopyIconButton } from "../../components/copy";
+import { LoadingState } from "../../components/history";
+import { Sheet } from "../../components/sheet";
+import { copyWithToast } from "../../components/toast";
+import { useDisplay, type Display } from "../../format/display";
+import { shortAddress, shortDate, shortHash } from "../../governance/model";
+import {
+  activityChip,
+  GROUP_TITLE,
+  groups,
+  heldRoles,
+  isEmpty,
+  kindText,
+  lastPayoutTitle,
+  MnText,
+  mnErrorText,
+  operatorShare,
+  payoutGroups,
+  registrarLine,
+  rowMeta,
+  rowName,
+  rowSub,
+  sharesPayoutAddress,
+  statusChip,
+  summary,
+  voteBlocked,
+} from "../../masternodes/model";
+import { useMasternode, useMasternodePayouts, useMasternodes, useMasternodesRefresh } from "../../masternodes/queries";
+import { MoreMenu, Notice, StatusChip } from "./common";
+
+const DAY = 86_400;
+/** mn-engine's `MAX_MASTERNODE_LABEL`. */
+const MAX_LABEL = 64;
+
+export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSummary; network: NetworkInfo; onVote: () => void }) {
+  const list = useMasternodes(wallet.walletId);
+  const refresh = useMasternodesRefresh();
+  const shown = useDisplay(network);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [retiredOpen, setRetiredOpen] = useState(false);
+
+  if (list.isPending) return <LoadingState testId="mn-loading" text={MnText.loading} />;
+  if (list.isError)
+    return (
+      <Notice
+        tone="warning"
+        testId="mn-list-failed"
+        action={
+          <DashButton variant="filledBlue" size="small" data-testid="mn-retry" onClick={() => void refresh()}>
+            {MnText.tryAgain}
+          </DashButton>
+        }
+      >
+        <strong>{MnText.failed}</strong> {mnErrorText(list.error)}
+      </Notice>
+    );
+  const o = list.data;
+  const watchNotice = wallet.watchOnly && (
+    <Notice tone="info" testId="mn-notice-watch-only">
+      <strong>{MnText.watchOnly}</strong> {MnText.watchOnlyText}
+    </Notice>
+  );
+  if (isEmpty(o))
+    return (
+      <>
+        {watchNotice}
+        <section className="mg-empty card-l1" data-testid="mn-empty">
+          <h2>{MnText.emptyTitle}</h2>
+          <p>{MnText.emptyText}</p>
+          {o.collateralCoins.length > 0 && <p data-testid="mn-empty-coin">{MnText.emptyCoin}</p>}
+          <ul className="mg-empty-points">
+            {MnText.emptyPoints.map(([title, text]) => (
+              <li key={title}>
+                <strong>{title}</strong>
+                <span>{text}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </>
+    );
+
+  const synced = o.list.synced;
+  const all = groups(o.masternodes);
+  const visible = all.flatMap((g) => (g.id === "retired" && !retiredOpen ? [] : g.rows));
+  const current = visible.find((r) => r.proTxHash === selected) ?? visible[0] ?? null;
+  const s = summary(o);
+  const amount = (duffs: number) => <AmountText text={shown.compact(duffs)} unitName={shown.name} />;
+  return (
+    <>
+      {watchNotice}
+      {!synced && <LoadingState testId="mn-syncing" text={MnText.loading} />}
+      <div className="mg-summary card-l1" data-testid="mn-summary">
+        <div>
+          <span className="mg-summary-label">Masternodes</span>
+          <span className="mg-summary-value">
+            {s.count} <span className="mg-muted mg-small">yours</span>
+          </span>
+          <span className="mg-summary-note">{s.countNote}</span>
+        </div>
+        <div data-testid="mn-summary-payouts">
+          <span className="mg-summary-label">Payouts, last 30 days</span>
+          <span className="mg-summary-value">{amount(s.payouts)}</span>
+          <span className="mg-summary-note">in masternode payouts</span>
+          {s.unattributed !== null && (
+            <>
+              <span className="mg-summary-value" data-testid="mn-summary-unattributed">
+                {amount(s.unattributed)}
+              </span>
+              <span className="mg-summary-note">of coinbase income to this wallet. {s.unattributedNote}</span>
+              <DashButton variant="plainBlue" size="small" data-testid="mn-summary-activity" onClick={() => navigate("activity", { activityFilter: { kind: "generated" } })}>
+                {MnText.seeInActivity}
+              </DashButton>
+            </>
+          )}
+        </div>
+      </div>
+      <div className="contacts-split">
+        <div className="contacts-list">
+          {all.map((g) => (
+            <section key={g.id} className="tx-group card-l1" data-testid={`mn-group-${g.id}`}>
+              <h2 className="contacts-group-title">
+                {g.id === "retired" ? (
+                  <button type="button" className="contacts-disclosure" aria-expanded={retiredOpen} data-testid="mn-retired-toggle" onClick={() => setRetiredOpen((v) => !v)}>
+                    {GROUP_TITLE.retired} ({g.rows.length})
+                  </button>
+                ) : (
+                  GROUP_TITLE[g.id]
+                )}
+              </h2>
+              {(g.id !== "retired" || retiredOpen) && (
+                <ul className="mg-list">
+                  {g.rows.map((r) => (
+                    <li key={r.proTxHash}>
+                      <button
+                        type="button"
+                        className="mg-row"
+                        aria-current={r.proTxHash === current?.proTxHash ? "true" : undefined}
+                        data-testid={`mn-row-${r.proTxHash}`}
+                        onClick={() => setSelected(r.proTxHash)}
+                      >
+                        <span className="mg-row-text">
+                          <span className="mg-row-title">{rowName(r)}</span>
+                          <span className="mg-row-sub">{rowSub(r)}</span>
+                        </span>
+                        <span className="mg-row-trailing">
+                          <StatusChip chip={statusChip(r.status)} />
+                          {rowMeta(r, synced) && <span className="mg-row-meta">{rowMeta(r, synced)}</span>}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          ))}
+        </div>
+        {current && <Pane key={current.proTxHash} row={current} rows={o.masternodes} wallet={wallet} shown={shown} onVote={onVote} />}
+      </div>
+    </>
+  );
+}
+
+function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: MasternodeRow[]; wallet: WalletSummary; shown: Display; onVote: () => void }) {
+  const detail = useMasternode(wallet.walletId, row.proTxHash);
+  const [renaming, setRenaming] = useState(false);
+  const d = detail.data;
+  const name = rowName(row);
+  const blocked = voteBlocked(row, wallet.watchOnly);
+  const outpoint = row.collateral.kind === "known" ? row.collateral.outpoint : null;
+  const line = d ? registrarLine(d) : null;
+  return (
+    <aside className="contacts-pane" aria-label="Masternode" data-testid="mn-pane">
+      <section className="mg-pane card-l1">
+        <div>
+          <h2 className="mg-pane-title" data-testid="mn-pane-title">
+            {name}
+          </h2>
+          <div className="chip-row mg-pane-chip">
+            <StatusChip chip={statusChip(row.status)} testId="mn-pane-chip" />
+            <span className="chip chip-neutral">{kindText(row.kind)}</span>
+          </div>
+        </div>
+        {row.status === "pose_banned" && (
+          <p className="mg-notice mg-notice-danger" data-testid="mn-banned">
+            <strong>{MnText.banned}</strong> {MnText.bannedText(row.bannedSeenAt === null ? null : shortDate(row.bannedSeenAt))}
+          </p>
+        )}
+        {detail.isError && <p className="mg-field-error">{mnErrorText(detail.error)}</p>}
+        <dl className="mg-facts" data-testid="mn-facts">
+          <Facts row={row} detail={d} shown={shown} />
+        </dl>
+        <Payouts walletId={wallet.walletId} row={row} rows={rows} name={name} shown={shown} />
+        <div>
+          <h3 className="mg-section-title">In this wallet</h3>
+          <ul className="mg-roles" data-testid="mn-roles">
+            {heldRoles(row, wallet.watchOnly).map((h) => (
+              <li key={h.id} className={h.held ? "mg-held" : "mg-elsewhere"}>
+                {h.text}
+              </li>
+            ))}
+          </ul>
+        </div>
+        {line && (
+          <p className="mg-small mg-muted mg-notice-row" data-testid="mn-registrar-line">
+            <span>{line.text}</span>
+            {line.unlock && (
+              <DashButton variant="tintedBlue" size="small" data-testid="mn-unlock" onClick={() => ui.set({ dialog: "unlock" })}>
+                {MnText.unlock}
+              </DashButton>
+            )}
+          </p>
+        )}
+        <div className="mg-actions">
+          {row.mine && (
+            <DashButton variant="tintedBlue" size="small" data-testid="mn-vote" disabled={blocked !== null} why={blocked} onClick={onVote}>
+              {MnText.vote}
+            </DashButton>
+          )}
+          <MoreMenu
+            testId="mn-more"
+            items={[
+              { id: "rename", title: MnText.rename, onSelect: () => setRenaming(true) },
+              { id: "copy-hash", title: MnText.copyHash, onSelect: () => void copyWithToast(row.proTxHash) },
+              ...(outpoint ? [{ id: "copy-outpoint", title: MnText.copyOutpoint, onSelect: () => void copyWithToast(outpoint) }] : []),
+            ]}
+          />
+        </div>
+      </section>
+      {renaming && <RenameSheet row={row} onClose={() => setRenaming(false)} />}
+    </aside>
+  );
+}
+
+function Facts({ row, detail, shown }: { row: MasternodeRow; detail: MasternodeDetail | undefined; shown: Display }) {
+  const list = detail?.list ?? null;
+  const reg = detail?.registration ?? null;
+  const fact = (id: string, title: string, value: React.ReactNode) => [
+    <dt key={`${id}-t`}>{title}</dt>,
+    <dd key={`${id}-d`} data-testid={`mn-fact-${id}`}>
+      {value}
+    </dd>,
+  ];
+  const last = row.lastPayout;
+  return (
+    <>
+      {row.service && fact("service", "Service", row.service)}
+      {reg?.registeredHeight != null && fact("registered", "Registered", `block ${reg.registeredHeight.toLocaleString("en-US")}`)}
+      {row.mine && reg?.payoutAddress && fact("payout", "Payout address", <>
+        <span className="mono">{shortAddress(reg.payoutAddress)}</span> <span className="mg-muted">{MnText.payoutProvenance}</span>
+      </>)}
+      {reg?.operatorReward ? fact("operator-share", "Operator's share", operatorShare(reg.operatorReward)) : null}
+      {list && fact("voting", "Voting address", <span className="mono">{shortAddress(list.votingAddress)}</span>)}
+      {list?.platformNodeId && fact("platform", "Platform node", <span className="mono">{`${shortHash(list.platformNodeId)}…${list.platformHttpPort ? ` · port ${list.platformHttpPort}` : ""}`}</span>)}
+      {last &&
+        fact("last-payout", lastPayoutTitle(last), <>
+          {!last.unattributed && <AmountText text={shown.compact(last.amount)} unitName={shown.name} />}
+          {last.timestamp !== null && `${last.unattributed ? "" : " · "}${shortDate(last.timestamp)}`}
+        </>)}
+      {fact("pose", "PoSe score", <>
+        — <span className="mg-muted">{MnText.poseScore}</span>
+      </>)}
+      {reg?.revoked && fact("revoked", "Revoked", "Yes")}
+      {fact("hash", "ProTx hash", (
+        <span className="copy-value">
+          <span className="mono">{`${row.proTxHash.slice(0, 4)}…${row.proTxHash.slice(-4)}`}</span>
+          <CopyIconButton text={row.proTxHash} label={MnText.copyHash} />
+        </span>
+      ))}
+    </>
+  );
+}
+
+function Payouts({ walletId, row, rows, name, shown }: { walletId: string; row: MasternodeRow; rows: MasternodeRow[]; name: string; shown: Display }) {
+  const backend = useBackend();
+  const [since] = useState(() => Math.floor(backend.now().getTime() / 1000) - 30 * DAY);
+  const payouts = useMasternodePayouts(walletId, row.proTxHash, since, row.mine && !row.sharedUnsupported);
+  const list = payoutGroups(payouts.data ?? []);
+  if (list.length === 0) return null;
+  return (
+    <div data-testid="mn-payouts">
+      {list.map((g) => (
+        <div key={g.heading} data-testid={g.flagged ? "mn-payouts-flagged" : "mn-payouts-attributed"}>
+          <h3 className="mg-section-title">{g.heading}</h3>
+          <p className="mg-small">
+            <AmountText text={shown.compact(g.total)} unitName={shown.name} /> in {g.count === 1 ? "1 payment" : `${g.count} payments`} ·{" "}
+            <DashButton
+              variant="plainBlue"
+              size="small"
+              data-testid={g.flagged ? "mn-flagged-activity" : "mn-payouts-activity"}
+              onClick={() => navigate("activity", { activityFilter: { kind: "txids", title: activityChip(name, g.flagged), txids: g.txids } })}
+            >
+              {MnText.seeInActivity}
+            </DashButton>
+          </p>
+        </div>
+      ))}
+      {sharesPayoutAddress(row, rows) && <p className="mg-small mg-muted" data-testid="mn-shared-payout">{MnText.sharedPayout}</p>}
+    </div>
+  );
+}
+
+function RenameSheet({ row, onClose }: { row: MasternodeRow; onClose: () => void }) {
+  const backend = useBackend();
+  const refresh = useMasternodesRefresh();
+  const [label, setLabel] = useState(row.label ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = async () => {
+    setBusy(true);
+    try {
+      await backend.mnSetLabel(row.proTxHash, label.trim() || null);
+      await refresh();
+      onClose();
+    } catch (e) {
+      setError(mnErrorText(e));
+      setBusy(false);
+    }
+  };
+  return (
+    <Sheet title={MnText.renameTitle} width="small" testId="mn-rename-sheet" onClose={onClose}>
+      <form
+        className="mg-sheet-body"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save();
+        }}
+      >
+        <label className={`mg-field ${error ? "has-error" : ""}`}>
+          Name
+          <input data-testid="mn-rename-input" value={label} maxLength={MAX_LABEL} placeholder={`${kindText(row.kind)} ${row.typeIndex || ""}`.trim()} autoComplete="off" data-autofocus onChange={(e) => setLabel(e.target.value)} />
+          <span className="mg-field-help">Only this wallet sees it. Leave it empty for the default name.</span>
+          {error && (
+            <span className="mg-field-error" role="alert" data-testid="mn-rename-error">
+              {error}
+            </span>
+          )}
+        </label>
+        <footer className="mg-sheet-footer">
+          <span />
+          <span className="mg-actions">
+            <DashButton type="button" variant="tintedGray" size="medium" onClick={onClose}>
+              Cancel
+            </DashButton>
+            <DashButton type="submit" variant="filledBlue" size="medium" data-testid="mn-rename-save" disabled={busy}>
+              Save
+            </DashButton>
+          </span>
+        </footer>
+      </form>
+    </Sheet>
+  );
+}
+

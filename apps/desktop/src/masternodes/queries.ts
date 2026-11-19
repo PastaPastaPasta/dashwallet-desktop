@@ -3,9 +3,12 @@
 // `["mnPlatform", hash, "credits"]`, re-read on a timer instead. `mn_reveal_key` has no query: its
 // result is a secret the sheet holds only while shown.
 
+import { useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MasternodeKeyRoleName } from "../api/generated/MasternodeKeyRoleName";
 import { keys, useBackend } from "../api/queries";
+import type { NodeNames } from "../governance/model";
+import { nodeNames } from "./model";
 
 const m = keys.masternodesAll;
 /** Platform reads while shown (§3.5). */
@@ -59,6 +62,12 @@ export function useEvonodeCredits(hash: string, enabled = true) {
 export function useMasternodeKeys(walletId: string, role: MasternodeKeyRoleName, start: number, count: number) {
   const b = useBackend();
   return useQuery({ queryKey: mnKeys.keychain(walletId, role, start, count), queryFn: () => b.mnKeys(walletId, role, start, count) });
+}
+
+/** The wallet's masternode labels and services for governance's vote rows (MG-09 F3). */
+export function useNodeNames(walletId: string): NodeNames {
+  const list = useMasternodes(walletId);
+  return useMemo(() => nodeNames(list.data), [list.data]);
 }
 
 /** Re-reads every engine-local masternode query (after a command, before its event lands). */
