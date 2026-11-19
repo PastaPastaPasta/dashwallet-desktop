@@ -906,6 +906,29 @@ fn close_during_dispatch_is_refused_and_dispatch_completes() {
     assert_eq!(h.admit(SHIELDED_ACCOUNT, 1, st_hash(1)), Ok(()));
 }
 
+/// A quit begun while a dispatch is past its first check (here waiting to
+/// read the account's notes) still refuses the spend: the hook checks again
+/// before it writes the artifact, so none is written and nothing is sent.
+#[test]
+fn a_quit_begun_mid_dispatch_refuses_it_before_the_artifact() {
+    let h = Hooked::new();
+    h.lease();
+    let payload = h.staged(1, &[1]);
+    let store = h.f.engine.block_on(h.coordinator.store().write());
+    let hook = Arc::clone(&h.hook);
+    let mut dispatch = Box::pin(async move { hook.dispatch(payload).await });
+    let waiting = h.f.engine.block_on(std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(dispatch.as_mut().poll(cx).is_pending())
+    }));
+    assert!(waiting, "the dispatch waits for the account's notes");
+    h.during_a_held_quit(|| {
+        drop(store);
+        let refused = h.f.engine.block_on(dispatch).unwrap_err().reason;
+        assert!(refused.contains("closing"), "{refused}");
+        assert_eq!(h.artifact(1), None);
+    });
+}
+
 /// The hook is set by every open of the shielded store, before the
 /// coordinator is handed out: the facade's first shielded call, the
 /// Platform start, and each again after the session was closed and

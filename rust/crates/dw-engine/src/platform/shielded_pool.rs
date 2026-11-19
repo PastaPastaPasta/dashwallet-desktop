@@ -1863,7 +1863,9 @@ fn refused(reason: impl Into<String>) -> DispatchRefused {
 /// a lock, a revocation or the close waits for the shielded passes
 /// ([`drain_passes`]). A spend between its store and its first broadcast is
 /// then refused, so the library records it `NotExecuted(Refused)` and frees
-/// its notes, and a pass in flight re-sends nothing more.
+/// its notes, and a pass in flight re-sends nothing more. `dispatch` checks
+/// again right before it writes the artifact; one already past that check
+/// completes, and the close's gate waits for its call.
 #[derive(Default)]
 pub(crate) struct HookFence {
     closing: AtomicBool,
@@ -1996,6 +1998,9 @@ impl ShieldedDispatch for EngineDispatch {
             selected: selected.into_iter().collect(),
             published: payload.published_nullifiers,
         };
+        if let Some(why) = session.platform.hook_fence.refusal() {
+            return Err(refused(why));
+        }
         let wallet = WalletId(payload.wallet_id);
         match (session.leases.record_shielded_artifact(wallet, artifact)).await {
             Ok(true) => Ok(()),

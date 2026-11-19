@@ -328,7 +328,11 @@ impl Engine {
         self.handle
             .spawn(async move {
                 let mut sessions = shared.sessions.lock().await;
-                for (network, session) in sessions.drain() {
+                let drained: Vec<_> = sessions.drain().collect();
+                for (_, session) in &drained {
+                    session.platform.hook_fence.close();
+                }
+                for (network, session) in drained {
                     if network == DashNetwork::Mainnet {
                         shared.rates.mainnet_closed();
                     }
@@ -384,7 +388,11 @@ impl Drop for Engine {
             .spawn(move || {
                 rt.block_on(async move {
                     let mut sessions = shared.sessions.lock().await;
-                    for (_, session) in sessions.drain() {
+                    let drained: Vec<_> = sessions.drain().collect();
+                    for (_, session) in &drained {
+                        session.platform.hook_fence.close();
+                    }
+                    for (_, session) in drained {
                         session.close().await;
                     }
                 });

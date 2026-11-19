@@ -741,7 +741,9 @@ one once it goes ahead, and the quit), and while a lock, a wallet's revocation o
 in flight, the dispatch hook refuses whatever it is asked (version 66): a spend the library stored but has not sent
 yet is refused before its first broadcast, so the library records it `NotExecuted(Refused)` and frees its notes, and
 the call returns `shielded.spend_refused` ("The payment was not sent"); a pass in flight re-sends nothing more, each
-spend keeping its re-send count. App quit (`shutdown`)
+spend keeping its re-send count. The hook checks again right before it writes a spend's artifact; a dispatch already
+past that check completes, and the close waits for its call. A quit sets this on every open session before it closes
+the first. App quit (`shutdown`)
 is never refused: it seals and drains as any close, then leaves that wallet loaded in the sealed manager, which runs
 nothing more. Its stores are committed (WAL), not closed: wallet.sqlite writes commit inline (the persister's
 `Immediate` mode), the close flushes the wallet once more (a failed flush is logged, not returned), and the library
@@ -4273,6 +4275,12 @@ renames or reshapes them takes the next version bump:
     the hook a spend is `platform.unavailable` and no pass runs. `platform.cancelled` ("cancelled
     before anything was sent") is not reused either: it is the outcome of a lock that won the permit or an approval
     that ended, and hosts group it with the ended-approval codes, while a refusal here is neither.
+88. **The hook during a close, the widened hold and the journal-unavailable refusals (version 66).** The dispatch hook
+    refuses from the start of a close and during a drain of the shielded passes, and checks again before it writes an
+    artifact; a dispatch past that check completes and the close waits for it. A wallet holds the close also for an
+    un-acknowledged `Executed` or `Unresolved` disposition, and for a spend stored under the hook and not sent yet.
+    While the dispatch journal is unavailable, removal, every seed import, `import_watch_only` and `restore_backup` are
+    refused with `storage` before anything changes (§2.13 "Closing with an unresolved spend").
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

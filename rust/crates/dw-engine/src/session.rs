@@ -954,7 +954,8 @@ impl NetworkSession {
     /// is gone, within [`PERSISTER_RELEASE`]. Must run on the engine runtime.
     pub(crate) async fn close(&self) {
         // From here the dispatch hook accepts no spend and allows no re-send:
-        // a quit does not wait for the signing calls in flight.
+        // a quit is not refused by a signing call in flight; it revokes the
+        // leases and drains the passes before its gate waits for that call.
         self.platform.hook_fence.close();
         // A running bring-up ends first (DASHPAY §3.2). It holds no
         // operation guard, so it is cancelled before waiting for the guards,

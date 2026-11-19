@@ -342,9 +342,10 @@ fn a_failed_classification_fails_the_open_and_the_next_open_reads_the_rows() {
 /// While the dispatch journal is unavailable (here unopenable), nothing
 /// changes which wallets the session knows, as no leased First starts: a
 /// removal, an import of a seed or of a watch-only xpub and a restore are
-/// refused (`storage`) before anything of them is stored or deleted. So no
-/// removal skips archiving its wallet's rows, and no import waits for a
-/// classification of its rows that cannot run.
+/// refused (`storage`) before anything of them is stored or deleted (a
+/// restore before a bundle's passphrase is checked). So no removal skips
+/// archiving its wallet's rows, and no import waits for a classification
+/// of its rows that cannot run.
 #[test]
 fn import_restore_and_remove_are_refused_while_the_journal_is_unavailable() {
     let mut f = Fixture::new();
@@ -355,6 +356,14 @@ fn import_restore_and_remove_are_refused_while_the_journal_is_unavailable() {
     (f.engine)
         .block_on(f.session.backup_wallet(b, backup.clone(), pass()))
         .unwrap();
+    // Another vault's bundle opens only with its passphrase.
+    let foreign = f._dir.path().join("foreign.dwbackup");
+    let other = Fixture::new();
+    let theirs = other.import(PHRASE_B);
+    (other.engine)
+        .block_on(other.session.backup_wallet(theirs, foreign.clone(), pass()))
+        .unwrap();
+    drop(other);
     let wipe = |f: &Fixture, w: WalletId| {
         (f.session.vault())
             .authorize(GrantPurpose::Wipe, Some(&w.0), Credential::None)
@@ -405,6 +414,14 @@ fn import_restore_and_remove_are_refused_while_the_journal_is_unavailable() {
             .block_on(
                 f.session
                     .import_watch_only(xpub, crate::WatchOnlyOptions::default()),
+            )
+            .map(drop),
+    );
+    refused(
+        (f.engine)
+            .block_on(
+                f.session
+                    .restore_backup(foreign, Some(Zeroizing::new(b"wrong".to_vec()))),
             )
             .map(drop),
     );
