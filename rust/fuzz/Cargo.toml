@@ -14,8 +14,9 @@ cargo-fuzz = true
 # The avatar decoder and the invitation parser, through dw-engine's
 # `platform::fuzzing`.
 engine = ["dep:dw-engine", "dw-engine/fuzzing"]
-# The libFuzzer targets (`cargo fuzz`, nightly; scripts/fuzz.sh).
-libfuzzer = ["dep:libfuzzer-sys", "engine"]
+# The libFuzzer targets (`cargo fuzz`, nightly; scripts/fuzz.sh). `avatar` and
+# `invitation` also need `engine`.
+libfuzzer = ["dep:libfuzzer-sys"]
 
 [dependencies]
 dw-compat = { workspace = true }
@@ -93,7 +94,7 @@ path = "fuzz_targets/avatar.rs"
 test = false
 doc = false
 bench = false
-required-features = ["libfuzzer"]
+required-features = ["libfuzzer", "engine"]
 
 [[bin]]
 name = "invitation"
@@ -101,4 +102,4 @@ path = "fuzz_targets/invitation.rs"
 test = false
 doc = false
 bench = false
-required-features = ["libfuzzer"]
+required-features = ["libfuzzer", "engine"]

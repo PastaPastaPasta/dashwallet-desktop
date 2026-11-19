@@ -34,7 +34,7 @@ cd "$ROOT/rust"
 # and finds nothing more.
 export CARGO_PROFILE_RELEASE_LTO=false
 fuzz=(cargo "+$toolchain" fuzz)
-opts=(--fuzz-dir fuzz --target-dir target/fuzz --features libfuzzer --codegen-units 16)
+opts=(--fuzz-dir fuzz --target-dir target/fuzz --features libfuzzer,engine --codegen-units 16)
 
 if [ $# -gt 0 ]; then
   targets=("$@")

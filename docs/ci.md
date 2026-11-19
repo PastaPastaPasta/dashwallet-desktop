@@ -244,7 +244,7 @@ scripts/fuzz.sh /work/scratch/fuzz 600 psbt link   # some targets
 The build is release with debug assertions, overflow checks and AddressSanitizer. A target that finds a crash,
 an input slower than 30 s (`DW_FUZZ_TIMEOUT`) or more than 4 GB of memory (`DW_FUZZ_RSS_MB`) leaves the input in
 `<work dir>/artifacts/<target>/` and fails the script. To fix one, from `rust/`: reproduce it with
-`cargo +nightly-2026-10-09 fuzz run --fuzz-dir fuzz --target-dir target/fuzz --features libfuzzer <target> <input>`,
+`cargo +nightly-2026-10-09 fuzz run --fuzz-dir fuzz --target-dir target/fuzz --features libfuzzer,engine <target> <input>`,
 minimise it with `cargo … fuzz tmin … <target> <input>`, fix the parser, and commit the minimised input under
 `rust/fuzz/regressions/<target>/` so the replay test fails without the fix.
 
