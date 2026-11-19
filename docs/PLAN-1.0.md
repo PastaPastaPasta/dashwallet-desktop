@@ -47,7 +47,7 @@ thread; "MG" is the masternode and governance thread, which is also the release 
 | H Marketplace | PO | Cut: X4 (browse, buy, extra names, instant-name offer), identity-verify link | — | cut to 1.0.x |
 | I Invitations | PO | Cut: the storage patch, X3 create, share and history, shielded-funded and small invites, the Home claim card, scanning an invitation's QR code. Claiming an invitation from a link or pasted text shipped in 0.1 and stays | — | cut to 1.0.x |
 | J DashConnect | PO | Cut: App Connect v1 and v2 | — | cut to 1.0.x |
-| K Everyday polish | PO | #25 empty states → P7 unlock once → P15 PSBT under Advanced. Cut: MP-04 tax categories, lock-screen receive and scan, log export, the support path and the backup reminder, transaction notes on Platform | 11-18 → 11-24 | #25 and unlock once (#37) in review, fixes in progress; P15 lane running |
+| K Everyday polish | PO | #25 empty states → P7 unlock once → P15 PSBT under Advanced. Cut: MP-04 tax categories, lock-screen receive and scan, log export, the support path and the backup reminder, transaction metadata sync and restore on Platform | 11-18 → 11-24 | #25 and unlock once (#37) in review, fixes in progress; P15 lane running |
 | P Localization | PO | MP-14, translated in this repository by agents (no Transifex): the message catalog, locale choice, plurals and the right-to-left check, with one screen converted as the pattern (11-19 → 11-21) → every screen's copy moved into the catalog, one small pull request per screen area, each after that area's open pull requests have merged (11-21 → 11-26) → copy freeze 11-27 → the translations, each checked by a second pass (11-27 → 11-29) | 11-19 → 11-29 | starting |
 | L Commerce | PO | Cut: MP-09 Explore, MP-13 CrowdNode withdraw, MP-10, MP-11, MP-12 | — | cut to 1.0.x |
 | M Hardening | PO | H-02 fuzzing → H-03 kill -9 matrix → H-06 performance → H-09 trust gate on by default → **H-01 security review (11-27 → 11-29)**. Cut: H-10 node pinning, Tor/SOCKS5, MP-03, MP-15 | 11-19 → 11-29 | H-02 lane running |
@@ -71,7 +71,7 @@ to a 1.0.x release unless a row says otherwise; nothing on the never-cut list is
 | Username marketplace (X4) and the identity-verify link | lane H | the whole lane |
 | Creating invitations (X3) and its storage patch, the Home claim card, scanning an invitation's QR code | lane I | the whole lane; claiming an invitation from a link or pasted text stays |
 | MP-04 tax categories, MP-06 phrase repair, MP-07 sweep and BIP38, MP-05 BIP70 | lanes G, K | the 0.4 and 0.5 parity items |
-| Spend unconfirmed change, per-transaction notifications, lock-screen receive and scan, log export, the support path, the backup reminder, transaction notes on Platform | lanes G, K | small parity items after the cut ones |
+| Spend unconfirmed change, per-transaction notifications, lock-screen receive and scan, log export, the support path, the backup reminder, transaction metadata sync and restore on Platform | lanes G, K | small parity items after the cut ones |
 | CoinJoin sleep prevention and start on login | lane F | an extra cut, beyond ROADMAP §6's order |
 | Tor/SOCKS5 | lane M | an extra cut, beyond ROADMAP §6's order |
 
@@ -86,7 +86,7 @@ only) is not applied, on pasta's decision of 2026-11-19: localization is in 1.0,
   send and receive, history, CoinJoin, backup and restore, security, the tools and settings);
 - instant incoming payments (lane A) and the two-second launch (lane B);
 - the wallet-holder masternode and governance screens (lanes D and E), with shared masternodes. The repository's
-  `CLAUDE.md` and DASHPAY still call this milestone "release 1.1"; ROADMAP §7 (DEC-1026, 2026-10-31) moved it
+  `CLAUDE.md` and DASHPAY still call this milestone "release 1.1"; ROADMAP §7 (DEC-1026, 2026-11-01) moved it
   into 1.0, owner-side only as before;
 - Platform ↔ Shielded transfers and the item 0 fixes (lane C; the release owner decides which of its later items stay);
 - the CoinJoin fixes BL-614 and BL-615, V24 promotion and demotion, mixed-send warnings (lane F);
