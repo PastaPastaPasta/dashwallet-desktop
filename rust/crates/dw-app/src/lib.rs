@@ -25,6 +25,8 @@ mod portal;
 pub mod settings;
 pub mod shell;
 pub mod state;
+#[cfg(test)]
+mod upgrade_path_tests;
 
 use std::path::Path;
 use std::sync::Arc;
