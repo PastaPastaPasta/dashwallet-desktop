@@ -40,8 +40,9 @@ Credential Manager behind a `UserConsentVerifier` prompt, which is a UI gate onl
   `Success` is taken as proof of a TPM key (D3); to be confirmed on the real PC (§11 R2).
 - A per-key hardware property, the fallback if attestation proves unreliable: the key opened through NCrypt's
   "Microsoft Passport Key Storage Provider" with `NCRYPT_IMPL_TYPE_PROPERTY` carrying `NCRYPT_IMPL_HARDWARE_FLAG`
-  (unverified; real-PC step 3). TPM presence on the PC is not enough: a PC with a TPM can still keep its Hello
-  container in software.
+  (unverified; real-PC step 3). It may replace attestation only after the session has seen it **set** on a TPM Hello
+  key and **clear** on a software Hello key (a Hyper-V VM without a vTPM is enough). TPM presence on the PC is not
+  enough: a PC with a TPM can still keep its Hello container in software.
 - `DeleteAsync(name)`.
 
 **Determinism.** Hello keys sign with RSASSA-PKCS1-v1_5 over SHA-256. PKCS#1 v1.5 has no random padding, so one key
@@ -51,9 +52,10 @@ KeePassXC `src/quickunlock/WindowsHello.cpp` (SHA-256 of the signature over a ra
 AES-256-GCM key) and Bitwarden `apps/desktop/desktop_native/biometric/src/windows.rs` ("a signing API, that
 deterministically signs a challenge, from which a windows hello key is derived").
 
-We do not take it on faith (D4): at enrolment, dw-desktop verifies the signature against the key's public key as
-PKCS#1 v1.5 SHA-256 (WinRT `AsymmetricKeyAlgorithmProvider` `RsaSignPkcs1Sha256` + `CryptographicEngine.VerifySignature`,
-no new crate, no extra prompt). A signature that verifies under that scheme is the only one that key can produce
+We do not take it on faith (D4): at enrolment, dw-desktop verifies the signature against the key's public key
+(`RetrievePublicKey(X509SubjectPublicKeyInfo)`) as PKCS#1 v1.5 SHA-256 (WinRT `AsymmetricKeyAlgorithmProvider`
+`RsaSignPkcs1Sha256` + `CryptographicEngine.VerifySignature`, no new crate, no extra prompt). It verifies with the
+`IBuffer` that `RequestSignAsync` returned, then copies S out and zeroes that buffer, so no second copy of S exists. A signature that verifies under that scheme is the only one that key can produce
 for that message. Any other scheme (PSS, ECDSA in a future Windows) fails the check and enrolment is refused with
 "can't be used for quick unlock". If a later Windows change made signatures differ, the blob would fail its AEAD
 check, which §6.6 treats as a reset: the enrolment is removed and the passphrase is used. Nothing is weakened.
@@ -97,8 +99,9 @@ f  = the vault's field framing, u32 LE length ‖ bytes (`push_field`, file.rs:1
 - The public-key hash in the AAD binds the blob to one Hello key; dw-app compares it with `RetrievePublicKey()`
   before prompting, so a reset is found without a pointless prompt (§6.6).
 - K, S and W live in `Zeroizing` buffers, on the Rust side only. W never crosses IPC to the renderer (D2).
-- S arrives in a WinRT `IBuffer` that `Zeroizing` does not cover: after copying S out, dw-desktop zeroes the
-  buffer through `IBufferByteAccess` before releasing it.
+- S arrives in a WinRT `IBuffer` that `Zeroizing` does not cover. dw-desktop verifies with that same buffer (D4),
+  then copies S out and zeroes the buffer through `IBufferByteAccess` before releasing it. No other `IBuffer` ever
+  holds S.
 
 ## 5. What is stored where
 
@@ -106,11 +109,12 @@ f  = the vault's field framing, u32 LE length ‖ bytes (`push_field`, file.rs:1
 |---|---|---|---|
 | Slot B, policy | `vault.dwv` (unchanged) | — | as today |
 | Hello key | the user's Hello (NGC) container | name `DashWallet.QuickUnlock.<hex16>`, hex16 = first 16 bytes of SHA-256(`"dw-app/hello-name/v1"` ‖ f(vault_id) ‖ f(network)) | RSA-2048, TPM-backed |
-| Hello blob | Credential Manager through `OsSecretStore` (D-N8) | service = SHA-256(`"dw-app/hello-blob/v1"` ‖ len ‖ vault_id ‖ network) (the `os_service` pattern, `vault.rs:260`), label `quick-unlock` | `version(1) ‖ C(32) ‖ SHA-256(pubkey)(32) ‖ nonce(24) ‖ ciphertext(32+16)`; the hash is in the clear for the check before the prompt and bound again by the AAD |
+| Hello blob | Credential Manager through `OsSecretStore` (D-N8) | service = SHA-256(`"dw-app/hello-blob/v1"` ‖ len ‖ vault_id ‖ network) (the `os_service` pattern, `vault.rs:260`), label `quick-unlock` | `version(1) ‖ C(32) ‖ SHA-256(pubkey)(32) ‖ nonce(24) ‖ ciphertext(32+16)`, pubkey = `RetrievePublicKey(X509SubjectPublicKeyInfo)`; the hash is in the clear for the check before the prompt and bound again by the AAD |
 
 One key and one blob per vault (vault id × network): two vaults with distinct vault ids, or two networks, never
-share or delete each other's (D7). A data root copied on the same PC keeps the vault id, so the copy shares the
-enrolment; turning Hello off or on in one makes the other fall to "reset" (§6.6), which fails safe. Nothing new is
+share or delete each other's (D7). A data root copied on the same PC keeps the vault id, so both copies share the
+enrolment. Either copy can reset it in both: turning Hello on or off in one, or opening a copy without slot B (whose
+sweep deletes the shared key and blob), makes the other fall to "reset" (§6.6). This fails safe. Nothing new is
 written to the data root.
 
 ## 6. Flows
@@ -120,8 +124,8 @@ Code shape (D8): `dw-desktop/src/hello.rs` (cfg(windows) WinRT calls behind a sm
 open the blob, store addressing; runs on every OS); dw-app commands that tie them to the vault. All WinRT calls run on
 a blocking thread (never the Tauri main thread), with the main window's HWND for the prompt's focus (R3).
 
-**One lock.** dw-app runs every Hello flow of a vault (provider read, enable, use, disable, the sweep and the reset
-handling) under one per-vault async mutex, held for the whole flow, prompts included. Without it a provider re-read
+**One lock.** dw-app runs every Hello flow of a vault (provider read, enable, use, disable, the sweep, the reset
+handling, and the Hello deletion and vault call of recovery and destroy) under one per-vault async mutex, held for the whole flow, prompts included. Without it a provider re-read
 during enable (slot B persisted, blob not yet `put`) would see "slot B, no blob" and reset it, and the sweep could
 delete the key between enable's create and enrol steps. A second flow waits; the UI shows the first one's prompt.
 
@@ -155,11 +159,14 @@ Hello steps come before the grant is redeemed so that a cancelled prompt leaves 
 
 Where it applies is D10 (accepted): the payment confirm sheet only. There the credential choice
 becomes `windowsHello` when: the vault is encrypted, "Require authentication for every payment" is on, slot B is
-enrolled, the amount (fee included) ≤ the limit, and the passphrase is fresher than 7 days (`quick_unlock_policy`
-answers all of these while locked). Otherwise it is the passphrase, as today.
+enrolled, the quick-unlock value of the whole grant set ≤ the limit, and the passphrase is fresher than 7 days
+(`quick_unlock_policy` answers all of these while locked). The value is summed over every grant in the set, as the
+vault does (`vault.rs:1273-1279`): the payment, fee included, plus, for "Accept and pay", the accept's `platformOp`
+value. Otherwise a 0.49 DASH payment with an accept fee against a 0.5 limit would offer Hello and then fail as over
+the limit. Otherwise it is the passphrase, as today.
 
-`authorize` with `CredentialSpec { kind: "windowsHello" }`: dw-app opens the key (no prompt), compares the public-key
-hash, reads the blob, signs M (prompt), derives K, opens W, calls `Vault::authorize_set(…, QuickUnlock(W))`, drops W.
+`authorize` with `CredentialSpec { kind: "windowsHello" }`: dw-app opens the key (no prompt), reads the blob, compares
+the public-key hash (the §6.6 checks, in that order), signs M (prompt), derives K, opens W, calls `Vault::authorize_set(…, QuickUnlock(W))`, drops W.
 `vault.quick_unlock_limit_exceeded` and `vault.passphrase_stale` turn the sheet to the passphrase with the copy in §8.
 A cancelled prompt leaves the sheet open with "Use passphrase instead".
 
@@ -179,8 +186,10 @@ Checked on every provider read and every use while slot B is enrolled, under the
 1. A remote session → touch nothing, use the passphrase (`quick_unlock.unavailable_now`).
 2. `OpenAsync(name)`, whatever `IsSupportedAsync` says (removing the Hello PIN can make it false and delete the key at
    once). `NotFound` → **reset**. Any other non-`Success` status → `unavailable_now`.
-3. The blob: `get` = `Ok(None)` → **reset**. `get` = `Err` (`OsStoreUnavailable`) → `unavailable_now`. A public key
-   whose hash differs from the one in the blob's header → **reset**.
+3. The blob: `get` = `Ok(None)` → **reset**. `get` = `Err` (`OsStoreUnavailable`) → `unavailable_now`. A blob that
+   doesn't parse (wrong length, unknown version) → **reset**, before any prompt. A public key
+   (`RetrievePublicKey(X509SubjectPublicKeyInfo)`, as D4) whose hash differs from the one in the blob's header →
+   **reset**.
 4. The prompt (use only). `UserCanceled` → `platform.cancelled`. `UserPrefersPassword`, `SecurityDeviceLocked`,
    `UnknownError`, a `NotFound` here or any other status → `unavailable_now`.
 5. After a successful prompt: the blob fails to open, or the vault refuses W (`vault.quick_unlock_unavailable`) →
@@ -193,11 +202,18 @@ nothing; the passphrase is used this time (D11).
 ### 6.7 Recovery, destroy, sweep
 
 - `recover_with_mnemonic` and `destroy` already drop slot B (`m2-engine.md:264-265`). The dw-app commands that call
-  them capture the vault id and network **before** the call and afterwards delete the blob and the key addressed by
-  those (the job `MacBiometricKeyStore.delete` had for Swift). Recovery makes a new vault id (`vault.rs:2744`), so
-  addressing by the current id would delete nothing and leave a Hello-prompt path to the old data key, which the
-  `vault.dwv.replaced-*` copy still holds (`m2-engine.md:381-383`). Hello keys can't be enumerated, so the sweep
-  below can't catch this case.
+  them, under the vault's lock, delete the Hello key and then the blob **before** the vault call, addressed by the
+  current vault id and network (the job `MacBiometricKeyStore.delete` had for Swift). Afterwards would be too late:
+  recovery makes a new vault id (`vault.rs:2744`), the sweep only looks at the current id, and Hello keys can't be
+  enumerated, so a leftover key would stay a Hello-prompt path to the old data key, which the
+  `vault.dwv.replaced-*` copy still holds (`m2-engine.md:381-383`).
+  - `DeleteAsync` → `NotFound` counts as deleted. A key delete that fails while the key still exists (`OpenAsync`
+    still `Success`) refuses recovery with `quick_unlock.delete_failed` (§8); nothing is recovered. A failed blob
+    delete does not refuse: without the key the blob opens nothing.
+  - Destroy goes on after a failed delete: it removes `vault.dwv` and every replaced copy, so a leftover key opens
+    nothing.
+  - If the vault call then fails, the unchanged vault keeps slot B without a key, and the next read resets it (§6.6).
+    This fails safe: at worst the user turns Hello on again.
 - At session open: slot B absent and a blob or key present → delete them (orphans from a failed delete or a crash).
 - Change passphrase leaves slot B as it is (the DEK does not change).
 
@@ -232,6 +248,7 @@ D10 (accepted): A for 1.0. B, and Hello on the other sheets, are follow-ups if u
 | Over the limit | `vault.quick_unlock_limit_exceeded` | "This payment is above your Windows Hello limit of {limit}. Enter your passphrase." |
 | Passphrase stale | `vault.passphrase_stale` | "For your security, enter your passphrase. It has been more than 7 days." |
 | Took too long | `vault.grant_invalid` | "That took too long. Try again." |
+| Key delete failed (recovery) | `quick_unlock.delete_failed` | "Windows couldn't remove DashWallet's Windows Hello key, so your wallet was not recovered. Try again in a moment." |
 | Store failed | `vault.os_store_unavailable` | "Windows Credential Manager couldn't save the key. Windows Hello was not turned on." |
 
 New codes are dw-app's (`quick_unlock.*`), listed with the other dw-app codes and in the generated TS types.
@@ -261,11 +278,12 @@ like PKCS#1 v1.5); modes: not set up, remote session, cancel, `UserPrefersPasswo
 | `test_IOS_011_enable_rolls_back_when_the_store_fails` | slot B removed, key deleted |
 | `test_IOS_011_enable_with_an_expired_grant_deletes_the_key` | |
 | `test_IOS_011_disable_removes_slot_b_blob_and_key` | and is idempotent |
-| `test_IOS_011_hello_reset_removes_slot_b_and_says_so` | `NotFound` on open (also with "not set up"), replaced key, blob `Ok(None)`, blob that fails to open, vault refuses W; no prompt for the first three |
+| `test_IOS_011_hello_reset_removes_slot_b_and_says_so` | `NotFound` on open (also with "not set up"), replaced key, blob `Ok(None)`, a blob of the wrong length or an unknown version, blob that fails to open, vault refuses W; no prompt for the first five |
 | `test_IOS_011_unavailable_now_keeps_the_enrolment` | remote session, `MemoryOsStore::unavailable()`, `UnknownError`, `UserPrefersPassword`, `SecurityDeviceLocked`: slot B, blob and key kept |
 | `test_IOS_011_hello_flows_are_serialised` | a provider read and a sweep started while enable is paused between enrol and `put` wait, then see slot B with its blob; enable ends On |
 | `test_IOS_016_over_the_limit_or_stale_asks_for_the_passphrase` | |
-| `test_IOS_011_recovery_and_destroy_drop_the_blob_and_key` | deleted at the addresses of the vault id before the call (recovery makes a new id) |
+| `test_IOS_011_recovery_and_destroy_drop_the_blob_and_key` | deleted at the addresses of the vault id, before the vault call (recovery makes a new id), under the lock |
+| `test_IOS_011_recovery_refuses_when_the_key_delete_fails` | key delete fails, key still there → `quick_unlock.delete_failed`, vault unchanged; `NotFound` on delete or a failing blob delete → recovery goes on; destroy goes on in every case |
 | `test_IOS_011_sweep_removes_orphans` | |
 | `test_IOS_011_two_vaults_have_separate_keys_and_blobs` | distinct vault ids × networks |
 | `test_IOS_011_wrap_key_never_leaves_dw_app` | no command response or event serialises W (scan the JSON of every quick-unlock command) |
@@ -277,12 +295,13 @@ artifacts per DEC-1484.
 Windows CI (`windows-latest`, no Hello): `hello.rs` builds; `supported()` answers false and the provider answers
 `unavailable/notSetUp` without panicking or prompting.
 
-**Real-PC checklist** (one Windows 11 PC with a TPM 2.0 and a fingerprint or face sensor, plus, if at hand, a PC or
-VM without a TPM; installed NSIS build):
+**Real-PC checklist** (one Windows 11 PC with a TPM 2.0 and a fingerprint or face sensor, and a machine whose Hello
+keys are in software, for example a Hyper-V VM without a vTPM; installed NSIS build):
 1. Provider reads `windowsHello`; the row offers "Turn on…".
 2. Enable: count the prompts (R5); the prompt is in front of the app and takes face/fingerprint (R3).
-3. Attestation status on the TPM PC (expect `Success`) and on the no-TPM machine (expect `NotSupported`), and, on
-   both, whether the key's NCrypt `NCRYPT_IMPL_TYPE_PROPERTY` has `NCRYPT_IMPL_HARDWARE_FLAG` (R2).
+3. Attestation status on the TPM PC (expect `Success`) and on the software-key machine (expect `NotSupported`), and,
+   on both, whether the key's NCrypt `NCRYPT_IMPL_TYPE_PROPERTY` has `NCRYPT_IMPL_HARDWARE_FLAG` (R2). The
+   software-key half is required, not optional: without a flag seen clear there, the fallback can't be used.
 4. Send 0.1 DASH (testnet) with Hello; a send above the limit asks for the passphrase.
 5. Cancel the prompt: the passphrase field shows; nothing changes.
 6. Use the PIN instead of the biometric: works (D9).
@@ -296,7 +315,7 @@ VM without a TPM; installed NSIS build):
 13. Close the app during the prompt; reopen: no orphan (sweep).
 14. From a second test exe, open our key name and call `RequestSignAsync`: record what the prompt shows (title, app
     or exe name, any text) and whether it differs from ours (R1).
-15. Recover with the recovery phrase while enrolled: the old key and blob are gone.
+15. Recover with the recovery phrase while enrolled: the old key and blob are gone before the new vault is written.
 
 ## 10. Decisions
 
@@ -304,15 +323,15 @@ VM without a TPM; installed NSIS build):
 |---|---|---|
 | D1 | The vault and its contract do not change. Hello protects the vault-made W in a host blob, the macOS keychain item's role. | `enroll_quick_unlock` already returns W once (`vault.rs:2586`); no key-handling change in dw-vault's slot logic. |
 | D2 | W stays in Rust: new dw-app commands `quick_unlock_provider`, `enable_quick_unlock(grant_id)`, `disable_quick_unlock`, and a credential kind `windowsHello` resolved inside dw-app. The renderer's `quickUnlock{wrapKey}` path and `enroll_quick_unlock`'s returned key are not used on Windows. | The webview is the larger attack surface; W opens the DEK. |
-| D3 | Enrolment needs a TPM-backed Hello key: attestation `Success` only; `TemporaryFailure` is "try later"; anything else is `no_tpm`. If attestation proves unreliable, a per-key hardware property replaces it (R2); if neither works, Windows ships without Hello. D3 is never dropped. **Accepted (MG 2026-11-19).** | A software Hello key falls to an offline PIN brute force (§3), weaker than the passphrase it stands in for. |
-| D4 | Verify each enrolment signature as RSA PKCS#1 v1.5 SHA-256 against the key's public key; refuse anything else. | Proves determinism without a second prompt. |
+| D3 | Enrolment needs a TPM-backed Hello key: attestation `Success` only; `TemporaryFailure` is "try later"; anything else is `no_tpm`. If attestation proves unreliable, a per-key hardware property replaces it, only after it has been seen clear on a software Hello key (R2); if neither works, Windows ships without Hello. D3 is never dropped. **Accepted (MG 2026-11-19).** | A software Hello key falls to an offline PIN brute force (§3), weaker than the passphrase it stands in for. |
+| D4 | Verify each enrolment signature as RSA PKCS#1 v1.5 SHA-256 against the key's public key (`RetrievePublicKey(X509SubjectPublicKeyInfo)`, the same encoding the blob hashes), with the `IBuffer` the sign call returned; refuse anything else. | Proves determinism without a second prompt. |
 | D5 | Random 32-byte challenge per enrolment, stored in the blob; K = HKDF-SHA256 with a domain-separated message. | Re-enrolment invalidates the old blob; no cross-protocol reuse of the signature. |
 | D6 | The blob lives in Credential Manager (D-N8), not in the data root. | Not in backups or synced folders; DPAPI adds a layer. |
-| D7 | One Hello key and one blob per vault (vault id × network). | Two vaults with distinct vault ids, or two networks, never touch each other's enrolment. A data root copied on the same PC shares the vault id and the enrolment; the copy falls back to reset (§5). |
+| D7 | One Hello key and one blob per vault (vault id × network). | Two vaults with distinct vault ids, or two networks, never touch each other's enrolment. A data root copied on the same PC shares the vault id and the enrolment; turning Hello on or off, or opening a copy without slot B, can reset the enrolment in both (fails safe, §5). |
 | D8 | WinRT code in `dw-desktop/src/hello.rs` via the `windows` crate (0.62, already in the lockfile) behind a `HelloKeys` trait; the pure blob code in `dw-vault/src/hello_blob.rs` (it uses the vault's AEAD; `hkdf` 0.12 becomes a direct dep, already in the lockfile). | Testable on Linux with fakes; the crypto stays in the crate that already holds it. |
 | D9 | Accept Hello's PIN fallback and say so in the enable dialog. **Accepted (MG 2026-11-19).** | `KeyCredentialManager` can't require biometrics; the limit and 7-day rule bound UI use. |
 | D10 | Scope A: Hello at the payment confirm sheet only (send, pay to a contact, "Accept and pay"). The lock screen, PSBT signing, sign message, other Platform writes, and the masternode, masternode-withdraw and governance grants stay passphrase only in 1.0, although the vault would issue them under quick unlock. **Accepted (MG 2026-11-19).** | No engine or shell lock-state change in 1.0 (§7); one sheet to prove on the real PC. |
-| D11 | Reset (removes the enrolment) only on: `OpenAsync` `NotFound`, whatever `IsSupportedAsync` says; a public key that differs from the blob's; the blob `get` returning `Ok(None)`; a blob that fails to open after a successful prompt; the vault refusing W. `unavailable_now` (removes nothing) on: a remote session; any other `OpenAsync` status; the blob `get` returning `Err`; `UserPrefersPassword`, `SecurityDeviceLocked`, `UnknownError` or any other sign status. `UserCanceled` is a cancel. Order as §6.6. | Remote sessions, a locked TPM and a store hiccup are temporary; removing the Hello PIN can make `IsSupportedAsync` false while the key is gone. |
+| D11 | Reset (removes the enrolment) only on: `OpenAsync` `NotFound`, whatever `IsSupportedAsync` says; a public key that differs from the blob's; the blob `get` returning `Ok(None)`; a blob that doesn't parse (wrong length, unknown version), before any prompt; a blob that fails to open after a successful prompt; the vault refusing W. `unavailable_now` (removes nothing) on: a remote session; any other `OpenAsync` status; the blob `get` returning `Err`; `UserPrefersPassword`, `SecurityDeviceLocked`, `UnknownError` or any other sign status. `UserCanceled` is a cancel. Order as §6.6. | Remote sessions, a locked TPM and a store hiccup are temporary; removing the Hello PIN can make `IsSupportedAsync` false while the key is gone. |
 | D12 | Spending limit choices and default as today (0/0.1/0.5/1/5 DASH, 0.5). | `m2-engine.md:263`, IOS-016. |
 | D13 | Implementation ~500 non-test lines in two PRs, each carrying the doc edits for the behaviour it changes: (1) `hello_blob` + `hello.rs` + dw-app commands, with the regenerated Tauri bindings (`apps/desktop/src/api/generated/`, checked by ci.yml:166-173), `m2-engine.md:283-284` and `:387-388`, and DESIGN-opus.md:258-260 (slot B is now a random W sealed under K, not a key derived directly from the signature); (2) the Security row and confirm sheet, with parity IOS-011/016 and U-04 D11. | Lane N's estimate; keeps each PR under the size check; no doc is wrong while a PR is in. |
 
@@ -321,7 +340,7 @@ VM without a TPM; installed NSIS build):
 | # | Risk | Plan |
 |---|---|---|
 | R1 | Same-user malware can call our key and ride a real Hello prompt the user approves (Bitwarden documents the same residual). One approved prompt gives it W, and with `vault.dwv` the data key: every seed, outside the spending limit and the 7-day rule, permanently (the data key does not rotate). The prompt can't name the action or the caller. | **Accepted for 1.0 with disclosure (MG 2026-11-19)**: §3 row 1, the enable-dialog and confirm-sheet line (§8), real-PC step 14; documented for H-01. Packaging as MSIX would scope keys per package; not in 1.0. |
-| R2 | `GetAttestationAsync` may not return `Success` for a TPM key (it may need a network round trip, or not be offered for Hello keys), or may not separate TPM from software keys. | Real-PC step 3. If attestation fails, use the per-key hardware property instead (`NCRYPT_IMPL_TYPE_PROPERTY` with `NCRYPT_IMPL_HARDWARE_FLAG` on the key, §2); TPM presence on the PC is not enough. If neither gives a per-key signal, Windows 1.0 ships passphrase only. D3 is not dropped. |
+| R2 | `GetAttestationAsync` may not return `Success` for a TPM key (it may need a network round trip, or not be offered for Hello keys), or may not separate TPM from software keys. | Real-PC step 3. If attestation fails, use the per-key hardware property instead (`NCRYPT_IMPL_TYPE_PROPERTY` with `NCRYPT_IMPL_HARDWARE_FLAG` on the key, §2), but only once the session has seen it set on a TPM Hello key and clear on a software Hello key (a Hyper-V VM without a vTPM is enough); TPM presence on the PC is not enough. Otherwise Windows 1.0 ships passphrase only. D3 is not dropped. |
 | R3 | From an unpackaged Win32 app the Hello prompt can open behind the window, and face/fingerprint then don't start; KeePassXC and Bitwarden both bring "Credential Dialog Xaml Host" to the front by hand. | Same workaround (FindWindow + SetForegroundWindow, retried briefly); real-PC step 2. |
 | R4 | Behaviour over RDP and with `SecurityDeviceLocked` is not documented precisely. | D11; real-PC step 11. |
 | R5 | Enable may show two prompts (create, then sign). | Acceptable; record the count. |
