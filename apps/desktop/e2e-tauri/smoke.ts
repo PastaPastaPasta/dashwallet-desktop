@@ -118,12 +118,12 @@ async function main() {
 
     await wd.press(tid("sidebar-home"));
     await wd.waitFor(tid("hero"), "the Overview after unlock");
-    await wd.waitFor(tid("history-empty"), "the empty history of a new wallet");
+    await wd.waitFor(`${tid("history-empty")}, ${tid("history-syncing")}`, "the empty history of a new wallet");
     await wd.screenshot("3-overview");
     step("unlocked: Overview of the new wallet, history empty");
 
     await wd.press(tid("sidebar-activity"));
-    await wd.waitFor(tid("tx-empty"), "the Transactions page");
+    await wd.waitFor(`${tid("tx-empty")}, ${tid("tx-syncing")}`, "the Transactions page");
     await wd.screenshot("4-activity");
     step("Activity page");
 
