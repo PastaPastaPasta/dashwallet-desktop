@@ -3177,6 +3177,181 @@ fn a_shield_refuses_a_coin_credited_after_its_coin_check() {
     );
 }
 
+#[test]
+fn ordinary_shield_funding_leaves_bip44_denominations_alone() {
+    use super::lease::FlowOutcome;
+    use dw_coinjoin::denoms::DENOMINATIONS;
+    use platform_wallet::AssetLockFundingType;
+
+    let f = super::topup_tests::fixture(false);
+    let (engine, session, wallet) = (&f.engine, &f.session, f.wallet);
+    let pw = engine.block_on(session.wallet(&wallet)).unwrap();
+    let d = DENOMINATIONS[2];
+    let denom_op = OutPoint::new(Txid::from_byte_array([0xd1; 32]), 0);
+    engine.block_on(async {
+        let address = (pw.core().next_receive_address_for_account(0).await).unwrap();
+        let mut state = pw.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        let mut utxo = key_wallet::Utxo::new(
+            denom_op,
+            dashcore::TxOut {
+                value: d,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            1,
+            false,
+        );
+        utxo.is_confirmed = true;
+        account.utxos.insert(denom_op, utxo);
+    });
+
+    let grant = || {
+        session
+            .vault()
+            .authorize(
+                dw_vault::GrantPurpose::PlatformOp {
+                    max_duffs: 100_000_000,
+                    max_credits: 0,
+                },
+                Some(&wallet.0),
+                dw_vault::Credential::None,
+            )
+            .unwrap()
+            .id
+    };
+    let key = FundingKey {
+        funding_type: AssetLockFundingType::AssetLockShieldedAddressTopUp,
+        identity_index: 0,
+        account: 0,
+    };
+
+    let s = Arc::clone(session);
+    let (values, spendable, only_denom_res, only_denom_sigs) = engine.block_on(async move {
+        let lib = pool::PwShielded::open(&s, wallet).await.unwrap();
+        let values = lib.coin_values().await.unwrap();
+        let spendable = lib.spendable().await.unwrap();
+        let lease = (s.begin_lease(wallet, FlowKind::Shield, &[grant()]).await).unwrap();
+        assert!(s.leases.refresh_funding(wallet).await);
+        let step = pool::next_step(&s, wallet).unwrap();
+        let permit = (lib.funding_permit(&lease, step, key, d - 1_000).await).unwrap();
+        let funded = lib.fund(d - 1_000, &permit).await;
+        let released = permit.signatures().released();
+        let _ = permit.finish(false);
+        (values, spendable, funded, released)
+    });
+    assert!(values.is_empty());
+    assert_eq!(spendable.duffs, 0);
+    assert!(
+        matches!(only_denom_res, Err(FundError::NotSent(_))),
+        "expected NotSent, got {only_denom_res:?}"
+    );
+    assert_eq!(only_denom_sigs, 0);
+    let unlocked_after = engine.block_on(async {
+        let state = pw.state().await;
+        !state.core_wallet.accounts.standard_bip44_accounts[&0].utxos[&denom_op].is_locked
+    });
+    assert!(unlocked_after, "temporary selection lock is lifted on drop");
+
+    // Credit an ordinary BIP44 coin beside the denomination and shield an amount
+    // where BranchAndBound would prefer `denom_op` if it were selectable.
+    let ordinary_op = OutPoint::new(Txid::from_byte_array([0xd2; 32]), 0);
+    engine.block_on(async {
+        let address = (pw.core().next_receive_address_for_account(0).await).unwrap();
+        let mut state = pw.state_mut().await;
+        let account = (state.core_wallet.accounts.standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap();
+        let mut utxo = key_wallet::Utxo::new(
+            ordinary_op,
+            dashcore::TxOut {
+                value: 50_000_000,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            1,
+            false,
+        );
+        utxo.is_confirmed = true;
+        account.utxos.insert(ordinary_op, utxo);
+    });
+    let s = Arc::clone(session);
+    let (values, sigs) = engine.block_on(async move {
+        let lib = pool::PwShielded::open(&s, wallet).await.unwrap();
+        let values = lib.coin_values().await.unwrap();
+        let lease = (s.begin_lease(wallet, FlowKind::Shield, &[grant()]).await).unwrap();
+        assert!(s.leases.refresh_funding(wallet).await);
+        let step = pool::next_step(&s, wallet).unwrap();
+        let target = d - 500;
+        let permit = (lib.funding_permit(&lease, step, key, target).await).unwrap();
+        let _ = lib.fund(target, &permit).await;
+        let sigs = permit.signatures().released();
+        let _ = permit.finish(false);
+        (values, sigs)
+    });
+    assert_eq!(values, vec![50_000_000]);
+    assert_eq!(
+        sigs, 1,
+        "selected and signed the ordinary coin, not the denomination"
+    );
+
+    // Pre-signing backstop: a denomination credited after the check is refused by the signer.
+    let f2 = super::topup_tests::fixture(false);
+    let (engine2, session2, wallet2) = (&f2.engine, &f2.session, f2.wallet);
+    let pw2 = engine2.block_on(session2.wallet(&wallet2)).unwrap();
+    let grant2 = session2
+        .vault()
+        .authorize(
+            dw_vault::GrantPurpose::PlatformOp {
+                max_duffs: 100_000_000,
+                max_credits: 0,
+            },
+            Some(&wallet2.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    let s2 = Arc::clone(session2);
+    let wh2 = Arc::clone(&pw2);
+    let (late_res, late_outcome, late_sigs) = engine2.block_on(async move {
+        let lib = pool::PwShielded::open(&s2, wallet2).await.unwrap();
+        let lease = (s2.begin_lease(wallet2, FlowKind::Shield, &[grant2]).await).unwrap();
+        assert!(s2.leases.refresh_funding(wallet2).await);
+        let step = pool::next_step(&s2, wallet2).unwrap();
+        let permit = (lib.funding_permit(&lease, step, key, d - 1_000).await).unwrap();
+        let address = (wh2.core().next_receive_address_for_account(0).await).unwrap();
+        let late = OutPoint::new(Txid::from_byte_array([0xd3; 32]), 0);
+        let mut utxo = key_wallet::Utxo::new(
+            late,
+            dashcore::TxOut {
+                value: d,
+                script_pubkey: address.script_pubkey(),
+            },
+            address,
+            1,
+            false,
+        );
+        utxo.is_confirmed = true;
+        (wh2.state_mut()
+            .await
+            .core_wallet
+            .accounts
+            .standard_bip44_accounts)
+            .get_mut(&0)
+            .unwrap()
+            .utxos
+            .insert(late, utxo);
+        let funded = lib.fund(d - 1_000, &permit).await;
+        let released = permit.signatures().released();
+        (funded, permit.finish(false), released)
+    });
+    assert_eq!(late_res, Err(FundError::CoinsLocked));
+    assert_eq!(late_sigs, 0);
+    assert_eq!(late_outcome, FlowOutcome::Cancelled);
+}
+
 /// A fake over the fixture's wallet whose shield locks are the real
 /// library's tracked rows (`FakeShielded::real_rows`).
 fn real_rows(fx: &Fixture) -> Arc<FakeShielded> {
