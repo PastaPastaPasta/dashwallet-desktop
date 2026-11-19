@@ -701,6 +701,15 @@ impl NetworkSession {
                 }
             };
             let _ = live.tap.on_contact_profiles.set(Box::new(checked));
+            let weak = Arc::downgrade(&session);
+            let queued = move |wallet| {
+                if let Some(session) = weak.upgrade() {
+                    (session.platform).signal(
+                        crate::platform::runtime::PlatformSignal::ContactAccountsQueued(wallet),
+                    );
+                }
+            };
+            let _ = live.tap.on_contact_accounts_queued.set(Box::new(queued));
             let _ = live
                 .tap
                 .registrations

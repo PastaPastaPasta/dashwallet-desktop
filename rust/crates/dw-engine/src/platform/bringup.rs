@@ -92,6 +92,9 @@ enum Job {
     /// ([`PlatformSignal::RetryStartup`]).
     Retry,
     Unlock,
+    /// The contact-crypto drain after a sync queued an account build
+    /// ([`PlatformSignal::ContactAccountsQueued`]).
+    Drain,
     /// The names pass after a bring-up that discovered identities
     /// (`recovery.rs`), with the supervisor's names-check epoch (D32).
     Names(u64),
@@ -395,6 +398,7 @@ impl NetworkSession {
                     admitted.insert(id, this.platform.stamp());
                     (vec![id], Job::Retry)
                 }
+                PlatformSignal::ContactAccountsQueued(id) => (vec![id], Job::Drain),
                 PlatformSignal::WalletAdded(id) | PlatformSignal::Readmit(id) => {
                     admitted.insert(id, this.platform.stamp());
                     // Its open contests are adopted at once.
@@ -531,6 +535,7 @@ impl NetworkSession {
                     Job::BringUp => this.bring_up_wallet(&manager, id, since, false).await,
                     Job::Retry => this.bring_up_wallet(&manager, id, since, true).await,
                     Job::Unlock => this.after_unlock(&manager, id).await,
+                    Job::Drain => this.after_contact_accounts_queued(&manager, id).await,
                     Job::Names(epoch) => this.names_pass(&manager, id, epoch).await,
                     Job::Contests => {
                         let pass = this.contest_pass(&manager, id);
@@ -887,12 +892,30 @@ impl NetworkSession {
         } else {
             self.drain_contact_crypto(manager, id).await;
         }
+        self.reconcile_rescan(manager, id).await;
+    }
+
+    /// A sync queued a contact's account build: drained now, as an unlock
+    /// drains it, while the vault is prompt-free; otherwise, or when the
+    /// drain fails, it stays queued for the next unlock.
+    async fn after_contact_accounts_queued(self: &Arc<Self>, manager: &Manager, id: WalletId) {
+        let admitted = self
+            .platform
+            .admit(&id, || self.vault.has_wallet_secret(&id.0));
+        if admitted != Some(true) || !prompt_free(self.platform.lock.borrow().state) {
+            return;
+        }
+        self.drain_contact_crypto(manager, id).await;
+        self.reconcile_rescan(manager, id).await;
+    }
+
+    async fn reconcile_rescan(&self, manager: &Manager, id: WalletId) {
         let Some(wallet) = manager.get_wallet(&id.0).await else {
             return;
         };
         match wallet.identity().dashpay().reconcile_dashpay_rescan().await {
             Ok(Some(floor)) => {
-                tracing::info!(wallet_id = %id, floor, "DIP-15 rescan scheduled after unlock");
+                tracing::info!(wallet_id = %id, floor, "DIP-15 rescan scheduled for new contact accounts");
             }
             Ok(None) => {}
             Err(e) => tracing::warn!(wallet_id = %id, error = %e, "DIP-15 rescan reconcile failed"),

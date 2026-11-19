@@ -58,6 +58,9 @@ pub(crate) enum PlatformSignal {
     /// again changes (`StartupStatus::awaits_rerun`): run it again, with
     /// the library's budget and whatever Platform proved before.
     RetryStartup(WalletId),
+    /// A sync queued a contact's account build for the wallet: drain it now
+    /// if the vault is prompt-free, else it waits for the next unlock.
+    ContactAccountsQueued(WalletId),
     /// A contest watch row was written (DP1-04): a pass now, and the
     /// schedule again.
     Contests,

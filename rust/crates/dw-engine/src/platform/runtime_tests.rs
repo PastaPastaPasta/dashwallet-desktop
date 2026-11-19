@@ -1275,3 +1275,90 @@ fn a_close_locks_the_vault_of_a_retained_session() {
     );
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+/// The account build a DashPay sync queues for a new contact of `id`'s
+/// identity ([`give_identity`]), stored through the session's store and
+/// its tap as the library stores it.
+fn queue_contact_account(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) {
+    use platform_wallet::changeset::{
+        PendingContactCrypto, PendingContactCryptoOp, PlatformWalletChangeSet,
+        PlatformWalletPersistence,
+    };
+    let entry = PendingContactCrypto {
+        owner_identity_id: [7u8; 32].into(),
+        contact_id: [8u8; 32].into(),
+        op: PendingContactCryptoOp::RegisterReceiving,
+        enqueued_at_ms: 0,
+    };
+    let manager = s.manager().unwrap();
+    let queued = entry.clone();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm.get_wallet_info_mut(&id.0).unwrap();
+        (info
+            .identity_manager
+            .managed_identity_mut(&[7u8; 32].into()))
+        .unwrap()
+        .dashpay_pending_contact_crypto_mut()
+        .push(queued);
+    });
+    let store = s.live().unwrap().store;
+    store
+        .store(
+            id.0,
+            PlatformWalletChangeSet {
+                pending_contact_crypto_added: vec![entry],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+}
+
+fn queued_contact_work(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) -> usize {
+    let manager = s.manager().unwrap();
+    engine.block_on(async move {
+        let wallet = manager.get_wallet(&id.0).await.unwrap();
+        wallet
+            .identity()
+            .dashpay()
+            .pending_contact_crypto_count()
+            .await
+    })
+}
+
+/// #84: a contact's account build that a sync queues while the vault is
+/// unlocked is drained with no further action; while it is locked it stays
+/// queued, and the unlock drains it.
+#[test]
+fn a_contact_account_queued_while_unlocked_is_built_at_once() {
+    let _serial = serial();
+    for locked in [false, true] {
+        let dir = dw_testutil::private_tempdir();
+        let (engine, s) = session_at(dir.path(), vec!["http://127.0.0.1:1".into()], true);
+        let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+        give_identity(&engine, &s, id);
+        engine.block_on(s.start_spv()).unwrap();
+        wait_until("the bring-up", Duration::from_secs(30), || {
+            !matches!(
+                startup(&s, &id),
+                StartupStatus::NotRun | StartupStatus::Starting
+            )
+        });
+        if locked {
+            s.lock_vault_sync().unwrap();
+        }
+        queue_contact_account(&engine, &s, id);
+        if locked {
+            std::thread::sleep(Duration::from_secs(2));
+            assert_eq!(queued_contact_work(&engine, &s, id), 1, "kept while locked");
+            engine
+                .block_on(s.vault_op(|v| v.unlock(PASSPHRASE, dw_vault::UnlockScope::Full)))
+                .unwrap();
+        }
+        wait_until("the drain", Duration::from_secs(20), || {
+            queued_contact_work(&engine, &s, id) == 0
+        });
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+}
