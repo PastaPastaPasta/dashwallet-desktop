@@ -1,6 +1,7 @@
 # Release artifacts and continuous delivery (0.1: RELEASE-PLAN §1, PK-01/PK-02, DEC-1058).
 #
-# Every trigger builds the Tauri app in release mode, without the `selftest` feature, one job per OS:
+# Every trigger but a pull request builds the Tauri app in release mode, without the `selftest` feature, one
+# job per OS:
 #   macos    a universal .dmg (aarch64 + x86_64), ad-hoc signed, not notarized;
 #   windows  an unsigned NSIS .exe installer;
 #   linux    an x86_64 AppImage and .deb.
@@ -24,8 +25,8 @@
 #   push to main          an immutable prerelease v<version>-dev.<run>+<short sha> and the rolling
 #                         prerelease `continuous` (stable asset names, replaced in place);
 #   push of a tag vX.Y.Z[-rc.N]  that tag's release: full for vX.Y.Z, a prerelease for -rc.N;
-#   anything else         builds and uploads CI artifacts only: pull requests (forks
-#                         included) and workflow_dispatch. They never reach the publish job.
+#   anything else         builds and uploads CI artifacts only: the schedule and workflow_dispatch.
+#                         Pull requests (forks included) build nothing. None reaches the publish job.
 # Every published file and both SHA256SUMS are attested with actions/attest-build-provenance
 # (`gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop`, docs/release/verifying.md).
 # No GPG until 1.0.
@@ -65,9 +66,10 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its branch's running build; main and tags are never cancelled.
+# A new push cancels its branch's running build; main and tags are never cancelled. Main builds one at a
+# time: a newer main run replaces a pending one, so a burst of merges builds and publishes the newest commit.
 concurrency:
-  group: release-build-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  group: release-build-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/') }}
 
 env:
