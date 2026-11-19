@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 65
+Contract-Version: 66
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -214,8 +214,8 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
-| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, what the funding can spend now (`available_duffs`, item 52), and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. | `RegistrationError` |
-| `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. | `RegistrationError` |
+| `registration_quote(req)` | async | The real costs for `req`: contested, lock, fee, total, credits left, what the funding can spend now (`available_duffs`, item 52), and the `grant` to ask for (`max_duffs` and `max_credits`). Refuses a bad label (`name.*`) and bad invitation funding (`invitation.*`, `name.unavailable_for_invite`) before any prompt. A `Shielded` request's quote also carries `readiness`, and ignores the request's `denomination` (§7 item 88). | `RegistrationError` |
+| `start_registration(req, grant)` | async | Persists a `Draft` row and runs the state machine; returns the draft id. `req.funding` is stored as DP1-02's versioned `funding` encoding (§3.4 "Registration rows"), not as this record's serde form. An `initial_profile` avatar must already have a URL (§5); registration never uploads. `FaucetAssetLock` is refused with `platform.feature_off{feature: "faucet"}` outside developer builds. `Shielded` is checked again before anything is written and refused (§7 item 88): a readiness check that does not hold is `registration.shielded_not_ready{reason, ready_at}` (no override), another denomination than the quote's is `registration.quote_changed`, and a ready one is `platform.feature_off{feature: "shielded_registration"}` until its flow step lands. | `RegistrationError` |
 | `start_registration_past_unknown_funding(req, grant, past)` | async | `start_registration` past earlier registrations whose funding is unknown (DEC-197, "In progress" below). `past` names each blocker the user confirmed, as `registration.in_progress` names it. Call it only after the user confirmed the wedge copy. A named blocker passes only if every funding step it waits on is wedged; anything else still returns `registration.in_progress`. SPV must be synced (`registration.not_synced`), and each passed step's funding must have been released at least an hour ago (`registration.funding_unknown_recent { draft, wait_secs }`). A malformed name is `invalid_argument`; a well-formed one that blocks nothing is ignored. | `RegistrationError` |
 | `registrations()` | async | Every `dp_registration` row of the wallet, with what each waits for (§5), and, read-only, every outstanding funding step whose row is gone (draft `registration/<n>/funding`; §2.2 "The registration ledger"). | `RegistrationError` |
 | `registration_resume_grant(draft)` | async | An invitation claim row's resume grant (item 64): no duffs, and the credits of the steps it has left (the identity's creation while it has no identity, the name until it is registered, a pending profile, and the request while one is asked), from the row alone: never from `invitation_status`, which reads `Claimed` once the row's own claim landed. Another row is `invalid_argument`. | `RegistrationError` |
@@ -907,7 +907,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 051121d307a723fa435dadb4fb68e9f7bb5ea8d8a0cfd4bcdcf96e8d9af76fca version: 65 -->
+<!-- surface-sha256: 82a75eb0fabafbcb3895caa161001e5ec49d6dff5a81b412914584df96aeac21 version: 66 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1243,6 +1243,8 @@ pub enum RegistrationError {
     FundingCancelled,
     NotSynced,
     FundingUnknownRecent { draft: String, wait_secs: Option<u64> },
+    ShieldedNotReady { reason: ShieldedCheck, ready_at: Option<u64> },
+    QuoteChanged,
     Name(NameError),
     Invitation(InvitationError),
     Platform(PlatformError),
@@ -2063,6 +2065,29 @@ pub enum RegistrationFunding {
     Invitation { link_id: String, request_inviter: bool },
     ExistingIdentity { identity: String },
     FaucetAssetLock { key: String, proof: String },
+    Shielded { denomination: u64 },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedReadiness {
+    pub denomination: Option<u64>,
+    pub checks: Vec<ShieldedCheckState>,
+    pub ready_at: Option<u64>,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedCheckState {
+    pub check: ShieldedCheck,
+    pub ready: bool,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedCheck {
+    PoolActive,
+    FeatureOn,
+    Denomination,
+    Balance,
+    NoUnsettledSpend,
+    Synced,
+    Rested,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FaucetLockKey {
@@ -2078,6 +2103,7 @@ pub struct RegistrationQuote {
     pub remaining_credits: u64,
     pub available_duffs: u64,
     pub grant: GrantRequest,
+    pub readiness: Option<ShieldedReadiness>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RegistrationStatus {
@@ -2487,7 +2513,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 | `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_interrupted`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
 | `ProfileError` | `profile.conflict`, `profile.empty`, `profile.too_long`, `profile.unsupported_contract` |
-| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent` |
+| `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent`, `registration.shielded_not_ready`, `registration.quote_changed` |
 | `NameError` | `name.invalid`, `name.taken`, `name.contest_open`, `name.locked`, `name.unavailable_for_invite` |
 | `ContactError` | `contact.ineligible`, `contact.already_contact`, `contact.request_pending`, `contact.self`, `contact.channel_broken`, `contact.payment_locked`, `contact.scan_expired`, `contact.scan_unverified`, `contact.no_username`, `contact.details_too_long` |
 | `InvitationError` | `invitation.invalid`, `invitation.claimed`, `invitation.expired`, `invitation.already_has_identity` |
@@ -2775,8 +2801,8 @@ The shapes are in §3. What they mean, where the name does not say:
     or the profile edit.
 - **`RegistrationFunding`.** `CoreBalance`, `Invitation{link_id, request_inviter}` (a `stash_invitation` id; DP5-02,
   below; `request_inviter` false sends the inviter no contact request, item 64),
-  `ExistingIdentity{identity}` (the id goes to the row's `identity` column), and `FaucetAssetLock{key, proof}` for
-  developer builds:
+  `ExistingIdentity{identity}` (the id goes to the row's `identity` column), `Shielded{denomination}` (the quote's
+  `readiness.denomination` in credits, item 88), and `FaucetAssetLock{key, proof}` for developer builds:
   - The faucet's `POST /api/asset-lock-proof` takes only a compressed public key and returns the `assetLockProof`
     (hex), the txid and the credits. So the engine keeps the key: `prepare_faucet_lock` derives a fresh registration
     asset-lock key (`m/9'/c'/5'/1'/…`, the `PlatformFunding` scope) and returns its id and public key; the host posts
@@ -2797,7 +2823,8 @@ The shapes are in §3. What they mean, where the name does not say:
 - **`RegistrationQuote`.** `total_duffs = lock_duffs + fee_duffs`; `grant` is the `PlatformOp{max_duffs, max_credits}`
   to ask for: `max_duffs` covers the lock and fee, `max_credits` the identity creation, the name and the profile.
   An invitation's quote has `lock_duffs` the invitation's funding, `fee_duffs`, `total_duffs`, `available_duffs`
-  and `max_duffs` 0, and `max_credits` with the request to the inviter (item 63).
+  and `max_duffs` 0, and `max_credits` with the request to the inviter (item 63). `readiness` is set for `Shielded`
+  funding only (`ShieldedReadiness`, item 88); that quote has every duff field 0.
 - **`GrantRequest`** (in every quote, and from `grant_request`): the caps of the `PlatformOp` grant an action needs,
   computed with the engine's own fee bound (E0-04 §4.2), so a host never sizes `max_credits` from `cost_table()`. The
   engine charges no more than it quoted; a quote that went stale (a fee change) is `platform.grant_exceeded`, and the
@@ -4255,6 +4282,31 @@ renames or reshapes them takes the next version bump:
     the hook a spend is `platform.unavailable` and no pass runs. `platform.cancelled` ("cancelled
     before anything was sent") is not reused either: it is the outcome of a lock that won the permit or an approval
     that ended, and hosts group it with the ended-approval codes, while a refusal here is neither.
+
+**From lane C, D-C4** ([`C-funding.md`](../design/C-funding.md), version 66):
+
+88. **Registration from the Shielded balance: the quote and the start's checks (C4b-1; F14, F16, F17).**
+    `RegistrationFunding` gains `Shielded{denomination}`, and `RegistrationQuote` gains `readiness:
+    Option<ShieldedReadiness>`, set for that funding only. `ShieldedReadiness{denomination, checks, ready_at}`:
+    `denomination` is the smallest member of the protocol version's `shielded_identity_create_denominations` (PV12:
+    0.1, 0.3, 0.5, 1 DASH; PV13 and PV14: 0.03, 0.1, 0.25, 0.5, 1 DASH; credits) that, less the create's fee for the
+    notes the library would select (`compute_shielded_identity_create_fee`, the six registration keys), covers the
+    names and the profile; `None` when none does. `checks` holds every `ShieldedCheckState{check, ready}` in this
+    order, which is the start's: `pool_active` (protocol version 12 or later), `feature_on` (Platform runs),
+    `denomination`, `balance` (the notes cover it), `no_unsettled_spend` (no unrecorded, unresolved or held spend of
+    the wallet, and the dispatch journal read), `synced` (the ledger established and its tree scanned), `rested` (3
+    hours since the latest incoming shielded activity's `created_at`; restored rows, which have none, count as rested
+    once `synced`). `ready_at` is when `rested` will hold. The quote's `grant` is `max_duffs` 0 and `max_credits` the
+    denomination plus the names and the profile; `remaining_credits` is the denomination less the fee, the names and
+    the profile. `start_registration` with `Shielded` runs every check again before anything is read for the ledger,
+    written or redeemed, with no override: `pool_active`, `feature_on` or `denomination` failing is
+    `platform.feature_off{feature: "shielded_registration"}` (no member of the version's set can pay, an empty set
+    included); any other is the new `registration.shielded_not_ready{reason, ready_at}` (`reason` the first check
+    that fails). Then a `denomination` other than the quote's is the new `registration.quote_changed` (C-funding F4).
+    A start that passes both is still `platform.feature_off{feature: "shielded_registration"}`: C4b-2 adds the flow
+    step. The stored `funding` kind `shielded` (`denomination`, `fallback` the wallet's own Platform receive address,
+    and `identity` once known; funding version 1) is decoded, and a row of it reads `registration.unsupported` here:
+    never funded, advanced or discarded until C4b-2.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

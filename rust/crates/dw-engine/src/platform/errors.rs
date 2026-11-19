@@ -13,6 +13,7 @@ use super::flows::{BudgetPurpose, RevokeCause};
 use super::identity::KeyPurpose;
 use super::names::UsernameRule;
 use super::profile::{Profile, ProfileField};
+use super::registration::ShieldedCheck;
 pub use super::shielded::ShieldedSyncWait;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -246,6 +247,18 @@ pub enum RegistrationError {
         draft: String,
         wait_secs: Option<u64>,
     },
+    /// A Shielded-funded start whose readiness `reason` does not hold
+    /// (C-funding F16, F17): nothing was written or signed. `ready_at` is
+    /// when the notes have rested, for `Rested`.
+    #[error("the shielded balance cannot pay yet: {reason:?}")]
+    ShieldedNotReady {
+        reason: ShieldedCheck,
+        ready_at: Option<u64>,
+    },
+    /// The start's cost is not the one the quote showed (C-funding F4):
+    /// nothing was written or signed; quote again.
+    #[error("the cost changed since the quote")]
+    QuoteChanged,
     #[error(transparent)]
     Name(NameError),
     #[error(transparent)]
@@ -268,6 +281,8 @@ impl RegistrationError {
             Self::FundingCancelled => "registration.funding_cancelled",
             Self::NotSynced => "registration.not_synced",
             Self::FundingUnknownRecent { .. } => "registration.funding_unknown_recent",
+            Self::ShieldedNotReady { .. } => "registration.shielded_not_ready",
+            Self::QuoteChanged => "registration.quote_changed",
             Self::Name(e) => e.code(),
             Self::Invitation(e) => e.code(),
             Self::Platform(e) => e.code(),

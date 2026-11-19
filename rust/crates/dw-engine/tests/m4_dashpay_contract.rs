@@ -1021,6 +1021,11 @@ fn error_codes_match_the_contract() {
                 draft: s(),
                 wait_secs: None,
             },
+            RegistrationError::ShieldedNotReady {
+                reason: ShieldedCheck::Rested,
+                ready_at: None,
+            },
+            RegistrationError::QuoteChanged,
         ],
         RegistrationError::code,
     );

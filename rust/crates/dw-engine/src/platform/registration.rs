@@ -6,8 +6,12 @@ use std::sync::Arc;
 
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::prelude::Identifier;
+use dpp::shielded::compute_shielded_identity_create_fee;
+use dpp::version::PlatformVersion;
 use dw_appdb::{ContestWatch, NewRegistration, RegistrationChange, RegistrationRow};
 use dw_vault::{GrantKind, GrantPurpose};
+use platform_wallet::wallet::shielded::ShieldedNote;
+use platform_wallet::wallet::shielded::note_selection::select_notes;
 use serde::{Deserialize, Serialize};
 
 use super::contest_watch::watch_of;
@@ -17,11 +21,14 @@ use super::flows::{
     BudgetPurpose, CONTACT_REQUEST_CREDITS, FlowKind, GrantRequest, LeaseStateView,
 };
 use super::invitations::InvitationStatus;
+use super::keys_policy::registration_specs;
 use super::lease::{Lease, LeaseError};
 use super::names::valid_label;
 use super::registration_flow::{self as flow, PwLib, RegistrationLib};
 use super::registration_ledger::{Ledger, Standing};
 use super::registration_rows::{Decoded, Funding, Phase, ProfileRecord};
+use super::shielded::SHIELDED_ACTIVATION_VERSION;
+use super::shielded_pool::MIN_ACTIONS;
 use super::unfinished::{LockKindId, TransfersReport};
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -71,6 +78,49 @@ pub enum RegistrationFunding {
         key: String,
         proof: String,
     },
+    /// Paid from the shielded pool (C-funding F11–F17). `denomination`, in
+    /// credits, is the quote's `readiness.denomination`: the quote ignores
+    /// it, and the start refuses another (`registration.quote_changed`).
+    Shielded {
+        denomination: u64,
+    },
+}
+
+/// Whether the Shielded balance can pay a registration now (C-funding F16).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedReadiness {
+    /// The member of the protocol version's denomination set the
+    /// registration spends, in credits; `None` while none fits (F14).
+    pub denomination: Option<u64>,
+    /// Every check, in the order the start refuses them.
+    pub checks: Vec<ShieldedCheckState>,
+    /// While `Rested` is not ready: when it will be, unix seconds.
+    pub ready_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShieldedCheckState {
+    pub check: ShieldedCheck,
+    pub ready: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShieldedCheck {
+    /// The network's protocol version takes shielded transitions.
+    PoolActive,
+    /// Platform runs in this build and session.
+    FeatureOn,
+    /// A member of the version's set covers the fee, the name and profile.
+    Denomination,
+    /// The notes cover the denomination.
+    Balance,
+    /// No spend of the wallet is unrecorded or unresolved.
+    NoUnsettledSpend,
+    /// The note tree is scanned.
+    Synced,
+    /// 3 hours since the latest incoming shielded activity (F17).
+    Rested,
 }
 
 /// An asset-lock key the engine derived for the faucet's
@@ -103,6 +153,8 @@ pub struct RegistrationQuote {
     /// once the funding charged the total), and `max_credits` the identity
     /// creation, name and profile.
     pub grant: GrantRequest,
+    /// `Shielded` funding only.
+    pub readiness: Option<ShieldedReadiness>,
 }
 
 /// One `dp_registration` row.
@@ -400,8 +452,8 @@ fn invalid(detail: impl Into<String>) -> RegistrationError {
 }
 
 /// What a request costs, as both the quote and the start compute it.
-struct Plan {
-    funding: Funding,
+pub(crate) struct Plan {
+    pub(crate) funding: Funding,
     contested: bool,
     /// The temporary name, kept only for a contested label.
     temp_label: Option<String>,
@@ -416,10 +468,11 @@ struct Plan {
     available_duffs: u64,
     /// Coins the funding could spend that the engine keeps from selection.
     protected_coins: usize,
+    readiness: Option<ShieldedReadiness>,
 }
 
 /// What `req` costs and how it is funded, for the quote and the start.
-async fn plan<L: RegistrationLib>(
+pub(crate) async fn plan<L: RegistrationLib>(
     lib: &L,
     req: &RegistrationRequest,
 ) -> Result<Plan, RegistrationError> {
@@ -465,6 +518,7 @@ async fn plan<L: RegistrationLib>(
         credits_held: 0,
         available_duffs: 0,
         protected_coins: 0,
+        readiness: None,
     };
     match &req.funding {
         RegistrationFunding::CoreBalance => {
@@ -507,6 +561,145 @@ async fn plan<L: RegistrationLib>(
             request_inviter,
         } => invitation_plan(lib, link_id, *request_inviter, credits, base).await,
         RegistrationFunding::FaucetAssetLock { .. } => unreachable!("refused above"),
+        RegistrationFunding::Shielded { .. } => shielded_plan(lib, base).await,
+    }
+}
+
+/// The notes rest this long after the wallet's latest incoming shielded
+/// activity before they may fund a registration (C-funding F17).
+pub(crate) const SHIELDED_REST_SECS: u64 = 3 * 3600;
+
+/// What a Shielded-funded registration reads of the wallet (C-funding F16).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ShieldedFacts {
+    pub(crate) platform_enabled: bool,
+    /// The account's ledger is established and its note tree scanned.
+    pub(crate) synced: bool,
+    /// The notes a spend may select.
+    pub(crate) notes: Vec<ShieldedNote>,
+    /// A spend of the wallet is unrecorded or unresolved, or the dispatch
+    /// journal is not read yet.
+    pub(crate) unsettled: bool,
+    /// The newest `created_at` of the wallet's incoming shielded activity;
+    /// restored rows have none.
+    pub(crate) latest_incoming: Option<u64>,
+    /// The wallet's Platform receive address (F13).
+    pub(crate) fallback: String,
+}
+
+/// A Shielded-funded plan: the smallest denomination of the version that
+/// pays the create's fee and `base.credits` (the names and the profile),
+/// and the readiness the start checks again. The identity starts with the
+/// denomination less the predicted fee; the change returns to the pool.
+async fn shielded_plan<L: RegistrationLib>(lib: &L, base: Plan) -> Result<Plan, RegistrationError> {
+    let version = lib.platform_version().await;
+    let facts = lib.shielded_facts().await?;
+    let pick = denomination(version, &facts.notes, base.credits);
+    let now = crate::events::unix_now();
+    let readiness = shielded_readiness(version, &facts, pick.map(|(d, _)| d), now);
+    let (denomination, fee) = pick.unwrap_or_default();
+    Ok(Plan {
+        funding: Funding::Shielded {
+            denomination,
+            fallback: facts.fallback,
+            identity: None,
+        },
+        credits_held: denomination.saturating_sub(fee),
+        readiness: Some(readiness),
+        ..base
+    })
+}
+
+/// The smallest member of `version`'s denomination set that, less the
+/// create's fee for the notes it would select, covers `needed`; with that
+/// fee (C-funding F14).
+pub(crate) fn denomination(
+    version: &PlatformVersion,
+    notes: &[ShieldedNote],
+    needed: u64,
+) -> Option<(u64, u64)> {
+    let set = (version.drive_abci.validation_and_processing.event_constants)
+        .shielded_identity_create_denominations;
+    let keys = registration_specs().len();
+    (set.iter())
+        .filter_map(|&d| {
+            let actions = select_notes(notes, d, 0).map_or(MIN_ACTIONS, |n| n.len());
+            let fee = compute_shielded_identity_create_fee(actions.max(MIN_ACTIONS), keys, version)
+                .ok()?;
+            (d > fee && d - fee >= needed).then_some((d, fee))
+        })
+        .min()
+}
+
+/// Each check of C-funding F16 and F17 at `now`.
+pub(crate) fn shielded_readiness(
+    version: &PlatformVersion,
+    facts: &ShieldedFacts,
+    denomination: Option<u64>,
+    now: u64,
+) -> ShieldedReadiness {
+    let ready_at = (facts.latest_incoming)
+        .map(|at| at.saturating_add(SHIELDED_REST_SECS))
+        .filter(|&at| at > now);
+    let checks = [
+        (
+            ShieldedCheck::PoolActive,
+            version.protocol_version >= SHIELDED_ACTIVATION_VERSION,
+        ),
+        (ShieldedCheck::FeatureOn, facts.platform_enabled),
+        (ShieldedCheck::Denomination, denomination.is_some()),
+        (
+            ShieldedCheck::Balance,
+            denomination.is_some_and(|d| select_notes(&facts.notes, d, 0).is_ok()),
+        ),
+        (ShieldedCheck::NoUnsettledSpend, !facts.unsettled),
+        (ShieldedCheck::Synced, facts.synced),
+        // Restored rows have no time: rested once the scan is complete.
+        (ShieldedCheck::Rested, facts.synced && ready_at.is_none()),
+    ];
+    ShieldedReadiness {
+        denomination,
+        checks: (checks.into_iter())
+            .map(|(check, ready)| ShieldedCheckState { check, ready })
+            .collect(),
+        ready_at,
+    }
+}
+
+/// The start of a Shielded-funded request, before anything is written:
+/// every readiness check again, with no override; then the denomination
+/// the quote showed. No flow step funds it yet (C4b-2).
+fn shielded_start(
+    readiness: &ShieldedReadiness,
+    funding: &RegistrationFunding,
+) -> Result<(), RegistrationError> {
+    let off = || {
+        PlatformError::FeatureOff {
+            feature: "shielded_registration".into(),
+        }
+        .into()
+    };
+    match readiness.checks.iter().find(|c| !c.ready).map(|c| c.check) {
+        Some(
+            ShieldedCheck::PoolActive | ShieldedCheck::FeatureOn | ShieldedCheck::Denomination,
+        ) => {
+            return Err(off());
+        }
+        Some(reason) => {
+            return Err(RegistrationError::ShieldedNotReady {
+                reason,
+                ready_at: readiness.ready_at,
+            });
+        }
+        None => {}
+    }
+    match funding {
+        RegistrationFunding::Shielded { denomination }
+            if readiness.denomination == Some(*denomination) =>
+        {
+            Err(off())
+        }
+        _ => Err(RegistrationError::QuoteChanged),
     }
 }
 
@@ -590,6 +783,11 @@ pub(crate) async fn quote<L: RegistrationLib>(
         Funding::CoreBalance { .. } => flow::PROOF_AUTHORITY_DUFFS,
         _ => 0,
     };
+    // F5: the notes spent, then the names and the profile.
+    let spent_credits = match plan.funding {
+        Funding::Shielded { denomination, .. } => denomination,
+        _ => 0,
+    };
     Ok(RegistrationQuote {
         contested: plan.contested,
         lock_duffs: plan.lock_duffs,
@@ -599,8 +797,9 @@ pub(crate) async fn quote<L: RegistrationLib>(
         available_duffs: plan.available_duffs,
         grant: GrantRequest {
             max_duffs: total_duffs.saturating_add(proof_authority),
-            max_credits: plan.credits,
+            max_credits: plan.credits.saturating_add(spent_credits),
         },
+        readiness: plan.readiness,
     })
 }
 
@@ -757,6 +956,9 @@ pub(crate) async fn start_past<L: RegistrationLib + 'static>(
     past: &[String],
 ) -> Result<String, RegistrationError> {
     let plan = plan(&*lib, &req).await?;
+    if let Some(readiness) = &plan.readiness {
+        shielded_start(readiness, &req.funding)?;
+    }
     let past = past
         .iter()
         .map(|p| past_draft(p).ok_or_else(|| invalid(format!("{p} names no registration"))))

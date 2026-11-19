@@ -154,6 +154,24 @@ mirror_enum!(UsernameRule => UsernameRuleName {
     MinLength, MaxLength, AllowedCharacters, NoEdgeHyphen, NoDoubleHyphen
 });
 
+/// One readiness check of a Shielded-funded registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum ShieldedCheckName {
+    PoolActive,
+    FeatureOn,
+    Denomination,
+    Balance,
+    NoUnsettledSpend,
+    Synced,
+    /// 3 hours since the latest incoming shielded activity.
+    Rested,
+}
+
+mirror_enum!(engine::ShieldedCheck => ShieldedCheckName {
+    PoolActive, FeatureOn, Denomination, Balance, NoUnsettledSpend, Synced, Rested
+});
+
 /// Whether an identity may send a contact request to another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]

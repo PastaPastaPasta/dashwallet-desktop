@@ -118,6 +118,10 @@ export function checkUsername(label: string): UsernameCheck {
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
+
+/** The engine refuses a Shielded-funded start until its flow step lands (m4 item 88); C4c adds the readiness quote. */
+export const shieldedOff = (): AppError =>
+  fail("platform.feature_off", "shielded_registration", { kind: "feature", feature: "shielded_registration" });
 const invalid = (detail: string) => fail("invalid_argument", detail);
 
 /** `name.invalid` with the rules `label` breaks, if it breaks one. */
@@ -246,6 +250,7 @@ export function registrationHandlers(d: RegistrationDeps): Handlers {
     const dp = d.dashpay(world, walletId);
     if (request.funding.kind === "invitation") return startClaim(ctx, walletId, request, grantId);
     if (request.funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
+    if (request.funding.kind === "shielded") throw shieldedOff();
     validLabel(request.label);
     const blocker = dp.registrations.find((r) => blocks(r) && !(past.includes(r.draft) && reported(world, walletId, dp, r).waiting === "fundingUnknown"));
     if (blocker) throw fail("registration.in_progress", "a registration is in progress", { kind: "draft", draft: blocker.draft });

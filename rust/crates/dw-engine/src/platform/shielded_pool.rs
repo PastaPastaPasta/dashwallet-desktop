@@ -144,7 +144,7 @@ use sha2::{Digest, Sha256};
 use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait as Wait};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
-use super::registration::{RegistrationWait, funding_cap, grant_cap};
+use super::registration::{RegistrationWait, ShieldedFacts, funding_cap, grant_cap};
 use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable,
 };
@@ -168,7 +168,7 @@ const MAX_HISTORY: u32 = 500;
 const MEMO_BYTES: usize = 36;
 /// The fewest actions a spend's bundle carries (Orchard pads a one-note
 /// spend to two), which the library's selection and fee assume.
-const MIN_ACTIONS: usize = 2;
+pub(crate) const MIN_ACTIONS: usize = 2;
 /// The Core fee rate an unshield asks for, Platform's minimum.
 const CORE_FEE_PER_BYTE: u32 =
     dpp::state_transition::identity_credit_withdrawal_transition::MIN_CORE_FEE_PER_BYTE;
@@ -577,6 +577,40 @@ async fn confirm_unrecorded(
         Ok(())
     } else {
         Err(ShieldedError::UnrecordedSpend)
+    }
+}
+
+/// What a Shielded-funded registration's readiness reads of the account
+/// (C-funding F16, F17), into `facts`. A held spend counts as unsettled:
+/// only the user's acknowledgement releases its notes.
+pub(crate) async fn registration_facts(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    facts: &mut ShieldedFacts,
+) -> Result<(), PlatformError> {
+    if !lib.bind().await? {
+        return Ok(());
+    }
+    facts.synced = (lib.ledger().await?).is_some_and(|l| l.synced_index.is_some());
+    facts.notes = lib.unspent().await?;
+    facts.unsettled = !session.leases.journal_ready()
+        || !(session.leases.unrecorded_spends(wallet).await)
+            .map_err(|detail| PlatformError::Storage { detail })?
+            .is_empty()
+        || !lib.unresolved().await?.is_empty()
+        || !lib.held_spends().await?.is_empty();
+    let mut offset = 0;
+    loop {
+        let page = lib.activity(offset, MAX_HISTORY).await?;
+        let incoming = (page.iter())
+            .filter(|e| matches!(e.direction, Direction::In) && e.created_at_ms != 0)
+            .map(|e| e.created_at_ms / 1000);
+        facts.latest_incoming = incoming.chain(facts.latest_incoming).max();
+        if page.len() < MAX_HISTORY as usize {
+            return Ok(());
+        }
+        offset += MAX_HISTORY;
     }
 }
 
