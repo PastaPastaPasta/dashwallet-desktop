@@ -94,10 +94,10 @@ pub enum LockFinish {
     /// Platform's proved execution: the lock is settled.
     Applied,
     /// Platform answered "already consumed" for this lock's outpoint,
-    /// unproved, and its kind takes that as finished elsewhere (type 4): the
-    /// lock leaves the lists, and nothing is settled or counted as this
-    /// wallet's but an own fund that had signed. Shielded locks read
-    /// `Checking` instead.
+    /// unproved, and its kind takes that as finished elsewhere (type 4, and a
+    /// restored type-5 lock): the lock leaves the lists, and nothing is
+    /// settled or counted as this wallet's but an own fund that had signed.
+    /// This device's own shield locks read `Checking` instead.
     ReportedUsed,
     /// The apply may have executed, unproved.
     Checking,
