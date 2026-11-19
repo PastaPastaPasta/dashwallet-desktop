@@ -65,18 +65,6 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: superseded by `lock` (`lock_vault`, async, awaits the lease drain); dw-ffi's synchronous `Vault::lock` maps to it for the frozen Swift shells, and the console and the relock timer use it",
     ),
     (
-        "NetworkSession::masternode_keys",
-        "deferred (MG): masternode key export is bound with the Masternodes domain",
-    ),
-    (
-        "NetworkSession::reveal_masternode_key",
-        "deferred (MG): masternode key reveal is bound with the Masternodes domain",
-    ),
-    (
-        "NetworkSession::masternodes",
-        "deferred (MG): the masternodes facade (mn-engine.md) is bound with the Masternodes domain (MG-03 D8); its evonode credit withdrawal calls (mn-engine.md §2.5: `withdrawal_quote`, `withdraw_credits`, `retry_withdrawal`, `withdrawals`, `recheck_withdrawal`, `mark_withdrawal`) are deferred (MG-10), MG-13 P14",
-    ),
-    (
         "Vault::with_revealed_seed",
         "internal: a closure over the seed for the engine's own key derivations (masternode keys, MG), never a host call",
     ),

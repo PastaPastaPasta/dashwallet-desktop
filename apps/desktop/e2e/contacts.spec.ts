@@ -298,7 +298,7 @@ test("Add contact opens in the slot, in place of a dashpay: link's card; a row r
   await expect(add).toHaveCount(0);
 });
 
-test("IOS-072 no contacts: the empty state offers Search for a User; a pass before any snapshot says updating", async ({ page }) => {
+test("IOS-072 no contacts: the empty state offers Add contact; a pass before any snapshot says updating", async ({ page }) => {
   await openContacts(page, "dashpay-contacts-empty");
   await expect(page.getByTestId("contacts-empty")).toContainText("No contacts yet");
   await page.getByTestId("contacts-empty-search").click();
@@ -307,6 +307,10 @@ test("IOS-072 no contacts: the empty state offers Search for a User; a pass befo
   await openContacts(page, "dashpay-contacts-updating");
   await expect(page.getByTestId("contacts-updating")).toHaveText("Updating contacts…");
   await expect(page.getByTestId("contacts-empty")).toHaveCount(0);
+  // The header's Add contact stays: the updating line is not the card that replaces it.
+  await expect(page.getByTestId("contacts-add")).toBeVisible();
+  await page.getByTestId("contacts-add").click();
+  await expect(page.getByTestId("add-contact")).toBeVisible();
 
   // After a snapshot, the rows stay, under the line.
   await openContacts(page, "dashpay-contacts-refreshing");
