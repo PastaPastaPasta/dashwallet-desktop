@@ -355,8 +355,8 @@ fn kill_after_drain_lock_signed_resumes_same_outpoint() {
 }
 
 /// The read of the wallet's coins: BIP44 account 0's final coins are the
-/// plan's (an InstantSend lock is final), held when locked, reserved or
-/// off its address paths; one not final yet (or an immature coinbase) is
+/// plan's (an InstantSend lock is final), held when locked, reserved, a
+/// denomination Dash Core counts as mixed or off its address paths; one not final yet (or an immature coinbase) is
 /// arriving; every other account's spendable coin is left.
 #[test]
 fn core_max_leaves_other_accounts() {
@@ -377,6 +377,7 @@ fn core_max_leaves_other_accounts() {
             utxo,
             send_account,
             coinjoin_account: !send_account,
+            counted_denomination: false,
             is_change: false,
             block_time: None,
             chain_locked: false,
@@ -401,6 +402,10 @@ fn core_max_leaves_other_accounts() {
     let mut coinbase = coin(7, true);
     coinbase.utxo.is_coinbase = true;
     coinbase.utxo.height = 150;
+    let mut denomination = coin(8, true);
+    denomination.counted_denomination = true;
+    let mut denomination_other = coin(14, false);
+    denomination_other.counted_denomination = true;
     let mut locked_other = coin(12, true);
     locked_other.user_locked = true;
     let snapshot = CoinSnapshot {
@@ -413,11 +418,14 @@ fn core_max_leaves_other_accounts() {
             reserved,
             coin(6, true),
             coinbase,
-            // Other accounts: BIP32, DashPay receiving, CoinJoin, a locked one.
+            denomination,
+            // Other accounts: BIP32, DashPay receiving, CoinJoin, a locked one,
+            // a CoinJoin denomination.
             coin(10, true),
             coin(11, true),
             coin(13, false),
             locked_other,
+            denomination_other,
         ],
     };
     let path = |p: &str| Some(DerivationPath::from_str(p).unwrap());
@@ -429,6 +437,7 @@ fn core_max_leaves_other_accounts() {
         (5, path("m/44'/1'/0'/0/5")),
         (6, None),
         (7, path("m/44'/1'/0'/0/7")),
+        (8, path("m/44'/1'/0'/0/8")),
     ]
     .into_iter()
     .map(|(n, p)| (OutPoint::new(Txid::from_byte_array([n; 32]), 0), p))
@@ -439,7 +448,14 @@ fn core_max_leaves_other_accounts() {
         .collect();
     assert_eq!(
         got,
-        [(1, false), (3, false), (4, true), (5, true), (6, true)]
+        [
+            (1, false),
+            (3, false),
+            (4, true),
+            (5, true),
+            (6, true),
+            (8, true)
+        ]
     );
     assert_eq!(read.arriving_duffs, 2_000 + 7_000);
     assert_eq!(read.left_duffs, 10_000 + 11_000 + 13_000);

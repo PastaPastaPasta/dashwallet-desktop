@@ -6,7 +6,8 @@
 //!
 //! The library's drain spends every final coin of the account (confirmed
 //! or InstantSend-locked) and cannot be told to skip one, so Max refuses
-//! while any such coin is held (a user's lock, a reservation), past
+//! while any such coin is held (a user's lock, a reservation, a
+//! denomination Dash Core counts as mixed, which funding leaves alone), past
 //! [`MAX_LOCK_INPUTS`] coins, and below the lock's floor, all before
 //! signing. A coin not final yet stays behind (`arriving_duffs`), as do
 //! the other accounts' coins (`left_duffs`). It takes the wallet's
@@ -159,7 +160,11 @@ pub(crate) fn coins_of(
             value,
             fully_mixed: false,
             confirmed: true,
-            held: c.user_locked || c.reserved || c.unresolved_lock || path.is_none(),
+            held: c.user_locked
+                || c.reserved
+                || c.unresolved_lock
+                || c.counted_denomination
+                || path.is_none(),
             path: path.unwrap_or_default(),
         });
     }

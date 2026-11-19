@@ -4293,7 +4293,8 @@ renames or reshapes them takes the next version bump:
     (every final coin: confirmed or InstantSend-locked) into one `DrainAll` lock with the fee out of it, under the
     existing `Shield` or `PlatformAddressFund` lease and `shield/<k>/funding` or `paddr/<k>/funding` step, so the
     pending listings, resumes and Repair treat it as any shield's or fund's lock (a kill after it is signed resumes the
-    same outpoint). It refuses while any final coin of the account is held (no fallback to an amount), past 50 coins,
+    same outpoint). It refuses while any final coin of the account is held (locked, reserved, or a denomination Dash Core counts as
+    mixed; no fallback to an amount), past 50 coins,
     below the floor, while the wallet mixes or another move of its coins runs (it holds the CoinJoin claim through the
     funding), all before signing. The vault cannot see the debit: the call's drain signer (`DrainPlan` with
     `instant_locked`) signs only the planned coins, one signature each, their sum within the grant, and only a build
