@@ -24,20 +24,14 @@ impl WalletBalances {
     /// The frozen bindings' reading: `None` while the wallet is catching up
     /// (review M-3), as before the engine reported a partial balance.
     pub(crate) fn known(b: dw_engine::WalletBalances) -> Option<Self> {
-        (!b.catching_up).then(|| b.into())
-    }
-}
-
-impl From<dw_engine::WalletBalances> for WalletBalances {
-    fn from(b: dw_engine::WalletBalances) -> Self {
-        Self {
+        (!b.catching_up).then_some(Self {
             confirmed: b.confirmed,
             unconfirmed: b.unconfirmed,
             immature: b.immature,
             locked: b.locked,
             total: b.total,
             coinjoin: b.coinjoin,
-        }
+        })
     }
 }
 

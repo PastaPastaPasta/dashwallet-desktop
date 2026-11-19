@@ -577,7 +577,8 @@ export function walletInfo(walletId: string): Promise<WalletSummary> {
 }
 
 /**
- * Balance buckets; `null` until the scan reaches the birth height.
+ * Balance buckets known so far; `catchingUp` is true before the scan reaches
+ * the wallet's birth height. `null` means the wallet state has not been read.
  */
 export function balance(walletId: string): Promise<Balances | null> {
   return invoke<Balances | null>("balance", { walletId });

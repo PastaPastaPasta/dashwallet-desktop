@@ -365,7 +365,16 @@ fn a_payment_seen_mid_sync_shows_at_once_and_counts_once() {
     assert_eq!(rows(&engine, &session, id).len(), 1);
     assert_eq!(balances(&session, id).total, PAID);
 
+    let flipped_from = recorder.len();
     mined(&engine, &session, id, BIRTH + 10, vec![tx.clone()]);
+    assert!(
+        recorder.wait_for(flipped_from, |e| matches!(
+            e,
+            crate::EngineEvent::Balances { wallet_id, balances: Some(b), .. }
+                if *wallet_id == id && !b.catching_up && b.total == PAID
+        )),
+        "Balances is sent when the scan passes the birth block"
+    );
     let b = balances(&session, id);
     assert!(!b.catching_up, "the scan passed the birth block");
     assert_eq!((b.total, b.confirmed), (PAID, PAID), "counted once");
