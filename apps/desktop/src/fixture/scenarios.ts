@@ -57,6 +57,8 @@ export interface FixtureWallet {
   rows: TxRow[];
   coins: Utxo[];
   receive: ReceiveWorld;
+  /** Filter checkpoint. Omitted: the tip once Core is caught up, otherwise no scan state. */
+  scanHeight?: number | null;
 }
 
 /** A 4 x 4 PNG in the DashPay blue: the fixture's avatar thumbnail (DP4-02). */
@@ -575,6 +577,13 @@ function withInvitation(w: World, status?: InvitationStatus): World {
   return w;
 }
 
+/** Platform and Shielded history succeed with nothing. A failed command is a different state. */
+function quietOptionalHistory(w: World): World {
+  if (w.pending.platform) w.pending.platform.activity = [];
+  if (w.pending.shielded) w.pending.shielded.activity = [];
+  return w;
+}
+
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t, "default", true),
@@ -863,8 +872,16 @@ const SCENARIOS = {
     w.pending.recovery.failures = 1;
     return w;
   },
-  /** A new wallet: no history, zero balance. */
+  /** A new wallet: no history, zero balance. Platform and Shielded still have their sample rows. */
   empty: (t) => base(t, "empty"),
+  /** That wallet with those optional histories empty too: the commands succeed and return nothing. */
+  "empty-activity": (t) => quietOptionalHistory(base(t, "empty")),
+  /** That wallet while the chain is still syncing: history must not offer Receive yet. */
+  "empty-syncing": (t) => {
+    const w = quietOptionalHistory(base(t, "empty"));
+    w.sync = syncing();
+    return w;
+  },
   /** No wallet on the network yet, and no vault. */
   "no-wallet": (t) => {
     const w = base(t);
@@ -1238,6 +1255,12 @@ const SCENARIOS = {
   },
   /** Coin Selection: CoinJoin denominations beside the plain coins, hidden by default (QT-071). */
   "tools-coinjoin": (t) => withCoinJoinCoins(base(t)),
+  /** Every coin is mixed, so Coin Selection's default list is empty until Show all coins. */
+  "coins-all-mixed": (t) => {
+    const w = base(t);
+    w.wallets[0].coins = w.wallets[0].coins.map((c) => ({ ...c, coinjoinDenominated: true, coinjoinRounds: 4 }));
+    return w;
+  },
   /** "alice" before her first contact: the Contacts empty state (DP2-07). */
   "dashpay-contacts-empty": (t) => {
     const w = base(t);

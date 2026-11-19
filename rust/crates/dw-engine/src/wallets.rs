@@ -114,9 +114,14 @@ impl NetworkSession {
     }
 
     /// Height up to which the wallet's compact filters have been scanned
-    /// (its filter checkpoint). In-memory read.
+    /// (its filter checkpoint). A replay the user cancelled before it was
+    /// back counts as scanned only to where it stopped, until a rewind
+    /// replays what it skipped. In-memory read.
     pub fn wallet_scan_height(&self, id: &WalletId) -> Option<u32> {
-        self.hub.wallet_state(id).map(|s| s.synced_height)
+        self.hub.wallet_state(id).map(|s| {
+            s.replay_cancelled
+                .map_or(s.synced_height, |reached| s.synced_height.min(reached))
+        })
     }
 
     /// Balance buckets known so far (`WalletBalances::catching_up` while the
