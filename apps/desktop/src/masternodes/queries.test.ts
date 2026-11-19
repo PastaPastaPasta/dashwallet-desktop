@@ -68,9 +68,11 @@ describe("masternode wrappers", () => {
     expect(client.getQueryState(mnKeys.credits(H))?.isInvalidated).toBe(false);
   });
 
-  it("re-read payouts on history, the list state on sync and the pane on a lock change", () => {
+  it("re-read payouts on history, the list state on sync and the list and pane on a lock change", () => {
     expect(invalidationsFor({ kind: "historyChanged", network: "testnet", walletId: W, txids: [] })).toContainEqual(mnKeys.payoutsAll(W));
     expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toContainEqual(mnKeys.listState);
     expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toContainEqual(mnKeys.detailAll);
+    // The list's rows carry the attached keys too (`null` while locked), beyond §3.5's pane.
+    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toContainEqual(mnKeys.listAll);
   });
 });

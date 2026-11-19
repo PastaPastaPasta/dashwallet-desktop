@@ -64,7 +64,8 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // A registration parks for an unlock or an authorization without writing its row, so
     // without a Platform signal (DP1-08 D19).
     case "vaultLockState":
-      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.detailAll];
+      // Masternode rows and panes carry the attached keys, `null` while locked (MG-10 §3.5 names only the pane).
+      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll];
     case "lockProgress":
       // `done` carries the report itself (bridgeEvents sets it).
       return event.progress.kind === "done" ? [keys.lockStatus, keys.lockReconcile] : [];

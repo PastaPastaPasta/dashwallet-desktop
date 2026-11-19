@@ -95,7 +95,7 @@ describe("fixture masternodes", () => {
     expect([...by.keys()]).toEqual([HOME, OFFICE, CLUB, OLD]);
     expect(by.get(OFFICE)).toMatchObject({ status: "pose_banned", mine: true, roles: { owner: true, collateral: true } });
     expect(by.get(OFFICE)!.bannedSeenAt).not.toBeNull();
-    expect(by.get(CLUB)).toMatchObject({ kind: "evonode", mine: false, tracked: true, collateral: { kind: "unresolved" }, roles: { attached: [{ role: "owner", check: "unchecked" }] } });
+    expect(by.get(CLUB)).toMatchObject({ kind: "evonode", typeIndex: 0, mine: false, tracked: true, collateral: { kind: "unresolved" }, roles: { attached: [{ role: "owner", check: "unchecked" }] } });
     expect(by.get(OLD)!.status).toBe("removed");
     expect(o.unattributed30d).toBe(0);
     expect(o.payouts30d).toBe(by.get(HOME)!.payouts30d);
@@ -103,23 +103,35 @@ describe("fixture masternodes", () => {
     expect((await cmd.mnMasternode(W, HOME)).registrar).toEqual({ kind: "available", signer: "keychain" });
     expect((await cmd.mnMasternode(W, CLUB)).registrar).toEqual({ kind: "registration_unavailable" });
     expect((await cmd.mnMasternode(W, OLD)).list).toBeNull();
+    // Each held registration has its own owner key; Home's and Office's are the keychain's (they hold the owner role).
+    const owners = await Promise.all([HOME, OFFICE, OLD].map(async (x) => (await cmd.mnMasternode(W, x)).registration!.ownerAddress));
+    expect(new Set(owners).size).toBe(3);
+    expect(owners.slice(0, 2)).toEqual([keyInfo("owner", 0).address, keyInfo("owner", 1).address]);
     expect((await cmd.mnPayouts(W, HOME, null)).length).toBe(5);
     const since = (await cmd.mnPayouts(W, HOME, null))[2].timestamp!;
     expect((await cmd.mnPayouts(W, HOME, since)).length).toBe(3);
   });
 
-  it("mn-v24-payouts: flagged records, a shared payout address and unattributed income", async () => {
+  it("mn-v24-payouts: every record unattributed (reads.rs:269), one list per shared address, no attributed total", async () => {
     install("mn-v24-payouts");
     const o = await cmd.mnList(W);
-    const home = o.masternodes.find((r) => r.proTxHash === HOME)!;
-    const office = o.masternodes.find((r) => r.proTxHash === OFFICE)!;
-    expect(o.unattributed30d).toBeGreaterThan(0);
-    expect(home.payoutsIncomplete && office.payoutsIncomplete).toBe(true);
+    const by = new Map(o.masternodes.map((r) => [r.proTxHash, r]));
+    const [home, office, old] = [by.get(HOME)!, by.get(OFFICE)!, by.get(OLD)!];
+    const homePayouts = await cmd.mnPayouts(W, HOME, null);
+    expect(homePayouts.length).toBe(6);
+    expect(homePayouts.every((p) => p.unattributed)).toBe(true);
     expect(home.payoutAddress).toBe(office.payoutAddress);
-    expect((await cmd.mnPayouts(W, HOME, null)).some((p) => p.unattributed)).toBe(true);
+    expect(await cmd.mnPayouts(W, OFFICE, null)).toEqual(homePayouts);
+    expect([home.payouts30d, office.payouts30d, o.payouts30d]).toEqual([0, 0, 0]);
+    expect(home.payoutsIncomplete && office.payoutsIncomplete).toBe(true);
+    expect(home.lastPayout).toEqual(office.lastPayout);
+    // Every windowed coinbase record plus 2.10 Dash mined elsewhere in the wallet.
+    expect(o.unattributed30d).toBe(4 * 144_270_000 + 210_000_000);
+    // Old's newest payment is unattributed and past the window: no paid meta, no incomplete flag.
     const fixtureNow = Math.floor(new Date(2026, 9, 6, 12).getTime() / 1000);
-    expect(office.lastPayout).toMatchObject({ unattributed: true });
-    expect(office.lastPayout!.timestamp!).toBeLessThan(fixtureNow - 30 * DAY);
+    expect(old.lastPayout).toMatchObject({ unattributed: true });
+    expect(old.lastPayout!.timestamp!).toBeLessThan(fixtureNow - 30 * DAY);
+    expect(old.payoutsIncomplete).toBe(false);
   });
 
   it("mn-empty and mn-empty-coin: no rows, with and without a collateral-shaped coin", async () => {
@@ -131,21 +143,26 @@ describe("fixture masternodes", () => {
     expect(o.collateralCoins).toMatchObject([{ amount: 1_000 * 100_000_000, userLocked: false }]);
   });
 
-  it("mn-syncing: own rows read Unknown and list reads refuse list_unavailable", async () => {
+  it("mn-syncing: every row Unknown with no ban time, service only from a held registration (reads.rs:277-302, 415-420)", async () => {
     install("mn-syncing");
     expect(await cmd.mnListState()).toEqual({ synced: false, height: null });
     const o = await cmd.mnList(W);
-    expect(o.masternodes.filter((r) => r.mine).every((r) => r.status === "unknown")).toBe(true);
+    const by = new Map(o.masternodes.map((r) => [r.proTxHash, r]));
+    expect(o.masternodes.every((r) => r.status === "unknown" && r.bannedSeenAt === null)).toBe(true);
+    expect(by.get(CLUB)!.service).toBeNull();
+    expect(by.get(HOME)!.service).toBe("203.0.113.7:19999");
     await expect(cmd.mnFind(HOME)).rejects.toMatchObject({ code: "masternodes.list_unavailable" });
     await expect(cmd.mnMasternode(W, FRIEND)).rejects.toMatchObject({ code: "masternodes.list_unavailable" });
     await expect(cmd.mnTrack(FRIEND, null)).rejects.toMatchObject({ code: "masternodes.list_unavailable" });
     await expect(cmd.mnAttachKey(CLUB, "voting", KEY_VOTING)).rejects.toMatchObject({ code: "masternodes.list_unavailable" });
   });
 
-  it("mn-watchonly: the keychain refuses watch_only", async () => {
+  it("mn-watchonly: the keychain refuses watch_only, a reveal only after its grant (dw-vault vault/masternode.rs:97-102)", async () => {
     install("mn-watchonly");
     await expect(cmd.mnKeys(W, "owner", 0, 20)).rejects.toMatchObject({ code: "masternode.watch_only" });
-    await expect(cmd.mnRevealKey(W, "owner", 0, "g")).rejects.toMatchObject({ code: "masternode.watch_only" });
+    await expect(cmd.mnRevealKey(W, "owner", 0, "g")).rejects.toMatchObject({ code: "masternode.grant_invalid" });
+    const grant = (await cmd.authorize({ kind: "revealSecret" }, W, PASS)).id;
+    await expect(cmd.mnRevealKey(W, "owner", 0, grant)).rejects.toMatchObject({ code: "masternode.watch_only" });
   });
 
   it("mn-locked: no attached keys, Club vault_locked, and key changes need the vault", async () => {
@@ -187,7 +204,7 @@ describe("fixture masternodes: track and keys", () => {
     expect(await cmd.mnTrack(FRIEND, "  Friend's evonode  ")).toMatchObject({ proTxHash: FRIEND, tracked: true });
     expect(seen).toEqual([{ kind: "masternodes", network: "testnet" }]);
     const row = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === FRIEND)!;
-    expect(row).toMatchObject({ label: "Friend's evonode", kind: "evonode", tracked: true, mine: false, typeIndex: 2 });
+    expect(row).toMatchObject({ label: "Friend's evonode", kind: "evonode", tracked: true, mine: false, typeIndex: 0 });
     expect((await cmd.mnMasternode(W, FRIEND)).trackedAt).not.toBeNull();
   });
 
@@ -244,6 +261,19 @@ describe("fixture masternodes: track and keys", () => {
     expect((await cmd.mnMasternode(W, SPARE)).row.label).toBeNull();
   });
 
+  it("checks the hash before the wallet (reads.rs:797, 815) and takes either case (mn-engine §1)", async () => {
+    install("mn-list");
+    const nobody = "ef".repeat(32);
+    for (const read of [() => cmd.mnMasternode(nobody, "zz"), () => cmd.mnPayouts(nobody, "zz", null)]) await expect(read()).rejects.toMatchObject({ code: "invalid_argument" });
+    for (const read of [() => cmd.mnMasternode(nobody, HOME), () => cmd.mnPayouts(nobody, HOME, null)]) await expect(read()).rejects.toMatchObject({ code: "wallet_not_found" });
+    expect((await cmd.mnMasternode(W, HOME.toUpperCase())).row.proTxHash).toBe(HOME);
+    expect((await cmd.mnPayouts(W, HOME.toUpperCase(), null)).length).toBe(5);
+    expect(await cmd.mnTrack(FRIEND.toUpperCase(), null)).toMatchObject({ proTxHash: FRIEND });
+    await expect(cmd.mnTrack(FRIEND, null)).rejects.toMatchObject({ code: "masternodes.already_tracked" });
+    expect(await cmd.mnAttachKey(CLUB.toUpperCase(), "payout", KEY_PAYOUT.toUpperCase())).toBe("matched");
+    expect(await cmd.mnDetachKey(CLUB.toUpperCase(), "payout")).toBe(true);
+  });
+
   it("reads an evonode's credits in the contract's order", async () => {
     install("mn-list");
     expect(await cmd.mnEvonodeCredits(CLUB)).toMatchObject({ credits: "42000000000", duffs: 42_000_000 });
@@ -270,6 +300,19 @@ describe("fixture masternodes: the keychain", () => {
     expect((await cmd.mnMasternode(W, OFFICE)).list!.operatorPublicKey).toBe(operator[1].legacyPublicKeyHex);
   });
 
+  it("matches a key only where its masternode holds that role", async () => {
+    install("mn-keys");
+    const voting = await cmd.mnKeys(W, "voting", 0, 40);
+    const owner = await cmd.mnKeys(W, "owner", 0, 40);
+    const listed = await Promise.all([HOME, OFFICE, CLUB].map(async (x) => (await cmd.mnMasternode(W, x)).list!.votingAddress));
+    // Only Home holds the voting role, and only its list voting address is a keychain key.
+    expect(listed.map((a) => voting.findIndex((k) => k.address === a))).toEqual([0, -1, -1]);
+    // Owner key i+1 and voting key i are different keys.
+    for (let i = 0; i < 39; i++) expect(owner[i + 1].publicKeyHex, String(i)).not.toBe(voting[i].publicKeyHex);
+    const all = [...owner, ...voting, ...(await cmd.mnKeys(W, "operator", 0, 25)), ...(await cmd.mnKeys(W, "platform_node", 0, 20))];
+    expect(new Set(all.map((k) => k.publicKeyHex)).size).toBe(all.length);
+  });
+
   it("reveals one key per revealSecret grant", async () => {
     install("mn-keys");
     await expect(cmd.mnRevealKey(W, "owner", 0, "no-such-grant")).rejects.toMatchObject({ code: "masternode.grant_invalid" });
@@ -284,5 +327,19 @@ describe("fixture masternodes: the keychain", () => {
     expect(node.tenderdashKey).toHaveLength(88);
     const op = await cmd.mnRevealKey(W, "operator", 4, (await cmd.authorize({ kind: "revealSecret" }, W, PASS)).id);
     expect([op.wif, op.tenderdashKey]).toEqual([null, null]);
+    // No pool limits a reveal: the engine derives any index (masternode_keys.rs:293-313).
+    expect((await cmd.mnRevealKey(W, "owner", 100, (await cmd.authorize({ kind: "revealSecret" }, W, PASS)).id)).wif).toBe(TEST_VECTOR_WIF);
+  });
+
+  it("needs the grant, then a key, then the seed (dw-vault vault/masternode.rs:97-102)", async () => {
+    const f = installFixture({ scenario: "mn-keys" });
+    const before = (await cmd.authorize({ kind: "revealSecret" }, W, PASS)).id;
+    f.world.lock = { ...f.world.lock, state: "unlockedMixingOnly" };
+    await expect(cmd.mnRevealKey(W, "owner", 0, before)).rejects.toMatchObject({ code: "masternode.vault_locked" });
+    await expect(cmd.mnRevealKey(W, "owner", 0, before)).rejects.toMatchObject({ code: "masternode.grant_invalid" });
+    // A passphrase grant issued while locked carries its own key.
+    f.world.lock = { ...f.world.lock, state: "locked" };
+    const own = (await cmd.authorize({ kind: "revealSecret" }, W, PASS)).id;
+    expect((await cmd.mnRevealKey(W, "voting", 0, own)).wif).toBe(TEST_VECTOR_WIF);
   });
 });

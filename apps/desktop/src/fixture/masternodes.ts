@@ -2,8 +2,9 @@
 // The fixture's masternodes (MG-10 §5.1 over mn-engine §2.1–§2.2 and the keychain, m3-engine §2.5):
 // the SPV list, the main wallet's masternodes and the tracked ones, payouts, attached keys and the
 // keychain. Testnet-shaped (port 19999, `y…` addresses, documentation IPs). The commands refuse in
-// the contract's order; a change `emit`s `masternodes` as the engine's notifier would. Keys are
-// fixed fake test vectors: `KEY_*` (repeated hex bytes) and Bitcoin Core's test WIF.
+// the engine's order; a change `emit`s `masternodes` as the engine's notifier would. Keys are
+// fixed fake test vectors: `KEY_*` (repeated hex bytes) and the WIF vector of rust-dashcore's
+// `dash/src/crypto/key.rs` tests (inherited from rust-bitcoin), which dw-app's masternodes_tests.rs also uses.
 
 import type { AppError } from "../api/generated/commands";
 import type { AttachedKey } from "../api/generated/AttachedKey";
@@ -20,7 +21,7 @@ import type { MasternodeRow } from "../api/generated/MasternodeRow";
 import type { RegistrarCapabilityName } from "../api/generated/RegistrarCapabilityName";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { Ctx, Handlers } from "./handlers";
-import { FIXTURE_WALLET_ID, type FixtureGrant, type FixtureWallet, type World } from "./scenarios";
+import { FIXTURE_WALLET_ID, type FixtureWallet, type World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
 
 const COIN = 100_000_000;
@@ -29,7 +30,7 @@ const DAY = 86_400;
 const HEIGHT = 1_214_880;
 /** mn-engine's `MAX_MASTERNODE_LABEL`. */
 export const MAX_LABEL = 64;
-const HEX64 = /^[0-9a-f]{64}$/;
+const HEX64 = /^[0-9a-fA-F]{64}$/;
 const SERVICE = /^(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{1,5}))?$/;
 /** A compressed WIF of a test network; mainnet's start with K or L, uncompressed ones with 9 or 5. */
 const TEST_WIF = /^c[1-9A-HJ-NP-Za-km-z]{51}$/;
@@ -46,7 +47,7 @@ export const OLD = h("0d");
 export const FRIEND = h("f2");
 export const SPARE = h("5a");
 
-/** Fake secrets the fixture recognises (hex test vectors and Bitcoin Core's test WIF). */
+/** Fake secrets the fixture recognises (repeated-byte hex and the public WIF test vector above). */
 export const KEY_OWNER = "11".repeat(32);
 export const KEY_PAYOUT = "22".repeat(32);
 export const KEY_VOTING = "33".repeat(32);
@@ -58,7 +59,7 @@ const POOL: Record<MasternodeKeyRoleName, number> = { owner: 40, voting: 40, ope
 const SUB: Record<MasternodeKeyRoleName, number> = { voting: 1, owner: 2, operator: 3, platform_node: 4 };
 
 export function keyInfo(role: MasternodeKeyRoleName, index: number): MasternodeKeyInfo {
-  const tag = (role.length + index).toString(16).padStart(2, "0");
+  const tag = `${SUB[role]}${index.toString(16).padStart(2, "0")}`;
   const node = role === "platform_node";
   return {
     role,
@@ -100,6 +101,8 @@ export interface MasternodesWorld {
   credits: Record<string, string>;
   platformDown: boolean;
   trackedAt: Record<string, number>;
+  /** The keychain owner key index of each own masternode with the owner role; other held registrations get their own fake owner address. */
+  ownerKeys: Record<string, number>;
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -110,7 +113,7 @@ const facts = (kind: ListFacts["kind"], n: string, valid = true, ip = `203.0.113
   valid,
   service: `${ip}:19999`,
   operatorPublicKey: fake(`8${n}`, 96),
-  votingAddress: addr(`v${n}`),
+  votingAddress: addr(`lv${n}`),
   platformNodeId: kind === "evonode" ? fake(`e${n}`, 40) : null,
   platformHttpPort: kind === "evonode" ? 1443 : null,
 });
@@ -156,6 +159,7 @@ function row(proTxHash: string, label: string | null, patch: Partial<MasternodeR
 
 const HOME_PAYOUT = addr("pH");
 const OFFICE_PAYOUT = addr("pF");
+const OLD_PAYOUT = addr("pD");
 
 /** MG-00's `mn-list` board (MG-10 §5.1). */
 export function newMasternodesWorld(): MasternodesWorld {
@@ -169,7 +173,7 @@ export function newMasternodesWorld(): MasternodesWorld {
     listState: { synced: true, height: HEIGHT },
     listFails: false,
     listed: [
-      { proTxHash: HOME, facts: { ...home, operatorPublicKey: keyInfo("operator", 0).publicKeyHex } },
+      { proTxHash: HOME, facts: { ...home, operatorPublicKey: keyInfo("operator", 0).publicKeyHex, votingAddress: keyInfo("voting", 0).address! } },
       { proTxHash: OFFICE, facts: { ...office, operatorPublicKey: keyInfo("operator", 1).legacyPublicKeyHex! } },
       { proTxHash: CLUB, facts: club },
       { proTxHash: FRIEND, facts: facts("evonode", "42", true, "198.51.100.42") },
@@ -192,7 +196,7 @@ export function newMasternodesWorld(): MasternodesWorld {
         payoutAddress: OFFICE_PAYOUT,
         lastPayout: officePayouts[0],
       }),
-      row(CLUB, null, { kind: "evonode", service: club.service, mine: false, tracked: true, collateral: { kind: "unresolved" } }),
+      row(CLUB, null, { kind: "evonode", typeIndex: 0, service: club.service, mine: false, tracked: true, collateral: { kind: "unresolved" } }),
       row(OLD, "Old node", { typeIndex: 3, status: "removed", roles: roles({ collateral: true }) }),
     ],
     registrations: [HOME, OFFICE, OLD],
@@ -205,6 +209,7 @@ export function newMasternodesWorld(): MasternodesWorld {
     credits: { [CLUB]: "42000000000" },
     platformDown: false,
     trackedAt: { [CLUB]: NOW - 12 * DAY },
+    ownerKeys: { [HOME]: 0, [OFFICE]: 1 },
   };
 }
 
@@ -231,8 +236,10 @@ function registrar(world: World, r: MasternodeRow): RegistrarCapabilityName {
 
 const listedOf = (m: MasternodesWorld, hash: string) => (m.listState.synced ? m.listed.find((l) => l.proTxHash === hash) : undefined);
 
-function checkHash(hash: string) {
+/** The hash in the engine's lower-case form; either case is accepted (mn-engine §1). */
+function checkHash(hash: string): string {
   if (!HEX64.test(hash)) throw fail("invalid_argument", "not a 64-character hex ProTx hash");
+  return hash.toLowerCase();
 }
 
 function checkLabel(label: string | null) {
@@ -242,19 +249,19 @@ function checkLabel(label: string | null) {
 const rowsFor = (world: World, walletId: string) => world.masternodes.rows.filter((r) => r.tracked || walletId === FIXTURE_WALLET_ID);
 
 /** The row of a masternode the wallet owns or tracks, or that the list holds; refused as `masternode` is. */
-function rowOf(world: World, walletId: string, hash: string): MasternodeRow {
-  checkHash(hash);
+function rowOf(world: World, walletId: string, proTxHash: string): MasternodeRow {
+  const hash = checkHash(proTxHash);
   const m = world.masternodes;
   const own = rowsFor(world, walletId).find((r) => r.proTxHash === hash);
   if (own) return own;
   const l = listedOf(m, hash);
-  if (l) return row(hash, m.labels[hash] ?? null, { kind: l.facts.kind, service: l.facts.service, mine: false, status: l.facts.valid ? "enabled" : "pose_banned", collateral: { kind: "unresolved" } });
+  if (l) return row(hash, m.labels[hash] ?? null, { kind: l.facts.kind, typeIndex: 0, service: l.facts.service, mine: false, status: l.facts.valid ? "enabled" : "pose_banned", collateral: { kind: "unresolved" } });
   if (!m.listState.synced) throw fail("masternodes.list_unavailable", "the masternode list is not synced");
   throw fail("masternodes.not_found", "masternode not found");
 }
 
-function tracked(m: MasternodesWorld, hash: string): MasternodeRow {
-  checkHash(hash);
+function tracked(m: MasternodesWorld, proTxHash: string): MasternodeRow {
+  const hash = checkHash(proTxHash);
   const r = m.rows.find((x) => x.proTxHash === hash && x.tracked);
   if (!r) throw fail("masternodes.not_tracked", "masternode not tracked");
   return r;
@@ -263,6 +270,7 @@ function tracked(m: MasternodesWorld, hash: string): MasternodeRow {
 function checkKey(world: World, r: MasternodeRow, role: AttachedKeyRoleName, key: string): KeyCheckName {
   const m = world.masternodes;
   const want = m.expected[r.proTxHash]?.[role];
+  key = HEX64.test(key) ? key.toLowerCase() : key;
   if (role === "payout") return key === want ? "matched" : "unchecked";
   if (role === "voting") {
     if (!m.listState.synced) throw fail("masternodes.list_unavailable", "the masternode list is not synced");
@@ -274,15 +282,7 @@ function checkKey(world: World, r: MasternodeRow, role: AttachedKeyRoleName, key
 
 const changed = ({ world, emit }: Ctx) => emit({ kind: "masternodes", network: world.launch.network.dirName });
 
-export function masternodesHandlers({
-  wallet,
-  grant,
-  useGrant,
-}: {
-  wallet: (w: World, walletId: string) => FixtureWallet;
-  grant: (w: World, id: string, walletId: string, kinds: "revealSecret"[]) => FixtureGrant | null;
-  useGrant: (w: World, id: string) => void;
-}): Handlers {
+export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, walletId: string) => FixtureWallet; useGrant: (w: World, id: string) => void }): Handlers {
   return {
     mn_list_state: (_, { world }) => copy(world.masternodes.listState),
     mn_list: ({ walletId }, { world }) => {
@@ -300,7 +300,8 @@ export function masternodesHandlers({
         payoutsIncomplete: rows.some((r) => r.payoutsIncomplete),
       };
     },
-    mn_masternode: ({ walletId, proTxHash }, { world }) => {
+    mn_masternode: ({ walletId, proTxHash: given }, { world }) => {
+      const proTxHash = checkHash(given);
       wallet(world, walletId);
       const r = withAttached(world, rowOf(world, walletId, proTxHash));
       const m = world.masternodes;
@@ -313,7 +314,7 @@ export function masternodesHandlers({
           ? {
               registeredHeight: HEIGHT - 180_000,
               collateral: copy(r.collateral),
-              ownerAddress: addr("oW"),
+              ownerAddress: proTxHash in m.ownerKeys ? keyInfo("owner", m.ownerKeys[proTxHash]).address : addr(`ow${proTxHash.slice(0, 4)}`),
               votingAddress: listedOf(m, proTxHash)?.facts.votingAddress ?? addr("vT"),
               payoutAddress: r.payoutAddress,
               payoutScript: r.payoutAddress ? `76a914${fake("5c", 40)}88ac` : null,
@@ -328,7 +329,8 @@ export function masternodesHandlers({
       };
       return detail;
     },
-    mn_payouts: ({ walletId, proTxHash, since }, { world }) => {
+    mn_payouts: ({ walletId, proTxHash: given, since }, { world }) => {
+      const proTxHash = checkHash(given);
       wallet(world, walletId);
       const r = rowOf(world, walletId, proTxHash);
       if (r.sharedUnsupported) throw fail("masternodes.unsupported", "shared masternodes are not supported", { kind: "unsupported", feature: "shared_masternodes", field: null });
@@ -344,9 +346,9 @@ export function masternodesHandlers({
       const hit = (l: Listed) => (service ? (service[2] ? l.facts.service === q : l.facts.service?.split(":")[0] === service[1]) : l.proTxHash === q);
       return m.listed.filter(hit).map((l) => ({ proTxHash: l.proTxHash, facts: copy(l.facts), tracked: m.rows.some((r) => r.proTxHash === l.proTxHash && r.tracked) }));
     },
-    mn_evonode_credits: ({ proTxHash }, { world }) => {
+    mn_evonode_credits: ({ proTxHash: given }, { world }) => {
       const m = world.masternodes;
-      checkHash(proTxHash);
+      const proTxHash = checkHash(given);
       if (!m.listState.synced) throw fail("masternodes.list_unavailable", "the masternode list is not synced");
       const l = listedOf(m, proTxHash);
       if (!l) throw fail("masternodes.not_found", "masternode not found");
@@ -358,31 +360,30 @@ export function masternodesHandlers({
     },
     mn_track: ({ proTxHash, label }, ctx) => {
       const m = ctx.world.masternodes;
-      checkHash(proTxHash);
+      const hash = checkHash(proTxHash);
       checkLabel(label);
       if (!m.listState.synced) throw fail("masternodes.list_unavailable", "the masternode list is not synced");
-      const l = listedOf(m, proTxHash);
+      const l = listedOf(m, hash);
       if (!l) throw fail("masternodes.not_found", "masternode not found");
-      const existing = m.rows.find((r) => r.proTxHash === proTxHash);
+      const existing = m.rows.find((r) => r.proTxHash === hash);
       if (existing?.tracked) throw fail("masternodes.already_tracked", "already tracked");
       const name = label?.trim() || null;
       if (existing) Object.assign(existing, { tracked: true, label: name ?? existing.label });
       else {
-        const typeIndex = m.rows.filter((r) => r.kind === l.facts.kind).length + 1;
-        m.rows.push(row(proTxHash, name, { kind: l.facts.kind, typeIndex, service: l.facts.service, mine: false, tracked: true, status: l.facts.valid ? "enabled" : "pose_banned", collateral: { kind: "unresolved" } }));
+        m.rows.push(row(hash, name, { kind: l.facts.kind, typeIndex: 0, service: l.facts.service, mine: false, tracked: true, status: l.facts.valid ? "enabled" : "pose_banned", collateral: { kind: "unresolved" } }));
       }
-      m.trackedAt[proTxHash] = NOW;
+      m.trackedAt[hash] = NOW;
       changed(ctx);
-      return { proTxHash, facts: copy(l.facts), tracked: true };
+      return { proTxHash: hash, facts: copy(l.facts), tracked: true };
     },
     mn_untrack: ({ proTxHash }, ctx) => {
       const { world } = ctx;
       const m = world.masternodes;
       const r = tracked(m, proTxHash);
-      const keys = m.attached[proTxHash] ?? [];
+      const keys = m.attached[r.proTxHash] ?? [];
       if (keys.length > 0 && locked(world)) throw fail("vault.locked", "vault locked");
-      delete m.attached[proTxHash];
-      delete m.trackedAt[proTxHash];
+      delete m.attached[r.proTxHash];
+      delete m.trackedAt[r.proTxHash];
       if (r.mine) r.tracked = false;
       else m.rows = m.rows.filter((x) => x !== r);
       changed(ctx);
@@ -395,8 +396,8 @@ export function masternodesHandlers({
       const name = label?.trim() || null;
       const kept = m.rows.find((x) => x.proTxHash === r.proTxHash);
       if (kept) kept.label = name;
-      else if (name) m.labels[proTxHash] = name;
-      else delete m.labels[proTxHash];
+      else if (name) m.labels[r.proTxHash] = name;
+      else delete m.labels[r.proTxHash];
       changed(ctx);
       return null;
     },
@@ -407,18 +408,18 @@ export function masternodesHandlers({
       const r = tracked(world.masternodes, proTxHash);
       const check = checkKey(world, r, role, key);
       if (locked(world)) throw fail("vault.locked", "vault locked");
-      const keys = (world.masternodes.attached[proTxHash] ??= []);
-      world.masternodes.attached[proTxHash] = [...keys.filter((k) => k.role !== role), { role, secret: key, check }];
+      const keys = world.masternodes.attached[r.proTxHash] ?? [];
+      world.masternodes.attached[r.proTxHash] = [...keys.filter((k) => k.role !== role), { role, secret: key, check }];
       changed(ctx);
       return check;
     },
     mn_detach_key: ({ proTxHash, role }, ctx) => {
       const { world } = ctx;
-      tracked(world.masternodes, proTxHash);
+      const { proTxHash: hash } = tracked(world.masternodes, proTxHash);
       if (locked(world)) throw fail("vault.locked", "vault locked");
-      const keys = world.masternodes.attached[proTxHash] ?? [];
+      const keys = world.masternodes.attached[hash] ?? [];
       if (!keys.some((k) => k.role === role)) return false;
-      world.masternodes.attached[proTxHash] = keys.filter((k) => k.role !== role);
+      world.masternodes.attached[hash] = keys.filter((k) => k.role !== role);
       changed(ctx);
       return true;
     },
@@ -429,10 +430,14 @@ export function masternodesHandlers({
       return Array.from({ length: Math.max(0, end - start) }, (_, i) => keyInfo(role, start + i));
     },
     mn_reveal_key: ({ walletId, role, index, grant: grantId }, { world }) => {
-      if (wallet(world, walletId).summary.watchOnly) throw fail("masternode.watch_only", "fixture: a watch-only wallet has no provider account");
-      if (!grant(world, grantId, walletId, ["revealSecret"])) throw fail("masternode.grant_invalid", "grant invalid");
-      if (index >= POOL[role]) throw fail("invalid_argument", "index past the keychain's pool");
+      // dw-vault vault/masternode.rs:97-102: the grant is redeemed, then the key (its own, else the vault's) is
+      // needed, then the seed (none: watch-only).
+      const w = wallet(world, walletId);
+      const g = world.grants.find((x) => x.grant.id === grantId && !x.used && x.grant.walletId === walletId && x.grant.purpose.kind === "revealSecret");
+      if (!g) throw fail("masternode.grant_invalid", "grant invalid");
       useGrant(world, grantId);
+      if (!g.ownKey && locked(world)) throw fail("masternode.vault_locked", "vault locked");
+      if (w.summary.watchOnly) throw fail("masternode.watch_only", "fixture: a watch-only wallet has no provider account");
       const secp = role === "owner" || role === "voting";
       return {
         privateKeyHex: h((index + 1).toString(16).padStart(2, "0")),
@@ -456,17 +461,19 @@ function mnBase(base: Base, theme: ThemeName | null, patch?: (m: MasternodesWorl
 
 const byHash = (m: MasternodesWorld, hash: string) => m.rows.find((r) => r.proTxHash === hash)!;
 
+/** Once v3 is seen every record is unattributed (reads.rs:269); a row's payouts are the records to its payout
+ * address, so Home and Office, which share one, list the same payments; Old's newest is past the 30-day window. */
 const v24 = (m: MasternodesWorld) => {
-  const home = byHash(m, HOME);
-  const office = byHash(m, OFFICE);
-  m.payouts[HOME] = m.payouts[HOME].map((p, i) => (i % 2 === 1 ? { ...p, unattributed: true } : p));
-  m.payouts[OFFICE] = [{ ...payout(6, 34, HOME_PAYOUT), unattributed: true }];
-  home.payouts30d = m.payouts[HOME].filter((p) => !p.unattributed && (p.timestamp ?? 0) >= NOW - 30 * DAY).reduce((s, p) => s + p.amount, 0);
+  const [home, office, old] = [byHash(m, HOME), byHash(m, OFFICE), byHash(m, OLD)];
+  const shared = [...m.payouts[HOME], payout(6, 34, HOME_PAYOUT)].map((p) => ({ ...p, unattributed: true }));
+  const oldPayout = { ...payout(8, 45, OLD_PAYOUT), unattributed: true };
+  m.payouts = { [HOME]: shared, [OFFICE]: shared, [OLD]: [oldPayout] };
   office.payoutAddress = HOME_PAYOUT;
-  office.lastPayout = m.payouts[OFFICE][0];
-  for (const r of [home, office]) r.payoutsIncomplete = true;
-  // Mining to another of the wallet's addresses and two v24 share payouts: counted, unmatched.
-  m.unattributed30d = 210 * COIN / 100;
+  Object.assign(old, { payoutAddress: OLD_PAYOUT, lastPayout: oldPayout });
+  const windowed = shared.filter((p) => (p.timestamp ?? 0) >= NOW - 30 * DAY);
+  for (const r of [home, office]) Object.assign(r, { payouts30d: 0, payoutsIncomplete: windowed.length > 0, lastPayout: shared[0] });
+  // Every coinbase record in the window, plus 2.10 Dash mined to another of the wallet's addresses.
+  m.unattributed30d = windowed.reduce((s, p) => s + p.amount, 0) + (210 * COIN) / 100;
 };
 
 const trackOnly = (m: MasternodesWorld) => {
@@ -489,11 +496,12 @@ export function masternodesScenarios(base: Base) {
         m.attached = {};
         m.collateralCoins = [{ outpoint: `${h("c0")}-0`, address: addr("cL"), amount: 1_000 * COIN, kind: "regular", confirmations: 42, userLocked: false }];
       }),
-    /** The list is still loading: own masternodes read Unknown. */
+    /** The list is still loading: with no entry every row reads Unknown with no ban time, and a row's service comes only
+     * from a registration the wallet holds (reads.rs:277-302, 415-420). */
     "mn-syncing": (t: ThemeName | null) =>
       mnBase(base, t, (m) => {
         m.listState = { synced: false, height: null };
-        for (const r of m.rows) if (r.mine) r.status = "unknown";
+        for (const r of m.rows) Object.assign(r, { status: "unknown", bannedSeenAt: null, service: m.registrations.includes(r.proTxHash) ? r.service : null });
       }),
     "mn-list-failed": (t: ThemeName | null) => mnBase(base, t, (m) => (m.listFails = true)),
     "mn-watchonly": (t: ThemeName | null) =>
@@ -533,6 +541,7 @@ export function masternodesScenarios(base: Base) {
         m.listed.push({ proTxHash: lab, facts: { ...facts("evonode", "77", true, "198.51.100.77"), operatorPublicKey: keyInfo("operator", 2).publicKeyHex, platformNodeId: node } });
         m.rows.push(row(lab, "Lab evonode", { kind: "evonode", service: "198.51.100.77:19999", roles: roles({ collateral: true, owner: true, operator: true }) }));
         m.registrations.push(lab);
+        m.ownerKeys[lab] = 2;
       }),
   };
 }

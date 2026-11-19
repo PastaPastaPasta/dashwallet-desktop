@@ -45,7 +45,7 @@ describe("event bridge", () => {
       dashpayKeys.quote("w"),
       keys.coinjoinStatus("w"),
     ]);
-    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.detailAll]);
+    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll]);
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);
     // DP1-09 D14: a registration lease's change re-reads the rows, whose `waiting` moved.
     const registration = { flow: "registration" } as never;

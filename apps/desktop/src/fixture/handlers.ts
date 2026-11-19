@@ -647,7 +647,7 @@ export const HANDLERS: Handlers = {
   // Governance (MG-09): governance.ts.
   ...governanceHandlers({ wallet, grant: checkGrant, useGrant }),
   // My masternodes (MG-10): masternodes.ts.
-  ...masternodesHandlers({ wallet, grant: checkGrant, useGrant }),
+  ...masternodesHandlers({ wallet, useGrant }),
   // Username registration (DP1-09): registration.ts.
   ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
   ...topUpHandlers({ wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE }),

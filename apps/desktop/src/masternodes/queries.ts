@@ -13,6 +13,7 @@ export const PLATFORM_REFRESH_MS = 60_000;
 
 export const mnKeys = {
   listState: [...m, "listState"] as const,
+  listAll: [...m, "list"] as const,
   list: (walletId: string) => [...m, "list", walletId] as const,
   detailAll: [...m, "detail"] as const,
   detail: (walletId: string, hash: string) => [...m, "detail", walletId, hash] as const,
