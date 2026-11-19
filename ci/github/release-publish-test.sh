@@ -223,6 +223,7 @@ check "main: immutable prerelease $tag, at the commit, a prerelease, not latest"
   'log_has "release create $tag " && log_has "--target $c2" && log_has "--prerelease" && log_has "--latest=false"'
 check "main: no draft, no delete" '! log_has "--draft" && ! log_has "DELETE"'
 check "main: creates continuous" 'log_has "release create continuous "'
+check "main: no latest.json, in the run's release or continuous" '[[ ! -e "$OUT/attest/latest.json" ]] && ! log_has latest.json'
 
 # --- push of a release tag: a version is a full release, a release candidate a prerelease
 tag_bundles() { # the four bundles under version $1, alone in their own dist
@@ -233,10 +234,20 @@ tag_bundles 0.1.0; fs_reset
 DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
 check "tag v0.1.0: a full release, not a prerelease, Latest left to GitHub" \
   '[[ $status -eq 0 ]] && log_has "release create v0.1.0 " && ! log_has "--prerelease" && ! log_has "--latest"'
+feed=$OUT/attest/latest.json
+check "tag v0.1.0: latest.json (the update feed) names the version, a UTC time and the release page" \
+  '[[ -f "$feed" && $(jq -r .version "$feed") == 0.1.0 && $(jq -r .notes_url "$feed") == https://github.com/o/r/releases/tag/v0.1.0 ]] &&
+   jq -e ".pub_date | test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$\")" "$feed" > /dev/null'
+check "tag v0.1.0: latest.json is uploaded with the release" 'log_has "SHA256SUMS $feed --repo"'
+FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=6 DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 rerun: six assets (with latest.json) is complete, nothing created" '[[ $status -eq 0 ]] && ! log_has "release create"'
+FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=5 DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 rerun: five assets (no latest.json) is incomplete and refused" '[[ $status -ne 0 ]] && ! log_has "release create"'
 tag_bundles 0.1.0-rc.1; fs_reset
 DIST=$work/tagdist run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
 check "tag v0.1.0-rc.1: a prerelease, not Latest" \
   '[[ $status -eq 0 ]] && log_has "release create v0.1.0-rc.1 " && log_has "--prerelease" && log_has "--latest=false"'
+check "tag v0.1.0-rc.1: no latest.json" '[[ ! -e "$OUT/attest/latest.json" ]] && ! log_has latest.json'
 
 # --- push to main again: the per-run release exists, continuous exists at the older commit
 seed_old

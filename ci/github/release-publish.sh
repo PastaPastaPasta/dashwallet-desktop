@@ -16,7 +16,10 @@
 #   push to refs/heads/main      an immutable prerelease v<version>-dev.<run>+<short sha> with the run's
 #                                files, and the rolling prerelease `continuous` with stable names;
 #   push of a tag vX.Y.Z[-rc.N]  that tag's release: a full release for vX.Y.Z, a prerelease for -rc.N;
-#                                notes from docs/release/<X.Y.Z>-notes.md when it exists.
+#                                notes from docs/release/<X.Y.Z>-notes.md when it exists. A full release
+#                                also gets latest.json ({version, pub_date, notes_url}), the feed of the
+#                                app's update check (PK-03a): GitHub serves it from the Latest release, and
+#                                no prerelease (-rc, -dev, continuous) ever carries one.
 # A commit that is not on origin/main never publishes, whatever the trigger or the tag says.
 #
 # `continuous` is replaced as one generation, with the previous one kept until everything has worked:
@@ -134,6 +137,8 @@ else
   tag=${ref#refs/tags/}
 fi
 run_url=${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/${GITHUB_RUN_ID:-0}
+feed=()
+[[ "$kind" != tag || ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || feed=("$out/attest/latest.json")
 
 case "$mode" in
 prepare)
@@ -151,6 +156,11 @@ prepare)
     cp "$out/continuous"/"$cont_prefix"-* "$out/attest/"
     cp "$out/continuous/SHA256SUMS" "$out/attest/SHA256SUMS.continuous"
   fi
+  if ((${#feed[@]})); then
+    jq -n --arg version "${tag#v}" --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      --arg notes_url "${GITHUB_SERVER_URL:-https://github.com}/$repo/releases/tag/$tag" \
+      '{version: $version, pub_date: $pub_date, notes_url: $notes_url}' > "${feed[0]}"
+  fi
   echo "release-publish: kind=$kind tag=$tag"
   ls -l "$out/attest"
   ;;
@@ -162,14 +172,15 @@ publish)
     version=${tag#v}
     notes=(--notes "Release $tag. $verify_note")
     [[ ! -f "$here/../../docs/release/${version%%-*}-notes.md" ]] || notes=(--notes-file "$here/../../docs/release/${version%%-*}-notes.md")
-    if complete_release "$tag" 5; then
+    if complete_release "$tag" $((5 + ${#feed[@]})); then
       echo "release-publish: release $tag exists and is complete; leaving it as it is"
     else
       # The tag exists (it triggered this run). A version (vX.Y.Z) is a full release, and GitHub picks
       # Latest by version; a release candidate (-rc.N) is a prerelease, never Latest.
       flavour=()
       [[ "$version" != *-rc.* ]] || flavour=(--prerelease --latest=false)
-      w gh release create "$tag" "${files[@]}" "$DIST/SHA256SUMS" --repo "$repo" --verify-tag \
+      [[ ${#feed[@]} -eq 0 || -f "${feed[0]}" ]] || die "run prepare first: no latest.json"
+      w gh release create "$tag" "${files[@]}" "$DIST/SHA256SUMS" "${feed[@]}" --repo "$repo" --verify-tag \
         "${flavour[@]}" --title "Dash Wallet Desktop $version" "${notes[@]}"
     fi
     exit 0

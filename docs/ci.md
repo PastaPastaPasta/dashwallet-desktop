@@ -293,7 +293,9 @@ out the full history, runs `ci/github/release-publish.sh` and publishes:
   `continuous` alone, after repairing).
 - push of a tag `vX.Y.Z[-rc.N]` (on `main`): a full release for `vX.Y.Z` (GitHub marks the highest version
   Latest), a prerelease for `-rc.N`, with the run's files (notes from
-  `docs/release/X.Y.Z-notes.md`), nothing rolling. `v0.0.0-rel<N>` dry-run tags only build.
+  `docs/release/X.Y.Z-notes.md`), nothing rolling. A full release also gets `latest.json`
+  (`{version, pub_date, notes_url}`), the feed of the app's opt-in update check (PK-03a), which reads it from
+  `releases/latest/download/`; no prerelease carries one. `v0.0.0-rel<N>` dry-run tags only build.
 - `actions/attest-build-provenance` runs before the release is written, on every file (the four bundles and both
   `SHA256SUMS`); the stable-named copies have the same bytes, so one attestation covers both.
 
