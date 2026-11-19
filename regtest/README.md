@@ -349,6 +349,20 @@ DWCLI=${CARGO_TARGET_DIR:-$PWD/rust/target}/debug/dwcli DWD_PYTHON=~/.cache/dwd-
 `DWD_MG03_EVIDENCE=<dir>` also writes the list, A's payouts and its removed detail as JSON. One
 pass takes about 3 minutes on agentbox.
 
+### Suites `governance`, `protx` and `shared` (MG-02, MG-04, MG-04b, MG-06, MG-08)
+
+`functional/dwd_governance.py`, `functional/dwd_protx.py` (plain and `DWD_MG04_V24=1`) and
+`functional/dwd_shared.py` run `dwcli` on the host the same way:
+
+```sh
+DWCLI=${CARGO_TARGET_DIR:-$PWD/rust/target}/debug/dwcli DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0 regtest/functional/run.sh dwd_governance.py --portseed=<n>
+DWCLI=${CARGO_TARGET_DIR:-$PWD/rust/target}/debug/dwcli DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0 regtest/functional/run.sh dwd_protx.py --portseed=<n>
+DWCLI=${CARGO_TARGET_DIR:-$PWD/rust/target}/debug/dwcli DWD_PYTHON=~/.cache/dwd-dashcore/func-venv/bin/python \
+    DASHCORE_DIR=~/.cache/dwd-dashcore/24.0.0 regtest/functional/run.sh dwd_shared.py --portseed=<n> --timeout-factor=4
+```
+
 ### Suite `governance_ui` (MG-09)
 
 `functional/dwd_governance_ui.py` is the Governance tab's acceptance on the real app: 3 masternodes,
@@ -390,5 +404,8 @@ regtest/
     ├── dwd_mn_chainlock.py  4 MNs → quorums → ChainLock + InstantSend
     ├── dwd_coinjoin_probe.py        4 MNs + 3 mixing wallets → real CoinJoin rounds
     ├── dwd_masternodes.py   dwcli mn against the MN list: roles, tracking, payouts, status
+    ├── dwd_governance.py    dwcli governance / gov against 4 MNs: govsync, proposals, votes
+    ├── dwd_protx.py         dwcli mn ProRegTx / ProUpRegTx owner flows (regular + v24)
+    ├── dwd_shared.py        dwcli mn shared v24 registration, key change, standby, dissolution
     └── dwd_governance_ui.py the desktop app votes and creates a proposal through its UI
 ```
