@@ -68,7 +68,10 @@ pub use registration::{
     RegistrationUpdate,
 };
 pub use rows::{SqlValue, TableRows};
-pub use shared_sessions::{SharedSessionRow, SharedSessionUpdate};
+pub use shared_sessions::{
+    AbandonOutcome, INHERITED_REFUSED_CODES, RESEND_IN_PROGRESS, SharedSessionRow,
+    SharedSessionUpdate,
+};
 pub use shared_standby::StandbyRow;
 
 mod embedded {
@@ -603,6 +606,7 @@ impl AppDb {
         embedded::migrations::runner()
             .set_abort_divergent(true)
             .set_abort_missing(true)
+            .set_grouped(true)
             .run(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -1821,7 +1825,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026111002);
+        assert_eq!(db.schema_version().unwrap(), 2026111901);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();
