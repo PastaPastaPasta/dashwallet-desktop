@@ -7,7 +7,7 @@ job's `GITHUB_TOKEN` is read-only (`contents: read`).
 
 | Workflow | Triggers | What it runs |
 |---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | push to `main` and `dw/**`, pull requests, manual | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
+| [`ci.yml`](../.github/workflows/ci.yml) | push to `main`, pull requests, manual | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
 | [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the shielded prover warm-up; the MG-04b release check; the Linux GUI (AT-SPI) demo |
 | [`gate.yml`](../.github/workflows/gate.yml) | manual only | G-02 / G-03 measurement scripts on the chosen OSes |
 | [`tauri-selftest.yml`](../.github/workflows/tauri-selftest.yml) | manual only | the Tauri app (G-01) built, run with `--selftest` and launched for a screenshot on macOS and Windows |
@@ -190,7 +190,7 @@ purpose. The per-state screenshots of the other suites are artifacts only.
 
 | Job | What |
 |---|---|
-| Regtest suites (T1) | `dwcli` built on the runner; the regtest image built; then, once that setup has passed, each as its own step so one failure does not hide the rest: the harness smoke tests, `l1-sync`, `l1-send`, `l2-tools`, `move-mixed`, `restore`, the functional tests `dwd_mn_chainlock.py` and `dwd_coinjoin_probe.py` (Docker), the `coinjoin` suite (`dwd_coinjoin_client.py`) and the `masternodes` suite (`dwd_masternodes.py`) on the host against the verified v24 release from `regtest/scripts/fetch-dashcore.sh`; then, once `dwcli` has built, its tests with each debug feature: `--features invitation-create-test`, `--features platform-addr-fund` and `--features mix-shield-test`. JUnit XML and logs are uploaded as `regtest-logs`. |
+| Regtest suites (T1) | `dwcli` built on the runner; the regtest image built; then, once that setup has passed, each as its own step so one failure does not hide the rest: the harness smoke tests, `l1-sync`, `l1-send`, `l2-tools`, `move-mixed`, `restore`, the functional tests `dwd_mn_chainlock.py` and `dwd_coinjoin_probe.py` (Docker), and on the host against the verified v24 release from `regtest/scripts/fetch-dashcore.sh`: `coinjoin` (`dwd_coinjoin_client.py`), `masternodes` (`dwd_masternodes.py`), `governance` (`dwd_governance.py`), `protx` (`dwd_protx.py`, plain and `DWD_MG04_V24=1`) and `shared` (`dwd_shared.py`); then, once `dwcli` has built, its tests with each debug feature: `--features invitation-create-test`, `--features platform-addr-fund` and `--features mix-shield-test`. JUnit XML and logs are uploaded as `regtest-logs`. |
 | Shielded prover warm-up (E0-12) | The `shielded_warmup` example (`cargo build -p dw-engine --example shielded_warmup --locked`), run in a cold process: it builds the Halo 2 proving key (no network). The shielded pool (`platform-wallet/shielded`, `platform-wallet-storage/shielded`: halo2, orchard) is on in every build since 0.1, so PR CI builds, lints and tests it. Cost: [`docs/research/shielded-cost.md`](research/shielded-cost.md). |
 | Release check (MG-04b sending override) | The release leg of `dw-engine`'s `tests/mg04b_release_check.rs` (MG-04b D71): `cargo test --release -p dw-engine --features test-support --test mg04b_release_check --locked`. Its `const` assert fails the build if the shared-masternode sending override is compiled into a release build; PR CI runs only the debug legs. |
 | Release check (dwcli `mix-shield-test`) | The release leg of `dw-engine`'s `tests/mix_shield_release_check.rs`: `cargo test --release -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked`. Its `const` assert fails the build if the regtest suite's test-only CoinJoin calls (`mix_shield_test`) are compiled into a release build; the nightly builds its `dwcli` with `--features mix-shield-test` (debug) for `move-mixed`. |
@@ -233,7 +233,7 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 
 ## `release.yml` (PK-01, PK-02; 0.1)
 
-On every push, pull request and dispatch (see Triggers below), and on a tag `v*`. One job per OS builds the release-profile app without the
+On a push to `main`, every pull request and dispatch (see Triggers below), and on a tag `v*`. One job per OS builds the release-profile app without the
 `selftest` feature (`rust-cache` keys `release-<os>`; Node 24, pnpm; the Windows `unistd` shim as in
 `ci.yml`):
 

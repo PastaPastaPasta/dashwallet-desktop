@@ -33,9 +33,11 @@
 # Screenshots and logs are uploaded as the `screenshots-<os>` artifacts.
 name: CI
 
+# A branch is checked through its pull request only: a push trigger for it as well ran every
+# job twice, and the hosted macOS runners are the scarce ones.
 on:
   push:
-    branches: [main, "dw/**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -129,8 +131,8 @@ jobs:
         run: ci/github/install-protoc.sh
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
         working-directory: .
-        # A mirror outage otherwise hangs here for most of the job's time.
-        timeout-minutes: 15
+        # Three bounded apt attempts (ci/github/linux-host-deps.sh); a mirror outage otherwise hangs here.
+        timeout-minutes: 25
         run: ci/github/linux-host-deps.sh rust
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install && rustc --version
