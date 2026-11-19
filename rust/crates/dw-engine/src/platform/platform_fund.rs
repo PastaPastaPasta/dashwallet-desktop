@@ -360,19 +360,28 @@ async fn no_open_fund(
     }
 }
 
-/// What a Core Max to the Platform address takes and adds, BIP44 account 0
-/// read under `fence` (`core_max.rs`).
-async fn max_plan(
+/// A Core Max's checks and reads before it takes the wallet's CoinJoin
+/// claim and coin fence, as the CoinJoin drain's: the fund's gate, an open
+/// fund, the address it pays.
+async fn max_gate(
     session: &NetworkSession,
     wallet: WalletId,
     lib: &impl FundLib,
+) -> Result<(&'static PlatformVersion, PlatformAddress), CreditsError> {
+    let rules = gate(lib).await?;
+    no_open_fund(session, wallet, lib).await?;
+    Ok((rules, lib.receive_address().await?))
+}
+
+/// What a Core Max to the Platform address takes and adds, BIP44 account 0
+/// read under `fence` (`core_max.rs`).
+async fn max_plan(
+    lib: &impl FundLib,
+    (rules, to): (&'static PlatformVersion, PlatformAddress),
     fence: &CoinFence,
 ) -> Result<(PlatformFundQuote, MaxPlan), CreditsError> {
-    let rules = gate(lib).await?;
     let fee = fee_credits(rules);
-    no_open_fund(session, wallet, lib).await?;
     let plan = core_max::plan(lib.core_coins(fence).await?, minimum_duffs(rules))?;
-    let to = lib.receive_address().await?;
     let quote = PlatformFundQuote {
         duffs: plan.duffs,
         fee_duffs: plan.fee_duffs,
@@ -398,9 +407,10 @@ pub(crate) async fn quote(
     match amount {
         FundAmount::Duffs { duffs } => plan(session, wallet, lib, duffs).await,
         FundAmount::All => {
+            let gated = max_gate(session, wallet, lib).await?;
             let _claim = core_max::claim(session, wallet)?;
             let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
-            Ok(max_plan(session, wallet, lib, &fence).await?.0)
+            Ok(max_plan(lib, gated, &fence).await?.0)
         }
     }
 }
@@ -482,10 +492,14 @@ pub(crate) async fn fund(
     }
     let lock = fund_lock(wallet);
     let _funding = lock.lock().await;
-    // A Core Max holds the wallet's CoinJoin claim through its funding.
+    // The amount's plan, or a Core Max's gate: it holds the wallet's
+    // CoinJoin claim through its funding.
     let (claim, quoted) = match amount {
-        FundAmount::All => (Some(core_max::claim(session, wallet)?), None),
-        FundAmount::Duffs { duffs } => (None, Some(plan(session, wallet, lib, duffs).await?)),
+        FundAmount::All => {
+            let gated = max_gate(session, wallet, lib).await?;
+            (Some(core_max::claim(session, wallet)?), Err(gated))
+        }
+        FundAmount::Duffs { duffs } => (None, Ok(plan(session, wallet, lib, duffs).await?)),
     };
     if !session.leases.refresh_funding(wallet).await {
         return Err(PlatformError::Unavailable.into());
@@ -494,10 +508,10 @@ pub(crate) async fn fund(
     // Held from the coin read to the permit, which keeps it until the
     // library tracks the lock.
     let (plan, max) = match quoted {
-        Some(plan) => (plan, None),
-        None => {
+        Ok(plan) => (plan, None),
+        Err(gated) => {
             let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
-            let (plan, max) = max_plan(session, wallet, lib, &fence).await?;
+            let (plan, max) = max_plan(lib, gated, &fence).await?;
             (plan, Some((max, fence)))
         }
     };
@@ -509,6 +523,11 @@ pub(crate) async fn fund(
             remaining,
         }
         .into());
+    }
+    // A Max's grant is its quote's coins' sum: coins read again to another
+    // sum are not the quote's.
+    if max.is_some() && plan.total_duffs != remaining {
+        return Err(CreditsError::CoinsChanged);
     }
     // The apply's signer is taken before the funding charges the budget,
     // which an exact grant leaves at 0, and kept for the apply.

@@ -134,10 +134,12 @@ struct FakeFund {
     /// The next apply locks the vault before it signs.
     lock_vault_in_apply: AtomicBool,
     /// BIP44 account 0 as a Core Max reads it; the coins its build spends
-    /// (the plan's when unset); each Core Max lock's inputs.
+    /// (the plan's when unset); each Core Max lock's inputs; whether each
+    /// Core Max build ran with the wallet's coin fence held.
     core: Mutex<super::core_max::CoreCoins>,
     core_built: Mutex<Option<Vec<super::shield_drain::DrainCoin>>>,
     core_drained: Mutex<Vec<Vec<OutPoint>>>,
+    core_fenced: Mutex<Vec<bool>>,
 }
 
 impl FakeFund {
@@ -169,6 +171,7 @@ impl FakeFund {
             core: Mutex::default(),
             core_built: Mutex::default(),
             core_drained: Mutex::default(),
+            core_fenced: Mutex::default(),
         }
     }
 
@@ -401,6 +404,9 @@ impl FundLib for FakeFund {
         permit: &CallPermit,
     ) -> Result<OutPoint, FundError> {
         use super::shielded_tests::{fake_credit_script, sign_fake_drain};
+        let free = self.session.try_coin_fence(self.wallet).await.unwrap();
+        self.core_fenced.lock().unwrap().push(free.is_none());
+        drop(free);
         let signer = super::shield_drain::drain_signer(
             permit,
             coins,

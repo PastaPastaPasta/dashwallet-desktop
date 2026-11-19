@@ -107,7 +107,40 @@ fn core_max_fund_quote_and_execute_agree() {
     assert_eq!(out.txid, outpoint.txid.to_string());
     assert_eq!(lib.applied(), [outpoint]);
     assert_eq!(lib.tracked.lock().unwrap()[0].amount, TOTAL - lock_fee);
+    assert_eq!(
+        *lib.core_fenced.lock().unwrap(),
+        [true],
+        "built and signed under the fence"
+    );
     drop(fx.s.coinjoin.claim_sweep(fx.wallet).unwrap());
+}
+
+/// Coins that changed since the quote to a smaller sum (one spent, one
+/// swapped for a smaller coin) are `coins_changed` under the quote's grant,
+/// before the lease: nothing stored, the grant unused; a quote of the coins
+/// as they are funds.
+#[test]
+fn core_max_fund_refuses_coins_changed_since_the_quote() {
+    let fx = Fixture::new(0);
+    let lib = maxer(&fx, account());
+    let quoted = max_quote(&fx, &lib).unwrap().grant.max_duffs;
+    let spent = CoreCoins {
+        coins: account().coins[..1].to_vec(),
+        ..account()
+    };
+    let mut swapped = account();
+    swapped.coins[1] = bip44(9, swapped.coins[1].value - 1);
+    for read in [spent, swapped] {
+        *lib.core.lock().unwrap() = read;
+        let (out, g) = max_fund(&fx, &lib, quoted);
+        assert_eq!(out.unwrap_err(), CreditsError::CoinsChanged);
+        unused(&fx, &g);
+        nothing_stored(&fx, &lib);
+    }
+    let requoted = max_quote(&fx, &lib).unwrap().grant.max_duffs;
+    lib.answer(Answer::Done(None));
+    max_fund(&fx, &lib, requoted).0.unwrap();
+    assert_eq!(lib.core_drained.lock().unwrap().len(), 1);
 }
 
 /// A build that is not the plan is refused unsigned: `coins_changed`,

@@ -4293,13 +4293,18 @@ renames or reshapes them takes the next version bump:
     (every final coin: confirmed or InstantSend-locked) into one `DrainAll` lock with the fee out of it, under the
     existing `Shield` or `PlatformAddressFund` lease and `shield/<k>/funding` or `paddr/<k>/funding` step, so the
     pending listings, resumes and Repair treat it as any shield's or fund's lock (a kill after it is signed resumes the
-    same outpoint). It refuses while any final coin of the account is held (locked, reserved, or a denomination Dash Core counts as
-    mixed; no fallback to an amount), past 50 coins,
-    below the floor, while the wallet mixes or another move of its coins runs (it holds the CoinJoin claim through the
-    funding), all before signing. The vault cannot see the debit: the call's drain signer (`DrainPlan` with
-    `instant_locked`) signs only the planned coins, one signature each, their sum within the grant, and only a build
-    whose inputs are exactly the planned coins at their values, each final, and whose one output is the lock's credit
-    burn within the planned fee; anything else is `*.coins_changed`, unsigned.
+    same outpoint). It refuses while any final coin of the account is held (locked, reserved, or a denomination Dash
+    Core counts as mixed; no fallback to an amount), past 50 coins, below the floor, while the wallet mixes or another
+    move of its coins runs (it holds the CoinJoin claim through the funding), all before signing. The execute reads the
+    account again under the quote's grant, which is the quoted coins' sum: a sum above it is
+    `platform.grant_exceeded`, any other sum `*.coins_changed`, both before the lease, the grant unused. The vault
+    cannot see the debit: the call's drain signer (`DrainPlan` with `instant_locked`) signs only the planned coins, one
+    signature each, their sum within the grant, and only a build whose inputs are exactly the planned coins at their
+    values, each final, and whose one output is the lock's credit burn within the planned fee; anything else is
+    `*.coins_changed`, unsigned. Known limit (r1, accepted for C2a): an InstantSend-locked input can be a received
+    payment whose own parents are unconfirmed, so a lock of many can pass Dash Core's default limit of 25 unconfirmed
+    ancestors; peers then refuse it until those confirm, and the step waits for its proof or Repair clears it. No value
+    is at risk.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

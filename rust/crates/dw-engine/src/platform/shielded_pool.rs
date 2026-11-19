@@ -1344,19 +1344,29 @@ async fn no_open_shield(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
     }
 }
 
-/// What a Core Max into the pool takes and buys, BIP44 account 0 read
-/// under `fence` (`core_max.rs`).
-async fn shield_max_plan(
+/// A Core Max's checks before it takes the wallet's CoinJoin claim and coin
+/// fence, as the CoinJoin drain's (`shield_drain::quote`): the pool's gate,
+/// the journal, an open shield. The pool's fee.
+async fn shield_max_gate(
     session: &NetworkSession,
     lib: &impl ShieldedLib,
-    fence: &crate::coins::CoinFence,
-) -> Result<(ShieldQuote, MaxPlan), ShieldedError> {
+) -> Result<u64, ShieldedError> {
     let version = priced_gate(lib).await?;
     if !session.leases.journal_ready() {
         return Err(journal_unread(session));
     }
     let pool_fee = shield_pool_fee(version)?;
     no_open_shield(lib).await?;
+    Ok(pool_fee)
+}
+
+/// What a Core Max into the pool of `pool_fee` takes and buys, BIP44
+/// account 0 read under `fence` (`core_max.rs`).
+async fn shield_max_plan(
+    lib: &impl ShieldedLib,
+    pool_fee: u64,
+    fence: &crate::coins::CoinFence,
+) -> Result<(ShieldQuote, MaxPlan), ShieldedError> {
     let floor = super::shield_drain::drain_floor(pool_fee);
     let plan = core_max::plan(lib.core_coins(fence).await?, floor)?;
     let quote = ShieldQuote {
@@ -1389,9 +1399,10 @@ pub(crate) async fn shield_max_quote(
     wallet: WalletId,
     lib: &impl ShieldedLib,
 ) -> Result<ShieldQuote, ShieldedError> {
+    let pool_fee = shield_max_gate(session, lib).await?;
     let _claim = core_max::claim(session, wallet)?;
     let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
-    Ok(shield_max_plan(session, lib, &fence).await?.0)
+    Ok(shield_max_plan(lib, pool_fee, &fence).await?.0)
 }
 
 /// What holds a shield's funding back, as the code the host sees: as a
@@ -1455,10 +1466,14 @@ pub(crate) async fn shield(
     open_for_funding(session, wallet, lib).await?;
     let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;
-    // A Core Max holds the wallet's CoinJoin claim through its funding.
+    // The amount's plan, or a Core Max's pool fee: it holds the wallet's
+    // CoinJoin claim through its funding.
     let (claim, quoted) = match amount {
-        FundAmount::All => (Some(core_max::claim(session, wallet)?), None),
-        FundAmount::Duffs { duffs } => (None, Some(shield_plan(session, lib, duffs).await?)),
+        FundAmount::All => {
+            let pool_fee = shield_max_gate(session, lib).await?;
+            (Some(core_max::claim(session, wallet)?), Err(pool_fee))
+        }
+        FundAmount::Duffs { duffs } => (None, Ok(shield_plan(session, lib, duffs).await?)),
     };
     if !session.leases.refresh_funding(wallet).await {
         return Err(PlatformError::Unavailable.into());
@@ -1467,10 +1482,10 @@ pub(crate) async fn shield(
     // Held from the coin read to the permit, which keeps it until the
     // library tracks the lock.
     let (plan, max) = match quoted {
-        Some(plan) => (plan, None),
-        None => {
+        Ok(plan) => (plan, None),
+        Err(pool_fee) => {
             let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
-            let (plan, max) = shield_max_plan(session, lib, &fence).await?;
+            let (plan, max) = shield_max_plan(lib, pool_fee, &fence).await?;
             (plan, Some((max, fence)))
         }
     };
@@ -1482,6 +1497,11 @@ pub(crate) async fn shield(
             remaining,
         }
         .into());
+    }
+    // A Max's grant is its quote's coins' sum: coins read again to another
+    // sum are not the quote's.
+    if max.is_some() && plan.total_duffs != remaining {
+        return Err(ShieldedError::CoinsChanged);
     }
     let lease = authority(session, wallet, grant, FlowKind::Shield).await?;
     // Before the funding charges the budget (`topup.rs`).

@@ -288,6 +288,38 @@ fn drain_grant_caps_the_debit() {
     unused(&fx, &short);
 }
 
+/// Coins that changed since the quote to a smaller sum (one spent, one
+/// swapped for a smaller coin) are `coins_changed` under the quote's grant,
+/// before the lease: nothing funded, the grant unused; a quote of the coins
+/// as they are funds.
+#[test]
+fn core_max_refuses_coins_changed_since_the_quote() {
+    let fx = Fixture::new(0);
+    let lib = maxer(&fx, account());
+    let quoted = quote_of(&fx, &lib).unwrap().grant.max_duffs;
+    let spent = CoreCoins {
+        coins: account().coins[..2].to_vec(),
+        ..account()
+    };
+    let mut swapped = account();
+    swapped.coins[2] = bip44(9, swapped.coins[2].value - 1);
+    for read in [spent, swapped] {
+        *lib.core.lock().unwrap() = read;
+        let grant = shield_grant(&fx, quoted);
+        assert_eq!(
+            max_of(&fx, &lib, grant.clone()).unwrap_err(),
+            ShieldedError::CoinsChanged
+        );
+        assert!(lib.funded.lock().unwrap().is_empty());
+        unused(&fx, &grant);
+    }
+    let requoted = quote_of(&fx, &lib).unwrap().grant.max_duffs;
+    *lib.applies.lock().unwrap() = Some(Ok(Applied::Done));
+    max_of(&fx, &lib, shield_grant(&fx, requoted)).unwrap();
+    assert_eq!(lib.funded.lock().unwrap().len(), 1);
+    drop(fx.s.coinjoin.claim_sweep(fx.wallet).unwrap());
+}
+
 /// A lock below the pool's floor, or none, is refused before signing.
 #[test]
 fn core_max_refuses_below_the_floor() {

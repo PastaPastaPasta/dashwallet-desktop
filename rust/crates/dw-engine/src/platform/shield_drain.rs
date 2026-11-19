@@ -45,16 +45,18 @@ use crate::coinjoin::CoinJoinFailure;
 use crate::coins::CoinFence;
 use crate::{NetworkSession, WalletId};
 
-/// One coin of CoinJoin account 0 as the drain sees it.
+/// One coin a drain plans: of CoinJoin account 0, or of BIP44 account 0
+/// for a Core Max (`core_max.rs`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DrainCoin {
     pub outpoint: OutPoint,
     pub value: u64,
-    /// Its address's key, `m/9'/coin'/4'/0'/{0,1}/i`.
+    /// Its address's key: `m/9'/coin'/4'/0'/{0,1}/i`, or a BIP44 address's.
     pub path: DerivationPath,
     pub fully_mixed: bool,
-    /// In a block: what a move spends (an InstantSend lock is not
-    /// enough, as for a sweep).
+    /// Final for the plan: in a block (an InstantSend lock is not enough
+    /// for the CoinJoin drain, as for a sweep), or InstantSend-locked for a
+    /// Core Max.
     pub confirmed: bool,
     /// Locked by the user, or reserved by a spend or a sweep the engine
     /// holds.

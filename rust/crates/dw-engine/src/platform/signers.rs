@@ -485,8 +485,8 @@ impl DrainCap {
     }
 
     /// Whether the build of `tx` over `inputs` is the plan's: exactly its
-    /// coins at their values, each in a block (an InstantSend lock is not
-    /// enough), within the grant; one output, the burn of the credit; one
+    /// coins at their values, each final (in a block; or InstantSend-locked
+    /// when the plan is `instant_locked`, a Core Max's), within the grant; one output, the burn of the credit; one
     /// credit, to the step's key, short of the coins' sum by at most the
     /// quote's fee bound and at least the library's drain minimum (as
     /// `build.rs` judges it, after signing).
