@@ -16,10 +16,11 @@
 //! open must answer as the first. A new release is covered by adding its
 //! directory.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dw_engine::DashNetwork;
 use dw_vault::{MemoryOsStore, VaultConfig};
@@ -32,6 +33,9 @@ use crate::launch::LaunchOptions;
 const CHILD: &str = "DW_UPGRADE_PATH_CHILD";
 const TEST: &str = "upgrade_path_tests::every_release_data_root_opens_with_the_same_answers";
 const DONE: &str = "upgrade-path child done";
+/// How long one open may take before its child is killed: generous, for hosts
+/// and CI runners under heavy load.
+const CHILD_DEADLINE: Duration = Duration::from_secs(600);
 
 /// Fields a later build renamed: (command, field in the release's answer,
 /// field in this build's answer).
@@ -56,16 +60,70 @@ const KNOWN: &[(&str, &str, &str, &str)] = &[(
     "47a179cf made the unset per-wallet setting read as off; a 0.1.0 wallet that never changed it was on",
 )];
 
-fn fixtures() -> Vec<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/upgrade");
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&root)
-        .unwrap_or_else(|e| panic!("{}: {e}", root.display()))
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.join("expected.json").is_file())
-        .collect();
-    dirs.sort();
-    dirs
+/// Every release directory under `root`, each with a readable, parseable
+/// `expected.json`; files beside them (the README) are skipped. Any entry that
+/// cannot be read, or a directory without its snapshot, is an error naming it.
+fn fixtures_in(root: &Path) -> Result<Vec<(PathBuf, Value)>, String> {
+    let entries = std::fs::read_dir(root).map_err(|e| format!("{}: {e}", root.display()))?;
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", root.display()))?;
+        let path = entry.path();
+        let kind = entry
+            .file_type()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if !kind.is_dir() {
+            continue;
+        }
+        let snapshot = path.join("expected.json");
+        let text = std::fs::read_to_string(&snapshot)
+            .map_err(|e| format!("{}: {e}", snapshot.display()))?;
+        let expected =
+            serde_json::from_str(&text).map_err(|e| format!("{}: {e}", snapshot.display()))?;
+        found.push((path, expected));
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(found)
+}
+
+/// What makes a snapshot too thin to stand for its release: no calls, a
+/// wallet without exactly one signature, or a wallet `list_wallets` lacks.
+fn snapshot_problems(expected: &Value) -> Vec<String> {
+    let mut problems = Vec::new();
+    let wallets: Vec<&Value> = match expected["wallets"].as_array() {
+        Some(w) if !w.is_empty() => w.iter().map(|w| &w["walletId"]).collect(),
+        _ => vec![],
+    };
+    if wallets.is_empty() {
+        problems.push("no wallets".to_string());
+    }
+    let calls = expected["calls"].as_array().map_or(&[][..], Vec::as_slice);
+    if calls.is_empty() {
+        problems.push("no calls".to_string());
+    }
+    let signatures = expected["signatures"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    if signatures.len() != wallets.len() {
+        problems.push(format!(
+            "{} signatures for {} wallets",
+            signatures.len(),
+            wallets.len()
+        ));
+    }
+    let listed = calls
+        .iter()
+        .find(|c| c["cmd"] == "list_wallets")
+        .and_then(|c| c["result"].as_array());
+    for id in &wallets {
+        if signatures.iter().filter(|s| &&s["walletId"] == id).count() != 1 {
+            problems.push(format!("wallet {id} has not exactly one signature"));
+        }
+        if !listed.is_some_and(|l| l.iter().any(|w| &&w["walletId"] == id)) {
+            problems.push(format!("wallet {id} is not in list_wallets"));
+        }
+    }
+    problems
 }
 
 fn copy_private(from: &Path, to: &Path) {
@@ -100,15 +158,21 @@ fn every_release_data_root_opens_with_the_same_answers() {
         child(Path::new(&dir));
         return;
     }
-    let fixtures = fixtures();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/upgrade");
+    let fixtures = fixtures_in(&root).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         !fixtures.is_empty(),
         "no testdata/upgrade/<tag>/expected.json"
     );
     let mut report = Vec::new();
-    for fixture in &fixtures {
+    for (fixture, expected) in &fixtures {
         let tag = fixture.file_name().unwrap().to_string_lossy().into_owned();
-        let expected = read_json(&fixture.join("expected.json"));
+        let problems = snapshot_problems(expected);
+        assert!(
+            problems.is_empty(),
+            "{tag}: expected.json is incomplete: {}",
+            problems.join("; ")
+        );
         let dir = dw_testutil::private_tempdir();
         copy_private(&fixture.join("data"), &dir.path().join("data"));
         std::fs::copy(
@@ -119,32 +183,12 @@ fn every_release_data_root_opens_with_the_same_answers() {
         let first = open_in_child(&tag, dir.path(), 1);
         let second = open_in_child(&tag, dir.path(), 2);
         let mut found = Vec::new();
-        compare_with_release(&expected, &first, &mut found);
-        for (i, (a, b)) in first["calls"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .zip(second["calls"].as_array().unwrap())
-            .enumerate()
-        {
-            let cmd = a["cmd"].as_str().unwrap();
-            let mut diffs = Vec::new();
-            contains(
-                cmd,
-                &a["result"],
-                &b["result"],
-                &format!("calls[{i}]"),
-                &mut diffs,
-            );
-            found.extend(
-                diffs
-                    .into_iter()
-                    .map(|d| (format!("{cmd} (second open)"), d)),
-            );
-        }
-        if first["signatures"] != second["signatures"] {
-            found.push(("sign_message (second open)".into(), "differs".into()));
-        }
+        compare_with_release(expected, &first, &mut found);
+        found.extend(
+            compare_opens(&first, &second)
+                .into_iter()
+                .map(|(cmd, d)| (format!("{cmd} (second open)"), d)),
+        );
         let known: Vec<_> = KNOWN.iter().filter(|k| k.0 == tag).collect();
         for k in &known {
             assert!(
@@ -172,20 +216,74 @@ fn every_release_data_root_opens_with_the_same_answers() {
 }
 
 fn open_in_child(tag: &str, dir: &Path, n: u32) -> Value {
-    let out = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", TEST, "--nocapture", "--test-threads=1"])
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    cmd.args(["--exact", TEST, "--nocapture", "--test-threads=1"])
         .env(CHILD, dir)
-        .env("DW_UPGRADE_PATH_OPEN", n.to_string())
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
+        .env("DW_UPGRADE_PATH_OPEN", n.to_string());
+    let (status, stdout, stderr) =
+        run_with_deadline(cmd, CHILD_DEADLINE).unwrap_or_else(|e| panic!("{tag}: open {n}: {e}"));
     assert!(
-        out.status.success() && stdout.contains(DONE),
-        "{tag}: open {n} failed: {}\n{stdout}\n{}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
+        status.success() && stdout.contains(DONE),
+        "{tag}: open {n} failed: {status}\n{stdout}\n{stderr}"
     );
     read_json(&dir.join(format!("answers-{n}.json")))
+}
+
+/// Runs `cmd` with its output drained on threads; past `deadline` it is
+/// killed and reaped, and the error carries what it printed.
+fn run_with_deadline(
+    mut cmd: Command,
+    deadline: Duration,
+) -> Result<(ExitStatus, String, String), String> {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not start: {e}"))?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    };
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < deadline => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(e) => return Err(format!("could not wait: {e}")),
+        }
+    };
+    let (stdout, stderr) = (stdout.join().unwrap(), stderr.join().unwrap());
+    match status {
+        Some(status) => Ok((status, stdout, stderr)),
+        None => Err(format!(
+            "killed after {deadline:?} without finishing\n{stdout}\n{stderr}"
+        )),
+    }
 }
 
 fn compare_with_release(expected: &Value, answers: &Value, found: &mut Vec<(String, String)>) {
@@ -195,12 +293,11 @@ fn compare_with_release(expected: &Value, answers: &Value, found: &mut Vec<(Stri
     for (i, (w, g)) in want.iter().zip(got).enumerate() {
         let cmd = w["cmd"].as_str().unwrap();
         let path = format!("calls[{i}] {}", w["args"]);
-        let mut diffs = Vec::new();
-        match &g["error"] {
-            Value::Null => contains(cmd, &w["result"], &g["result"], &path, &mut diffs),
-            e => diffs.push(format!("{path}: fails with {e}")),
-        }
-        found.extend(diffs.into_iter().map(|d| (cmd.to_string(), d)));
+        found.extend(
+            answer_diffs(cmd, w, g, &path)
+                .into_iter()
+                .map(|d| (cmd.to_string(), d)),
+        );
     }
     if expected["signatures"] != answers["signatures"] {
         found.push((
@@ -211,6 +308,44 @@ fn compare_with_release(expected: &Value, answers: &Value, found: &mut Vec<(Stri
             ),
         ));
     }
+}
+
+/// The second open's answers against the first's, call by call.
+fn compare_opens(first: &Value, second: &Value) -> Vec<(String, String)> {
+    let a = first["calls"].as_array().unwrap();
+    let b = second["calls"].as_array().unwrap();
+    let mut found = Vec::new();
+    if a.len() != b.len() {
+        found.push((
+            "calls".to_string(),
+            format!("{} answers, then {}", a.len(), b.len()),
+        ));
+    }
+    for (i, (a, b)) in a.iter().zip(b).enumerate() {
+        let cmd = a["cmd"].as_str().unwrap();
+        let path = format!("calls[{i}] {}", a["args"]);
+        found.extend(
+            answer_diffs(cmd, a, b, &path)
+                .into_iter()
+                .map(|d| (cmd.to_string(), d)),
+        );
+    }
+    if first["signatures"] != second["signatures"] {
+        found.push(("sign_message".into(), "differs".into()));
+    }
+    found
+}
+
+/// `got` answers a call as `want` did: a result containing `want`'s, or, when
+/// either failed, the same failure on both sides counts as a difference too.
+fn answer_diffs(cmd: &str, want: &Value, got: &Value, path: &str) -> Vec<String> {
+    let mut diffs = Vec::new();
+    match (want.get("error"), got.get("error")) {
+        (None, None) => contains(cmd, &want["result"], &got["result"], path, &mut diffs),
+        (_, Some(e)) => diffs.push(format!("{path}: fails with {e}")),
+        (Some(e), None) => diffs.push(format!("{path}: failed before with {e}")),
+    }
+    diffs
 }
 
 /// Every field of `want` is in `got` with an equal value, recursively;
@@ -258,7 +393,7 @@ fn child(dir: &Path) {
     };
     let launch = LaunchOptions {
         data_dir: Some(root.clone()),
-        network,
+        network: network.clone(),
         network_given: true,
         ..LaunchOptions::default()
     };
@@ -335,10 +470,86 @@ fn child(dir: &Path) {
         })
         .collect();
     tauri::async_runtime::block_on(state.shutdown_engine()).expect("engine shutdown");
+    let marker = root.join(network.dir_name()).join(".session-open");
+    assert!(
+        !marker.try_exists().expect("check the open-session marker"),
+        "open {n} left an unclean session: {}",
+        marker.display()
+    );
     std::fs::write(
         dir.join(format!("answers-{n}.json")),
         serde_json::to_string_pretty(&json!({ "calls": calls, "signatures": signatures })).unwrap(),
     )
     .unwrap();
     println!("{DONE}");
+}
+
+fn v0_1_0_snapshot() -> Value {
+    read_json(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../testdata/upgrade/v0.1.0/expected.json"),
+    )
+}
+
+#[test]
+fn a_call_that_fails_on_one_open_and_answers_on_the_other_differs() {
+    let answered = |result: Value| json!({ "calls": [{ "cmd": "tx_label", "args": {}, "result": result }], "signatures": [] });
+    let failed = json!({ "calls": [{ "cmd": "tx_label", "args": {}, "error": "storage" }], "signatures": [] });
+    assert!(compare_opens(&answered(Value::Null), &answered(Value::Null)).is_empty());
+    assert_eq!(compare_opens(&answered(Value::Null), &failed).len(), 1);
+    assert_eq!(compare_opens(&failed, &answered(Value::Null)).len(), 1);
+    assert_eq!(compare_opens(&failed, &failed).len(), 1);
+    assert_eq!(
+        compare_opens(&answered(json!("a")), &answered(json!("b"))).len(),
+        1
+    );
+}
+
+#[test]
+fn discovery_names_a_release_directory_without_a_readable_snapshot() {
+    let root = dw_testutil::private_tempdir();
+    std::fs::write(root.path().join("README.md"), "notes").unwrap();
+    std::fs::create_dir(root.path().join("v9.9.8")).unwrap();
+    std::fs::write(root.path().join("v9.9.8/expected.json"), "{}").unwrap();
+    assert_eq!(fixtures_in(root.path()).unwrap().len(), 1);
+    std::fs::create_dir(root.path().join("v9.9.9")).unwrap();
+    let e = fixtures_in(root.path()).unwrap_err();
+    assert!(e.contains("v9.9.9"), "{e}");
+    std::fs::write(root.path().join("v9.9.9/expected.json"), "{").unwrap();
+    let e = fixtures_in(root.path()).unwrap_err();
+    assert!(e.contains("v9.9.9"), "{e}");
+}
+
+#[test]
+fn a_thinned_snapshot_is_refused() {
+    let full = v0_1_0_snapshot();
+    assert_eq!(snapshot_problems(&full), Vec::<String>::new());
+    let mut no_calls = full.clone();
+    no_calls["calls"] = json!([]);
+    assert!(!snapshot_problems(&no_calls).is_empty());
+    let mut one_signature = full.clone();
+    one_signature["signatures"].as_array_mut().unwrap().pop();
+    assert!(!snapshot_problems(&one_signature).is_empty());
+    let mut unlisted = full.clone();
+    for call in unlisted["calls"].as_array_mut().unwrap() {
+        if call["cmd"] == "list_wallets" {
+            call["result"].as_array_mut().unwrap().pop();
+        }
+    }
+    assert!(!snapshot_problems(&unlisted).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_child_past_its_deadline_is_killed_and_its_output_kept() {
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "echo started; exec sleep 60"]);
+    let started = Instant::now();
+    let e = run_with_deadline(cmd, Duration::from_secs(1)).unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(30));
+    assert!(e.contains("killed") && e.contains("started"), "{e}");
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "echo done"]);
+    let (status, stdout, _) = run_with_deadline(cmd, Duration::from_secs(60)).unwrap();
+    assert!(status.success() && stdout.contains("done"));
 }
