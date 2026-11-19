@@ -259,7 +259,7 @@ pub enum CoinJoinStatusCode {
     FailedToStartQueue,
     WaitingInQueue,
     Signing,
-    /// "Masternode: <message>".
+    /// `"Masternode: <message>"`.
     Masternode { message: CoinJoinPoolMessage },
 }
 
