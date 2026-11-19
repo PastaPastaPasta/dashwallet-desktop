@@ -430,8 +430,13 @@ export function ConfirmSheet({
             This wallet could not be read, so it cannot send now.{contact ? "" : " Create Unsigned still works."}
           </p>
         )}
+        {contact && (
+          <span className="sr-only" role="status" data-testid="pay-confirm-watch-only-status">
+            {watchOnlyKnown === true ? WATCH_ONLY : ""}
+          </span>
+        )}
         {contact && watchOnlyKnown === true && (
-          <p className="placeholder-note" role="status" data-testid="pay-confirm-watch-only">
+          <p className="placeholder-note" aria-hidden="true" data-testid="pay-confirm-watch-only">
             {WATCH_ONLY}
           </p>
         )}

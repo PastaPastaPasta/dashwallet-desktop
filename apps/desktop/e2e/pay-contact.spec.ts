@@ -136,12 +136,18 @@ test("IOS-050 pays a frequent contact; the confirm sheet names them and Activity
 });
 
 for (const theme of THEMES) {
-  test(`IOS-050 #82 a watch-only answer that arrives after the sheet opened keeps the contact's confirm wording (${theme})`, async ({ page }, info) => {
+  test(`IOS-050 #82 a wallet that turns watch-only while the contact sheet is open keeps the confirm wording and says why Send went (${theme})`, async ({ page }, info) => {
     const errors = await openPay(page, "dashpay-registered", theme);
     await page.getByTestId("pay-frequent-chip").first().click();
     await fillAmount(page, "0.01");
     const sheet = page.getByTestId("pay-confirm");
     await expect(sheet.getByTestId("pay-confirm-send")).toBeVisible();
+    // The status region is there, empty, before the wallet changes, so the reason is announced when it fills.
+    const status = sheet.getByTestId("pay-confirm-watch-only-status");
+    await expect(status).toHaveAttribute("role", "status");
+    await expect(status).toHaveText("");
+    // A refresh of the wallet list while the sheet is open (not the first load: Pay waits for the list)
+    // reports the wallet watch-only.
     await page.evaluate(`(() => {
       const f = window.__dwFixture;
       const wallet = f.world.wallets[0];
@@ -152,6 +158,7 @@ for (const theme of THEMES) {
     await expect(sheet.getByRole("heading", { name: "Confirm payment" })).toBeVisible();
     await expect(sheet).not.toContainText("Unsigned transaction");
     await expect(sheet).not.toContainText("PSBT");
+    await expect(status).toHaveText("A watch-only wallet cannot pay contacts.");
     await expect(sheet.getByTestId("pay-confirm-watch-only")).toHaveText("A watch-only wallet cannot pay contacts.");
     await expect(sheet.getByTestId("pay-confirm-unsigned")).toHaveCount(0);
     await expect(sheet.getByTestId("pay-confirm-passphrase")).toHaveCount(0);
