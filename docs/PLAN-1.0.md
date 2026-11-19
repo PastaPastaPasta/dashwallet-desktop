@@ -24,9 +24,9 @@ owner updates the State column as items land and reports against it daily.
 |---|---|---|
 | 0.2 | Thu 11-19 | what is on `main` when it is green (it waits on #40); instant incoming payments and the fast launch move to 0.3 |
 | 0.3 | Mon 11-23 | instant incoming payments, the fast launch, masternode screens (MG-10), Platform ↔ Shielded, CoinJoin fixes, legacy `wallet.dat`, empty states, unlock once |
-| 0.4 | Thu 11-26 | the rest of the core: shared masternodes (MG-10b), what lane C keeps, CoinJoin V24, PSBT under Advanced, the app's copy in the message catalog (English) |
+| 0.4 | Thu 11-26 | the rest of the core: shared masternodes (MG-10b), the lane C items that have merged by then, CoinJoin V24, PSBT under Advanced, the screens whose copy is in the message catalog by then (English) |
 | 0.5 | — | not released: its contents (commerce, BIP70) are cut to 1.0.x |
-| 0.6 | Sun 11-29 | hardening: fuzzing, kill -9 matrix, performance, trust gate, auto-update; the translations |
+| 0.6 | Sun 11-29 | hardening: fuzzing, kill -9 matrix, performance, trust gate, auto-update; the lane C items kept and merged after 0.4; the last screens' copy in the catalog; the translations |
 | 0.9 (RC) | Mon 11-30 | security review fixes in; QA pass on three OSes |
 | 1.0 | Wed 12-02 | RC fixes; release checklist; signed if the certificates exist |
 
@@ -45,14 +45,14 @@ thread; "MG" is the masternode and governance thread, which is also the release 
 | F CoinJoin | PO | BL-614 → BL-615 → V24 promotion and demotion → mixed-send warnings. Cut: sleep prevention, start on login | 11-19 → 11-25 | BL-614 (#38) and BL-615 (#39) in review, fixes in progress |
 | G Core compatibility | PO | legacy Berkeley DB `wallet.dat`. Cut: MP-07 sweep and BIP38, MP-06 phrase repair, MP-05 BIP70, spend unconfirmed change, per-transaction notifications | 11-19 → 11-23 | `wallet.dat` in review (#34, fixes in progress) |
 | H Marketplace | PO | Cut: X4 (browse, buy, extra names, instant-name offer), identity-verify link | — | cut to 1.0.x |
-| I Invitations | PO | Cut: the storage patch, X3 create, share and history, shielded-funded and small invites, the Home claim card. Claiming an invitation shipped in 0.1 and stays | — | cut to 1.0.x |
+| I Invitations | PO | Cut: the storage patch, X3 create, share and history, shielded-funded and small invites, the Home claim card, scanning an invitation's QR code. Claiming an invitation from a link or pasted text shipped in 0.1 and stays | — | cut to 1.0.x |
 | J DashConnect | PO | Cut: App Connect v1 and v2 | — | cut to 1.0.x |
-| K Everyday polish | PO | #25 empty states → P7 unlock once → P15 PSBT under Advanced. Cut: MP-04 tax categories, lock-screen receive, log export and backup reminder, transaction notes on Platform | 11-18 → 11-24 | #25 and unlock once (#37) in review, fixes in progress; P15 lane running |
+| K Everyday polish | PO | #25 empty states → P7 unlock once → P15 PSBT under Advanced. Cut: MP-04 tax categories, lock-screen receive and scan, log export, the support path and the backup reminder, transaction notes on Platform | 11-18 → 11-24 | #25 and unlock once (#37) in review, fixes in progress; P15 lane running |
 | P Localization | PO | MP-14, translated in this repository by agents (no Transifex): the message catalog, locale choice, plurals and the right-to-left check, with one screen converted as the pattern (11-19 → 11-21) → every screen's copy moved into the catalog, one small pull request per screen area, each after that area's open pull requests have merged (11-21 → 11-26) → copy freeze 11-27 → the translations, each checked by a second pass (11-27 → 11-29) | 11-19 → 11-29 | starting |
 | L Commerce | PO | Cut: MP-09 Explore, MP-13 CrowdNode withdraw, MP-10, MP-11, MP-12 | — | cut to 1.0.x |
 | M Hardening | PO | H-02 fuzzing → H-03 kill -9 matrix → H-06 performance → H-09 trust gate on by default → **H-01 security review (11-27 → 11-29)**. Cut: H-10 node pinning, Tor/SOCKS5, MP-03, MP-15 | 11-19 → 11-29 | H-02 lane running |
-| N Release and packaging | MG | cut 0.2 → `parity.md` redone for the Tauri app → PK-03 auto-update → W-02 Windows services → Flatpak → SBOM and checklist → retire Swift (U-08) → each release cut | 11-19 → 12-02 | not started |
-| O Test suites and QA | PO | DP2-06 (never-cut), DP1-07, DP3-05 suites → visual baselines refresh, issue #29 → iOS/Android restore test → H-04 real-node flows → H-08 full QA pass on three OSes → H-05 accessibility → H-07 mainnet canary | 11-19 → 12-01 | suites lane running |
+| N Release and packaging | MG | cut 0.2 → `parity.md` redone for the Tauri app → PK-03 auto-update → W-02 Windows services → Flatpak → SBOM and checklist → retire Swift (U-08) → each release cut. Cut: Windows Hello in W-02 (passphrase only on Windows), and what is left of the tray companion on Windows and Linux | 11-19 → 12-02 | not started |
+| O Test suites and QA | PO | DP2-06 (never-cut), DP1-07, DP3-05 suites → visual baselines refresh, issue #29 → iOS/Android restore test → H-04 real-node flows → H-08 full QA pass on three OSes → H-05 accessibility → H-07 mainnet canary, all done by 11-30 for the release candidate; 12-01 is for its fixes | 11-19 → 11-30 | suites lane running |
 
 ## Cuts applied 2026-11-19
 
@@ -69,13 +69,15 @@ to a 1.0.x release unless a row says otherwise; nothing on the never-cut list is
 | DashConnect, App Connect v1 and v2 | lane J | the whole lane |
 | Explore, CrowdNode withdraw, DashSpend, Buy & Sell, ZenLedger (MP-09…MP-13) | lane L | the whole lane; the partner credentials are no longer needed for 1.0 |
 | Username marketplace (X4) and the identity-verify link | lane H | the whole lane |
-| Creating invitations (X3) and its storage patch | lane I | the whole lane; claiming an invitation stays |
+| Creating invitations (X3) and its storage patch, the Home claim card, scanning an invitation's QR code | lane I | the whole lane; claiming an invitation from a link or pasted text stays |
 | MP-04 tax categories, MP-06 phrase repair, MP-07 sweep and BIP38, MP-05 BIP70 | lanes G, K | the 0.4 and 0.5 parity items |
-| Spend unconfirmed change, per-transaction notifications, lock-screen receive, log export, backup reminder, transaction notes on Platform | lanes G, K | small parity items after the cut ones |
+| Spend unconfirmed change, per-transaction notifications, lock-screen receive and scan, log export, the support path, the backup reminder, transaction notes on Platform | lanes G, K | small parity items after the cut ones |
 | CoinJoin sleep prevention and start on login | lane F | |
 | Tor/SOCKS5 | lane M | |
 
-ROADMAP §6's cuts 3, 4 and 7 (X1a, the Identities page, fiat) do not apply: those shipped. Cut 8 (MP-14, English
+ROADMAP §6's cuts 3, 4 and 7 do not apply, because those shipped: X1a; DP6-01 and DP6-02 (the Identities page
+and withdrawing an identity's credits to Core; withdrawing to one's own Platform address is a lane C item, not
+this one); and MP-01 fiat. Cut 8 (MP-14, English
 only) is not applied, on pasta's decision of 2026-11-19: localization is in 1.0, as lane P.
 
 **The 1.0 core, due in the release candidate on 11-30:**
@@ -83,7 +85,9 @@ only) is not applied, on pasta's decision of 2026-11-19: localization is in 1.0,
 - everything released in 0.1 and on `main` today (the DashPay identity, username, contacts and payments flows,
   send and receive, history, CoinJoin, backup and restore, security, the tools and settings);
 - instant incoming payments (lane A) and the two-second launch (lane B);
-- the wallet-holder masternode and governance screens (lanes D and E), with shared masternodes;
+- the wallet-holder masternode and governance screens (lanes D and E), with shared masternodes. The repository's
+  `CLAUDE.md` and DASHPAY still call this milestone "release 1.1"; ROADMAP §7 (DEC-1026, 2026-10-31) moved it
+  into 1.0, owner-side only as before;
 - Platform ↔ Shielded transfers and the item 0 fixes (lane C; the release owner decides which of its later items stay);
 - the CoinJoin fixes BL-614 and BL-615, V24 promotion and demotion, mixed-send warnings (lane F);
 - opening a legacy Berkeley DB `wallet.dat` (lane G);
@@ -121,9 +125,9 @@ No longer on this list: partner credentials and Explore database access (lane L 
 |---|---|---|---|
 | Apple Developer ID and notarization, Windows signing certificate | signed installers, auto-update | 11-27 | 1.0 ships unsigned and says so; auto-update ships off |
 | A release key, and the choice of PGP or Sigstore | signed checksums | 11-27 | build attestations only, as today |
-| Up to 0.5 DASH on mainnet and an iOS user for an hour | mainnet canary (H-07) | 11-30 | canary runs on testnet only |
+| Up to 0.5 DASH on mainnet and an iOS user for an hour | mainnet canary (H-07) | 11-28 | canary runs on testnet only |
 | A funded testnet wallet created on iOS and one on Android | same-seed restore test | 11-24 | checked by code comparison only |
-| A real-Mac session and a real Windows PC | Touch ID, Windows Hello, VoiceOver, Narrator, first notarized launch | 11-30 | passphrase unlock only; screen-reader checks on Linux only |
+| A real-Mac session and a real Windows PC | Touch ID, VoiceOver, Narrator, first notarized launch | 11-28 | passphrase unlock only on macOS; screen-reader checks on Linux only |
 | Go-ahead for the upstream platform pull request (E0-04.P3/P4), or agreement to drop it | Mode A dispatch | 11-21 | dropped as superseded by item 0's hook |
 
 ## Risks
