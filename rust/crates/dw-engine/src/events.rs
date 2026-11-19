@@ -1077,16 +1077,21 @@ impl SessionHub {
             news.then(|| {
                 let known_before = state.balances().is_some();
                 let from = state.scan_target.max(state.processed_height);
+                let checkpoint_lowered = height < state.synced_height;
                 state.synced_height = state.synced_height.min(height);
                 state.scan_target = state.scan_target.min(height);
                 state.processed_height = state.processed_height.min(height);
                 if found.detected {
                     state.detected = Some(height);
                 }
-                (from, known_before != state.balances().is_some())
+                (
+                    from,
+                    known_before != state.balances().is_some(),
+                    checkpoint_lowered,
+                )
             })
         };
-        let Some((from, flipped)) = lowered else {
+        let Some((from, flipped, checkpoint_lowered)) = lowered else {
             return false;
         };
         #[cfg(test)]
@@ -1098,9 +1103,13 @@ impl SessionHub {
         let changed = self
             .history
             .with_wallet(id, |h| h.truncate(found.removed, found.unconfirmed));
-        if let Some(rescan) = self.rescan().as_mut()
-            && rescan.truncate(&id, height)
-        {
+        // A reader of the wallet's checkpoint hears it go down, as it hears
+        // every advance.
+        let rescan_moved = self
+            .rescan()
+            .as_mut()
+            .is_some_and(|rescan| rescan.truncate(&id, height));
+        if rescan_moved || checkpoint_lowered {
             self.pump.mark_sync();
         }
         if let Some(replay) = self.replay.get().and_then(std::sync::Weak::upgrade) {
@@ -1913,6 +1922,25 @@ mod tests {
             !hub.pump.take_wallet_marks().0.contains(&W),
             "unchanged: not announced"
         );
+    }
+
+    /// A fork that lowers the checkpoint outside a rescan tells whoever
+    /// read the wallet's scan height; one that leaves it where it was does
+    /// not.
+    #[test]
+    fn a_truncation_that_lowers_the_checkpoint_marks_sync() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        hub.apply_wallet_event(&WalletEvent::SyncHeightAdvanced {
+            wallet_id: W.0,
+            height: 110,
+        });
+        assert!(hub.pump.take_sync_mark());
+        hub.apply_wallet_event(&truncated(120, Vec::new(), Vec::new(), 0));
+        assert_eq!(hub.wallet_state(&W).unwrap().synced_height, 110);
+        assert!(!hub.pump.sync_marked());
+        hub.apply_wallet_event(&truncated(105, Vec::new(), Vec::new(), 0));
+        assert_eq!(hub.wallet_state(&W).unwrap().synced_height, 105);
+        assert!(hub.pump.sync_marked());
     }
 
     /// dash-spv truncated the wallet at a fork: the hub's history, heights and balance
