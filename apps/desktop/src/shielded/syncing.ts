@@ -32,14 +32,15 @@ export function syncingRefusal(code: string, syncing: boolean): boolean {
 
 export const SHIELDED_SYNC_COPY = {
   scanning: "Scanning…",
-  lastSynced: (when: string) => `Last synced ${when}`,
+  /** When the last pass ended, whatever its result: the engine stamps a failed pass too. */
+  lastChecked: (when: string) => `Last checked ${when}`,
 } as const;
 
 /** The sheet's sync line at `now` (Unix seconds): "Scanning…" while a pass runs, else when the last
- * completed pass ended; `null` before one has, or while Shielded is off. */
+ * pass ended; `null` before a scan has completed, or while Shielded is off. */
 export function shieldedSyncText(status: ShieldedStatus | null | undefined, now: number): string | null {
   if (!status?.active) return null;
   if (status.syncing) return SHIELDED_SYNC_COPY.scanning;
   if (status.syncedIndex === null || status.lastSyncAt === null) return null;
-  return SHIELDED_SYNC_COPY.lastSynced(ago(status.lastSyncAt, now));
+  return SHIELDED_SYNC_COPY.lastChecked(ago(status.lastSyncAt, now));
 }

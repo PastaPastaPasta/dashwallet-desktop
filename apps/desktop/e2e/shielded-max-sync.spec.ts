@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { seriousAxeViolations } from "./axe";
-import { authorize, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { authorize, fixtureUrl, fontsReady, openTransfer, THEMES, trackPageErrors, type Theme } from "./helpers";
 import { callsOf, lastGrant } from "./transfer";
 
 // Send from Shielded (Pay's link): Max to another Shielded address, and the sheet's sync line. The
@@ -77,6 +77,39 @@ test.describe("Send from Shielded: Max", () => {
     });
   }
 
+  for (const theme of THEMES) {
+    test(`over three notes takes the fee of all three: one more quote, and the send spends the balance exactly (${theme})`, async ({ page }) => {
+      const errors = await openSend(page, "shielded-three-notes", theme);
+      await page.getByTestId("shielded-to").fill(TO);
+      await page.getByTestId("shielded-max").click();
+      // 1.25 less 0.0003 (three actions): the first refusal names the two-action fee, the second the three.
+      await expect(page.getByTestId("shielded-amount")).toHaveValue("1.24970000");
+      expect(await callsOf(page, "shielded_send_quote")).toBe(3);
+      await expect(page.getByTestId("shielded-amount-problem")).toHaveText("");
+      await expect(page.getByTestId("shielded-next")).toBeEnabled();
+      await shot(page, `${theme}-send-max-three-notes`);
+      if (theme === "dark") return;
+      await page.getByTestId("shielded-next").click();
+      await expect(page.getByTestId("shielded-quote-fee")).toContainText("0.0003");
+      await expect(page.getByTestId("shielded-quote-total")).toContainText("1.25");
+      await page.getByTestId("shielded-go").click();
+      await authorize(page);
+      await expect(page.getByTestId("shielded-outcome-title")).toHaveText("Sent");
+      expect(await lastGrant(page)).toEqual({ kind: "platformOp", maxDuffs: 0, maxCredits: "125000000000" });
+      await expect.poll(() => page.evaluate(() => window.__dwFixture!.world.pending.shielded!.balance)).toBe("0");
+      expect(errors).toEqual([]);
+    });
+  }
+
+  test("Transfer's Shielded → Dash wallet Max over three notes takes the fee of all three", async ({ page }) => {
+    await page.goto(fixtureUrl("shielded-three-notes", "light"));
+    await openTransfer(page, "shieldedToCore");
+    await page.getByTestId("transfer-max").click();
+    await expect(page.getByTestId("transfer-amount")).toHaveValue("1.24970000");
+    expect(await callsOf(page, "unshield_quote")).toBe(3);
+    await expect(page.getByTestId("transfer-continue")).toBeEnabled();
+  });
+
   test("says why when the balance does not cover the fee, and fills nothing", async ({ page }) => {
     await openSend(page, "shielded-below-fee");
     await page.getByTestId("shielded-to").fill(TO);
@@ -123,13 +156,25 @@ test.describe("Send from Shielded: sync line", () => {
 
     test(`says when the last pass ended (${theme})`, async ({ page }) => {
       await openSend(page, "shielded-synced-earlier", theme);
-      await expect(page.getByTestId("shielded-sync")).toHaveText("Last synced 3 hours ago");
+      await expect(page.getByTestId("shielded-sync")).toHaveText("Last checked 3 hours ago");
       await shot(page, `${theme}-send-synced-earlier`);
     });
   }
 
-  test("a pass that just ended reads just now", async ({ page }) => {
+  test("a pass that just ended reads just now, and only Scanning… is announced", async ({ page }) => {
     await openSend(page, "funded");
-    await expect(page.getByTestId("shielded-sync")).toHaveText("Last synced just now");
+    await expect(page.getByTestId("shielded-sync")).toHaveText("Last checked just now");
+    await expect(page.getByTestId("shielded-sync").getByRole("status")).toHaveText("");
+  });
+
+  test("re-reads the status while a pass runs, and stops once it has ended", async ({ page }) => {
+    await openSend(page, "shielded-scanning");
+    const line = page.getByTestId("shielded-sync");
+    await expect(line.getByRole("status")).toHaveText("Scanning…");
+    await page.evaluate(() => (window.__dwFixture!.world.pending.shielded!.scanning = false));
+    await expect(line).toHaveText("Last checked just now", { timeout: 15_000 });
+    const reads = await callsOf(page, "shielded_status");
+    await page.waitForTimeout(6_000);
+    expect(await callsOf(page, "shielded_status")).toBe(reads);
   });
 });

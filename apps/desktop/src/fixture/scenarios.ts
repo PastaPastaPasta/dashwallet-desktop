@@ -798,6 +798,12 @@ const SCENARIOS = {
     w.pending.shielded!.lastSyncAt = Math.floor(FIXTURE_NOW.getTime() / 1000) - 3 * 3600;
     return w;
   },
+  /** Shielded's 1.25 is three notes (1, 0.2 and 0.05), priced per action: Max takes all three. */
+  "shielded-three-notes": (t) => {
+    const w = base(t);
+    w.pending.shielded!.notes = ["100000000000", "20000000000", "5000000000"];
+    return w;
+  },
   /** Shielded holds less than a send's fee: Max has nothing to send and says why. */
   "shielded-below-fee": (t) => {
     const w = base(t);

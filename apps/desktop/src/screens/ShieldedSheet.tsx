@@ -17,7 +17,7 @@ import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
 import { sendMax, sendMaxLine } from "../shielded/sendMax";
-import { SHIELDED_SYNCING_TEXT, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
+import { SHIELDED_SYNC_COPY, SHIELDED_SYNCING_TEXT, shieldedSyncing, shieldedSyncText } from "../shielded/syncing";
 import { TRANSFER_COPY } from "../transfer/model";
 import { useNowSecs } from "./masternodes/common";
 import { Qr } from "./Receive";
@@ -99,8 +99,9 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
       <p className="sheet-text">{C.form[kind]}</p>
       {kind !== "add" && available !== null && <p className="field-hint">{C.form.available(fmt(available))}</p>}
       {syncLine && (
-        <p className="field-hint" role="status" data-testid="shielded-sync">
-          {syncLine}
+        <p className="field-hint" data-testid="shielded-sync">
+          <span role="status">{syncLine === SHIELDED_SYNC_COPY.scanning ? syncLine : ""}</span>
+          {syncLine !== SHIELDED_SYNC_COPY.scanning && syncLine}
         </p>
       )}
       {kind === "send" ? (
@@ -450,9 +451,9 @@ export function ShieldedReceiveCard({ walletId, network }: { walletId: string; n
  * while Shielded is active on this network; it waits, and says why, as the card's Send did. */
 export function ShieldedSendLink({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const backend = useBackend();
-  const status = useShieldedStatus(walletId).data ?? null;
   const flow = shieldedFor(backend, walletId);
   useModel(flow);
+  const status = useShieldedStatus(walletId, flow.open).data ?? null;
   const sheet = <ShieldedSheet flow={flow} walletId={walletId} network={network} status={status} />;
   if (!status?.active) return sheet;
   const syncing = shieldedSyncing(status);
