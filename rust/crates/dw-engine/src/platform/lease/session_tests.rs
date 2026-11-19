@@ -4065,7 +4065,7 @@ fn a_shield_drain_lease_signs_coinjoin_inputs_and_its_credit_key_only_while_it_h
     for wrong in [
         typed(COIN, 0),
         typed(COIN, 1_000),
-        f.grant(GrantPurpose::Governance, Credential::None),
+        f.grant(GrantPurpose::Governance, Credential::Passphrase(PASS)),
     ] {
         assert_eq!(
             f.lease(FlowKind::ShieldDrain, &[wrong]).unwrap_err(),
