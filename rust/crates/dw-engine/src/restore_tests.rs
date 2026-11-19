@@ -57,6 +57,13 @@ fn offline() -> crate::SessionOptions {
 
 /// A real engine on `data_root` and its offline regtest session.
 fn open_engine(data_root: std::path::PathBuf) -> (Engine, Arc<NetworkSession>) {
+    open_engine_with(data_root, offline())
+}
+
+fn open_engine_with(
+    data_root: std::path::PathBuf,
+    options: crate::SessionOptions,
+) -> (Engine, Arc<NetworkSession>) {
     use crate::EngineConfig;
     use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
     let engine = Engine::new(
@@ -73,7 +80,7 @@ fn open_engine(data_root: std::path::PathBuf) -> (Engine, Arc<NetworkSession>) {
     )
     .unwrap();
     let session = engine
-        .block_on(engine.open_network(DashNetwork::Regtest, offline()))
+        .block_on(engine.open_network(DashNetwork::Regtest, options))
         .unwrap();
     (engine, session)
 }
@@ -345,6 +352,326 @@ fn a_rescan_finds_coinjoin_coins_at_index_100_and_beyond() {
         &[(OutPoint::new(later.txid(), 0), further)],
         cj(),
         VALUE,
+    );
+}
+
+/// An offline regtest session without Platform, whose SPV client can run.
+fn open_spv_engine(data_root: std::path::PathBuf) -> (Engine, Arc<NetworkSession>) {
+    open_engine_with(
+        data_root,
+        crate::SessionOptions {
+            no_platform: true,
+            ..offline()
+        },
+    )
+}
+
+fn create_vault(engine: &Engine, session: &Arc<NetworkSession>) {
+    engine
+        .block_on(session.vault_op(|v| v.create(None)))
+        .unwrap();
+}
+
+fn import_from_genesis(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
+    engine
+        .block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(0),
+                ..Default::default()
+            },
+        ))
+        .unwrap()
+}
+
+fn start_offline_spv(engine: &Engine, session: &Arc<NetworkSession>) {
+    engine.block_on(session.start_spv()).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while session.spv_state().unwrap() != crate::SpvState::Running {
+        assert!(std::time::Instant::now() < deadline, "SPV did not start");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// The BIP158 filter of a block holding `tx` alone, and the block's hash.
+fn block_filter(nonce: u32, tx: &Transaction) -> (BlockHash, dashcore::bip158::BlockFilter) {
+    let block = dashcore::Block {
+        header: dashcore::block::Header {
+            version: dashcore::block::Version::ONE,
+            prev_blockhash: BlockHash::all_zeros(),
+            merkle_root: dashcore::TxMerkleNode::all_zeros(),
+            time: 1_793_598_712,
+            bits: dashcore::CompactTarget::from_consensus(0x207f_ffff),
+            nonce,
+        },
+        txdata: vec![tx.clone()],
+    };
+    let mut raw = Vec::new();
+    let mut writer = dashcore::bip158::BlockFilterWriter::new(&mut raw, &block);
+    writer.add_output_scripts();
+    writer.finish().unwrap();
+    (block.block_hash(), dashcore::bip158::BlockFilter::new(&raw))
+}
+
+/// Whether SPV, querying with `scripts`, downloads the block of `filter`.
+fn matches_filter(
+    (hash, filter): &(BlockHash, dashcore::bip158::BlockFilter),
+    scripts: &[dashcore::ScriptBuf],
+) -> bool {
+    let mut query = dashcore::bip158::FilterQuery::new();
+    for script in scripts {
+        query.push(script.as_bytes());
+    }
+    filter.match_any(hash, &query).unwrap()
+}
+
+/// What wallet `id` gives SPV to match filters with.
+fn scan_scripts(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+) -> Vec<dashcore::ScriptBuf> {
+    engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        (wm.get_wallet_info(&id.0).unwrap().core_wallet).scan_script_pubkeys()
+    })
+}
+
+fn synced_height(engine: &Engine, session: &NetworkSession, id: WalletId) -> u32 {
+    engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        (wm.get_wallet_info(&id.0).unwrap().core_wallet).synced_height()
+    })
+}
+
+/// A batch SPV commits up to `height` for wallet `id`.
+fn commit_batch(engine: &Engine, session: &NetworkSession, id: WalletId, height: u32) {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        wm.update_wallet_synced_height(&id.0, height);
+        wm.update_wallet_last_processed_height(&id.0, height);
+    });
+}
+
+/// Puts wallet `id`'s CoinJoin account back to the pools a fresh wallet
+/// publishes: gap 100, indexes 0 to 99.
+fn narrow_coinjoin(engine: &Engine, session: &NetworkSession, id: WalletId) {
+    engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let (wallet, info) = wm.get_wallet_and_info_mut(&id.0).unwrap();
+        let mut fresh = key_wallet::managed_account::ManagedCoreFundsAccount::from_account(
+            wallet.accounts.account_of_type(cj()).unwrap(),
+        );
+        let accounts = &mut info.core_wallet.accounts.coinjoin_accounts;
+        for _ in 0..=accounts[&0].monitor_revision() {
+            fresh.bump_monitor_revision();
+        }
+        *accounts.get_mut(&0).unwrap() = fresh;
+    });
+    assert_eq!(gap(engine, session, id, cj()), 100);
+}
+
+/// The filters of two blocks paying CoinJoin index 100, on the receive and
+/// on the change chain, of the wallet of `PHRASE`.
+fn filters_past_99() -> [(BlockHash, dashcore::bip158::BlockFilter); 2] {
+    let mnemonic =
+        key_wallet::mnemonic::Mnemonic::from_phrase(std::str::from_utf8(PHRASE).unwrap()).unwrap();
+    let wallet = Wallet::from_mnemonic(
+        mnemonic,
+        dashcore::Network::Regtest,
+        key_wallet::wallet::initialization::WalletAccountCreationOptions::Default,
+    )
+    .unwrap();
+    let info = ManagedWalletInfo::from_wallet(&wallet, 0);
+    [0, 1].map(|pool| {
+        let to = coinjoin_pool_address(&wallet, &info, pool, 100);
+        block_filter(pool as u32, &pays(20 + pool as u8, &to))
+    })
+}
+
+/// The public rescan widens a CoinJoin pool left at the default gap before
+/// it rewinds: the filters of blocks paying index 100, on either chain, then
+/// match the scan's scripts, and the coins they deliver are counted.
+#[test]
+fn a_public_rescan_matches_filters_paying_coinjoin_index_100() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = import_from_genesis(&engine, &session);
+    start_offline_spv(&engine, &session);
+    let (external, internal) = engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let wallet = wm.get_wallet(&id.0).unwrap();
+        let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        (
+            coinjoin_pool_address(wallet, info, 0, 100),
+            coinjoin_pool_address(wallet, info, 1, 100),
+        )
+    });
+    narrow_coinjoin(&engine, &session, id);
+    commit_batch(&engine, &session, id, HEIGHT + 100);
+    let txs = [pays(11, &external), pays(12, &internal)];
+    let filters = [block_filter(11, &txs[0]), block_filter(12, &txs[1])];
+    let before = scan_scripts(&engine, &session, id);
+    assert!(filters.iter().all(|f| !matches_filter(f, &before)));
+
+    engine
+        .block_on(session.rescan(crate::RescanFrom::Genesis))
+        .unwrap();
+
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    let after = scan_scripts(&engine, &session, id);
+    assert!(filters.iter().all(|f| matches_filter(f, &after)));
+    replay(&engine, &session, id, &txs);
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[
+            (OutPoint::new(txs[0].txid(), 0), external),
+            (OutPoint::new(txs[1].txid(), 0), internal),
+        ],
+        cj(),
+        2 * VALUE,
+    );
+}
+
+/// platform-wallet publishes an imported wallet to SPV with the default
+/// CoinJoin gap. A batch SPV commits before the import widens it matched
+/// the narrow pools, so the import rewinds the wallet to its birth, with a
+/// replay record, and the next scan matches index 100.
+#[test]
+fn an_import_rescans_a_batch_spv_committed_before_the_coinjoin_gap_was_widened() {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let filters = filters_past_99();
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let matched_when_published = Arc::new(AtomicBool::new(true));
+    {
+        let live = session.live().unwrap();
+        let wm = live.manager.wallet_manager_arc();
+        let matched = Arc::clone(&matched_when_published);
+        let filters = filters.clone();
+        *live.store.on_register.lock().unwrap() = Some(Box::new(move |wallet| {
+            let mut wm = wm.try_write().expect("registered, the manager unlocked");
+            let scripts = (wm.get_wallet_info(&wallet).unwrap().core_wallet).scan_script_pubkeys();
+            matched.store(
+                filters.iter().any(|f| matches_filter(f, &scripts)),
+                Ordering::SeqCst,
+            );
+            wm.update_wallet_synced_height(&wallet, HEIGHT);
+            wm.update_wallet_last_processed_height(&wallet, HEIGHT);
+        }));
+    }
+
+    let id = import_from_genesis(&engine, &session);
+
+    assert!(!matched_when_published.load(Ordering::SeqCst));
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    let scripts = scan_scripts(&engine, &session, id);
+    assert!(filters.iter().all(|f| matches_filter(f, &scripts)));
+    let record = engine
+        .block_on(session.live().unwrap().replay.get(id))
+        .unwrap()
+        .unwrap();
+    assert_eq!((record.reached, record.target), (0, HEIGHT));
+}
+
+/// The same for a wallet opened again: `load_from_persistor` publishes it
+/// with the default CoinJoin gap, and a batch SPV commits before the load
+/// widens it is rescanned from the checkpoint the wallet was loaded with.
+#[test]
+fn a_load_rescans_a_batch_spv_committed_before_the_coinjoin_gap_was_widened() {
+    let filters = filters_past_99();
+    let (_dir, engine, session, id) = engine_wallet();
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let live = session.live().unwrap();
+    live.store.set_unloaded(id.0, false);
+    engine.block_on(live.manager.load_from_persistor()).unwrap();
+    let loaded_at = live.store.loaded_checkpoint(&id.0).unwrap();
+    assert_eq!(synced_height(&engine, &session, id), loaded_at);
+    narrow_coinjoin(&engine, &session, id);
+    commit_batch(&engine, &session, id, loaded_at + 50);
+    let before = scan_scripts(&engine, &session, id);
+    assert!(filters.iter().all(|f| !matches_filter(f, &before)));
+
+    engine.block_on(session.restore_loaded_wallet(&live.manager, id));
+
+    assert_eq!(synced_height(&engine, &session, id), loaded_at);
+    let after = scan_scripts(&engine, &session, id);
+    assert!(filters.iter().all(|f| matches_filter(f, &after)));
+    let record = engine.block_on(live.replay.get(id)).unwrap().unwrap();
+    assert_eq!((record.reached, record.target), (loaded_at, loaded_at + 50));
+}
+
+/// A rescan waits for an unload in flight, then widens and rewinds the
+/// wallets still open.
+#[test]
+fn a_rescan_waits_for_an_unload_and_widens_the_wallets_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let w1 = engine
+        .block_on(session.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    let w2 = engine
+        .block_on(session.create_wallet(12))
+        .unwrap()
+        .wallet_id;
+    start_offline_spv(&engine, &session);
+    narrow_coinjoin(&engine, &session, w2);
+
+    engine.block_on(async {
+        let live = session.live().unwrap();
+        let wm = live.manager.wallet_manager_arc();
+        let hold = wm.read().await;
+        let unload = {
+            let s = Arc::clone(&session);
+            session.rt.spawn(async move { s.unload_wallet(w1).await })
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !live.store.is_unloaded(&w1.0) {
+            assert!(tokio::time::Instant::now() < deadline, "the unload began");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let rescan = {
+            let s = Arc::clone(&session);
+            (session.rt).spawn(async move { s.rescan(crate::RescanFrom::Genesis).await })
+        };
+        while session.wallet_lifecycle.waiting() == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the rescan waits for the unload"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        drop(hold);
+        unload.await.unwrap().unwrap();
+        rescan.await.unwrap().unwrap();
+    });
+    assert!(
+        engine
+            .block_on(session.manager().unwrap().get_wallet(&w1.0))
+            .is_none()
+    );
+    assert_eq!(
+        gap(&engine, &session, w2, cj()),
+        crate::keys::COINJOIN_SCAN_GAP
     );
 }
 
