@@ -139,6 +139,7 @@ import type { ProposalDraft } from "./ProposalDraft";
 import type { ProposalPreview } from "./ProposalPreview";
 import type { ProposalQuery } from "./ProposalQuery";
 import type { ProposalRow } from "./ProposalRow";
+import type { ProtocolCompatibility } from "./ProtocolCompatibility";
 import type { PsbtAnalysis } from "./PsbtAnalysis";
 import type { PublishStateName } from "./PublishStateName";
 import type { QrMatrix } from "./QrMatrix";
@@ -258,6 +259,15 @@ export function uiSettings(): Promise<UiSettings> {
  */
 export function setUiSettings(settings: UiSettings): Promise<UiSettings> {
   return invoke<UiSettings>("set_ui_settings", { settings });
+}
+
+/**
+ * Opens this repository's GitHub releases page in the system browser
+ * (the protocol-compatibility advisory banner). Only [`RELEASES_URL`]
+ * may be opened.
+ */
+export function openReleasesPage(): Promise<null> {
+  return invoke<null>("open_releases_page");
 }
 
 /**
@@ -578,7 +588,8 @@ export function walletInfo(walletId: string): Promise<WalletSummary> {
 }
 
 /**
- * Balance buckets; `null` until the scan reaches the birth height.
+ * Balance buckets known so far; `catchingUp` is true before the scan reaches
+ * the wallet's birth height. `null` means the wallet state has not been read.
  */
 export function balance(walletId: string): Promise<Balances | null> {
   return invoke<Balances | null>("balance", { walletId });
@@ -1977,6 +1988,14 @@ export function dashpaySyncStatus(walletId: string): Promise<DashPaySyncStatus> 
 }
 
 /**
+ * Platform protocol compatibility of the open network (the Home advisory
+ * banner when `networkVersion > supportedVersion`).
+ */
+export function protocolCompatibility(): Promise<ProtocolCompatibility> {
+  return invoke<ProtocolCompatibility>("protocol_compatibility");
+}
+
+/**
  * Where Platform proofs get their quorum keys now (Tools ▸ Information).
  */
 export function quorumSource(): Promise<QuorumSource> {
@@ -2769,6 +2788,7 @@ export type CommandArgs = {
   startup_mark: { mark: string };
   ui_settings: {  };
   set_ui_settings: { settings: UiSettings };
+  open_releases_page: {  };
   probe_unlisted: {  };
   open_network: { network: string | null; settings: SessionSettings | null };
   switch_network: { network: ChosenNetwork };
@@ -2979,6 +2999,7 @@ export type CommandArgs = {
   dashpay_status: { walletId: string };
   dashpay_sync_now: { walletId: string };
   dashpay_sync_status: { walletId: string };
+  protocol_compatibility: {  };
   quorum_source: {  };
   trusted_quorums_only: {  };
   set_trusted_quorums_only: { on: boolean };
@@ -3083,6 +3104,7 @@ export type CommandResults = {
   startup_mark: number;
   ui_settings: UiSettings;
   set_ui_settings: UiSettings;
+  open_releases_page: null;
   probe_unlisted: string;
   open_network: OpenedNetwork;
   switch_network: NetworkSwitch;
@@ -3293,6 +3315,7 @@ export type CommandResults = {
   dashpay_status: DashPayStatus;
   dashpay_sync_now: SyncPassReport;
   dashpay_sync_status: DashPaySyncStatus;
+  protocol_compatibility: ProtocolCompatibility;
   quorum_source: QuorumSource;
   trusted_quorums_only: boolean;
   set_trusted_quorums_only: null;
@@ -3399,6 +3422,7 @@ export const COMMANDS: Record<CommandName, string> = {
   startup_mark: "app",
   ui_settings: "app",
   set_ui_settings: "app",
+  open_releases_page: "app",
   probe_unlisted: "app",
   open_network: "network",
   switch_network: "network",
@@ -3609,6 +3633,7 @@ export const COMMANDS: Record<CommandName, string> = {
   dashpay_status: "identity",
   dashpay_sync_now: "identity",
   dashpay_sync_status: "identity",
+  protocol_compatibility: "identity",
   quorum_source: "identity",
   trusted_quorums_only: "identity",
   set_trusted_quorums_only: "identity",
@@ -3728,6 +3753,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.network_busy",
   "app.network_switch_failed",
   "app.explorer_open",
+  "app.browser_open",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

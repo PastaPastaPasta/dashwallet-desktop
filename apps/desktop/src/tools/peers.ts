@@ -58,7 +58,6 @@ export function peerRow(p: PeerSummary, nowSecs: number): PeerRow {
 }
 
 export const PeersText = {
-  none: "No peers are connected.",
   rotated: "Dropped every connection; connecting to other peers.",
   noPeers: "No other peers are known yet. Try again later.",
 };

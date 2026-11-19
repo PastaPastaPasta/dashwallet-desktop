@@ -36,6 +36,8 @@ mod keys;
 mod labels;
 pub mod masternode_keys;
 pub mod masternodes;
+#[cfg(test)]
+mod mempool_sync_tests;
 mod multiwallet;
 mod network;
 pub mod network_choice;
@@ -101,8 +103,8 @@ pub use masternode_keys::{
 pub use multiwallet::{AccountXpub, NetworkDataInfo, WalletLoadState, WatchOnlyOptions};
 pub use network::DashNetwork;
 pub use platform::{
-    CREATED_HERE_BUDGET, DashPayStartup, PlatformCadence, PlatformStatus, SpvState, StartupStatus,
-    SyncLoop, SyncLoopStatus,
+    CREATED_HERE_BUDGET, DashPayStartup, PlatformCadence, PlatformStatus, ProtocolCompatibility,
+    SpvState, StartupStatus, SyncLoop, SyncLoopStatus,
 };
 pub use receive::{AddressFilter, AddressInfo, ReceiveRequest};
 pub use send::psbt::{PsbtAnalysis, PsbtFailure, PsbtOutputInfo, PsbtSignability};

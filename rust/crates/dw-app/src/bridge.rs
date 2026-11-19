@@ -121,7 +121,8 @@ pub enum AppEvent {
         network: String,
         status: SyncStatus,
     },
-    /// `null` while the scan has not reached the wallet's birth height.
+    /// The balance known so far (`catchingUp` while the scan has not reached
+    /// the wallet's birth height); `null` before the wallet's state was read.
     Balances {
         network: String,
         wallet_id: String,
@@ -849,6 +850,7 @@ mod tests {
                         locked: u64::MAX,
                         total: u64::MAX,
                         coinjoin: u64::MAX,
+                        catching_up: true,
                     }),
                 },
                 EngineEvent::HistoryChanged {

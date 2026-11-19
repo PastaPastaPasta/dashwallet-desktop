@@ -53,10 +53,10 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its branch's running CI. Each distinct commit on main gets its own group, so a
-# queued main run is not superseded by a later commit's (two runs of the same commit still share one).
+# A new push cancels its branch's or pull request's running CI. Main runs one at a time and is never
+# cancelled; a newer main run replaces a pending one, so a burst of merges queues one run behind the running one.
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
@@ -70,8 +70,42 @@ env:
   DWD_SWIFT_LINUX_SUITES: DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests|SwiftCrossUIPatchTests
 
 jobs:
+  # A pull request that changes only documentation (docs/ outside docs/contracts and the generated
+  # E0-13 coverage table, or *.md elsewhere) and whose paths are valid on Windows skips the four required
+  # jobs, which then report success. Every other event, and any failure here, runs them. This job is a
+  # required check too: a run cancelled while it is pending skips the four jobs, and its own cancelled
+  # check then blocks the merge.
+  changes:
+    name: What this pull request changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        run: |
+          code=true
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
+            printf '%s\n' "$changed"
+            if [[ -n "$changed" ]] \
+              && ! grep -vE '^docs/|\.md$' <<<"$changed" >/dev/null \
+              && ! grep -E '^docs/contracts/|^docs/design/E0-13-facade-coverage\.md$' <<<"$changed" >/dev/null; then
+              code=false
+              ci/github/windows-paths.py
+            fi
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
   lint:
     name: Rust lint (fmt, clippy)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -116,6 +150,8 @@ jobs:
 
   rust-linux:
     name: Rust tests (Linux)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
     # Cold runs (no cache restored) take 65-95 min. This job alone saves the ci-Linux cache, only
     # on main and only when it succeeds, so it must be able to finish cold.
@@ -136,8 +172,6 @@ jobs:
         run: ci/github/install-protoc.sh
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
         working-directory: .
-        # Three bounded apt attempts (ci/github/linux-host-deps.sh); a mirror outage otherwise hangs here.
-        timeout-minutes: 25
         run: ci/github/linux-host-deps.sh rust
       - name: Rust toolchain (rust-toolchain.toml)
         run: rustup toolchain install && rustc --version
@@ -181,6 +215,8 @@ jobs:
 
   desktop-renderer:
     name: Tauri renderer (tokens, tsc, vitest)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -220,6 +256,8 @@ jobs:
 
   ui-playwright:
     name: UI tests (Playwright, axe)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # The browsers and their libraries, pinned to @playwright/test in package.json (bump both).
@@ -649,7 +687,14 @@ jobs:
           $url = 'https://download.microsoft.com/download/4f5a8b87-f017-485d-8cf7-c16e82671dbe/WindowsAppRuntimeInstall-x64.exe'
           $sha256 = '7418DC8DC18CFEE1CDC1B087A326EA6FD66E2E3A5E1C76D49FA948737A83A45E'
           $installer = Join-Path $env:RUNNER_TEMP 'WindowsAppRuntimeInstall-x64.exe'
-          Invoke-WebRequest -Uri $url -OutFile $installer
+          for ($attempt = 1; ; $attempt++) {
+            try { Invoke-WebRequest -Uri $url -OutFile $installer; break }
+            catch {
+              if ($attempt -ge 5) { throw }
+              Write-Host "download attempt $attempt failed: $($_.Exception.Message)"
+              Start-Sleep -Seconds 5
+            }
+          }
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash
           if ($hash -ne $sha256) { throw "Windows App Runtime installer SHA-256 $hash, expected $sha256" }
           $signature = Get-AuthenticodeSignature $installer
