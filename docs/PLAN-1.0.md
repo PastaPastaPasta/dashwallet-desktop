@@ -134,7 +134,10 @@ cd rust && cargo test -p dw-app --lib upgrade_path_tests                  # test
 **macOS and Windows, by hand in the QA pass** (not run yet; a test user account with no
 `org.dash.wallet.desktop` data root: `~/Library/Application Support/org.dash.wallet.desktop` on macOS,
 `%APPDATA%\org.dash.wallet.desktop` on Windows). The automated check does not cover each OS's installer
-upgrading in place, its default data root or its keychain (Touch ID quick unlock), so:
+upgrading in place, its default data root or its keychain, so the steps below do. The Touch ID and Windows Hello
+steps (marked "biometric") apply only to a release pair whose shipped app has quick-unlock enrolment and unlock
+in both releases. Neither 0.1.0 nor the 0.2 line has them yet (Settings ▸ Security shows the row as not yet
+available), so skip them for an upgrade from 0.1.0:
 
 1. macOS only: the same fixture check, from a checkout: `cd rust && cargo test -p dw-app --lib upgrade_path_tests`.
    Expected: `test upgrade_path_tests::every_release_data_root_opens_with_the_same_answers ... ok`. (CI runs it on
@@ -145,14 +148,15 @@ upgrading in place, its default data root or its keychain (Touch ID quick unlock
    `(Get-FileHash dash-wallet-0.1.0-windows-x64-setup.exe).Hash` with its line). Open it, choose testnet in
    Settings, create a wallet with a passphrase, fund it from the testnet faucet, pay 0.1 tDASH back with a
    recipient label, add an address-book entry and a receive request, set unit mDASH, auto-lock 15 minutes, dark
-   theme and CoinJoin rounds 6; on macOS also enrol Touch ID. In Tools ▸ Sign/Verify sign `h08 upgrade` with the
-   first receive address. Write down the balance, every Activity row (txid, amount, status), the labels and the
+   theme and CoinJoin rounds 6; biometric: enrol Touch ID or Windows Hello. In Tools ▸ Sign/Verify sign
+   `h08 upgrade` with the first receive address. Write down the balance, every Activity row (txid, amount, status), the labels and the
    signature, and take screenshots of Home, Activity and Settings.
 3. Quit the app (⌘Q on macOS, File ▸ Exit on Windows) and keep a copy of the data root:
    `ditto ~/Library/Application\ Support/org.dash.wallet.desktop ~/h08-backup` (macOS) or
    `robocopy "%APPDATA%\org.dash.wallet.desktop" "%USERPROFILE%\h08-backup" /E` (Windows).
 4. Install the release candidate over it (drag to Applications and replace; or run the new `setup.exe`). Open it.
-   Expected: the lock screen, not Welcome; the old passphrase unlocks, and Touch ID unlocks on macOS; the same
+   Expected: the lock screen, not Welcome; the old passphrase unlocks (biometric: so do Touch ID or Windows Hello,
+   with the spending limit set before); the same
    wallet name, balance, Activity rows, labels, address book, receive request and Settings values; the network is
    still testnet; Tools ▸ Sign/Verify accepts the old signature, and signing the same text again gives the same
    signature. Quit and open again: the same.
