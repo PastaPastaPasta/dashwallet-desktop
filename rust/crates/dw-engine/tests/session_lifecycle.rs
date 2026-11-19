@@ -133,9 +133,14 @@ fn created_wallet_survives_engine_restart() {
     assert_eq!(wallets[0].wallet_id, created.wallet_id);
     assert_eq!(wallets[0].name, "Wallet 1");
     assert!(wallets[0].has_mnemonic && !wallets[0].watch_only);
-    // Nothing scanned yet: the balance is unknown, not zero (review M-3).
-    assert_eq!(wallets[0].balances, None);
-    assert_eq!(session.balances(&created.wallet_id).unwrap(), None);
+    // Nothing scanned yet: the balance is what the wallet knows, flagged as
+    // catching up rather than passed off as a settled zero (review M-3).
+    let known = dw_engine::WalletBalances {
+        catching_up: true,
+        ..Default::default()
+    };
+    assert_eq!(wallets[0].balances, Some(known));
+    assert_eq!(session.balances(&created.wallet_id).unwrap(), Some(known));
 
     let events = rec.events();
     assert!(events.contains(&EngineEvent::SessionOpened {

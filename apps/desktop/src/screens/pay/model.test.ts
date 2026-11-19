@@ -11,6 +11,10 @@ import {
   broadcastFailure,
   changePolicy,
   coinSource,
+  confirmActions,
+  PAY_CHECKING,
+  PAY_INCOMPLETE,
+  reviewBlockedReason,
   confirmedOf,
   credentialPrompt,
   DEFAULT_ADVANCED,
@@ -116,18 +120,25 @@ describe("the engine's refusals", () => {
     const base = "The amount exceeds the 0.65276809 tDASH a normal payment can spend.";
     const where = "To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).";
     // No mixing or mixed coins, or another source: the refusal keeps its plain text.
+    const none = { mixed: false, mixing: false, stalled: false };
+    const stalledAlone =
+      "Denominations this wallet cannot mix stay apart; choose Advanced: coins, fee and change ▸ Selected coins to spend them, which can link your coins.";
+    const stalledAfterMixed = "Denominations this wallet cannot mix use Selected coins there, which can link your coins.";
+    const stalledAfterMixing =
+      "Denominations this wallet cannot mix use Advanced: coins, fee and change ▸ Selected coins, which can link your coins.";
+    const finishingAlone =
+      "Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).";
+    const finishingBeside = "Coins still being mixed can be spent that way once mixing finishes.";
     expect(sendErrorText(over, "test", "DASH")?.text).toBe(plain);
-    expect(sendErrorText(over, "test", "DASH", { mixed: false, mixing: false })?.text).toBe(plain);
-    expect(sendErrorText(over, "test", "DASH", { mixed: true, mixing: false })).toEqual({ text: `${base} ${where}`, field: "amount" });
-    expect(sendErrorText(over, "test", "DASH", { mixed: true, mixing: true })?.text).toBe(
-      `${base} ${where} Coins still being mixed can be spent that way once mixing finishes.`,
-    );
-    // Only mixing coins: no pointer to switch now, since nothing is fully mixed yet; they stay apart.
-    expect(sendErrorText(over, "test", "DASH", { mixed: false, mixing: true })?.text).toBe(
-      `${base} Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).`,
-    );
+    expect(sendErrorText(over, "test", "DASH", none)?.text).toBe(plain);
+    expect(sendErrorText(over, "test", "DASH", { ...none, mixed: true })).toEqual({ text: `${base} ${where}`, field: "amount" });
+    expect(sendErrorText(over, "test", "DASH", { ...none, mixed: true, mixing: true })?.text).toBe(`${base} ${where} ${finishingBeside}`);
+    expect(sendErrorText(over, "test", "DASH", { ...none, mixing: true })?.text).toBe(`${base} ${finishingAlone}`);
+    expect(sendErrorText(over, "test", "DASH", { ...none, stalled: true })?.text).toBe(`${base} ${stalledAlone}`);
+    expect(sendErrorText(over, "test", "DASH", { ...none, mixed: true, stalled: true })?.text).toBe(`${base} ${where} ${stalledAfterMixed}`);
+    expect(sendErrorText(over, "test", "DASH", { ...none, mixing: true, stalled: true })?.text).toBe(`${base} ${finishingAlone} ${stalledAfterMixing}`);
     // Without the engine's figure there is nothing to name.
-    expect(sendErrorText(err("send.amount_exceeds_balance"), "test", "DASH", { mixed: true, mixing: false })?.text).toBe(plain);
+    expect(sendErrorText(err("send.amount_exceeds_balance"), "test", "DASH", { ...none, mixed: true })?.text).toBe(plain);
   });
 
   it("labels Available with the coin source it counts", () => {
@@ -320,5 +331,41 @@ describe("Create Unsigned keeps the sheet's promise (U-05 D37)", () => {
     expect(unsignedKeepsPromise(confirmed, unsigned({ outputs: [pay, change, { address: "yOther", amount: 5, isMine: false }] }))).toBe(false);
     expect(unsignedKeepsPromise(confirmed, unsigned({ outputs: [pay, { ...change, isMine: false }] }))).toBe(false);
     expect(unsignedKeepsPromise(confirmed, unsigned({ fee: null }))).toBe(false);
+  });
+});
+
+describe("what the confirm sheet offers (P15)", () => {
+  it("sends, under a credential, from a wallet that signs", () => {
+    expect(confirmActions(false, false)).toEqual({ send: true, credential: true, unsignedFirst: false });
+  });
+
+  it("makes only a PSBT when Advanced asked for one, even from a wallet that signs", () => {
+    expect(confirmActions(true, false)).toEqual({ send: false, credential: false, unsignedFirst: true });
+  });
+
+  it("makes only a PSBT from a watch-only wallet, asked or not", () => {
+    expect(confirmActions(false, true)).toEqual({ send: false, credential: false, unsignedFirst: true });
+    expect(confirmActions(true, true)).toEqual({ send: false, credential: false, unsignedFirst: true });
+  });
+
+  it("holds Send while the wallet is not known", () => {
+    expect(confirmActions(false, undefined)).toEqual({ send: false, credential: false, unsignedFirst: false });
+  });
+});
+
+describe("why a payment cannot be reviewed yet (P15)", () => {
+  it("gives no reason once it can", () => {
+    expect(reviewBlockedReason(true, ["stale"], true)).toBeNull();
+  });
+
+  it("names the first field problem the form shows, not an incomplete form", () => {
+    const wrongNetwork = "This is a Mainnet address. This wallet is on Testnet.";
+    expect(reviewBlockedReason(false, [wrongNetwork, null, undefined, "general"], true)).toBe(wrongNetwork);
+    expect(reviewBlockedReason(false, [null, undefined, "Enter a valid amount."], false)).toBe("Enter a valid amount.");
+  });
+
+  it("falls back to incomplete or still being checked", () => {
+    expect(reviewBlockedReason(false, [null, undefined, ""], false)).toBe(PAY_INCOMPLETE);
+    expect(reviewBlockedReason(false, [null], true)).toBe(PAY_CHECKING);
   });
 });

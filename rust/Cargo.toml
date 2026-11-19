@@ -7,7 +7,7 @@ resolver = "2"
 members = ["crates/*", "bin/*"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
@@ -15,7 +15,9 @@ publish = false
 
 [workspace.dependencies]
 # ---- dashpay/platform, pinned to pasta's fork (DESIGN.md R3, DEC-18, DEC-168) ----
-# PastaPastaPasta/platform dw/0.2-item0@72d0a3e74c
+# PastaPastaPasta/platform dw/0.2-mempool-during-sync@08d1eb7047
+# = dw/0.2-item0@72d0a3e74c (below) + the rust-dashcore re-pin below.
+# dw/0.2-item0@72d0a3e74c
 # = dw/0.2-item0@1050b954e3 (below) merged with
 #   dw/0.2-item0-hook@bdf8553942, the public keyset entry points for hooked shielded
 #   spends (`PlatformWallet::shielded_{transfer,withdraw}_to_with_keyset`), which refuse
@@ -90,33 +92,41 @@ publish = false
 # `shielded`: the Orchard pool (halo2, orchard, the commitment tree), on since
 # 0.1 ships shielded funds (RELEASE-PLAN §1; cost in docs/research/shielded-cost.md).
 # It turns on `dash-sdk/shielded` and `dpp/shielded-client` too.
-platform-wallet = { git = "https://github.com/PastaPastaPasta/platform", rev = "72d0a3e74c82d88ab1db0b3761f081c60b7bddc3", features = ["bls", "eddsa", "shielded"] }
+platform-wallet = { git = "https://github.com/PastaPastaPasta/platform", rev = "08d1eb704774f49266cc31056085faa28b1b3c48", features = ["bls", "eddsa", "shielded"] }
 # `sqlite` = SqlitePersister, `secrets` = vault/keyring primitives (WS-03),
 # `shielded` = the persister's shielded tables.
-platform-wallet-storage = { git = "https://github.com/PastaPastaPasta/platform", rev = "72d0a3e74c82d88ab1db0b3761f081c60b7bddc3", default-features = false, features = ["sqlite", "secrets", "shielded"] }
+platform-wallet-storage = { git = "https://github.com/PastaPastaPasta/platform", rev = "08d1eb704774f49266cc31056085faa28b1b3c48", default-features = false, features = ["sqlite", "secrets", "shielded"] }
 # Default features kept, as platform-wallet-ffi (the iOS build) does.
-dash-sdk = { git = "https://github.com/PastaPastaPasta/platform", rev = "72d0a3e74c82d88ab1db0b3761f081c60b7bddc3", features = ["wallet", "dashpay-contract", "dpns-contract"] }
+dash-sdk = { git = "https://github.com/PastaPastaPasta/platform", rev = "08d1eb704774f49266cc31056085faa28b1b3c48", features = ["wallet", "dashpay-contract", "dpns-contract"] }
 # `ed25519-dalek`: platform-wallet's masternode locator imports `dpp::ed25519_dalek`
 # but its manifest does not enable the feature (the platform workspace gets it by
 # feature unification).
-dpp = { git = "https://github.com/PastaPastaPasta/platform", rev = "72d0a3e74c82d88ab1db0b3761f081c60b7bddc3", features = ["ed25519-dalek"] }
-dash-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "72d0a3e74c82d88ab1db0b3761f081c60b7bddc3" }
+dpp = { git = "https://github.com/PastaPastaPasta/platform", rev = "08d1eb704774f49266cc31056085faa28b1b3c48", features = ["ed25519-dalek"] }
+dash-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "08d1eb704774f49266cc31056085faa28b1b3c48" }
 # Drive's document cost estimator (`drive::drive::document::cost`, the one
 # wasm-sdk exposes), for the credits cost table (DP1-06). `verify` is the
 # feature dash-sdk already builds it with.
-drive = { git = "https://github.com/PastaPastaPasta/platform", rev = "72d0a3e74c82d88ab1db0b3761f081c60b7bddc3", default-features = false, features = ["verify"] }
+drive = { git = "https://github.com/PastaPastaPasta/platform", rev = "08d1eb704774f49266cc31056085faa28b1b3c48", default-features = false, features = ["verify"] }
 # `dpns-contract`: the provider serves the DPNS contract that the contested-name
 # vote-state proofs need (DP1-03), as rs-sdk-ffi (the iOS build) enables it;
 # `dashpay-contract`: the DashPay contract that a broadcast contactRequest's
 # proof is verified against (DP2-02).
-rs-sdk-trusted-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "72d0a3e74c82d88ab1db0b3761f081c60b7bddc3", features = ["dpns-contract", "dashpay-contract"] }
+rs-sdk-trusted-context-provider = { git = "https://github.com/PastaPastaPasta/platform", rev = "08d1eb704774f49266cc31056085faa28b1b3c48", features = ["dpns-contract", "dashpay-contract"] }
 # DIP-15 DashPay crypto (ECDH, account reference, contactInfo AES) for the
 # vault's Platform signers; the same functions platform-wallet calls.
-platform-encryption = { git = "https://github.com/PastaPastaPasta/platform", rev = "72d0a3e74c82d88ab1db0b3761f081c60b7bddc3" }
+platform-encryption = { git = "https://github.com/PastaPastaPasta/platform", rev = "08d1eb704774f49266cc31056085faa28b1b3c48" }
 
 # ---- rust-dashcore: EXACTLY the revision platform pins (platform Cargo.toml) ----
 # A different revision would duplicate every dashcore type in the graph.
-# PastaPastaPasta/rust-dashcore dw/0.2-mix-shield-approve-inputs-r57@8e7ad2c1f5
+# PastaPastaPasta/rust-dashcore dw/0.2-mempool-during-sync@ae49570ae8
+# = dw/0.2-mix-shield-approve-inputs-r57@8e7ad2c1f5 (below) + `ClientConfig::mempool_during_sync`:
+#   mempool relay turned on as each peer connects rather than at FiltersSyncComplete, so a
+#   payment and its InstantSend lock reach the wallet while it is still syncing, and the
+#   mempool asked for again when filter sync first completes (opt-in; the engine sets it
+#   in `spv_config`). The wallet is given an InstantSend lock only once it is verified, a
+#   later lock replaces one that has not verified, and a peer without the Bloom service
+#   is sent no Bloom or mempool message.
+# dw/0.2-mix-shield-approve-inputs-r57@8e7ad2c1f5
 # = dw/0.1.x-row57-rescan-credits-swept@7b7126b418 (below) merged with
 #   dw/0.2-mix-shield-approve-inputs@e19314aa82 (9359687d93 + `Signer::approve_inputs`: a
 #   signer sees a build's inputs before any signature).
@@ -128,11 +138,11 @@ platform-encryption = { git = "https://github.com/PastaPastaPasta/platform", rev
 #   and doc commits on it (f0f5cd08, 846ffe54); the gaps #1326 leaves are tracked in #1361.
 #   9359687d93 adds `TransactionsSwept::winner_block` (the winner's block, height and
 #   hash). Back to a dashpay revision at the next platform re-pin.
-dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "8e7ad2c1f51ea67b4776808bc1f3f686a7e80119" }
-key-wallet = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "8e7ad2c1f51ea67b4776808bc1f3f686a7e80119" }
-key-wallet-manager = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "8e7ad2c1f51ea67b4776808bc1f3f686a7e80119" }
-dash-spv = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "8e7ad2c1f51ea67b4776808bc1f3f686a7e80119" }
-dashcore-rpc = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "8e7ad2c1f51ea67b4776808bc1f3f686a7e80119" }
+dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d" }
+key-wallet = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d" }
+key-wallet-manager = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d" }
+dash-spv = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d" }
+dashcore-rpc = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d" }
 # ---- dashpay/base-sdk: EXACTLY the revision that rust-dashcore pins ----
 dash-pkc = { git = "https://github.com/dashpay/base-sdk", rev = "33fcc59e1868c803f9608e0e78ee8bddf3abcee7", default-features = false }
 

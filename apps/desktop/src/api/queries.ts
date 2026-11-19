@@ -4,6 +4,7 @@
 import { createContext, useContext } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
+import type { Balances } from "./generated/Balances";
 import type { ShieldedSpendQuote } from "./generated/ShieldedSpendQuote";
 import type { ShieldedStatus } from "./generated/ShieldedStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
@@ -139,9 +140,12 @@ export function useWallets() {
   return useQuery({ queryKey: keys.wallets, queryFn: () => b.listWallets() });
 }
 
+/** `null` while the wallet is catching up: no screen shows a partial balance yet. */
+export const settledBalance = (balances: Balances | null): Balances | null => (balances?.catchingUp ? null : balances);
+
 export function useBalance(walletId: string) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.balance(walletId), queryFn: () => b.balance(walletId) });
+  return useQuery({ queryKey: keys.balance(walletId), queryFn: async () => settledBalance(await b.balance(walletId)) });
 }
 
 /** The wallet's Platform addresses; `null` while dw-app has no such command (api/pending.ts). */

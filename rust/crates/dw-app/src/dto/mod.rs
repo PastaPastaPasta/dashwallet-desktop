@@ -301,6 +301,13 @@ pub struct Balances {
     /// The fully mixed CoinJoin balance once computed; before that, the
     /// spendable balance of the CoinJoin accounts.
     pub coinjoin: u64,
+    /// The wallet is still catching up (its scan has not reached the birth
+    /// block): the buckets hold what it has seen so far, payments seen in
+    /// the mempool or locked by InstantSend included, and can miss coins in
+    /// blocks not scanned yet. `false` says only that the birth block was
+    /// scanned: a wallet born long ago is still behind the tip while the
+    /// sync status says so.
+    pub catching_up: bool,
 }
 
 impl From<WalletBalances> for Balances {
@@ -312,6 +319,7 @@ impl From<WalletBalances> for Balances {
             locked,
             total,
             coinjoin,
+            catching_up,
         } = b;
         Balances {
             confirmed,
@@ -320,6 +328,7 @@ impl From<WalletBalances> for Balances {
             locked,
             total,
             coinjoin,
+            catching_up,
         }
     }
 }
@@ -337,7 +346,8 @@ pub struct WalletSummary {
     pub birth_height: Option<u32>,
     /// UNIX seconds the wallet was added on this device, when known.
     pub created_at: Option<u64>,
-    /// `null` until the scan has processed the birth block: a zero would be a guess.
+    /// What the wallet knows so far (`catchingUp` until the scan has processed
+    /// the birth block); `null` before the wallet's state was first read.
     pub balances: Option<Balances>,
 }
 
