@@ -416,8 +416,9 @@ impl NetworkSession {
             })
             .await??,
         );
-        // dash-qt loads only the wallets of its settings list; an empty or
-        // missing list loads every wallet.
+        // dash-qt loads only the wallets of its settings list; a missing
+        // list loads every wallet, and so does one that would load none of
+        // them: with no wallet open, closed ones cannot be reached.
         let startup_list = {
             let appdb = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::multiwallet::read_startup_list(&appdb))
@@ -431,10 +432,14 @@ impl NetworkSession {
                 })
                 .await?
                 .map_err(|e| EngineError::Storage(format!("wallet list: {e}")))?;
-                registered
-                    .into_iter()
-                    .filter(|id| !list.contains(&WalletId(*id)))
-                    .collect()
+                if registered.iter().any(|id| list.contains(&WalletId(*id))) {
+                    registered
+                        .into_iter()
+                        .filter(|id| !list.contains(&WalletId(*id)))
+                        .collect()
+                } else {
+                    Default::default()
+                }
             }
             None => Default::default(),
         };

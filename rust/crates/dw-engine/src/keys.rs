@@ -758,6 +758,7 @@ impl NetworkSession {
         if origin == Origin::CreatedHere {
             self.mark_created_here(wallet_id).await;
         }
+        self.list_new_wallet_on_startup(wallet_id).await;
         self.sink.emit(EngineEvent::WalletCreated {
             network: self.network.clone(),
             wallet_id,
