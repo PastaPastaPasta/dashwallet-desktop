@@ -147,6 +147,30 @@ impl From<engine::DashPaySyncStatus> for DashPaySyncStatus {
     }
 }
 
+/// Platform protocol compatibility of the open network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolCompatibility {
+    /// Active Platform protocol version from the latest proved epoch read;
+    /// `null` until Platform has answered, or when Platform is off.
+    pub network_version: Option<u32>,
+    /// Highest Platform protocol version this build supports.
+    pub supported_version: u32,
+}
+
+impl From<engine::ProtocolCompatibility> for ProtocolCompatibility {
+    fn from(c: engine::ProtocolCompatibility) -> Self {
+        let engine::ProtocolCompatibility {
+            network_version,
+            supported_version,
+        } = c;
+        ProtocolCompatibility {
+            network_version,
+            supported_version,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

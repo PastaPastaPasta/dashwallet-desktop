@@ -1314,47 +1314,45 @@ fn psbt_a_contacts_address_is_not_the_wallets() {
 }
 
 /// MG-04 D50 (validator r1 m-1): a coin paid to one of the wallet's ProTx
-/// owner keys is not the wallet's to sign in a PSBT, so a PSBT spending it
+/// owner or voting keys is not the wallet's to sign in a PSBT, so a PSBT spending it
 /// is reported unsignable and leaves that input unsigned, as another
 /// wallet's would be, instead of failing at the vault.
 #[test]
-fn psbt_an_owner_keys_coin_is_not_signed() {
-    let f = fixture(false);
-    let owner = f
-        .engine
-        .block_on(f.session.derive_masternode_keys(
-            f.wallet,
-            crate::masternode_keys::MasternodeKeyRole::Owner,
-            0,
-            1,
-        ))
-        .unwrap()
-        .remove(0)
-        .address
-        .unwrap();
-    let prev = Transaction {
-        version: 2,
-        lock_time: 0,
-        input: vec![dashcore::TxIn {
-            previous_output: OutPoint::new(Txid::from_byte_array([8; 32]), 0),
-            script_sig: dashcore::ScriptBuf::new(),
-            sequence: u32::MAX,
-            witness: dashcore::Witness::default(),
-        }],
-        output: vec![TxOut {
-            value: COIN,
-            script_pubkey: script_of(&owner),
-        }],
-        special_transaction_payload: None,
-    };
-    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN - 10_000)]);
-    let a = f
-        .engine
-        .block_on(f.session.analyze_psbt(Some(f.wallet), psbt.clone()))
-        .unwrap();
-    assert_eq!(a.signability, PsbtSignability::NoMatchingKeys);
-    let signed = f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
-    assert!(signed.inputs[0].partial_sigs.is_empty());
+fn psbt_an_owner_or_voting_keys_coin_is_not_signed() {
+    use crate::masternode_keys::MasternodeKeyRole::{Owner, Voting};
+    for role in [Owner, Voting] {
+        let f = fixture(false);
+        let address = f
+            .engine
+            .block_on(f.session.derive_masternode_keys(f.wallet, role, 0, 1))
+            .unwrap()
+            .remove(0)
+            .address
+            .unwrap();
+        let prev = Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: OutPoint::new(Txid::from_byte_array([8; 32]), 0),
+                script_sig: dashcore::ScriptBuf::new(),
+                sequence: u32::MAX,
+                witness: dashcore::Witness::default(),
+            }],
+            output: vec![TxOut {
+                value: COIN,
+                script_pubkey: script_of(&address),
+            }],
+            special_transaction_payload: None,
+        };
+        let psbt = psbt_spending(&prev, &[(FOREIGN, COIN - 10_000)]);
+        let a = f
+            .engine
+            .block_on(f.session.analyze_psbt(Some(f.wallet), psbt.clone()))
+            .unwrap();
+        assert_eq!(a.signability, PsbtSignability::NoMatchingKeys);
+        let signed = f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
+        assert!(signed.inputs[0].partial_sigs.is_empty());
+    }
 }
 
 /// MG-04 D55 (review r2 m-1): a payment to one of the wallet's own

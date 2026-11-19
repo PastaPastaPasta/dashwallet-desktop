@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 67
+Contract-Version: 69
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -63,7 +63,7 @@ type is `pub(crate)`.
 | File | Owner (ROADMAP) | Calls |
 |---|---|---|
 | `dashpay.rs` | E0-08 | `NetworkSession.dashpay`, `wallet_id`; `BearerSecret` |
-| `startup.rs` | E0-05 bring-up | `status`, `sync_status`, `sync_now` |
+| `startup.rs` | E0-05 bring-up; 1.0 C2 | `status`, `sync_status`, `sync_now`, `NetworkSession.protocol_compatibility` |
 | `identity.rs` | DP1-01, DP1-05, DP6-01 | `identities`, `set_main_identity`, `identity_detail`, `refresh_identity`, `refresh_identities`, `find_identity`, `refresh_balance`, `discover_identities` |
 | `registration.rs` | DP1-02 | `registration_quote`, `registration_resume_grant`, `start_registration`, `start_registration_past_unknown_funding`, `registrations`, `resume_registration`, `discard_registration`, `finish_asset_locks`, `prepare_faucet_lock` |
 | `names.rs` | DP1-03, DP1-04, DP2-03 | `check_username`, `name_availability`, `register_name`, `set_main_name`, `main_name`, `contest_status`, `search_users`, `resolve_user` |
@@ -200,6 +200,7 @@ Every call's status today: **stub**, except §2.10, BL-153's `status` (§2.1), D
 |---|---|---|---|
 | `status()` | sync | The banner state (F1) shared by the Home card, the chip and the Contacts empty state: `NoIdentity{reason}`, `Registering{draft}`, `ContestPending{identity, label, ends_at}`, `Ready{main}`, `StartupIncomplete{startup}`. Reads memory and app.sqlite only, never Platform, so it answers offline; the rules are item 49. `StartupIncomplete` only while no identity is on file. Changes are signalled as `Platform{Startup}` (bring-up, `set_main_identity`), `Platform{Registration}`, `Platform{Identities}`, `Platform{Names}`; `WaitingForSync` ends with sync, which has its own events. **Implemented (BL-153).** | `PlatformError` |
 | `sync_status()` | sync | Tools ▸ Information's DashPay card (F23): startup status, last pass, pending contact crypto, loops, quorum source. **works** (E0-10b): `last_pass` is `None` until sync passes report one. | `PlatformError` |
+| `NetworkSession.protocol_compatibility()` | sync | Platform protocol compatibility of the open network (1.0 C2): `ProtocolCompatibility{network_version, supported_version}`. `supported_version` is `PlatformVersion::latest().protocol_version` (highest version this build knows); `network_version` is the highest active version proved on this session (`ExtendedEpochInfo::fetch_current`'s unclamped epoch version, or a proved response metadata ratchet), `None` before Platform has answered or with `no_platform`. Refreshed in the background when the Platform loops start and every 60 s while SPV runs, and whenever `refresh_protocol_version` runs (invitations, shielded pool, platform fund); never blocks any action (`refresh_protocol_version` stays clamped at `<= supported_version`). Signalled on each loaded wallet's `Platform{Startup}` when `network_version` advances. **Implemented (1.0 C2).** | `PlatformError` |
 | `sync_now()` | async | Runs one DashPay pass now and reports it. | `PlatformError` |
 | `identities()` | sync | The wallet's identities by index: names (the library's order), main name, credit balance (`None` = unknown) with `balance_as_of` (the Platform block time, ms, of the balance shown, once a refresh read it) and `balance_stale` (it may be behind: spent by a write since its refresh, or neither refreshed by this process nor stored by Platform in the last ten minutes; the engine refreshes it in the background and sends `Platform{Identities}` when the flag may have changed, §7 item 44), and its `credit_level` against the cost table (`None` while the balance is unknown; DP1-06), whether the DashPay keys 4–5 exist, profile. `is_main` marks the `dp_main_identity` choice while the wallet still has that identity, else the lowest index. `names` and `main_name` are as `main_name(identity)` (§2.3) has them: names the identity owns by Platform's evidence (not a label in a contest or one whose write may be in flight), and its pick while owned, else the temporary or won contested name, else the name acquired first; `None` while it owns none. Read from the library's memory, or the last snapshot while a sync pass writes it; which names show comes from the app database's main-name rows, read in one statement on each call (a failed read fails the call), never from a cache. From the live list, a label whose write may be in flight or that Platform refused is hidden. From the older snapshot, `names` is empty, `main_name` is `None` and `names_updating` is `true` (show "updating", not "no name"); the other fields still come from it. `names_updating` is `false` on a live read. `names_check` (item 51) is `Pending` or `Failed` while `main_name` is `None` and Platform has not said this session that the identity owns no name: it may still own one. **Implemented (DP1-05).** | `PlatformError` |
 | `set_main_identity(identity)` | async | Writes `dp_main_identity`; one of the wallet's identities, else `identity.not_found`. Signalled `Platform{Identities}` and `Platform{Startup}` (the list's `is_main`, `status`'s main; DP6-01). **Implemented (DP1-05).** | `PlatformError` (`identity.not_found`) |
@@ -716,7 +717,7 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   through. The engine never releases such notes by itself.
 - The marker of a spend the library kept no record of (schema 10, "Unrecorded spends" below) is still written and gates
   as below. The schema-9 journal row is written only for a spend stored before any hook was set, at pass admission.
-- **The library's outcomes (version 67).** At the end of each pass and when it opens `shielded.sqlite`, the engine
+- **The library's outcomes (version 69).** At the end of each pass and when it opens `shielded.sqlite`, the engine
   reads the outcome the library recorded for each ended spend (its disposition) into the spend's artifact by
   Platform's hash of the transition, and only then acknowledges it, which lets the library drop the outcome and its
   hold on the notes. A crash between the two repeats both. `NotExecuted` (nothing was sent, the notes are free) reads
@@ -739,7 +740,7 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
 stored transitions and reservations (`remove_wallet` → `unregister_wallet` → `purge_wallet`, `wallet_lifecycle.rs:847`,
 `coordinator.rs:878-902`, `file_store.rs:880-901`), and the library has no detach. A wallet holds such a spend while
 the library stores a record of it (one stored under the dispatch hook and not sent yet included), or keeps an
-`Executed` or `Unresolved` outcome of one that the engine has not acknowledged (version 66): removing the wallet would
+`Executed` or `Unresolved` outcome of one that the engine has not acknowledged (version 68): removing the wallet would
 hand that outcome's hold on its notes to the next scan instead of the acknowledgement. A `NotExecuted` outcome holds
 nothing. So while a wallet holds such a spend:
 Close Wallet (`unload_wallet`) and an in-app network close or switch (`close_network`) are refused with the engine code
@@ -753,7 +754,7 @@ shielded store's first open, which rehydrates its stored spends (the supervisor'
 shielded call), is admitted as a load is: one running is waited for, and one that starts after the check fails with
 `network_not_open`. So a close or switch that succeeds leaves no spend unresolved. From the start of a close (an in-app
 one once it goes ahead, and the quit), and while a lock, a wallet's revocation or the close waits for a shielded pass
-in flight, the dispatch hook refuses whatever it is asked (version 66): a spend the library stored but has not sent
+in flight, the dispatch hook refuses whatever it is asked (version 68): a spend the library stored but has not sent
 yet is refused before its first broadcast, so the library records it `NotExecuted(Refused)` and frees its notes, and
 the call returns `shielded.spend_refused` ("The payment was not sent"); a pass in flight re-sends nothing more, each
 spend keeping its re-send count. The hook checks again right before it writes a spend's artifact; a dispatch already
@@ -772,7 +773,7 @@ as `wallet` (`EngineError`) or `internal` (`WalletError`), with the same detail.
 user's `remove_wallet`, under its wipe grant) deletes its spends with it. Item 1, on the fork line, replaces this with
 an upstream detach.
 
-**While the dispatch journal is unavailable** (version 66: `dispatch.sqlite` could not be opened or is of a newer
+**While the dispatch journal is unavailable** (version 68: `dispatch.sqlite` could not be opened or is of a newer
 schema; the session still opens), the calls that change which wallets the session knows are refused with `storage`
 ("the dispatch journal is unavailable") before anything of them is stored, deleted or consumed, as a leased First is:
 `remove_wallet` (before the grant is checked or redeemed), `import_wallet` and every other seed import (the Dash Core
@@ -942,7 +943,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 051121d307a723fa435dadb4fb68e9f7bb5ea8d8a0cfd4bcdcf96e8d9af76fca version: 67 -->
+<!-- surface-sha256: dca82392a58e8217126ef66a22ea4b3d41acf7d938407ff00f7fff2e9a0ddb40 version: 69 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -2443,6 +2444,14 @@ pub enum QuorumSource {
     Spv,
     TrustedFallback,
     Trusted,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtocolCompatibility {
+    pub network_version: Option<u32>,
+    pub supported_version: u32,
+}
+impl NetworkSession {
+    pub fn protocol_compatibility(&self) -> Result<ProtocolCompatibility, PlatformError>;
 }
 impl DashPay {
     pub fn status(&self) -> Result<DashPayStatus, PlatformError>;
@@ -4290,13 +4299,13 @@ renames or reshapes them takes the next version bump:
     the hook a spend is `platform.unavailable` and no pass runs. `platform.cancelled` ("cancelled
     before anything was sent") is not reused either: it is the outcome of a lock that won the permit or an approval
     that ended, and hosts group it with the ended-approval codes, while a refusal here is neither.
-88. **The hook during a close, the widened hold and the journal-unavailable refusals (version 66).** The dispatch hook
+88. **The hook during a close, the widened hold and the journal-unavailable refusals (version 68).** The dispatch hook
     refuses from the start of a close and during a drain of the shielded passes, and checks again before it writes an
     artifact; a dispatch past that check completes and the close waits for it. A wallet holds the close also for an
     un-acknowledged `Executed` or `Unresolved` disposition, and for a spend stored under the hook and not sent yet.
     While the dispatch journal is unavailable, removal, every seed import, `import_watch_only` and `restore_backup` are
     refused with `storage` before anything changes (§2.13 "Closing with an unresolved spend").
-89. **The library's spend outcomes, read and acknowledged (version 67).** After each pass and at the shielded store's
+89. **The library's spend outcomes, read and acknowledged (version 69).** After each pass and at the shielded store's
     open the engine settles each spend's artifact from the library's disposition, then acknowledges it: `NotExecuted`
     at once, `Executed` once its notes read spent in the journal, an unreadable one by its key once its held notes read
     spent; never an `Unresolved` one. `Unattributable` with a confirmed history row reads done, with no retry and no
