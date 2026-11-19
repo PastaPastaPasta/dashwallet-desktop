@@ -773,8 +773,7 @@ impl NetworkSession {
     fn coinjoin_warning(&self, id: &WalletId) -> Option<ExportWarning> {
         self.hub
             .wallet_state(id)
-            .and_then(|s| s.balances())
-            .is_some_and(|b| b.coinjoin > 0)
+            .is_some_and(|s| s.balances().coinjoin > 0)
             .then_some(ExportWarning::CoinJoinAccountNotScannedByLegacyCore)
     }
 

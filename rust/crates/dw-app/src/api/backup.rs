@@ -450,7 +450,12 @@ commands! {
         if path.is_empty() {
             return Err(AppError::invalid_argument("empty path"));
         }
-        let kind = state.engine.inspect_wallet_file(PathBuf::from(path)).await?;
+        let engines = state.engine.clone();
+        let kind = engines
+            .wait()
+            .await?
+            .inspect_wallet_file(PathBuf::from(path))
+            .await?;
         Ok(kind.into())
     }
 

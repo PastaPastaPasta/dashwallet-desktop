@@ -38,6 +38,13 @@ fn granted_commands(dir: &Path) -> Vec<String> {
 }
 
 fn main() {
+    // GTK calls g_dbus_proxy_new_sync in libgtk. The executable has to export
+    // our copy or the dynamic linker never sees it.
+    if std::env::var("CARGO_CFG_TARGET_OS").ok().as_deref() == Some("linux") {
+        println!("cargo:rustc-link-arg=-Wl,--export-dynamic-symbol=g_dbus_proxy_new_sync");
+        println!("cargo:rustc-link-arg=-Wl,--export-dynamic-symbol=g_dbus_proxy_new_for_bus_sync");
+        println!("cargo:rustc-link-arg=-Wl,--wrap=dbus_connection_send_with_reply_and_block");
+    }
     println!("cargo:rerun-if-changed=capabilities");
     println!("cargo:rerun-if-changed=capabilities-selftest");
     let mut commands = granted_commands(Path::new("capabilities"));
