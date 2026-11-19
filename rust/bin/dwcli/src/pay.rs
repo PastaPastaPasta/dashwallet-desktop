@@ -256,8 +256,8 @@ pub fn run(
                 .map_err(e)?
                 .ok_or_else(|| format!("balance of {id} still unknown at height {height}"))?;
             println!(
-                "synced {height} confirmed={} unconfirmed={} immature={} total={}",
-                b.confirmed, b.unconfirmed, b.immature, b.total
+                "synced {height} confirmed={} unconfirmed={} immature={} total={} catching_up={}",
+                b.confirmed, b.unconfirmed, b.immature, b.total, b.catching_up
             );
         }
         PayCommand::Utxos { wallet, all } => {

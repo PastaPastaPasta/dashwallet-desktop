@@ -71,6 +71,8 @@ export interface CoinJoinWorld {
   drainUnknown?: "next" | "stuck";
   /** The recorded chunks of unknown outcome, by wallet id: their display txids. */
   sweepUnknown?: Record<string, string[]>;
+  /** Restored BIP44 denominations (`txid:vout`): counted as denominated, not on the CoinJoin account. */
+  restoredOutpoints?: string[];
 }
 
 /** The step of the fixture's drain left possibly sent. */
@@ -107,18 +109,24 @@ export function coinjoinStatusOf(world: World, w: FixtureWallet): CoinJoinStatus
   const total = w.summary.balances?.confirmed ?? 0;
   const target = settings.targetAmountDash * DUFFS_PER_DASH;
   const amount = Math.min(total, target);
-  const fullyMixed = Math.floor((total * m.progress.mixedPercent) / 100);
+  const restored = w.coins.filter((u) => u.coinjoinDenominated && isRestoredBip44(world, u));
+  const restoredDenom = restored.reduce((n, u) => n + u.amount, 0);
+  const restoredMixed = restored.filter((u) => (u.coinjoinRounds ?? 0) >= settings.rounds && u.confirmations > 0).reduce((n, u) => n + u.amount, 0);
+  const dip9Denom = Math.floor((total * m.progress.denominatedPercent) / 100);
+  const dip9Mixed = Math.floor((total * m.progress.mixedPercent) / 100);
+  const fullyMixed = dip9Mixed + restoredMixed;
   return {
     walletId: w.summary.walletId,
     state: m.state,
     stopReason: m.state === "idle" ? m.stopReason : null,
     unavailable: unavailableOf(settings, w),
     balances: {
-      anonymizable: total - fullyMixed,
-      denominated: Math.floor((total * m.progress.denominatedPercent) / 100),
+      anonymizable: Math.max(0, total - fullyMixed),
+      denominated: dip9Denom + restoredDenom,
       normalizedAnonymized: fullyMixed,
       fullyMixed,
-      coinjoinAccount: w.coins.filter((u) => isCoinJoinCoin(u) && u.confirmations > 0 && !u.reserved && !u.userLocked).reduce((n, u) => n + u.amount, 0),
+      mixableUnfinished: Math.max(0, dip9Denom - dip9Mixed),
+      coinjoinAccount: w.coins.filter((u) => isCoinJoinCoin(world, u) && u.confirmations > 0 && !u.reserved && !u.userLocked).reduce((n, u) => n + u.amount, 0),
     },
     progress: m.progress,
     amountAndRounds: { amount: amount === 0 ? target : amount, rounds: settings.rounds, insufficientInputs: total > 0 && total < target },
@@ -167,10 +175,13 @@ function sweepTxid(w: World): string {
   return ("5eed" + w.issued.toString(16).padStart(4, "0")).repeat(8);
 }
 
-const isCoinJoinCoin = (u: Utxo) => u.coinjoinRounds !== null && u.amount > SWEEP_MIN_COIN && !u.reserved;
+export const isRestoredBip44 = (world: World, u: Utxo) => !!world.coinjoin.restoredOutpoints?.includes(`${u.outpoint.txid}:${u.outpoint.vout}`);
+
+const isCoinJoinCoin = (world: World, u: Utxo) => u.coinjoinRounds !== null && !isRestoredBip44(world, u) && u.amount > SWEEP_MIN_COIN && !u.reserved;
 
 /** The CoinJoin account's coins (its addresses' coins): the fixture's coins with mixing rounds. */
-export const coinJoinAccount = (w: FixtureWallet) => w.coins.filter((u) => u.coinjoinRounds !== null);
+export const coinJoinAccount = (w: FixtureWallet, world?: World) =>
+  w.coins.filter((u) => u.coinjoinRounds !== null && (!world || !isRestoredBip44(world, u)));
 
 /** The wallet mixes or winds a session down (`coinjoin.mixing_active`, `shielded.mixing_active`). */
 export const mixerBusy = (world: World, walletId: string) => (world.coinjoin.mixers[walletId]?.state ?? "idle") !== "idle";
@@ -205,7 +216,7 @@ function sweepPlanOf(world: World, w: FixtureWallet, target: SweepTarget) {
   if (w.summary.watchOnly) throw fail("coinjoin.watch_only", "fixture: this wallet is watch-only");
   if (mixerBusy(world, w.summary.walletId)) throw fail("coinjoin.mixing_active", "stop mixing first");
   // Confirmed coins only (`sweep_coins`); the rest wait for a confirmation.
-  const account = w.coins.filter(isCoinJoinCoin);
+  const account = w.coins.filter((u) => isCoinJoinCoin(world, u));
   const coins = account.filter((u) => u.confirmations > 0);
   const unconfirmed = account.length - coins.length;
   let chunks = sweepChunks(coins);
@@ -217,7 +228,7 @@ function sweepPlanOf(world: World, w: FixtureWallet, target: SweepTarget) {
   const swept = chunks.flatMap((c) => c.coins);
   const fullyMixed = swept.filter((u) => (u.coinjoinRounds ?? 0) >= world.coinjoin.settings.rounds).reduce((n, u) => n + u.amount, 0);
   const total = swept.reduce((n, u) => n + u.amount, 0);
-  const coinsAfter = coinJoinAccount(w).length - swept.length + chunks.length;
+  const coinsAfter = coinJoinAccount(w, world).length - swept.length + chunks.length;
   return { chunks, total, fullyMixed, unconfirmed, coinsAfter };
 }
 

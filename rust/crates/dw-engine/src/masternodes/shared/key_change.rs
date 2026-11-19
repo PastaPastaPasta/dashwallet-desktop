@@ -31,7 +31,11 @@ use dw_protx::shared::envelope::{
 };
 use dw_protx::shared::key_change::{self, Checked, Keys, Refusal};
 use dw_protx::shared::rules::{self as shared_rules, SharedMn};
-use dw_protx::shared::{CompactSignature, ProUpSharedRegTx, SpecialTx, payload_bytes};
+use dw_protx::shared::{
+    CollateralShare, CompactSignature, ProUpShareTx, ProUpSharedRegTx, SpecialTx,
+    TRANSACTION_PROVIDER_UPDATE_SHARE, TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR, payload_bytes,
+};
+use key_wallet::transaction_checking::TransactionContext;
 use platform_wallet::masternode::MasternodeListSummary;
 use serde::{Deserialize, Serialize};
 
@@ -51,10 +55,10 @@ use super::build::sign_own_inputs;
 use super::dissolve::address_of;
 use super::flow::signer_refusal;
 use super::send::typed;
-use super::standby::{in_history, p2pkh_address};
+use super::standby::{in_history, p2pkh_address, registration_of};
 use super::store::{
-    decode_outpoints, encode_outpoints, json, message_refusal, reserved_of, role_name, role_of,
-    stage_refusal,
+    ChainView, copy_rank, decode_outpoints, encode_outpoints, json, message_refusal, reserved_of,
+    role_name, role_of, stage_refusal,
 };
 use super::together::{TogetherView, absorb, known_mn, unsigned};
 use crate::coins::now_secs;
@@ -282,6 +286,93 @@ fn envelope(
     }
 }
 
+/// A history transaction as the shared types read it. The pin keeps a
+/// payload it cannot structure as raw bytes, and those round-trip.
+fn special_of(tx: &Transaction) -> Option<SpecialTx> {
+    SpecialTx::from_bytes(&dashcore::consensus::serialize(tx)).ok()
+}
+
+/// Every reward script the wallet has seen a share hold: the
+/// registration's shares, and one more per confirmed ProUpShareTx with the
+/// script it wrote (Core writes `scriptReward`, `specialtxman.cpp:671`).
+/// The payee-reuse check refuses a voting key any of them pays, superseded
+/// or current, so block order doesn't matter (D29). An update this wallet
+/// never saw is not here (MG-00 D42's watch).
+fn seen_payees(
+    chain: &ChainView,
+    hash: [u8; 32],
+    registered: &[CollateralShare],
+) -> Vec<CollateralShare> {
+    let mut shares = registered.to_vec();
+    for entry in chain.history.values() {
+        if entry.context.block_info().is_none()
+            || entry.tx.tx_type().to_u16() != TRANSACTION_PROVIDER_UPDATE_SHARE
+        {
+            continue;
+        }
+        let Some(tx) = special_of(&entry.tx) else {
+            continue;
+        };
+        let Ok(payload) = dashcore::consensus::deserialize::<ProUpShareTx>(&tx.payload) else {
+            continue;
+        };
+        if payload.pro_tx_hash.to_byte_array() != hash {
+            continue;
+        }
+        if let Some(share) = registered.get(usize::from(payload.share_index)) {
+            shares.push(CollateralShare {
+                reward_script: payload.reward_script,
+                ..share.clone()
+            });
+        }
+    }
+    shares
+}
+
+/// `bad-proupsharedreg-payee-reuse` when `voting` is paid by a script
+/// [`seen_payees`] holds.
+fn check_seen_payees(
+    chain: &ChainView,
+    hash: [u8; 32],
+    registered: &[CollateralShare],
+    voting: [u8; 20],
+) -> Result<(), MasternodesError> {
+    match shared_rules::share_list_voting_key_safe(&seen_payees(chain, hash, registered), voting) {
+        true => Ok(()),
+        false => Err(refused("bad-proupsharedreg-payee-reuse")),
+    }
+}
+
+/// The height of the funder's key change in a block: `sent` in a
+/// ChainLocked block, else the best of `sent` and every confirmed
+/// ProUpSharedRegTx with the payload this wallet signed under another
+/// txid, as a registration's copies (`copy_rank`).
+fn mined_height(chain: &ChainView, signed: Option<&[u8]>, sent: Option<&Txid>) -> Option<u32> {
+    let original = sent.and_then(|t| chain.history.get(t));
+    if let Some(e) =
+        original.filter(|e| matches!(e.context, TransactionContext::InChainLockedBlock(_)))
+    {
+        return e.context.block_info().map(|b| b.height());
+    }
+    let payload = signed
+        .and_then(|s| SpecialTx::from_bytes(s).ok())
+        .filter(|s| s.tx_type == TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR)
+        .map(|s| s.payload);
+    chain
+        .history
+        .iter()
+        .filter(|(id, entry)| {
+            entry.context.block_info().is_some()
+                && (Some(*id) == sent
+                    || payload.as_ref().is_some_and(|p| {
+                        entry.tx.tx_type().to_u16() == TRANSACTION_PROVIDER_UPDATE_SHARED_REGISTRAR
+                            && special_of(&entry.tx).is_some_and(|tx| tx.payload == *p)
+                    }))
+        })
+        .min_by_key(|(id, entry)| copy_rank(id, &entry.context, sent))
+        .and_then(|(_, entry)| entry.context.block_info().map(|b| b.height()))
+}
+
 /// The synced list's keys for the masternode now: `None` while the list
 /// isn't synced or doesn't hold it.
 fn current_keys(list: Option<&ListView>, hash: &[u8; 32]) -> Option<Keys> {
@@ -294,9 +385,10 @@ fn same_keys(k: Keys, base: &KeyBase, network: dashcore::Network) -> bool {
 }
 
 /// The stage (D103), first match. The funder: abandoned before its send;
-/// its sent transaction in a block (`confirmed`); out, a fee input spent in
-/// a block by another transaction (`conflicted`); not out, a fee input
-/// spent (`dead{inputs_spent}`). Then for every wallet: the masternode out
+/// its sent transaction in a block, or a mined copy with the same payload
+/// (`confirmed`); out, a fee input spent in a block by another transaction
+/// (`conflicted`); not out, a fee input spent (`dead{inputs_spent}`). Then
+/// for every wallet: the masternode out
 /// of the synced list once the wallet has scanned to its height
 /// (`dead{delisted}`, D81's guard); for an approver, the list's keys the
 /// requested ones (`confirmed` at the list's height, D27); the list's keys
@@ -319,7 +411,10 @@ fn derive_stage(
             };
         }
         let txid = k.row.txid.as_deref().and_then(|t| Txid::from_str(t).ok());
-        if let Some(height) = txid.as_ref().and_then(|t| v.chain.confirmed_height(t)) {
+        // A scriptSig-malleated copy has another txid and the same payload.
+        // Matching it the way `ChainView::registration` ranks copies keeps
+        // the spend from reading `conflicted`.
+        if let Some(height) = mined_height(&v.chain, k.row.signed_tx.as_deref(), txid.as_ref()) {
             return SharedStage::Confirmed { height };
         }
         let own = f.inputs();
@@ -728,7 +823,8 @@ impl NetworkSession {
         // Core's trivial rules: a kept null key is `bad-protx-key-null`.
         let checked = key_change::check(&tx, &mn).map_err(request_refusal)?;
         // Core's rules on the request: the operator key unique in the list,
-        // the voting key no share's payee, `inputsHash` (D12).
+        // the voting key no share's payee, `inputsHash` (D12); then no
+        // reward script a seen ProUpShareTx wrote either.
         shared_rules::check_update_shared_registrar(
             &tx,
             &checked.payload,
@@ -738,6 +834,8 @@ impl NetworkSession {
             false,
         )
         .map_err(refused)?;
+        let chain = self.shared_chain(wallet).await?;
+        check_seen_payees(&chain, hash, &reg.shares, keys.voting_key_id)?;
         let id = session_id(hash, checked.sign_hash);
         let _flight = self.claim_shared_session(wallet, &id)?;
         // The same request as one abandoned before its send, whose coins
@@ -1040,6 +1138,8 @@ impl NetworkSession {
                 true,
             )
             .map_err(refused)?;
+            let chain = self.shared_chain(wallet).await?;
+            check_seen_payees(&chain, k.hash, &reg.shares, p.voting_key_id)?;
             let tx = typed(&signed)?;
             let (w, sid, bytes, txid) = (
                 wallet.to_string(),
@@ -1090,6 +1190,9 @@ impl NetworkSession {
         self.check_no_key_change_out(wallet, k.hash, Some(&k.row.id))
             .await?;
         self.check_resend_inputs(wallet, &tx)?;
+        let chain = self.shared_chain(wallet).await?;
+        let reg = registration_of(&chain, k.hash)?;
+        check_seen_payees(&chain, k.hash, &reg.shares, k.payload.voting_key_id)?;
         let lease = self.shared_lease(wallet, grant).await?;
         let result = async {
             let (charge, _) = charge_fee(&lease, funded.fee)?;
@@ -1314,6 +1417,15 @@ fn view(
         warnings.push(SharedWarning::OperatorReset);
     }
     warnings.push(SharedWarning::UsableByFunder);
+    // Before `out_at` an abandon spends nothing (D102). The hint is the
+    // overdue quiet used for a sent operation; it does not change `next`.
+    if funder
+        && matches!(stage, SharedStage::Signing)
+        && now_secs().saturating_sub(k.row.updated_at)
+            >= crate::masternodes::protx::ops::OVERDUE_SECS
+    {
+        warnings.push(SharedWarning::AbandonHint);
+    }
     let fee = k.funded.as_ref().map(|f| f.fee);
     SharedSession {
         id: k.row.id.clone(),

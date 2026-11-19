@@ -159,6 +159,7 @@ fn seam_for(session: &NetworkSession, net: &Arc<Net>) -> Arc<Seam> {
         list: Mutex::new(Some(Vec::new())),
         list_height: Mutex::new(100),
         shared_mined: Mutex::default(),
+        shared_locked: Mutex::default(),
     });
     session.masternodes.set_protx_seam(Some(seam.clone()));
     seam
@@ -490,6 +491,12 @@ impl Fx {
             .lock()
             .unwrap()
             .push((txid, tx, height));
+    }
+
+    /// `tx` in a ChainLocked block at `height` of every wallet's history.
+    fn mine_locked(&self, tx: Transaction, height: u32) {
+        self.seam.shared_locked.lock().unwrap().insert(tx.txid());
+        self.mine(tx, height);
     }
 
     fn tip(&self, height: u32) {

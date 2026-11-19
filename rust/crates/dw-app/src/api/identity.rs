@@ -40,7 +40,9 @@ use self::shielded::{
     MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
     ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding,
 };
-use self::startup::{DashPayStatus, DashPaySyncStatus, QuorumSource, SyncPassReport};
+use self::startup::{
+    DashPayStatus, DashPaySyncStatus, ProtocolCompatibility, QuorumSource, SyncPassReport,
+};
 use self::unfinished::{LockFinish, LockKind, UnfinishedTransfers};
 use crate::api::send::BroadcastOutcome;
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
@@ -668,6 +670,13 @@ commands! {
     #[facade("DashPay::sync_status")]
     fn dashpay_sync_status(state, wallet_id: String) -> DashPaySyncStatus {
         Ok(state.dashpay(&wallet_id).await?.sync_status()?.into())
+    }
+
+    /// Platform protocol compatibility of the open network (the Home advisory
+    /// banner when `networkVersion > supportedVersion`).
+    #[facade("NetworkSession::protocol_compatibility")]
+    fn protocol_compatibility(state) -> ProtocolCompatibility {
+        Ok(state.session().await?.protocol_compatibility()?.into())
     }
 
     /// Where Platform proofs get their quorum keys now (Tools ▸ Information).
