@@ -43,6 +43,7 @@ test.describe("Send from Shielded: Max", () => {
     await expect(page.getByTestId("shielded-amount")).toHaveValue("1.24980000");
     expect(await callsOf(page, "shielded_send_quote")).toBe(2);
     await expect(page.getByTestId("shielded-amount-problem")).toHaveText("");
+    await expect(page.getByTestId("shielded-next")).toBeEnabled();
   }
 
   for (const theme of THEMES) {
