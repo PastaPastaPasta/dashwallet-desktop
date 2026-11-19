@@ -186,27 +186,23 @@ pub(crate) async fn transition(
 }
 
 /// C6-7 after the broadcast: the nonce read again, at least as recent as
-/// `height`, until it decides, at most [`READ_BACK_TRIES`] times. `None`:
-/// a read that recent shows Drive still takes `k`; every read older
-/// decides nothing (`platform.unavailable`).
+/// `height`, until it decides, at most [`READ_BACK_TRIES`] times.
 async fn decide(
     net: &impl WithdrawNet,
     signed: &[Signed],
     (id, k): (Identifier, u64),
     height: u64,
 ) -> Result<Option<Signed>, PlatformError> {
-    let mut read = Err(PlatformError::Unavailable);
     for _ in 0..READ_BACK_TRIES {
         let (state, at) = net.nonce_state(id).await?;
         if at < height {
             continue;
         }
-        read = executed(net, signed, (id, k), (state, at)).await;
-        if !matches!(read, Ok(None)) {
-            break;
+        if let Some(s) = executed(net, signed, (id, k), (state, at)).await? {
+            return Ok(Some(s));
         }
     }
-    read
+    Ok(None)
 }
 
 /// `DashPay::withdraw_to_platform` (module doc).
@@ -265,8 +261,8 @@ pub(crate) async fn transfer(
     let rivals = (nonces.unconfirmed(id))
         .filter(|(k, _)| *k == nonce)
         .map_or_else(|| vec![this], |(_, all)| all);
-    match (decide(net, &rivals, (id, nonce), height).await, answer) {
-        (Ok(Some(s)), answer) if s == this => {
+    match decide(net, &rivals, (id, nonce), height).await {
+        Ok(Some(s)) if s == this => {
             nonces.executed(id, nonce);
             Ok(WithdrawToPlatformOutcome {
                 credits,
@@ -275,17 +271,11 @@ pub(crate) async fn transfer(
                 transition,
             })
         }
-        (Ok(Some(s)), _) => {
+        Ok(Some(s)) => {
             nonces.executed(id, nonce);
             Err(landed_error(s))
         }
-        // R1: a definitive refusal while Drive still takes the nonce clears
-        // the transfer's hold; the next write signs at the same nonce.
-        (Ok(None), Err(Unsent::Refused(e))) => {
-            nonces.refused(id, nonce, this);
-            Err(e.into())
-        }
-        (read, answer) => {
+        read => {
             if let Err(e) = read {
                 tracing::info!("reading the transfer's nonce back: {e}");
             }

@@ -252,9 +252,12 @@ fn the_document_id_is_drives() {
 /// What `broadcast` answers.
 pub(crate) enum Answer {
     /// It executes: Platform's proved new balance, the balance less the
-    /// amount and `fee`; Platform's refusal when Drive refuses it.
+    /// amount and `fee`; Platform's refusal when Drive refuses it, which
+    /// for a transfer is CheckTx's and reaches the engine as no answer
+    /// (`settled`).
     Applied { fee: u64 },
-    /// Refused at execution: the nonce is spent.
+    /// Refused at execution: the nonce is spent for a withdrawal; a
+    /// transfer's stays free (one node's unproved answer).
     Refused,
     /// No answer, and it never executes.
     Unknown,
@@ -484,14 +487,16 @@ impl WithdrawNet for FakeWithdrawals {
             })
         };
         let unknown = || Unsent::Unknown(PlatformError::Timeout);
+        let transfer = matches!(
+            transition,
+            StateTransition::IdentityCreditTransferToAddresses(_)
+        );
         match *self.answer.lock().unwrap() {
             Answer::Applied { fee } if self.execute(&transition, fee) => Ok(self.balance_now()),
+            Answer::Applied { .. } if transfer => Err(unknown()),
             Answer::Applied { .. } => Err(refused()),
             Answer::Refused => {
-                if !matches!(
-                    transition,
-                    StateTransition::IdentityCreditTransferToAddresses(_)
-                ) {
+                if !transfer {
                     self.used.lock().unwrap().insert(nonce_of(&transition));
                 }
                 Err(refused())

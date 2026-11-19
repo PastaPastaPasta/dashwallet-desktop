@@ -371,21 +371,45 @@ fn a_shared_nonce_is_decided_by_the_withdrawal_document() {
     }
 }
 
-/// R1: a transfer Drive refused while it still takes the nonce no longer
-/// holds the route; the next transfer is quoted and signs at that nonce.
+/// C6-8: a failed transfer holds the route. Drive's CheckTx refusal (here
+/// a fee above the balance) reaches the engine as no answer, and a node's
+/// refusal with the nonce still free is unproved: either way every later
+/// transfer is `credits.move_pending` naming it, its grant kept. A
+/// withdrawal that executes at that nonce unlocks it.
 #[test]
-fn a_refused_transfer_frees_its_nonce() {
-    let w = World::new(10 * DASH);
-    w.net.answer(Answer::Applied { fee: 100 * DASH });
-    let refused = w.send(DASH).unwrap_err();
-    assert_eq!(refused.code(), "platform.insufficient_credits");
-    assert_eq!(w.executed(), 0);
-    let k = nonce_of(&w.net.sent()[0]);
+fn a_failed_transfer_keeps_the_route_held() {
+    for answer in [Answer::Applied { fee: 100 * DASH }, Answer::Refused] {
+        let w = World::new(10 * DASH);
+        let checktx = matches!(answer, Answer::Applied { .. });
+        w.net.answer(answer);
+        let failed = w.send(DASH).unwrap_err();
+        let t = w.net.sent()[0].clone();
+        if checktx {
+            assert_eq!(failed, unknown(&t));
+        } else {
+            assert_eq!(failed.code(), "platform.insufficient_credits");
+        }
+        assert_eq!(w.executed(), 0);
 
-    w.net.answer(Answer::Applied { fee: TRANSFER_FEE });
-    w.send(DASH).unwrap();
-    assert_eq!(nonce_of(&w.net.sent()[1]), k);
-    assert_eq!(w.executed(), 1);
+        w.net.answer(Answer::Applied { fee: TRANSFER_FEE });
+        let grant = w.f.grant(4 * DASH);
+        let held = w
+            .transfer_to(&w.own(), WithdrawAmount::Credits { credits: DASH }, &grant)
+            .unwrap_err();
+        assert_eq!(held, CreditsError::MovePending { id: hash(&t) });
+        assert!(w.f.unused(&grant));
+        assert_eq!(w.net.sent().len(), 1);
+
+        w.withdraw(
+            WithdrawAmount::Credits { credits: DASH },
+            &w.f.grant(4 * DASH),
+        )
+        .unwrap();
+        assert_eq!(nonce_of(&w.net.sent()[1]), nonce_of(&t));
+        w.send(DASH).unwrap();
+        assert_eq!(nonce_of(&w.net.sent()[2]), nonce_of(&t) + 1);
+        assert_eq!((w.net.landed(), w.executed()), (1, 1));
+    }
 }
 
 /// C6-7: an `Ok` from the broadcast is not the transfer executed; with its
