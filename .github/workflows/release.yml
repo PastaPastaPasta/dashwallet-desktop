@@ -89,6 +89,7 @@ jobs:
         with:
           persist-credentials: false
       - run: ci/github/release-publish-test.sh
+      - run: ci/github/linux-host-deps-test.sh
 
   # Read-only: what this run builds and whether it may publish. Gates the builds (docs-only branch and
   # pull-request changes skip them) and the publish job (a release tag outside main never starts it).
