@@ -20,8 +20,8 @@ mkdir -p "$work" "$(dirname "$out")"
 cp "$deb" "$dir/dash-wallet.deb"
 trap 'rm -f "$dir/dash-wallet.deb"' EXIT
 
-flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 build() {
+  flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
   flatpak-builder --user --install-deps-from=flathub --disable-rofiles-fuse --force-clean \
     --state-dir="$work/state" --repo="$work/repo" "$work/build" "$dir/$app_id.yml"
 }

@@ -39,7 +39,7 @@
 # the pushed commit, so it cannot stop a tag whose workflow file was itself edited; that needs an
 # environment deployment policy or a tag ruleset in the repository settings.) Dry-run tags
 # (v0.0.0-rel<N>) build only and never start the publish job.
-# `decide` also skips the three build jobs for a branch push or pull request that changes only docs
+# `decide` also skips the build jobs for a branch push or pull request that changes only docs
 # and files no bundle is built from; a new push cancels that ref's running build (never main or tags).
 # Pull requests run script-tests and decide only: the bundles build on pushes to main, tags, the
 # 02:47 UTC schedule (on main; builds only, never publishes) and dispatches (`gh workflow run release.yml --ref <branch>` builds them for a branch).

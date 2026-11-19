@@ -251,17 +251,27 @@ On a push to `main`, the 02:47 UTC schedule, a dispatch and a tag `v*` (pull req
 | macOS | `macos-latest` | `pnpm tauri build --target universal-apple-darwin --bundles dmg`: `macos-universal.dmg`, ad-hoc signed (`signingIdentity "-"` in `tauri.conf.json`), not notarized | 45 min (build 42) |
 | Windows | `windows-latest` | `pnpm tauri build --bundles nsis`: `windows-x64-setup.exe`, unsigned | 33 min (build 28) |
 | Linux | `ubuntu-24.04` | `pnpm tauri build --bundles appimage,deb`: `linux-x86_64.AppImage`, `linux-amd64.deb` | 16 min (build 13) |
-| Linux Flatpak | `ubuntu-24.04` | `flatpak-builder` from the linux job's `.deb` (`packaging/flatpak`, `ci/github/flatpak-bundle.sh`): `linux-x86_64.flatpak`; a `cmp` checks its binary is the `.deb`'s, then `flatpak run` takes the launch check | |
+| Linux Flatpak | `ubuntu-24.04` | `flatpak-builder` from the linux job's `.deb` (`packaging/flatpak`, `ci/github/flatpak-bundle.sh`): `linux-x86_64.flatpak`; a `cmp` checks its binary is the `.deb`'s, then `flatpak run` takes the launch check | 12 min (apt 9, build 2) |
 
 Each job then launches the built app for 30 s on an empty `--datadir` with `--network regtest --no-platform
 --dapi https://127.0.0.1:1 --window-size 960x640` (nothing syncs, nothing leaves the runner), fails if the
-process dies, and uploads `launch-<os>`. Linux runs the AppImage under Xvfb (`linux-release-launch.sh`);
+process dies, and uploads `launch-<os>`. Linux runs the AppImage under Xvfb (`linux-release-launch.sh`); the Flatpak job runs
+`flatpak run` with the same script, without `--datadir` (its data dir is under the private HOME);
 Windows silently installs the NSIS setup into a private directory and launches the installed exe
 (`windows-launch-screenshot.ps1`); macOS mounts the staged dmg and launches the app copied out of it
 (`macos-launch-screenshot.sh`). **Only the Linux screenshot shows the app.** On the hosted macOS and Windows
 runners the screen capture is black or shows the runner console although the window exists (a real Windows 11
 VM renders the same build), so there the check is "the process is alive after 30 s", with the window title
 logged; real screenshots of those two come from a person at release time.
+
+Flatpak limits (PK-01):
+
+- The sandbox has no access to the system secret store (no `--talk-name=org.freedesktop.secrets`), so a wallet in
+  the Flatpak needs a passphrase. The secret-store option fails closed, and onboarding asks for a passphrase.
+- `checksums` waits on the Flatpak job, so a Flathub outage or a slow runtime pull holds up every main and tag
+  publish. `flatpak-bundle.sh` retries once.
+- `packaging/flatpak` is a self-hosted manifest and is not on Flathub. Submitting it needs a `url` + `sha256`
+  source (the tagged `.deb`), `<screenshots>` in the metainfo and a `vcs-browser` URL.
 
 The `checksums` job downloads the four `dist-*` artifacts (five bundles), writes `SHA256SUMS` in `sha256sum` format
 (file names only), checks it with `sha256sum -c` and uploads everything as `release-v<version>`.
