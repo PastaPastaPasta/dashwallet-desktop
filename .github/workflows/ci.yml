@@ -356,9 +356,10 @@ jobs:
       - name: Linux packages (WebKitGTK, its WebDriver, Xvfb)
         working-directory: .
         run: ci/github/linux-host-deps.sh tauri
+      # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
@@ -424,7 +425,14 @@ jobs:
         run: ci/github/linux-host-deps.sh tauri
       - name: protoc
         run: ci/github/install-protoc.sh
+      # On Linux only that toolchain, as in rust-linux, whose cache the Linux leg restores; the
+      # macOS and Windows caches are saved by jobs that keep the image's stable.
+      - name: Rust toolchain (rust-toolchain.toml), Linux
+        if: ${{ matrix.os == 'linux' }}
+        working-directory: rust
+        run: ../ci/github/rust-toolchain-only.sh
       - name: Rust toolchain (rust-toolchain.toml)
+        if: ${{ matrix.os != 'linux' }}
         working-directory: rust
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -494,9 +502,10 @@ jobs:
         run: ci/github/linux-swiftly.sh 6.3.3
       - name: protoc
         run: ci/github/install-protoc.sh
+      # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target

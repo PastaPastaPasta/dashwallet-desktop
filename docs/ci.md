@@ -129,8 +129,9 @@ it exits early. They run only on CI runners and in containers, never on a develo
 
 **Caching.** `Swatinem/rust-cache` caches `~/.cargo` and the dependency part of `rust/target` per job,
 keyed on `Cargo.lock` and the toolchain. rust-cache hashes `rustc -vV` of every installed toolchain into the
-key, so the Linux Rust jobs uninstall every toolchain but `rust/rust-toolchain.toml`'s
-(`ci/github/rust-toolchain-only.sh`): with the image's stable left in, a runner image that bumps it moves
+key, so every Linux job that restores the `ci-Linux` cache (Rust lint, Rust tests, Tauri E2E, the Linux
+deep-links leg, Swift + UI T0 and `release.yml`'s Linux build) uninstalls every toolchain but
+`rust/rust-toolchain.toml`'s (`ci/github/rust-toolchain-only.sh`): with the image's stable left in, a runner image that bumps it moves
 every job to a key that nothing has saved yet. `actions/cache` caches SwiftPM's repository cache, keyed on
 `Package.resolved`. A cold run builds the whole platform graph: it takes about 25–90 minutes per job,
 depending on the job and the runner (about 45 for `Rust tests (Linux)`, which takes under 20 warm), and a warm one much less.

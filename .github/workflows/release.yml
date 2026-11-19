@@ -292,9 +292,10 @@ jobs:
         run: ci/github/install-protoc.sh
       - name: Linux packages (WebKitGTK, Xvfb, ImageMagick)
         run: ci/github/linux-host-deps.sh tauri
+      # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
