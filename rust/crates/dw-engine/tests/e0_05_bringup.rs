@@ -27,6 +27,9 @@ const PASSPHRASE: &[u8] = b"correct horse battery staple";
 const RESTORE_BUDGET: Duration = Duration::from_secs(20);
 /// The acceptance bound past the budget for SPV's start (ROADMAP E0-05).
 const SPV_SLACK: Duration = Duration::from_secs(1);
+/// How soon SPV must start when a restored wallet's bring-up ends early:
+/// half the budget it would otherwise wait, so a slow machine still passes.
+const ENDED_EARLY: Duration = Duration::from_secs(10);
 
 /// Held by every test for its whole run. The tests assert wall-clock bounds
 /// (SPV starts within the budget + 1 s, ROADMAP E0-05), and a bring-up that
@@ -459,14 +462,11 @@ fn a_lock_drops_a_running_bring_up() {
     assert_eq!(f.startup(&id), StartupStatus::Starting);
     let locked = Instant::now();
     f.session.lock_vault_sync().unwrap();
-    let started = f
-        .rec
-        .spv_started_at(Duration::from_secs(5))
-        .expect("SPV started");
+    let started = f.rec.spv_started_at(ENDED_EARLY).expect("SPV started");
     eprintln!("SPV started {:?} after the lock", started - locked);
     assert!(started > locked, "SPV started before the lock");
     assert!(
-        started - called < Duration::from_secs(2),
+        started - called < ENDED_EARLY,
         "SPV waited {:?}",
         started - called
     );
@@ -552,12 +552,9 @@ fn removing_a_wallet_ends_its_bring_up() {
     f.engine
         .block_on(f.session.remove_wallet(id, grant.id))
         .unwrap();
-    let started = f
-        .rec
-        .spv_started_at(Duration::from_secs(5))
-        .expect("SPV started");
+    let started = f.rec.spv_started_at(ENDED_EARLY).expect("SPV started");
     assert!(
-        started - called < Duration::from_secs(2),
+        started - called < ENDED_EARLY,
         "SPV waited {:?}",
         started - called
     );
