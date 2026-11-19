@@ -72,8 +72,8 @@ to a 1.0.x release unless a row says otherwise; nothing on the never-cut list is
 | Creating invitations (X3) and its storage patch, the Home claim card, scanning an invitation's QR code | lane I | the whole lane; claiming an invitation from a link or pasted text stays |
 | MP-04 tax categories, MP-06 phrase repair, MP-07 sweep and BIP38, MP-05 BIP70 | lanes G, K | the 0.4 and 0.5 parity items |
 | Spend unconfirmed change, per-transaction notifications, lock-screen receive and scan, log export, the support path, the backup reminder, transaction notes on Platform | lanes G, K | small parity items after the cut ones |
-| CoinJoin sleep prevention and start on login | lane F | |
-| Tor/SOCKS5 | lane M | |
+| CoinJoin sleep prevention and start on login | lane F | an extra cut, beyond ROADMAP §6's order |
+| Tor/SOCKS5 | lane M | an extra cut, beyond ROADMAP §6's order |
 
 ROADMAP §6's cuts 3, 4 and 7 do not apply, because those shipped: X1a; DP6-01 and DP6-02 (the Identities page
 and withdrawing an identity's credits to Core; withdrawing to one's own Platform address is a lane C item, not
@@ -136,7 +136,7 @@ No longer on this list: partner credentials and Explore database access (lane L 
   applies, then lanes J, L and the 0.4 parity items move to a 1.0.x release. The never-cut list stands.
   This was applied on 2026-11-19 (above). The next cuts, if the core slips again: PSBT under Advanced, mixed-send
   warnings, CoinJoin V24, then the later items of lane C.
-- **Review and CI throughput.** A full CI run takes about 90 minutes on macOS. With 15 lanes the runners
+- **Review and CI throughput.** A full CI run takes about 90 minutes on macOS. With 12 lanes active the runners
   queue; engine-only and renderer-only pull requests should not wait on each other's jobs.
 - **Security review on new code.** H-01 runs 11-27 → 11-29 over code written the same fortnight. Its
   findings land before the release candidate or the affected feature ships disabled.
