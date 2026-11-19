@@ -46,7 +46,9 @@ pub struct UiSettings {
     /// route (Governance, Username voting) are hidden until it is on (MG-00
     /// D1, D2; the 0.1 release plan).
     pub show_masternodes: bool,
-    /// The Masternodes page's open tab (MG-10 D1).
+    /// The Masternodes page's open tab (MG-10 D1); a tab this build doesn't
+    /// know opens the default.
+    #[serde(deserialize_with = "MasternodesTab::lenient")]
     pub masternodes_tab: MasternodesTab,
     /// The 0.1 pre-release notice was dismissed: it is shown once, on the
     /// first run.
@@ -66,6 +68,13 @@ impl Default for UiSettings {
             masternodes_tab: MasternodesTab::MyMasternodes,
             pre_release_notice_dismissed: false,
         }
+    }
+}
+
+impl MasternodesTab {
+    fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        Ok(Self::deserialize(value).unwrap_or_default())
     }
 }
 
@@ -182,6 +191,18 @@ mod tests {
             read(dir.path()).masternodes_tab,
             MasternodesTab::MyMasternodes
         );
+    }
+
+    #[test]
+    fn an_unknown_tab_opens_my_masternodes_and_keeps_the_rest() {
+        let dir = root();
+        for tab in [r#""keys""#, "7", "null"] {
+            let file = format!(r#"{{"showMasternodes":true,"masternodesTab":{tab}}}"#);
+            std::fs::write(path(dir.path()), file).unwrap();
+            let s = read(dir.path());
+            assert_eq!(s.masternodes_tab, MasternodesTab::MyMasternodes);
+            assert!(s.show_masternodes);
+        }
     }
 
     #[test]

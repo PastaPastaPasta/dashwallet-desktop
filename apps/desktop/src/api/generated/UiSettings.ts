@@ -39,7 +39,8 @@ subtractFeeByDefault: boolean,
  */
 showMasternodes: boolean,
 /**
- * The Masternodes page's open tab (MG-10 D1).
+ * The Masternodes page's open tab (MG-10 D1); a tab this build doesn't
+ * know opens the default.
  */
 masternodesTab: MasternodesTab,
 /**
