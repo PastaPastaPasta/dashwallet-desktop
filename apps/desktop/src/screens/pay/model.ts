@@ -145,22 +145,40 @@ export function addressProblem(c: AddressClass): string | null {
 
 export type Field = "address" | "amount" | null;
 
-/** What a wallet that mixes has beyond what a normal payment spends: fully mixed coins, and coins
- * mixing has not finished. Both stay out of a normal payment (the 0.1.0 release notes). */
+/** What a wallet that mixes has beyond what a normal payment spends. */
 export interface MixHints {
+  /** Fully mixed coins, spendable with Fully mixed funds only. */
   mixed: boolean;
+  /** CoinJoin-account coins mixing here can still finish. */
   mixing: boolean;
+  /** Denominations this wallet will not mix further, including coins restored from Dash Core. */
+  stalled: boolean;
 }
 
 /** The "Available" hint's label for the coin source it counts. */
 export const availableLabel = (coins: CoinChoice) => (coins === "mixed" ? "Available (fully mixed)" : coins === "selected" ? "Available (selected coins)" : "Available");
 
 /** The amount is over what a normal payment spends, on a wallet with mixed or mixing coins. */
-function overNormalFunds(spendable: string, { mixed, mixing }: MixHints): string {
-  const text = `The amount exceeds the ${spendable} a normal payment can spend.`;
-  if (!mixed) return `${text} Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).`;
-  const where = `${text} To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).`;
-  return mixing ? `${where} Coins still being mixed can be spent that way once mixing finishes.` : where;
+function overNormalFunds(spendable: string, { mixed, mixing, stalled }: MixHints): string {
+  const parts = [`The amount exceeds the ${spendable} a normal payment can spend.`];
+  if (mixed) parts.push("To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).");
+  if (mixing) {
+    parts.push(
+      mixed
+        ? "Coins still being mixed can be spent that way once mixing finishes."
+        : "Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).",
+    );
+  }
+  if (stalled) {
+    parts.push(
+      mixed
+        ? "Denominations this wallet cannot mix use Selected coins there, which can link your coins."
+        : mixing
+          ? "Denominations this wallet cannot mix use Advanced: coins, fee and change ▸ Selected coins, which can link your coins."
+          : "Denominations this wallet cannot mix stay apart; choose Advanced: coins, fee and change ▸ Selected coins to spend them, which can link your coins.",
+    );
+  }
+  return parts.join(" ");
 }
 
 /** dash-qt's send-dialog text for a refusal (`SendCoinsDialog::processSendCoinsReturn`), and the
@@ -185,7 +203,7 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
     case "send.amount_too_small_after_fee":
       return { text: "The amount is too small to pay its share of the fee.", field: "amount" };
     case "send.amount_exceeds_balance":
-      return { text: e.data?.kind === "duffs" && mix && (mix.mixed || mix.mixing) ? overNormalFunds(amount(e.data.available), mix) : "The amount exceeds your balance.", field: "amount" };
+      return { text: e.data?.kind === "duffs" && mix && (mix.mixed || mix.mixing || mix.stalled) ? overNormalFunds(amount(e.data.available), mix) : "The amount exceeds your balance.", field: "amount" };
     case "send.amount_with_fee_exceeds_balance": {
       const fee = e.data?.kind === "fee" ? e.data.fee : null;
       return {

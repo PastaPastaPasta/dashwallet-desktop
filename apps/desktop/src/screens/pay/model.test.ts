@@ -115,18 +115,25 @@ describe("the engine's refusals", () => {
     const base = "The amount exceeds the 0.65276809 tDASH a normal payment can spend.";
     const where = "To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).";
     // No mixing or mixed coins, or another source: the refusal keeps its plain text.
+    const none = { mixed: false, mixing: false, stalled: false };
+    const stalledAlone =
+      "Denominations this wallet cannot mix stay apart; choose Advanced: coins, fee and change ▸ Selected coins to spend them, which can link your coins.";
+    const stalledAfterMixed = "Denominations this wallet cannot mix use Selected coins there, which can link your coins.";
+    const stalledAfterMixing =
+      "Denominations this wallet cannot mix use Advanced: coins, fee and change ▸ Selected coins, which can link your coins.";
+    const finishingAlone =
+      "Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).";
+    const finishingBeside = "Coins still being mixed can be spent that way once mixing finishes.";
     expect(sendErrorText(over, "test", "DASH")?.text).toBe(plain);
-    expect(sendErrorText(over, "test", "DASH", { mixed: false, mixing: false })?.text).toBe(plain);
-    expect(sendErrorText(over, "test", "DASH", { mixed: true, mixing: false })).toEqual({ text: `${base} ${where}`, field: "amount" });
-    expect(sendErrorText(over, "test", "DASH", { mixed: true, mixing: true })?.text).toBe(
-      `${base} ${where} Coins still being mixed can be spent that way once mixing finishes.`,
-    );
-    // Only mixing coins: no pointer to switch now, since nothing is fully mixed yet; they stay apart.
-    expect(sendErrorText(over, "test", "DASH", { mixed: false, mixing: true })?.text).toBe(
-      `${base} Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).`,
-    );
+    expect(sendErrorText(over, "test", "DASH", none)?.text).toBe(plain);
+    expect(sendErrorText(over, "test", "DASH", { ...none, mixed: true })).toEqual({ text: `${base} ${where}`, field: "amount" });
+    expect(sendErrorText(over, "test", "DASH", { ...none, mixed: true, mixing: true })?.text).toBe(`${base} ${where} ${finishingBeside}`);
+    expect(sendErrorText(over, "test", "DASH", { ...none, mixing: true })?.text).toBe(`${base} ${finishingAlone}`);
+    expect(sendErrorText(over, "test", "DASH", { ...none, stalled: true })?.text).toBe(`${base} ${stalledAlone}`);
+    expect(sendErrorText(over, "test", "DASH", { ...none, mixed: true, stalled: true })?.text).toBe(`${base} ${where} ${stalledAfterMixed}`);
+    expect(sendErrorText(over, "test", "DASH", { ...none, mixing: true, stalled: true })?.text).toBe(`${base} ${finishingAlone} ${stalledAfterMixing}`);
     // Without the engine's figure there is nothing to name.
-    expect(sendErrorText(err("send.amount_exceeds_balance"), "test", "DASH", { mixed: true, mixing: false })?.text).toBe(plain);
+    expect(sendErrorText(err("send.amount_exceeds_balance"), "test", "DASH", { ...none, mixed: true })?.text).toBe(plain);
   });
 
   it("labels Available with the coin source it counts", () => {

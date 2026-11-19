@@ -694,6 +694,7 @@ struct Resolved {
     /// Funded by fully mixed CoinJoin coins (no change; signed by the
     /// engine, not key-wallet's builder, which would add change).
     coinjoin: bool,
+    fully_mixed_only: bool,
     /// A contact payment's pair (DP3-01): `recipients[0]` pays it.
     contact: Option<Pair>,
     /// The draft's `OP_RETURN` output with a value (MG-06 D1): the
@@ -831,17 +832,7 @@ impl NetworkSession {
         }
         let wallet = self.wallet(&fence.wallet_id()).await?;
         let snapshot = self.coin_snapshot(fence, &wallet).await?;
-        let mut coins = candidates(&snapshot, source, exempt, coinjoin_exempt)?;
-        if *source == CoinSource::Any {
-            let state = wallet.state().await;
-            let denominated: HashSet<OutPoint> = snapshot
-                .coins
-                .iter()
-                .filter(|c| crate::coinjoin::counted_as_denominated(&state.core_wallet, c))
-                .map(|c| c.utxo.outpoint)
-                .collect();
-            coins.retain(|u| !denominated.contains(&u.outpoint));
-        }
+        let coins = candidates(&snapshot, source, exempt, coinjoin_exempt)?;
         Ok((coins, snapshot.height))
     }
 
@@ -1014,7 +1005,8 @@ impl TxDraft {
             self.session
                 .check_payment_lock(self.wallet_id, pair, None)?;
         }
-        let coinjoin = state.source == CoinSource::FullyMixedOnly || self.coinjoin_exempt;
+        let fully_mixed_only = state.source == CoinSource::FullyMixedOnly;
+        let coinjoin = fully_mixed_only || self.coinjoin_exempt;
         if coinjoin && !matches!(state.change, ChangeTarget::Auto) {
             return Err(EngineError::InvalidArgument(
                 "the CoinJoin source pays its change as fee; only the automatic change policy applies"
@@ -1066,6 +1058,7 @@ impl TxDraft {
             fee_rate: state.fee,
             height,
             coinjoin,
+            fully_mixed_only,
             contact: state.contact,
             data: state.data,
         };
@@ -1365,6 +1358,7 @@ impl TxDraft {
                 owner,
                 signed: Mutex::new(None),
                 mixed: Some(tx),
+                coinjoin_send: r.fully_mixed_only && r.data.is_none(),
                 phase: Mutex::new(Phase::Pending),
                 attempts: tokio::sync::Mutex::new(()),
                 lease: lease.map(|l| (l, artifact)),
@@ -1431,6 +1425,7 @@ impl TxDraft {
             owner,
             signed: Mutex::new(Some(Arc::new(signed))),
             mixed: None,
+            coinjoin_send: false,
             phase: Mutex::new(Phase::Pending),
             attempts: tokio::sync::Mutex::new(()),
             lease: lease.map(|l| (l, artifact)),
@@ -1473,6 +1468,7 @@ impl TxDraft {
             owner,
             signed: Mutex::new(None),
             mixed: Some(tx),
+            coinjoin_send: false,
             phase: Mutex::new(if maybe_out {
                 Phase::Unknown
             } else {
@@ -2052,6 +2048,8 @@ enum Phase {
     Released,
 }
 
+pub(crate) const COINJOIN_SEND_PREFIX: &str = "coinjoin.send.";
+
 /// A signed transaction with its inputs reserved. Only
 /// [`TxDraft::broadcast`] sends it; [`TxDraft::abandon`] or dropping it
 /// while pending releases the inputs.
@@ -2069,6 +2067,7 @@ pub struct PreparedTx {
     /// A CoinJoin-page payment (QT-051), signed by the engine: no
     /// key-wallet reservation, only the engine's pending spends.
     mixed: Option<Transaction>,
+    coinjoin_send: bool,
     phase: Mutex<Phase>,
     /// A contact payment's broadcasts, one at a time through the contact's
     /// settlement: a repeat waits for the attempt before it (DP3-01 D24).
@@ -2220,9 +2219,13 @@ impl NetworkSession {
             .map(|((a, l, _), mine)| (a.clone(), l.clone(), mine))
             .collect();
         let txid = prepared.summary.txid.clone();
+        let coinjoin_send = prepared.coinjoin_send;
         let id = wallet_id.to_string();
         self.appdb_op(move |db| {
             let now = now_secs();
+            if coinjoin_send {
+                db.set_setting(&id, &format!("{COINJOIN_SEND_PREFIX}{txid}"), Some("1"))?;
+            }
             if let Some(m) = &message {
                 db.set_tx_message(&id, &txid, Some(m), now)?;
             }
