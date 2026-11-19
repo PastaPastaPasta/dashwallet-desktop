@@ -35,10 +35,15 @@ name: CI
 
 # A branch is checked through its pull request only: a push trigger for it as well ran every
 # job twice, and the hosted macOS runners are the scarce ones.
+# Pull requests run the Linux checks only (lint, rust-linux, desktop-renderer, ui-playwright). The
+# macOS, Windows, deep-link, E2E and Swift jobs run on pushes to main, nightly and on a dispatch
+# (`gh workflow run ci.yml --ref <branch>` runs them all for a branch); docs/ci.md, "Triggers".
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "47 2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -262,6 +267,7 @@ jobs:
 
   e2e-tauri-linux:
     name: Tauri E2E (tauri-driver, Linux)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     defaults:
@@ -321,6 +327,7 @@ jobs:
 
   deep-links:
     name: Deep links (${{ matrix.os }})
+    if: ${{ github.event_name != 'pull_request' }}
     strategy:
       fail-fast: false
       matrix:
@@ -403,6 +410,7 @@ jobs:
 
   swift-linux:
     name: Swift + UI T0 (Linux)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -450,6 +458,7 @@ jobs:
 
   macos:
     name: macOS (engine, Swift, app)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: macos-latest
     timeout-minutes: 150
     steps:
@@ -526,6 +535,7 @@ jobs:
 
   windows:
     name: Windows (engine)
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: windows-latest
     timeout-minutes: 150
     env:
@@ -572,6 +582,7 @@ jobs:
   # bundle, the headless Swift suites, and dash-wallet launched with a screenshot.
   windows-swift:
     name: Windows Swift (known gap, non-blocking)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     runs-on: windows-latest
     timeout-minutes: 150
     continue-on-error: true
