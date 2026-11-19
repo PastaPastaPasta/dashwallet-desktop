@@ -57,7 +57,7 @@ const select = (contact: string) => ui.set({ contact, addContact: null, contactP
 /** Closes the slot; focus goes back to the header's Add contact (D15). */
 function close() {
   ui.set({ addContact: null, contactPrefill: null });
-  requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="contacts-add"]')?.focus());
+  requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-testid="contacts-add"], [data-testid="contacts-empty-search"]')?.focus());
 }
 
 function focusContact(target: HTMLElement | null) {
