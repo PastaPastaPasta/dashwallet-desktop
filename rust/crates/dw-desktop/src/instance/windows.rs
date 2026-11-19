@@ -1,9 +1,6 @@
 //! Windows single instance: the named mutex `Local\<key>` decides who is
 //! primary (session-local); the primary serves `\\.\pipe\<key>-<user>`.
 //!
-//! UNVERIFIED: written against the Win32 API (windows-sys 0.59) but not
-//! built or run on Windows yet; no Windows runner exists (DESIGN.md R2 G1).
-//!
 //! The first pipe instance is created with `FILE_FLAG_FIRST_PIPE_INSTANCE`,
 //! so a process that squatted the name makes `start` fail instead of
 //! receiving our arguments; `PIPE_REJECT_REMOTE_CLIENTS` keeps it local.

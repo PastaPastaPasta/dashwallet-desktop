@@ -1,16 +1,14 @@
 //! Per-user URI scheme registration for unpackaged builds (QT-150,
 //! IOS-048). Packages register at install time (macOS `CFBundleURLTypes`,
-//! Flatpak and the MSI); this covers the Linux tarball and a Windows build
-//! run from a folder.
+//! Flatpak and the Windows NSIS installer); this covers the Linux tarball.
 //!
 //! - Linux: `$XDG_DATA_HOME/applications/<app_id>.desktop` with
 //!   `MimeType=x-scheme-handler/<scheme>;…` and `Exec=<exec> %u`, the
 //!   defaults in `$XDG_CONFIG_HOME/mimeapps.list`, then
 //!   `update-desktop-database` when it is installed.
-//! - Windows: `HKCU\Software\Classes\<scheme>` with `URL Protocol` and
-//!   `shell\open\command = "<exec>" "%1"`, written with `reg.exe`.
-//!   UNVERIFIED: not run on Windows yet.
-//! - macOS: `Unsupported` (the bundle's Info.plist registers them).
+//! - Windows and macOS: `Unsupported`. There is no portable Windows build;
+//!   the NSIS installer registers the schemes, as the bundle's Info.plist
+//!   does on macOS.
 
 use crate::DesktopError;
 
@@ -54,15 +52,11 @@ pub fn register(app_id: &str, exec_path: &str, schemes: &[String]) -> Result<(),
         linux::update_database(&apps);
         Ok(())
     }
-    #[cfg(windows)]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = app_id;
-        windows::register(exec_path, schemes)
-    }
-    #[cfg(not(any(target_os = "linux", windows)))]
-    {
         Err(DesktopError::Unsupported(
-            "URI scheme registration (the app bundle's Info.plist registers them)".into(),
+            "URI scheme registration (the installer or app bundle registers them)".into(),
         ))
     }
 }
@@ -126,45 +120,6 @@ pub(crate) mod linux {
     }
 }
 
-#[cfg(windows)]
-mod windows {
-    use std::process::Command;
-
-    use crate::DesktopError;
-    use crate::autostart::windows_command_line;
-
-    fn reg_add(key: &str, args: &[&str]) -> Result<(), DesktopError> {
-        let output = Command::new("reg")
-            .arg("add")
-            .arg(key)
-            .args(args)
-            .arg("/f")
-            .output()?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(DesktopError::OsError(format!(
-                "reg.exe add {key} failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )))
-        }
-    }
-
-    pub(crate) fn register(exec_path: &str, schemes: &[String]) -> Result<(), DesktopError> {
-        let command = format!("{} \"%1\"", windows_command_line(&[exec_path]));
-        for scheme in schemes {
-            let key = format!(r"HKCU\Software\Classes\{scheme}");
-            reg_add(&key, &["/ve", "/d", &format!("URL:{scheme} Protocol")])?;
-            reg_add(&key, &["/v", "URL Protocol", "/d", ""])?;
-            reg_add(
-                &format!(r"{key}\shell\open\command"),
-                &["/ve", "/d", &command],
-            )?;
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,11 +170,16 @@ mod tests {
         ));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(not(target_os = "linux"))]
     #[test]
-    fn test_QT_150_macos_is_unsupported() {
+    fn test_QT_150_unsupported_off_linux() {
+        let exe = std::env::current_exe().unwrap();
         assert!(matches!(
-            register("org.dash.DashWallet", "/x", &["dash".into()]),
+            register(
+                "org.dash.DashWallet",
+                exe.to_str().unwrap(),
+                &["dash".into()]
+            ),
             Err(DesktopError::Unsupported(_))
         ));
     }

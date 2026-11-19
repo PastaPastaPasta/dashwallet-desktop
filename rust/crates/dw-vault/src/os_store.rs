@@ -224,4 +224,20 @@ mod tests {
             Err(other) => panic!("unexpected error {other:?}"),
         }
     }
+
+    /// Credential Manager is always there on Windows (D-N8: it is the
+    /// DPAPI store), so the round trip must work.
+    #[cfg(windows)]
+    #[test]
+    fn keyring_round_trip_on_windows() {
+        let s = KeyringOsStore::new();
+        let service = crate::crypto::random_array::<32>().unwrap();
+        s.put(&service, "dw-test", b"value").unwrap();
+        assert_eq!(&s.get(&service, "dw-test").unwrap().unwrap()[..], b"value");
+        s.put(&service, "dw-test", b"other").unwrap();
+        assert_eq!(&s.get(&service, "dw-test").unwrap().unwrap()[..], b"other");
+        assert!(s.delete(&service, "dw-test").unwrap());
+        assert!(s.get(&service, "dw-test").unwrap().is_none());
+        assert!(!s.delete(&service, "dw-test").unwrap());
+    }
 }

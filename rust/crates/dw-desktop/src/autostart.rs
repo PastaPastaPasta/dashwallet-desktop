@@ -7,7 +7,7 @@
 //! - Windows: the per-user `HKCU\…\CurrentVersion\Run` value `<app_id>`,
 //!   written with `reg.exe`. dash-qt uses a Startup-folder shortcut, which
 //!   needs COM (`IShellLink`); the Run value starts the program the same
-//!   way at logon. UNVERIFIED: not run on Windows yet.
+//!   way at logon.
 //! - macOS: `Unsupported` (dash-qt hides the option; the app is a login
 //!   item through `SMAppService` if ever offered).
 
@@ -140,20 +140,17 @@ pub(crate) mod linux {
 }
 
 #[cfg(windows)]
-pub(crate) use windows::command_line as windows_command_line;
-
-#[cfg(windows)]
 mod windows {
     use std::process::Command;
 
     use super::AutostartEntry;
     use crate::DesktopError;
 
-    const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    pub(super) const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 
     /// A Windows command line: each part double-quoted, inner quotes and
     /// the backslashes before them escaped (CommandLineToArgvW rules).
-    pub(crate) fn command_line(parts: &[&str]) -> String {
+    fn command_line(parts: &[&str]) -> String {
         parts
             .iter()
             .map(|p| {
@@ -286,5 +283,52 @@ mod tests {
             set(&entry(), true),
             Err(DesktopError::Unsupported(_))
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_QT_009_windows_run_value_round_trip() {
+        let e = AutostartEntry {
+            app_id: format!("org.dash.DashWallet-citest-{}", std::process::id()),
+            display_name: "Dash Wallet (CI)".into(),
+            exec_path: r"C:\Program Files\Dash Wallet\dash-wallet.exe".into(),
+            args: vec![
+                "--min".into(),
+                "--chain=test".into(),
+                r#"say "hi" \"#.into(),
+            ],
+        };
+        let run_value = || {
+            let out = std::process::Command::new("reg")
+                .args(["query", windows::RUN_KEY, "/v", &e.app_id])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+            let text = String::from_utf8_lossy(&out.stdout).into_owned();
+            let line = text
+                .lines()
+                .find(|l| l.trim_start().starts_with(&e.app_id))
+                .unwrap_or_else(|| panic!("no value line in {text:?}"))
+                .to_owned();
+            let (_, data) = line.split_once("REG_SZ").expect("REG_SZ");
+            data.trim().to_owned()
+        };
+        set(&e, false).unwrap();
+        assert!(!enabled(&e.app_id).unwrap());
+        set(&e, true).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert!(enabled(&e.app_id).unwrap());
+            assert_eq!(
+                run_value(),
+                r#""C:\Program Files\Dash Wallet\dash-wallet.exe" "--min" "--chain=test" "say \"hi\" \\""#
+            );
+            set(&e, true).unwrap();
+        }));
+        set(&e, false).unwrap();
+        set(&e, false).unwrap();
+        assert!(!enabled(&e.app_id).unwrap());
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
     }
 }

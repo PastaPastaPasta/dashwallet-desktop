@@ -7,14 +7,14 @@
 //! - [`instance`]: one primary process per key; later launches forward
 //!   their arguments (URIs) to it and exit (QT-001). Unix: a socket in the
 //!   user's runtime directory guarded by a lock file; Windows: a named
-//!   mutex and a named pipe (not built or run on Windows yet).
+//!   mutex and a named pipe.
 //! - [`autostart`]: "Start on system login" (QT-009). Linux: XDG autostart
-//!   entry; Windows: the per-user `Run` registry value (not run yet).
+//!   entry; Windows: the per-user `Run` registry value.
 //! - [`uri_schemes`]: per-user URI scheme registration for unpackaged
-//!   builds (QT-150, IOS-048). Linux: a `.desktop` file plus
-//!   `mimeapps.list` defaults; Windows: `HKCU\Software\Classes`.
+//!   Linux builds (QT-150, IOS-048): a `.desktop` file plus
+//!   `mimeapps.list` defaults. Installers register them elsewhere.
 //! - [`notify`]: transaction notifications (QT-031). Linux: `notify-send`;
-//!   Windows: a toast through PowerShell (not run yet).
+//!   Windows: a toast through PowerShell.
 //! - [`qr`]: every QR code in a PNG/JPEG/BMP image (IOS-043).
 //! - [`logs`]: zips the log files for a support request (IOS-112).
 //! - [`capture`]: Windows screen-capture exclusion (IOS-006).

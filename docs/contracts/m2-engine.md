@@ -274,7 +274,7 @@ unless noted.
 |---|---|---|---|---|
 | `acquire_single_instance(key, InstanceObserver)` | sync, free | `Some(InstanceGuard)` = primary; it delivers later launches' args to `on_forwarded`. `None` = another instance holds `key` (`DashWallet-<network>`): call `forward_to_primary(key, args)` and exit 0. Windows: named pipe; macOS and Linux: a path Unix socket `<key>.sock` in a 0700 directory whose owner is checked (`instance/unix.rs`, §8), not an abstract socket. | `desktop.os_error` | QT-001 |
 | `forward_to_primary(key, args)` | sync, free | `false` when no primary listens. | `desktop.os_error` | QT-001 |
-| `register_uri_schemes(app_id, exec_path, schemes)` | sync, free | Per-user registration for the Linux tarball and unpackaged Windows builds. Packages register at install time. | `desktop.os_error` | QT-150, IOS-048 |
+| `register_uri_schemes(app_id, exec_path, schemes)` | sync, free | Per-user registration for the Linux tarball. Packages register at install time; `desktop.unsupported` on Windows (the NSIS installer registers them) and macOS. | `desktop.os_error` | QT-150, IOS-048 |
 | `autostart_enabled(app_id)` / `set_autostart(AutostartEntry, enabled)` | sync, free | Windows Startup shortcut; Linux XDG autostart (Flatpak: Background portal), launched with `--min --network=<net>`. macOS: hidden (dash-qt). | `desktop.unsupported`, `desktop.os_error` | QT-009 |
 | `TrayIcon(TraySpec, TrayObserver)`, `set_tooltip`, `set_items`, `set_visible` | object | Windows `Shell_NotifyIcon` thread; Linux StatusNotifierItem (`ksni`). `desktop.unsupported` when the session has no tray host (GNOME without AppIndicator, disclosed in Options). | `desktop.unsupported` | QT-028…030, IOS-117 |
 | `DesktopNotifier(app_id, NotificationObserver)`, `notify(DesktopNotification)` | object | WinRT toast / D-Bus `org.freedesktop.Notifications` / Flatpak portal; clicks come back with `deep_link`. | `desktop.unsupported`, `desktop.os_error` | QT-031, IOS-116 |
@@ -400,9 +400,9 @@ Calls that no longer return `NotImplemented`, with the decisions the open points
   - **Tray: no backend is built** (StatusNotifierItem needs a D-Bus stack, the Windows icon needs a Win32 message
     loop). `TrayIcon.new` is `desktop.unsupported` on every OS, so hosts hide the tray options and keep the
     window.
-  - Windows code paths are written but not compiled or run (UNVERIFIED): a named mutex plus a named pipe, the
-    `HKCU\…\Run` value via `reg.exe` (instead of a Startup shortcut, which needs COM), `HKCU\Software\Classes`
-    schemes, a toast through PowerShell (clicks not reported) and `WDA_EXCLUDEFROMCAPTURE`.
+  - Windows (tested on CI's `windows-latest`): a named mutex plus a named pipe, the `HKCU\…\Run` value via
+    `reg.exe` (instead of a Startup shortcut, which needs COM), a toast through PowerShell (clicks not reported)
+    and `WDA_EXCLUDEFROMCAPTURE`. URI schemes are the NSIS installer's job.
   - `decode_qr_codes`: `rqrr` over PNG/JPEG/BMP, at most 32 MiB and 40 MP. Works on every OS.
   - `Engine.export_logs`: zips `logs/*` and `<network>/logs/*` of the data root, the host's files under `app/`,
     and a `manifest.txt` (included and skipped files). It never replaces a file. The engine writes no log files

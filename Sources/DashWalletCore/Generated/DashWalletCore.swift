@@ -23691,8 +23691,9 @@ public func forwardToPrimary(key: String, args: [String])throws  -> Bool  {
  * Registers the URI schemes (`dash`, `pay`, `dashwallet`, …) for the
  * current user where the installer did not (Linux tarball:
  * `x-scheme-handler` in a user `.desktop` file plus `mimeapps.list`
- * defaults; Windows: HKCU). Packaged builds (Flatpak, MSI, macOS bundle)
- * register at install time; macOS returns `desktop.unsupported`.
+ * defaults). Packaged builds (Flatpak, the Windows installer, macOS
+ * bundle) register at install time; Windows and macOS return
+ * `desktop.unsupported`.
  */
 public func registerUriSchemes(appId: String, execPath: String, schemes: [String])throws   {try rustCallWithError(FfiConverterTypeDesktopError_lift) {
         uniffiCallStatus in
@@ -23938,7 +23939,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_func_forward_to_primary() != 14140) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_func_register_uri_schemes() != 25056) {
+    if (uniffi_dashwallet_core_checksum_func_register_uri_schemes() != 1687) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_func_set_autostart() != 28072) {

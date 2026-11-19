@@ -9,8 +9,7 @@
 //! on LaunchServices instead): a lock file and a stream socket in the
 //! user's runtime directory. The `flock` on the lock file decides who is
 //! primary, so a stale socket left by a crash never blocks a new primary.
-//! Windows: a named mutex decides, a named pipe carries the arguments
-//! (written against the Win32 API, not yet built or run on Windows).
+//! Windows: a named mutex decides, a named pipe carries the arguments.
 
 use std::sync::Arc;
 
@@ -214,5 +213,89 @@ mod tests {
             forward("DashWallet-x", &["x".repeat(100_000)]),
             Err(DesktopError::InvalidArgument(_))
         ));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::sync::Mutex;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const PROBE_KEY: &str = "DW_DESKTOP_INSTANCE_PROBE_KEY";
+
+    fn uris() -> Vec<String> {
+        vec!["dash:yQ1?amount=0.5".to_string(), "--min".into()]
+    }
+
+    fn channel_handler() -> (ForwardHandler, mpsc::Receiver<Vec<String>>) {
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        (
+            Arc::new(move |args| {
+                let _ = tx.lock().unwrap().send(args);
+            }),
+            rx,
+        )
+    }
+
+    /// The second launch, run by the test below in another process: exits
+    /// 0 after forwarding, 3 if it became primary, 4 if nobody listened.
+    #[test]
+    fn forward_probe() {
+        let Ok(key) = std::env::var(PROBE_KEY) else {
+            return;
+        };
+        let (handler, _) = channel_handler();
+        if acquire(&key, handler).unwrap().is_some() {
+            std::process::exit(3);
+        }
+        std::process::exit(if forward(&key, &uris()).unwrap() {
+            0
+        } else {
+            4
+        });
+    }
+
+    #[test]
+    fn test_QT_001_windows_second_process_forwards_to_the_primary() {
+        let key = format!("DashWallet-citest-{}", std::process::id());
+        let probe = || {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "instance::windows_tests::forward_probe",
+                    "--test-threads=1",
+                ])
+                .env(PROBE_KEY, &key)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .code()
+        };
+        let (handler, rx) = channel_handler();
+        let guard = acquire(&key, handler).unwrap().expect("primary");
+        let (other, _) = channel_handler();
+        assert!(acquire(&key, other).unwrap().is_none());
+
+        assert_eq!(probe(), Some(0));
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), uris());
+        assert_eq!(probe(), Some(0), "the pipe serves more than one launch");
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), uris());
+        assert!(forward(&key, &[]).unwrap());
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Vec::<String>::new()
+        );
+
+        assert!(!forward(&format!("{key}-other"), &uris()).unwrap());
+
+        guard.release();
+        guard.release();
+        assert!(!forward(&key, &uris()).unwrap());
+        assert_eq!(probe(), Some(3), "the key is free once released");
+        let (handler, _) = channel_handler();
+        assert!(acquire(&key, handler).unwrap().is_some());
     }
 }

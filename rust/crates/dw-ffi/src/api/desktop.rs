@@ -159,8 +159,9 @@ pub fn forward_to_primary(key: String, args: Vec<String>) -> Result<bool, Deskto
 /// Registers the URI schemes (`dash`, `pay`, `dashwallet`, …) for the
 /// current user where the installer did not (Linux tarball:
 /// `x-scheme-handler` in a user `.desktop` file plus `mimeapps.list`
-/// defaults; Windows: HKCU). Packaged builds (Flatpak, MSI, macOS bundle)
-/// register at install time; macOS returns `desktop.unsupported`.
+/// defaults). Packaged builds (Flatpak, the Windows installer, macOS
+/// bundle) register at install time; Windows and macOS return
+/// `desktop.unsupported`.
 #[uniffi::export]
 pub fn register_uri_schemes(
     app_id: String,

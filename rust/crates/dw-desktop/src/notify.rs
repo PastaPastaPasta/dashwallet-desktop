@@ -8,7 +8,7 @@
 //!   available. Timeout 10 s, as dash-qt.
 //! - Windows: a toast shown through PowerShell's registered app identity
 //!   (no AUMID of our own until the MSI installs a Start-menu shortcut).
-//!   Clicks are not reported back. UNVERIFIED: not run on Windows yet.
+//!   Clicks are not reported back.
 //! - macOS: `Unsupported` (UserNotifications in Swift).
 
 use std::sync::Arc;
@@ -419,5 +419,23 @@ mod tests {
             Notifier::new("org.dash.DashWallet", h),
             Err(DesktopError::Unsupported(_))
         ));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn test_QT_031_windows_toast_is_shown() {
+        let notifier = Notifier::new("org.dash.DashWallet", Arc::new(|_, _| {})).unwrap();
+        notifier
+            .notify(&Notification {
+                id: "tx-1".into(),
+                title: "Incoming transaction".into(),
+                body: "Amount: 1.00 DASH\n<b>Label</b> & co's".into(),
+                deep_link: Some("dashwallet://tx/abcd".into()),
+            })
+            .unwrap();
     }
 }
