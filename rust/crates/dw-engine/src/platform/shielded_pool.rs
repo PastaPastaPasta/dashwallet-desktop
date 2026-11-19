@@ -2525,7 +2525,9 @@ pub(crate) fn shield_funding(outpoint: OutPoint) -> AssetLockFunding {
 
 /// How the library's shield call of the lock at `outpoint` ended, given
 /// whether the lock's credit key signed a transition in it. Only "already
-/// consumed" naming `outpoint` is [`Applied::Taken`].
+/// consumed" naming `outpoint` is [`Applied::Taken`], the library's refusal
+/// to record it included
+/// ([`consumed_unrecorded`](super::unfinished_locks::consumed_unrecorded)).
 pub(crate) fn applied_from(
     result: Result<(), PlatformWalletError>,
     outpoint: OutPoint,
@@ -2538,6 +2540,7 @@ pub(crate) fn applied_from(
         Err(PlatformWalletError::AssetLockAlreadyConsumed(o)) if o == outpoint => {
             Ok(Applied::Taken)
         }
+        Err(e) if super::unfinished_locks::consumed_unrecorded(&e) => Ok(Applied::Taken),
         // The library signs the transition and then broadcasts it
         // (`build_and_broadcast_shielded`, `fund_from_asset_lock.rs:707-757`):
         // a failure after a signature may follow its submission.

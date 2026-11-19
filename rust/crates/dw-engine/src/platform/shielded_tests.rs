@@ -280,6 +280,10 @@ struct FakeShielded {
     /// consumed" (`PlatformWalletError::AssetLockAlreadyConsumed`), after
     /// its transition was signed.
     consumed: AtomicBool,
+    /// The next applies end with these library errors, in order, after
+    /// their transitions were signed, mapped as `PwShielded::apply` maps
+    /// them.
+    lib_errors: Mutex<std::collections::VecDeque<PlatformWalletError>>,
     /// What the next apply leaves of the lock's real row.
     row_after: Mutex<RowAfter>,
     /// The coin reads and the funding permits asked for.
@@ -434,6 +438,7 @@ impl Default for FakeShielded {
             probed: Mutex::default(),
             real_rows: false,
             consumed: AtomicBool::new(false),
+            lib_errors: Mutex::default(),
             row_after: Mutex::default(),
             coin_reads: AtomicU32::new(0),
             permits: AtomicU32::new(0),
@@ -987,6 +992,9 @@ impl ShieldedLib for FakeShielded {
             // As platform-wallet answers it, mapped by the real function.
             let consumed = PlatformWalletError::AssetLockAlreadyConsumed(outpoint);
             return pool::applied_from(Err(consumed), outpoint, true);
+        }
+        if let Some(e) = self.lib_errors.lock().unwrap().pop_front() {
+            return pool::applied_from(Err(e), outpoint, true);
         }
         let answer = (self.applies.lock().unwrap().take()).expect("a scripted apply");
         *self.applies.lock().unwrap() = self.queued.lock().unwrap().pop_front();
