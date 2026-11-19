@@ -303,7 +303,7 @@ export function ConfirmSheet({
   };
 
   return (
-    <Sheet title={unsigned ? "Unsigned transaction" : "Confirm payment"} width="small" testId="pay-confirm" returnFocus={returnFocus} onClose={() => !busy && onCancel()}>
+    <Sheet title={actions.unsignedFirst ? "Unsigned transaction" : "Confirm payment"} width="small" testId="pay-confirm" returnFocus={returnFocus} onClose={() => !busy && onCancel()}>
       <form
         className="confirm"
         onSubmit={(e) => {
