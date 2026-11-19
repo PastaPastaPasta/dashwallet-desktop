@@ -410,10 +410,13 @@ impl EngineHandle {
         self.inner.parked.load(Ordering::SeqCst)
     }
 
-    fn install(&self, result: Result<Engine, AppError>) -> bool {
+    /// Publishes the build's result unless startup was abandoned. A result
+    /// that arrives late is handed back, so the caller drops the engine (and
+    /// shuts its runtime down) after the state lock is released.
+    fn install(&self, result: Result<Engine, AppError>) -> Result<(), Result<Engine, AppError>> {
         let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         if !matches!(*state, BuildState::Starting) {
-            return false;
+            return Err(result);
         }
         match result {
             Ok(engine) => {
@@ -434,7 +437,7 @@ impl EngineHandle {
         }
         drop(state);
         self.inner.notify.notify_waiters();
-        true
+        Ok(())
     }
 
     /// Waits until the build installs the engine or records its failure.
@@ -486,6 +489,7 @@ impl Drop for FinishEngine {
                 .install(Err(AppError::from(EngineError::Internal(
                     "the engine stopped while starting".into(),
                 ))))
+                .is_ok()
         {
             crate::startup_phase(self.started, "engine-failed");
         }
@@ -687,7 +691,7 @@ impl AppState {
                 }
                 let ok = result.is_ok();
                 finish.done = true;
-                if handle.install(result) {
+                if handle.install(result).is_ok() {
                     crate::startup_phase(
                         started,
                         if ok { "engine-ready" } else { "engine-failed" },
@@ -702,6 +706,7 @@ impl AppState {
                 .install(Err(AppError::from(EngineError::Internal(format!(
                     "could not start the engine thread: {e}"
                 )))))
+                .is_ok()
         {
             crate::startup_phase(self.started, "engine-failed");
         }
@@ -1081,6 +1086,41 @@ impl Drop for PreparedSlot<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A build that finishes after quit is not published; its engine comes
+    /// back to the caller, and the state lock is free while the caller still
+    /// holds it.
+    #[test]
+    fn a_build_finishing_after_quit_is_handed_back_unlocked() {
+        let app = tauri::test::mock_app();
+        let dir = dw_testutil::private_tempdir();
+        let launch = LaunchOptions {
+            data_dir: Some(dir.path().join("data")),
+            ..LaunchOptions::default()
+        };
+        let state = AppState::pending(
+            app.handle(),
+            launch,
+            Instant::now(),
+            Default::default(),
+            || unreachable!("--datadir given"),
+        )
+        .unwrap();
+        assert!(state.engine.try_begin_initial());
+        assert!(tauri::async_runtime::block_on(state.shutdown_engine()).is_ok());
+        let engine = (state.engine_build)().expect("the engine builds");
+        let late = state
+            .engine
+            .install(Ok(engine))
+            .expect_err("a build after quit was published");
+        assert!(matches!(
+            state.engine.build_view(),
+            EngineBuildView::Failed(_)
+        ));
+        assert!(late.is_ok(), "the late engine was not handed back");
+        drop(late);
+        assert!(state.engine.ready().is_none());
+    }
 
     #[test]
     fn handles_are_capped_and_never_reused() {

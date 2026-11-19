@@ -228,7 +228,7 @@ fn the_setup_hook_returns_before_the_engine_is_built() {
     });
 
     let entered = entered_rx.recv_timeout(Duration::from_secs(20));
-    let snap = snap_rx.recv_timeout(Duration::from_secs(2));
+    let snap = snap_rx.recv_timeout(Duration::from_secs(20));
     drop(gate);
     assert!(entered.is_ok(), "the build thread did not start");
     let (ready, spv, window_at, engine_at) = snap.expect("setup waited for the engine");

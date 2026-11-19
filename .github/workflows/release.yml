@@ -318,6 +318,15 @@ jobs:
       # catches a broken pass-through on the next main push, before any tag.
       - name: The binary carries this run's build version
         run: grep -aqF "$VERSION" rust/target/release/dash-wallet || { echo "::error::build version $VERSION is not in dash-wallet" >&2; exit 1; }
+      # dw-app's portal.rs: without these, a desktop whose portal cannot start shows no window for ~30 s.
+      - name: The binary keeps the desktop-portal interposers
+        run: |
+          exported=$(nm -D --defined-only rust/target/release/dash-wallet)
+          defined=$(nm --defined-only rust/target/release/dash-wallet)
+          for s in g_dbus_proxy_new_sync g_dbus_proxy_new_for_bus_sync; do
+            grep -qw "$s" <<<"$exported" || { echo "::error::dash-wallet does not export $s" >&2; exit 1; }
+          done
+          grep -qw __wrap_dbus_connection_send_with_reply_and_block <<<"$defined" || { echo "::error::dash-wallet does not wrap libdbus" >&2; exit 1; }
       - name: Stage the bundles
         run: |
           appimage=$(ci/github/release-stage.sh "$RUNNER_TEMP/dist" "$VERSION" linux-x86_64.AppImage 'release/bundle/appimage/*.AppImage')

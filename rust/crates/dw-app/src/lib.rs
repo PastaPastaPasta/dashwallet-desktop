@@ -235,8 +235,7 @@ pub fn run() {
     // icon exists (those come with `run`). The setup hook shows the window
     // and returns before the engine is built: it runs on the event loop's
     // Ready, and the window cannot paint until that hook returns. With the
-    // single-instance
-    // plugin it waits for the build, during which the plugin forwards and
+    // single-instance plugin it waits for the build, during which the plugin forwards and
     // exits where it can. Without it (macOS, or Linux without a session
     // bus) it comes first, so a refused launch ends before GTK starts and
     // GLib autolaunches a session bus of its own.
@@ -259,11 +258,11 @@ pub fn run() {
     if let Some(single_instance) = single_instance {
         base = base.plugin(single_instance);
     }
-    // Before `build`, which registers the GTK application. A portal that is
-    // not owned would otherwise be activated from that register and the
+    // Before `build`, which registers the GTK application. A portal that
+    // cannot start would otherwise be activated from that register and the
     // window would not exist until the activation gave up.
     #[cfg(target_os = "linux")]
-    portal::skip_portal_autostart_if_unowned();
+    portal::skip_portal_autostart_if_unavailable();
     #[cfg(target_os = "linux")]
     startup_phase(started, "portal");
     if let Some(window_state) = shell::native::window_state(&launch) {
@@ -581,9 +580,6 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
-        // The park count moves just before `await` registers. Give that poll
-        // a timeslice so `notify_waiters` cannot land in the gap.
-        std::thread::sleep(Duration::from_millis(50));
         go_tx.send(()).unwrap();
 
         for rx in waiters {
