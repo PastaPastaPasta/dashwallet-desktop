@@ -11,7 +11,7 @@ import { FIXTURE_PASSPHRASE as PASS, SECOND_WALLET_ID, type ScenarioName } from 
 import { LockText } from "../onboarding/lock";
 import { WRONG_PASSPHRASE } from "../onboarding/model";
 import { PassphraseText } from "../onboarding/passphrase";
-import { AUTO_LOCK_CHOICES, ChangePassphraseModel, EncryptModel, PaymentAuthModel, SecurityText, WipeModel } from "./security";
+import { AUTO_LOCK_CHOICES, ChangePassphraseModel, EncryptModel, PaymentAuthModel, SecurityText, SpendLimitModel, WipeModel } from "./security";
 
 let fixture: FixtureHandle;
 let b: IpcBackend;
@@ -47,7 +47,9 @@ describe("encrypt wallet", () => {
     const model = new EncryptModel(b);
     await model.encrypt("x", "x");
     expect(model.step).toBe("form");
-    expect(model.error).toBe("The wallet is already encrypted.");
+    // An encrypted vault does not issue changeCredential without the passphrase, so Encrypt
+    // never reaches the "already encrypted" refusal.
+    expect(model.error).toBe("Enter your wallet passphrase.");
     expect(fixture.world.passphrase).toBe(PASS);
   });
 });
@@ -76,6 +78,20 @@ describe("change passphrase", () => {
     expect(fixture.world.passphrase).toBe(PASS);
     model.edited();
     expect(model.message).toBe(`${WRONG_PASSPHRASE} ${LockText.attemptsRemaining(7)}`);
+  });
+});
+
+describe("the spending limit", () => {
+  it("saves one of the options with the passphrase", async () => {
+    const model = new SpendLimitModel(b);
+    await model.load();
+    expect(model.limit).toBe(50_000_000);
+    model.ask(10_000_000);
+    expect(model.pending).toBe(10_000_000);
+    await model.confirm(PASS);
+    expect(model.limit).toBe(10_000_000);
+    expect(model.pending).toBeNull();
+    expect((await b.quickUnlockPolicy()).spendLimitDuffs).toBe(10_000_000);
   });
 });
 

@@ -21,7 +21,7 @@ export SWIFTLY_HOME_DIR="$HOME/.local/share/swiftly" SWIFTLY_BIN_DIR="$HOME/.loc
 scratch="$(mktemp -d)"
 # From the scratch dir: `swiftly install --use` writes .swift-version into the current directory.
 cd "$scratch"
-curl -fsSL -o swiftly.tar.gz \
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 -o swiftly.tar.gz \
   "https://download.swift.org/swiftly/linux/swiftly-${swiftly_version}-$(uname -m).tar.gz"
 echo "$swiftly_sha256  swiftly.tar.gz" | sha256sum -c -
 tar -xzf swiftly.tar.gz
