@@ -1023,6 +1023,16 @@ impl From<EngineError> for CliError {
             EngineError::Vault(v) => v.into(),
             EngineError::Contact(c) => c.into(),
             e if e.is_task_panic() => panic_error("an engine task", "the call"),
+            EngineError::Send(f) => {
+                let code = match f {
+                    SendFailure::NoPeers => "send.no_peers",
+                    SendFailure::BroadcastRejected { .. } => "send.broadcast_rejected",
+                    SendFailure::BroadcastUnknown { .. } => "send.broadcast_unknown",
+                    SendFailure::Cancelled => "send.cancelled",
+                    _ => "send",
+                };
+                Self::new(code, EngineError::Send(f), json!({}))
+            }
             e => Self::new(e.code(), &e, json!({})),
         }
     }
@@ -2454,6 +2464,26 @@ mod tests {
         assert_eq!(shielded_params(&e), json!({"reason": "journal"}));
     }
 
+    #[test]
+    fn each_broadcast_failure_has_its_own_code() {
+        let code = |f: SendFailure| CliError::from(EngineError::Send(f)).code;
+        assert_eq!(code(SendFailure::NoPeers), "send.no_peers");
+        assert_eq!(
+            code(SendFailure::BroadcastRejected {
+                reason: "bad-txns".into()
+            }),
+            "send.broadcast_rejected"
+        );
+        assert_eq!(
+            code(SendFailure::BroadcastUnknown {
+                reason: "no verdict".into()
+            }),
+            "send.broadcast_unknown"
+        );
+        assert_eq!(code(SendFailure::Cancelled), "send.cancelled");
+        assert_eq!(code(SendFailure::TxTooLarge), "send");
+    }
+
     /// D15 (Sol r1): an accept that went through and a payment that did
     /// not is a partial success, never a plain error.
     #[test]
@@ -2465,7 +2495,7 @@ mod tests {
         assert_eq!(r["accepted"], json!(true));
         assert_eq!(r["paid"], json!(false));
         assert_eq!(r["grant"], grant);
-        assert_eq!(r["payment_error"]["code"], json!("send"));
+        assert_eq!(r["payment_error"]["code"], json!("send.cancelled"));
         assert_eq!(r["payment_error"]["message"], json!(message));
         assert!(r["next"].as_str().unwrap().contains("without --accept"));
 
@@ -2473,6 +2503,7 @@ mod tests {
             reason: "no verdict".into(),
         });
         let r = after_accept(grant.clone(), Err(PaymentFailed::Broadcast(unknown)));
+        assert_eq!(r["payment_error"]["code"], json!("send.broadcast_unknown"));
         assert_eq!(r["paid"], json!(false));
         assert!(r["next"].as_str().unwrap().contains("resolve-lock"));
 

@@ -1891,6 +1891,7 @@ fn reason_means_no_peers(reason: &str) -> bool {
         || r.contains("not connected")
         || r.contains("notconnected")
         || r.contains("no peer")
+        || r.contains("no connected peer")
 }
 
 fn finalize_failure(e: PlatformWalletError) -> EngineError {
@@ -2369,6 +2370,21 @@ mod tests {
         assert!(FeeMode::PerKb(999).rate().is_err());
         assert_eq!(FeeMode::PerKb(1000).rate().unwrap(), FeeRate::new(1000));
         assert!(FeeMode::PerKb(MAX_FEE_PER_KB + 1).rate().is_err());
+    }
+
+    #[test]
+    fn the_libraries_no_peers_rejection_is_reported_as_no_peers() {
+        let library = "SPV broadcast not sent: no connected peers";
+        assert!(reason_means_no_peers(library));
+        let sent = broadcast_result(
+            Err(PlatformWalletError::TransactionBroadcast(library.into())),
+            true,
+        );
+        assert!(matches!(sent, Err(EngineError::Send(SendFailure::NoPeers))));
+        for old in ["not started", "NotConnected", "not connected", "no peers"] {
+            assert!(reason_means_no_peers(old), "{old}");
+        }
+        assert!(!reason_means_no_peers("bad-txns-inputs-missingorspent"));
     }
 
     #[test]
