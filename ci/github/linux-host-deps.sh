@@ -28,14 +28,28 @@ apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::
 install=(apt-get "${apt_opts[@]}" install -y --no-install-recommends)
 # Only the network steps run under a deadline and are tried again. A deadline that fired while
 # dpkg was unpacking would leave a journal that apt refuses to continue from.
-# The runner image lists its regional mirror first (mirror+file:/etc/apt/apt-mirrors.txt). When
-# that mirror stalls without failing, apt never moves on to the next one, so a failed attempt
-# drops every mirror listed ahead of archive.ubuntu.com.
+# The runner image lists its regional mirror first (mirror+file:/etc/apt/apt-mirrors.txt), then
+# archive.ubuntu.com and security.ubuntu.com, and reads noble-security from security.ubuntu.com.
+# A mirror that stalls without failing keeps apt from moving on, and on 2026-11-19 all three were
+# down together. So a failed attempt puts the Azure mirror first, drops the mirrors listed ahead of
+# archive.ubuntu.com, and reads noble-security from the Azure mirror too.
 mirrors=${DW_APT_MIRRORS:-/etc/apt/apt-mirrors.txt}
-skip_stalled_mirror() {
-  local main='^https?://archive\.ubuntu\.com/'
-  sudo grep -Eq "$main" "$mirrors" 2>/dev/null || return 0
-  sudo sed -i -E "0,\\#$main#{\\#$main#!d}" "$mirrors"
+sources=${DW_APT_SOURCES:-/etc/apt/sources.list.d/ubuntu.sources}
+fallback=http://azure.archive.ubuntu.com/ubuntu/
+use_fallback_mirror() {
+  local main='^https?://archive\.ubuntu\.com/' rest text
+  [ -f "$mirrors" ] || return 0
+  if grep -Eq "$main" "$mirrors"; then
+    rest=$(sed -n -E "\\#$main#,\$p" "$mirrors")
+  else
+    rest=$(cat "$mirrors")
+  fi
+  rest=$(printf '%s\n' "$rest" | grep -vF "$fallback" || true)
+  printf '%s\tpriority:1\n%s\n' "$fallback" "$rest" | sed '/^$/d' | sudo tee "$mirrors" > /dev/null
+  if [ -f "$sources" ]; then
+    text=$(sed -E "s#https?://security\.ubuntu\.com/ubuntu/?#$fallback#" "$sources")
+    printf '%s\n' "$text" | sudo tee "$sources" > /dev/null
+  fi
   echo "apt mirrors now: $(tr '\n' ' ' < "$mirrors")" >&2
 }
 downloaded=
@@ -46,7 +60,7 @@ for attempt in 1 2 3; do
     break
   fi
   echo "apt download attempt $attempt failed" >&2
-  skip_stalled_mirror
+  use_fallback_mirror || echo "could not switch apt mirrors" >&2
 done
 [ -n "$downloaded" ] || exit 1
 sudo DEBIAN_FRONTEND=noninteractive "${install[@]}" -qq --no-download "${packages[@]}"
