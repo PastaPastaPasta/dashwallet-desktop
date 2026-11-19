@@ -28,7 +28,8 @@ request runs only the Linux checks: `lint`, `rust-linux`, `desktop-renderer` and
 `ci.yml`, and `script-tests` and `decide` in `release.yml`. These four `ci.yml` jobs are the required status
 checks on `main`. The hosted macOS runners (five at a time across the account) were the bottleneck, so the
 macOS, Windows, deep-link, tauri-driver E2E and Linux Swift jobs, and the release bundles, run on every push
-to `main` (each merge), on `ci.yml`'s 02:47 UTC schedule and on a dispatch. The non-blocking Windows Swift job
+to `main` (each merge), on a 02:47 UTC schedule (both workflows; the scheduled release run builds and never
+publishes) and on a dispatch. The non-blocking Windows Swift job
 runs only on the schedule and on a dispatch. To run everything for a branch before it merges:
 `gh workflow run ci.yml --ref <branch>` and `gh workflow run release.yml --ref <branch>`.
 
@@ -204,8 +205,8 @@ purpose. The per-state screenshots of the other suites are artifacts only.
 | Release check (dwcli `mix-shield-test`) | The release leg of `dw-engine`'s `tests/mix_shield_release_check.rs`: `cargo test --release -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked`. Its `const` assert fails the build if the regtest suite's test-only CoinJoin calls (`mix_shield_test`) are compiled into a release build; the nightly builds its `dwcli` with `--features mix-shield-test` (debug) for `move-mixed`. |
 | SwiftCrossUI AT-SPI demo (GUI, Linux) | **non-blocking** (see "Known gaps"): `scripts/crossui-linux-demo.sh` with `DWD_CROSSUI_SUITE=m2` (the M1 flows, then the M2 flows), uploaded as `crossui-linux-demo` |
 
-GitHub runs `schedule` triggers only from the repository's default branch (see "Known gaps"). Until then,
-start it by hand: `gh workflow run nightly.yml --ref main`. The nightly's overall status is the regtest,
+GitHub runs `schedule` triggers only from the repository's default branch, which is `main`. To start a run by
+hand: `gh workflow run nightly.yml --ref main`. The nightly's overall status is the regtest,
 shielded and release-check jobs': the AT-SPI demo shows its own red X without failing the run, so check its log
 separately.
 
@@ -241,7 +242,7 @@ The scripts can use the launch-and-screenshot helpers in `ci/github/`. Playwrigh
 
 ## `release.yml` (PK-01, PK-02; 0.1)
 
-On a push to `main`, a dispatch and a tag `v*` (pull requests run only `script-tests` and `decide`; see Triggers below). One job per OS builds the release-profile app without the
+On a push to `main`, the 02:47 UTC schedule, a dispatch and a tag `v*` (pull requests run only `script-tests` and `decide`; see Triggers below). One job per OS builds the release-profile app without the
 `selftest` feature (`rust-cache` keys `release-<os>`; Node 24, pnpm; the Windows `unistd` shim as in
 `ci.yml`):
 
@@ -266,8 +267,8 @@ The `checksums` job downloads the three `dist-<os>` artifacts, writes `SHA256SUM
 `ci/github/release-version.sh` names the files: the tag's version for a tag (a plain `vX.Y.Z` must equal
 `tauri.conf.json`), else `<version>-dev.<run>.g<short sha>`.
 
-**Triggers and publishing (DEC-1058).** The workflow runs on pushes to `main`, on tags `v*`, on pull requests
-and on `workflow_dispatch`; all but pull requests build and upload CI artifacts with `contents: read`. Only the `publish` job
+**Triggers and publishing (DEC-1058).** The workflow runs on pushes to `main`, on tags `v*`, on pull requests,
+on its schedule and on `workflow_dispatch`; all but pull requests build and upload CI artifacts with `contents: read`. Only the `publish` job
 has write permissions (`contents`, `id-token`, `attestations`), and its `if` admits a push to `main` or to a release
 tag only when the read-only `decide` job (`ci/github/release-decide.sh`) says `publish=true`: the trigger is a push
 to `main` or a tag `vX.Y.Z[-rc.N]`, in `PastaPastaPasta/dashwallet-desktop`, **and the commit is an ancestor of a
@@ -404,10 +405,8 @@ first step and says so.
        G-03 owns the fix. When the app stays up, the step uploads the screenshot. The Windows helper captures
        the screen whatever is on it, so look at `screenshots-windows` before reading a green step as the app
        rendering.
-2. **The nightly schedule does not fire yet.** The repository's default branch on GitHub is
-   `m3/r2-governance`, not `main`, and GitHub runs `schedule` only from the default branch. Setting the
-   default branch to `main` (repository settings; needs an admin) turns the nightly on. Manual runs work
-   meanwhile.
+2. **Closed: the schedules fire.** The repository's default branch is now `main`, and GitHub runs `schedule`
+   only from the default branch.
 3. **dash-wallet (SwiftCrossUI) on macOS.** The debug build of `dash-wallet` with AppKitBackend crashes at
    launch on `macos-latest`. The cause is a main-thread stack overflow: `EXC_BAD_ACCESS` in
    `___chkstk_darwin`, 11,110 frames deep in SwiftCrossUI's recursive layout (`ViewGraphNode.computeLayout` →
