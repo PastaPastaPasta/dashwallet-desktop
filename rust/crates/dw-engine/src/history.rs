@@ -331,7 +331,36 @@ fn merge_context(old: &TransactionContext, new: &TransactionContext) -> Transact
 /// wallet's scripts only): such a spender holds its other inputs until it
 /// is abandoned.
 pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint> {
-    let mined = |e: &TxEntry| e.context.block_info().is_some();
+    let conflicted = conflicted(txs);
+    (txs.iter())
+        .filter(|(t, e)| mined(e) || !(e.is_abandoned() || conflicted.contains(*t)))
+        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+        .collect()
+}
+
+/// The wallet's own coins that its transactions out of a block spend, each
+/// with its spender, by the rule of [`spent_outpoints`]: what key-wallet
+/// held for each such spend when it recorded it (`own_inputs`), as
+/// key-wallet's spent-output claims (`restore_spent_outpoints`).
+pub(crate) fn unmined_own_spends(txs: &HashMap<Txid, TxEntry>) -> Vec<(OutPoint, Option<Txid>)> {
+    let conflicted = conflicted(txs);
+    (txs.iter())
+        .filter(|(t, e)| !mined(e) && !e.is_abandoned() && !conflicted.contains(*t))
+        .flat_map(|(t, e)| {
+            (e.own_inputs.keys())
+                .filter_map(|i| e.tx.input.get(*i as usize))
+                .map(move |i| (i.previous_output, Some(*t)))
+        })
+        .collect()
+}
+
+fn mined(e: &TxEntry) -> bool {
+    e.context.block_info().is_some()
+}
+
+/// The transactions out of a block that one in a block beats to an input,
+/// and their descendants out of a block ([`spent_outpoints`]).
+fn conflicted(txs: &HashMap<Txid, TxEntry>) -> HashSet<Txid> {
     let in_block: HashMap<OutPoint, Txid> = (txs.iter().filter(|(_, e)| mined(e)))
         .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
         .collect();
@@ -351,10 +380,7 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
             todo.extend(children.get(&t).into_iter().flatten());
         }
     }
-    (txs.iter())
-        .filter(|(t, e)| mined(e) || !(e.is_abandoned() || conflicted.contains(*t)))
-        .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
-        .collect()
+    conflicted
 }
 
 #[derive(Debug, Default)]
@@ -2413,5 +2439,62 @@ mod tests {
             .map(|r| r.amount)
             .collect();
         assert_eq!(amounts, vec![50, 20, -70]);
+    }
+
+    /// #88: the claims restored at load are the wallet's own inputs of each
+    /// live spend out of a block, never a mined, abandoned or conflicted
+    /// one's, and never an input the wallet did not hold.
+    #[test]
+    fn unmined_own_spends_claim_only_live_spends_of_own_coins() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let spend = |n: u8, coins: &[OutPoint], own: &[u32], context| {
+            let t = tx(
+                coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                vec![out(n.into(), &hash_addr(9))],
+            );
+            let mut e = entry(t, context);
+            for i in own {
+                e.own_inputs.insert(*i, (1, hash_addr(1)));
+            }
+            e
+        };
+        let mut txs = HashMap::new();
+        let mut add = |e: TxEntry| {
+            let txid = e.tx.txid();
+            txs.insert(txid, e);
+            txid
+        };
+        let live = add(spend(
+            1,
+            &[coin(1), coin(2), coin(3)],
+            &[0, 2],
+            TransactionContext::Mempool,
+        ));
+        add(spend(2, &[coin(4)], &[0], in_block(10, 0)));
+        let mut abandoned = spend(3, &[coin(5)], &[0], TransactionContext::Mempool);
+        abandoned.abandoned = true;
+        add(abandoned);
+        let beaten = add(spend(
+            4,
+            &[coin(6), coin(7)],
+            &[0, 1],
+            TransactionContext::Mempool,
+        ));
+        add(spend(5, &[coin(7)], &[], in_block(11, 0)));
+        let child = add(spend(
+            6,
+            &[OutPoint::new(beaten, 0)],
+            &[0],
+            TransactionContext::Mempool,
+        ));
+
+        let mut claims = unmined_own_spends(&txs);
+        claims.sort();
+        let mut want = vec![(coin(1), Some(live)), (coin(3), Some(live))];
+        want.sort();
+        assert_eq!(
+            claims, want,
+            "the beaten spend {beaten} and its child {child} claim nothing"
+        );
     }
 }

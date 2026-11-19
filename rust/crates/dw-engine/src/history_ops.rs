@@ -370,7 +370,33 @@ impl NetworkSession {
                 }
             });
         }
+        drop(wm);
+        for wallet in ids {
+            self.restore_unmined_spends(&live.manager, wallet).await;
+        }
         Ok(())
+    }
+
+    /// key-wallet rebuilds no records at load, so it no longer knows which
+    /// of its coins the wallet's own transactions out of a block spent: a
+    /// scan reaching such a coin's funding block would credit it again
+    /// beside the change the store gave back (#88). Each one is restored
+    /// as a spent-output claim held by its spender, which a block, an
+    /// InstantSend lock or an abandon of the spender settles.
+    async fn restore_unmined_spends(&self, manager: &crate::session::Manager, wallet: WalletId) {
+        let claims = self.hub.history.with_wallet(wallet, |h| {
+            let mut claims = crate::history::unmined_own_spends(&h.txs);
+            claims.retain(|(_, spender)| spender.is_some_and(|t| !h.session_held.contains(&t)));
+            claims
+        });
+        if claims.is_empty() {
+            return;
+        }
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        if let Some(info) = wm.get_wallet_info_mut(&wallet.0) {
+            info.core_wallet.restore_spent_outpoints(&claims);
+        }
     }
 
     /// Transaction and address labels of a wallet (dw-appdb).
