@@ -2,7 +2,7 @@
 
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use zeroize::Zeroizing;
 
@@ -78,8 +78,9 @@ pub enum Credential<'a> {
     /// No credential: accepted when the vault is unencrypted, or unlocked
     /// with scope Full for purposes other than
     /// [`GrantPurpose::requires_credential`] ones. Whether the app allows
-    /// this (dash-qt's behaviour with "require authentication for every
-    /// payment" off) is the host's setting.
+    /// it for a payment is the host's setting: "ask for my passphrase for
+    /// every payment", or the post-unlock signing window under the
+    /// quick-unlock spend limit.
     None,
 }
 
@@ -185,11 +186,17 @@ impl GrantPurpose {
 
     /// Whether this purpose needs a credential (passphrase, or quick unlock
     /// in M2) whenever the vault has a passphrase slot, even while it is
-    /// unlocked: revealing the phrase, wiping a wallet, changing a credential.
+    /// unlocked or inside the signing window: revealing the phrase, wiping a
+    /// wallet, changing a credential, a vote, and a masternode owner
+    /// operation (which can move every future reward for a fee).
     pub fn requires_credential(&self) -> bool {
         matches!(
             self,
-            GrantPurpose::RevealSecret | GrantPurpose::Wipe | GrantPurpose::ChangeCredential
+            GrantPurpose::RevealSecret
+                | GrantPurpose::Wipe
+                | GrantPurpose::ChangeCredential
+                | GrantPurpose::Governance
+                | GrantPurpose::MasternodeOp { .. }
         )
     }
 
@@ -498,6 +505,13 @@ impl std::fmt::Debug for RevealedMnemonic {
 /// tested without sleeping.
 pub trait Clock: Send + Sync {
     fn now_secs(&self) -> u64;
+
+    /// Monotonic instant for deadlines that a wall-clock change must not move.
+    /// The default is the process clock. A test clock overrides it so a test
+    /// can expire a window without sleeping.
+    fn monotonic(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 /// [`Clock`] backed by `SystemTime`.
@@ -558,6 +572,12 @@ pub const DEFAULT_QUICK_UNLOCK_SPEND_LIMIT: u64 = 50_000_000;
 /// Quick unlock is refused once the passphrase was last entered longer ago
 /// than this: 7 days (iOS).
 pub const PASSPHRASE_MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// How long a passphrase unlock covers signing under the quick-unlock spend
+/// limit without asking again. Memory only: it ends at this deadline, at
+/// lock, when the machine sleeps, or when the process quits. It is not the
+/// 7-day freshness rule above.
+pub const SIGNING_WINDOW_SECS: u64 = 5 * 60;
 
 /// Quick-unlock rules `Vault::authorize` enforces (DESIGN-opus §1.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

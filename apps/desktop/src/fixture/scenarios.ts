@@ -119,8 +119,16 @@ export interface World {
   releasesOpened?: number;
   /** `protocol_compatibility`'s answer; absent: equal (`15` / `15`). */
   protocolCompatibility?: ProtocolCompatibility;
-  /** "Require authentication for every payment" (E0-13 D11; on by default). */
+  /** "Ask for my passphrase for every payment". The funded scenario leaves it on, so the
+   * existing screens keep asking. The engine's own default is off: the signing window. */
   paymentAuth: boolean;
+  /** Quick-unlock and signing-window spend limit, in duffs. Default 0.5 DASH. */
+  spendLimitDuffs: number;
+  /** When the post-unlock signing window ends (ms). `null` when it is closed. The funded
+   * scenario starts unlocked, so the window is open. */
+  signingUntil: number | null;
+  /** Duff already authorized from this window. The limit is a total, not per payment. */
+  windowCharged?: number;
   /** "Load contact pictures" (DP4-02 D17); absent: on. */
   loadContactPictures?: boolean;
   /** The vault's wait after a wrong passphrase (`retryAfterSecs`); null: none. */
@@ -230,6 +238,8 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     stash: [],
     shellSync: null,
     paymentAuth: true,
+    spendLimitDuffs: 50_000_000,
+    signingUntil: Date.now() + 5 * 60 * 1000,
     throttleSecs: null,
     throttledUntil: null,
     send: newSendWorld(),
