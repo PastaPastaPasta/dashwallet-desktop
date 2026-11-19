@@ -39,7 +39,7 @@ azure=$'http://azure.archive.ubuntu.com/ubuntu/\tpriority:1'
 run() {
   : > "$work/log"
   PATH="$work/bin:$PATH" DW_APT_MIRRORS="$work/mirrors" DW_APT_SOURCES="$work/sources" FAKE_LOG="$work/log" \
-    FAKE_GOOD_MIRROR="$1" "$here/linux-host-deps.sh" rust > /dev/null 2>&1
+    FAKE_GOOD_MIRROR="$1" "$here/linux-host-deps.sh" rust > /dev/null 2> "$work/err"
 }
 fail() {
   echo "FAIL: $1" >&2
@@ -47,9 +47,13 @@ fail() {
 }
 expect_log() { [ "$(tr '\n' ' ' < "$work/log")" = "$1" ] || fail "$2: log was: $(tr '\n' ' ' < "$work/log")"; }
 expect_mirrors() { [ "$(cat "$work/mirrors")" = "$1" ] || fail "$2: mirrors were: $(cat "$work/mirrors")"; }
-expect_security() { grep -qxF "URIs: $1" "$work/sources" || fail "$2: sources were: $(cat "$work/sources")"; }
+expect_security() {
+  [ "$(grep -A1 -xF "URIs: $1" "$work/sources" | tail -n 1)" = "Suites: noble-security" ] ||
+    fail "$2: sources were: $(cat "$work/sources")"
+}
+from_list="mirror+file:$work/mirrors"
 write_sources() {
-  printf 'Types: deb\nURIs: mirror+file:/etc/apt/apt-mirrors.txt\nSuites: noble noble-updates\n\n' > "$work/sources"
+  printf 'Types: deb\nURIs: mirror+file:%s\nSuites: noble noble-updates\n\n' "$work/mirrors" > "$work/sources"
   printf 'Types: deb\nURIs: http://security.ubuntu.com/ubuntu/\nSuites: noble-security\n' >> "$work/sources"
 }
 
@@ -58,8 +62,8 @@ printf '%s\n%s\n%s\n' "$regional" "$main" "$security" > "$work/mirrors"
 run http://azure.archive. || fail "the image's mirrors stalled: the script failed"
 expect_log "download http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ download http://azure.archive.ubuntu.com/ubuntu/ install " "the image's mirrors stalled"
 expect_mirrors "$(printf '%s\n%s\n%s' "$azure" "$main" "$security")" "the image's mirrors stalled"
-expect_security http://azure.archive.ubuntu.com/ubuntu/ "the image's mirrors stalled"
-grep -qxF "URIs: mirror+file:/etc/apt/apt-mirrors.txt" "$work/sources" || fail "the mirror stanza changed"
+expect_security "$from_list" "the image's mirrors stalled"
+[ "$(grep -cxF "URIs: $from_list" "$work/sources")" = 2 ] || fail "the mirror stanza changed"
 
 write_sources
 printf '%s\n%s\n%s\n' "$regional" "$main" "$security" > "$work/mirrors"
@@ -73,10 +77,27 @@ printf '%s\n%s\n%s\n' "$regional" "$main" "$security" > "$work/mirrors"
 if run nowhere; then fail "every mirror stalled: the script passed"; fi
 expect_log "download http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ download http://azure.archive.ubuntu.com/ubuntu/ download http://azure.archive.ubuntu.com/ubuntu/ " "every mirror stalled"
 expect_mirrors "$(printf '%s\n%s\n%s' "$azure" "$main" "$security")" "every mirror stalled"
+expect_security "$from_list" "every mirror stalled"
+[ "$(wc -l < "$work/sources")" = 7 ] || fail "every mirror stalled: sources were: $(cat "$work/sources")"
 
+write_sources
 printf '%s\n%s\n' "$regional" "$security" > "$work/mirrors"
 run http://azure.archive. || fail "no main mirror listed: the script failed"
-expect_mirrors "$(printf '%s\n%s\n%s' "$azure" "$regional" "$security")" "no main mirror listed"
+expect_mirrors "$(printf '%s\n%s\n%s' "$azure" $'http://us-east-2.ec2.archive.ubuntu.com/ubuntu/\tpriority:2' "$security")" \
+  "no main mirror listed"
+expect_security "$from_list" "no main mirror listed"
+
+write_sources
+printf '%s\n%s\n%s\n' "$regional" "$main" "$security" > "$work/mirrors"
+chmod 000 "$work/sources"
+if [ ! -r "$work/sources" ]; then
+  if run http://azure.archive.; then fail "unreadable sources: the script passed"; fi
+  chmod 600 "$work/sources"
+  grep -qF "could not switch apt mirrors" "$work/err" || fail "unreadable sources: not reported: $(cat "$work/err")"
+  expect_mirrors "$(printf '%s\n%s\n%s' "$regional" "$main" "$security")" "unreadable sources"
+  expect_security http://security.ubuntu.com/ubuntu/ "unreadable sources"
+fi
+chmod 600 "$work/sources"
 
 rm "$work/sources"
 printf '%s\n%s\n' "$main" "$security" > "$work/mirrors"

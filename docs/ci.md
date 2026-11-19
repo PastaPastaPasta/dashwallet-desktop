@@ -79,11 +79,12 @@ Swift images build only `dw-ffi` and do not.
 
 The script downloads the packages under a deadline, up to three times, and installs them only once they
 are all on disk. The runner image lists its regional Ubuntu mirror first, then `archive.ubuntu.com` and
-`security.ubuntu.com`, and reads `noble-security` from `security.ubuntu.com`. A mirror that stalls without
-failing never makes apt move on by itself, and all three can be down together (2026-11-19). So when a
-download attempt fails, the script puts `azure.archive.ubuntu.com` first, drops the mirrors listed ahead
-of `archive.ubuntu.com`, and points the `noble-security` source at the Azure mirror as well. apt checks
-every package against Ubuntu's signed indexes whichever mirror serves it.
+`security.ubuntu.com`, and reads `noble-security` from `security.ubuntu.com`. apt leaves a stalled mirror too
+slowly to finish under the deadline, and all three can be down together (2026-11-19). So when a download
+attempt fails, the script puts `azure.archive.ubuntu.com` first, drops the mirrors listed ahead of
+`archive.ubuntu.com`, and points the `noble-security` source at the same mirror list, so it keeps
+`archive.ubuntu.com` and `security.ubuntu.com` as fallbacks. apt checks every package against Ubuntu's
+signed indexes whichever mirror serves it.
 `ci/github/linux-host-deps-test.sh` covers this with stand-ins for apt and runs in the "Release scripts"
 job.
 

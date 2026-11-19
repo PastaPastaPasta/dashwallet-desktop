@@ -30,25 +30,28 @@ install=(apt-get "${apt_opts[@]}" install -y --no-install-recommends)
 # dpkg was unpacking would leave a journal that apt refuses to continue from.
 # The runner image lists its regional mirror first (mirror+file:/etc/apt/apt-mirrors.txt), then
 # archive.ubuntu.com and security.ubuntu.com, and reads noble-security from security.ubuntu.com.
-# A mirror that stalls without failing keeps apt from moving on, and on 2026-11-19 all three were
-# down together. So a failed attempt puts the Azure mirror first, drops the mirrors listed ahead of
-# archive.ubuntu.com, and reads noble-security from the Azure mirror too.
+# apt leaves a stalled mirror too slowly to finish under the deadline, and on 2026-11-19 all three
+# were down together. So a failed attempt puts the Azure mirror first, drops the mirrors listed
+# ahead of archive.ubuntu.com, and reads noble-security from the same mirror list.
 mirrors=${DW_APT_MIRRORS:-/etc/apt/apt-mirrors.txt}
 sources=${DW_APT_SOURCES:-/etc/apt/sources.list.d/ubuntu.sources}
 fallback=http://azure.archive.ubuntu.com/ubuntu/
 use_fallback_mirror() {
-  local main='^https?://archive\.ubuntu\.com/' rest text
+  local main='^https?://archive[.]ubuntu[.]com/' list skip=0 rest text=
   [ -f "$mirrors" ] || return 0
-  if grep -Eq "$main" "$mirrors"; then
-    rest=$(sed -n -E "\\#$main#,\$p" "$mirrors")
-  else
-    rest=$(cat "$mirrors")
-  fi
-  rest=$(printf '%s\n' "$rest" | grep -vF "$fallback" || true)
-  printf '%s\tpriority:1\n%s\n' "$fallback" "$rest" | sed '/^$/d' | sudo tee "$mirrors" > /dev/null
+  list=$(cat "$mirrors") || return 1
+  if grep -Eq "$main" <<< "$list"; then skip=1; fi
+  rest=$(awk -v main="$main" -v skip="$skip" -v fallback="$fallback" '
+    $1 ~ main { skip = 0 }
+    skip || !NF || $1 == fallback { next }
+    { print $1 "\tpriority:" ++n + 1 }' <<< "$list") || return 1
   if [ -f "$sources" ]; then
-    text=$(sed -E "s#https?://security\.ubuntu\.com/ubuntu/?#$fallback#" "$sources")
-    printf '%s\n' "$text" | sudo tee "$sources" > /dev/null
+    text=$(sed -E "s#https?://security[.]ubuntu[.]com/ubuntu/?#mirror+file:$mirrors#" "$sources") || return 1
+    [ -n "$text" ] || return 1
+  fi
+  printf '%s\tpriority:1\n%s\n' "$fallback" "$rest" | sed '/^$/d' | sudo tee "$mirrors" > /dev/null || return 1
+  if [ -n "$text" ]; then
+    printf '%s\n' "$text" | sudo tee "$sources" > /dev/null || return 1
   fi
   echo "apt mirrors now: $(tr '\n' ' ' < "$mirrors")" >&2
 }
