@@ -29,7 +29,11 @@
 //! new draft, as for any resolved marker).
 //!
 //! **Which coins.** Every coin of the funding accounts that consensus lets
-//! the self-spend spend (mature, not frozen by key-wallet). The inputs of
+//! the self-spend spend (mature, not frozen by key-wallet), except a
+//! counted denomination (a mixed coin a restored wallet holds there) that
+//! no lock of the step spends: no funding selects one, so no lost lock
+//! spent one, and joining it to unmixed coins would undo its mixing. The
+//! inputs of
 //! tracked `Built`/`Broadcast` locks are reserved for every other build
 //! (`coins.rs`); this draft names exactly them as exempt. A coin the user
 //! locked, or one a pending payment of the engine reserves, is not
@@ -115,7 +119,9 @@ impl NetworkSession {
 
     /// The self-spend's draft (module doc): every spendable coin of the
     /// funding accounts to a fresh receive address, the fee subtracted,
-    /// with the tracked locks' inputs exempt.
+    /// with the tracked locks' inputs exempt. A counted denomination is left
+    /// out unless a lock spends it: mixed coins are never joined to unmixed
+    /// ones.
     pub(crate) async fn stuck_funding_draft(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -162,10 +168,11 @@ impl NetworkSession {
                 .iter()
                 .filter(|c| c.utxo.is_spendable(snapshot.height))
                 .filter(|c| {
+                    let input = recorded.contains(&c.utxo.outpoint);
                     if coinjoin {
-                        c.coinjoin_account && recorded.contains(&c.utxo.outpoint)
+                        c.coinjoin_account && input
                     } else {
-                        c.send_account
+                        c.send_account && (!c.counted_denomination || c.lock_input || input)
                     }
                 })
                 .collect();

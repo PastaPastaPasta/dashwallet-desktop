@@ -2388,6 +2388,49 @@ fn repair_refuses_a_trusted_row_no_call_of_the_step_signed() {
     }
 }
 
+/// Repair leaves a mixed denomination of a restored wallet's send account
+/// out of its self-spend: it never joins mixed coins to unmixed ones.
+#[test]
+fn repair_leaves_a_counted_denomination_out_of_the_self_spend() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let b = f.credit(2, COIN / 2);
+    let denomination = f.credit(3, dw_coinjoin::denoms::DENOMINATIONS[2]);
+    f.stuck_signing(STEP, 51, &[a]);
+    f.track_lock(51, 0, &[a], platform_wallet::AssetLockStatus::Built);
+
+    let tx = f.repair(STEP);
+
+    let inputs: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(inputs, std::collections::HashSet::from([a, b]));
+    assert!(!inputs.contains(&denomination));
+}
+
+/// A denomination the stuck lock itself spent is still spent by the
+/// repair, which must conflict with that lock.
+#[test]
+fn repair_spends_a_denomination_the_stuck_lock_spent() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let denomination = f.credit(3, dw_coinjoin::denoms::DENOMINATIONS[2]);
+    f.stuck_signing(STEP, 51, &[denomination]);
+    f.track_lock(
+        51,
+        0,
+        &[denomination],
+        platform_wallet::AssetLockStatus::Built,
+    );
+
+    let tx = f.repair(STEP);
+
+    let inputs: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(inputs, std::collections::HashSet::from([a, denomination]));
+}
+
 /// E0-04 §6.5 (C9): a self-spend the journal fails to record is released
 /// unsent: never broadcast, its inputs free, no row.
 #[test]
