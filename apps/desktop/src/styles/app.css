@@ -397,6 +397,14 @@ input[type="radio"]:disabled {
   color: var(--dw-role-text-secondary);
 }
 
+.contact-activity-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  text-align: center;
+}
+
 .placeholder-note,
 .form-problem {
   margin: 0 0 var(--dw-space-m);
@@ -638,6 +646,10 @@ input[type="radio"]:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
   gap: var(--dw-space-l);
+}
+
+.contacts-split.is-solo {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .contacts-list {
@@ -1530,6 +1542,22 @@ input[type="radio"]:disabled {
   opacity: var(--dw-opacity-hero-hint);
 }
 
+.empty-state-art {
+  color: var(--dw-role-accent);
+  flex: none;
+}
+
+/* The accent used for text on light cards is too dim on a dark card. The link blue clears 4.5:1 there. */
+:root[data-theme="dark"] .empty-state-art {
+  color: var(--dw-role-text-link);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .empty-state-art {
+    color: var(--dw-role-text-link);
+  }
+}
+
 .empty-state-title {
   font-size: var(--dw-type-headline-size);
   font-weight: var(--dw-type-headline-weight);
@@ -1574,6 +1602,11 @@ input[type="radio"]:disabled {
   align-items: center;
   gap: var(--dw-space-m);
   margin-bottom: var(--dw-space-l);
+}
+
+.page-transactions .empty-state + [data-testid="tx-list"],
+.page-transactions .empty-state + .table-card {
+  margin-top: var(--dw-space-stack);
 }
 
 .search-field {
@@ -3786,6 +3819,22 @@ input[type="radio"]:disabled {
 
 .bell-title:focus {
   outline: none;
+}
+
+.bell-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-xs);
+  margin: 0 0 var(--dw-space-m);
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+  text-align: center;
+}
+
+.bell-empty p {
+  margin: 0;
 }
 
 .bell-section {

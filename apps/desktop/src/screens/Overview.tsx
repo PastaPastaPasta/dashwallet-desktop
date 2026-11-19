@@ -9,8 +9,10 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
-import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, type HistoryFilter } from "../api/queries";
+import { errorMessage } from "../api/backend";
+import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
+import { historyEmptyCopy, listDisplay, type ListArrival } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
 import type { UsedIcon } from "../components/icons";
 import { useContactsOwner } from "../contacts/queries";
@@ -210,14 +212,43 @@ function HomeFrequentOf({ walletId, identity }: { walletId: string; identity: st
   );
 }
 
+/** Recent history with nothing in it yet. Only a caught-up wallet offers Receive. */
+function HistoryEmpty({ arrival, recheck }: { arrival: ListArrival; recheck: () => void }) {
+  const copy = historyEmptyCopy({ arrival, home: true });
+  return (
+    <EmptyState
+      testId={arrival === "settled" ? "history-empty" : "history-syncing"}
+      art={copy.art}
+      title={copy.title}
+      message={copy.message}
+      action={
+        copy.action && (
+          <DashButton variant="filledBlue" data-testid={copy.action.testId} onClick={() => (arrival === "settled" ? navigate("receive") : recheck())}>
+            {copy.action.label}
+          </DashButton>
+        )
+      }
+    />
+  );
+}
+
 export function Overview({ walletId, network, onOpen }: { walletId: string; network: NetworkInfo; onOpen: (row: TxRow) => void }) {
   const balance = useBalance(walletId);
   const pools = usePoolBalances(walletId);
   const sync = useSyncStatus();
+  const { arrival, recheck } = useWalletCatchUp(walletId);
   const recent = useHistory(walletId, RECENT_FILTER, RECENT_COUNT);
   const discreet = useUi((s) => s.discreet);
   const rows = recent.data?.pages[0]?.rows ?? [];
   const ctx = useRowContext(network);
+  const historyList = listDisplay({
+    rowCount: rows.length,
+    pending: recent.isPending,
+    failed: recent.isError,
+    hasSnapshot: recent.data !== undefined,
+    refreshing: recent.isFetching,
+    arrival,
+  });
   const syncing = !!sync.data && isSyncing(sync.data);
   const percent = sync.data ? syncPercent(sync.data) : null;
   const b = useBackend();
@@ -255,18 +286,23 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
         </div>
         {discreet ? (
           <EmptyState testId="history-hidden" title="Recent transactions are hidden in discreet mode" />
-        ) : recent.isPending ? (
-          <LoadingState testId="history-loading" text="Loading transactions" />
-        ) : rows.length === 0 ? (
+        ) : historyList.kind === "failed" ? (
           <EmptyState
-            testId="history-empty"
-            title="There are no transactions to display"
+            testId="history-error"
+            title="Could not load transactions"
+            message={errorMessage(recent.error)}
             action={
-              <DashButton variant="filledBlue" data-testid="history-empty-receive" onClick={() => navigate("receive")}>
-                Receive Dash
+              <DashButton variant="plainBlue" data-testid="history-retry" onClick={() => void recent.refetch()}>
+                Try again
               </DashButton>
             }
           />
+        ) : historyList.kind === "arriving" && historyList.why === "pending" ? (
+          <LoadingState testId="history-loading" text="Loading transactions" />
+        ) : historyList.kind === "arriving" && historyList.why !== "pending" ? (
+          <HistoryEmpty arrival={historyList.why} recheck={recheck} />
+        ) : historyList.kind === "empty" ? (
+          <HistoryEmpty arrival="settled" recheck={recheck} />
         ) : (
           <>
             <TxGroups rows={rows} ctx={ctx} onOpen={onOpen} testIdPrefix="overview" />

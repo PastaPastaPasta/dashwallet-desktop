@@ -4,8 +4,10 @@
 // until the flow ends.
 
 import { useEffect, useId, useRef, useState } from "react";
+import { errorMessage } from "../api/backend";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { useBackend } from "../api/queries";
+import { useBackend, useWallets } from "../api/queries";
+import { walletReadyToOpen } from "../components/emptyStates";
 import { useSecretScreen } from "../app/ui";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
 import { NetworkPicker, useNetworkPicker } from "../components/networkPicker";
@@ -38,7 +40,7 @@ export function Onboarding({
   inert?: boolean;
   /** Closes Add Wallet; `null` for the first wallet, which cannot be skipped. */
   onCancel: (() => void) | null;
-  onDone: (walletId: string | null) => void;
+  onDone: (walletId: string | null) => void | Promise<void>;
 }) {
   const backend = useBackend();
   const [model] = useState(() => new OnboardingModel(backend, network.kind));
@@ -111,7 +113,7 @@ function Step({
   model: OnboardingModel;
   network: NetworkInfo;
   onCancel: (() => void) | null;
-  onDone: (walletId: string | null) => void;
+  onDone: (walletId: string | null) => void | Promise<void>;
   restoreText: string;
   setRestoreText: (text: string) => void;
 }) {
@@ -193,15 +195,22 @@ function Step({
   }
 }
 
-/** The last step; on Mainnet it carries the price disclosure (MP-01), saved by "Open wallet". */
-function Done({ model, network, onDone }: { model: OnboardingModel; network: NetworkInfo; onDone: (walletId: string | null) => void }) {
+/** The last step; on Mainnet it carries the price disclosure (MP-01), saved by "Open wallet".
+ * A list read that fails after the wallet is saved stays here: it says so and tries the read again,
+ * and Open wallet does not stay disabled. */
+function Done({ model, network, onDone }: { model: OnboardingModel; network: NetworkInfo; onDone: (walletId: string | null) => void | Promise<void> }) {
   const consent = useRatesConsent(network);
+  const wallets = useWallets();
   const [ratesOn, setRatesOn] = useState(true);
   const [opening, setOpening] = useState(false);
+  const listFailed = !walletReadyToOpen(model.walletId, wallets.data) && wallets.isError;
   const open = () => {
-    if (!consent.needed) return onDone(model.walletId);
     setOpening(true);
-    void consent.answer(ratesOn).finally(() => onDone(model.walletId));
+    const finish = () => {
+      void Promise.resolve(onDone(model.walletId)).finally(() => setOpening(false));
+    };
+    if (!consent.needed) return finish();
+    void consent.answer(ratesOn).finally(finish);
   };
   return (
     <>
@@ -212,8 +221,13 @@ function Done({ model, network, onDone }: { model: OnboardingModel; network: Net
           : "Keep your recovery phrase safe. It is the only way to restore this wallet."}
       </p>
       {consent.needed && <OnboardingRatesChoice consent={consent} on={ratesOn} setOn={setRatesOn} />}
-      <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid="onboarding-open" disabled={opening} onClick={open}>
-        Open wallet
+      {listFailed && (
+        <p className="form-problem" role="alert" data-testid="onboarding-list-error">
+          The wallet was saved, but the list of wallets could not be read.{wallets.error ? ` ${errorMessage(wallets.error)}` : ""}
+        </p>
+      )}
+      <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid={listFailed ? "onboarding-list-retry" : "onboarding-open"} disabled={opening} onClick={open}>
+        {listFailed ? "Try again" : "Open wallet"}
       </DashButton>
     </>
   );

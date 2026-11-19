@@ -72,6 +72,8 @@ export function feedSync(owner: object, raw: SyncStatus, now: number = Date.now(
   e.raw = raw;
   e.news = settleSync(e.news, raw, now, NEWS_MS).settled;
   recompute(e, now);
+  // The raw reading has its own subscribers, and can change while the shown one holds.
+  e.listeners.forEach((l) => l());
   return true;
 }
 
@@ -103,13 +105,27 @@ export function resetSync(owner: object) {
   entries.delete(owner);
 }
 
+/** Calls `listener` whenever the raw or the shown status of `owner` may have changed; returns the
+ * way to stop. */
+export function watchSync(owner: object, listener: () => void): () => void {
+  const e = entry(owner);
+  e.listeners.add(listener);
+  return () => void e.listeners.delete(listener);
+}
+
+/** The raw status as it changes: an event's reading at once, before any read that follows it. */
+export function useRawSync(owner: object): SyncStatus | undefined {
+  const e = entry(owner);
+  return useSyncExternalStore(
+    (l) => watchSync(owner, l),
+    () => e.raw ?? undefined,
+  );
+}
+
 export function useShownSync(owner: object): SyncStatus | undefined {
   const e = entry(owner);
   return useSyncExternalStore(
-    (l) => {
-      e.listeners.add(l);
-      return () => void e.listeners.delete(l);
-    },
+    (l) => watchSync(owner, l),
     () => e.shown ?? undefined,
   );
 }
