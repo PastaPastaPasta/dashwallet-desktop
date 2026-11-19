@@ -270,7 +270,6 @@ function tracked(m: MasternodesWorld, proTxHash: string): MasternodeRow {
 function checkKey(world: World, r: MasternodeRow, role: AttachedKeyRoleName, key: string): KeyCheckName {
   const m = world.masternodes;
   const want = m.expected[r.proTxHash]?.[role];
-  key = HEX64.test(key) ? key.toLowerCase() : key;
   if (role === "payout") return key === want ? "matched" : "unchecked";
   if (role === "voting") {
     if (!m.listState.synced) throw fail("masternodes.list_unavailable", "the masternode list is not synced");
@@ -315,7 +314,8 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
               registeredHeight: HEIGHT - 180_000,
               collateral: copy(r.collateral),
               ownerAddress: proTxHash in m.ownerKeys ? keyInfo("owner", m.ownerKeys[proTxHash]).address : addr(`ow${proTxHash.slice(0, 4)}`),
-              votingAddress: listedOf(m, proTxHash)?.facts.votingAddress ?? addr("vT"),
+              // The wallet's own record, whatever the sync state (reads.rs:596): the list's entry agrees with it.
+              votingAddress: m.listed.find((l) => l.proTxHash === proTxHash)?.facts.votingAddress ?? addr(`rv${proTxHash.slice(0, 4)}`),
               payoutAddress: r.payoutAddress,
               payoutScript: r.payoutAddress ? `76a914${fake("5c", 40)}88ac` : null,
               operatorReward: 0,
@@ -401,9 +401,11 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
       changed(ctx);
       return null;
     },
-    mn_attach_key: ({ proTxHash, role, key }, ctx) => {
+    mn_attach_key: ({ proTxHash, role, key: given }, ctx) => {
       const { world } = ctx;
       checkHash(proTxHash);
+      // The engine decodes hex to bytes (tracking.rs:58-60), so either case is one key.
+      const key = HEX64.test(given) ? given.toLowerCase() : given;
       if (!HEX64.test(key) && !TEST_WIF.test(key)) throw fail("invalid_argument", "not a compressed test-network WIF or 64 hex digits");
       const r = tracked(world.masternodes, proTxHash);
       const check = checkKey(world, r, role, key);
@@ -465,7 +467,7 @@ const byHash = (m: MasternodesWorld, hash: string) => m.rows.find((r) => r.proTx
  * address, so Home and Office, which share one, list the same payments; Old's newest is past the 30-day window. */
 const v24 = (m: MasternodesWorld) => {
   const [home, office, old] = [byHash(m, HOME), byHash(m, OFFICE), byHash(m, OLD)];
-  const shared = [...m.payouts[HOME], payout(6, 34, HOME_PAYOUT)].map((p) => ({ ...p, unattributed: true }));
+  const shared = [...m.payouts[HOME], payout(6, 34, HOME_PAYOUT)].map((p) => ({ ...p, unattributed: true })).sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
   const oldPayout = { ...payout(8, 45, OLD_PAYOUT), unattributed: true };
   m.payouts = { [HOME]: shared, [OFFICE]: shared, [OLD]: [oldPayout] };
   office.payoutAddress = HOME_PAYOUT;

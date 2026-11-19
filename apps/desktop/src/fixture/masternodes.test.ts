@@ -120,6 +120,8 @@ describe("fixture masternodes", () => {
     const homePayouts = await cmd.mnPayouts(W, HOME, null);
     expect(homePayouts.length).toBe(6);
     expect(homePayouts.every((p) => p.unattributed)).toBe(true);
+    const times = homePayouts.map((p) => p.timestamp!);
+    expect(times).toEqual([...times].sort((a, b) => b - a));
     expect(home.payoutAddress).toBe(office.payoutAddress);
     expect(await cmd.mnPayouts(W, OFFICE, null)).toEqual(homePayouts);
     expect([home.payouts30d, office.payouts30d, o.payouts30d]).toEqual([0, 0, 0]);
@@ -151,6 +153,10 @@ describe("fixture masternodes", () => {
     expect(o.masternodes.every((r) => r.status === "unknown" && r.bannedSeenAt === null)).toBe(true);
     expect(by.get(CLUB)!.service).toBeNull();
     expect(by.get(HOME)!.service).toBe("203.0.113.7:19999");
+    // A held registration's voting address is the wallet's own record, so it doesn't move with sync (reads.rs:596).
+    const voting = await Promise.all([HOME, OFFICE, OLD].map(async (x) => (await cmd.mnMasternode(W, x)).registration!.votingAddress));
+    expect(voting[0]).toBe(keyInfo("voting", 0).address);
+    expect(new Set(voting).size).toBe(3);
     await expect(cmd.mnFind(HOME)).rejects.toMatchObject({ code: "masternodes.list_unavailable" });
     await expect(cmd.mnMasternode(W, FRIEND)).rejects.toMatchObject({ code: "masternodes.list_unavailable" });
     await expect(cmd.mnTrack(FRIEND, null)).rejects.toMatchObject({ code: "masternodes.list_unavailable" });
@@ -272,6 +278,13 @@ describe("fixture masternodes: track and keys", () => {
     await expect(cmd.mnTrack(FRIEND, null)).rejects.toMatchObject({ code: "masternodes.already_tracked" });
     expect(await cmd.mnAttachKey(CLUB.toUpperCase(), "payout", KEY_PAYOUT.toUpperCase())).toBe("matched");
     expect(await cmd.mnDetachKey(CLUB.toUpperCase(), "payout")).toBe(true);
+    // A hex key in either case is one key, stored and shown in lower case.
+    expect(await cmd.mnAttachKey(CLUB, "payout", "AB".repeat(32))).toBe("unchecked");
+    const upper = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!.roles.attached!.find((k) => k.role === "payout")!.keyId;
+    expect(await cmd.mnAttachKey(CLUB, "payout", "ab".repeat(32))).toBe("unchecked");
+    const lower = (await cmd.mnList(W)).masternodes.find((r) => r.proTxHash === CLUB)!.roles.attached!.find((k) => k.role === "payout")!.keyId;
+    expect(upper).toBe(lower);
+    expect(upper).toMatch(/^[0-9a-f]{40}$/);
   });
 
   it("reads an evonode's credits in the contract's order", async () => {
