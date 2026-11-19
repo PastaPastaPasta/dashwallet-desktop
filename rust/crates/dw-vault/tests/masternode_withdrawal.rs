@@ -344,7 +344,7 @@ fn only_a_withdraw_grant_issues_the_withdrawal_signer() {
             max_credits: MAX,
         },
     ] {
-        let t = token(&v, purpose, Credential::None);
+        let t = token(&v, purpose, Credential::Passphrase(PASS));
         assert_eq!(
             v.masternode_withdrawal_signer(&w, &t).map(drop),
             Err(VaultError::GrantPurposeMismatch),
@@ -963,7 +963,7 @@ fn other_scopes_refuse_the_withdrawal() {
             &token(
                 &v,
                 GrantPurpose::MasternodeOp { max_duffs: 1 },
-                Credential::None,
+                Credential::Passphrase(PASS),
             ),
         )
         .unwrap(),

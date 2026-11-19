@@ -94,7 +94,7 @@ function VoteForm({
   const rows = useMemo(() => voteRows(nodes, now, undefined, names), [nodes, now, names]);
   const [outcome, setOutcome] = useState<VoteOutcomeName | null>(() => presetOutcome(nodes));
   const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set(rows.filter((r) => r.eligible).map((r) => r.proTxHash)));
-  const credential = useCredential(wallet.walletId, "Enter your passphrase to vote.");
+  const credential = useCredential(wallet.walletId, "Enter your passphrase to vote.", null);
   const picked = rows.filter((r) => r.eligible && checked.has(r.proTxHash));
   const toggle = (hash: string) =>
     setChecked((s) => {

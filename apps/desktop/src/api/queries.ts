@@ -228,10 +228,22 @@ export function usePendingPlatformFunds(walletId: string) {
   return useQuery({ queryKey: keys.pendingPlatformFunds(walletId), queryFn: () => b.pendingPlatformFunds(walletId), retry: false });
 }
 
-/** The shielded account's status; `null` while dw-app has no such command (api/pending.ts). */
-export function useShieldedStatus(walletId: string) {
+/** How often a sheet that shows the sync line re-reads the status while a pass runs: the engine
+ * sends no event when a pass ends. */
+export const SHIELDED_SCAN_POLL_MS = 5_000;
+
+export const shieldedStatusRefetchMs = (status: ShieldedStatus | null | undefined): number | false => (status?.syncing ? SHIELDED_SCAN_POLL_MS : false);
+
+/** The shielded account's status; `null` while dw-app has no such command (api/pending.ts).
+ * `pollWhileSyncing`: re-read it every `SHIELDED_SCAN_POLL_MS` while a pass runs. */
+export function useShieldedStatus(walletId: string, pollWhileSyncing = false) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.shieldedStatus(walletId), queryFn: () => b.shieldedStatus(walletId), retry: false });
+  return useQuery({
+    queryKey: keys.shieldedStatus(walletId),
+    queryFn: () => b.shieldedStatus(walletId),
+    retry: false,
+    refetchInterval: pollWhileSyncing ? (q) => shieldedStatusRefetchMs(q.state.data) : false,
+  });
 }
 
 /** The Core → Shielded locks not known to be applied; `null` while dw-app has no such command. */
@@ -465,10 +477,23 @@ export function useFeePolicy() {
   return useQuery({ queryKey: keys.feePolicy, queryFn: () => b.feePolicy(), staleTime: Infinity });
 }
 
-/** "Require authentication for every payment"; read again each time the confirm sheet opens. */
+/** "Ask for my passphrase for every payment"; read again each time the confirm sheet opens. */
 export function usePaymentAuthentication() {
   const b = useBackend();
   return useQuery({ queryKey: keys.paymentAuth, queryFn: () => b.paymentAuthentication(), staleTime: 0, gcTime: 0, retry: false });
+}
+
+/** The spend limit and the post-unlock signing window. Read again with the confirm sheet. */
+export function useQuickUnlockPolicy(enabled = true) {
+  const b = useBackend();
+  return useQuery({
+    queryKey: [...keys.paymentAuth, "window"] as const,
+    queryFn: () => b.quickUnlockPolicy(),
+    enabled,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false,
+  });
 }
 
 /** The network's last lock report (E0-13 D3); `null` until something locks the vault. */
