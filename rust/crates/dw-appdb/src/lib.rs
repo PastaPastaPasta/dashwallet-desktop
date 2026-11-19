@@ -68,7 +68,10 @@ pub use registration::{
     RegistrationUpdate,
 };
 pub use rows::{SqlValue, TableRows};
-pub use shared_sessions::{SharedSessionRow, SharedSessionUpdate};
+pub use shared_sessions::{
+    AbandonOutcome, INHERITED_REFUSED_CODES, RESEND_IN_PROGRESS, SharedSessionRow,
+    SharedSessionUpdate,
+};
 pub use shared_standby::StandbyRow;
 
 mod embedded {

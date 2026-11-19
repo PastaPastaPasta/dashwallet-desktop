@@ -26,6 +26,7 @@ const SHARED_STANDBY: i64 = 2026103001;
 const TX_FIAT: i64 = 2026110501;
 const REQUEST_USERNAME: i64 = 2026111001;
 const MG_WITHDRAWALS: i64 = 2026111002;
+const SHARED_ABANDON: i64 = 2026111901;
 const CONTACT_PAYOUT: i64 = 2026111902;
 
 const DP_TABLES: [&str; 11] = [
@@ -114,6 +115,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             TX_FIAT,
             REQUEST_USERNAME,
             MG_WITHDRAWALS,
+            SHARED_ABANDON,
             CONTACT_PAYOUT
         ]
     );
@@ -190,6 +192,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             TX_FIAT,
             REQUEST_USERNAME,
             MG_WITHDRAWALS,
+            SHARED_ABANDON,
             CONTACT_PAYOUT
         ]
     );
@@ -246,6 +249,7 @@ fn reopening_and_rerunning_change_nothing() {
             TX_FIAT,
             REQUEST_USERNAME,
             MG_WITHDRAWALS,
+            SHARED_ABANDON,
             CONTACT_PAYOUT
         ]
     );
@@ -279,7 +283,7 @@ fn an_upgrade_stopped_partway_changes_nothing_and_the_next_open_finishes_it() {
         conn.execute_batch("DROP TRIGGER stop").unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), MG_WITHDRAWALS);
+    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
     assert!(db.conn().prepare("SELECT 1 FROM tx_fiat").is_ok());
 }
 
@@ -331,6 +335,128 @@ fn upgrade_from_request_username_adds_the_withdrawal_tables() {
     // App-wide: no `wallet_id` column, so neither removal nor export sees them.
     let scoped = wallet_scoped_tables(&conn);
     assert!(!scoped.iter().any(|t| t.starts_with("mn_")), "{scoped:?}");
+}
+
+/// MG-10 §4.4 storage (Sol r6 M1/M2): the upgrade from `V2026111002`
+/// gives an older build's abandon a legacy `maybe_sent` entry and the
+/// legacy mark, and reads every inherited refusal on an out row unknown;
+/// other rows keep what they had.
+#[test]
+fn upgrade_backfills_shared_abandons_and_rewrites_inherited_refusals() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(crate::APP_DB_FILE);
+    let id = |n: usize| format!("{n:064x}");
+    let refused = crate::INHERITED_REFUSED_CODES;
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        embedded::migrations::runner()
+            .set_target(Target::Version(MG_WITHDRAWALS as i32))
+            .run(&mut conn)
+            .unwrap();
+        let insert = |n: usize, out: bool, abandon: Option<&str>, error: Option<&str>| {
+            conn.execute(
+                "INSERT INTO shared_mn_sessions (id, wallet_id, kind, role, envelope, my_shares,
+                     reserved, signed_tx, txid, out_at, abandon_txid, created_at, updated_at,
+                     last_error)
+                 VALUES (?1, ?2, 'registration', 'participant', '{}', '{}', '[\"t:0\"]', ?3,
+                     ?4, ?5, ?6, 1, 1, ?7)",
+                params![
+                    id(n),
+                    W,
+                    out.then_some(vec![7u8]),
+                    out.then_some("own"),
+                    out.then_some(5),
+                    abandon,
+                    error
+                ],
+            )
+            .unwrap();
+        };
+        insert(0, true, Some("ab"), Some("send.no_peers"));
+        insert(1, true, None, None);
+        insert(2, true, None, Some("send.broadcast_unknown"));
+        insert(3, true, None, Some("send.grant_exceeded"));
+        insert(4, false, None, Some("send.no_peers"));
+        for (n, code) in refused.iter().enumerate() {
+            insert(10 + n, true, None, Some(code));
+        }
+    }
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let db = AppDb::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
+    let row = |n: usize| db.shared_session(W, &id(n)).unwrap().unwrap();
+
+    let legacy = row(0);
+    assert_eq!(legacy.abandon_txid.as_deref(), Some("ab"));
+    assert_eq!(legacy.abandon_tx, None);
+    assert!(legacy.legacy_bound && !legacy.resend_marked);
+    assert_eq!(legacy.last_error.as_deref(), Some("send.broadcast_unknown"));
+    let entry: (i64, String, Option<i64>, String, i64, Option<String>, bool) = db
+        .conn()
+        .query_row(
+            "SELECT json_array_length(abandon_log), json_extract(abandon_log, '$[0].txid'),
+                 json_extract(abandon_log, '$[0].fee'),
+                 json_extract(abandon_log, '$[0].outcome'),
+                 json_extract(abandon_log, '$[0].signed_at'),
+                 json_extract(abandon_log, '$[0].code'),
+                 json_extract(abandon_log, '$[0].legacy')
+             FROM shared_mn_sessions WHERE id = ?1",
+            [id(0)],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .unwrap();
+    let (len, txid, fee, outcome, signed_at, code, is_legacy) = entry;
+    assert_eq!((len, txid.as_str(), fee), (1, "ab", None));
+    assert_eq!(outcome, "maybe_sent");
+    assert!(
+        u64::try_from(signed_at).unwrap() >= before,
+        "the upgrade time"
+    );
+    assert_eq!(code, None);
+    assert!(is_legacy);
+
+    let plain = row(1);
+    assert_eq!((plain.abandon_log, plain.abandon_tx), (None, None));
+    assert!(!plain.legacy_bound && !plain.resend_marked);
+    assert_eq!(plain.last_error, None);
+    assert_eq!(row(2).last_error.as_deref(), Some("send.broadcast_unknown"));
+    assert_eq!(row(3).last_error.as_deref(), Some("send.grant_exceeded"));
+    assert_eq!(
+        row(4).last_error.as_deref(),
+        Some("send.no_peers"),
+        "not out"
+    );
+    for (n, code) in refused.iter().enumerate() {
+        assert_eq!(
+            row(10 + n).last_error.as_deref(),
+            Some("send.broadcast_unknown"),
+            "{code}"
+        );
+    }
+    let sql = include_str!("../migrations/V2026111901__mg_shared_abandon.sql");
+    let listed = sql
+        .split("last_error IN (")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .unwrap();
+    let listed: Vec<&str> = listed
+        .split(',')
+        .map(|c| c.trim().trim_matches('\''))
+        .collect();
+    assert_eq!(listed, refused);
 }
 
 /// Shipped migrations are never edited (refinery refuses a database whose
@@ -417,6 +543,11 @@ fn shipped_migrations_are_unchanged() {
                 CHECKSUM_MG_WITHDRAWALS
             ),
             (
+                SHARED_ABANDON,
+                "mg_shared_abandon".to_string(),
+                CHECKSUM_SHARED_ABANDON
+            ),
+            (
                 CONTACT_PAYOUT,
                 "dp_contact_payout".to_string(),
                 CHECKSUM_CONTACT_PAYOUT
@@ -443,6 +574,7 @@ const CHECKSUM_SHARED_STANDBY: u64 = 6265244453823859058;
 const CHECKSUM_TX_FIAT: u64 = 16250844939786173904;
 const CHECKSUM_REQUEST_USERNAME: u64 = 9240954005103932665;
 const CHECKSUM_MG_WITHDRAWALS: u64 = 8235275556707324401;
+const CHECKSUM_SHARED_ABANDON: u64 = 6131843723659947961;
 const CHECKSUM_CONTACT_PAYOUT: u64 = 16737723588251346381;
 
 #[test]
