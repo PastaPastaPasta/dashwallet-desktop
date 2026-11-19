@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 66
+Contract-Version: 67
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -716,6 +716,21 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   through. The engine never releases such notes by itself.
 - The marker of a spend the library kept no record of (schema 10, "Unrecorded spends" below) is still written and gates
   as below. The schema-9 journal row is written only for a spend stored before any hook was set, at pass admission.
+- **The library's outcomes (version 67).** At the end of each pass and when it opens `shielded.sqlite`, the engine
+  reads the outcome the library recorded for each ended spend (its disposition) into the spend's artifact by
+  Platform's hash of the transition, and only then acknowledges it, which lets the library drop the outcome and its
+  hold on the notes. A crash between the two repeats both. `NotExecuted` (nothing was sent, the notes are free) reads
+  not executed and is acknowledged, also for a spend the hook refused (it has no artifact). `Executed` reads executed
+  and is acknowledged once each note it holds reads spent in the journal (the wallet store took that spent state), so
+  no note it held becomes selectable while the wallet store could still read it unspent; until then a later pass
+  acknowledges it. `Unresolved` reads unresolved (being confirmed) and is never acknowledged by the engine: its notes
+  stay held until a later scan or the user settles it. One the library could not attribute (`Unattributable`) whose
+  history row reads `confirmed` reads executed, never failed: it is no proof, so it is not acknowledged either, nothing
+  of it is re-sent or rebuilt, and no gate (`confirm_unrecorded` included) is relaxed by it. An outcome this build
+  cannot read is acknowledged by its key only once each note it holds reads spent in the journal (its artifact reads
+  unresolved); until then the wallet's other outcomes wait. An outcome of a spend with no artifact (a spend stored
+  before any hook was set) or with an unclassified one waits, as does every outcome while the journal is unavailable.
+  So Close Wallet and a switch stay refused (DEC-1046, below) only while an outcome is not acknowledged.
 - **No way back.** Once a build with the hook has run on a data directory, a build on a platform-wallet older than
   the hooked one must not open that directory: it knows neither the unsent mark of a stored spend nor the outcomes
   the hooked library recorded.
@@ -927,7 +942,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 051121d307a723fa435dadb4fb68e9f7bb5ea8d8a0cfd4bcdcf96e8d9af76fca version: 66 -->
+<!-- surface-sha256: 051121d307a723fa435dadb4fb68e9f7bb5ea8d8a0cfd4bcdcf96e8d9af76fca version: 67 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -4281,6 +4296,11 @@ renames or reshapes them takes the next version bump:
     un-acknowledged `Executed` or `Unresolved` disposition, and for a spend stored under the hook and not sent yet.
     While the dispatch journal is unavailable, removal, every seed import, `import_watch_only` and `restore_backup` are
     refused with `storage` before anything changes (§2.13 "Closing with an unresolved spend").
+89. **The library's spend outcomes, read and acknowledged (version 67).** After each pass and at the shielded store's
+    open the engine settles each spend's artifact from the library's disposition, then acknowledges it: `NotExecuted`
+    at once, `Executed` once its notes read spent in the journal, an unreadable one by its key once its held notes read
+    spent; never an `Unresolved` one. `Unattributable` with a confirmed history row reads done, with no retry and no
+    gate relaxed (§2.13 "The dispatch hook").
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

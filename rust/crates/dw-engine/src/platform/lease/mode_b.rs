@@ -1512,12 +1512,42 @@ impl LeaseTable {
         wallet: WalletId,
         activity: [u8; 32],
     ) -> Result<Option<dw_appdb::dispatch::ShieldedArtifact>, String> {
+        let artifacts = self.shielded_artifacts(wallet).await?;
+        Ok(artifacts.into_iter().find(|a| a.activity == activity))
+    }
+
+    /// Every shielded artifact of `wallet` (schema 11), archived ones
+    /// included. On the blocking pool.
+    pub(crate) async fn shielded_artifacts(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<dw_appdb::dispatch::ShieldedArtifact>, String> {
         let backend = self.journal.get().ok_or("the journal is closed")?;
-        let artifacts = (self.rt)
+        (self.rt)
             .spawn_blocking(move || backend.shielded_artifacts(&wallet.0))
             .await
-            .map_err(|e| e.to_string())??;
-        Ok(artifacts.into_iter().find(|a| a.activity == activity))
+            .map_err(|e| e.to_string())?
+    }
+
+    /// Settles `wallet`'s artifacts of transition `st_hash` from the
+    /// library's disposition of it (`disposition`: its stored strings), in
+    /// dispatch.sqlite (`synchronous=FULL`): written when this returns
+    /// `Ok`. On the blocking pool.
+    pub(crate) async fn settle_shielded_artifact(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+        status: dw_appdb::dispatch::ArtifactStatus,
+        disposition: Option<(&'static str, Option<&'static str>)>,
+        acked: bool,
+    ) -> Result<dw_appdb::dispatch::ArtifactSettled, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        (self.rt)
+            .spawn_blocking(move || {
+                backend.settle_shielded_artifact(&wallet.0, &st_hash, status, disposition, acked)
+            })
+            .await
+            .map_err(|e| e.to_string())?
     }
 
     /// Marks the shielded spend `activity` of `wallet`, of unknown result

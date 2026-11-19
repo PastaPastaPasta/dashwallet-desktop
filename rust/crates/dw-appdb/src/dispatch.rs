@@ -652,6 +652,16 @@ pub struct ShieldedArtifact {
     pub published: Vec<[u8; 32]>,
 }
 
+/// What [`DispatchJournal::settle_shielded_artifact`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtifactSettled {
+    /// No artifact of the wallet but archived ones has the transition.
+    Absent,
+    /// One is not classified yet: nothing was written.
+    Unclassified,
+    Settled,
+}
+
 /// What [`DispatchJournal::classify_shielded_imports`] did.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ImportsClassified {
@@ -1943,6 +1953,75 @@ impl DispatchJournal {
         }
         tx.commit()?;
         Ok(added)
+    }
+
+    /// Settles `wallet`'s shielded artifacts of transition `st_hash`
+    /// (schema 11, archived ones aside) from the library's disposition of
+    /// it, in one transaction: `status` (`Executed`, `NotExecuted` or
+    /// `Unresolved`), the disposition's stored strings (`None` for one the
+    /// library could not read) and `acked`, which is only ever raised. A
+    /// registered or unresolved artifact takes any of them; a settled one
+    /// only its own status again (a replay), and anything else is refused.
+    /// Nothing is written while one is unclassified.
+    pub fn settle_shielded_artifact(
+        &self,
+        wallet: &[u8; 32],
+        st_hash: &[u8; 32],
+        status: ArtifactStatus,
+        disposition: Option<(&str, Option<&str>)>,
+        acked: bool,
+    ) -> Result<ArtifactSettled> {
+        let new = match status {
+            ArtifactStatus::Executed => "executed",
+            ArtifactStatus::NotExecuted => "not_executed",
+            ArtifactStatus::Unresolved { unrecorded: false } => "unresolved",
+            other => {
+                return Err(AppDbError::Corrupt(format!(
+                    "a shielded artifact is not settled as {other:?}"
+                )));
+            }
+        };
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let standing = {
+            let mut stmt = tx.prepare(
+                "SELECT status FROM shielded_artifact \
+                 WHERE wallet = ?1 AND st_hash = ?2 AND status <> 'archived'",
+            )?;
+            stmt.query_map(params![&wallet[..], &st_hash[..]], |r| {
+                r.get::<_, String>(0)
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if standing.is_empty() {
+            return Ok(ArtifactSettled::Absent);
+        }
+        if standing.iter().any(|s| s == "unclassified") {
+            return Ok(ArtifactSettled::Unclassified);
+        }
+        if let Some(other) = (standing.iter())
+            .find(|s| !matches!(s.as_str(), "registered" | "unresolved") && *s != new)
+        {
+            return Err(AppDbError::Corrupt(format!(
+                "a shielded artifact settled {other} is not {new}"
+            )));
+        }
+        let (kind, reason) = disposition.unzip();
+        tx.execute(
+            "UPDATE shielded_artifact SET status = ?3, status_reason = NULL, \
+             disposition_kind = ?4, disposition_reason = ?5, acked = max(acked, ?6) \
+             WHERE wallet = ?1 AND st_hash = ?2 AND status <> 'archived'",
+            params![
+                &wallet[..],
+                &st_hash[..],
+                new,
+                kind,
+                reason.flatten(),
+                acked
+            ],
+        )?;
+        tx.commit()?;
+        Ok(ArtifactSettled::Settled)
     }
 
     /// The shielded artifacts of `wallet` (schema 11) but the archived ones,
