@@ -25,7 +25,7 @@
 #   push to main          an immutable prerelease v<version>-dev.<run>+<short sha> and the rolling
 #                         prerelease `continuous` (stable asset names, replaced in place);
 #   push of a tag vX.Y.Z[-rc.N]  that tag's release: full for vX.Y.Z, a prerelease for -rc.N;
-#   anything else         builds and uploads CI artifacts only: other branches, pull requests (forks
+#   anything else         builds and uploads CI artifacts only: pull requests (forks
 #                         included) and workflow_dispatch. They never reach the publish job.
 # Every published file and both SHA256SUMS are attested with actions/attest-build-provenance
 # (`gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop`, docs/release/verifying.md).
@@ -41,16 +41,22 @@
 # (v0.0.0-rel<N>) build only and never start the publish job.
 # `decide` also skips the three build jobs for a branch push or pull request that changes only docs
 # and files no bundle is built from; a new push cancels that ref's running build (never main or tags).
+# Pull requests run script-tests and decide only: the bundles build on pushes to main, tags, the
+# 02:47 UTC schedule (on main; builds only, never publishes) and dispatches (`gh workflow run release.yml --ref <branch>` builds them for a branch).
 # Repository setting: "Immutable releases" must stay off (`continuous` renames assets, moves its tag).
 name: Release
 
 on:
   push:
-    branches: ["**"]
+    # Other branches build through their pull request: a push trigger for them as well built
+    # every bundle twice, and the hosted macOS runners are the scarce ones.
+    branches: [main]
     # A dev tag is made by the publish job itself (with GITHUB_TOKEN, which starts no run); this keeps a
     # hand-pushed one from starting one either.
     tags: ["v*", "!v*-dev.*"]
   pull_request:
+  schedule:
+    - cron: "47 2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -106,7 +112,7 @@ jobs:
     name: macOS universal .dmg
     runs-on: macos-latest
     needs: decide
-    if: ${{ needs.decide.outputs.build == 'true' }}
+    if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -183,7 +189,7 @@ jobs:
     name: Windows NSIS .exe
     runs-on: windows-latest
     needs: decide
-    if: ${{ needs.decide.outputs.build == 'true' }}
+    if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 120
     env:
       # rs-x11-hash includes <unistd.h>, which MSVC lacks (ci/windows/unistd-shim/unistd.h).
@@ -268,7 +274,7 @@ jobs:
     name: Linux AppImage and .deb
     runs-on: ubuntu-24.04
     needs: decide
-    if: ${{ needs.decide.outputs.build == 'true' }}
+    if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 90
     env:
       # The runner has no FUSE: the AppImage tools (linuxdeploy) run extracted.
