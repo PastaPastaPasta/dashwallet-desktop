@@ -41,6 +41,7 @@ import { activityPage, contactList, eventOf, fixtureLoops, relationOf, type Dash
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
+import { masternodesHandlers } from "./masternodes";
 import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers } from "./registration";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
@@ -645,6 +646,8 @@ export const HANDLERS: Handlers = {
   ...coinjoinHandlers({ wallet, grant: checkGrant, useGrant }),
   // Governance (MG-09): governance.ts.
   ...governanceHandlers({ wallet, grant: checkGrant, useGrant }),
+  // My masternodes (MG-10): masternodes.ts.
+  ...masternodesHandlers({ wallet, grant: checkGrant, useGrant }),
   // Username registration (DP1-09): registration.ts.
   ...registrationHandlers({ wallet, dashpay, grant: checkGrant, newLease, setLease, writeLease }),
   ...topUpHandlers({ wallet, dashpay, grant: checkGrant, useGrant, costs: COST_TABLE }),

@@ -41,6 +41,7 @@ import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
+import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { buildRows, caughtUp, FIXTURE_NOW, FUNDED_BALANCES, makeIds, prng, secs, XSS_PAYLOADS, ZERO_BALANCES, type HistoryVariant } from "./wallet";
@@ -131,6 +132,8 @@ export interface World {
   coinjoin: CoinJoinWorld;
   /** Governance: sync, proposals, voting masternodes and own proposals (governance.ts, MG-09). */
   governance: GovernanceWorld;
+  /** My masternodes: the SPV list, own and tracked masternodes, attached keys (masternodes.ts, MG-10). */
+  masternodes: MasternodesWorld;
   /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
   rates: RatesWorld;
   /** The commands dw-app does not have yet: network choice, shielded and Platform balances (pending.ts). */
@@ -230,6 +233,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
+    masternodes: newMasternodesWorld(),
     rates: newRatesWorld(),
     pending: newPendingWorld(),
   };
@@ -1329,6 +1333,8 @@ const SCENARIOS = {
   ...coinjoinScenarios(base),
   // Governance (MG-09): governance.ts.
   ...governanceScenarios(base),
+  // My masternodes (MG-10): masternodes.ts.
+  ...masternodesScenarios(base),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesScenarios(base),
   // Transfer (POLISH 25): transfer.ts.
