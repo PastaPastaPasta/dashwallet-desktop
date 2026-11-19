@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NEWS_MS, SETTLE_MS } from "../format/sync";
 import type { SyncStatus } from "./generated/SyncStatus";
-import { announceable, feedSync, rawSync, readTicket, resetSync, shownSync } from "./syncDisplay";
+import { announceable, feedSync, rawSync, readTicket, resetSync, shownSync, watchSync } from "./syncDisplay";
 
 const owner = {};
 const status = (caughtUp: boolean, behind = 0): SyncStatus => ({
@@ -46,6 +46,25 @@ describe("DEC1058_syncHoldExpires", () => {
     vi.setSystemTime(1000 + SETTLE_MS + 5000);
     vi.advanceTimersByTime(SETTLE_MS + 5000);
     expect(shownSync(owner)?.caughtUp).toBe(true);
+  });
+});
+
+describe("the raw reading's subscribers", () => {
+  it("hear of an event the display holds back, and of nothing when a stale reply is refused", () => {
+    feedSync(owner, status(true), 0);
+    const seen: (boolean | undefined)[] = [];
+    const stop = watchSync(owner, () => seen.push(rawSync(owner)?.caughtUp));
+    const ticket = readTicket(owner);
+    feedSync(owner, status(false, 1), 1000); // one block behind: the display holds "caught up"
+    expect(shownSync(owner)?.caughtUp).toBe(true);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((caughtUp) => caughtUp === false)).toBe(true);
+    const heard = seen.length;
+    expect(feedSync(owner, status(true), 2000, ticket)).toBe(false);
+    expect(seen.length).toBe(heard);
+    stop();
+    feedSync(owner, status(true), 3000);
+    expect(seen.length).toBe(heard);
   });
 });
 
