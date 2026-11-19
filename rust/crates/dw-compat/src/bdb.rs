@@ -6,6 +6,8 @@
 //! key/value records. Pages are bounds-checked, allocations are capped, and
 //! a repeated page number is a cycle, not a loop.
 
+use zeroize::Zeroizing;
+
 use crate::walletdat::{WalletDatError, corrupt};
 
 const PAGE_MIN: usize = 512;
@@ -34,10 +36,21 @@ struct Meta {
     root: u32,
 }
 
-enum Item {
-    Data { deleted: bool, data: Vec<u8> },
-    Overflow { deleted: bool, page: u32, len: u32 },
-    Child { deleted: bool, page: u32 },
+enum Item<'a> {
+    /// Inline bytes borrowed from the page. Indexing a page does not copy.
+    Data {
+        deleted: bool,
+        data: &'a [u8],
+    },
+    Overflow {
+        deleted: bool,
+        page: u32,
+        len: u32,
+    },
+    Child {
+        deleted: bool,
+        page: u32,
+    },
 }
 
 fn u32_at(page: &[u8], off: usize, swap: bool) -> Result<u32, WalletDatError> {
@@ -157,12 +170,12 @@ fn read_head(page: &[u8], expected: u32, swap: bool) -> Result<PageHead, WalletD
     Ok(head)
 }
 
-fn read_items(
-    page: &[u8],
+fn read_items<'a>(
+    page: &'a [u8],
     head: &PageHead,
     swap: bool,
     internal: bool,
-) -> Result<Vec<Item>, WalletDatError> {
+) -> Result<Vec<Item<'a>>, WalletDatError> {
     let entries = head.entries as usize;
     let index_end = PAGE_HEADER
         .checked_add(
@@ -214,7 +227,7 @@ fn read_items(
                     }
                     items.push(Item::Data {
                         deleted,
-                        data: page[body..end].to_vec(),
+                        data: &page[body..end],
                     });
                 }
                 REC_OVERFLOW => {
@@ -239,12 +252,12 @@ fn overflow_bytes(
     meta: &Meta,
     first: u32,
     item_len: u32,
-) -> Result<Vec<u8>, WalletDatError> {
+) -> Result<Zeroizing<Vec<u8>>, WalletDatError> {
     let want = item_len as usize;
     if want > MAX_RECORD || want > file.len() {
         return Err(corrupt("overflow record is too large"));
     }
-    let mut out = Vec::with_capacity(want);
+    let mut out = Zeroizing::new(Vec::with_capacity(want));
     let mut next = first;
     let mut seen = vec![false; meta.last_page as usize + 1];
     while next != 0 {
@@ -282,21 +295,34 @@ fn overflow_bytes(
     Ok(out)
 }
 
-fn item_bytes(file: &[u8], meta: &Meta, item: &Item) -> Result<Option<Vec<u8>>, WalletDatError> {
+fn item_len(item: &Item<'_>) -> Result<Option<usize>, WalletDatError> {
+    match item {
+        Item::Data { deleted: true, .. } | Item::Overflow { deleted: true, .. } => Ok(None),
+        Item::Data { data, .. } => Ok(Some(data.len())),
+        Item::Overflow { len, .. } => Ok(Some(*len as usize)),
+        Item::Child { .. } => Err(corrupt("internal record on a leaf page")),
+    }
+}
+
+fn item_bytes(
+    file: &[u8],
+    meta: &Meta,
+    item: &Item<'_>,
+) -> Result<Option<Zeroizing<Vec<u8>>>, WalletDatError> {
     match item {
         Item::Data { deleted: true, .. } | Item::Overflow { deleted: true, .. } => Ok(None),
         Item::Data { data, .. } => {
             if data.len() > MAX_RECORD {
                 return Err(corrupt("record is too large"));
             }
-            Ok(Some(data.clone()))
+            Ok(Some(Zeroizing::new(data.to_vec())))
         }
         Item::Overflow { page, len, .. } => Ok(Some(overflow_bytes(file, meta, *page, *len)?)),
         Item::Child { .. } => Err(corrupt("internal record on a leaf page")),
     }
 }
 
-pub(crate) type Record = (Vec<u8>, Vec<u8>);
+pub(crate) type Record = (Zeroizing<Vec<u8>>, Zeroizing<Vec<u8>>);
 
 /// Key/value pairs of the `main` subdatabase, in btree order.
 pub(crate) fn read_pairs(file: &[u8]) -> Result<Vec<Record>, WalletDatError> {
@@ -316,9 +342,9 @@ pub(crate) fn read_pairs(file: &[u8]) -> Result<Vec<Record>, WalletDatError> {
     if pages == 0 || outer.last_page as usize != pages - 1 {
         return Err(corrupt("last page number does not match the file"));
     }
-    // Core checks every page except the last. A bad LSN means Dash Core did
-    // not close the file, so the pages may be torn.
-    for n in 0..outer.last_page {
+    // Every page, including the last, must have a reset LSN. A snapshot that
+    // still needs log recovery is not the wallet Dash Core closed.
+    for n in 0..=outer.last_page {
         lsn_is_reset(page(file, outer.pagesize, n)?, outer.other_endian)?;
     }
     if outer.root > outer.last_page {
@@ -348,14 +374,14 @@ pub(crate) fn read_pairs(file: &[u8]) -> Result<Vec<Record>, WalletDatError> {
     else {
         return Err(corrupt("subdatabase record is not inline"));
     };
-    if name != b"main" {
+    if *name != b"main" {
         return Err(corrupt("subdatabase has an unexpected name"));
     }
     if loc.len() != 4 {
         return Err(corrupt("subdatabase page number has unexpected length"));
     }
     let main_page = u32::from_be_bytes(
-        loc.as_slice()
+        (*loc)
             .try_into()
             .map_err(|_| corrupt("subdatabase page number has unexpected length"))?,
     );
@@ -413,16 +439,27 @@ pub(crate) fn read_pairs(file: &[u8]) -> Result<Vec<Record>, WalletDatError> {
                     let key_item = &items[i];
                     let val_item = &items[i + 1];
                     i += 2;
+                    // The outer meta page is the file bound. The inner meta's
+                    // last_page is not: Core writes the inner tree past it.
+                    let klen = item_len(key_item)?;
+                    let vlen = item_len(val_item)?;
+                    let (Some(klen), Some(vlen)) = (klen, vlen) else {
+                        continue;
+                    };
+                    if klen > MAX_RECORD || vlen > MAX_RECORD {
+                        return Err(corrupt("record is too large"));
+                    }
+                    let add = klen.saturating_add(vlen);
+                    if stored.saturating_add(add) > file.len() || records.len() >= MAX_RECORDS {
+                        return Err(corrupt("too many wallet records"));
+                    }
                     let (Some(key), Some(value)) = (
-                        item_bytes(file, &inner, key_item)?,
-                        item_bytes(file, &inner, val_item)?,
+                        item_bytes(file, &outer, key_item)?,
+                        item_bytes(file, &outer, val_item)?,
                     ) else {
                         continue;
                     };
-                    stored = stored.saturating_add(key.len()).saturating_add(value.len());
-                    if stored > file.len() || records.len() >= MAX_RECORDS {
-                        return Err(corrupt("too many wallet records"));
-                    }
+                    stored += add;
                     records.push((key, value));
                 }
             }
@@ -574,7 +611,9 @@ pub(crate) mod build {
     }
 
     /// Outer meta, outer leaf (`main` → inner meta), inner meta, then `rest`.
-    pub(crate) fn assemble(rest: &[Vec<u8>], swap: bool) -> Vec<u8> {
+    /// `inner_last` is the inner meta's last-page field, which Core does not
+    /// keep equal to the outer one.
+    pub(crate) fn assemble_bounds(rest: &[Vec<u8>], inner_last: u32, swap: bool) -> Vec<u8> {
         let last = (2 + rest.len()) as u32;
         let mut file = Vec::new();
         file.extend_from_slice(&meta(0, 1, last, swap));
@@ -584,11 +623,16 @@ pub(crate) mod build {
             data_item(&loc, false, swap),
         ];
         file.extend_from_slice(&pack(1, &outer, super::TYPE_LEAF, 1, 0, swap));
-        file.extend_from_slice(&meta(2, 3, last, swap));
+        file.extend_from_slice(&meta(2, 3, inner_last, swap));
         for page in rest {
             file.extend_from_slice(page);
         }
         file
+    }
+
+    pub(crate) fn assemble(rest: &[Vec<u8>], swap: bool) -> Vec<u8> {
+        let last = (2 + rest.len()) as u32;
+        assemble_bounds(rest, last, swap)
     }
 
     pub(crate) fn pairs(pairs: &[(&[u8], &[u8])], swap: bool) -> Vec<u8> {

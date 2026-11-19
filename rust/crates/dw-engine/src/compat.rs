@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use dashcore::hashes::Hash;
 use dw_appdb::BookPurpose;
 use dw_compat::descriptor::{ImportRequest, PkhDescriptor, import_descriptors_json};
 use dw_compat::dump::{self, DumpFile, DumpHeader, HdAccount, KeyEntry, KeyRole};
@@ -26,6 +27,7 @@ use dw_compat::walletdat::{self, Container, WalletDatError};
 use dw_uri::keyio;
 use dw_vault::{GrantKind, SeedDerivation, WalletSecret, mnemonic};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
+use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use zeroize::Zeroizing;
 
 use crate::events::unix_now;
@@ -39,6 +41,9 @@ use crate::{
 
 /// Largest dumpwallet file read (a wallet with a few hundred thousand keys).
 const MAX_DUMP_BYTES: u64 = 256 * 1024 * 1024;
+/// Most keys one legacy chain may have derived, keypool included. Past this
+/// the pool would be too large to build, so the file is refused.
+const MAX_ISSUED: u32 = 10_000;
 /// Bytes read to recognise a file.
 const SNIFF_BYTES: usize = 4096;
 
@@ -562,7 +567,14 @@ impl NetworkSession {
     ) -> Result<ImportReport, EngineError> {
         drop(self.try_enter()?);
         let network_mainnet = self.network == DashNetwork::Mainnet;
-        let (root, coinjoin_salt, loose_keys, scripts) = self
+        let WalletDatImport {
+            root,
+            coinjoin_salt,
+            loose_keys,
+            scripts,
+            issued,
+            locks,
+        } = self
             .on_runtime(async move {
                 tokio::task::spawn_blocking(move || -> Result<WalletDatImport, EngineError> {
                     let wallet = match walletdat::sniff_container(&head(&path)?) {
@@ -582,12 +594,29 @@ impl NetworkSession {
                     let root = wallet
                         .hd_root(wallet_passphrase.as_deref().map(|p| &p[..]))
                         .map_err(walletdat_failure)?;
-                    let mainnet = key_is_mainnet(&root.external.key);
-                    if mainnet.is_some_and(|m| m != network_mainnet) {
-                        return Err(CompatFailure::NetworkMismatch {
-                            mainnet: mainnet == Some(true),
+                    let mainnet = key_is_mainnet(&root.external.key).ok_or_else(|| {
+                        CompatFailure::UnsupportedFormat(
+                            "the wallet's network cannot be established from its keys".into(),
+                        )
+                    })?;
+                    if mainnet != network_mainnet {
+                        return Err(CompatFailure::NetworkMismatch { mainnet }.into());
+                    }
+                    let mut issued = None;
+                    for (account, external, internal) in wallet.hd_accounts() {
+                        if account != 0 {
+                            return Err(CompatFailure::UnsupportedFormat(format!(
+                                "HD account {account} cannot be restored; only account 0 is"
+                            ))
+                            .into());
                         }
-                        .into());
+                        if external > MAX_ISSUED || internal > MAX_ISSUED {
+                            return Err(CompatFailure::UnsupportedFormat(
+                                "the wallet's address range is too large to restore".into(),
+                            )
+                            .into());
+                        }
+                        issued = Some((external, internal));
                     }
                     let labels = wallet
                         .address_book
@@ -622,23 +651,39 @@ impl NetworkSession {
                         }
                         (None, None) => return Err(CompatFailure::NoHdChain.into()),
                     };
-                    Ok((
-                        CoreRoot {
+                    let locks = wallet
+                        .locked_outpoints
+                        .iter()
+                        .map(|(txid, vout)| dashcore::OutPoint {
+                            txid: dashcore::Txid::from_byte_array(*txid),
+                            vout: *vout,
+                        })
+                        .collect();
+                    Ok(WalletDatImport {
+                        root: CoreRoot {
                             phrase,
                             seed,
                             master_pubkey: Some(root.master_pubkey),
                             used_per_chain: wallet.next_index(),
                             labels,
                         },
-                        wallet.coinjoin_salt,
-                        wallet.loose_keys,
-                        wallet.scripts,
-                    ))
+                        coinjoin_salt: wallet.coinjoin_salt,
+                        loose_keys: wallet.loose_keys,
+                        scripts: wallet.scripts,
+                        issued,
+                        locks,
+                    })
                 })
                 .await?
             })
             .await?;
         let report = self.import_core_root(root, options).await?;
+        if let Some(issued) = issued {
+            self.cover_issued(&*self.manager()?, report.wallet_id, issued)
+                .await?;
+            self.store_issued(report.wallet_id, issued).await?;
+        }
+        self.install_imported_locks(report.wallet_id, locks).await?;
         // The wallet keeps Dash Core's salt, so the same coins count as
         // fully mixed (QT-043, m3-engine.md §5).
         if let Some(salt) = coinjoin_salt {
@@ -864,9 +909,124 @@ impl NetworkSession {
     }
 }
 
-/// What `import_wallet_dat` carries out of the blocking read: the root,
-/// CoinJoin salt, loose keys left out, and scripts left out.
-type WalletDatImport = (CoreRoot, Option<[u8; 32]>, u32, u32);
+/// What `import_wallet_dat` carries out of the blocking read.
+struct WalletDatImport {
+    root: CoreRoot,
+    coinjoin_salt: Option<[u8; 32]>,
+    loose_keys: u32,
+    scripts: u32,
+    /// How many receive and change keys Core derived on account 0.
+    issued: Option<(u32, u32)>,
+    locks: Vec<dashcore::OutPoint>,
+}
+
+/// dw-appdb setting (wallet scope): `external,internal`, the counters of a
+/// legacy Core wallet's account 0, applied again at every load because
+/// key-wallet keeps its pools in memory.
+const ISSUED_SETTING: &str = "bip44.legacy_issued";
+
+impl NetworkSession {
+    /// Derives account 0's receive and change chains up to the last address
+    /// Core derived on each, marks it used and keeps the gap past it. The
+    /// two counters are not one lookahead, and either can be past the
+    /// largest gap limit.
+    pub(crate) async fn cover_issued(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        (external, internal): (u32, u32),
+    ) -> Result<(), EngineError> {
+        use key_wallet::managed_account::address_pool::AddressPoolType;
+        let unsupported = || {
+            EngineError::from(CompatFailure::UnsupportedFormat(
+                "HD account 0 cannot be restored".into(),
+            ))
+        };
+        let account = key_wallet::account::AccountType::Standard {
+            index: 0,
+            standard_account_type: key_wallet::account::StandardAccountType::BIP44Account,
+        };
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let (wallet, info) = wm
+            .get_wallet_and_info_mut(&id.0)
+            .ok_or_else(|| EngineError::WalletNotFound(id.to_string()))?;
+        let key = wallet.key_source_for_account(account);
+        let managed = info
+            .core_wallet
+            .accounts
+            .funds_account_mut(&account)
+            .ok_or_else(unsupported)?;
+        for pool in managed.managed_account_type_mut().address_pools_mut() {
+            let next = match pool.pool_type {
+                AddressPoolType::External => external,
+                AddressPoolType::Internal => internal,
+                _ => continue,
+            };
+            let Some(last) = next.checked_sub(1) else {
+                continue;
+            };
+            pool.generate_up_to(last, &key)
+                .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
+            pool.mark_index_used(last);
+            pool.maintain_gap_limit(&key)
+                .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
+        }
+        managed.bump_monitor_revision();
+        Ok(())
+    }
+
+    async fn store_issued(
+        self: &Arc<Self>,
+        id: WalletId,
+        (external, internal): (u32, u32),
+    ) -> Result<(), EngineError> {
+        let key = id.to_string();
+        self.appdb_op(move |db| {
+            db.set_setting(
+                &key,
+                ISSUED_SETTING,
+                Some(&format!("{external},{internal}")),
+            )
+        })
+        .await
+    }
+
+    /// Wallet `id`'s stored legacy counters, if valid ones are stored.
+    pub(crate) async fn stored_issued(&self, id: WalletId) -> Option<(u32, u32)> {
+        let appdb = Arc::clone(&self.live().ok()?.appdb);
+        let key = id.to_string();
+        let value = tokio::task::spawn_blocking(move || appdb.setting(&key, ISSUED_SETTING))
+            .await
+            .ok()?
+            .ok()??;
+        let (external, internal) = value.split_once(',')?;
+        let issued = (external.parse().ok()?, internal.parse().ok()?);
+        (issued.0 <= MAX_ISSUED && issued.1 <= MAX_ISSUED).then_some(issued)
+    }
+
+    /// Writes Core's persistent coin locks before the wallet can spend.
+    /// The coins themselves may not be synced yet; the lock row is what
+    /// coin selection reads when they appear.
+    async fn install_imported_locks(
+        self: &Arc<Self>,
+        id: WalletId,
+        locks: Vec<dashcore::OutPoint>,
+    ) -> Result<(), EngineError> {
+        if locks.is_empty() {
+            return Ok(());
+        }
+        let key = id.to_string();
+        self.appdb_op(move |db| {
+            let now = crate::coins::now_secs();
+            for o in &locks {
+                db.lock_manual(&key, &o.txid.to_string(), o.vout, now)?;
+            }
+            Ok(())
+        })
+        .await
+    }
+}
 
 fn walletdat_failure(e: WalletDatError) -> EngineError {
     match e {

@@ -692,15 +692,20 @@ impl NetworkSession {
         }
     }
 
-    /// Applies wallet `id`'s stored lookahead, if any, then places the coins
-    /// the load left outside the account that derives them
-    /// ([`crate::restore`]), before SPV can replay them. Failures are
-    /// logged; the wallet keeps the default gap.
+    /// Applies wallet `id`'s stored legacy address range and lookahead, if
+    /// any, then places the coins the load left outside the account that
+    /// derives them ([`crate::restore`]), before SPV can replay them.
+    /// Failures are logged; the wallet keeps the default gap.
     pub(crate) async fn restore_loaded_wallet(
         &self,
         manager: &crate::session::Manager,
         id: WalletId,
     ) {
+        if let Some(issued) = self.stored_issued(id).await
+            && let Err(e) = self.cover_issued(manager, id, issued).await
+        {
+            tracing::warn!(wallet_id = %id, error = %e, "could not restore the legacy wallet's address range");
+        }
         let restored = match self.stored_lookahead(id).await {
             Some(gap) => self.raise_lookahead(manager, id, gap).await,
             None => self.restore_coins(manager, id).await.map(|_| ()),

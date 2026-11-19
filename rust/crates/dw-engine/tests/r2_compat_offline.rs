@@ -52,18 +52,21 @@ fn engine(root: &Path) -> Engine {
     .unwrap()
 }
 
+fn session(e: &Engine, network: DashNetwork) -> Arc<NetworkSession> {
+    e.block_on(e.open_network(
+        network,
+        SessionOptions {
+            dapi_addresses: vec!["http://127.0.0.1:1".into()],
+            quorum_url: Some("http://127.0.0.1:1".into()),
+            spv_peers: vec!["127.0.0.1:1".into()],
+            ..Default::default()
+        },
+    ))
+    .unwrap()
+}
+
 fn open(e: &Engine, passphrase: Option<&[u8]>) -> Arc<NetworkSession> {
-    let s = e
-        .block_on(e.open_network(
-            DashNetwork::Regtest,
-            SessionOptions {
-                dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                quorum_url: Some("http://127.0.0.1:1".into()),
-                spv_peers: vec!["127.0.0.1:1".into()],
-                ..Default::default()
-            },
-        ))
-        .unwrap();
+    let s = session(e, DashNetwork::Regtest);
     let pw = passphrase.map(<[u8]>::to_vec);
     e.block_on(s.vault_op(move |v| v.create(pw.as_deref())))
         .unwrap();
@@ -362,6 +365,141 @@ fn test_qt_106_import_dash_core_bdb() {
             "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
             "yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw",
         ]
+    );
+}
+
+fn regtest_address(phrase: &str, pass: &str, path: &str) -> String {
+    let secret =
+        dw_vault::mnemonic::derive_secret(phrase.as_bytes(), pass.as_bytes(), true).unwrap();
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &secret.seed[..]).unwrap();
+    let child = master
+        .derive_priv(&DerivationPath::from_str(path).unwrap())
+        .unwrap();
+    dashcore::Address::p2pkh(
+        &dashcore::PublicKey::new(child.private_key.public_key()),
+        dashcore::Network::Regtest,
+    )
+    .to_string()
+}
+
+/// A label-free keypool is still checked against the session network, loose
+/// keys are reported, coin locks are stored before any spend, and a chain
+/// past the gap limit is actually derived.
+#[test]
+fn test_qt_106_import_checks_network_range_locks_and_loose_keys() {
+    let zoo = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
+    let main_dir = dw_testutil::private_tempdir();
+    let main = engine(main_dir.path());
+    let main_session = session(&main, DashNetwork::Mainnet);
+    let refused = main.block_on(main_session.import_wallet_dat(
+        testdata("compat/walletdat/bdb_label_free.dat"),
+        None,
+        ImportOptions::default(),
+    ));
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::Compat(CompatFailure::NetworkMismatch {
+                mainnet: false
+            }))
+        ),
+        "{refused:?}"
+    );
+
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = open(&e, Some(b"vault pass"));
+    e.block_on(s.vault_op(|v| v.unlock(b"vault pass", UnlockScope::Full)))
+        .unwrap();
+    let opts = ImportOptions::default;
+    let plain = e
+        .block_on(s.import_wallet_dat(
+            testdata("compat/walletdat/bdb_label_free.dat"),
+            None,
+            opts(),
+        ))
+        .unwrap();
+    assert_eq!(plain.wallet_id, core_id(zoo, ""));
+    assert_eq!(plain.labels_imported, 0);
+    assert_eq!(
+        receive_addresses(&e, &s, plain.wallet_id, 1),
+        [regtest_address(zoo, "", "m/44'/1'/0'/0/0")]
+    );
+
+    let wide = e
+        .block_on(s.import_wallet_dat(
+            testdata("compat/walletdat/bdb_wide_range.dat"),
+            None,
+            opts(),
+        ))
+        .unwrap();
+    assert_eq!(wide.keys_not_imported, 1);
+    let receive = e
+        .block_on(s.addresses(
+            wide.wallet_id,
+            AddressFilter {
+                chain: Some(AddressChain::Receiving),
+                used: None,
+            },
+        ))
+        .unwrap();
+    assert!(
+        receive.iter().any(|a| a.index == 1000),
+        "receive index 1000 was not derived"
+    );
+    let change = e
+        .block_on(s.addresses(
+            wide.wallet_id,
+            AddressFilter {
+                chain: Some(AddressChain::Change),
+                used: None,
+            },
+        ))
+        .unwrap();
+    assert!(change.iter().any(|a| a.index == 1));
+    let locks = e.block_on(s.locked_outpoints(wide.wallet_id)).unwrap();
+    assert_eq!(locks.len(), 1);
+    assert_eq!(locks[0].vout, 7);
+    assert_eq!(locks[0].txid.to_string(), "ab".repeat(32));
+
+    e.block_on(e.close_network(DashNetwork::Regtest)).unwrap();
+    let s = session(&e, DashNetwork::Regtest);
+    let chain_reach = |chain| {
+        e.block_on(s.addresses(
+            wide.wallet_id,
+            AddressFilter {
+                chain: Some(chain),
+                used: None,
+            },
+        ))
+        .unwrap()
+        .iter()
+        .map(|a| a.index)
+        .max()
+    };
+    assert!(
+        chain_reach(AddressChain::Receiving) >= Some(1000),
+        "the receive range was not restored after a restart"
+    );
+    assert!(chain_reach(AddressChain::Change) >= Some(1));
+    assert_eq!(
+        e.block_on(s.locked_outpoints(wide.wallet_id))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let account = e.block_on(s.import_wallet_dat(
+        testdata("compat/walletdat/bdb_account1.dat"),
+        None,
+        opts(),
+    ));
+    assert!(
+        matches!(
+            &account,
+            Err(EngineError::Compat(CompatFailure::UnsupportedFormat(d))) if d.contains("account 1")
+        ),
+        "{account:?}"
     );
 }
 

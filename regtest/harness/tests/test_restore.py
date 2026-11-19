@@ -22,7 +22,9 @@ PSBT: dwcli "Create Unsigned" is signed by dashd `walletprocesspsbt` and broadca
 dashd `walletcreatefundedpsbt` is signed by dwcli (signatures equal dashd's) and sent by dashd.
 
 Signatures (§4.4 item 3) are covered by the `l1-send` suite (sign/verify both ways).
-Not covered here: legacy BDB wallet.dat (M6), wallets mixed by Core's CoinJoin.
+Legacy BDB `wallet.dat` is covered by `test_restore_legacy_bdb_past_the_gap`: a receive
+address past the 1000-address gap cap, and a change output, must both be in the
+balance after sync. Wallets mixed by Core's CoinJoin are not covered here.
 
     DWD_COMPOSE_PROJECT=dwd-r2 DWD_REGTEST_BUILD=0 DWCLI=<target>/debug/dwcli \\
         .venv/bin/python -m pytest -v tests/test_restore.py
@@ -402,3 +404,24 @@ def test_psbt_round_trips_with_dashd(tmp_path, regtest_node, funded_miner, ours)
     sent = node.rpc.sendrawtransaction(final["hex"])
     node.mine(1)
     assert node.wait_for_tx(sent, 1)["confirmations"] >= 1
+
+
+def test_restore_legacy_bdb_past_the_gap(tmp_path, regtest_node, funded_miner):
+    """A legacy wallet's receive index past the gap cap, and its change, survive import."""
+    node = regtest_node
+    w = create_hd(node, "r_bdb_gap", ABANDON, "", None, descriptors=False)
+    last = None
+    for _ in range(1001):
+        last = w.getnewaddress()
+    change = w.getrawchangeaddress()
+    funded_miner.sendtoaddress(last, Decimal("1.1"))
+    funded_miner.sendtoaddress(change, Decimal("0.4"))
+    node.mine(1)
+    height = node.rpc.getblockcount()
+    want = balance(w)
+    assert want == duffs(Decimal("1.5"))
+    dat = tmp_path / "wallet.dat"
+    dat.write_bytes(copy_wallet_dat(node, "r_bdb_gap"))
+    cli = Dwcli(tmp_path / "restored", node.p2p_port)
+    out = cli.run("import-wallet-dat", str(dat))
+    assert cli.total(height) == want, out

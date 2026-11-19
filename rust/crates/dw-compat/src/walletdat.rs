@@ -21,10 +21,12 @@
 //! writes next to the user's file (no `-wal`/`-shm`/journal).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use dashcore::secp256k1::{PublicKey, SecretKey};
+use key_wallet::bip32::{ChildNumber, ExtendedPrivKey, ExtendedPubKey};
 use zeroize::Zeroizing;
 
 use crate::crypter::{self, MasterKeyRecord};
@@ -239,6 +241,14 @@ struct KeyRecord {
 
 /// Dash Core `CHDChain` (`hdchain` / `chdchain`). Seed and mnemonic are
 /// ciphertext while `crypted` is set.
+struct HdChild {
+    account: u32,
+    /// 0 external, 1 internal.
+    change: u32,
+    index: u32,
+    pubkey: [u8; 33],
+}
+
 struct LegacyChain {
     id: [u8; 32],
     crypted: bool,
@@ -278,8 +288,15 @@ pub struct SqliteWallet {
     keys: Vec<KeyRecord>,
     legacy: Option<LegacyChain>,
     crypted_keys: Vec<CryptedKey>,
-    /// Plain or encrypted keys that are not listed as `hdpubkey`.
+    /// Plain or encrypted keys that are not listed as `hdpubkey`. An HD
+    /// chain does not make those keys derived from it.
     pub loose_keys: u32,
+    /// HD public keys, with the account, change chain and address index
+    /// Core stored beside them. The network is which BIP44 coin type
+    /// derives them.
+    hd_children: Vec<HdChild>,
+    /// Persistent coin locks (`lockedutxo`), txid in internal byte order.
+    pub locked_outpoints: Vec<([u8; 32], u32)>,
     /// `cscript` and watch-only scripts, which the HD import leaves out.
     pub scripts: u32,
     /// `Some(true)` when the address book has a mainnet address.
@@ -368,6 +385,22 @@ impl SqliteWallet {
             .as_ref()
             .and_then(|c| c.accounts.values().map(|(ext, int)| (*ext).max(*int)).max())
             .unwrap_or(0)
+    }
+
+    /// Legacy HD accounts as `(account, external counter, internal counter)`.
+    /// The counters are how many keys Core derived on each chain, keypool
+    /// included, kept apart so a restore does not treat them as one
+    /// lookahead.
+    pub fn hd_accounts(&self) -> Vec<(u32, u32, u32)> {
+        self.legacy
+            .as_ref()
+            .map(|c| {
+                c.accounts
+                    .iter()
+                    .map(|(&account, &(external, internal))| (account, external, internal))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Earliest descriptor creation time (UNIX seconds).
@@ -463,6 +496,16 @@ impl SqliteWallet {
         let Some(chain) = &self.legacy else {
             return Err(WalletDatError::NoHdChain);
         };
+        // An encrypted wallet's root decrypts under the same master key that
+        // opened the other records. A plaintext chain next to an `mkey` or
+        // `ckey` is a modified file, not a wallet Dash Core would load.
+        if master.is_some() != chain.crypted {
+            return Err(corrupt(if master.is_some() {
+                "encrypted wallet has a plaintext HD chain"
+            } else {
+                "plaintext wallet has an encrypted HD chain"
+            }));
+        }
         let OpenedChain {
             seed,
             mnemonic,
@@ -478,10 +521,10 @@ impl SqliteWallet {
             return Err(WalletDatError::SeedLength(seed.len()));
         }
         let (master_secret, master_pubkey) = bip32_master(&seed)?;
-        let hint = match self.address_mainnet {
-            Some(true) => "xpub",
-            Some(false) => "tpub",
-            None => "unknown",
+        let hint = if self.established_network(&seed)? {
+            "xpub"
+        } else {
+            "tpub"
         };
         Ok(HdRoot {
             mnemonic: has_mnemonic.then_some((mnemonic, pass)),
@@ -501,6 +544,7 @@ impl SqliteWallet {
         if self.master_keys.is_empty() {
             return Err(corrupt("encrypted wallet without a master key record"));
         }
+        self.kdf_budget()?;
         for mk in &self.master_keys {
             let Some(master) = crypter::decrypt_master_key(mk, passphrase) else {
                 continue;
@@ -560,6 +604,7 @@ impl SqliteWallet {
         if self.master_keys.is_empty() {
             return Err(corrupt("encrypted keys without a master key record"));
         }
+        self.kdf_budget()?;
         for mk in &self.master_keys {
             let Some(master) = crypter::decrypt_master_key(mk, passphrase) else {
                 continue;
@@ -573,6 +618,97 @@ impl SqliteWallet {
             }
         }
         Err(WalletDatError::WrongPassphrase)
+    }
+}
+
+impl SqliteWallet {
+    /// Every `mkey` is tried until one opens the wallet. Each record is
+    /// already capped; their rounds together are capped the same way, so a
+    /// file of many candidates cannot multiply the work.
+    fn kdf_budget(&self) -> Result<(), WalletDatError> {
+        let total: u64 = self.master_keys.iter().map(|m| u64::from(m.rounds)).sum();
+        if total > u64::from(crypter::MAX_ROUNDS) {
+            return Err(corrupt(format!(
+                "mkey records ask for {total} key derivation rounds (at most {})",
+                crypter::MAX_ROUNDS
+            )));
+        }
+        Ok(())
+    }
+
+    /// Mainnet when the stored HD children derive on coin type 5, test
+    /// networks when they derive on coin type 1. Address-book labels are
+    /// not evidence: a keypool with no `name` records still has to decide.
+    fn established_network(&self, seed: &[u8]) -> Result<bool, WalletDatError> {
+        if self.hd_children.is_empty() {
+            return Err(WalletDatError::Unsupported(
+                "the wallet's network cannot be established from its keys".into(),
+            ));
+        }
+        let master = ErasedXprv(
+            ExtendedPrivKey::new_master(dashcore::Network::Mainnet, seed)
+                .map_err(|_| corrupt("HD seed is not a BIP32 seed"))?,
+        );
+        let mut accounts: BTreeMap<(u32, u32), ExtendedPubKey> = BTreeMap::new();
+        let mut derives = |coin: u32, child: &HdChild| -> Result<bool, WalletDatError> {
+            let xpub = match accounts.entry((coin, child.account)) {
+                std::collections::btree_map::Entry::Occupied(e) => *e.get(),
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    let path = [
+                        ChildNumber::from_hardened_idx(44),
+                        ChildNumber::from_hardened_idx(coin),
+                        ChildNumber::from_hardened_idx(child.account),
+                    ]
+                    .into_iter()
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| corrupt("hdpubkey account"))?;
+                    let account = ErasedXprv(
+                        master
+                            .0
+                            .derive_priv(&path)
+                            .map_err(|_| corrupt("hdpubkey account"))?,
+                    );
+                    *e.insert(ExtendedPubKey::from_priv(&account.0))
+                }
+            };
+            let path = [
+                ChildNumber::from_normal_idx(child.change),
+                ChildNumber::from_normal_idx(child.index),
+            ]
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| corrupt("hdpubkey record"))?;
+            let derived = xpub
+                .derive_pub(&path)
+                .map_err(|_| corrupt("hdpubkey record"))?;
+            Ok(derived.public_key.serialize() == child.pubkey)
+        };
+        let mut network = None;
+        for child in &self.hd_children {
+            let this = match (derives(5, child)?, derives(1, child)?) {
+                (true, false) => true,
+                (false, true) => false,
+                _ => return Err(corrupt("HD public key does not match the wallet seed")),
+            };
+            if network.is_some_and(|prev| prev != this) {
+                return Err(corrupt("HD public keys are for more than one network"));
+            }
+            network = Some(this);
+        }
+        let network = network == Some(true);
+        if self.address_mainnet.is_some_and(|book| book != network) {
+            return Err(corrupt("address book and HD keys disagree on the network"));
+        }
+        Ok(network)
+    }
+}
+
+/// An extended private key erased on every return path.
+struct ErasedXprv(ExtendedPrivKey);
+
+impl Drop for ErasedXprv {
+    fn drop(&mut self) {
+        self.0.private_key.non_secure_erase();
     }
 }
 
@@ -770,21 +906,30 @@ pub fn read_sqlite(path: &Path) -> Result<SqliteWallet, WalletDatError> {
 /// Reads a legacy Berkeley DB `wallet.dat` (or a descriptor wallet stored in
 /// one) into the same records [`read_sqlite`] produces.
 pub fn read_bdb(path: &Path) -> Result<SqliteWallet, WalletDatError> {
-    let meta = std::fs::metadata(path).map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
+    let file = std::fs::File::open(path).map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
+    let meta = file
+        .metadata()
+        .map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
     if !meta.is_file() {
         return Err(WalletDatError::Unreadable(format!(
             "{} is not a file",
             path.display()
         )));
     }
-    if meta.len() > crate::bdb::MAX_FILE as u64 {
+    // One handle, and a cap on how many bytes it can yield. Checking
+    // `metadata` and then reading a newly opened file would follow a
+    // replacement that grew past the cap.
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(crate::bdb::MAX_FILE as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
+    if bytes.len() > crate::bdb::MAX_FILE {
         return Err(WalletDatError::Unreadable(format!(
             "{} is over {} bytes",
             path.display(),
             crate::bdb::MAX_FILE
         )));
     }
-    let bytes = std::fs::read(path).map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
     read_bdb_bytes(&bytes)
 }
 
@@ -813,6 +958,8 @@ fn empty_wallet() -> SqliteWallet {
         legacy: None,
         crypted_keys: Vec::new(),
         loose_keys: 0,
+        hd_children: Vec::new(),
+        locked_outpoints: Vec::new(),
         scripts: 0,
         address_mainnet: None,
         earliest_key_time: None,
@@ -835,15 +982,15 @@ fn finish(w: &mut SqliteWallet, gather: Gather) -> Result<(), WalletDatError> {
             purpose,
         });
     }
-    w.loose_keys = if hd_pubs.is_empty() {
-        if w.legacy.is_some() {
-            0
-        } else {
-            key_pubs.len() as u32
+    if !w.crypted_keys.is_empty() {
+        let crypted: BTreeSet<_> = w.crypted_keys.iter().map(|k| k.pubkey.as_slice()).collect();
+        if key_pubs.iter().any(|p| !crypted.contains(p.as_slice())) {
+            return Err(corrupt("encrypted wallet has a plaintext key"));
         }
-    } else {
-        key_pubs.iter().filter(|p| !hd_pubs.contains(*p)).count() as u32
-    };
+    }
+    // A key Core did not list as `hdpubkey` is not shown to be on the HD
+    // chain, including when the file has no `hdpubkey` records at all.
+    w.loose_keys = key_pubs.iter().filter(|p| !hd_pubs.contains(*p)).count() as u32;
     Ok(())
 }
 
@@ -981,11 +1128,23 @@ fn parse_record(
             }
         }
         b"hdchain" | b"chdchain" => {
+            if w.legacy.is_some() {
+                return Err(corrupt("conflicting HD chain records"));
+            }
             let chain = parse_hdchain(&mut v)?;
             if chain.crypted != (kind == b"chdchain") {
                 return Err(corrupt("HD chain type mismatch"));
             }
             w.legacy = Some(chain);
+        }
+        b"lockedutxo" => {
+            let txid = k
+                .take(32)
+                .ok_or_else(|| bad("lockedutxo"))?
+                .try_into()
+                .map_err(|_| bad("lockedutxo"))?;
+            let vout = k.u32().ok_or_else(|| bad("lockedutxo"))?;
+            w.locked_outpoints.push((txid, vout));
         }
         b"key" | b"ckey" => {
             let pubkey = k.bytes().ok_or_else(|| bad("key"))?.to_vec();
@@ -995,7 +1154,7 @@ fn parse_record(
                 let hashed = if kind == b"ckey" {
                     sha256d(&secret)
                 } else {
-                    let mut buf = Vec::with_capacity(pubkey.len() + secret.len());
+                    let mut buf = Zeroizing::new(Vec::with_capacity(pubkey.len() + secret.len()));
                     buf.extend_from_slice(&pubkey);
                     buf.extend_from_slice(&secret);
                     sha256d(&buf)
@@ -1047,11 +1206,12 @@ fn parse_record(
         }
         b"hdpubkey" => {
             let pubkey = k.bytes().ok_or_else(|| bad("hdpubkey"))?.to_vec();
-            let stored = parse_hd_pubkey(&mut v)?;
-            if stored != pubkey {
+            let child = parse_hd_pubkey(&mut v)?;
+            if child.pubkey.as_slice() != pubkey.as_slice() {
                 return Err(corrupt("hdpubkey does not match its key"));
             }
             g.hd_pubs.insert(pubkey);
+            w.hd_children.push(child);
         }
         b"cscript" => {
             v.bytes().ok_or_else(|| bad("script"))?;
@@ -1110,16 +1270,34 @@ fn bounded(v: &mut Reader<'_>, what: &str) -> Result<Vec<u8>, WalletDatError> {
 /// `CHDPubKey`: version, then `CExtPubKey` as a 74-byte blob (depth,
 /// fingerprint, big-endian child, chain code, compressed pubkey), then the
 /// chain id and the account and change indexes.
-fn parse_hd_pubkey(v: &mut Reader<'_>) -> Result<Vec<u8>, WalletDatError> {
+fn parse_hd_pubkey(v: &mut Reader<'_>) -> Result<HdChild, WalletDatError> {
     v.i32().ok_or_else(|| corrupt("hdpubkey record"))?;
     let ext = v.bytes().ok_or_else(|| corrupt("hdpubkey record"))?;
     if ext.len() != 74 {
         return Err(corrupt("hdpubkey record"));
     }
+    let index = u32::from_be_bytes(
+        ext[5..9]
+            .try_into()
+            .map_err(|_| corrupt("hdpubkey record"))?,
+    );
+    if index & 0x8000_0000 != 0 {
+        return Err(corrupt("hdpubkey record"));
+    }
+    let mut pubkey = [0u8; 33];
+    pubkey.copy_from_slice(&ext[41..74]);
     v.hash256().ok_or_else(|| corrupt("hdpubkey record"))?;
-    v.u32().ok_or_else(|| corrupt("hdpubkey record"))?;
-    v.u32().ok_or_else(|| corrupt("hdpubkey record"))?;
-    Ok(ext[41..74].to_vec())
+    let account = v.u32().ok_or_else(|| corrupt("hdpubkey record"))?;
+    let change = v.u32().ok_or_else(|| corrupt("hdpubkey record"))?;
+    if change > 1 {
+        return Err(corrupt("hdpubkey record"));
+    }
+    Ok(HdChild {
+        account,
+        change,
+        index,
+        pubkey,
+    })
 }
 
 fn plain_key_matches(pubkey: &[u8], der: &[u8]) -> bool {
@@ -1572,7 +1750,19 @@ mod tests {
         let seed = [0x5au8; 64];
         let id = sha256d(&seed);
         let chain = ser_chain(&id, false, &seed, b"", b"", 0, 4);
-        let pairs = [(db_key("hdchain"), chain)];
+        let child = {
+            let master = ExtendedPrivKey::new_master(Network::Regtest, &seed).unwrap();
+            master
+                .derive_priv(&DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
+                .unwrap()
+                .private_key
+                .public_key()
+                .serialize()
+        };
+        let pairs = [
+            (db_key("hdchain"), chain),
+            (db_key_pub("hdpubkey", &child), ser_hdpubkey(&child)),
+        ];
         let refs: Vec<(&[u8], &[u8])> = pairs
             .iter()
             .map(|(k, v)| (k.as_slice(), v.as_slice()))
@@ -1645,7 +1835,8 @@ mod tests {
         let leaf = build::pack(3, &items, TYPE_LEAF, 1, 0, false);
         let overflow = build::overflow_page(4, payload, 0, false);
         let pairs = crate::bdb::read_pairs(&build::assemble(&[leaf, overflow], false)).unwrap();
-        assert_eq!(pairs, vec![(b"k".to_vec(), payload.to_vec())]);
+        assert_eq!(&pairs[0].0[..], b"k");
+        assert_eq!(&pairs[0].1[..], payload);
         let deleted = vec![
             build::data_item(b"gone-key", true, false),
             build::data_item(b"gone-val", false, false),
@@ -1654,7 +1845,8 @@ mod tests {
         ];
         let leaf = build::pack(3, &deleted, TYPE_LEAF, 1, 0, false);
         let pairs = crate::bdb::read_pairs(&build::assemble(&[leaf], false)).unwrap();
-        assert_eq!(pairs, vec![(b"kept-key".to_vec(), b"kept-val".to_vec())]);
+        assert_eq!(&pairs[0].0[..], b"kept-key");
+        assert_eq!(&pairs[0].1[..], b"kept-val");
         let odd = build::pack(
             3,
             &[build::data_item(b"only", false, false)],
@@ -1664,6 +1856,259 @@ mod tests {
             false,
         );
         assert!(crate::bdb::read_pairs(&build::assemble(&[odd], false)).is_err());
+    }
+
+    #[test]
+    fn overflow_past_the_inner_last_page_is_readable() {
+        let payload = b"real-core-overflow";
+        let items = vec![
+            build::data_item(b"k", false, false),
+            build::overflow_item(4, payload.len() as u32, false),
+        ];
+        let leaf = build::pack(3, &items, TYPE_LEAF, 1, 0, false);
+        let overflow = build::overflow_page(4, payload, 0, false);
+        // Inner last_page 2, outer last_page 4, inner root at page 3. The
+        // four Dash Core fixtures have this shape (2 and 3).
+        let file = build::assemble_bounds(&[leaf, overflow], 2, false);
+        let pairs = crate::bdb::read_pairs(&file).unwrap();
+        assert_eq!(&pairs[0].1[..], payload);
+    }
+
+    #[test]
+    fn a_dirty_last_page_is_not_a_flushed_wallet() {
+        let payload = b"k";
+        let items = vec![
+            build::data_item(b"k", false, false),
+            build::data_item(payload, false, false),
+        ];
+        let leaf = build::pack(3, &items, TYPE_LEAF, 1, 0, false);
+        let mut file = build::assemble(&[leaf], false);
+        let pagesize = 4096;
+        let last = file.len() / pagesize - 1;
+        file[last * pagesize] = 9;
+        assert!(crate::bdb::read_pairs(&file).is_err());
+    }
+
+    #[test]
+    fn an_encrypted_wallet_rejects_a_plaintext_chain() {
+        let seed = core_seed(PHRASE.as_bytes(), b"second");
+        let salt = [7u8; 8];
+        let (pass_key, pass_iv) = crypter::key_from_passphrase(b"bdb-pass", &salt, 2).unwrap();
+        let master = [0x42u8; 32];
+        let crypted_master = crypter::aes_cbc_encrypt(&pass_key, &pass_iv, &master);
+        let child_secret = {
+            let xprv = ExtendedPrivKey::new_master(Network::Regtest, &seed[..]).unwrap();
+            xprv.derive_priv(&DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
+                .unwrap()
+                .private_key
+                .to_secret_bytes()
+        };
+        let child_pub = compressed(&child_secret);
+        let ct = crypter::aes_cbc_encrypt(&master, &crypter::pubkey_iv(&child_pub), &child_secret);
+        let mut ckey = Vec::new();
+        ser_bytes(&mut ckey, &ct);
+        ckey.extend_from_slice(&sha256d(&ct));
+        let mut mkey = Vec::new();
+        ser_bytes(&mut mkey, &crypted_master);
+        ser_bytes(&mut mkey, &salt);
+        mkey.extend_from_slice(&0u32.to_le_bytes());
+        mkey.extend_from_slice(&2u32.to_le_bytes());
+        ser_bytes(&mut mkey, b"");
+        let mut mkey_key = db_key("mkey");
+        mkey_key.extend_from_slice(&1u32.to_le_bytes());
+        let other = core_seed(PHRASE.as_bytes(), b"");
+        let other_id = sha256d(&other[..]);
+        let chain = ser_chain(&other_id, false, &other[..], PHRASE.as_bytes(), b"", 1, 0);
+        let pairs = [
+            (db_key("hdchain"), chain),
+            (mkey_key, mkey),
+            (db_key_pub("ckey", &child_pub), ckey),
+            (db_key_pub("hdpubkey", &child_pub), ser_hdpubkey(&child_pub)),
+        ];
+        let refs: Vec<(&[u8], &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        let wallet = read_bdb_bytes(&build::pairs(&refs, false)).unwrap();
+        let err = wallet.hd_root(Some(b"bdb-pass")).unwrap_err();
+        assert!(
+            matches!(err, WalletDatError::Corrupt(ref d) if d.contains("plaintext HD chain")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn two_hd_chain_records_are_rejected() {
+        let seed = [0x5au8; 64];
+        let id = sha256d(&seed);
+        let chain = ser_chain(&id, false, &seed, b"", b"", 1, 0);
+        let pairs = [
+            (db_key("hdchain"), chain.clone()),
+            (db_key("chdchain"), chain),
+        ];
+        let refs: Vec<(&[u8], &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        let err = read_bdb_bytes(&build::pairs(&refs, false)).unwrap_err();
+        assert!(
+            matches!(err, WalletDatError::Corrupt(ref d) if d.contains("conflicting")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn an_hd_chain_does_not_hide_loose_keys() {
+        let seed = [0x5au8; 64];
+        let id = sha256d(&seed);
+        let chain = ser_chain(&id, false, &seed, b"", b"", 1, 0);
+        let secret = [0x44u8; 32];
+        let pubkey = compressed(&secret);
+        let mut value = Vec::new();
+        ser_bytes(&mut value, &der_of(&secret));
+        let pairs = [
+            (db_key("hdchain"), chain),
+            (db_key_pub("key", &pubkey), value),
+        ];
+        let refs: Vec<(&[u8], &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        let wallet = read_bdb_bytes(&build::pairs(&refs, false)).unwrap();
+        assert_eq!(wallet.loose_keys, 1);
+    }
+
+    #[test]
+    fn an_encrypted_wallet_with_a_plaintext_key_is_corrupt() {
+        let plain = [0x44u8; 32];
+        let plain_pub = compressed(&plain);
+        let mut key = Vec::new();
+        ser_bytes(&mut key, &der_of(&plain));
+        let crypted_pub = compressed(&[0x45u8; 32]);
+        let ct = [0x99u8; 48];
+        let mut ckey = Vec::new();
+        ser_bytes(&mut ckey, &ct);
+        ckey.extend_from_slice(&sha256d(&ct));
+        let pairs = [
+            (db_key_pub("key", &plain_pub), key),
+            (db_key_pub("ckey", &crypted_pub), ckey),
+        ];
+        let refs: Vec<(&[u8], &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        let err = read_bdb_bytes(&build::pairs(&refs, false)).err().unwrap();
+        assert!(
+            matches!(err, WalletDatError::Corrupt(ref d) if d.contains("plaintext key")),
+            "{err:?}"
+        );
+    }
+
+    fn label_free_wallet(coin: u32, seed_of_child: &[u8]) -> SqliteWallet {
+        let seed = core_seed(PHRASE.as_bytes(), b"");
+        let id = sha256d(&seed[..]);
+        let chain = ser_chain(&id, false, &seed[..], PHRASE.as_bytes(), b"", 1, 0);
+        let child = ExtendedPrivKey::new_master(Network::Regtest, seed_of_child)
+            .unwrap()
+            .derive_priv(&DerivationPath::from_str(&format!("m/44'/{coin}'/0'/0/0")).unwrap())
+            .unwrap()
+            .private_key
+            .public_key()
+            .serialize();
+        let pairs = [
+            (db_key("hdchain"), chain),
+            (db_key_pub("hdpubkey", &child), ser_hdpubkey(&child)),
+        ];
+        let refs: Vec<(&[u8], &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        read_bdb_bytes(&build::pairs(&refs, false)).unwrap()
+    }
+
+    #[test]
+    fn a_label_free_wallet_takes_its_network_from_its_keypool() {
+        let seed = core_seed(PHRASE.as_bytes(), b"");
+        let main = label_free_wallet(5, &seed[..]);
+        assert_eq!(main.hd_root(None).unwrap().external.key.as_str(), "xpub");
+        let test = label_free_wallet(1, &seed[..]);
+        assert_eq!(test.hd_root(None).unwrap().external.key.as_str(), "tpub");
+        let foreign = label_free_wallet(1, &[0x33u8; 64]);
+        let err = foreign.hd_root(None).err().unwrap();
+        assert!(
+            matches!(err, WalletDatError::Corrupt(ref d) if d.contains("does not match the wallet seed")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn bdb_records_are_wiped_on_drop() {
+        type Wiped = zeroize::Zeroizing<Vec<u8>>;
+        let read: fn(&[u8]) -> Result<Vec<(Wiped, Wiped)>, WalletDatError> = crate::bdb::read_pairs;
+        assert!(read(&[]).is_err());
+    }
+
+    #[test]
+    fn locked_utxos_are_kept() {
+        let seed = [0x5au8; 64];
+        let id = sha256d(&seed);
+        let chain = ser_chain(&id, false, &seed, b"", b"", 0, 0);
+        let child = {
+            let master = ExtendedPrivKey::new_master(Network::Regtest, &seed).unwrap();
+            master
+                .derive_priv(&DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
+                .unwrap()
+                .private_key
+                .public_key()
+                .serialize()
+        };
+        let mut key = db_key("lockedutxo");
+        let txid = [0xabu8; 32];
+        key.extend_from_slice(&txid);
+        key.extend_from_slice(&7u32.to_le_bytes());
+        let pairs = [
+            (db_key("hdchain"), chain),
+            (db_key_pub("hdpubkey", &child), ser_hdpubkey(&child)),
+            (key, b"1".to_vec()),
+        ];
+        let refs: Vec<(&[u8], &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        let wallet = read_bdb_bytes(&build::pairs(&refs, false)).unwrap();
+        assert_eq!(wallet.locked_outpoints, vec![(txid, 7)]);
+    }
+
+    #[test]
+    fn mkey_rounds_are_capped_across_records() {
+        let seed = [0x5au8; 64];
+        let id = sha256d(&seed);
+        let chain = ser_chain(&id, true, &seed, b"phrase", b"", 0, 0);
+        let rounds = crypter::MAX_ROUNDS / 2 + 1;
+        let mut records = vec![(db_key("chdchain"), chain)];
+        for n in 1..=2u32 {
+            let mut mkey = Vec::new();
+            ser_bytes(&mut mkey, &[0u8; 32]);
+            ser_bytes(&mut mkey, &[n as u8; 8]);
+            mkey.extend_from_slice(&0u32.to_le_bytes());
+            mkey.extend_from_slice(&rounds.to_le_bytes());
+            ser_bytes(&mut mkey, b"");
+            let mut mkey_key = db_key("mkey");
+            mkey_key.extend_from_slice(&n.to_le_bytes());
+            records.push((mkey_key, mkey));
+        }
+        let child = [0x02u8; 33];
+        records.push((db_key_pub("hdpubkey", &child), ser_hdpubkey(&child)));
+        let refs: Vec<(&[u8], &[u8])> = records
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        let wallet = read_bdb_bytes(&build::pairs(&refs, false)).unwrap();
+        let err = wallet.hd_root(Some(b"bdb-pass")).unwrap_err();
+        assert!(
+            matches!(err, WalletDatError::Corrupt(ref d) if d.contains("derivation rounds")),
+            "{err:?}"
+        );
     }
 
     fn hex_bytes(s: &str) -> Vec<u8> {
@@ -1807,6 +2252,103 @@ mod tests {
             std::fs::read(dir.join("bdb_hd_encrypted.dat")).unwrap(),
             encrypted
         );
+    }
+
+    /// Wallets the engine tests import. Written with `DW_WRITE_BDB_FIXTURES=1`.
+    fn engine_security_wallets() -> Vec<(&'static str, Vec<u8>)> {
+        let phrase = PHRASE.as_bytes();
+        let seed = core_seed(phrase, b"");
+        let id = sha256d(&seed[..]);
+        let abandon = b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let abandon_seed = core_seed(abandon, b"");
+        let abandon_id = sha256d(&abandon_seed[..]);
+        let child_of = |seed: &[u8]| {
+            let master = ExtendedPrivKey::new_master(Network::Regtest, seed).unwrap();
+            master
+                .derive_priv(&DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap())
+                .unwrap()
+                .private_key
+                .public_key()
+                .serialize()
+        };
+        let child = child_of(&seed[..]);
+        let abandon_child = child_of(&abandon_seed[..]);
+        let hd = |id: &[u8; 32], seed: &[u8], phrase: &[u8], external, internal| {
+            ser_chain(id, false, seed, phrase, b"", external, internal)
+        };
+        let label_free = {
+            let pairs = [
+                (db_key("hdchain"), hd(&id, &seed[..], phrase, 1, 0)),
+                (db_key_pub("hdpubkey", &child), ser_hdpubkey(&child)),
+            ];
+            let refs: Vec<(&[u8], &[u8])> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                .collect();
+            build::pairs(&refs, false)
+        };
+        let secret = [0x44u8; 32];
+        let loose_pub = compressed(&secret);
+        let mut loose_value = Vec::new();
+        ser_bytes(&mut loose_value, &der_of(&secret));
+        let mut lock_key = db_key("lockedutxo");
+        let txid = [0xabu8; 32];
+        lock_key.extend_from_slice(&txid);
+        lock_key.extend_from_slice(&7u32.to_le_bytes());
+        let wide = {
+            let pairs = [
+                (
+                    db_key("hdchain"),
+                    hd(&abandon_id, &abandon_seed[..], abandon, 1001, 2),
+                ),
+                (
+                    db_key_pub("hdpubkey", &abandon_child),
+                    ser_hdpubkey(&abandon_child),
+                ),
+                (db_key_pub("key", &loose_pub), loose_value),
+                (lock_key, b"1".to_vec()),
+            ];
+            let refs: Vec<(&[u8], &[u8])> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                .collect();
+            build::pairs(&refs, false)
+        };
+        let mut account1_chain = hd(&abandon_id, &abandon_seed[..], abandon, 1, 0);
+        let n = account1_chain.len();
+        account1_chain[n - 12..n - 8].copy_from_slice(&1u32.to_le_bytes());
+        let account1 = {
+            let pairs = [
+                (db_key("hdchain"), account1_chain),
+                (
+                    db_key_pub("hdpubkey", &abandon_child),
+                    ser_hdpubkey(&abandon_child),
+                ),
+            ];
+            let refs: Vec<(&[u8], &[u8])> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                .collect();
+            build::pairs(&refs, false)
+        };
+        vec![
+            ("bdb_label_free.dat", label_free),
+            ("bdb_wide_range.dat", wide),
+            ("bdb_account1.dat", account1),
+        ]
+    }
+
+    #[test]
+    fn engine_security_fixtures_are_stable() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../testdata/compat/walletdat");
+        for (name, bytes) in engine_security_wallets() {
+            let path = dir.join(name);
+            if std::env::var_os("DW_WRITE_BDB_FIXTURES").is_some() {
+                std::fs::write(&path, &bytes).unwrap();
+            }
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{name}");
+        }
     }
 }
 
