@@ -2408,13 +2408,14 @@ fn repair_leaves_a_counted_denomination_out_of_the_self_spend() {
     assert!(!inputs.contains(&denomination));
 }
 
-/// A denomination the stuck lock itself spent is still spent by the
-/// repair, which must conflict with that lock.
+/// A stuck lock that spent only a denomination is repaired with that
+/// denomination alone: it conflicts with the lock, and no unmixed coin is
+/// joined to it.
 #[test]
-fn repair_spends_a_denomination_the_stuck_lock_spent() {
+fn repair_of_a_lock_of_a_denomination_spends_that_denomination_alone() {
     const STEP: &str = "registration/1/funding";
     let f = fixture(false);
-    let a = f.credit(1, COIN);
+    f.credit(1, COIN);
     let denomination = f.credit(3, dw_coinjoin::denoms::DENOMINATIONS[2]);
     f.stuck_signing(STEP, 51, &[denomination]);
     f.track_lock(
@@ -2428,7 +2429,26 @@ fn repair_spends_a_denomination_the_stuck_lock_spent() {
 
     let inputs: std::collections::HashSet<OutPoint> =
         tx.input.iter().map(|i| i.previous_output).collect();
-    assert_eq!(inputs, std::collections::HashSet::from([a, denomination]));
+    assert_eq!(inputs, std::collections::HashSet::from([denomination]));
+}
+
+/// A denomination another step's tracked lock spends is that lock's input,
+/// not this step's: the repair leaves it out.
+#[test]
+fn repair_leaves_out_a_denomination_another_steps_lock_spends() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let other = f.credit(3, dw_coinjoin::denoms::DENOMINATIONS[2]);
+    f.stuck_signing(STEP, 51, &[a]);
+    f.track_lock(51, 0, &[a], platform_wallet::AssetLockStatus::Built);
+    f.track_lock(52, 5, &[other], platform_wallet::AssetLockStatus::Built);
+
+    let tx = f.repair(STEP);
+
+    let inputs: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(inputs, std::collections::HashSet::from([a]));
 }
 
 /// E0-04 §6.5 (C9): a self-spend the journal fails to record is released
