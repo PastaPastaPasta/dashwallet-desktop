@@ -923,7 +923,7 @@ struct WalletDatImport {
 /// dw-appdb setting (wallet scope): `external,internal`, the counters of a
 /// legacy Core wallet's account 0, applied again at every load because
 /// key-wallet keeps its pools in memory.
-const ISSUED_SETTING: &str = "bip44.legacy_issued";
+pub(crate) const ISSUED_SETTING: &str = "bip44.legacy_issued";
 
 impl NetworkSession {
     /// Derives account 0's receive and change chains up to the last address
@@ -976,23 +976,47 @@ impl NetworkSession {
         Ok(())
     }
 
-    /// Stores `state` for wallet `id`: the range setting, Core's coin locks
-    /// and its CoinJoin salt, so the same coins count as fully mixed
-    /// (QT-043, m3-engine.md §5). The range and salt replace stored ones;
-    /// Core's locks are added to any the wallet has.
+    /// Stores `state` for wallet `id` in one transaction: the range
+    /// setting, Core's coin locks and its CoinJoin salt, so the same coins
+    /// count as fully mixed (QT-043, m3-engine.md §5). The range and salt
+    /// replace stored ones; Core's locks are added to any the wallet has.
+    /// Returns what was replaced, for [`Self::restore_imported_state`].
     pub(crate) async fn write_imported_state(
         self: &Arc<Self>,
         id: WalletId,
         state: &ImportedState,
-    ) -> Result<(), EngineError> {
-        if let Some(issued) = state.issued {
-            self.store_issued(id, issued).await?;
+    ) -> Result<Option<dw_appdb::PriorRows>, EngineError> {
+        let mut settings = Vec::new();
+        if let Some((external, internal)) = state.issued {
+            settings.push((ISSUED_SETTING, format!("{external},{internal}")));
         }
-        self.install_imported_locks(id, state.locks.clone()).await?;
         if let Some(salt) = state.coinjoin_salt {
-            self.import_coinjoin_salt(id, salt).await?;
+            settings.push(crate::coinjoin::salt_setting(&salt));
         }
-        Ok(())
+        // The coins may not be synced yet; the lock row is what coin
+        // selection reads when they appear.
+        let locks: Vec<(String, u32)> = (state.locks.iter())
+            .map(|o| (o.txid.to_string(), o.vout))
+            .collect();
+        if settings.is_empty() && locks.is_empty() {
+            return Ok(None);
+        }
+        let key = id.to_string();
+        self.appdb_op(move |db| {
+            db.write_settings_and_locks(&key, &settings, &locks, crate::coins::now_secs())
+        })
+        .await
+        .map(Some)
+    }
+
+    /// Puts back what [`Self::write_imported_state`] replaced.
+    pub(crate) async fn restore_imported_state(&self, prior: dw_appdb::PriorRows) {
+        if let Err(e) = self
+            .appdb_op(move |db| db.restore_settings_and_locks(&prior))
+            .await
+        {
+            tracing::warn!(error = %e, "could not put back the rows a failed import replaced");
+        }
     }
 
     /// Applies the range of `state` to registered wallet `id`, before it is
@@ -1013,22 +1037,6 @@ impl NetworkSession {
         self.cover_issued(manager, id, issued).await
     }
 
-    async fn store_issued(
-        self: &Arc<Self>,
-        id: WalletId,
-        (external, internal): (u32, u32),
-    ) -> Result<(), EngineError> {
-        let key = id.to_string();
-        self.appdb_op(move |db| {
-            db.set_setting(
-                &key,
-                ISSUED_SETTING,
-                Some(&format!("{external},{internal}")),
-            )
-        })
-        .await
-    }
-
     /// Wallet `id`'s stored legacy counters, if valid ones are stored.
     pub(crate) async fn stored_issued(&self, id: WalletId) -> Option<(u32, u32)> {
         let appdb = Arc::clone(&self.live().ok()?.appdb);
@@ -1037,28 +1045,16 @@ impl NetworkSession {
             .await
             .ok()?
             .ok()??;
-        let (external, internal) = value.split_once(',')?;
-        let issued = (external.parse().ok()?, internal.parse().ok()?);
-        (issued.0 <= MAX_ISSUED && issued.1 <= MAX_ISSUED).then_some(issued)
+        parse_issued(&value)
     }
+}
 
-    /// Writes Core's persistent coin locks before the wallet can spend.
-    /// The coins themselves may not be synced yet; the lock row is what
-    /// coin selection reads when they appear.
-    async fn install_imported_locks(
-        self: &Arc<Self>,
-        id: WalletId,
-        locks: Vec<dashcore::OutPoint>,
-    ) -> Result<(), EngineError> {
-        if locks.is_empty() {
-            return Ok(());
-        }
-        let key = id.to_string();
-        let locks: Vec<(String, u32)> =
-            locks.iter().map(|o| (o.txid.to_string(), o.vout)).collect();
-        self.appdb_op(move |db| db.lock_manual_all(&key, &locks, crate::coins::now_secs()))
-            .await
-    }
+/// The range setting's value, if valid: `"<external>,<internal>"`, each at
+/// most [`MAX_ISSUED`].
+pub(crate) fn parse_issued(value: &str) -> Option<(u32, u32)> {
+    let (external, internal) = value.split_once(',')?;
+    let issued = (external.parse().ok()?, internal.parse().ok()?);
+    (issued.0 <= MAX_ISSUED && issued.1 <= MAX_ISSUED).then_some(issued)
 }
 
 /// Tests: the next legacy range an import applies in a session on one of
@@ -1277,13 +1273,16 @@ mod tests {
         }
     }
 
-    /// A legacy wallet whose range cannot be applied is not announced: the
-    /// import fails, the wallet is taken out with its rows, and importing
-    /// the file again works.
-    #[test]
-    fn a_legacy_range_not_applied_fails_the_import_before_it_is_announced() {
+    /// A regtest session with an unencrypted vault, its data dir private,
+    /// and what it announced.
+    fn regtest_session() -> (
+        tempfile::TempDir,
+        crate::Engine,
+        Arc<NetworkSession>,
+        Arc<Created>,
+    ) {
         use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
-        let dir = tempfile::tempdir().unwrap();
+        let dir = dw_testutil::private_tempdir();
         let created = Arc::new(Created::default());
         let engine = crate::Engine::new(
             crate::EngineConfig {
@@ -1310,9 +1309,31 @@ mod tests {
             ))
             .unwrap();
         engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+        (dir, engine, s, created)
+    }
+
+    /// The id of `bdb_wide_range.dat`'s wallet (`abandon … about`).
+    fn wide_range_id() -> WalletId {
         let phrase = b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
         let seed = mnemonic::derive_secret(phrase, b"", true).unwrap().seed;
-        let id = WalletId(mnemonic::wallet_id_for_seed(&seed, dashcore::Network::Regtest).unwrap());
+        WalletId(mnemonic::wallet_id_for_seed(&seed, dashcore::Network::Regtest).unwrap())
+    }
+
+    /// Whether wallet `id` has none of Core's rows: range, salt, locks.
+    fn has_no_core_rows(s: &NetworkSession, id: WalletId) -> bool {
+        let (db, wallet) = (s.live().unwrap().appdb, id.to_string());
+        db.setting(&wallet, ISSUED_SETTING).unwrap().is_none()
+            && db.setting(&wallet, "coinjoin.salt").unwrap().is_none()
+            && db.locks(&wallet).unwrap().is_empty()
+    }
+
+    /// A legacy wallet whose range cannot be applied is not announced: the
+    /// import fails, the wallet is taken out with its rows, and importing
+    /// the file again works.
+    #[test]
+    fn a_legacy_range_not_applied_fails_the_import_before_it_is_announced() {
+        let (_dir, engine, s, created) = regtest_session();
+        let id = wide_range_id();
         let file = testdata("compat/walletdat/bdb_wide_range.dat");
 
         FAIL_COVER_IN
@@ -1331,10 +1352,7 @@ mod tests {
         );
         let manager = s.manager().unwrap();
         assert!(engine.block_on(manager.get_wallet(&id.0)).is_none());
-        let (db, wallet) = (s.live().unwrap().appdb, id.to_string());
-        assert_eq!(db.setting(&wallet, ISSUED_SETTING).unwrap(), None);
-        assert_eq!(db.setting(&wallet, "coinjoin.salt").unwrap(), None);
-        assert!(db.locks(&wallet).unwrap().is_empty());
+        assert!(has_no_core_rows(&s, id));
 
         let report = engine
             .block_on(s.import_wallet_dat(file, None, ImportOptions::default()))
@@ -1342,6 +1360,29 @@ mod tests {
         assert_eq!(report.wallet_id, id);
         assert_eq!(*created.0.lock().unwrap(), [id]);
         assert_eq!(engine.block_on(s.locked_outpoints(id)).unwrap().len(), 1);
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// Taking out a wallet whose range was not applied deletes its rows even
+    /// when its stored wallet cannot be deleted.
+    #[test]
+    fn a_failed_stored_wallet_delete_still_deletes_the_rows() {
+        let (_dir, engine, s, created) = regtest_session();
+        let id = wide_range_id();
+        let dir = s.data_dir().to_path_buf();
+        FAIL_COVER_IN.lock().unwrap().push(dir.clone());
+        (crate::backup::FAIL_STORED_WALLET_DELETE_IN.lock().unwrap()).push(dir);
+        let failed = engine.block_on(s.import_wallet_dat(
+            testdata("compat/walletdat/bdb_wide_range.dat"),
+            None,
+            ImportOptions::default(),
+        ));
+        assert!(
+            matches!(failed, Err(EngineError::Internal(_))),
+            "{failed:?}"
+        );
+        assert!(created.0.lock().unwrap().is_empty());
+        assert!(has_no_core_rows(&s, id));
         engine.block_on(engine.shutdown()).unwrap();
     }
 

@@ -1003,7 +1003,10 @@ fn finish(w: &mut SqliteWallet, gather: Gather) -> Result<(), WalletDatError> {
             purpose,
         });
     }
-    if !w.crypted_keys.is_empty() {
+    let encrypted = !w.master_keys.is_empty()
+        || !w.crypted_keys.is_empty()
+        || w.legacy.as_ref().is_some_and(|c| c.crypted);
+    if encrypted {
         let crypted: BTreeSet<_> = w.crypted_keys.iter().map(|k| k.pubkey.as_slice()).collect();
         if key_pubs.iter().any(|p| !crypted.contains(p.as_slice())) {
             return Err(corrupt("encrypted wallet has a plaintext key"));
@@ -2015,6 +2018,20 @@ mod tests {
         assert!(crate::bdb::read_pairs(&build::assemble(&[odd], false)).is_err());
     }
 
+    /// Bytes past the last whole page are refused, not ignored.
+    #[test]
+    fn a_partial_trailing_page_is_refused() {
+        let mut file = build::pairs(&[(b"k", b"v")], false);
+        assert!(crate::bdb::read_pairs(&file).is_ok());
+        file.push(0);
+        assert_eq!(
+            crate::bdb::read_pairs(&file).err(),
+            Some(WalletDatError::Corrupt(
+                "file is not a whole number of pages".into()
+            ))
+        );
+    }
+
     /// A child named twice is refused when it is pushed, before it is read,
     /// so slots that all name one page cannot grow the walk's stack.
     #[test]
@@ -2285,6 +2302,38 @@ mod tests {
             matches!(err, WalletDatError::Corrupt(ref d) if d.contains("plaintext key")),
             "{err:?}"
         );
+    }
+
+    /// A plaintext key beside a master key or an encrypted HD chain, with
+    /// no encrypted key, is refused as well.
+    #[test]
+    fn a_plaintext_key_beside_a_master_key_or_encrypted_chain_is_corrupt() {
+        let plain = [0x44u8; 32];
+        let mut key = Vec::new();
+        ser_bytes(&mut key, &der_of(&plain));
+        let key = (db_key_pub("key", &compressed(&plain)), key);
+        let mut mkey = Vec::new();
+        ser_bytes(&mut mkey, &[0x11u8; 48]);
+        ser_bytes(&mut mkey, &[0x22u8; 8]);
+        mkey.extend_from_slice(&0u32.to_le_bytes());
+        mkey.extend_from_slice(&2u32.to_le_bytes());
+        ser_bytes(&mut mkey, b"");
+        let mut mkey_key = db_key("mkey");
+        mkey_key.extend_from_slice(&1u32.to_le_bytes());
+        let seed = [0x5au8; 64];
+        let chain = ser_chain(&sha256d(&seed), true, &seed, b"", b"", 1, 0);
+        for beside in [(mkey_key, mkey), (db_key("chdchain"), chain)] {
+            let pairs = [key.clone(), beside];
+            let refs: Vec<(&[u8], &[u8])> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                .collect();
+            let err = read_bdb_bytes(&build::pairs(&refs, false)).err().unwrap();
+            assert!(
+                matches!(err, WalletDatError::Corrupt(ref d) if d.contains("plaintext key")),
+                "{err:?}"
+            );
+        }
     }
 
     fn label_free_wallet(coin: u32, seed_of_child: &[u8]) -> SqliteWallet {

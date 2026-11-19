@@ -667,6 +667,89 @@ fn test_qt_106_an_import_of_a_wallet_already_there_changes_nothing() {
     );
 }
 
+/// A watch-only wallet: the `abandon` wallet restored from its phrase,
+/// with its own salt, then its seed deleted from the vault.
+fn watch_only_abandon(e: &Engine, s: &Arc<NetworkSession>) -> (WalletId, String) {
+    let id = restore_abandon(e, s);
+    let own_salt = e.block_on(s.coinjoin_salt(id)).unwrap();
+    assert_ne!(own_salt, CORE_SALT);
+    assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+    (id, own_salt)
+}
+
+/// A wallet.dat of a watch-only wallet's seed attaches its keys with Core's
+/// range, locks and salt, all in place when the wallet is announced.
+#[test]
+fn test_qt_106_a_wallet_dat_attaches_keys_to_a_watch_only_wallet() {
+    let dir = dw_testutil::private_tempdir();
+    let probe = Arc::new(CreatedProbe::default());
+    let e = engine_with(dir.path(), Arc::clone(&probe) as Arc<dyn EventSink>);
+    let s = unlocked_session(&e);
+    probe
+        .db
+        .set(s.data_dir().join(dw_appdb::APP_DB_FILE))
+        .unwrap();
+    let (id, _) = watch_only_abandon(&e, &s);
+    assert_eq!(import_wide(&e, &s).unwrap(), id);
+    assert!(s.vault().has_wallet_secret(&id.0));
+    assert!(reaches_index_1000(&e, &s, id));
+    assert_eq!(e.block_on(s.locked_outpoints(id)).unwrap().len(), 1);
+    assert_eq!(e.block_on(s.coinjoin_salt(id)).unwrap(), CORE_SALT);
+    let seen = probe.seen.lock().unwrap().clone();
+    assert_eq!(
+        seen.last(),
+        Some(&(
+            id.to_string(),
+            1,
+            Some("1001,2".to_owned()),
+            Some(CORE_SALT.to_owned())
+        )),
+        "what the app database held when the keys were announced: {seen:?}"
+    );
+}
+
+/// Attaching keys whose last write fails leaves the watch-only wallet as it
+/// was: no seed, its own salt, no Core lock or range setting.
+#[test]
+fn test_qt_106_a_failed_key_attachment_leaves_the_watch_only_wallet_as_it_was() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = unlocked_session(&e);
+    let (id, own_salt) = watch_only_abandon(&e, &s);
+    refuse_salt_writes(&s, true);
+    let failed = import_wide(&e, &s);
+    assert!(failed.is_err(), "{failed:?}");
+    refuse_salt_writes(&s, false);
+    assert!(!s.vault().has_wallet_secret(&id.0));
+    assert_eq!(stored_setting(&s, id, "coinjoin.salt"), Some(own_salt));
+    assert_eq!(stored_setting(&s, id, "bip44.legacy_issued"), None);
+    assert!(e.block_on(s.locked_outpoints(id)).unwrap().is_empty());
+}
+
+/// A `.dwbackup` of a legacy wallet restores its range before the wallet
+/// is announced, in that session, without a reload.
+#[test]
+fn test_qt_110_a_restored_legacy_wallet_has_its_range_at_once() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(&dir.path().join("a"));
+    let s = unlocked_session(&e);
+    let id = import_wide(&e, &s).unwrap();
+    let dest = dir.path().join("legacy.dwbackup");
+    e.block_on(s.backup_wallet(id, dest.clone(), None)).unwrap();
+
+    let e2 = engine(&dir.path().join("b"));
+    let s2 = open(&e2, None);
+    let ids = e2
+        .block_on(s2.restore_backup(dest, Some(Zeroizing::new(b"vault pass".to_vec()))))
+        .unwrap();
+    assert_eq!(ids, vec![id]);
+    assert!(
+        reaches_index_1000(&e2, &s2, id),
+        "the range was not restored"
+    );
+    assert_eq!(e2.block_on(s2.locked_outpoints(id)).unwrap().len(), 1);
+}
+
 /// Core's CoinJoin salt in `bdb_wide_range.dat`.
 const CORE_SALT: &str = "5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c";
 

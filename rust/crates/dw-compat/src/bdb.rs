@@ -350,6 +350,9 @@ pub(crate) fn read_pairs(file: &[u8]) -> Result<Vec<Record>, WalletDatError> {
     if outer.pagesize > file.len() {
         return Err(corrupt("bad page size"));
     }
+    if !file.len().is_multiple_of(outer.pagesize) {
+        return Err(corrupt("file is not a whole number of pages"));
+    }
     let pages = file.len() / outer.pagesize;
     if pages == 0 || outer.last_page as usize != pages - 1 {
         return Err(corrupt("last page number does not match the file"));
