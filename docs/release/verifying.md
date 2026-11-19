@@ -34,7 +34,7 @@ For a tagged release use the tag, for example `--source-ref refs/tags/v0.1.0` (`
 the workflow file, not the branch or tag it ran on).
 
 It prints the workflow, the commit and the run that built the file, and exits non-zero when the file's digest has
-no attestation from this repository (or none that satisfies the filters). The same works for every other file (`.exe`, `.AppImage`, `.deb`) and for
+no attestation from this repository (or none that satisfies the filters). The same works for every other file (`.exe`, `.AppImage`, `.deb`, the two SBOMs) and for
 `SHA256SUMS`. Verification goes by the file's contents, so a renamed copy verifies too, and so does
 `DashWallet-continuous-macos-universal.dmg` from the rolling `continuous` release: it is the same file as the
 per-build one.
@@ -55,6 +55,29 @@ grep <file name> SHA256SUMS | shasum -a 256 -c  # macOS, one file
 
 `--ignore-missing` skips the downloads you did not fetch. The `continuous` release has its own `SHA256SUMS`, which
 lists its `DashWallet-continuous-…` names.
+
+## Check an SBOM
+
+Each release also carries two software bills of materials in CycloneDX JSON:
+`dash-wallet-<version>-sbom-rust.cdx.json` lists the Rust crates the app is built from (every platform's
+dependencies), and `dash-wallet-<version>-sbom-npm.cdx.json` the renderer's production npm packages, the ones
+bundled into the app. The `continuous` release has them as `DashWallet-continuous-sbom-rust.cdx.json` and
+`DashWallet-continuous-sbom-npm.cdx.json`. They are made by the same workflow run as the bundles
+(`ci/github/release-sbom.sh`), listed in `SHA256SUMS` and attested like every other file, so they are checked the
+same way:
+
+```sh
+gh attestation verify dash-wallet-0.1.0-sbom-rust.cdx.json --repo PastaPastaPasta/dashwallet-desktop \
+  --signer-workflow PastaPastaPasta/dashwallet-desktop/.github/workflows/release.yml \
+  --source-ref refs/tags/v0.1.0
+sha256sum -c --ignore-missing SHA256SUMS
+```
+
+(0.1.0 itself has no SBOMs; they start with the next release. The names show the pattern.) A passing check
+proves the SBOM came from the release workflow run on that ref and commit, the same run as the bundles of that
+release: compare the commit `--format json` prints for the SBOM and for a bundle. It does not prove the SBOM is
+complete; it lists what Cargo and the pnpm lockfile resolve, not code vendored by hand. To read one:
+`jq -r '.components[] | "\(.name) \(.version)"' <file>`.
 
 ## What you are getting
 
