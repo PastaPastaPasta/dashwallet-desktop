@@ -69,6 +69,7 @@ fn fixtures() -> Vec<PathBuf> {
 }
 
 fn copy_private(from: &Path, to: &Path) {
+    #[allow(unused_mut)]
     let mut mkdir = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut mkdir, 0o700);

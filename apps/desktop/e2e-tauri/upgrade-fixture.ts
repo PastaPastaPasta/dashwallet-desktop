@@ -1,4 +1,4 @@
-// Writes an upgrade-path fixture with a released app (rust/crates/dw-app/tests/upgrade_path.rs reads it).
+// Writes an upgrade-path fixture with a released app (rust/crates/dw-app/src/upgrade_path_tests.rs reads it).
 // The release binary is the only thing that writes the data root: tauri-driver drives it and every
 // change goes through its own IPC, as its renderer would send it. dashd regtest is the chain and the
 // judge of what the app reports.
@@ -68,7 +68,7 @@ async function launch(dataRoot: string, args: string[]) {
   return { wd, invoke };
 }
 
-/** Quits the app as SIGTERM does (its engine shutdown flushes and closes every database), then
+/** Quits the app as SIGTERM does (its engine shutdown), then
  * checks that the session ended cleanly: no `.session-open` marker is left. */
 async function close(wd: WebDriver, dataRoot: string) {
   const group = driver?.pid;
