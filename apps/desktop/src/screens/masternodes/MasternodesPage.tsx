@@ -181,7 +181,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           )}
         </header>
         <Tabs label="Masternodes" tabs={TABS} current={tab} onSelect={setTab} testId="masternodes-tabs">
-          {mnList.data?.synced && mnList.data.height !== null && (
+          {!mnList.isError && mnList.data?.synced && mnList.data.height !== null && (
             <p className="mg-muted mg-small" data-testid="mn-list-height">
               {MnText.listHeight(mnList.data.height)}
             </p>

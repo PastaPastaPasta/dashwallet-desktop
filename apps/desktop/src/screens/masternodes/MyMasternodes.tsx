@@ -176,7 +176,7 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
 function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: MasternodeRow[]; wallet: WalletSummary; shown: Display; onVote: () => void }) {
   const detail = useMasternode(wallet.walletId, row.proTxHash);
   const [renaming, setRenaming] = useState(false);
-  const d = detail.data;
+  const d = detail.isError ? undefined : detail.data;
   const name = rowName(row);
   const blocked = voteBlocked(row, wallet.watchOnly);
   const outpoint = row.collateral.kind === "known" ? row.collateral.outpoint : null;
@@ -198,7 +198,7 @@ function Pane({ row, rows, wallet, shown, onVote }: { row: MasternodeRow; rows: 
             <strong>{MnText.banned}</strong> {MnText.bannedText(row.bannedSeenAt === null ? null : shortDate(row.bannedSeenAt))}
           </p>
         )}
-        {detail.isError && <p className="mg-field-error">{mnErrorText(detail.error)}</p>}
+        {detail.isError && <p className="mg-field-error" data-testid="mn-detail-failed">{mnErrorText(detail.error)}</p>}
         <dl className="mg-facts" data-testid="mn-facts">
           <Facts row={row} detail={d} shown={shown} />
         </dl>
@@ -287,6 +287,15 @@ function Payouts({ walletId, row, rows, name, shown }: { walletId: string; row: 
   const backend = useBackend();
   const [since] = useState(() => Math.floor(backend.now().getTime() / 1000) - 30 * DAY);
   const payouts = useMasternodePayouts(walletId, row.proTxHash, since, row.mine && !row.sharedUnsupported);
+  if (payouts.isError)
+    return (
+      <p className="mg-small mg-notice-row" data-testid="mn-payouts-failed">
+        <span className="mg-field-error">{`${MnText.payoutsFailed} ${mnErrorText(payouts.error)}`}</span>
+        <DashButton variant="tintedBlue" size="small" data-testid="mn-payouts-retry" onClick={() => void payouts.refetch()}>
+          {MnText.tryAgain}
+        </DashButton>
+      </p>
+    );
   const list = payoutGroups(payouts.data ?? []);
   if (list.length === 0) return null;
   return (
@@ -340,7 +349,7 @@ function RenameSheet({ row, onClose }: { row: MasternodeRow; onClose: () => void
       >
         <label className={`mg-field ${error ? "has-error" : ""}`}>
           Name
-          <input data-testid="mn-rename-input" value={label} maxLength={MAX_LABEL} placeholder={`${kindText(row.kind)} ${row.typeIndex || ""}`.trim()} autoComplete="off" data-autofocus onChange={(e) => setLabel(e.target.value)} />
+          <input data-testid="mn-rename-input" value={label} maxLength={MAX_LABEL} placeholder={rowName({ ...row, label: null })} autoComplete="off" data-autofocus onChange={(e) => setLabel(e.target.value)} />
           <span className="mg-field-help">Only this wallet sees it. Leave it empty for the default name.</span>
           {error && (
             <span className="mg-field-error" role="alert" data-testid="mn-rename-error">

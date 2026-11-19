@@ -6,6 +6,7 @@ import type { MasternodeOverview } from "../api/generated/MasternodeOverview";
 import type { MasternodePayout } from "../api/generated/MasternodePayout";
 import type { MasternodeRow } from "../api/generated/MasternodeRow";
 import { CLUB, HOME, newMasternodesWorld, OFFICE, OLD } from "../fixture/masternodes";
+import { compact } from "../format/amount";
 import { nodeName, voteRows } from "../governance/model";
 import {
   activityChip,
@@ -44,9 +45,11 @@ const pay = (txid: string, amount: number, unattributed: boolean): MasternodePay
 
 describe("formatCredits", () => {
   it("shows the Dash value of the credits through the Dash formatter", () => {
-    expect(formatCredits("100000000000")).toBe("1.00");
-    expect(formatCredits("42000000000")).toBe("0.42");
-    expect(formatCredits("999")).toBe("0.00");
+    const dash = (d: number) => compact(d, false);
+    expect(formatCredits("100000000000", dash)).toBe("1.00");
+    expect(formatCredits("42000000000", dash)).toBe("0.42");
+    expect(formatCredits("999", dash)).toBe("0.00");
+    expect(formatCredits("100000000000", (d) => compact(d, false, "mDASH"))).toBe(compact(100_000_000, false, "mDASH"));
     expect(formatCredits("100000000000", (d) => `${d} duffs`)).toBe("100000000 duffs");
   });
 });
@@ -135,6 +138,8 @@ describe("pane", () => {
     expect(voteBlocked({ ...rowOf(HOME), status: "pose_banned" }, false)).toBe(MnText.voteBanned);
     expect(voteBlocked(rowOf(OFFICE), false)).toBe(MnText.voteBanned);
     expect(voteBlocked({ ...rowOf(HOME), roles: { ...rowOf(HOME).roles, voting: false } }, false)).toBe(MnText.voteNoKey);
+    expect(voteBlocked({ ...rowOf(HOME), status: "removed" }, false)).toBe(MnText.voteRetired);
+    expect(voteBlocked({ ...rowOf(HOME), status: "unconfirmed" }, false)).toBe(MnText.voteRegistering);
   });
 
   it("replaces Change keys with §1.7's reason line, never for available or shared", () => {
@@ -196,6 +201,10 @@ describe("governance vote rows (MG-09 F3)", () => {
     expect(nodeName(home, names)).toBe("Home node · 203.0.113.7:19999");
     expect(nodeName({ proTxHash: CLUB, kind: "evonode" }, names)).toBe(`Evonode ${CLUB.slice(0, 8)} · 198.51.100.21:19999`);
     expect(nodeName({ proTxHash: "ab".repeat(32), kind: "regular" }, names)).toBe("Masternode abababab");
+    // Same name as the My masternodes row: an unlabelled own node reads "Masternode N".
+    const unlabelled = nodeNames(overview([{ ...rowOf(HOME), label: null, typeIndex: 2 }]));
+    expect(nodeName(home, unlabelled)).toBe(`${rowName({ ...rowOf(HOME), label: null, typeIndex: 2 })} · 203.0.113.7:19999`);
+    expect(nodeName(home, unlabelled)).toBe("Masternode 2 · 203.0.113.7:19999");
     expect(nodeName(home)).toBe(`Masternode ${HOME.slice(0, 8)}`);
     const rows = voteRows([{ proTxHash: HOME, kind: "regular", weight: 1, valid: true, keyIndex: 0, currentVote: null, voteTime: null, keyHolders: 1, keyLastVote: null, keyLastVoteTime: null }], 0, "en-US", names);
     expect(rows[0].name).toBe("Home node · 203.0.113.7:19999");

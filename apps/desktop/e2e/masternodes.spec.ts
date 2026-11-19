@@ -7,13 +7,13 @@ import { fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
 // MG-10 S1: Masternodes ▸ My masternodes on the fixture: the list, the read-only pane, rename and
 // copy, the payout headings into Activity's filters, the states, and the unlock re-read.
 
-async function open(page: Page, scenario: string, theme: "light" | "dark" = "light") {
+async function open(page: Page, scenario: string, theme: "light" | "dark" = "light", extra = "") {
   const errors = trackPageErrors(page);
   await page.addInitScript(() => {
     Object.defineProperty(navigator, "clipboard", { value: { writeText: async (t: string) => void ((window as unknown as { __copied: string }).__copied = t) } });
   });
   await page.clock.setFixedTime(FIXTURE_NOW);
-  await page.goto(fixtureUrl(scenario, theme));
+  await page.goto(fixtureUrl(scenario, theme, extra));
   await page.getByTestId("toolbar").waitFor();
   await page.getByTestId("sidebar-masternodes").click();
   await expect(page.getByTestId("page-masternodes")).toBeVisible();
@@ -54,6 +54,7 @@ test("list → pane → rename → copy", async ({ page }) => {
   await expect(page.getByTestId("mn-fact-service")).toHaveText("203.0.113.7:19999");
   await expect(page.getByTestId("mn-vote")).toBeEnabled();
   await page.getByTestId("mn-more").click();
+  await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash", "Copy collateral outpoint"]);
   await page.getByTestId("mn-more-rename").click();
   await page.getByTestId("mn-rename-input").fill("Basement node");
   await page.getByTestId("mn-rename-save").click();
@@ -63,6 +64,12 @@ test("list → pane → rename → copy", async ({ page }) => {
   await page.getByTestId("mn-more").click();
   await page.getByTestId("mn-more-copy-hash").click();
   expect(await page.evaluate(() => (window as unknown as { __copied: string }).__copied)).toBe(HOME);
+  // A tracked evonode's collateral isn't resolved: no outpoint to copy.
+  await row(page, CLUB).click();
+  await page.getByTestId("mn-more").click();
+  await expect(page.getByRole("menuitem")).toHaveText(["Rename…", "Copy ProTx hash"]);
+  await page.keyboard.press("Escape");
+  await row(page, HOME).click();
   // Vote goes to Governance, filtered to what needs a vote.
   await page.getByTestId("mn-vote").click();
   await expect(page.getByTestId("masternodes-tabs-governance")).toHaveAttribute("aria-selected", "true");
@@ -91,6 +98,10 @@ test("flagged payouts heading → See in Activity, per node and Generated", asyn
   await expect(page.getByTestId("tx-route-filter")).toContainText("Coinbase income");
   const rows = page.getByTestId("tx-list").locator("[data-txid]");
   await expect(rows.first()).toBeVisible();
+  const shown = await rows.evaluateAll((els) => els.map((e) => e.getAttribute("data-txid")!));
+  const types = await page.evaluate(() => Object.fromEntries(window.__dwFixture!.world.wallets[0].rows.map((r) => [r.txid, r.txType])));
+  expect(shown.every((t) => types[t] === "generated")).toBe(true);
+  expect(Object.values(types).some((t) => t !== "generated")).toBe(true);
   // Leaving Activity drops the filter.
   await page.getByTestId("sidebar-home").click();
   await page.getByTestId("sidebar-activity").click();
@@ -108,6 +119,39 @@ test("locked → unlock re-reads the pane", async ({ page }) => {
   await expect(page.getByTestId("unlock-sheet")).toHaveCount(0);
   await expect(page.getByTestId("mn-registrar-line")).toHaveText("This wallet doesn't hold this masternode's owner key.");
   expect(errors).toEqual([]);
+});
+
+test("payouts: a failed first read and a failed re-read show the error, never old totals", async ({ page }) => {
+  const errors = await open(page, "mn-v24-payouts", "light", "&fail=mn_payouts:none");
+  await row(page, HOME).click();
+  await expect(page.getByTestId("mn-payouts-failed")).toContainText("Couldn't read this masternode's payouts.");
+  await expect(page.getByTestId("mn-payouts")).toHaveCount(0);
+  await page.evaluate(() => window.__dwFixture!.fail("mn_payouts", null));
+  await page.getByTestId("mn-payouts-retry").click();
+  await expect(page.getByTestId("mn-payouts-flagged")).toBeVisible();
+  await expect(page.getByTestId("mn-payouts-failed")).toHaveCount(0);
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.fail("mn_payouts", "none");
+    f.emit({ kind: "historyChanged", network: "testnet", walletId: f.world.wallets[0].summary.walletId, txids: [] });
+  });
+  await expect(page.getByTestId("mn-payouts-failed")).toBeVisible();
+  for (const gone of ["mn-payouts", "mn-payouts-flagged", "mn-flagged-activity", "mn-payouts-activity"]) await expect(page.getByTestId(gone)).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("a failed pane re-read drops the detail facts and the unlock line", async ({ page }) => {
+  await open(page, "mn-locked");
+  await row(page, CLUB).click();
+  await expect(page.getByTestId("mn-unlock")).toBeVisible();
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.fail("mn_masternode", "none");
+    f.emit({ kind: "vaultLockState", network: "testnet", state: "unlockedMixingOnly" });
+  });
+  await expect(page.getByTestId("mn-detail-failed")).toBeVisible();
+  await expect(page.getByTestId("mn-registrar-line")).toHaveCount(0);
+  await expect(page.getByTestId("mn-unlock")).toHaveCount(0);
 });
 
 test("states: empty, collateral coin, syncing, failed, watch-only", async ({ page }) => {

@@ -9,7 +9,6 @@ import type { MasternodeRow } from "../api/generated/MasternodeRow";
 import type { MasternodeStatusName } from "../api/generated/MasternodeStatusName";
 import type { MasternodeTypeName } from "../api/generated/MasternodeTypeName";
 import { creditsToDuffs } from "../api/pending";
-import { compact } from "../format/amount";
 import { shortDate, shortHash, type ChipView, type NodeNames } from "../governance/model";
 
 export const MnText = {
@@ -18,6 +17,7 @@ export const MnText = {
   loading: "Loading the masternode list…",
   listSyncing: "list syncing",
   failed: "Couldn't read your masternodes.",
+  payoutsFailed: "Couldn't read this masternode's payouts.",
   tryAgain: "Try again",
   emptyTitle: "No masternodes yet",
   emptyText:
@@ -39,6 +39,8 @@ export const MnText = {
   vote: "Vote on proposals",
   voteBanned: "A banned masternode can't vote",
   voteNoKey: "Its voting key is not in this wallet",
+  voteRetired: "A retired masternode can't vote",
+  voteRegistering: "A masternode can vote once its registration confirms",
   rename: "Rename…",
   renameTitle: "Rename masternode",
   copyHash: "Copy ProTx hash",
@@ -148,6 +150,8 @@ export function heldRoles(r: MasternodeRow, watchOnly: boolean): Held[] {
 export function voteBlocked(r: MasternodeRow, watchOnly: boolean): string | null {
   if (watchOnly) return "Voting needs the wallet that holds the voting keys";
   if (r.status === "pose_banned") return MnText.voteBanned;
+  if (r.status === "removed") return MnText.voteRetired;
+  if (r.status === "unconfirmed") return MnText.voteRegistering;
   return r.roles.voting ? null : MnText.voteNoKey;
 }
 
@@ -199,12 +203,12 @@ export const sharesPayoutAddress = (r: MasternodeRow, rows: MasternodeRow[]) =>
 export const activityChip = (name: string, flagged: boolean) => (flagged ? `Payments to ${name}'s payout address` : `Payouts of ${name}`);
 
 /** Credits (10^11 per Dash) through the Dash formatter, never a raw integer (§1). */
-export function formatCredits(credits: string, fmt: (duffs: number) => string = (d) => compact(d, false)): string {
+export function formatCredits(credits: string, fmt: (duffs: number) => string): string {
   return fmt(creditsToDuffs(credits));
 }
 
 /** Labels and services by ProTx hash, for the governance vote rows (MG-09 F3). */
-export const nodeNames = (o: MasternodeOverview | undefined): NodeNames => new Map((o?.masternodes ?? []).map((r) => [r.proTxHash, { label: r.label, service: r.service }]));
+export const nodeNames = (o: MasternodeOverview | undefined): NodeNames => new Map((o?.masternodes ?? []).map((r) => [r.proTxHash, { label: rowName(r), service: r.service }]));
 
 const ERRORS: Record<string, string> = {
   "masternodes.list_unavailable": "The masternode list isn't loaded yet. Try again once the wallet has synced.",
