@@ -146,7 +146,7 @@ export function MyMasternodes({ wallet, network, onVote }: { wallet: WalletSumma
                     <li key={r.proTxHash}>
                       <button
                         type="button"
-                        className="mg-row"
+                        className="mg-row mg-row-wide"
                         aria-current={r.proTxHash === current?.proTxHash ? "true" : undefined}
                         data-testid={`mn-row-${r.proTxHash}`}
                         onClick={() => setSelected(r.proTxHash)}
