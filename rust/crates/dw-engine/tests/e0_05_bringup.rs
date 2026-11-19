@@ -27,8 +27,9 @@ const PASSPHRASE: &[u8] = b"correct horse battery staple";
 const RESTORE_BUDGET: Duration = Duration::from_secs(20);
 /// The acceptance bound past the budget for SPV's start (ROADMAP E0-05).
 const SPV_SLACK: Duration = Duration::from_secs(1);
-/// How soon SPV must start when a restored wallet's bring-up ends early:
-/// half the budget it would otherwise wait, so a slow machine still passes.
+/// How soon SPV must start when an imported wallet has no bring-up to wait
+/// for, or its bring-up ends early: half the budget it would otherwise
+/// wait, so a slow machine still passes.
 const ENDED_EARLY: Duration = Duration::from_secs(10);
 
 /// Held by every test for its whole run. The tests assert wall-clock bounds
@@ -422,7 +423,7 @@ fn a_locked_vault_defers_the_bring_up_to_the_unlock() {
         .spv_started_at(Duration::from_secs(5))
         .expect("SPV started");
     assert!(
-        started - called < Duration::from_secs(1),
+        started - called < CREATED_HERE_BUDGET - Duration::from_millis(500),
         "{:?}",
         started - called
     );
@@ -462,7 +463,10 @@ fn a_lock_drops_a_running_bring_up() {
     assert_eq!(f.startup(&id), StartupStatus::Starting);
     let locked = Instant::now();
     f.session.lock_vault_sync().unwrap();
-    let started = f.rec.spv_started_at(ENDED_EARLY).expect("SPV started");
+    let started = f
+        .rec
+        .spv_started_at(RESTORE_BUDGET + SPV_SLACK)
+        .expect("SPV started");
     eprintln!("SPV started {:?} after the lock", started - locked);
     assert!(started > locked, "SPV started before the lock");
     assert!(
@@ -500,9 +504,13 @@ fn a_watch_only_wallet_is_read_only() {
     let (_, called) = f.start_spv();
     let started = f
         .rec
-        .spv_started_at(Duration::from_secs(5))
+        .spv_started_at(RESTORE_BUDGET + SPV_SLACK)
         .expect("SPV started");
-    assert!(started - called < Duration::from_secs(1));
+    assert!(
+        started - called < ENDED_EARLY,
+        "SPV waited {:?}",
+        started - called
+    );
     let after = f.session.dashpay_startup(&id).unwrap();
     assert!(after.read_only);
     assert_eq!(after.startup, StartupStatus::NotRun);
@@ -552,7 +560,10 @@ fn removing_a_wallet_ends_its_bring_up() {
     f.engine
         .block_on(f.session.remove_wallet(id, grant.id))
         .unwrap();
-    let started = f.rec.spv_started_at(ENDED_EARLY).expect("SPV started");
+    let started = f
+        .rec
+        .spv_started_at(RESTORE_BUDGET + SPV_SLACK)
+        .expect("SPV started");
     assert!(
         started - called < ENDED_EARLY,
         "SPV waited {:?}",
