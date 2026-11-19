@@ -77,3 +77,23 @@ test("Flatpak: Privacy offers no update check", async ({ page }) => {
   await page.getByTestId("settings-privacy").waitFor();
   await expect(page.getByTestId("settings-update-check")).toHaveCount(0);
 });
+
+test("no wallet listed: Privacy shows only the update check, and no card at all in Flatpak", async ({ page }) => {
+  await page.goto(fixtureUrl("update-off", "light", "&fail=list_wallets:duffs"));
+  await page.getByTestId("wallets-error").waitFor();
+  await settings(page, "general");
+  await expect(page.getByTestId("settings-update-check")).toBeVisible();
+  await expect(page.getByTestId("settings-username-in-requests")).toHaveCount(0);
+  await page.goto(fixtureUrl("update-flatpak", "light", "&fail=list_wallets:duffs"));
+  await page.getByTestId("wallets-error").waitFor();
+  await settings(page, "general");
+  await page.getByTestId("settings-tabs-general").waitFor();
+  await expect(page.getByTestId("settings-privacy")).toHaveCount(0);
+});
+
+test("the chip's failed open goes to About, which says why", async ({ page }) => {
+  await page.goto(fixtureUrl("update-available", "light", "&fail=open_release_notes:duffs"));
+  await page.getByTestId("status-update").click();
+  await expect(page.getByTestId("settings-about-updates")).toContainText("Version 0.9.0 is available");
+  await expect(page.getByTestId("settings-about-release-notes-problem")).toHaveText("Could not open the release notes.");
+});

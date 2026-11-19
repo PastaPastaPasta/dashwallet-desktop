@@ -11,7 +11,7 @@ import { changingUsernameInRequests } from "../../api/username";
 import { useUi } from "../../app/ui";
 import { useContactPictures, useSetContactPictures } from "../../dashpay/profileQueries";
 import { failureText } from "../../onboarding/model";
-import { UpdateCheckRow } from "../../updates/updates";
+import { UpdateCheckRow, useUpdates } from "../../updates/updates";
 import { Hint, Problem, SettingsCard } from "./parts";
 
 /** The card of the wallet the window shows, picked as the shell picks it (App.tsx). */
@@ -19,6 +19,9 @@ export function PrivacyCard() {
   const walletId = useUi((s) => s.walletId);
   const wallets = useWallets();
   const wallet = wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0];
+  const updates = useUpdates();
+  // With no wallet the update check is the card's only row: no empty card while it loads or in Flatpak.
+  if (!wallet && (updates.isPending || updates.data?.supported === false)) return null;
   return (
     <SettingsCard title="Privacy" testId="settings-privacy">
       {wallet && <UsernameInRequests key={wallet.walletId} wallet={wallet} />}
