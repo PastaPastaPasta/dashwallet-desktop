@@ -226,10 +226,22 @@ export function usePendingPlatformFunds(walletId: string) {
   return useQuery({ queryKey: keys.pendingPlatformFunds(walletId), queryFn: () => b.pendingPlatformFunds(walletId), retry: false });
 }
 
-/** The shielded account's status; `null` while dw-app has no such command (api/pending.ts). */
-export function useShieldedStatus(walletId: string) {
+/** How often a sheet that shows the sync line re-reads the status while a pass runs: the engine
+ * sends no event when a pass ends. */
+export const SHIELDED_SCAN_POLL_MS = 5_000;
+
+export const shieldedStatusRefetchMs = (status: ShieldedStatus | null | undefined): number | false => (status?.syncing ? SHIELDED_SCAN_POLL_MS : false);
+
+/** The shielded account's status; `null` while dw-app has no such command (api/pending.ts).
+ * `pollWhileSyncing`: re-read it every `SHIELDED_SCAN_POLL_MS` while a pass runs. */
+export function useShieldedStatus(walletId: string, pollWhileSyncing = false) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.shieldedStatus(walletId), queryFn: () => b.shieldedStatus(walletId), retry: false });
+  return useQuery({
+    queryKey: keys.shieldedStatus(walletId),
+    queryFn: () => b.shieldedStatus(walletId),
+    retry: false,
+    refetchInterval: pollWhileSyncing ? (q) => shieldedStatusRefetchMs(q.state.data) : false,
+  });
 }
 
 /** The Core → Shielded locks not known to be applied; `null` while dw-app has no such command. */
