@@ -141,6 +141,12 @@ fn mn_failures_are_json_lines_that_never_quote_the_arguments() {
         (&["mn", "payouts", SECRET], b""),
         (&["mn", "payouts", SECRET, "--wallet", SECRET], b""),
         (&["mn", "credits", SECRET], b""),
+        (&["mn", "resolve-collateral", SECRET], b""),
+        (&["mn", "registration-keys", "--wallet", SECRET], b""),
+        (
+            &["mn", "registration-keys", "--evonode", "--wallet", SECRET],
+            b"",
+        ),
         (&["mn", "update-registrar", SECRET, "--payout", "new"], b""),
         (
             &[
@@ -606,6 +612,12 @@ fn mn_withdrawal_commands_answer_in_json_lines() {
             "masternodes.withdrawal_not_found",
         ),
         (&["mn", "recheck-withdrawal", "zz"], "invalid_argument"),
+        (
+            &["mn", "resolve-collateral", &hash],
+            "masternodes.unsupported",
+        ),
+        (&["mn", "resolve-collateral", "zz"], "invalid_argument"),
+        (&["mn", "registration-keys"], "masternodes.list_unavailable"),
     ] {
         let out = dwcli(dir.path(), "pass", args, b"");
         let (code, _) = error(&out);
