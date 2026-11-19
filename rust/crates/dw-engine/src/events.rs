@@ -514,6 +514,10 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next wallet open before its replay is resumed.
     #[cfg(test)]
     pub(crate) pause_load: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: runs once, when a load or watch-only import has published a
+    /// wallet and before it widens the wallet's pools.
+    #[cfg(test)]
+    pub(crate) on_published: Mutex<Option<PublishedHook>>,
     /// Tests: holds the next history load once it has read the stored
     /// records, before it reads the wallet.
     #[cfg(test)]
@@ -551,7 +555,19 @@ pub(crate) struct SessionHub {
     pub(crate) pause_event: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
 }
 
+#[cfg(test)]
+pub(crate) type PublishedHook = Box<dyn FnOnce(crate::WalletId) + Send>;
+
 impl SessionHub {
+    /// Tests: runs [`Self::on_published`], if set, for wallet `id`.
+    #[cfg(test)]
+    pub(crate) fn run_on_published(&self, id: crate::WalletId) {
+        let hook = self.on_published.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook(id);
+        }
+    }
+
     pub(crate) fn set_rates(&self, rates: std::sync::Weak<crate::rates::RatesHub>) {
         let _ = self.rates.set(rates);
     }
@@ -642,6 +658,8 @@ impl SessionHub {
             pause_seen: Mutex::new(None),
             #[cfg(test)]
             pause_load: Mutex::new(None),
+            #[cfg(test)]
+            on_published: Mutex::new(None),
             #[cfg(test)]
             pause_history: Mutex::new(None),
             #[cfg(test)]

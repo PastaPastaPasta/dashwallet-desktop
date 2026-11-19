@@ -243,6 +243,7 @@ impl PlatformWalletPersistence for WalletStore {
             .platform_addresses
             .retain(|id, _| !unloaded.contains(id));
         let mut loaded_at = self.loaded_at.lock().unwrap_or_else(|p| p.into_inner());
+        loaded_at.retain(|id, _| state.wallets.contains_key(id));
         for (id, wallet) in &state.wallets {
             loaded_at.insert(*id, wallet.wallet_info.metadata.synced_height);
         }

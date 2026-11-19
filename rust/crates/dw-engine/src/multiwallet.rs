@@ -24,6 +24,7 @@ use key_wallet::account::{Account, AccountType, StandardAccountType};
 use key_wallet::bip32::{ChildNumber, ExtendedPubKey};
 use key_wallet::wallet::Wallet;
 use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use key_wallet::wallet::root_extended_keys::RootExtendedPubKey;
 use platform_wallet::changeset::{
     AccountAddressPoolEntry, AccountRegistrationEntry, PlatformWalletChangeSet,
@@ -269,6 +270,11 @@ impl NetworkSession {
                 return Ok(());
             }
             this.require_wallet(&id)?;
+            let synced = {
+                let wm = live.manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                (wm.get_wallet_info(&id.0)).map(|info| info.core_wallet.synced_height())
+            };
             // A shielded call of the wallet in flight (a send, an unshield,
             // a shield) ends first and none starts until the unload is
             // done: a spend's library call outlives its permit's drain, and
@@ -310,6 +316,14 @@ impl NetworkSession {
                 return Err(e);
             }
             this.hub.unload_wallet(&id);
+            // Its next load publishes narrow CoinJoin pools again; what SPV
+            // matches above this checkpoint before they are widened is
+            // replayed, across a crash too.
+            if let (Ok(Some(crate::keys::WideScan::Done)), Some(synced)) =
+                (this.wide_scan(id).await, synced)
+            {
+                (this.set_wide_scan(id, Some(crate::keys::WideScan::From(synced)))).await;
+            }
             this.spends.forget_wallet(&id);
             this.coin_fences.forget(&id);
             this.platform.forget(&id);
@@ -360,6 +374,8 @@ impl NetworkSession {
                 return Err(EngineError::WalletNotFound(id.to_string()));
             }
             drop(passes);
+            #[cfg(test)]
+            this.hub.run_on_published(id);
             this.restore_loaded_wallet(&live.manager, id).await;
             #[cfg(test)]
             let pause = this.hub.pause_load.lock().unwrap().take();
@@ -512,6 +528,8 @@ impl NetworkSession {
             // DEC-210: before the first write, as an import of a seed.
             let readmit = id.to_string();
             let readmitted = this.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
+            // Before SPV can match a batch with the pools it publishes.
+            this.set_wide_scan(id, Some(crate::keys::WideScan::Birth)).await;
             let was_unloaded = this.hub.admit(id);
             let registered = async {
                 let store = Arc::clone(&live.store);
@@ -548,12 +566,22 @@ impl NetworkSession {
                     return Err(e);
                 }
             };
+            #[cfg(test)]
+            this.hub.run_on_published(id);
+            let mut raised = true;
             if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD {
                 if let Err(e) = crate::keys::apply_lookahead(&wallet, lookahead).await {
+                    raised = false;
                     tracing::warn!(wallet_id = %id, error = %e, "could not set the watch-only lookahead");
                 }
                 // Raised again at every load, as a seed import's.
                 this.store_lookahead(id, lookahead).await;
+            }
+            // A batch SPV committed since the load published it matched the
+            // default gap.
+            let published_at = live.store.loaded_checkpoint(&id.0).unwrap_or(0);
+            if this.widen_published_wallet(&live.manager, id, published_at).await && raised {
+                this.set_wide_scan(id, Some(crate::keys::WideScan::Done)).await;
             }
             this.refresh_wallet_state(&live.manager, id).await;
             let default_name = this.next_default_name();

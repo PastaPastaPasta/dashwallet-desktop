@@ -565,7 +565,9 @@ impl crate::NetworkSession {
                 .map(crate::WalletId)
                 .collect();
             for id in &ids {
-                crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await?;
+                if let Err(e) = crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap before the rescan");
+                }
             }
             let from_height = match from {
                 RescanFrom::WalletBirth => ids
