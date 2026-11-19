@@ -32,10 +32,15 @@ does not restate them:
   take the move lock alone. "Accept and pay" releases the identity's write lock when the accept returns, before the
   payment takes any other.
 - **What may run next to a held record, by move kind** (the table of that name in C-routes §0). It covers main's
-  kinds and the two this document adds: `Register` (F9, F10) and `ToContact` (P4, P8). For both, the only move
-  allowed beside a held record is its exact retry.
+  kinds and the two this document adds: `Register` (F9, F10) and `ToContact` (P4, P8). Beside a held `Register` a
+  "Move to Dash wallet" at the record's inputs and nonces may run (F10). Beside a held `ToContact` only its exact
+  retry may run (P8); the exact-terms set is `Transfer` and `ToContact`.
 - **The input-0 fee reserve** (C-routes C1-4, C1-5): a Platform route whose transition takes its fee from input 0
-  leaves a fee reserve unclaimed there. F9 applies it to registration.
+  leaves a fee reserve unclaimed there. F9 applies it to registration. In both documents `debit_credits` is the
+  grant's cap (the amount plus the reserve), and the copy shows the amount plus `fee_credits`, as "about".
+- **Fresh absence.** A proof that something is absent decides only when its height is at or above the height of the
+  proof it is weighed against (the nonce proof in F10, the execution evidence in F12 and F13). An older proof of
+  absence decides nothing.
 
 ---
 
@@ -60,7 +65,7 @@ does not restate them:
 | F2 | Two new stored kinds, written at funding version 1: `platform_addresses` and `shielded` (fields in F3 and F9). `FUNDING_VERSION` stays 1. | An older build decodes an unknown kind as `Unsupported` (`P/registration_rows.rs:195`; the test at `:307` pins exactly `platform_addresses`). Such a row fails with `registration.unsupported` and is never funded, discarded or advanced (`P/registration_flow.rs:1130-1157`). C4a moves that test line to another unknown kind. |
 | F3 | `platform_addresses` stores `funding_credits` (what the identity receives) and `fee_reserve_credits` (F9) at Draft, both from the accepted quote. The plan step adds `inputs` (address, nonce and claimed credits each, in address order) and `identity` (the id those inputs give). `shielded` stores `denomination` and `fallback` at Draft, and `identity` once it is known (F11). The row's `identity` column is set only when the identity is proved to exist. | The invitation row does the same: the expected id lives in `funding`, and the column is "the only identity the row adopts" (`P/registration_rows.rs:104-113`). The plan travels with the row in a `.dwbackup`, so an imported row still knows what it may have signed. |
 | F4 | `RegistrationRequest.funding` gains `PlatformAddresses{funding_credits, fee_reserve_credits}` and `Shielded{denomination}`. The host passes back the numbers its quote showed. A start whose numbers no longer match the engine's own plan is refused with `registration.quote_changed` before anything is written. | `CoreBalance` keeps "the locked amount from the accepted quote" for the same reason (`P/registration_rows.rs:98-101`): the user confirmed one cost, and a protocol-version change between quote and start must not swap it. |
-| F5 | One `Registration` lease still covers the whole flow. For a `platform_addresses` row it also carries the Platform-address signer. For a `shielded` row it also carries the shielded spend key. It never carries both, and neither row gets the Core funding signer. The grant is a `PlatformOp` with `max_duffs` 0. For Platform, `max_credits` = `funding_credits` + `fee_reserve_credits` + the name and profile credits. For Shielded, `max_credits` = the denomination + the name and profile credits. | The scopes exist (`rust/crates/dw-vault/src/signer.rs:113`, `:159`) and the permit already hands them out (`P/lease/call.rs:841-850`, `:855`). The proof-of-possession signatures come from the same identity signer as today (`P/registration_flow.rs:3618`). A lease holds only the keys its row can use. The grant consents to the planned debit; the metered fee has no ceiling (C-routes C1-5). |
+| F5 | One `Registration` lease still covers the whole flow. For a `platform_addresses` row it also carries the Platform-address signer. For a `shielded` row it also carries the shielded spend key. It never carries both, and neither row gets the Core funding signer. The grant is a `PlatformOp` with `max_duffs` 0. For Platform, `max_credits` = `debit_credits` (`funding_credits` + `fee_reserve_credits`) + the name and profile credits. For Shielded, `max_credits` = the denomination + the name and profile credits. | The scopes exist (`rust/crates/dw-vault/src/signer.rs:113`, `:159`) and the permit already hands them out (`P/lease/call.rs:841-850`, `:855`). The proof-of-possession signatures come from the same identity signer as today (`P/registration_flow.rs:3618`). A lease holds only the keys its row can use. The grant consents to the planned debit; the metered fee has no ceiling (C-routes C1-5). |
 | F6 | `funds_committed` for a new-source row is true from the moment a signature for its identity call may have been released, until evidence proves that call can never execute. `discard_registration` refuses while it is true. | m4 §2.2's discard rule, and the invitation's `claim_discard_refused` (`P/registration_flow.rs:1180-1203`): a discard must not leave an identity on Platform that no step finishes. |
 | F7 | An unknown outcome is a wait, not a failure. New `RegistrationWait::PaymentUnknown`: the row keeps its phase, the next proved read settles it, and no user action is needed or offered except "Check again". | `platform.broadcast_unknown` as a failure reads "Registration stopped → Open Repair" (DP1-09 R8), and Repair's "Finish transfers" handles asset locks only. These sources have no lock to finish; reads alone decide. |
 
@@ -69,16 +74,16 @@ does not restate them:
 | # | Decision | Why |
 |---|---|---|
 | F8 | **One create route.** The registration signs at nonces the engine fixed and recorded first, through the SDK's `PutIdentity::put_with_address_funding(&sdk, inputs_with_nonce, None, identity_signer, address_signer, settings)` (`rs-sdk/src/platform/transition/put_identity.rs:115-123`, body `:399-470`), reached through the `sdk` handle the flow already holds (`P/registration_flow.rs:3155-3159`). It never uses the library's `register_from_addresses`, which fetches the nonces itself at submit (`W/identity/network/register_from_addresses.rs:101-110`), nor rs-sdk's `fetch_inputs_with_nonce`. After a proved result the engine calls the library's two follow-ups: `reconcile_address_infos` through `wallet.platform()` (`W/platform_addresses/wallet.rs:292`), with no wallet-state guard held (its lock order is provider, then wallet manager, `:262-270`); then `add_identity` through `wallet.state_mut()` and `wallet.persister()` (`W/identity/state/manager/lifecycle.rs:36`), as `P/identity_reads.rs:289-293` does. `IdentityAlreadyExists` from `add_identity` (`lifecycle.rs:45-47`) is success: discovery added it first. Neither follow-up decides anything; a failure of either is logged and the next sync heals it. No fork unit is needed. | The identity id is a hash of the input addresses and their nonces (`rs-dpp/src/state_transition/traits/state_transition_identity_id_from_inputs.rs:26-44`). With fetched nonces the id is unknown before signing, and two attempts could sign at different nonces and create two identities from two debits. With fixed nonces Drive executes at most one transition per input nonce (`P/platform_moves.rs:54-60`). The SDK form returns the proved identity and the address infos in one call. |
-| F9 | Order of the funding step, under the Platform move lock: one proved read under rule 5 (`P/platform_moves.rs:8-13`, `:2456`); refuse with `credits.move_pending` if any move is pending or holding; plan; write the plan into the row (F3), durably; write a move record of the new kind `Register` naming the draft, `pending` and able to land, and read it back; only then sign and send. **The plan** follows C-routes C1-4: the candidates are the funded addresses in `PlatformAddress` order; the claims sum to exactly `funding_credits`, with no change output; and input 0, the first in that order, keeps `fee_reserve_credits` unclaimed on top of its claim. The reserve is the registration cost and the transition's fee at the version in force, with the planner's band. A plan whose input 0 cannot keep the reserve is refused before anything is written or signed (`platform.insufficient_credits`). The quote's debit is `funding_credits` plus the fee, shown as "about". Registration has no Max. | The SDK's create fixes the fee on input 0 (`put_identity.rs:414-415`). Drive gives the identity exactly the sum of the claims and takes the registration cost and the metered fee from input 0's remaining balance, or refuses with a state error. That refusal is not `never_valid` (`P/platform_moves.rs:1403-1413`), so a plan that drained input 0 would hold every Platform move until funds happened to arrive there. The move planner's largest-first fee source (`:1215`) cannot be used for the same reason. The order is the one every Platform-address move follows (`:54-57`, `:2441-2500`); recording the debit as a move gives the existing hold, the nonce settlement, and the rule that a move's own spend is never an `outgoing` activity row (`:21-24`). |
-| F10 | Settlement. **Done:** the SDK's proved result for this transition, which binds execution and checks the identity id against the inputs (`put_identity.rs:447-463`); or, after a restart or an unknown answer, a proved read that shows every input at or past its signed nonce together with a proved fetch of the planned identity. The row adopts that id and moves to `IdentityRegistered`. **Can never execute:** Platform's structure or signature check refused it; or an input's nonce is taken and the planned identity is proved absent; or, in the process that made the call and never after a restart, the call returned having released no signature. The move is `failed` and unable to land, the plan is cleared from the row, and the row may plan again. **Anything else:** `PaymentUnknown` (F7), and the row keeps its plan. A plan whose move is `failed` by height may still execute, so the row re-signs only that plan, and the only move allowed beside it is that exact retry (the C-routes §0 table, kind `Register`). | Rule 1. Re-signing the same inputs, nonces, claims and keys gives the same identity id, so a retry is idempotent. A `pending` record read back after a restart is always treated as able to land (`P/platform_moves.rs:76-82`, `:2540-2545`): the engine cannot know whether a signature left. A row imported without its move record follows the same cases: it can re-sign its plan safely whether or not another install already signed it. |
+| F9 | Order of the funding step, under the Platform move lock: one proved read under rule 5 (`P/platform_moves.rs:8-13`, `:2456`); refuse with `credits.move_pending` if any move is pending or holding; plan; write the plan into the row (F3), durably; write a move record of the new kind `Register` naming the draft, `pending` and able to land, and read it back; only then sign and send. **The plan** follows C-routes C1-4: the candidates are the funded addresses in `PlatformAddress` order; input 0 is the first address in that order whose balance is above the reserve, as C1-4's planner takes it, and it keeps `fee_reserve_credits` unclaimed on top of its claim; the claims sum to exactly `funding_credits`, with no change output. **The reserve** is 3 × `calculate_min_required_fee` for the plan's inputs and the keys being created (`rs-dpp/.../identity_create_from_addresses_transition/state_transition_estimated_fee_validation.rs:15-40`), the band C-routes C3-3 uses for the top-up. There is no separate registration cost. Input 0's claim is at least `min_input_amount` and the claims reach `min_identity_funding_amount`; a plan that cannot meet those, or has no address above the reserve, is refused before anything is written or signed (`platform.insufficient_credits`). The quote gives `fee_credits` (one times the minimum fee, shown as "about") and `debit_credits` = `funding_credits` + `fee_reserve_credits`, which is the grant's cap and not what the copy shows. Registration has no Max. | The SDK's create fixes the fee on input 0 (`put_identity.rs:414-415`). Drive gives the identity exactly the sum of the claims and takes the metered fee from input 0's remaining balance, or refuses with a state error. That refusal is not `never_valid` (`P/platform_moves.rs:1403-1413`): nothing is paid, no nonce is used, and the signed create stays valid. So a plan whose input 0 fell short would hold; the band makes that unlikely and F10 gives the way out. The library's planner picks input 0 the same way (`PW:186-196`), so a first address that holds only dust does not refuse every registration. The move planner's largest-first fee source (`:1215`) cannot be used for the same reason. The order is the one every Platform-address move follows (`:54-57`, `:2441-2500`); recording the debit as a move gives the existing hold, the nonce settlement, and the rule that a move's own spend is never an `outgoing` activity row (`:21-24`). |
+| F10 | Settlement. **Done:** the SDK's proved result for this transition, which binds execution and checks the identity id against the inputs (`put_identity.rs:447-463`); or, after a restart or an unknown answer, a proved read that shows every input at or past its signed nonce together with a proved fetch that finds the planned identity. The row adopts that id and moves to `IdentityRegistered`. **Can never execute:** Platform's structure or signature check refused it; or an input's nonce is taken and the planned identity is proved absent at a height at or above the height of that nonce proof (an older proof of absence decides nothing: the fetch may have reached a node behind); or, in the process that made the call and never after a restart, the call returned having released no signature. The move is `failed` and unable to land, the plan is cleared from the row, and the row may plan again. **Anything else:** `PaymentUnknown` (F7), and the row keeps its plan. A plan whose move is `failed` by height may still execute, so the row re-signs only that plan and never plans a second registration while it holds. **The way out:** beside a held `Register`, a "Move to Dash wallet" that signs exactly the record's inputs at its nonces may run (the C-routes §0 table, kind `Register`; as C3-9 for the top-up). Whichever of the two executes takes the nonce. The planned identity's existence, proved at a height at or above the nonce proof, says which: present, the registration is done; absent, it can never execute and the row may plan again. `Register` is not in the exact-terms set, which is `Transfer` and `ToContact`. | Rule 1. Re-signing the same inputs, nonces, claims and keys gives the same identity id, so a retry is idempotent. A `pending` record read back after a restart is always treated as able to land (`P/platform_moves.rs:76-82`, `:2540-2545`): the engine cannot know whether a signature left. If the metered fee is more than input 0 kept, Drive refuses the create unpaid and it stays valid, so without the way out the wallet's Platform balance would stay held until a deposit reached that one address. The move is not a second registration, so rule 1 holds. A row imported without its move record follows the same cases: it can re-sign its plan safely whether or not another install already signed it. |
 
 **Shielded (C4b)**
 
 | # | Decision | Why |
 |---|---|---|
 | F11 | The identity call is the library's pool-funded create through the dispatch hook, with the keyset entry point UP-1 adds (never the seed path, `PW:1690`). The engine records the hooked `IdentityCreate` artifact (`rust/crates/dw-appdb/src/dispatch.rs:539-545`) and writes the created id into the row when the call returns it. The id is `double_sha256` of the sorted nullifiers (`OPS:2188-2189`), so it exists only once notes are selected. If the hook's registration does not carry it, UP-1 adds it. | The engine holds a key set, never the seed (lane-C §0 finding 1). The id cannot be planned ahead as F9 does, so the artifact is the record of what may have been sent. |
-| F12 | Evidence, in this order. The journal's disposition of the artifact (item 0: executed, definitely unsent, unresolved). Then the identity: by the row's stored id, else by the seed's identity at the row's index after a discovery pass (`P/registration_flow.rs:1921-1936`). **Executed, and the identity exists at the stored id:** adopt it. **Executed, no identity at the stored id, an identity of this seed at the row's index:** the duplicate-keys refund; adopt that identity (F13). **Executed, and no identity of this seed at the stored id or at the index after a discovery pass:** the create took Platform's fallback for another reason (key bounds or key limits). The row fails with `registration.refunded`, not retryable; its plan is cleared; nothing retries automatically (F13 for where the funds are). **Definitely unsent** (A5 reads it so, with the stored transition abandoned and never redriven): the row returns to `KeysPrepared` and may select notes again. A refusal for the pool's note floor is not that: it stays unresolved until A5 says so (F16). **Unresolved:** `PaymentUnknown`; no second create runs while a spend of the wallet is unrecorded or unresolved. | A second create selects other notes, so it would have another id. Platform's fallback fires for duplicate key hashes and also for key contract-bounds and key-limit failures (`rs-drive-abci/.../identity_create_from_shielded_pool/state/v1/mod.rs:66-72`, `:84-101`, `:103-150`); each is deterministic, so a blind retry would lose a penalty every time. A duplicate can never make a second identity. The existing gate `shielded.unrecorded_spend` (`P/shielded_pool.rs:563`, `:1153`) already blocks the next spend. |
-| F13 | The required fallback address is always the wallet's own Platform receive address (`P/platform_addresses.rs:429`), fixed at Draft and stored in the row. It is never typed, pasted or external. When Platform takes the fallback, the denomination less a penalty lands there (`state/v1/mod.rs:72`, `:137`). The rise is attributed with C-routes C1-9's record and kind: a `FromShieldedRecord` whose source is the registration's draft, shown as `PlatformActivityKind::FromShielded` with the label "Returned from a registration". It is written and armed only once the refund is proved: the disposition reads executed and the identity at the stored id is proved absent. It absorbs a rise of the fallback address up to the denomination less the penalty, and is `done` when it has. It is never armed while the create is pending, and never in the success case. It is written under the shielded wallet lock, then the move lock (lock order above). Two armed records on one address (a C1b unshield defaults to the same address) absorb in the order they were armed, each up to its own credits, and no credit is counted for both. | iOS passes a required Platform fallback (`ios.md:673`). On desktop the only safe meaning is "back to me". Arming while the create is pending would absorb unrelated deposits to the wallet's default address and, on success, keep them, hiding an `incoming` row. Arming after the proof costs at most a wrong label: a read that runs between the execution and the arming shows the rise as a plain `incoming` row. No money depends on it. |
+| F12 | Evidence, in this order. The journal's disposition of the artifact (item 0: executed, definitely unsent, unresolved). Then the identity: by the row's stored id, else by the seed's identity at the row's index after a discovery pass (`P/registration_flow.rs:1921-1936`). **Executed, and the identity exists at the stored id:** adopt it. Every "no identity" below means a proof of absence at a height at or above the height of the execution evidence; an older one decides nothing and the row stays `PaymentUnknown`. **Executed, no identity at the stored id, an identity of this seed at the row's index:** the duplicate-keys refund; adopt that identity (F13). **Executed, and no identity of this seed at the stored id or at the index after a discovery pass:** the create took Platform's fallback for another reason (key bounds or key limits). The row fails with `registration.refunded`, not retryable; its plan is cleared; nothing retries automatically (F13 for where the funds are). **Definitely unsent** (A5 reads it so, with the stored transition abandoned and never redriven): the row returns to `KeysPrepared` and may select notes again. A refusal for the pool's note floor is not that: it stays unresolved until A5 says so (F16). **Unresolved:** `PaymentUnknown`; no second create runs while a spend of the wallet is unrecorded or unresolved. | A second create selects other notes, so it would have another id. Platform's fallback fires for duplicate key hashes and also for key contract-bounds and key-limit failures (`rs-drive-abci/.../identity_create_from_shielded_pool/state/v1/mod.rs:66-72`, `:84-101`, `:103-150`); each is deterministic, so a blind retry would lose a penalty every time. A duplicate can never make a second identity. The existing gate `shielded.unrecorded_spend` (`P/shielded_pool.rs:563`, `:1153`) already blocks the next spend. |
+| F13 | The required fallback address is always the wallet's own Platform receive address (`P/platform_addresses.rs:429`), fixed at Draft and stored in the row. It is never typed, pasted or external. When Platform takes the fallback, the denomination less a penalty lands there (`state/v1/mod.rs:72`, `:137`). The rise is attributed with C-routes C1-9's record and kind: a `FromShieldedRecord` whose source is the registration's draft, shown as `PlatformActivityKind::FromShielded` with the label "Returned from a registration". It is written and armed only once the refund is proved: the disposition reads executed and the identity at the stored id is proved absent at a height at or above the execution height (F12). The record absorbs only a rise in a read whose stored baseline is below the execution height, up to the denomination less the penalty; if the baseline is already at or above it, the record settles `done` and absorbs nothing. It is never armed while the create is pending, and never in the success case. It is written under the shielded wallet lock, then the move lock (lock order above). Two armed records on one address (a C1b unshield defaults to the same address) absorb in the order they were armed, each up to its own credits, and no credit is counted for both. | iOS passes a required Platform fallback (`ios.md:673`). On desktop the only safe meaning is "back to me". Arming while the create is pending would absorb unrelated deposits to the wallet's default address and, on success, keep them, hiding an `incoming` row. Arming after the proof costs at most a wrong label: a read that runs between the execution and the arming has the rise in its baseline and shows it as a plain `incoming` row. The baseline rule then stops the record from absorbing the next unrelated deposit in its place. No money depends on the label. C-routes C1-9 carries the same sentence for this source. |
 | F14 | The denomination comes from the protocol version in force, never from a constant: `shielded_identity_create_denominations`. At PV12 the set is 0.1, 0.3, 0.5, 1 DASH (`PV/drive_abci_versions/drive_abci_validation_versions/v8.rs:434`, used by `PV/v12.rs`). From PV13 it is 0.03, 0.1, 0.25, 0.5, 1 DASH (`v9.rs:431`, `v10.rs:506`). The engine picks the smallest member that, less the predicted create fee, covers what the name and profile need at that version. An empty set is `platform.feature_off{feature: "shielded_registration"}`. | The library refuses a non-member before proving (`W/shielded/note_selection.rs:230-242`) and refuses a denomination that does not exceed the fee (`:252-259`). Core's amounts are the yardstick: 0.03 DASH for a plain name (`P/registration_flow.rs:79`) and the version's contested amount (`:92-98`). This also follows iOS #1267 (0.03 DASH for a standard name) without hard-coding it. |
 | F15 | The change goes back to the pool, to the account's default shielded address (`OPS:2179-2180`, `:2256`). It is not spendable until a sync pass finds it. The quote says so, and the engine counts it as the wallet's the whole time. | The library sets the change address itself; the engine has no choice to make. The copy prevents "my shielded balance dropped by more than the fee". |
 | F16 | Readiness is an engine quote, checked again at the start. Items: the pool is active at this version (PV12); the feature is on; a denomination exists (F14); the spendable balance covers it; no unrecorded or unresolved spend; the shielded tree is synced; the notes have rested (F17). The pool's 250-note floor (`minimum_pool_notes_for_outgoing`, `v10.rs:470`) cannot be read ahead, so it shows up as the refusal `shielded.pool_too_small{notes, required}` at the call (`P/shielded_pool.rs:853-854`). That refusal is not final: the signed create stays valid while its anchor is, and the pool only grows. The row waits in `PaymentUnknown` until A5 reads the artifact definitely unsent with the stored transition abandoned (F12). | iOS's checklist (`ios.md:37`, `:673`). Every item but the rest is already a refusal of a shielded spend on main; the quote only reports them before Confirm. The floor is a state check on a count that only rises (`rs-drive-abci/.../shielded_common/mod.rs:320-349`), and the engine keeps the signed bytes for redrive (C-routes R6). |
@@ -122,7 +127,7 @@ the user finishes with "Choose a username" (DP1-09 D6).
 | Shielded: an earlier spend is unknown | "An earlier shielded payment is still being checked. Try again when it is settled." |
 | Shielded: still syncing | "Your shielded balance is still syncing." |
 | Shielded: pool too small | "The shielded pool is too small for this right now. Dash Wallet is checking that nothing was sent; do not start again until it says so." Then, once it is definitely unsent: "Nothing was paid. Try again later, or pay with your Dash wallet." |
-| Confirm, Platform | "About N Dash leaves your Platform balance: M for your identity and a network fee of about F. Your identity starts with M." (M is `funding_credits`, exact; N is M plus the fee.) |
+| Confirm, Platform | "About N Dash leaves your Platform balance: M for your identity and a network fee of about F. Your identity starts with M." (M is `funding_credits`, exact; F is `fee_credits`; N is M plus F. `debit_credits` is the grant's cap and is not shown.) |
 | Confirm, Shielded | "N Dash leaves your Shielded balance. The rest of the notes used returns to your Shielded balance after the next sync." |
 | `registration.quote_changed` | "The cost changed. Review it and confirm again. Nothing was paid." |
 | `PaymentUnknown` | "We could not confirm the payment yet. Dash Wallet keeps checking; do not start again. Nothing more is needed from you." Button: "Check again". |
@@ -133,7 +138,7 @@ the user finishes with "Choose a username" (DP1-09 D6).
 
 | Slice | Section | Rows |
 |---|---|---|
-| C4a-1, C4a-2 | §2.2, §2.12, §3, §4 | `RegistrationFunding::PlatformAddresses{funding_credits, fee_reserve_credits}`; `RegistrationQuote` gains `funding_credits`, `fee_reserve_credits`, `debit_credits` (their sum, "about"), `available_credits` (0 for other sources; the duff fields are 0 for this one); `RegistrationWait::PaymentUnknown`; `registration.quote_changed`; the start's refusals `credits.move_pending` and `platform.insufficient_credits`; the input-0 reserve (F9); the rule "a planned row re-signs only its plan" (F10). §2.12: the move kind `Register`, its activity row, and its line in the held-record rule. |
+| C4a-1, C4a-2 | §2.2, §2.12, §3, §4 | `RegistrationFunding::PlatformAddresses{funding_credits, fee_reserve_credits}`; `RegistrationQuote` gains `funding_credits`, `fee_reserve_credits`, `fee_credits` (the estimate the copy shows), `debit_credits` (funding plus reserve: the grant's cap, never shown as what leaves), `available_credits` (0 for other sources; the duff fields are 0 for this one); `RegistrationWait::PaymentUnknown`; `registration.quote_changed`; the start's refusals `credits.move_pending` and `platform.insufficient_credits`; the input-0 reserve (F9); the rule "a planned row re-signs only its plan" (F10). §2.12: the move kind `Register`, its activity row, and its line in the held-record rule (a "Move to Dash wallet" at its inputs and nonces may run beside it). |
 | C4b-1, C4b-2 | §2.2, §2.12, §2.13, §3, §4 | `RegistrationFunding::Shielded{denomination}`; `RegistrationQuote.readiness` (each item of F16 with its state, and `ready_at` for the rest); `registration.shielded_not_ready{reason, ready_at}`; `registration.refunded`; `platform.feature_off{feature: "shielded_registration"}`; the fallback rule and the refund record's arming (F13); the evidence order (F12); the pool-floor rule (F16). |
 | C4c | none | Renderer only. |
 
@@ -142,45 +147,65 @@ A new error code may touch `rust/crates/dw-ffi/src/api/error.rs`; if its mapping
 
 ### Tests that prove the money rules
 
-C4a:
+C4a-1 (quote, plan, the `Register` kind):
+
+- `fee_reserve_on_input_0`: after the plan, input 0 keeps `fee_reserve_credits` above its claim and the claims sum to
+  `funding_credits`; with no address above the reserve the quote refuses before signing. Mutant: the move planner's
+  largest-first fee source.
+- `fee_reserve_is_three_times_min_fee`: the reserve is 3 × `calculate_min_required_fee` for the plan's inputs and keys.
+- Input 0 is the first address above the reserve: a first address holding dust is skipped, not a refusal.
+- Input 0's claim below `min_input_amount`, or claims below `min_identity_funding_amount`, refuse in the quote.
+- `debit_credits` is funding plus reserve and equals the grant's cap; `fee_credits` is what the copy shows.
+- The grant covers `debit_credits` plus the name and profile credits, and no less.
+- Settlement needs the SDK's proved result, or both the nonces and the identity from proved reads. Mutants: settle on
+  the nonces alone; settle on an answer that carries no proof.
+- `absence_older_than_the_nonce_proof_decides_nothing`: nonces taken at height h and the identity absent at h−1 → no
+  re-plan, and the row stays `PaymentUnknown`. Mutant: drop the height check.
+- `register_fee_shortfall_holds_and_to_core_exits`: the create is refused for input 0's shortfall and the record holds;
+  a "Move to Dash wallet" at its inputs and nonces runs and executes; a fresh proof shows the identity absent; the
+  record resolves as never able to land and the row may plan again. A move at other inputs or nonces is still
+  `credits.move_pending`. Mutant: put `Register` in the exact-terms set.
+- A pending registration refuses the next Platform move with `credits.move_pending`, and a pending move refuses the
+  registration.
+- No `outgoing` activity row appears for the registration's spend.
+- An older build's decode of both new kinds is `Unsupported`; a newer row is never funded or discarded there.
+- `lock_order_register`: the call runs against a holder of the move lock and does not deadlock.
+
+C4a-2 (flow, resume):
 
 - A kill at each row of the table above loses nothing, and the relaunch pays once (mock SDK, as DP1-02 §11.2).
 - The transition is signed at the recorded nonces. Mutant: fetch nonces at submit; the test that moves a nonce between
   plan and call must fail.
 - A row with a plan re-signs the same terms and reaches the same identity id. Mutant: re-plan while the first is
   unknown.
-- Settlement needs the SDK's proved result, or both the nonces and the identity from proved reads. Mutants: settle on
-  the nonces alone; settle on an answer that carries no proof.
-- `fee_reserve_on_input_0`: after the plan, input 0 keeps `fee_reserve_credits` above its claim and the claims sum to
-  `funding_credits`; a plan whose input 0 lacks the reserve is refused before signing. Mutant: the move planner's
-  largest-first fee source.
-- The grant covers `funding_credits` plus the reserve plus the name and profile credits, and no less.
 - A kill after the record with no signature known keeps the plan: after a deposit changes the balances, the relaunch
   signs the same inputs and nonces. Mutant: clear an unsigned `pending` record at load.
 - `IdentityAlreadyExists` from `add_identity` is success, and a failed `reconcile_address_infos` changes no decision.
-- `lock_order_register`: the call runs against a holder of the move lock and does not deadlock.
 - A refusal before signing keeps the grant and leaves no move record.
-- A pending registration refuses the next Platform move with `credits.move_pending`, and a pending move refuses the
-  registration.
-- No `outgoing` activity row appears for the registration's debit.
-- An older build's decode of both new kinds is `Unsupported`; a newer row is never funded or discarded there.
 - Discard is refused while `funds_committed`.
 
-C4b:
+C4b-1 (readiness, denomination):
+
+- Every readiness item refuses at the start as well as in the quote. Mutant: check the rest only in the quote.
+- The denomination follows the version: PV12, PV13 and PV14 give the members of F14; an empty set is `feature_off`.
+- The fallback is the wallet's own receive address. Mutant: accept a caller's address; the test must fail to compile or
+  fail.
+
+C4b-2 (flow, evidence, refund):
 
 - The kill matrix, including both item-0 windows (before and after the artifact write).
 - The id written to the row equals `double_sha256` of the sorted nullifiers of the built bundle.
 - Mutant: the seed entry point. A test that the hook saw the spend must fail.
 - No second create while a spend is unresolved or unrecorded.
-- Every readiness item refuses at the start as well as in the quote. Mutant: check the rest only in the quote.
-- The denomination follows the version: PV12, PV13 and PV14 give the members of F14; an empty set is `feature_off`.
-- The fallback is the wallet's own receive address. Mutant: accept a caller's address; the test must fail to compile or
-  fail.
 - A duplicate-keys refund adopts the existing identity and shows one attributed activity row.
 - Executed with no identity at the stored id or the index fails the row with `registration.refunded` and starts no
   second create. Mutant: treat it as unsent.
+- Executed, with the identity absent only in a proof older than the execution evidence: the row stays
+  `PaymentUnknown`, does not fail `registration.refunded`, and no refund record is armed. Mutant: drop the height check.
 - The refund record is armed only after the proof. A deposit to the fallback address while the create is pending, and
   one after a successful create, are both plain `incoming` rows. Mutant: arm at the hook.
+- An address read between the execution and the arming, then an unrelated deposit: that deposit is an `incoming` row
+  and the record settles `done` having absorbed nothing. Mutant: absorb whatever the baseline.
 - Two armed records on one address absorb in arming order and never count one credit twice.
 - A pool-floor refusal keeps the row in `PaymentUnknown` until A5 reads definitely unsent. Mutant: return to
   `KeysPrepared` on the refusal.
@@ -228,9 +253,9 @@ and WebKit; DEC-1484 images, light and dark.
 | P3 | The source's gates are the ones on main, none relaxed. Shielded: the hook check, the wallet's shielded lock, `confirm_unrecorded`, the quote under the pass hold, the withdrawal range (`P/shielded_pool.rs:781-796`, `:924-963`, `:1150-1154`). Platform: the wallet lock, the proved read under rule 5, `credits.move_pending`, the withdrawal limits (`P/platform_moves.rs:2441-2500`). | A contact payment is an unshield or a withdrawal with a different destination. It must pass everything those pass. |
 | P4 | The address comes only from the reservation made inside the same call. No facade call takes a Core address for a contact payout, and `move_to_core` keeps refusing an address that is not the wallet's own. The Platform move gets a new internal target and move kind, `ToContact`, beside the own-address target (`P/platform_moves.rs:2020-2025`), built only by `contact_pay`. | C5b needs an external Core script; lane-C calls it "a new `to` kind". Keeping it internal means the own-address rule of "Move to Dash wallet" is not loosened for any host input. |
 | P5 | The pair's reserved address is shared with the Core path: a draft's unused address is the payout's, and the reverse. The payout claims it before it signs. It goes back to the pair in two cases only: the call was refused before a signature, or Platform's structure or signature check refused the transition. Otherwise it is consumed, also when the payment is later proved not sent. A refusal for the shielded pool's note floor is not a give-back: the lock stays and the address stays consumed until A5 reads the payout definitely unsent with the stored transition abandoned and never redriven; then the lock clears and the address is still consumed. | DP3-01 D7 and D21. An address that may have reached the network is never paid twice (DIP-15 rotation). The floor is a state check on a note count that only rises (`rs-drive-abci/.../shielded_common/mod.rs:320-349`), so the signed unshield stays valid while its anchor is, and the engine keeps its bytes for redrive (C-routes R6). Handing the address back would let a Core payment and a later redrive both pay it. |
-| P6 | One lock per pair, across all three sources. The payout's reference is assigned first: for Platform it is the move's id, chosen before the move record is written; for Shielded it is an id the engine makes, and the hook's accept writes the artifact's `st_hash` into the row before it returns. The row goes into a new table `dp_contact_payout` (wallet, identity, contact, source, reference, `st_hash`, address, credits, expected duffs, note, state, since), synced as DP3-01 D27 requires, before the source record and before anything is signed. While its state is `pending` it is the pair's lock in memory, so the existing check (`P/payment_locks.rs:202-221`) refuses every other payment to that contact, from any source. A Core lock likewise refuses a payout. **On restart**, a `pending` row whose source record is absent (no move record with its id; no `st_hash`) was never signed: it is cleared as not sent and its address goes back to the pair. | DP3-01 D23: the row, not memory, is the record of every payment that may have gone out. The existing row is keyed by a Core txid and a payout has none before it executes. Both sources write their own record before signing (C-routes R1, R6), so a row with no source record cannot have released a signature; without this rule a kill between the two writes would lock the contact for good. |
+| P6 | One lock per pair, across all three sources. The payout's reference is assigned first: for Platform it is the move's id, chosen before the move record is written; for Shielded it is an id the engine makes, and the hook's accept writes the spend's `st_hash` into the row, durably, before it writes the dispatch artifact; if that write fails the accept refuses the spend and nothing is sent. The row goes into a new table `dp_contact_payout` (wallet, identity, contact, source, reference, `st_hash`, address, credits, expected duffs, note, state, since), synced as DP3-01 D27 requires, before the source record and before anything is signed. While its state is `pending` it is the pair's lock in memory, so the existing check (`P/payment_locks.rs:202-221`) refuses every other payment to that contact, from any source. A Core lock likewise refuses a payout. **On restart**, a `pending` row whose source record is absent was never sent: it is cleared as not sent and its address goes back to the pair. Absent means, for Platform, no move record with its id; for Shielded, no `st_hash`, or an `st_hash` with no artifact in the journal. A row whose `st_hash` has an artifact is settled by A4b and A5, never cleared by this rule. | DP3-01 D23: the row, not memory, is the record of every payment that may have gone out. The existing row is keyed by a Core txid and a payout has none before it executes. Both sources write their own record before signing (C-routes R1, R6), so a row with no source record cannot have released a signature. Writing `st_hash` first closes the window in which the journal holds an artifact a pass may re-send while the row does not name it; without this rule a kill between the two writes would lock the contact for good. |
 | P7 | What clears the lock. **Sent:** Platform executed the transition. Shielded: the spend is `Done`, or item 0's disposition is executed. Platform: the move is `done` as itself. **Not sent:** only proof that it can never execute: a structure or signature refusal, A5's "definitely unsent" with the stored transition abandoned, a Platform move unable to land, or P6's restart case. **Anything else: the lock stays**, a pool-floor refusal included (P5). The Core arrival of the payout is not waited for. | The lock exists to stop a second payment while the first is unknown (DP3-01 D8, D9). Once Platform has executed the withdrawal the outcome is known: the payout is queued by consensus and is only late. Waiting for the asset unlock would hold the contact for a long time with nothing left to learn. |
-| P8 | A Platform payout that is `failed` by height still holds its nonces and may still execute. While it holds, the only move allowed beside it is its exact retry: the same inputs, nonces, amount and address. Any other move is `credits.move_pending`. The lock stays until its nonces are taken. C5b adds `ToContact` to main's exact-terms set, which today keys only on `Transfer` (`P/platform_moves.rs:2555-2559`); the C-routes §0 table lists the result beside the other kinds. | Rule 1. This is the rule a held send to a Platform address already has (`P/platform_moves.rs:66-74`). Without it a different move at the same nonces could execute instead, and no proof would say which one did (`:87-91`). |
+| P8 | A Platform payout that is `failed` by height still holds its nonces and may still execute. While it holds, the only move allowed beside it is its exact retry: the same inputs, nonces, amount and address. Any other move is `credits.move_pending`. The lock stays until its nonces are taken. C5b adds `ToContact` to main's exact-terms set, which today keys only on `Transfer` (`P/platform_moves.rs:2555-2559`), so the set is `Transfer` and `ToContact`; the C-routes §0 table lists it beside the other kinds. Because nothing but the retry can run beside it, C5b keeps a band of 3 × the fee estimate on the payout's fee input, where main's withdrawal planner keeps one. | Rule 1. A payout pays someone else, so no own-address move may stand in for it the way one may for a held `Register`. The band is what keeps a fee shortfall from holding the balance (open risk 7). This is the rule a held send to a Platform address already has (`P/platform_moves.rs:66-74`). Without it a different move at the same nonces could execute instead, and no proof would say which one did (`:87-91`). |
 | P9 | A shielded payout whose result is unconfirmed is `pending`, as every shielded spend is (`P/shielded_pool.rs:996-1045`). The contact stays locked until the scan or the journal decides. The user's acknowledgement of an unresolved spend in Tools ▸ Repair (A4c) does not clear the contact's lock. | An acknowledgement is not evidence (rule 2). The exit is real: the nullifiers are seen spent, or the anchor expires with them unspent. |
 | P10 | History names the contact from the payout row. `ShieldedActivity` and the Platform activity row gain `contact` (the `Counterparty` record), joined by the row's reference. Without a row (a restore from the seed), the join falls back to the destination address through the existing payee scripts, with their shared-xpub exclusion (`P/attribution.rs:12-14`, `:243-253`). | The wallet does not fund the asset unlock, so the Core rule cannot attribute it. The payout row is the wallet's own durable word; the address fallback is the same "by address first" rule Core uses. |
 | P11 | `contact_activity` and the frequent strip include payouts. `ActivityItem` and `PaymentLock` gain `source` (`core`, `shielded`, `platform`) and `reference`. `txid` keeps its type and equals `reference`; a host reads `source` before treating it as a Core txid. `ActivityItem` also gains `core_txid`, set once the wallet has seen the payout on Core. `contact.payment_locked{txid}` carries the same reference. | Additive: no host breaks, and dw-ffi binds no DashPay record (DP1-09 D5). A payout the user just made must show at once, before any Core transaction exists. |
@@ -255,7 +280,8 @@ and WebKit; DEC-1484 images, light and dark.
 
 A restart at any point reads the payout rows back. A `pending` row with its source record is the lock again, and that
 record (the shielded journal's artifact, the move record) settles it as it would a live one. A `pending` row with no
-source record is cleared as not sent, and its address goes back to the pair (P6).
+source record (no move record; no `st_hash`, or an `st_hash` with no artifact) is cleared as not sent, and its address
+goes back to the pair (P6).
 
 ### Copy
 
@@ -287,42 +313,50 @@ C5-0 carries the shared rows and merges first; C5a and C5b each add one source.
 
 ### Tests that prove the money rules
 
-C5a and C5b, each for its source:
+C5-0 (shared rows; each source's slice runs the same list for its source):
 
 - An unknown outcome holds the contact: a second payment from each of the three sources is `contact.payment_locked`.
 - The payout row is on disk before a signature is released. Mutant: write it after the call; the kill-before-return
   test must fail.
-- A kill between the payout row and the source record: the relaunch clears the row as not sent, unlocks the contact
-  and returns the address to the pair. Mutant: keep such a row as the lock.
-- A restart with a `pending` row locks the contact again, and the source's evidence then settles it.
-- The lock clears on execution and on proof of never executing, and on nothing else. Mutants: clear on a timeout; clear
-  on the library's `Ok` without proof (Platform); clear on the Repair acknowledgement (Shielded).
+- A restart with a `pending` row and its source record locks the contact again, and the source's evidence then
+  settles it.
+- The lock clears on execution and on proof of never executing, and on nothing else. Mutant: clear on a timeout.
 - An address that may have reached the network is never paid again; one refused before a signature is reused.
 - Rule 5 refuses before the grant is redeemed and before an address is taken, and the re-check after the reservation
   drops an address that no longer verifies.
 - History, contact activity and the frequent strip name the contact; no second row appears if the payout is later seen
   on Core.
-- The withdrawal minimum and maximum refuse before the grant is redeemed.
 - "Accept and pay": one grant, one lease; an accept that succeeds with a payment that fails leaves the contact
   established and the address reserved; the lease cannot sign a Core spend, and a `ContactPayment` lease is refused by
   `contact_pay`.
 - `lock_order_contact_pay`: the call runs against the existing holders of the later locks and does not deadlock.
 
-C5b only:
+C5a (Shielded):
 
-- `move_to_core` still refuses an address that is not the wallet's own. Mutant: route the contact target through it.
-- Beside a held payout only its exact retry runs; any other move is `credits.move_pending`. Mutant: leave `ToContact`
-  out of the exact-terms set.
-- Nonce settlement as "Move to Dash wallet": mutant, settle without the proved nonce.
-
-C5a only:
-
-- The spend goes through the dispatch hook, and the journal's disposition for the kind settles the lock.
+- The spend goes through the dispatch hook, and the journal's disposition for the kind settles the lock. Mutant: clear
+  the lock on the Repair acknowledgement.
 - `shielded.unrecorded_spend` refuses the payout unless confirmed, before an address is taken.
+- The withdrawal minimum and maximum refuse before the grant is redeemed.
+- The accept writes `st_hash` into the payout row before the artifact, and refuses the spend when that write fails
+  (nothing is sent). Mutant: write the artifact first.
+- A kill after each of the two writes. After the `st_hash` write alone, the relaunch clears the row as not sent,
+  unlocks the contact and returns the address to the pair. After the artifact, the lock stays and A4b and A5 settle
+  it. Mutant: clear a row whose `st_hash` has an artifact.
 - A pool-floor refusal holds the lock and keeps the address consumed; a Core payment to the contact is refused
   meanwhile; A5's definitely-unsent clears the lock and the address is not reused. Mutant: give the address back on
   the refusal.
-- The hook's accept writes the `st_hash` into the payout row before it returns.
+
+C5b (Platform):
+
+- `move_to_core` still refuses an address that is not the wallet's own. Mutant: route the contact target through it.
+- Beside a held payout only its exact retry runs; any other move, a "Move to Dash wallet" at its inputs and nonces
+  included, is `credits.move_pending`. Mutant: leave `ToContact` out of the exact-terms set.
+- The payout's fee input keeps 3 × the fee estimate. Mutant: main's planner, which keeps one.
+- A kill between the payout row and the move record: the relaunch clears the row as not sent, unlocks the contact and
+  returns the address to the pair. Mutant: keep such a row as the lock.
+- Nonce settlement as "Move to Dash wallet". Mutants: settle without the proved nonce; clear the lock on the library's
+  `Ok` without proof.
+- The withdrawal minimum and maximum refuse before the grant is redeemed.
 
 C5c: vitest for the "From" model (default, reasons, the lock banner per source, the confirm lines); Playwright on
 Chromium and WebKit; DEC-1484 images, light and dark.
@@ -344,14 +378,14 @@ Each engine slice is at most about 500 non-test lines. Sizes are estimates.
 
 | Slice | Content | Non-test lines | Depends on |
 |---|---|---|---|
-| C4a-1 | Platform registration: the quote, the input-0 plan (F9), the stored kind (F2–F4), the move kind `Register` with its settlement and held-record rule (F10), dw-app DTOs | ~400 | D-C4; C-routes §0 table |
+| C4a-1 | Platform registration: the quote, the input-0 plan (F9), the stored kind (F2–F4), the move kind `Register` with its settlement, the fresh-absence rule and the "Move to Dash wallet" exit (F10), dw-app DTOs | ~400 | D-C4; C-routes §0 table |
 | C4a-2 | Platform registration: the flow step, the lease scope (F5), the SDK create and its follow-ups (F8), resume, discard, `PaymentUnknown` (F6, F7) | ~350 | C4a-1 |
 | C4b-1 | Shielded registration: the readiness quote, the denomination per version, the stored kind (F14, F16, F17) | ~300 | D-C4 |
-| C4b-2 | Shielded registration: the flow step through the hook, the evidence order, the fallback and the refund record (F11–F13, F15) | ~450 | C4b-1, UP-1, RP-1, A5, A4b; C1-9's record if C1b merged first, else C4b-2 adds it |
+| C4b-2 | Shielded registration: the flow step through the hook, the evidence order, the fallback and the refund record (F11–F13, F15) | ~450 | C4b-1, UP-1, RP-1, A5, A4b, and C-routes' C1b-2, which adds C1-9's record; C4b-2 adds only the registration source to it |
 | C4c | The picker (F19–F21); per source | ~350 | C4a-2 (Platform), C4b-2 (Shielded) |
 | C5-0 | Shared rows: the two calls, `dp_contact_payout`, the lock's source and reference, the activity fields and joins (P10–P12), `ContactPayFromBalance`, the `AcceptAndPay` source (P15) | ~450 | D-C5 |
-| C5a | Shielded source: the payout through `unshield`, the hook's `st_hash` write, P9, the pool-floor rule | ~300 | C5-0, A5 |
-| C5b | Platform source: the `ToContact` target and kind, the exact-terms set, nonce settlement | ~350 | C5-0; C-routes §0 table |
+| C5a | Shielded source: the payout through `unshield`, the `st_hash` write before the artifact (P6), P9, the pool-floor rule | ~300 | C5-0, A5 |
+| C5b | Platform source: the `ToContact` target and kind, the exact-terms set, the 3 × fee band (P8), nonce settlement | ~350 | C5-0; C-routes §0 table |
 | C5c | The "From" step; per source | ~250 | C5a, C5b |
 
 ## MG rulings
@@ -384,7 +418,10 @@ M1–M5 were ruled as recommended (MG, 2026-11-19 05:1xZ). MG also ruled one cre
    can register from Shielded at once.
 6. **A pool-floor refusal waits on A5.** Until A5's disposition can read a floor-refused spend definitely unsent and
    abandon its stored transition, such a registration or payout stays `PaymentUnknown` or locked (F12, F16, P5).
-7. **The fee reserve's size** (F9) is an estimate with a band; the metered fee has no ceiling. If input 0's remainder
-   falls short at execution Drive refuses, and the record holds until the same plan can land.
-8. **Size.** C4b-2 is the largest slice and depends on UP-1, RP-1, A5 and A4b. If the date slips, items 4 and 5 are
+7. **The metered fee has no ceiling.** The reserve is 3 × the minimum fee (F9, P8). Past that band Drive refuses the
+   transition unpaid and it stays valid. A held `Register` then has the "Move to Dash wallet" exit (F10). A held
+   `ToContact` has none: only its exact retry may run, so the wallet's Platform moves are `credits.move_pending` and
+   the contact stays locked until a deposit reaches the payout's fee input and the retry lands. Nothing is lost, but
+   the user cannot end it from the app.
+8. **Size.** C4b-2 is the largest slice and depends on UP-1, RP-1, A5, A4b and C1b-2. If the date slips, items 4 and 5 are
    the first cut (lane-C schedule).
