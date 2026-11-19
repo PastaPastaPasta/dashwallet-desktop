@@ -186,13 +186,14 @@ async fn drain_cap(
 /// The funding signer of a drain's call: `permit`'s, signing at most
 /// [`MAX_LOCK_INPUTS`] inputs, and only the build of `coins`, worth
 /// `total_duffs`, within the quote's fee bound, that credits at least
-/// `minimum_lock_duffs` to `credit_script`.
+/// `minimum_lock_duffs` to `credit_script` (`DrainPlan::instant_locked`).
 pub(super) fn drain_signer(
     permit: &CallPermit,
     coins: &[DrainCoin],
     total_duffs: u64,
     minimum_lock_duffs: u64,
     credit_script: dashcore::ScriptBuf,
+    instant_locked: bool,
 ) -> Result<CountingFundingSigner, FundError> {
     let plan = DrainPlan {
         coins: (coins.iter())
@@ -202,6 +203,7 @@ pub(super) fn drain_signer(
         fee_bound: crate::fees::asset_lock_fee_bound(coins.len()),
         minimum_lock_duffs,
         credit_script,
+        instant_locked,
     };
     Ok((permit.funding_signer())
         .map_err(|e| FundError::Refused(e.into()))?

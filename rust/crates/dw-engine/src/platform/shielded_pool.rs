@@ -125,7 +125,7 @@ use dw_appdb::dispatch::{
     ArtifactKind, ArtifactOrigin, ArtifactStatus, NewShieldedArtifact, TopUpSettled,
 };
 use dw_vault::{SHIELDED_ACCOUNT, VaultError, VaultSigner};
-use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+use key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingAccount;
 use platform_wallet::changeset::{
     PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
 };
@@ -141,6 +141,8 @@ use platform_wallet::wallet::shielded::{
 use platform_wallet::{AssetLockFundingType, PlatformWalletError};
 use sha2::{Digest, Sha256};
 
+use super::core_max::{self, CoreCoins, MaxPlan};
+use super::credits::FundAmount;
 use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait as Wait};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
@@ -360,6 +362,20 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// and waited for its proof. A built lock below `minimum_lock_duffs`
     /// is dropped before it is tracked or sent.
     fn fund_drain(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> impl Future<Output = Result<OutPoint, FundError>> + Send;
+    /// A Core Max: BIP44 account 0 read under `fence` (`core_max.rs`).
+    fn core_coins(
+        &self,
+        fence: &crate::coins::CoinFence,
+    ) -> impl Future<Output = Result<CoreCoins, PlatformError>> + Send;
+    /// Drains BIP44 account 0 into one shield lock, as [`Self::fund_drain`]
+    /// does CoinJoin account 0 (`core_max::fund`).
+    fn fund_core_max(
         &self,
         coins: &[DrainCoin],
         total_duffs: u64,
@@ -1277,16 +1293,7 @@ async fn shield_plan(
     if duffs < min {
         return Err(ShieldedError::BelowMinimum { min });
     }
-    // A lock whose consumption is unknown may never settle (only a proved
-    // apply does, and Platform answers a consumed lock "already consumed",
-    // unproved): it stays listed, resumable, and blocks nothing. The new
-    // shield funds a new lock from the wallet's coins; that outpoint is no
-    // coin of the wallet's.
-    if let Some(open) = (open_shields(lib).await?.iter()).find(|o| !o.consumption_unknown) {
-        return Err(ShieldedError::ShieldPending {
-            txid: open.lock.outpoint.txid.to_string(),
-        });
-    }
+    no_open_shield(lib).await?;
     let fee_duffs = lib.fee_bound().await?;
     let spendable = lib.spendable().await?;
     let total_duffs = duffs.saturating_add(fee_duffs);
@@ -1318,7 +1325,53 @@ async fn shield_plan(
             max_duffs: total_duffs,
             max_credits: 0,
         },
+        max: None,
     })
+}
+
+/// Refused while a shield lock that can still settle is open.
+async fn no_open_shield(lib: &impl ShieldedLib) -> Result<(), ShieldedError> {
+    // A lock whose consumption is unknown may never settle (only a proved
+    // apply does, and Platform answers a consumed lock "already consumed",
+    // unproved): it stays listed, resumable, and blocks nothing. The new
+    // shield funds a new lock from the wallet's coins; that outpoint is no
+    // coin of the wallet's.
+    match (open_shields(lib).await?.iter()).find(|o| !o.consumption_unknown) {
+        Some(open) => Err(ShieldedError::ShieldPending {
+            txid: open.lock.outpoint.txid.to_string(),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// What a Core Max into the pool takes and buys, BIP44 account 0 read
+/// under `fence` (`core_max.rs`).
+async fn shield_max_plan(
+    session: &NetworkSession,
+    lib: &impl ShieldedLib,
+    fence: &crate::coins::CoinFence,
+) -> Result<(ShieldQuote, MaxPlan), ShieldedError> {
+    let version = priced_gate(lib).await?;
+    if !session.leases.journal_ready() {
+        return Err(journal_unread(session));
+    }
+    let pool_fee = shield_pool_fee(version)?;
+    no_open_shield(lib).await?;
+    let floor = super::shield_drain::drain_floor(pool_fee);
+    let plan = core_max::plan(lib.core_coins(fence).await?, floor)?;
+    let quote = ShieldQuote {
+        duffs: plan.duffs,
+        fee_duffs: plan.fee_duffs,
+        total_duffs: plan.total_duffs,
+        pool_fee_credits: pool_fee,
+        credits: (plan.duffs.saturating_mul(CREDITS_PER_DUFF)).saturating_sub(pool_fee),
+        grant: GrantRequest {
+            max_duffs: plan.total_duffs,
+            max_credits: 0,
+        },
+        max: Some(plan.max),
+    };
+    Ok((quote, plan))
 }
 
 pub(crate) async fn shield_quote(
@@ -1327,6 +1380,18 @@ pub(crate) async fn shield_quote(
     duffs: u64,
 ) -> Result<ShieldQuote, ShieldedError> {
     shield_plan(session, lib, duffs).await
+}
+
+/// The quote of a Core Max into the pool: the wallet's claim and its coin
+/// fence held for the read only.
+pub(crate) async fn shield_max_quote(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+) -> Result<ShieldQuote, ShieldedError> {
+    let _claim = core_max::claim(session, wallet)?;
+    let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
+    Ok(shield_max_plan(session, lib, &fence).await?.0)
 }
 
 /// What holds a shield's funding back, as the code the host sees: as a
@@ -1384,17 +1449,31 @@ pub(crate) async fn shield(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     lib: &impl ShieldedLib,
-    duffs: u64,
+    amount: FundAmount,
     grant: &str,
 ) -> Result<ShieldOutcome, ShieldedError> {
     open_for_funding(session, wallet, lib).await?;
     let lock = wallet_lock(session, wallet);
     let _shielding = lock.lock().await;
-    let plan = shield_plan(session, lib, duffs).await?;
+    // A Core Max holds the wallet's CoinJoin claim through its funding.
+    let (claim, quoted) = match amount {
+        FundAmount::All => (Some(core_max::claim(session, wallet)?), None),
+        FundAmount::Duffs { duffs } => (None, Some(shield_plan(session, lib, duffs).await?)),
+    };
     if !session.leases.refresh_funding(wallet).await {
         return Err(PlatformError::Unavailable.into());
     }
     let step = next_step(session, wallet)?;
+    // Held from the coin read to the permit, which keeps it until the
+    // library tracks the lock.
+    let (plan, max) = match quoted {
+        Some(plan) => (plan, None),
+        None => {
+            let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
+            let (plan, max) = shield_max_plan(session, lib, &fence).await?;
+            (plan, Some((max, fence)))
+        }
+    };
     let remaining = funding_cap(session, wallet, grant).await?;
     if plan.total_duffs > remaining {
         return Err(PlatformError::GrantExceeded {
@@ -1411,12 +1490,35 @@ pub(crate) async fn shield(
         .map_err(PlatformError::from)?;
     let funded = lease
         .scope_step(Some(step.clone()), async {
-            let permit = (lib.funding_permit(&lease, step.clone(), SHIELD_KEY, duffs)).await?;
-            let funded = lib.fund(duffs, &permit).await;
+            let (permit, funded) = match max {
+                None => {
+                    let permit =
+                        (lib.funding_permit(&lease, step.clone(), SHIELD_KEY, plan.duffs)).await?;
+                    let funded = lib.fund(plan.duffs, &permit).await;
+                    (permit, funded)
+                }
+                Some((max, fence)) => {
+                    let total = max.total_duffs;
+                    let permit = (session.drain_call_permit(
+                        &lease,
+                        step.clone(),
+                        total,
+                        step.clone(),
+                        SHIELD_KEY,
+                        fence,
+                    ))
+                    .await
+                    .map_err(FundError::Refused)?;
+                    let floor = super::shield_drain::drain_floor(plan.pool_fee_credits);
+                    let funded = lib.fund_core_max(&max.coins, total, floor, &permit).await;
+                    (permit, funded)
+                }
+            };
             permit.finish(funded.is_ok());
             funded
         })
         .await;
+    drop(claim);
     finish_lock(session, wallet, lib, &lease, &signer, step, funded).await
 }
 
@@ -1719,29 +1821,11 @@ impl PwShielded {
     /// the build, which holds the wallet's lock while it signs; the
     /// shielding lock the drain holds keeps any other shield lock out.
     pub(super) async fn shield_credit_script(&self) -> Result<dashcore::ScriptBuf, FundError> {
-        let state = self.pw.wallet.state().await;
-        let xpub = (state
-            .wallet()
-            .accounts
-            .asset_lock_shielded_address_topup
-            .as_ref())
-        .map(|a| a.account_xpub);
-        let account = state
-            .core_wallet
-            .accounts
-            .asset_lock_shielded_address_topup
-            .clone();
-        drop(state);
-        let unavailable = |detail: &str| {
-            FundError::Refused(PlatformError::Internal {
-                detail: format!("the shield funding key: {detail}"),
-            })
-        };
-        let mut account = account.ok_or_else(|| unavailable("no funding account"))?;
-        let address = account
-            .next_address(xpub.as_ref(), false)
-            .map_err(unavailable)?;
-        Ok(address.script_pubkey())
+        super::core_max::credit_script(
+            &self.pw,
+            AssetLockFundingType::AssetLockShieldedAddressTopUp,
+        )
+        .await
     }
 }
 
@@ -2493,8 +2577,12 @@ impl ShieldedLib for PwShielded {
             total_duffs,
             minimum_lock_duffs,
             credit_script,
+            false,
         )?;
-        let funded = self.pw.fund_drain_with(minimum_lock_duffs, &signer).await;
+        let account = AssetLockFundingAccount::CoinJoin { account_index: 0 };
+        let funded = (self.pw)
+            .fund_drain_with(account, SHIELD_KEY, minimum_lock_duffs, &signer)
+            .await;
         // A build that is not the plan's, a coin outside it or past the
         // grant: the signer refused before the transaction was complete, so
         // nothing can be out.
@@ -2510,6 +2598,33 @@ impl ShieldedLib for PwShielded {
             }),
             Err(e) => Err(e),
         }
+    }
+
+    async fn core_coins(
+        &self,
+        fence: &crate::coins::CoinFence,
+    ) -> Result<CoreCoins, PlatformError> {
+        core_max::read(&self.pw.session, fence).await
+    }
+
+    async fn fund_core_max(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        let credit_script = self.shield_credit_script().await?;
+        let plan = (coins, total_duffs);
+        core_max::fund(
+            &self.pw,
+            permit,
+            plan,
+            minimum_lock_duffs,
+            SHIELD_KEY,
+            credit_script,
+        )
+        .await
     }
 }
 

@@ -377,23 +377,23 @@ describe("fixture Add from Dash wallet", () => {
   const duffsGrant = (maxDuffs: number) => backend.authorize({ kind: "platformOp", maxDuffs, maxCredits: "0" }, W, passphrase);
   const platform = () => fixture.world.pending.platform!;
   const add = async (duffs: number) => {
-    const q = await backend.platformFundQuote(W, duffs);
+    const q = await backend.platformFundQuote(W, { kind: "duffs", duffs: duffs });
     const grant = await duffsGrant(q.grant.maxDuffs);
-    return { q, outcome: await backend.platformFund(W, duffs, grant.id) };
+    return { q, outcome: await backend.platformFund(W, { kind: "duffs", duffs: duffs }, grant.id) };
   };
 
   it("quotes the lock fee, Platform's fee and what arrives, to the wallet's receive address", async () => {
-    const q = await backend.platformFundQuote(W, 50_000_000);
-    expect(q).toEqual({ duffs: 50_000_000, feeDuffs: 1_000, totalDuffs: 50_001_000, feeCredits: "56000000", credits: "49944000000", to: platform().receive.address, grant: { maxDuffs: 50_001_000, maxCredits: "0" } });
+    const q = await backend.platformFundQuote(W, { kind: "duffs", duffs: 50_000_000 });
+    expect(q).toEqual({ duffs: 50_000_000, feeDuffs: 1_000, totalDuffs: 50_001_000, feeCredits: "56000000", credits: "49944000000", to: platform().receive.address, grant: { maxDuffs: 50_001_000, maxCredits: "0" }, max: null });
   });
 
   it("refuses an amount below the minimum, more than the Core balance, and a new add while one is waiting", async () => {
-    await expect(backend.platformFundQuote(W, 56_000)).rejects.toMatchObject({ code: "credits.below_minimum", data: { kind: "limit", duffs: 56_001 } });
-    await expect(backend.platformFundQuote(W, 9_000_000_000_000)).rejects.toMatchObject({ code: "credits.funding_insufficient", data: { kind: "duffs" } });
+    await expect(backend.platformFundQuote(W, { kind: "duffs", duffs: 56_000 })).rejects.toMatchObject({ code: "credits.below_minimum", data: { kind: "limit", duffs: 56_001 } });
+    await expect(backend.platformFundQuote(W, { kind: "duffs", duffs: 9_000_000_000_000 })).rejects.toMatchObject({ code: "credits.funding_insufficient", data: { kind: "duffs" } });
     platform().nextFund = "proofWaiting";
     const { outcome } = await add(50_000_000);
     expect(outcome.state).toEqual({ kind: "proofWaiting" });
-    await expect(backend.platformFundQuote(W, 50_000_000)).rejects.toMatchObject({ code: "credits.fund_pending", data: { kind: "txid", txid: outcome.txid } });
+    await expect(backend.platformFundQuote(W, { kind: "duffs", duffs: 50_000_000 })).rejects.toMatchObject({ code: "credits.fund_pending", data: { kind: "txid", txid: outcome.txid } });
   });
 
   it("applies an add: the receive address gains the credits and Activity has a done fromCore row", async () => {
@@ -406,10 +406,10 @@ describe("fixture Add from Dash wallet", () => {
   });
 
   it("refuses a grant that is too small, a lease id, and a grant it already used, unused", async () => {
-    const q = await backend.platformFundQuote(W, 50_000_000);
+    const q = await backend.platformFundQuote(W, { kind: "duffs", duffs: 50_000_000 });
     const small = await duffsGrant(q.totalDuffs - 1);
-    await expect(backend.platformFund(W, 50_000_000, small.id)).rejects.toMatchObject({ code: "platform.grant_exceeded" });
-    await expect(backend.platformFund(W, 50_000_000, "lease-1")).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    await expect(backend.platformFund(W, { kind: "duffs", duffs: 50_000_000 }, small.id)).rejects.toMatchObject({ code: "platform.grant_exceeded" });
+    await expect(backend.platformFund(W, { kind: "duffs", duffs: 50_000_000 }, "lease-1")).rejects.toMatchObject({ code: "platform.grant_invalid" });
     expect(platform().funds).toEqual([]);
     expect(platform().activity.some((a) => a.kind === "fromCore")).toBe(false);
   });
@@ -434,7 +434,7 @@ describe("fixture Add from Dash wallet", () => {
     const { outcome } = await add(50_000_000);
     expect(outcome.state).toEqual({ kind: "consumptionUnknown" });
     expect(await backend.pendingPlatformFunds(W)).toMatchObject([{ proved: true, consumptionUnknown: true, state: "checking" }]);
-    await expect(backend.platformFundQuote(W, 50_000_000)).resolves.toMatchObject({ duffs: 50_000_000 });
+    await expect(backend.platformFundQuote(W, { kind: "duffs", duffs: 50_000_000 })).resolves.toMatchObject({ duffs: 50_000_000 });
   });
 
   it("a lock Platform refused stays pending with the error", async () => {
@@ -447,18 +447,18 @@ describe("fixture Add from Dash wallet", () => {
   it("a lock that is too small or unsupported blocks no new add and can't be finished; a ready one still blocks", async () => {
     for (const state of ["tooSmall", "unsupported"] as const) {
       platform().funds = [{ txid: "ab".repeat(32), duffs: 5_000, proved: true, consumptionUnknown: false, state }];
-      await expect(backend.platformFundQuote(W, 50_000_000)).resolves.toMatchObject({ duffs: 50_000_000 });
+      await expect(backend.platformFundQuote(W, { kind: "duffs", duffs: 50_000_000 })).resolves.toMatchObject({ duffs: 50_000_000 });
       await expect(backend.resumePlatformFund(W, "ab".repeat(32), (await duffsGrant(1)).id)).rejects.toMatchObject({ code: "invalid_argument" });
       expect(platform().funds).toHaveLength(1);
     }
     platform().funds = [{ txid: "ab".repeat(32), duffs: 5_000, proved: true, consumptionUnknown: false, state: "ready" }];
-    await expect(backend.platformFundQuote(W, 50_000_000)).rejects.toMatchObject({ code: "credits.fund_pending" });
+    await expect(backend.platformFundQuote(W, { kind: "duffs", duffs: 50_000_000 })).rejects.toMatchObject({ code: "credits.fund_pending" });
   });
 
   it("answers null for the unfinished locks, and rejects the calls, while the Platform commands are absent", async () => {
     fixture.world.pending.platform = null;
     expect(await backend.pendingPlatformFunds(W)).toBeNull();
-    await expect(backend.platformFundQuote(W, 50_000_000)).rejects.toThrow("not available");
+    await expect(backend.platformFundQuote(W, { kind: "duffs", duffs: 50_000_000 })).rejects.toThrow("not available");
   });
 });
 

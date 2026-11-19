@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use super::credits::WithdrawAmount;
+use super::credits::{FundAmount, WithdrawAmount};
 use super::dashpay::DashPay;
 use super::errors::{CreditsError, PlatformError};
 use super::flows::GrantRequest;
@@ -300,6 +300,9 @@ pub struct PlatformFundQuote {
     pub to: String,
     /// What to authorize: `total_duffs` duffs, no credits.
     pub grant: GrantRequest,
+    /// A Core Max's (`FundAmount::All`): `total_duffs` is then the coins'
+    /// sum and `duffs` the lock's value at least, the fee out of it.
+    pub max: Option<super::credits::CoreMax>,
 }
 
 /// Where an "Add from Dash wallet" stands when the call returns.
@@ -520,23 +523,31 @@ impl DashPay {
         .await
     }
 
-    /// What adding `duffs` of the Core balance to the wallet's Platform
+    /// What adding `amount` of the Core balance to the wallet's Platform
     /// receive address costs and adds.
-    pub async fn platform_fund_quote(&self, duffs: u64) -> Result<PlatformFundQuote, CreditsError> {
+    pub async fn platform_fund_quote(
+        &self,
+        amount: FundAmount,
+    ) -> Result<PlatformFundQuote, CreditsError> {
         let wallet = self.wallet_id;
-        platform_fund::on_lib(&self.session, wallet, false, move |session, lib| async move {
-            platform_fund::quote(&session, wallet, &lib, duffs).await
-        })
+        platform_fund::on_lib(
+            &self.session,
+            wallet,
+            false,
+            move |session, lib| async move {
+                platform_fund::quote(&session, wallet, &lib, amount).await
+            },
+        )
         .await
     }
 
-    /// "Add from Dash wallet": an asset lock of `duffs` from the Core balance
-    /// under a `PlatformAddressFund` lease begun from `grant`, then Platform's
-    /// AddressFundingFromAssetLock of it to the wallet's Platform receive
-    /// address.
+    /// "Add from Dash wallet": an asset lock of `amount` from the Core
+    /// balance under a `PlatformAddressFund` lease begun from `grant`, then
+    /// Platform's AddressFundingFromAssetLock of it to the wallet's Platform
+    /// receive address. `All` drains BIP44 account 0 (`core_max.rs`).
     pub async fn platform_fund(
         &self,
-        duffs: u64,
+        amount: FundAmount,
         grant: String,
     ) -> Result<PlatformFundOutcome, CreditsError> {
         let wallet = self.wallet_id;
@@ -545,7 +556,7 @@ impl DashPay {
             wallet,
             true,
             move |session, lib| async move {
-                platform_fund::fund(&session, wallet, &lib, duffs, &grant).await
+                platform_fund::fund(&session, wallet, &lib, amount, &grant).await
             },
         )
         .await

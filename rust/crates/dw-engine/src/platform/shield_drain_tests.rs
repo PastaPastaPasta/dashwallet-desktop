@@ -608,8 +608,16 @@ fn the_repair_listing_holds_a_possibly_sent_shield_with_repairs_refusal() {
         Credential::None,
     );
     let (rs, rlib) = (Arc::clone(&s), Arc::clone(&lib));
-    let shielded = (f.engine)
-        .block_on(async move { pool::shield(&rs, wallet, &*rlib, 1_000_000, &grant).await });
+    let shielded = (f.engine).block_on(async move {
+        pool::shield(
+            &rs,
+            wallet,
+            &*rlib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &grant,
+        )
+        .await
+    });
     assert_eq!(code(shielded), "platform.broadcast_unknown");
     let stuck = (f.engine).block_on(s.dashpay(wallet).stuck_shield_fundings());
     let [listed] = <[_; 1]>::try_from(stuck.unwrap()).unwrap();
@@ -646,7 +654,16 @@ fn a_lock_waiting_for_its_proof_is_pending_not_stuck() {
     );
     let (s, rlib) = (Arc::clone(&f.session), Arc::clone(&lib));
     let outcome = (f.engine)
-        .block_on(async move { pool::shield(&s, wallet, &*rlib, 1_000_000, &grant).await })
+        .block_on(async move {
+            pool::shield(
+                &s,
+                wallet,
+                &*rlib,
+                FundAmount::Duffs { duffs: 1_000_000 },
+                &grant,
+            )
+            .await
+        })
         .unwrap();
     assert_eq!(outcome.state, ShieldState::ProofWaiting);
     let step = pool::shield_step(0);

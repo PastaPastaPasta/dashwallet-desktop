@@ -433,8 +433,8 @@ export class TransferModel extends Model {
   ) {
     super();
     this.lines = {
-      coreToShielded: new QuoteLine((d) => api.shieldQuote(walletId, d), timers),
-      coreToPlatform: new QuoteLine((d) => api.platformFundQuote(walletId, d), timers),
+      coreToShielded: new QuoteLine((d) => api.shieldQuote(walletId, { kind: "duffs", duffs: d }), timers),
+      coreToPlatform: new QuoteLine((d) => api.platformFundQuote(walletId, { kind: "duffs", duffs: d }), timers),
       shieldedToCore: new QuoteLine((d) => api.unshieldQuote(walletId, String(BigInt(d) * CREDITS_PER_DUFF), null), timers),
     };
     for (const f of [flows.shielded, flows.fund, flows.move]) f.subscribe(() => this.onFlow());

@@ -330,7 +330,7 @@ export class ShieldedFlow extends Model {
   private async call(r: ShieldedRequest, grant: string, confirmUnrecorded: boolean): Promise<ShieldedResult> {
     switch (r.kind) {
       case "add":
-        return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, r.duffs, grant) };
+        return { kind: "shield", outcome: await this.api.shieldFromCore(this.walletId, { kind: "duffs", duffs: r.duffs }, grant) };
       case "resume":
         return { kind: "shield", outcome: await this.api.resumeShield(this.walletId, r.txid, grant) };
       case "send":

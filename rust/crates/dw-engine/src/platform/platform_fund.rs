@@ -71,6 +71,8 @@ use dpp::version::PlatformVersion;
 use dw_vault::SignerError;
 use platform_wallet::{AssetLockFundingType, PlatformWalletError, TrackedAssetLock};
 
+use super::core_max::{self, CoreCoins, MaxPlan};
+use super::credits::FundAmount;
 use super::errors::{CreditsError, PlatformError};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
@@ -80,12 +82,14 @@ use super::platform_addresses::{
 use super::platform_moves;
 use super::registration::{RegistrationWait, funding_cap};
 use super::registration_flow::{FundError, PwLib, RegistrationLib as Reg, Spendable};
+use super::shield_drain::DrainCoin;
 use super::shielded_pool::{MAX_LOCK_INPUTS, shield_funding};
 use super::unfinished_funds::FundLocks;
 use super::unfinished_locks::{
     self as locks, ApplyAuthority, FundedLease, KindLock, LockFinish, LockOrigin, UnfinishedLock,
     UnfinishedState,
 };
+use crate::coins::CoinFence;
 use crate::{NetworkSession, WalletId};
 
 /// How long "Check again" waits for a lock's proof before it answers
@@ -155,6 +159,20 @@ pub(crate) trait FundLib: Send + Sync {
     /// A sync pass of the wallet's Platform addresses, so the balance takes
     /// in an apply.
     fn sync_now(&self) -> impl Future<Output = ()> + Send;
+    /// A Core Max: BIP44 account 0 read under `fence` (`core_max.rs`).
+    fn core_coins(
+        &self,
+        fence: &CoinFence,
+    ) -> impl Future<Output = Result<CoreCoins, PlatformError>> + Send;
+    /// Drains BIP44 account 0 into one fund lock signed by `permit`'s
+    /// drain signer for `coins` worth `total_duffs` (`core_max::fund`).
+    fn fund_core_max(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> impl Future<Output = Result<OutPoint, FundError>> + Send;
 }
 
 /// The kind's rows of the library's tracked locks: the
@@ -286,17 +304,7 @@ async fn plan(
     if duffs < min {
         return Err(CreditsError::BelowMinimum { min });
     }
-    // A lock of unknown consumption may never settle, and one too small or
-    // unsupported can't be finished: each stays listed and blocks nothing
-    // (as a shield's).
-    if let Some(open) = (own_open(session, wallet, lib).await?.into_iter()).find(|l| {
-        !matches!(
-            l.state,
-            UnfinishedState::Checking | UnfinishedState::TooSmall | UnfinishedState::Unsupported
-        )
-    }) {
-        return Err(CreditsError::FundPending { txid: open.txid });
-    }
+    no_open_fund(session, wallet, lib).await?;
     let fee_duffs = lib.fee_bound().await?;
     let spendable = lib.spendable().await?;
     let total_duffs = duffs.saturating_add(fee_duffs);
@@ -328,16 +336,73 @@ async fn plan(
             max_duffs: total_duffs,
             max_credits: 0,
         },
+        max: None,
     })
+}
+
+/// Refused while a fund lock that can still be finished is open.
+async fn no_open_fund(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl FundLib,
+) -> Result<(), CreditsError> {
+    // A lock of unknown consumption may never settle, and one too small or
+    // unsupported can't be finished: each stays listed and blocks nothing
+    // (as a shield's).
+    match (own_open(session, wallet, lib).await?.into_iter()).find(|l| {
+        !matches!(
+            l.state,
+            UnfinishedState::Checking | UnfinishedState::TooSmall | UnfinishedState::Unsupported
+        )
+    }) {
+        Some(open) => Err(CreditsError::FundPending { txid: open.txid }),
+        None => Ok(()),
+    }
+}
+
+/// What a Core Max to the Platform address takes and adds, BIP44 account 0
+/// read under `fence` (`core_max.rs`).
+async fn max_plan(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl FundLib,
+    fence: &CoinFence,
+) -> Result<(PlatformFundQuote, MaxPlan), CreditsError> {
+    let rules = gate(lib).await?;
+    let fee = fee_credits(rules);
+    no_open_fund(session, wallet, lib).await?;
+    let plan = core_max::plan(lib.core_coins(fence).await?, minimum_duffs(rules))?;
+    let to = lib.receive_address().await?;
+    let quote = PlatformFundQuote {
+        duffs: plan.duffs,
+        fee_duffs: plan.fee_duffs,
+        total_duffs: plan.total_duffs,
+        fee_credits: fee,
+        credits: credits_of(plan.duffs, fee),
+        to: platform_moves::bech32m(&to, lib.network()),
+        grant: GrantRequest {
+            max_duffs: plan.total_duffs,
+            max_credits: 0,
+        },
+        max: Some(plan.max),
+    };
+    Ok((quote, plan))
 }
 
 pub(crate) async fn quote(
     session: &NetworkSession,
     wallet: WalletId,
     lib: &impl FundLib,
-    duffs: u64,
+    amount: FundAmount,
 ) -> Result<PlatformFundQuote, CreditsError> {
-    plan(session, wallet, lib, duffs).await
+    match amount {
+        FundAmount::Duffs { duffs } => plan(session, wallet, lib, duffs).await,
+        FundAmount::All => {
+            let _claim = core_max::claim(session, wallet)?;
+            let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
+            Ok(max_plan(session, wallet, lib, &fence).await?.0)
+        }
+    }
 }
 
 /// The wallet's fund step `k`.
@@ -406,7 +471,7 @@ pub(crate) async fn fund(
     session: &Arc<NetworkSession>,
     wallet: WalletId,
     lib: &impl FundLib,
-    duffs: u64,
+    amount: FundAmount,
     grant: &str,
 ) -> Result<PlatformFundOutcome, CreditsError> {
     if let Some(wait) = lib.funding_hold() {
@@ -417,11 +482,25 @@ pub(crate) async fn fund(
     }
     let lock = fund_lock(wallet);
     let _funding = lock.lock().await;
-    let plan = plan(session, wallet, lib, duffs).await?;
+    // A Core Max holds the wallet's CoinJoin claim through its funding.
+    let (claim, quoted) = match amount {
+        FundAmount::All => (Some(core_max::claim(session, wallet)?), None),
+        FundAmount::Duffs { duffs } => (None, Some(plan(session, wallet, lib, duffs).await?)),
+    };
     if !session.leases.refresh_funding(wallet).await {
         return Err(PlatformError::Unavailable.into());
     }
     let step = next_step(session, wallet)?;
+    // Held from the coin read to the permit, which keeps it until the
+    // library tracks the lock.
+    let (plan, max) = match quoted {
+        Some(plan) => (plan, None),
+        None => {
+            let fence = (session.coin_fence(wallet).await).map_err(PlatformError::from)?;
+            let (plan, max) = max_plan(session, wallet, lib, &fence).await?;
+            (plan, Some((max, fence)))
+        }
+    };
     let remaining = funding_cap(session, wallet, grant).await?;
     if plan.total_duffs > remaining {
         return Err(PlatformError::GrantExceeded {
@@ -438,12 +517,36 @@ pub(crate) async fn fund(
     let lease = held.lease();
     let funded = lease
         .scope_step(Some(step.clone()), async {
-            let permit = (lib.funding_permit(lease, step.clone(), funding_key(), duffs)).await?;
-            let funded = lib.fund(duffs, &permit).await;
+            let (permit, funded) = match max {
+                None => {
+                    let permit =
+                        (lib.funding_permit(lease, step.clone(), funding_key(), plan.duffs))
+                            .await?;
+                    let funded = lib.fund(plan.duffs, &permit).await;
+                    (permit, funded)
+                }
+                Some((max, fence)) => {
+                    let total = max.total_duffs;
+                    let permit = (session.drain_call_permit(
+                        lease,
+                        step.clone(),
+                        total,
+                        step.clone(),
+                        funding_key(),
+                        fence,
+                    ))
+                    .await
+                    .map_err(FundError::Refused)?;
+                    let floor = plan.fee_credits / CREDITS_PER_DUFF + 1;
+                    let funded = lib.fund_core_max(&max.coins, total, floor, &permit).await;
+                    (permit, funded)
+                }
+            };
             permit.finish(funded.is_ok());
             funded
         })
         .await;
+    drop(claim);
     // The step's own lock decides, never the call's result alone.
     let signed = session.leases.signed_lock_txids(wallet, &step);
     let own =
@@ -452,6 +555,8 @@ pub(crate) async fn fund(
         return Err(match funded {
             Err(FundError::Refused(e) | FundError::NotSent(e)) => e.into(),
             Err(FundError::CoinsLocked) => CreditsError::CoinsLocked,
+            Err(FundError::CoinsChanged) => CreditsError::CoinsChanged,
+            Err(FundError::BelowMinimum { min }) => CreditsError::BelowMinimum { min },
             // "Combine coins first": at least one coin past the cap.
             Err(FundError::TooManyInputs { max }) => CreditsError::TooManyInputs {
                 inputs: max + 1,
@@ -789,5 +894,30 @@ impl FundLib for PwFund {
         if let Err(e) = synced {
             tracing::info!(wallet_id = %self.pw.wallet_id, error = %e, "a fund's sync pass did not run");
         }
+    }
+
+    async fn core_coins(&self, fence: &CoinFence) -> Result<CoreCoins, PlatformError> {
+        core_max::read(&self.pw.session, fence).await
+    }
+
+    async fn fund_core_max(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        let key = funding_key();
+        let credit_script = core_max::credit_script(&self.pw, key.funding_type).await?;
+        let plan = (coins, total_duffs);
+        core_max::fund(
+            &self.pw,
+            permit,
+            plan,
+            minimum_lock_duffs,
+            key,
+            credit_script,
+        )
+        .await
     }
 }
