@@ -194,6 +194,33 @@ describe("event bridge", () => {
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
   });
 
+  it("drops a wallet's scan height when that wallet comes, goes, or the network changes, without a sync event", async () => {
+    const client = new QueryClient();
+    client.setQueryData(keys.scanHeight("a"), 100);
+    client.setQueryData(keys.scanHeight("b"), 80);
+    let emit: (e: AppEvent) => void = () => undefined;
+    const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
+    await bridgeEvents(fake, client, "testnet");
+    emit({ kind: "walletRemoved", network: "testnet", walletId: "a" });
+    expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
+    expect(client.getQueryData(keys.scanHeight("b"))).toBe(80);
+    client.setQueryData(keys.scanHeight("a"), 100);
+    emit({ kind: "walletCreated", network: "testnet", walletId: "a" });
+    expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
+    client.setQueryData(keys.scanHeight("b"), 80);
+    emit({ kind: "walletLoadChanged", network: "testnet", walletId: "b", loaded: true });
+    expect(client.getQueryData(keys.scanHeight("b"))).toBeUndefined();
+    client.setQueryData(keys.scanHeight("a"), 50);
+    emit({ kind: "sessionOpened", network: "testnet" });
+    expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
+    client.setQueryData(keys.scanHeight("a"), 50);
+    emit({ kind: "sessionClosed", network: "testnet" });
+    expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
+    client.setQueryData(keys.scanHeight("a"), 50);
+    emit({ kind: "eventsOverflowed" });
+    expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
+  });
+
   it("a wallet that comes or goes drops its cached receive reads (DP3-03b D17)", async () => {
     const client = new QueryClient();
     for (const w of ["a", "b"]) {

@@ -571,6 +571,13 @@ function withInvitation(w: World, status?: InvitationStatus): World {
   return w;
 }
 
+/** Platform and Shielded history succeed with nothing. A failed command is a different state. */
+function quietOptionalHistory(w: World): World {
+  if (w.pending.platform) w.pending.platform.activity = [];
+  if (w.pending.shielded) w.pending.shielded.activity = [];
+  return w;
+}
+
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t, "default", true),
@@ -859,11 +866,13 @@ const SCENARIOS = {
     w.pending.recovery.failures = 1;
     return w;
   },
-  /** A new wallet: no history, zero balance. */
+  /** A new wallet: no history, zero balance. Platform and Shielded still have their sample rows. */
   empty: (t) => base(t, "empty"),
+  /** That wallet with those optional histories empty too: the commands succeed and return nothing. */
+  "empty-activity": (t) => quietOptionalHistory(base(t, "empty")),
   /** That wallet while the chain is still syncing: history must not offer Receive yet. */
   "empty-syncing": (t) => {
-    const w = base(t, "empty");
+    const w = quietOptionalHistory(base(t, "empty"));
     w.sync = syncing();
     return w;
   },

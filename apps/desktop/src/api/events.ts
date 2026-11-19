@@ -175,6 +175,10 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
     // engine may hold another "Include my username in payment requests" for it now, and a
     // cached `true` would draw the name until a refetch (DP3-03b D17).
     if (event.kind === "walletCreated" || event.kind === "walletRemoved") void client.resetQueries({ queryKey: keys.receiveAll(event.walletId) });
+    if (event.kind === "walletCreated" || event.kind === "walletRemoved" || event.kind === "walletLoadChanged")
+      void client.resetQueries({ queryKey: keys.scanHeight(event.walletId) });
+    if (event.kind === "sessionOpened" || event.kind === "sessionClosed" || event.kind === "eventsOverflowed")
+      void client.resetQueries({ queryKey: keys.scanHeightAll });
     if (event.kind === "lockProgress") {
       const { progress } = event;
       // The new report shows with its `done`, never the previous lock's while a refetch runs: a

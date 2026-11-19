@@ -15,7 +15,7 @@ import { navigate } from "../app/ui";
 import { useLocalDay } from "../app/localDay";
 import { useDebounced } from "../app/useDebounced";
 import { DashButton, Icon } from "../components/basics";
-import { activityFiltersApplied, catchUpArrival, EMPTY, historyEmptyCopy, listDisplay, listShowsCount } from "../components/emptyStates";
+import { activityFiltersApplied, catchUpArrival, EMPTY, historyEmptyCopy, listDisplay, listShowsCount, optionalHistorySource, type ListSource } from "../components/emptyStates";
 import { EmptyState, focusWhenIdle, LoadingState, TxGroups, TxTable, useRowContext, type RowDecor } from "../components/history";
 import { UNIT_LABEL, useDisplay } from "../format/display";
 import { exportHistory } from "../history/exportCsv";
@@ -108,16 +108,30 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
     scanFailed: scan.isError,
     scanHeight: scan.data,
   });
-  // Platform and Shielded rows are part of this list too: it is not empty until they have answered.
-  const extraPending = withExtra && (platform.isPending || shielded.isPending);
+  const platformCount = extraShown.filter((r) => rowSource(r) === "platform").length;
+  const shieldedCount = extraShown.filter((r) => rowSource(r) === "shielded").length;
+  type Retryable = { error: unknown; refetch: () => unknown };
+  const optional = withExtra
+    ? ([
+        { query: platform as Retryable, source: optionalHistorySource(platform, platformCount) },
+        { query: shielded as Retryable, source: optionalHistorySource(shielded, shieldedCount) },
+      ].filter((x): x is { query: Retryable; source: ListSource } => x.source !== null))
+    : [];
   const historyList = listDisplay({
-    rowCount: rows.length,
+    rowCount: coreRows.length,
     pending: history.isPending,
     failed: history.isError,
     hasSnapshot: history.data !== undefined,
     arrival,
-    extraPending,
+    extras: optional.map((x) => x.source),
   });
+  const gaps: Retryable[] = [
+    ...(history.isError && history.data === undefined ? [history] : []),
+    ...optional.filter((x) => x.source.failed && !x.source.hasSnapshot).map((x) => x.query),
+  ];
+  const retryGaps = () => {
+    for (const q of gaps) void q.refetch();
+  };
   const empty = historyList.kind === "empty" && filtered ? EMPTY.activityFiltered : historyEmptyCopy({ arrival: historyList.kind === "arriving" && historyList.why !== "pending" ? historyList.why : "settled", home: false });
   const coreTotal = history.data?.pages[0]?.totalMatching ?? null;
   // Every extra row the filters keep counts, loaded or not; Export is the Core history only.
@@ -245,18 +259,19 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
             ))}
           </div>
         </div>
-        {historyList.kind === "failed" ? (
+        {gaps.length > 0 && (
           <EmptyState
             testId="tx-error"
             title="Could not load transactions"
-            message={errorMessage(history.error)}
+            message={errorMessage(gaps[0].error)}
             action={
-              <DashButton variant="plainBlue" data-testid="tx-retry" onClick={() => void history.refetch()}>
+              <DashButton variant="plainBlue" data-testid="tx-retry" onClick={retryGaps}>
                 Try again
               </DashButton>
             }
           />
-        ) : historyList.kind === "arriving" && historyList.why === "pending" ? (
+        )}
+        {historyList.kind === "arriving" && historyList.why === "pending" ? (
           <LoadingState testId="tx-loading" text="Loading transactions" />
         ) : historyList.kind === "rows" && mode === "list" ? (
           <div data-testid="tx-list">
@@ -264,7 +279,7 @@ export function Transactions({ walletId, network, onOpen }: { walletId: string; 
           </div>
         ) : historyList.kind === "rows" ? (
           <TxTable rows={rows} ctx={ctx} onOpen={onOpen} sort={sort} onSort={setSort} />
-        ) : (
+        ) : historyList.kind === "failed" ? null : (
           <EmptyState
             testId={empty.action ? "tx-empty" : "tx-syncing"}
             art={empty.art}

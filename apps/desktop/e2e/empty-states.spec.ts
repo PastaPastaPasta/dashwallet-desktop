@@ -3,6 +3,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { ToolsTab } from "../src/api/generated/ToolsTab";
 import { CREATED_12 } from "../src/fixture/vault";
+import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
 import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
 
@@ -69,7 +70,7 @@ for (const theme of THEMES) {
   });
 
   test(`activity empty offers Receive (${theme})`, async ({ page }) => {
-    const errors = await open(page, "empty", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    const errors = await open(page, "empty-activity", theme);
     await page.getByTestId("sidebar-activity").click();
     const empty = page.getByTestId("tx-empty");
     await expect(empty).toContainText("There are no transactions to display");
@@ -80,7 +81,7 @@ for (const theme of THEMES) {
   });
 
   test(`activity is not empty until Platform history has answered (${theme})`, async ({ page }) => {
-    const errors = await open(page, "empty", theme, "&fail=shielded_history:none&fail=platform_activity:none&hold=platform_activity");
+    const errors = await open(page, "empty-activity", theme, "&hold=platform_activity");
     await page.getByTestId("sidebar-activity").click();
     await expect(page.getByTestId("tx-syncing")).toContainText("Your history is still syncing");
     await expect(page.getByTestId("tx-empty-receive")).toHaveCount(0);
@@ -90,7 +91,7 @@ for (const theme of THEMES) {
   });
 
   test(`a filtered activity waits for Platform history before it says nothing matches (${theme})`, async ({ page }) => {
-    const errors = await open(page, "empty", theme, "&fail=shielded_history:none&fail=platform_activity:none&hold=platform_activity");
+    const errors = await open(page, "empty-activity", theme, "&hold=platform_activity");
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-date").selectOption("today");
     await expect(page.getByTestId("tx-syncing")).toContainText("Your history is still syncing");
@@ -101,7 +102,7 @@ for (const theme of THEMES) {
   });
 
   test(`a filtered activity waits for Core history while the wallet is syncing (${theme})`, async ({ page }) => {
-    const errors = await open(page, "empty-syncing", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    const errors = await open(page, "empty-syncing", theme);
     await page.getByTestId("sidebar-activity").click();
     await page.getByTestId("tx-category-sent").click();
     await expect(page.getByTestId("tx-syncing")).toContainText("Your history is still syncing");
@@ -256,7 +257,7 @@ for (const theme of THEMES) {
   });
 
   test(`history stays quiet while the wallet is syncing (${theme})`, async ({ page }) => {
-    const errors = await open(page, "empty-syncing", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    const errors = await open(page, "empty-syncing", theme);
     const home = page.getByTestId("history-syncing");
     await expect(home).toContainText("Your history is still syncing");
     await expect(home).toContainText("Payments show up here as the wallet catches up.");
@@ -406,7 +407,7 @@ for (const theme of THEMES) {
   });
 
   test(`home, activity and coin selection wait while Core has not caught up (${theme})`, async ({ page }) => {
-    const errors = await open(page, "empty", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    const errors = await open(page, "empty-activity", theme);
     await page.evaluate(() => {
       const f = window.__dwFixture!;
       const s = f.world.sync;
@@ -430,7 +431,7 @@ for (const theme of THEMES) {
   });
 
   test(`an empty list follows the engine, not a display that still says caught up (${theme})`, async ({ page }) => {
-    const errors = await open(page, "empty", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    const errors = await open(page, "empty", theme);
     await expect(page.getByTestId("history-empty-receive")).toBeVisible();
     await page.evaluate(() => {
       const f = window.__dwFixture!;
@@ -451,7 +452,7 @@ for (const theme of THEMES) {
   });
 
   test(`a wallet whose scan is behind the tip is not an empty wallet (${theme})`, async ({ page }) => {
-    const errors = await open(page, "empty", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    const errors = await open(page, "empty", theme);
     await expect(page.getByTestId("history-empty-receive")).toBeVisible();
     await page.evaluate(() => {
       const f = window.__dwFixture!;
@@ -464,8 +465,59 @@ for (const theme of THEMES) {
   });
 
   test(`home, activity and coin selection wait while Core is scanning (${theme})`, async ({ page }) => {
-    const errors = await open(page, "empty-syncing", theme, "&fail=platform_activity:none&fail=shielded_history:none");
+    const errors = await open(page, "empty-syncing", theme);
     await expectUnsettled(page, "Your history is still syncing", "Coins are still syncing");
+    expect(errors).toEqual([]);
+  });
+
+  test(`a rejected Platform read is not an empty activity (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty-activity", theme, "&fail=platform_activity:none");
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId("tx-error")).toContainText("Could not load transactions");
+    await expect(page.getByTestId("tx-retry")).toBeVisible();
+    await expect(page.getByTestId("tx-empty")).toHaveCount(0);
+    await expect(page.getByTestId("tx-empty-receive")).toHaveCount(0);
+    await expect(page.getByTestId("tx-export-why")).toHaveCount(0);
+    await expect(page.getByTestId("tx-footer")).toHaveCount(0);
+    await expect(page.getByText("Nothing matches these filters")).toHaveCount(0);
+    await checked(page, errors);
+    await page.getByTestId("tx-date").selectOption("today");
+    await expect(page.getByTestId("tx-error")).toBeVisible();
+    await expect(page.getByText("Nothing matches these filters")).toHaveCount(0);
+    await expect(page.getByTestId("tx-export-why")).toHaveCount(0);
+    await expect(page.getByTestId("tx-footer")).toHaveCount(0);
+    await page.evaluate(() => window.__dwFixture!.fail("platform_activity", null));
+    await page.getByTestId("tx-retry").click();
+    await expect(page.getByTestId("tx-error")).toHaveCount(0);
+    await expect(page.getByTestId("tx-empty")).toContainText("Nothing matches these filters");
+    await expect(page.getByTestId("tx-footer")).toHaveText("0 transactions");
+    await page.getByTestId("tx-date").selectOption("all");
+    await expect(page.getByTestId("tx-empty-receive")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`absent commands and unsupported optional pools still settle an empty activity (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty-activity", theme, "&fail=platform_activity:call&fail=shielded_history:protocol");
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId("tx-error")).toHaveCount(0);
+    await expect(page.getByTestId("tx-empty-receive")).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
+  test(`a failed Core read stays visible when Platform has a row (${theme})`, async ({ page }) => {
+    const errors = await open(page, "empty", theme, "&fail=history_page:none");
+    await page.getByTestId("sidebar-activity").click();
+    await expect(page.getByTestId("tx-error")).toContainText("Could not load transactions");
+    await expect(page.getByTestId("tx-retry")).toBeVisible();
+    await expect(page.getByTestId("tx-list")).toBeVisible();
+    await expect(page.getByTestId("tx-empty")).toHaveCount(0);
+    await expect(page.getByTestId("tx-footer")).toHaveCount(0);
+    await checked(page, errors);
+    await page.evaluate(() => window.__dwFixture!.fail("history_page", null));
+    await page.getByTestId("tx-retry").click();
+    await expect(page.getByTestId("tx-error")).toHaveCount(0);
+    await expect(page.getByTestId("tx-list")).toBeVisible();
+    await expect(page.getByTestId("tx-footer")).toBeVisible();
     expect(errors).toEqual([]);
   });
 
@@ -479,3 +531,44 @@ for (const theme of THEMES) {
     await expect(empty.getByRole("button", { name: "Create a wallet" })).toHaveCount(1);
   });
 }
+
+test("removing a wallet and restoring the same phrase forgets its cached scan height without a sync event", async ({ page }) => {
+  const errors = await open(page, "funded", "light");
+  await page.evaluate(() => {
+    const w = window.__dwFixture!.world;
+    if (w.pending.platform) w.pending.platform.activity = [];
+    if (w.pending.shielded) w.pending.shielded.activity = [];
+    window.__dwFixture!.shellCommand({ kind: "addWallet" });
+  });
+  await page.getByTestId("onboarding-restore").click();
+  await page.getByTestId("restore-input").fill(CREATED_12);
+  await page.getByTestId("restore-continue").click();
+  await page.getByTestId("restore-finish").click();
+  await page.getByTestId("onboarding-open").click();
+  const firstId = await page.evaluate(() => window.__dwFixture!.world.wallets.at(-1)!.summary.walletId);
+  await expect(page.getByTestId("history-empty-receive")).toBeVisible();
+
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+  await page.getByTestId("settings-tabs-wallets").click();
+  await page.getByTestId(`settings-wallet-${firstId.slice(0, 8)}-remove`).click();
+  await page.getByTestId("settings-remove-passphrase-field").fill(FIXTURE_PASSPHRASE);
+  await page.getByTestId("settings-remove-passphrase-submit").click();
+  await expect(page.getByTestId("settings-wallets-notice")).toBeVisible();
+
+  await page.getByTestId("settings-add-wallet").click();
+  await page.getByTestId("onboarding-restore").click();
+  await page.getByTestId("restore-input").fill(CREATED_12);
+  await page.getByTestId("restore-continue").click();
+  await page.getByTestId("restore-finish").click();
+  await expect(page.getByTestId("onboarding-done")).toBeVisible();
+  const secondId = await page.evaluate(() => {
+    const added = window.__dwFixture!.world.wallets.at(-1) as { scanHeight?: number | null; summary: { walletId: string } };
+    added.scanHeight = null;
+    return added.summary.walletId;
+  });
+  expect(secondId).toBe(firstId);
+  await page.getByTestId("onboarding-open").click();
+
+  await expectUnsettled(page, "The wallet is still starting", "The wallet is still starting");
+  expect(errors).toEqual([]);
+});

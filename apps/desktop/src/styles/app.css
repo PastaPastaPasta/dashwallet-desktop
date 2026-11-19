@@ -1604,6 +1604,11 @@ input[type="radio"]:disabled {
   margin-bottom: var(--dw-space-l);
 }
 
+.page-transactions .empty-state + [data-testid="tx-list"],
+.page-transactions .empty-state + .table-card {
+  margin-top: var(--dw-space-stack);
+}
+
 .search-field {
   display: flex;
   flex: 1 1 260px;

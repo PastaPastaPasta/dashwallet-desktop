@@ -399,7 +399,7 @@ test.describe("disabled reasons are visible and described", () => {
   });
 
   test("Activity with no transactions hides the export hint and the zero footer", async ({ page }) => {
-    await page.goto(fixtureUrl("empty", "light", "&fail=platform_activity:none&fail=shielded_history:none"));
+    await page.goto(fixtureUrl("empty-activity", "light"));
     await page.getByTestId("toolbar").waitFor();
     await page.getByTestId("sidebar-activity").click();
     await expect(page.getByTestId("tx-empty")).toBeVisible();

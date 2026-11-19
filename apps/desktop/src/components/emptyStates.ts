@@ -1,6 +1,7 @@
 // Copy and artwork for screens that have nothing to list yet. Each row is one
 // illustration, one sentence, and at most one next step. The screen wires the step.
 
+import { hasCode } from "../api/backend";
 import type { EmptyArtId } from "./emptyArt";
 
 export interface EmptyAction {
@@ -190,38 +191,84 @@ export function catchUpArrival(input: {
   return "settled";
 }
 
-/** One list, decided once, for the body and every control that depends on it. */
+/** One source on a list. Absent commands and unsupported features are omitted, not passed as sources. */
+export type ListSource = {
+  pending: boolean;
+  failed: boolean;
+  hasSnapshot: boolean;
+  rowCount: number;
+};
+
+export function isUnsupportedOptionalSource(error: unknown): boolean {
+  return (
+    hasCode(error, "shielded.not_active") ||
+    hasCode(error, "platform.feature_off") ||
+    hasCode(error, "not_implemented") ||
+    hasCode(error, "platform.not_implemented")
+  );
+}
+
+export function optionalHistorySource(
+  q: { isPending: boolean; isError: boolean; isSuccess: boolean; data: unknown; error?: unknown },
+  rowCount: number,
+): ListSource | null {
+  if (q.isSuccess && q.data === null) return null;
+  if (q.isError && q.data === undefined && isUnsupportedOptionalSource(q.error)) return null;
+  return {
+    pending: q.isPending,
+    failed: q.isError,
+    hasSnapshot: q.data !== undefined,
+    rowCount: q.data == null ? 0 : rowCount,
+  };
+}
+
+/** One list, decided once, for the body and every control that depends on it.
+ * `incomplete` rows are usable, but a visible source has not answered yet or its first read failed. */
 export type ListDisplay =
-  | { kind: "rows" }
+  | { kind: "rows"; incomplete: boolean }
   | { kind: "arriving"; why: "pending" | ListArrival }
   | { kind: "failed" }
   | { kind: "empty" };
 
-/** Rows already in hand stay, including after a refetch fails. A confirmed empty result is the
- * only kind that may offer the empty card's action. Pending, a sync that has not caught up, and
- * an optional source still out are still arriving. A failed read with no snapshot says so. */
+const sourceWaiting = (s: ListSource) => !s.hasSnapshot && !s.failed;
+const sourceGap = (s: ListSource) => s.failed && !s.hasSnapshot;
+
+/** Rows already in hand stay, including after a refetch fails, and a first-read failure stays
+ * with them. A confirmed empty result — every visible source answered, and the wallet has caught
+ * up — is the only kind that may offer the empty card or a count. An optional source still out
+ * is still arriving. A rejected read with no snapshot is a failure, not an empty list. */
 export function listDisplay(input: {
   rowCount: number;
   pending: boolean;
   failed: boolean;
   hasSnapshot: boolean;
   arrival: ListArrival;
-  extraPending?: boolean;
+  /** Optional sources that are actually on this list. Omit a missing command (`null`). */
+  extras?: ListSource[];
 }): ListDisplay {
-  if (input.rowCount > 0) return { kind: "rows" };
-  if (input.pending) return { kind: "arriving", why: "pending" };
-  if (input.failed && !input.hasSnapshot) return { kind: "failed" };
-  if (input.arrival !== "settled" || input.extraPending) {
-    const why = input.extraPending && input.arrival === "settled" ? "syncing" : input.arrival;
+  const primary: ListSource = {
+    pending: input.pending,
+    failed: input.failed,
+    hasSnapshot: input.hasSnapshot,
+    rowCount: input.hasSnapshot ? input.rowCount : 0,
+  };
+  const sources = [primary, ...(input.extras ?? [])];
+  const rows = sources.reduce((n, s) => n + (s.hasSnapshot ? s.rowCount : 0), 0);
+  if (rows > 0) return { kind: "rows", incomplete: sources.some((s) => !s.hasSnapshot) };
+  if (sources.some(sourceGap)) return { kind: "failed" };
+  if (sourceWaiting(primary)) return { kind: "arriving", why: "pending" };
+  if (sources.some(sourceWaiting) || input.arrival !== "settled") {
+    const why = sources.some(sourceWaiting) && input.arrival === "settled" ? "syncing" : input.arrival;
     return { kind: "arriving", why: why === "settled" ? "syncing" : why };
   }
   return { kind: "empty" };
 }
 
-/** The zero count and the "nothing to export" line are real only for rows, or for a filter that
- * matched nothing after the list was confirmed empty. An unfiltered empty card already says so. */
+/** The zero count and the "nothing to export" line are real only for a complete row list, or for
+ * a filter that matched nothing after every source had answered. An unfiltered empty card already
+ * says so. A list with a source still out, or whose first read failed, is not counted. */
 export function listShowsCount(display: ListDisplay, filtered: boolean): boolean {
-  return display.kind === "rows" || (display.kind === "empty" && filtered);
+  return (display.kind === "rows" && !display.incomplete) || (display.kind === "empty" && filtered);
 }
 
 /** Contacts. `empty` is the card that carries Add contact: the header button hides only then. */

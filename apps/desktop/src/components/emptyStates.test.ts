@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addressBookEmpty, activityFiltersApplied, catchUpArrival, coinsEmptyCopy, contactsDisplay, contactsHeaderAdd, EMPTY, historyEmptyCopy, listArrival, listDisplay, listShowsCount, walletListGate, walletReadyToOpen, type ListArrival } from "./emptyStates";
+import { addressBookEmpty, activityFiltersApplied, catchUpArrival, coinsEmptyCopy, contactsDisplay, contactsHeaderAdd, EMPTY, historyEmptyCopy, listArrival, listDisplay, listShowsCount, optionalHistorySource, walletListGate, walletReadyToOpen, type ListArrival } from "./emptyStates";
 
 const reading = (over: Partial<{ running: boolean; caughtUp: boolean; tipHeight: number | null }> = {}) => ({
   running: false,
@@ -42,24 +42,65 @@ describe("catch-up for one wallet", () => {
 
 describe("list display", () => {
   const base = { rowCount: 0, pending: false, failed: false, hasSnapshot: true, arrival: "settled" as ListArrival };
+  const extra = { pending: false, failed: false, hasSnapshot: true, rowCount: 0 };
 
   it("keeps rows, waits while anything is still out, and confirms empty only then", () => {
-    expect(listDisplay({ ...base, rowCount: 3, failed: true })).toEqual({ kind: "rows" });
+    expect(listDisplay({ ...base, rowCount: 3, failed: true })).toEqual({ kind: "rows", incomplete: false });
     expect(listDisplay({ ...base, pending: true, hasSnapshot: false })).toEqual({ kind: "arriving", why: "pending" });
     expect(listDisplay({ ...base, failed: true, hasSnapshot: false })).toEqual({ kind: "failed" });
     expect(listDisplay({ ...base, arrival: "syncing" })).toEqual({ kind: "arriving", why: "syncing" });
     expect(listDisplay({ ...base, arrival: "starting" })).toEqual({ kind: "arriving", why: "starting" });
     expect(listDisplay({ ...base, arrival: "stopped" })).toEqual({ kind: "arriving", why: "stopped" });
     expect(listDisplay({ ...base, arrival: "unreadable" })).toEqual({ kind: "arriving", why: "unreadable" });
-    expect(listDisplay({ ...base, extraPending: true })).toEqual({ kind: "arriving", why: "syncing" });
-    expect(listDisplay({ ...base, arrival: "stopped", extraPending: true })).toEqual({ kind: "arriving", why: "stopped" });
+    expect(listDisplay({ ...base, extras: [{ ...extra, pending: true, hasSnapshot: false }] })).toEqual({ kind: "arriving", why: "syncing" });
+    expect(listDisplay({ ...base, arrival: "stopped", extras: [{ ...extra, pending: true, hasSnapshot: false }] })).toEqual({ kind: "arriving", why: "stopped" });
     expect(listDisplay(base)).toEqual({ kind: "empty" });
     // A failed refetch of a confirmed empty snapshot is still that snapshot.
     expect(listDisplay({ ...base, failed: true })).toEqual({ kind: "empty" });
   });
 
-  it("counts zero only for rows, or a filter on a confirmed empty list", () => {
-    expect(listShowsCount({ kind: "rows" }, false)).toBe(true);
+  it("does not call a rejected optional read empty, and keeps a failed first read beside usable rows", () => {
+    const rejected = { pending: false, failed: true, hasSnapshot: false, rowCount: 0 };
+    expect(listDisplay({ ...base, extras: [rejected] })).toEqual({ kind: "failed" });
+    expect(listDisplay({ ...base, extras: [rejected, { ...extra, rowCount: 2 }] })).toEqual({ kind: "rows", incomplete: true });
+    expect(listDisplay({ ...base, rowCount: 0, failed: true, hasSnapshot: false, extras: [{ ...extra, rowCount: 1 }] })).toEqual({ kind: "rows", incomplete: true });
+    // A missing command is not passed in, so it neither fails the list nor holds it open.
+    expect(listDisplay({ ...base, extras: [] })).toEqual({ kind: "empty" });
+  });
+
+  it("omits absent commands and unsupported optional pools, and flags real read failures", () => {
+    expect(optionalHistorySource({ isPending: false, isError: false, isSuccess: true, data: null }, 0)).toBeNull();
+    for (const code of ["shielded.not_active", "platform.feature_off", "not_implemented", "platform.not_implemented"]) {
+      expect(
+        optionalHistorySource(
+          { isPending: false, isError: true, isSuccess: false, data: undefined, error: { code, message: code, data: null } },
+          0,
+        ),
+      ).toBeNull();
+    }
+    expect(
+      optionalHistorySource(
+        { isPending: false, isError: true, isSuccess: false, data: undefined, error: { code: "internal", message: "boom", data: null } },
+        0,
+      ),
+    ).toEqual({ pending: false, failed: true, hasSnapshot: false, rowCount: 0 });
+    expect(optionalHistorySource({ isPending: true, isError: false, isSuccess: false, data: undefined }, 0)).toEqual({
+      pending: true,
+      failed: false,
+      hasSnapshot: false,
+      rowCount: 0,
+    });
+    expect(optionalHistorySource({ isPending: false, isError: false, isSuccess: true, data: [{ id: "1" }] }, 1)).toEqual({
+      pending: false,
+      failed: false,
+      hasSnapshot: true,
+      rowCount: 1,
+    });
+  });
+
+  it("counts zero only for a complete row list, or a filter on a confirmed empty list", () => {
+    expect(listShowsCount({ kind: "rows", incomplete: false }, false)).toBe(true);
+    expect(listShowsCount({ kind: "rows", incomplete: true }, false)).toBe(false);
     expect(listShowsCount({ kind: "empty" }, true)).toBe(true);
     expect(listShowsCount({ kind: "empty" }, false)).toBe(false);
     expect(listShowsCount({ kind: "arriving", why: "syncing" }, true)).toBe(false);
