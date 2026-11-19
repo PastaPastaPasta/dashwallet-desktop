@@ -54,7 +54,7 @@ use super::build::sign_own_inputs;
 use super::dissolve::address_of;
 use super::flow::signer_refusal;
 use super::send::typed;
-use super::standby::{in_history, p2pkh_address};
+use super::standby::{in_history, p2pkh_address, registration_of};
 use super::store::{
     ChainView, copy_rank, decode_outpoints, encode_outpoints, json, message_refusal, reserved_of,
     role_name, role_of, stage_refusal,
@@ -1178,6 +1178,9 @@ impl NetworkSession {
         self.check_no_key_change_out(wallet, k.hash, Some(&k.row.id))
             .await?;
         self.check_resend_inputs(wallet, &tx)?;
+        let chain = self.shared_chain(wallet).await?;
+        let reg = registration_of(&chain, k.hash)?;
+        check_seen_payees(&chain, k.hash, &reg.shares, k.payload.voting_key_id)?;
         let lease = self.shared_lease(wallet, grant).await?;
         let result = async {
             let (charge, _) = charge_fee(&lease, funded.fee)?;

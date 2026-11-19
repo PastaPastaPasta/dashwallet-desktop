@@ -134,7 +134,11 @@ fn import_into(f: &Fx, w: usize, text: &str) -> Result<SharedImport, Masternodes
 /// A starts, B and C approve from the copied text, A takes C's Reply: the
 /// session id, A's start and the request's fee.
 fn complete(f: &Fx, txid: Txid) -> (String, SharedOutcome) {
-    let a = start(f, 0, rotate(txid), 0).unwrap();
+    complete_with(f, rotate(txid))
+}
+
+fn complete_with(f: &Fx, request: KeyChangeRequest) -> (String, SharedOutcome) {
+    let a = start(f, 0, request, 0).unwrap();
     let id = a.session.id.clone();
     f.imported(1, &a.message.text);
     let b = approve(f, 1, &id, 0).unwrap();
@@ -1033,6 +1037,30 @@ fn test_QT_127_a_key_change_refuses_both_same_block_updates() {
     assert_payee_reuse(&start(&f, 0, voting_of(txid, x), 0));
     assert_payee_reuse(&start(&f, 0, voting_of(txid, y), 0));
     assert!(f.locked(0).is_empty());
+}
+
+/// A resend checks the seen reward scripts too: a confirmed ProUpShareTx
+/// paying the requested voting key since the send refuses it, the saved
+/// bytes not handed off and the session as it was.
+#[test]
+fn test_QT_127_a_resend_refuses_a_voting_key_a_share_now_pays() {
+    let f = fx(3, true);
+    let (_, txid) = keyed(&f);
+    let voting = [0x77; 20];
+    let (id, _) = complete_with(&f, voting_of(txid, voting));
+    let fee = f.session_of(0, &id).fee.unwrap();
+    send(&f, 0, &id, fee).unwrap();
+    let before = f.row(0, &id);
+    f.mine(mined_share_update(txid, 0, p2pkh(voting)), 60);
+
+    assert_payee_reuse(&send(&f, 0, &id, fee));
+    assert_eq!(f.net.sent().len(), 1);
+    let after = f.row(0, &id);
+    assert_eq!(
+        (&after.signed_tx, &after.txid, after.out_at),
+        (&before.signed_tx, &before.txid, before.out_at)
+    );
+    assert_eq!(f.session_of(0, &id).stage, SharedStage::Sent);
 }
 
 /// D103 residual: a scriptSig-malleated copy of the funder's key change,
