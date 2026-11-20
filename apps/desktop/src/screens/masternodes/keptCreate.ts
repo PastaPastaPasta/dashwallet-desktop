@@ -1,54 +1,86 @@
-// A proposal's fee payment that outlived its sheet, or whose outcome is not known yet: a lock
-// takes the page down at once, and `create_proposal` may already have paid the fee. Calling it
-// again with the same draft pays a second fee, so Create (and the fee call itself) waits until
-// Mine, read since the unlock, says whether the attempt made its proposal. Only the page draws
-// this, and the page is not mounted while locked.
+// A proposal's fee payment whose outcome the page has to answer for: a lock takes the page down
+// at once, and `create_proposal` may already have paid the fee when its answer is lost. Calling it
+// again for the same draft pays a second fee. The engine names a proposal only once its call
+// answers (its hash leaves out the fee's transaction but covers the time it was made, which the
+// renderer does not know), so an attempt is known by what the user entered. The rules:
 //
-// The engine names a proposal only once its call answers (its hash covers the fee and the time),
-// so an attempt is known by everything the user entered. A row in Mine is credited to an attempt
-// only when no other open attempt could have made it; when two could, both fees may have gone out
-// and the notice says so rather than pick one.
+// 1. Pay is dispatched only after a Mine read that began after every earlier attempt of the
+//    wallet was recorded, succeeded, and belongs to the current lock generation (`beginCreate`).
+//    That read reconciles the ledger, the hold is checked against it, and its matching proposals
+//    are the new attempt's baseline. No successful read, no Pay.
+// 2. Every Mine observation carries its request's sequence and lock generation (`readMine`). One
+//    older than the newest applied, or from another generation, is dropped. A proposal that more
+//    than one attempt could have made, or one of several an attempt could have made, marks it
+//    uncertain; only an attempt's own answer clears that, and the user acknowledging the attempt
+//    stops it holding Create. A later list never does.
+// 3. Results and acknowledgements go by attempt: a sheet reads its own (`attemptStatus`), and a
+//    button acknowledges the attempts it shows (`acknowledge`).
+// 4. The ledger keeps what outstanding attempts need (their drafts and proposal hashes), never
+//    Mine's rows. A removed wallet or vault forgets its attempts and its reads still out
+//    (`forgetKeptCreate`), and nothing answered after brings them back.
+// 5. A draft matches a proposal exactly: amount in duffs, payment count, and the first payment's
+//    epoch within a quarter cycle of the preview's. What still collides is uncertain, not made.
+// 6. An attempt whose outcome is not known holds Create, with a stated way on: a different
+//    proposal (`goOnWithAnother`). Its draft stays held and its notice stays.
+//
+// Only the page draws this, and it is not mounted while locked. Quitting forgets it.
 
 import { useSyncExternalStore } from "react";
 import type { MyProposal } from "../../api/generated/MyProposal";
 import type { ProposalDraft } from "../../api/generated/ProposalDraft";
-import { lockGeneration, walletGateClosed } from "../../api/lockGate";
+import type { ProposalPreview } from "../../api/generated/ProposalPreview";
+import { lockGeneration, subscribeWalletGate, walletGateClosed } from "../../api/lockGate";
 import { GovText, inProgress } from "../../governance/model";
 
-/** What a proposal in Mine shows of the draft that made it. */
-export type ProposalPrint = Pick<ProposalDraft, "name" | "url" | "paymentAddress" | "paymentAmount" | "paymentCount">;
+/** What a proposal in Mine shows of the draft that made it, with the schedule its preview gave. */
+export type ProposalPrint = Pick<ProposalDraft, "name" | "url" | "paymentAddress" | "paymentAmount" | "paymentCount"> &
+  Pick<ProposalPreview, "startEpoch" | "endEpoch">;
 
-/** One press of Pay: the draft as entered, and the proposals Mine held as it was pressed. */
-export type CreateAttempt = { id: number; name: string; print: ProposalPrint; known: readonly string[] };
+type Phase = { kind: "paying" } | { kind: "unsure"; since: number; checked: number | null; failed: boolean } | { kind: "made"; hash: string; wasUnsure: boolean };
 
-/** What Mine, read since the unlock, said of an attempt whose call failed. `twin`: Mine shows a
- * proposal that this attempt or another one of the same draft made, and which is not known. */
-export type MineCheck = { kind: "reading" } | { kind: "found"; p: MyProposal } | { kind: "absent" } | { kind: "failed" } | { kind: "twin" };
-
-/** What the page shows of the wallet's attempts: the one that matters most. */
-export type KeptCreate =
-  | { kind: "paying"; attempt: CreateAttempt }
-  | { kind: "created"; p: MyProposal }
-  | { kind: "unsure"; attempt: CreateAttempt; check: MineCheck };
-
-type State = { kind: "paying" } | { kind: "unsure"; read: "reading" | "failed" | "done" } | { kind: "made"; p: MyProposal; wasUnsure: boolean };
-
-type Entry = {
-  attempt: CreateAttempt;
-  state: State;
-  /** A proposal in Mine is this attempt's or another open one's. */
-  twin: boolean;
-  /** What it said when the user last saw it: it is seen until that changes. */
-  seenAs: string | null;
+type Attempt = {
+  id: number;
+  print: ProposalPrint;
+  /** Proposals of this draft Mine held when Pay was pressed: never this attempt's. */
+  baseline: readonly string[];
+  /** The sequence at which it was recorded. */
+  recorded: number;
+  phase: Phase;
+  /** Proposals this attempt may have made, each with the other attempts that may have made it. */
+  uncertain: Map<string, Set<number>>;
+  /** The status the user acknowledged: seen until it changes. */
+  seenAs: AttemptStatus | null;
+  /** The user went on with another proposal while its outcome is not known. */
+  released: boolean;
 };
 
-/** Attempts kept per wallet beyond the open ones. */
-const MAX_ENTRIES = 32;
+export type AttemptStatus = "paying" | "reading" | "failed" | "absent" | "uncertain" | "found" | "created";
 
-const ledger = new Map<string, Entry[]>();
-/** Mine as last read, to settle against once an attempt's own answer names its proposal. */
-const lastMine = new Map<string, readonly MyProposal[]>();
-const views = new Map<string, KeptCreate | null>();
+/** What the page shows: the most pressing attempt and the attempts its notice speaks for, and why
+ * Create waits, over all of the wallet's attempts. */
+export type KeptCreate = {
+  status: AttemptStatus;
+  name: string;
+  ids: number[];
+  hash: string | null;
+  /** Some of `ids` can be acknowledged; the rest wait for their outcome. */
+  dismissable: boolean;
+  /** Some of `ids` are not known and the user has not gone on with another proposal. */
+  waiting: boolean;
+  held: string | null;
+} | null;
+
+let sequence = 0;
+let attemptIds = 0;
+/** Bumped when every wallet is forgotten: what was asked before answers nothing. */
+let vault = 0;
+const ledgers = new Map<string, Attempt[]>();
+/** The newest observation applied, per wallet. */
+const observed = new Map<string, number>();
+/** Bumped when a wallet is forgotten. */
+const incarnation = new Map<string, number>();
+/** Each wallet's view, with the lock generation it was drawn in: a check from before is stale. */
+const views = new Map<string, { generation: number; view: KeptCreate }>();
 const reading = new Set<string>();
 const listeners = new Set<() => void>();
 const subscribe = (l: () => void) => {
@@ -56,202 +88,291 @@ const subscribe = (l: () => void) => {
   return () => void listeners.delete(l);
 };
 
-const entriesOf = (walletId: string): Entry[] => ledger.get(walletId) ?? [];
-const open = (e: Entry) => e.state.kind !== "made";
-const seen = (e: Entry) => e.seenAs === status(e);
+const bornAs = (walletId: string) => `${vault}:${incarnation.get(walletId) ?? 0}`;
 
-/** What an attempt says. Only one whose call failed and whose Mine was read can be a twin: one
- * still paying, or not read yet, holds Create back anyway. */
-function status(e: Entry): string {
-  if (e.state.kind === "made") return e.state.wasUnsure ? "found" : "created";
-  if (e.state.kind === "paying") return "paying";
-  if (e.state.read !== "done") return e.state.read;
-  return e.twin ? "twin" : "done";
+function statusOf(a: Attempt): AttemptStatus {
+  if (a.phase.kind === "made") return a.phase.wasUnsure ? "found" : "created";
+  if (a.uncertain.size) return "uncertain";
+  if (a.phase.kind === "paying") return "paying";
+  if (a.phase.failed) return "failed";
+  return a.phase.checked === lockGeneration() ? "absent" : "reading";
 }
 
-function view(entries: Entry[]): KeptCreate | null {
-  const first = (s: string, unseen = true) => entries.find((e) => status(e) === s && !(unseen && seen(e)));
-  const failed = first("failed", false) ?? first("reading", false);
-  if (failed?.state.kind === "unsure") return { kind: "unsure", attempt: failed.attempt, check: { kind: failed.state.read === "failed" ? "failed" : "reading" } };
-  const twin = first("twin");
-  if (twin) return { kind: "unsure", attempt: twin.attempt, check: { kind: "twin" } };
-  const paying = first("paying", false);
-  if (paying) return { kind: "paying", attempt: paying.attempt };
-  const created = first("created");
-  if (created?.state.kind === "made") return { kind: "created", p: created.state.p };
-  const found = first("found");
-  if (found?.state.kind === "made") return { kind: "unsure", attempt: found.attempt, check: { kind: "found", p: found.state.p } };
-  const absent = first("done");
-  if (absent) return { kind: "unsure", attempt: absent.attempt, check: { kind: "absent" } };
-  return null;
+const seen = (a: Attempt) => a.seenAs === statusOf(a);
+/** Its outcome is not known: its call has not answered, or Mine has not said since. It holds
+ * Create until the user goes on with another proposal, and cannot be acknowledged. */
+const pending = (a: Attempt) => a.phase.kind === "paying" || statusOf(a) === "reading" || statusOf(a) === "failed";
+const ORDER: readonly AttemptStatus[] = ["failed", "reading", "paying", "uncertain", "found", "created", "absent"];
+const shows = (a: Attempt) => pending(a) || !seen(a);
+/** A second payment for `a`'s draft now may pay a second fee. */
+const atRisk = (a: Attempt) => pending(a) || (!seen(a) && (statusOf(a) === "uncertain" || statusOf(a) === "found"));
+
+function heldBy(a: Attempt): string | null {
+  const s = statusOf(a);
+  if (!seen(a) && s === "uncertain") return GovText.createTwin(a.print.name);
+  if (!seen(a) && s === "found") return GovText.createFound(a.print.name);
+  if (!pending(a) || a.released) return null;
+  return a.phase.kind === "paying" ? GovText.keptPaying : s === "failed" ? GovText.createReadFailed : GovText.createChecking;
 }
 
-const key = (e: Entry) => `${e.attempt.id}:${status(e)}:${e.state.kind === "made" ? e.state.p.hash : ""}:${e.seenAs ?? ""}`;
+/** Attempts sharing an uncertain proposal with `a`, `a` among them. */
+function group(attempts: Attempt[], a: Attempt): Attempt[] {
+  const out = new Set([a]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const x of attempts)
+      if (!out.has(x) && [...out].some((y) => [...y.uncertain.keys()].some((h) => x.uncertain.has(h)))) {
+        out.add(x);
+        grew = true;
+      }
+  }
+  return [...out];
+}
 
-/** Runs `change` on copies of the wallet's attempts, and tells the page when anything it shows
- * may have changed (`force`: whether or not). */
-function update(walletId: string, change: (entries: Entry[]) => Entry[], force = false) {
-  const before = entriesOf(walletId);
-  const after = change(before.map((e) => ({ ...e })));
-  if (!force && after.map(key).join() === before.map(key).join()) return;
-  if (after.length) ledger.set(walletId, after);
-  else ledger.delete(walletId);
-  views.set(walletId, view(after));
+/** The notice first shown: what holds Create, an outcome not known before one told, then the
+ * rest; within each, by `ORDER`. */
+const rank = (a: Attempt) => (heldBy(a) !== null ? 0 : pending(a) ? 1 : 2) * ORDER.length + ORDER.indexOf(statusOf(a));
+
+function view(attempts: Attempt[]): KeptCreate {
+  const a = attempts.filter(shows).sort((x, y) => rank(x) - rank(y))[0];
+  if (!a) return null;
+  const s = statusOf(a);
+  const ids = s === "uncertain" ? group(attempts, a).filter(shows).map((x) => x.id) : [a.id];
+  const shown = attempts.filter((x) => ids.includes(x.id));
+  return {
+    status: s,
+    name: a.print.name,
+    ids,
+    hash: a.phase.kind === "made" ? a.phase.hash : null,
+    dismissable: shown.some((x) => !pending(x)),
+    waiting: shown.some((x) => pending(x) && !x.released),
+    held: heldBy(a),
+  };
+}
+
+function publish(walletId: string) {
+  views.set(walletId, { generation: lockGeneration(), view: view(ledgers.get(walletId) ?? []) });
   listeners.forEach((l) => l());
 }
 
-export const keptCreate = (walletId: string): KeptCreate | null => views.get(walletId) ?? null;
-
-export const useKeptCreate = (walletId: string): KeptCreate | null => useSyncExternalStore(subscribe, () => keptCreate(walletId));
-
-let attempts = 0;
-
-const print = (d: ProposalPrint): ProposalPrint => ({ name: d.name, url: d.url, paymentAddress: d.paymentAddress, paymentAmount: d.paymentAmount, paymentCount: d.paymentCount });
-
-/** Pay was pressed: until the call settles, Create waits. */
-export function startCreate(walletId: string, draft: ProposalPrint, mine: readonly MyProposal[]): CreateAttempt {
-  const attempt = { id: ++attempts, name: draft.name, print: print(draft), known: mine.map((p) => p.hash) };
-  update(walletId, (entries) => trim([...entries, { attempt, state: { kind: "paying" }, twin: false, seenAs: null }]));
-  return attempt;
+export function keptCreate(walletId: string): KeptCreate {
+  const v = views.get(walletId);
+  if (!v) return null;
+  if (v.generation !== lockGeneration()) views.set(walletId, { generation: lockGeneration(), view: view(ledgers.get(walletId) ?? []) });
+  return views.get(walletId)!.view;
 }
 
-/** Keeps every open attempt; of the rest, the newest. */
-function trim(entries: Entry[]): Entry[] {
-  let over = entries.length - MAX_ENTRIES;
-  return over <= 0 ? entries : entries.filter((e) => open(e) || !seen(e) || over-- <= 0);
+// A lock or an unlock moves the generation: what was read before is drawn as being read again.
+subscribeWalletGate(() => listeners.forEach((l) => l()));
+
+export const useKeptCreate = (walletId: string): KeptCreate => useSyncExternalStore(subscribe, () => keptCreate(walletId));
+
+/** `p` is a proposal of `print`: every field the user entered, and the first payment's epoch
+ * within a quarter cycle of the preview's (the engine dates it from the tip when it is made). */
+export function matches(print: ProposalPrint, p: MyProposal): boolean {
+  const cycle = print.paymentCount > 0 ? (print.endEpoch - print.startEpoch) / print.paymentCount : 0;
+  return (
+    p.name === print.name &&
+    p.url === print.url &&
+    p.paymentAddress === print.paymentAddress &&
+    p.paymentAmount === print.paymentAmount &&
+    p.paymentCount === print.paymentCount &&
+    (cycle > 0 ? Math.abs(p.startEpoch - print.startEpoch) < cycle / 4 : p.startEpoch === print.startEpoch)
+  );
 }
 
-/** `p` is a proposal `attempt` could have made: what the user entered, and new since Pay. The
- * amount went through the proposal's JSON, so it may round by a duff. */
-export const couldBe = (attempt: CreateAttempt, p: MyProposal): boolean =>
-  inProgress(p) &&
-  !attempt.known.includes(p.hash) &&
-  p.name === attempt.print.name &&
-  p.url === attempt.print.url &&
-  p.paymentAddress === attempt.print.paymentAddress &&
-  Math.abs(p.paymentAmount - attempt.print.paymentAmount) <= 1 &&
-  p.paymentCount === attempt.print.paymentCount;
+const open = (a: Attempt) => a.phase.kind !== "made";
 
-/** Credits each proposal in `mine` that only one open attempt could have made to that attempt,
- * and marks the open attempts a proposal could belong to with another. An attempt whose own read
- * since the unlock has not answered yet is never credited. */
-function credit(entries: Entry[], mine: readonly MyProposal[]): Entry[] {
-  const claimed = new Set(entries.flatMap((e) => (e.state.kind === "made" ? [e.state.p.hash] : [])));
-  let rows = mine.filter((p) => !claimed.has(p.hash));
-  for (const e of entries) e.twin = false;
-  const owners = (p: MyProposal) => entries.filter((e) => open(e) && couldBe(e.attempt, p));
-  for (let found = true; found; ) {
-    found = false;
-    for (const p of rows) {
-      const can = owners(p);
-      const e = can[0];
-      if (can.length !== 1 || (e.state.kind === "unsure" && e.state.read === "reading")) continue;
-      e.state = { kind: "made", p, wasUnsure: e.state.kind === "unsure" };
-      rows = rows.filter((r) => r !== p);
-      found = true;
-      break;
+/** Applies a successful Mine read that began at `seq` in lock generation `generation` (rule 2). */
+function observe(walletId: string, seq: number, generation: number, rows: readonly MyProposal[]): boolean {
+  if (seq <= (observed.get(walletId) ?? 0) || generation !== lockGeneration() || walletGateClosed()) return false;
+  observed.set(walletId, seq);
+  const attempts = ledgers.get(walletId);
+  if (!attempts?.length) return true;
+  for (const a of attempts) if (a.phase.kind === "unsure" && a.phase.since < seq) a.phase = { ...a.phase, checked: generation, failed: false };
+  const claimed = new Set(attempts.flatMap((a) => (a.phase.kind === "made" ? [a.phase.hash] : [])));
+  const live = rows.filter((p) => inProgress(p) && !claimed.has(p.hash));
+  const candidates = new Map<Attempt, MyProposal[]>();
+  for (const a of attempts) if (open(a) && a.recorded < seq) candidates.set(a, live.filter((p) => matches(a.print, p) && !a.baseline.includes(p.hash)));
+  const owners = (p: MyProposal) => [...candidates].filter(([, ps]) => ps.includes(p)).map(([a]) => a);
+  for (const [a, ps] of candidates) {
+    const sole = ps.length === 1 && owners(ps[0]).length === 1;
+    if (sole && !a.uncertain.size) {
+      a.phase = { kind: "made", hash: ps[0].hash, wasUnsure: a.phase.kind === "unsure" };
+      continue;
+    }
+    if (sole) continue;
+    for (const p of ps) {
+      const rivals = a.uncertain.get(p.hash) ?? new Set<number>();
+      for (const o of owners(p)) if (o !== a) rivals.add(o.id);
+      a.uncertain.set(p.hash, rivals);
     }
   }
-  for (const p of rows) {
-    const can = owners(p);
-    if (can.length > 1) for (const e of can) e.twin = true;
-  }
-  return entries;
+  publish(walletId);
+  return true;
 }
 
-/** The call settled: `created` with its proposal (`shown` when its sheet showed it), `unsure`
- * when the fee may have gone out, or `null` when it was never paid. Ignored once another
- * attempt took the wallet's place. */
-export function settleCreate(walletId: string, attempt: CreateAttempt, outcome: { kind: "created"; p: MyProposal; shown: boolean } | { kind: "unsure" } | null) {
-  update(walletId, (entries) => {
-    const e = entries.find((x) => x.attempt.id === attempt.id);
-    if (!e) return entries;
-    if (outcome === null) return e.state.kind === "paying" ? entries.filter((x) => x !== e) : entries;
-    if (outcome.kind === "created") {
-      // Its own answer names it, whatever Mine was credited with.
-      e.state = { kind: "made", p: outcome.p, wasUnsure: e.state.kind === "made" && e.state.wasUnsure };
-      if (outcome.shown) e.seenAs = status(e);
-      const mine = lastMine.get(walletId);
-      return mine ? credit(entries, mine) : entries;
-    }
-    if (e.state.kind === "paying") e.state = { kind: "unsure", read: "reading" };
-    return entries;
-  });
-}
+export type MineRead = { rows: MyProposal[]; applied: boolean; seq: number };
 
-/** Mine as the page read it. */
-export function sawMine(walletId: string, mine: readonly MyProposal[]) {
-  lastMine.set(walletId, mine);
-  if (entriesOf(walletId).length) update(walletId, (entries) => credit(entries, mine));
-}
-
-/** Reads Mine for the attempts whose call failed, while the window is unlocked. A read the vault
- * locked during began before that lock, so it is read again; an attempt that failed during the
- * read waits for the next one. */
-export async function checkKept(walletId: string, read: () => Promise<MyProposal[]>) {
-  const waiting = entriesOf(walletId).filter((e) => e.state.kind === "unsure" && e.state.read === "reading");
-  if (!waiting.length || reading.has(walletId) || walletGateClosed()) return;
-  const ids = new Set(waiting.map((e) => e.attempt.id));
+/** Reads Mine for `walletId` and applies it in order (rule 2). Rejects when the read failed;
+ * `applied` is false when it can no longer count. Nothing of the rows is kept. */
+export async function readMine(walletId: string, read: () => Promise<MyProposal[]>): Promise<MineRead> {
+  const seq = ++sequence;
   const generation = lockGeneration();
-  reading.add(walletId);
-  let mine: MyProposal[] | null = null;
-  try {
-    mine = await read();
-  } catch {
-    mine = null;
-  } finally {
-    reading.delete(walletId);
-  }
-  if (walletGateClosed() || lockGeneration() !== generation) {
-    update(walletId, (entries) => entries, true);
-    return;
-  }
-  if (mine) lastMine.set(walletId, mine);
-  update(walletId, (entries) => {
-    for (const e of entries) if (ids.has(e.attempt.id) && e.state.kind === "unsure" && e.state.read === "reading") e.state = { kind: "unsure", read: mine ? "done" : "failed" };
-    return mine ? credit(entries, mine) : entries;
-  });
+  const born = bornAs(walletId);
+  const rows = await read();
+  return { rows, applied: born === bornAs(walletId) && observe(walletId, seq, generation, rows), seq };
 }
 
-/** The page showed a made proposal. */
-export function keepCreateDone(walletId: string) {
-  update(walletId, (entries) => entries.map((e) => (status(e) === "created" ? { ...e, seenAs: "created" } : e)));
+export type BeginCreate = { kind: "go"; attempt: number } | { kind: "held"; reason: string } | { kind: "unread" };
+
+/** Rule 1: reads Mine, then in one step after it answers reconciles the ledger with it, checks
+ * the holds against it and records the attempt with it as the baseline. */
+export async function beginCreate(walletId: string, print: ProposalPrint, read: () => Promise<MyProposal[]>): Promise<BeginCreate> {
+  for (let tries = 0; tries < 3; tries++) {
+    const generation = lockGeneration();
+    let r: MineRead;
+    try {
+      r = await readMine(walletId, read);
+    } catch {
+      return { kind: "unread" };
+    }
+    if (walletGateClosed() || generation !== lockGeneration()) return { kind: "unread" };
+    // A newer read applied, or another attempt recorded, since this read began: read again.
+    const attempts = ledgers.get(walletId) ?? [];
+    if (!r.applied || observed.get(walletId) !== r.seq || attempts.some((a) => a.recorded > r.seq)) continue;
+    if (attempts.some((a) => a.print.name === print.name && atRisk(a))) return { kind: "held", reason: GovText.sameDraftHeld(print.name) };
+    const held = view(attempts)?.held;
+    if (held) return { kind: "held", reason: held };
+    const attempt: Attempt = {
+      id: ++attemptIds,
+      print: { ...print },
+      baseline: r.rows.filter((p) => matches(print, p)).map((p) => p.hash),
+      recorded: ++sequence,
+      phase: { kind: "paying" },
+      uncertain: new Map(),
+      seenAs: null,
+      released: false,
+    };
+    ledgers.set(walletId, [...attempts, attempt]);
+    publish(walletId);
+    return { kind: "go", attempt: attempt.id };
+  }
+  return { kind: "unread" };
+}
+
+const find = (walletId: string, id: number) => ledgers.get(walletId)?.find((a) => a.id === id);
+
+/** Attempt `id`'s call answered: `created` with the proposal it names (`shown` when its sheet
+ * showed it), `unsure` when the fee may have gone out, or `null` when it was never paid. */
+export function settleCreate(walletId: string, id: number, outcome: { kind: "created"; hash: string; shown: boolean } | { kind: "unsure" } | null) {
+  const a = find(walletId, id);
+  if (!a) return;
+  const attempts = ledgers.get(walletId)!;
+  if (outcome === null) {
+    if (a.phase.kind === "paying") ledgers.set(walletId, attempts.filter((x) => x !== a));
+  } else if (outcome.kind === "created") {
+    // Its own answer: the proposal is this attempt's, and no other attempt made it.
+    a.phase = { kind: "made", hash: outcome.hash, wasUnsure: false };
+    a.uncertain.clear();
+    for (const x of attempts)
+      for (const [h, rivals] of x.uncertain)
+        if (h === outcome.hash) x.uncertain.delete(h);
+        else if (rivals.delete(a.id) && rivals.size === 0) x.uncertain.delete(h);
+    if (outcome.shown) a.seenAs = statusOf(a);
+  } else if (a.phase.kind === "paying") a.phase = { kind: "unsure", since: ++sequence, checked: null, failed: false };
+  // Mine showed it while the call was out, and the call failed: told as found, not as made.
+  else if (a.phase.kind === "made") a.phase = { ...a.phase, wasUnsure: true };
+  trim(walletId);
+  publish(walletId);
+}
+
+/** What the sheet of attempt `id` shows: its own outcome, never another attempt's. */
+export function attemptStatus(walletId: string, id: number): { status: AttemptStatus; hash: string | null } | null {
+  const a = find(walletId, id);
+  return a ? { status: statusOf(a), hash: a.phase.kind === "made" ? a.phase.hash : null } : null;
+}
+
+/** An earlier payment for a draft named `name` may have paid a fee: the sheet says so. */
+export function priorRisk(walletId: string, name: string): string | null {
+  const earlier = (ledgers.get(walletId) ?? []).filter((a) => a.print.name === name);
+  return earlier.some((a) => a.phase.kind === "unsure" || a.uncertain.size || (a.phase.kind === "made" && a.phase.wasUnsure)) ? GovText.priorFee(name) : null;
+}
+
+/** Reads Mine when an attempt whose call failed has no read in this lock generation. */
+export async function checkKept(walletId: string, read: () => Promise<MyProposal[]>) {
+  if (!(ledgers.get(walletId) ?? []).some((a) => statusOf(a) === "reading") || reading.has(walletId) || walletGateClosed()) return;
+  const born = bornAs(walletId);
+  const seq = sequence + 1;
+  reading.add(walletId);
+  try {
+    await readMine(walletId, read);
+  } catch {
+    if (born === bornAs(walletId))
+      for (const a of ledgers.get(walletId) ?? [])
+        if (a.phase.kind === "unsure" && a.phase.since < seq && a.phase.checked !== lockGeneration()) a.phase = { ...a.phase, failed: true };
+  } finally {
+    if (born === bornAs(walletId)) {
+      reading.delete(walletId);
+      publish(walletId);
+    }
+  }
 }
 
 /** Read again: Mine could not be read. */
 export function readKeptAgain(walletId: string) {
-  update(walletId, (entries) => entries.map((e) => (e.state.kind === "unsure" && e.state.read === "failed" ? { ...e, state: { kind: "unsure", read: "reading" } } : e)));
+  for (const a of ledgers.get(walletId) ?? []) if (a.phase.kind === "unsure" && a.phase.failed) a.phase = { ...a.phase, failed: false };
+  publish(walletId);
 }
 
-/** Dismissed: only once Mine was read. While an outcome is unknown the notice stays. The
- * attempts stay kept, so a proposal Mine shows later is not credited to a newer one. */
-export function dismissKept(walletId: string) {
-  update(walletId, (entries) => entries.map((e) => (["found", "done", "twin"].includes(status(e)) ? { ...e, seenAs: status(e) } : e)));
+/** The user saw what attempts `ids` say. An outcome not known yet stays. */
+export function acknowledge(walletId: string, ids: readonly number[]) {
+  for (const a of ledgers.get(walletId) ?? []) if (ids.includes(a.id) && !pending(a)) a.seenAs = statusOf(a);
+  trim(walletId);
+  publish(walletId);
 }
 
-/** Why Create, and the fee call, wait for the wallet's kept attempts, or `null` when they do not. */
-export function createHeldBack(k: KeptCreate | null): string | null {
-  if (k?.kind === "paying") return GovText.keptPaying;
-  if (k?.kind !== "unsure") return null;
-  switch (k.check.kind) {
-    case "reading":
-      return GovText.createChecking;
-    case "failed":
-      return GovText.createReadFailed;
-    case "found":
-      return GovText.createFound(k.attempt.name);
-    case "twin":
-      return GovText.createTwin(k.attempt.name);
-    case "absent":
-      return null;
+/** Rule 6: the user goes on with a different proposal while attempts `ids` are not known. */
+export function goOnWithAnother(walletId: string, ids: readonly number[]) {
+  for (const a of ledgers.get(walletId) ?? []) if (ids.includes(a.id)) a.released = true;
+  publish(walletId);
+}
+
+/** Drops attempts with nothing left to tell or to guard. */
+function trim(walletId: string) {
+  const attempts = ledgers.get(walletId) ?? [];
+  const keep = attempts.filter((a) => open(a) || a.uncertain.size || !seen(a) || attempts.some((x) => x !== a && open(x) && x.print.name === a.print.name));
+  if (keep.length) ledgers.set(walletId, keep);
+  else ledgers.delete(walletId);
+}
+
+/** Rule 4: a removed wallet, or every wallet when the vault goes, with its reads still out. */
+export function forgetKeptCreate(walletId?: string) {
+  if (walletId === undefined) {
+    vault++;
+    ledgers.clear();
+    observed.clear();
+    reading.clear();
+    views.clear();
+  } else {
+    incarnation.set(walletId, (incarnation.get(walletId) ?? 0) + 1);
+    ledgers.delete(walletId);
+    observed.delete(walletId);
+    reading.delete(walletId);
+    views.delete(walletId);
   }
+  listeners.forEach((l) => l());
 }
+
+/** Tests: whether anything is kept for `walletId`. */
+export const keepsAnything = (walletId: string): boolean => ledgers.has(walletId) || observed.has(walletId) || reading.has(walletId) || views.has(walletId);
+
+/** Tests: what the ledger holds for `walletId`, as text. */
+export const ledgerSnapshot = (walletId: string): string =>
+  JSON.stringify(ledgers.get(walletId) ?? [], (_, v: unknown) => (v instanceof Map ? [...v] : v instanceof Set ? [...v] : v));
 
 /** Tests: nothing kept. */
 export function resetKeptCreate() {
-  ledger.clear();
-  lastMine.clear();
-  views.clear();
-  reading.clear();
-  listeners.forEach((l) => l());
+  forgetKeptCreate();
+  incarnation.clear();
 }

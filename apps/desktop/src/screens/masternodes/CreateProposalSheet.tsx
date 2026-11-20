@@ -39,11 +39,11 @@ import {
   shortDate,
   superblockOption,
 } from "../../governance/model";
-import { useGovernanceInfo, useGovernanceRefresh, useMyProposals, useUpcomingSuperblocks } from "../../governance/queries";
+import { useGovernanceInfo, useGovernanceRefresh, useUpcomingSuperblocks } from "../../governance/queries";
 import { useAmountField } from "../pay/form";
 import { failureText } from "../pay/model";
 import { useNowSecs } from "./common";
-import { checkKept, createHeldBack, dismissKept, keptCreate, readKeptAgain, settleCreate, startCreate } from "./keptCreate";
+import { acknowledge, attemptStatus, beginCreate, checkKept, priorRisk, readKeptAgain, settleCreate, useKeptCreate } from "./keptCreate";
 import { CredentialField, useCredential } from "./credential";
 
 type Step = 1 | 2 | 3;
@@ -55,9 +55,12 @@ const STEPS: { n: Step; title: string; heading: string }[] = [
 
 type FieldErrors = Partial<Record<ProposalFieldName, string>>;
 
-/** After a failed `create_proposal` (D34): reading Mine, the proposal it made anyway, or Mine
- *  unreadable. Pay stays off in all three. */
-type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "twin"; name: string } | { kind: "unknown" };
+/** After this sheet's `create_proposal` failed (D34): reading Mine, the proposal it made anyway,
+ *  one that it or an earlier attempt may have made, or Mine unreadable. Pay stays off in all four. */
+type AfterFailure = { kind: "checking" } | { kind: "created"; hash: string } | { kind: "twin" } | { kind: "unknown" };
+
+/** Made: the proposal's hash, and the row when the call answered with it. */
+export type Made = { hash: string; name: string; p?: MyProposal };
 
 export function CreateProposalSheet({
   wallet,
@@ -68,7 +71,7 @@ export function CreateProposalSheet({
   wallet: WalletSummary;
   network: NetworkInfo;
   onClose: () => void;
-  onCreated: (p: MyProposal) => void;
+  onCreated: (made: Made) => void;
 }) {
   const b = useBackend();
   const shown = useDisplay(network);
@@ -99,8 +102,20 @@ export function CreateProposalSheet({
   const [firstMoved, setFirstMoved] = useState(false);
   /** Pay's re-read found other figures than the review showed: they need a fresh confirm (D33). */
   const [feeChanged, setFeeChanged] = useState(false);
-  const mine = useMyProposals(wallet.walletId);
-  const [after, setAfter] = useState<AfterFailure | null>(null);
+  /** This sheet's attempt whose call failed: what the sheet shows is that attempt's outcome. */
+  const [failed, setFailed] = useState<number | null>(null);
+  useKeptCreate(wallet.walletId);
+  const own = failed === null ? null : attemptStatus(wallet.walletId, failed);
+  const after: AfterFailure | null =
+    own?.status === "reading"
+      ? { kind: "checking" }
+      : own?.status === "failed"
+        ? { kind: "unknown" }
+        : own?.status === "uncertain"
+          ? { kind: "twin" }
+          : (own?.status === "found" || own?.status === "created") && own.hash
+            ? { kind: "created", hash: own.hash }
+            : null;
 
   const choice = useMemo(() => defaultFirstPayment(superblocks.data ?? [], now), [superblocks.data, now]);
   // The default, and again when the chosen superblock passes (the list re-reads on the tip).
@@ -185,28 +200,17 @@ export function CreateProposalSheet({
   };
 
   /** Whether the failed call made the proposal anyway: Mine says, ignoring the proposals it held
-   *  when Pay was pressed (D34). */
+   *  when Pay was pressed (D34). Through the ledger, so a lock meanwhile leaves the page to finish. */
+  const readMine = () => b.governanceMyProposals(wallet.walletId);
   const checkMine = async () => {
-    setAfter({ kind: "checking" });
-    // Through the kept attempt, so a lock meanwhile leaves the page to finish the check.
-    await checkKept(wallet.walletId, () => b.governanceMyProposals(wallet.walletId));
-    if (!mounted.current) return;
-    const k = keptCreate(wallet.walletId);
-    const check = k?.kind === "unsure" ? k.check : null;
-    if (check?.kind === "found" || check?.kind === "twin") credential.setError(null); // the notice says what happened instead
-    setAfter(
-      check?.kind === "found"
-        ? { kind: "created", p: check.p }
-        : check?.kind === "twin" && k?.kind === "unsure"
-          ? { kind: "twin", name: k.attempt.name }
-          : check?.kind === "failed"
-            ? { kind: "unknown" }
-            : check?.kind === "reading"
-              ? { kind: "checking" }
-              : null,
-    );
+    await checkKept(wallet.walletId, readMine);
     void refresh();
   };
+  // The notice says what happened instead of the call's error.
+  const told = after?.kind === "created" || after?.kind === "twin";
+  useEffect(() => {
+    if (told) credential.setError(null);
+  }, [told]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const mounted = useRef(true);
   useEffect(() => {
@@ -235,15 +239,20 @@ export function CreateProposalSheet({
       setFeeChanged(false);
       const grant = await credential.authorize({ kind: "spend", maxDuffs: feeGrantCap(confirmed) });
       if (!grant || shownKey.current !== draftKey) return;
-      // An earlier fee whose outcome is not known yet holds this one back, whatever the button said.
-      const heldBack = createHeldBack(keptCreate(wallet.walletId));
-      if (heldBack) {
+      // Mine read now, after every earlier attempt: an earlier fee it shows, or one whose outcome is
+      // not known yet, holds this one back, whatever the button said.
+      const { name: n, url: u, paymentAddress, paymentAmount, paymentCount } = draft;
+      const print = { name: n, url: u, paymentAddress, paymentAmount, paymentCount, startEpoch: confirmed.startEpoch, endEpoch: confirmed.endEpoch };
+      const begun = await beginCreate(wallet.walletId, print, readMine);
+      if (begun.kind !== "go" || shownKey.current !== draftKey) {
+        if (begun.kind === "go") settleCreate(wallet.walletId, begun.attempt, null);
         void b.revokeGrant(grant.id).catch(() => null);
-        credential.setError(heldBack);
+        credential.setError(begun.kind === "held" ? begun.reason : begun.kind === "unread" ? GovText.createUnread : null);
         return;
       }
+      const attempt = begun.attempt;
+      setFailed(null);
       let created: MyProposal;
-      const attempt = startCreate(wallet.walletId, draft, mine.data ?? []);
       try {
         created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
       } catch (e) {
@@ -254,13 +263,14 @@ export function CreateProposalSheet({
         if (!mounted.current || unpaid) return;
         credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
         // `after` keeps Pay and Back off; the sheet may close while Mine is read.
+        setFailed(attempt);
         setBusy(false);
         await checkMine();
         return;
       }
-      settleCreate(wallet.walletId, attempt, { kind: "created", p: created, shown: mounted.current });
+      settleCreate(wallet.walletId, attempt, { kind: "created", hash: created.hash, shown: mounted.current });
       void refresh();
-      if (mounted.current) onCreated(created);
+      if (mounted.current) onCreated({ hash: created.hash, name: created.name, p: created });
     } catch (e) {
       credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
     } finally {
@@ -283,6 +293,7 @@ export function CreateProposalSheet({
   const lastSb = sb[sb.findIndex((s) => s.height === first) + count - 1];
   const total = amount.duffs ? amount.duffs * count : null;
   const notice = budgetNotice(info.data, (d) => `${shown.compact(d)} ${shown.name}`);
+  const risk = draft && !after ? priorRisk(wallet.walletId, draft.name) : null;
 
   let body;
   if (step === 1)
@@ -441,6 +452,11 @@ export function CreateProposalSheet({
                 {figures.dataJson}
               </pre>
             </details>
+            {risk && (
+              <p className="mg-notice mg-notice-warning" role="alert" data-testid="create-prior-fee">
+                {risk}
+              </p>
+            )}
             <p className="mg-notice mg-notice-warning" data-testid="create-fee-warning">
               <strong>{GovText.feeWarning}</strong> {GovText.feeAfter}
             </p>
@@ -449,12 +465,12 @@ export function CreateProposalSheet({
             {after?.kind === "created" && (
               <div className="mg-notice mg-notice-warning" role="alert" data-testid="create-already-made">
                 <p className="mg-flush">
-                  <strong>{after.p.name} was made, and its fee may have gone out.</strong> Don&apos;t pay again: Mine shows it and sends it on from there.
+                  <strong>{draft.name} was made, and its fee may have gone out.</strong> Don&apos;t pay again: Mine shows it and sends it on from there.
                 </p>
                 <DashButton variant="filledBlue" size="small" data-testid="create-show-mine"
                   onClick={() => {
-                    dismissKept(wallet.walletId);
-                    onCreated(after.p);
+                    if (failed !== null) acknowledge(wallet.walletId, [failed]);
+                    onCreated({ hash: after.hash, name: draft.name });
                   }}
                 >
                   Show it in Mine
@@ -463,7 +479,7 @@ export function CreateProposalSheet({
             )}
             {after?.kind === "twin" && (
               <p className="mg-notice mg-notice-warning" role="alert" data-testid="create-twin">
-                {GovText.keptTwin(after.name)}
+                {GovText.keptTwin(draft.name)}
               </p>
             )}
             {after?.kind === "unknown" && (

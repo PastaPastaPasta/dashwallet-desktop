@@ -12,6 +12,7 @@ import { useUi } from "../app/ui";
 import { showToast } from "../components/toast";
 import { bannedCount } from "../masternodes/model";
 import { useMasternodes } from "../masternodes/queries";
+import { readMine } from "../screens/masternodes/keptCreate";
 import { badgeCount, GovText, governanceErrorText, SUPERBLOCK_CHOICES } from "./model";
 
 const g = keys.governanceAll;
@@ -69,10 +70,16 @@ export function useVotingMasternodes(walletId: string, hash: string) {
   return useQuery({ queryKey: govKeys.voting(walletId, hash), queryFn: () => b.governanceVotingMasternodes(walletId, hash) });
 }
 
-/** The wallet's own proposals: work with sync off (mg-engine §2.5). */
+/** The wallet's own proposals: work with sync off (mg-engine §2.5). Each read is an observation
+ * for the proposals the wallet is paying for (keptCreate.ts), in the order it was asked. */
 export function useMyProposals(walletId: string, enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: govKeys.mine(walletId), queryFn: () => b.governanceMyProposals(walletId), refetchInterval: TIP_REFRESH_MS, enabled });
+  return useQuery({
+    queryKey: govKeys.mine(walletId),
+    queryFn: async () => (await readMine(walletId, () => b.governanceMyProposals(walletId))).rows,
+    refetchInterval: TIP_REFRESH_MS,
+    enabled,
+  });
 }
 
 /** The sidebar's Masternodes item and its badge (MG-09 D3, D5). 0.1 release plan: Masternodes,

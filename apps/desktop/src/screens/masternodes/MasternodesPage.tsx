@@ -5,7 +5,7 @@
 // (vote, create, numbers) live here, so a list that changes under an open sheet (a filter, a
 // re-sort, a resync) keeps it (D31).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage } from "../../api/backend";
 import type { GovernanceInfo } from "../../api/generated/GovernanceInfo";
 import type { MasternodesTab } from "../../api/generated/MasternodesTab";
@@ -45,8 +45,8 @@ import { useMasternodeListState } from "../../masternodes/queries";
 import { savePrefs } from "../../settings/prefs";
 import { Tabs, type Tab } from "../Routes";
 import { MoreMenu, Notice, StatusChip, useNowSecs, VoteBar } from "./common";
-import { CreateProposalSheet } from "./CreateProposalSheet";
-import { checkKept, createHeldBack, dismissKept, keepCreateDone, type KeptCreate, readKeptAgain, sawMine, useKeptCreate } from "./keptCreate";
+import { CreateProposalSheet, type Made } from "./CreateProposalSheet";
+import { acknowledge, checkKept, goOnWithAnother, type KeptCreate, readKeptAgain, useKeptCreate } from "./keptCreate";
 import { MineList } from "./Mine";
 import { MyMasternodes } from "./MyMasternodes";
 import { NamesTab } from "./NamesTab";
@@ -82,26 +82,46 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   // A proposal paid for as the wallet locked: made, it is shown in Mine as if the sheet had stayed;
   // otherwise Create waits for Mine, read since the unlock, to say whether it was made.
   const kept = useKeptCreate(walletId);
-  const heldBack = createHeldBack(kept);
+  const heldBack = kept?.held ?? null;
+  const mine = useMyProposals(walletId);
   const showMine = () => {
     setShownTab("governance");
     setFilter("mine");
   };
+  /** The toast for a proposal made: from its row in Mine when Mine has it. */
+  const madeToast = (made: Made) => {
+    const p = made.p ?? mine.data?.find((r) => r.hash === made.hash);
+    return p ? createdToast(p) : GovText.madeToast(made.name);
+  };
+  // Made while no sheet showed it (a lock took the sheet down): shown as the sheet would have.
   useEffect(() => {
-    if (kept?.kind !== "created") return;
-    keepCreateDone(walletId);
+    if (kept?.status !== "created" || !kept.hash || sheet === "create") return;
+    acknowledge(walletId, kept.ids);
     showMine();
-    showToast(createdToast(kept.p));
-  }, [kept, walletId]); // eslint-disable-line react-hooks/exhaustive-deps
+    showToast(madeToast({ hash: kept.hash, name: kept.name }));
+  }, [kept, sheet, walletId]); // eslint-disable-line react-hooks/exhaustive-deps
   const sync = useGovernanceSyncState();
   const info = useGovernanceInfo();
-  const mine = useMyProposals(walletId);
+  // An attempt whose call failed has Mine read in each lock generation (checkKept skips otherwise).
   useEffect(() => {
-    if (kept?.kind === "unsure" && kept.check.kind === "reading") void checkKept(walletId, () => backend.governanceMyProposals(walletId));
+    if (kept) void checkKept(walletId, () => backend.governanceMyProposals(walletId));
   }, [backend, kept, walletId]);
+  // After Dismiss the focus goes to the next notice, else to Create, else to the heading.
+  const page = useRef<HTMLElement>(null);
+  const refocus = useRef(false);
   useEffect(() => {
-    if (mine.data && sheet !== "create") sawMine(walletId, mine.data);
-  }, [mine.data, sheet, walletId]);
+    if (!refocus.current) return;
+    refocus.current = false;
+    const next =
+      page.current?.querySelector<HTMLElement>('[data-kept-notice] button:not(:disabled)') ??
+      page.current?.querySelector<HTMLElement>('[data-testid="governance-create"]:not(:disabled)') ??
+      page.current?.querySelector<HTMLElement>("h1");
+    next?.focus();
+  }, [kept]);
+  const dismiss = (ids: number[]) => {
+    refocus.current = true;
+    acknowledge(walletId, ids);
+  };
   const { turnOn, busy: turningOn } = useTurnOnGovernance();
   const refresh = useGovernanceRefresh();
   const shown = useDisplay(network);
@@ -174,10 +194,12 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
     );
 
   return (
-    <main className="page page-masternodes" data-testid="page-masternodes">
+    <main className="page page-masternodes" data-testid="page-masternodes" ref={page}>
       <div className="page-column">
         <header className="top-intro mg-header">
-          <h1 className="top-intro-title">{GovText.title}</h1>
+          <h1 className="top-intro-title" tabIndex={-1}>
+            {GovText.title}
+          </h1>
           {/* Governance's actions; Username voting has none (MG-11 D2). */}
           {tab === "governance" && (
             <span className="mg-header-actions">
@@ -201,12 +223,7 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
             </span>
           )}
         </header>
-        {kept?.kind === "paying" && sheet !== "create" && (
-          <Notice tone="warning" testId="create-kept-paying">
-            {GovText.keptPaying}
-          </Notice>
-        )}
-        {kept?.kind === "unsure" && sheet !== "create" && <KeptUnsureNotice walletId={walletId} kept={kept} onShowMine={showMine} />}
+        {kept && kept.status !== "created" && sheet !== "create" && <KeptNotice walletId={walletId} kept={kept} onShowMine={showMine} onDismiss={dismiss} />}
         <Tabs label="Masternodes" tabs={TABS} current={tab} onSelect={setTab} testId="masternodes-tabs">
           {!mnList.isError && mnList.data?.synced && mnList.data.height !== null && (
             <p className="mg-muted mg-small" data-testid="mn-list-height">
@@ -235,10 +252,10 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           wallet={wallet}
           network={network}
           onClose={() => setSheet(null)}
-          onCreated={(p) => {
+          onCreated={(made) => {
             setSheet(null);
             setFilter("mine");
-            showToast(createdToast(p));
+            showToast(madeToast(made));
           }}
         />
       )}
@@ -476,40 +493,67 @@ function ProposalRowButton({
   );
 }
 
-/** A proposal whose call failed after its fee may have gone out: Mine, read since the unlock, says
- * whether it was made. Until it has, and while it cannot be read, there is no way to pay again. */
-function KeptUnsureNotice({ walletId, kept, onShowMine }: { walletId: string; kept: Extract<KeptCreate, { kind: "unsure" }>; onShowMine: () => void }) {
-  const { check } = kept;
+/** A proposal paid for whose outcome the page answers for (keptCreate.ts): being made, being read
+ * in Mine, Mine unreadable, made, perhaps made by more than one payment, or not in Mine. While its
+ * outcome is not known, Create waits unless the user goes on with a different proposal. */
+function KeptNotice({
+  walletId,
+  kept,
+  onShowMine,
+  onDismiss,
+}: {
+  walletId: string;
+  kept: NonNullable<KeptCreate>;
+  onShowMine: () => void;
+  onDismiss: (ids: number[]) => void;
+}) {
+  const s = kept.status;
   const text =
-    check.kind === "reading"
-      ? GovText.keptChecking
-      : check.kind === "failed"
-        ? GovText.keptReadFailed
-        : check.kind === "found"
-          ? GovText.keptFound(check.p.name)
-          : check.kind === "twin"
-            ? GovText.keptTwin(kept.attempt.name)
-            : GovText.keptUnsure;
-  const action =
-    check.kind === "reading" ? undefined : check.kind === "failed" ? (
-      <DashButton variant="filledBlue" size="small" data-testid="create-kept-read-again" onClick={() => readKeptAgain(walletId)}>
-        Read again
-      </DashButton>
-    ) : (
-      <span className="mg-header-actions">
+    s === "paying"
+      ? GovText.keptPaying
+      : s === "reading"
+        ? GovText.keptChecking
+        : s === "failed"
+          ? GovText.keptReadFailed
+          : s === "found"
+            ? GovText.keptFound(kept.name)
+            : s === "uncertain"
+              ? GovText.keptTwin(kept.name)
+              : GovText.keptUnsure;
+  const told = s === "found" || s === "uncertain" || s === "absent";
+  const unknown = s === "paying" || s === "reading" || s === "failed";
+  const action = (
+    <span className="mg-header-actions">
+      {s === "failed" && (
+        <DashButton variant="filledBlue" size="small" data-testid="create-kept-read-again" onClick={() => readKeptAgain(walletId)}>
+          Read again
+        </DashButton>
+      )}
+      {told && (
         <DashButton variant="filledBlue" size="small" data-testid="create-kept-show-mine" onClick={onShowMine}>
           Show Mine
         </DashButton>
-        <DashButton variant="tintedGray" size="small" data-testid="create-kept-dismiss" onClick={() => dismissKept(walletId)}>
+      )}
+      {told && kept.dismissable && (
+        <DashButton variant="tintedGray" size="small" data-testid="create-kept-dismiss" onClick={() => onDismiss(kept.ids)}>
           Dismiss
         </DashButton>
-      </span>
-    );
+      )}
+      {kept.waiting && (
+        <DashButton variant="tintedGray" size="small" data-testid="create-kept-go-on" onClick={() => goOnWithAnother(walletId, kept.ids)}>
+          {GovText.goOnWithAnother}
+        </DashButton>
+      )}
+    </span>
+  );
   return (
-    <Notice tone="warning" testId="create-kept-unsure" action={action}>
-      <span data-testid="create-kept-text" data-check={check.kind}>
-        {text}
-      </span>
-    </Notice>
+    <div data-kept-notice>
+      <Notice tone="warning" testId={s === "paying" ? "create-kept-paying" : "create-kept-unsure"} action={action}>
+        <span data-testid="create-kept-text" data-check={s}>
+          {text}
+          {unknown && !kept.waiting && ` ${GovText.wentOn}`}
+        </span>
+      </Notice>
+    </div>
   );
 }
