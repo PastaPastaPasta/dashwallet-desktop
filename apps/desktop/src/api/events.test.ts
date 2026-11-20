@@ -15,7 +15,8 @@ import { FIXTURE_WALLET_ID } from "../fixture/scenarios";
 import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { mnKeys } from "../masternodes/queries";
-import { resetWalletGate, walletGateClosed } from "./lockGate";
+import { lockGeneration, lockUnconfirmed, resetWalletGate, seedLockStatus, walletGateClosed } from "./lockGate";
+import { beginCreate, keepsAnything, resetKeptCreate } from "../screens/masternodes/keptCreate";
 import { keys } from "./queries";
 import { IpcBackend } from "./tauri";
 
@@ -322,7 +323,7 @@ describe("event bridge", () => {
   it("looks up a payment that arrives while locked only at the unlock, for the bell, without a toast", async () => {
     resetReceived();
     const client = new QueryClient();
-    const lock = (state: LockStatus["state"]) => client.setQueryData<LockStatus>(keys.lockStatus, { ...LOCK, state });
+    const lock = (state: LockStatus["state"]) => seedLockStatus(client, { ...LOCK, state }, lockGeneration());
     lock("locked");
     let emit: (e: AppEvent) => void = () => undefined;
     const asked: string[][] = [];
@@ -355,7 +356,7 @@ describe("event bridge", () => {
   it("closes the gate on the lock event itself, before the status is read again, and drops the wallet's queries", async () => {
     resetReceived();
     const client = new QueryClient();
-    client.setQueryData<LockStatus>(keys.lockStatus, { ...LOCK, state: "unlocked" });
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
     client.setQueryData(keys.balance("w"), "32.04698287");
     let emit: (e: AppEvent) => void = () => undefined;
     const asked: string[][] = [];
@@ -375,17 +376,47 @@ describe("event bridge", () => {
     emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["a"], catchUp: false } as AppEvent);
     await new Promise((r) => setTimeout(r, 0));
     expect(asked).toEqual([]);
-    client.setQueryData<LockStatus>(keys.lockStatus, { ...LOCK, state: "unlocked" });
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
     await new Promise((r) => setTimeout(r, 0));
     expect(walletGateClosed()).toBe(false);
     expect(asked).toEqual([["a"]]);
     resetReceived();
   });
 
+  it("forgets a removed wallet's proposal attempts, every wallet's when the vault goes, and ends a confirmation with the bridge", async () => {
+    const client = new QueryClient();
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
+    let emit: (e: AppEvent) => void = () => undefined;
+    let statusReads = 0;
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      lockStatus: () => (statusReads++, new Promise(() => undefined)),
+    } as unknown as Backend;
+    const stop = await bridged(fake, client, "testnet");
+    const print = { name: "p", url: "https://example.org", paymentAddress: "y", paymentAmount: 1, paymentCount: 1, startEpoch: 0, endEpoch: 100 };
+    for (const w of ["w1", "w2", "w3"]) expect((await beginCreate(w, print, async () => [])).kind).toBe("go");
+    emit({ kind: "walletRemoved", network: "testnet", walletId: "w1" } as AppEvent);
+    expect([keepsAnything("w1"), keepsAnything("w2"), keepsAnything("w3")]).toEqual([false, true, true]);
+    emit({ kind: "vaultLockState", network: "testnet", state: "noVault" } as AppEvent);
+    expect([keepsAnything("w2"), keepsAnything("w3")]).toEqual([false, false]);
+    vi.useFakeTimers();
+    try {
+      emit({ kind: "eventsOverflowed", network: "testnet" } as AppEvent);
+      expect(statusReads).toBe(1);
+      expect(lockUnconfirmed()).toBe(true);
+      stop();
+      expect(lockUnconfirmed()).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      resetKeptCreate();
+    }
+  });
+
   it("drops the payments held for a removed wallet, and all of them on a network switch", async () => {
     resetReceived();
     const client = new QueryClient();
-    client.setQueryData<LockStatus>(keys.lockStatus, LOCK);
+    seedLockStatus(client, LOCK, lockGeneration());
     let emit: (e: AppEvent) => void = () => undefined;
     const asked: [string, string[]][] = [];
     const fake = {
@@ -397,13 +428,13 @@ describe("event bridge", () => {
     paid("w", "a");
     paid("v", "b");
     emit({ kind: "walletRemoved", network: "testnet", walletId: "v" } as AppEvent);
-    client.setQueryData<LockStatus>(keys.lockStatus, { ...LOCK, state: "unlocked" });
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
     await new Promise((r) => setTimeout(r, 0));
     expect(asked).toEqual([["w", ["a"]]]);
-    client.setQueryData<LockStatus>(keys.lockStatus, LOCK);
+    seedLockStatus(client, LOCK, lockGeneration());
     paid("w", "c");
     emit({ kind: "sessionClosed", network: "testnet" } as AppEvent);
-    client.setQueryData<LockStatus>(keys.lockStatus, { ...LOCK, state: "unlocked" });
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
     await new Promise((r) => setTimeout(r, 0));
     expect(asked).toHaveLength(1);
     resetReceived();
@@ -412,7 +443,7 @@ describe("event bridge", () => {
   it("drops the bell's payments on a lock and reads them again after the unlock, a lookup that answers locked recording nothing", async () => {
     resetReceived();
     const client = new QueryClient();
-    client.setQueryData<LockStatus>(keys.lockStatus, { ...LOCK, state: "unlocked" });
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
     let emit: (e: AppEvent) => void = () => undefined;
     const asked: string[][] = [];
     let slow: ((rows: TxNoticeRow[]) => void) | null = null;
@@ -428,7 +459,7 @@ describe("event bridge", () => {
     emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["a"], catchUp: false } as AppEvent);
     await new Promise((r) => setTimeout(r, 0));
     expect(receivedNow().map((p) => p.txid)).toEqual(["a"]);
-    const lock = (state: LockStatus["state"]) => client.setQueryData<LockStatus>(keys.lockStatus, { ...LOCK, state });
+    const lock = (state: LockStatus["state"]) => seedLockStatus(client, { ...LOCK, state }, lockGeneration());
     lock("locked");
     expect(receivedNow()).toEqual([]);
     // The unlock's lookup is slow, and the vault locks again before it answers.

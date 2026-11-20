@@ -17,10 +17,11 @@ import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
 import { HeldNews } from "../payments/heldNews";
 import { announceReceived, forgetReceived, LOOKUP_TIMEOUT_MS, sealReceived } from "../payments/received";
+import { forgetKeptCreate } from "../screens/masternodes/keptCreate";
 import { onMoveSettled } from "../platform/move";
 import { onRecoverySettled } from "../recovery/model";
 import { onShieldedSettled } from "../shielded/flow";
-import { closeWalletGate, confirmAgain, confirmLockState, followLockStatus, lockStateChanged, subscribeWalletGate, walletGateClosed } from "./lockGate";
+import { closeWalletGate, confirmLockState, disposeConfirm, followLockStatus, lockStateChanged, subscribeWalletGate, walletGateClosed } from "./lockGate";
 import { keys, scanHeightsStale } from "./queries";
 import { announceable, feedSync } from "./syncDisplay";
 
@@ -194,18 +195,18 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
       lockStateChanged();
       if (event.state === "locked") closeWalletGate(client);
     }
-    // Lost events may have held a lock: the gate closes until a status read says otherwise, and any
-    // other event reads a status still unconfirmed again at once.
-    if (event.kind === "eventsOverflowed") void confirmLockState(client, () => backend.lockStatus());
-    else confirmAgain();
+    // Lost events may have held a lock: the gate closes until a status read says otherwise.
+    if (event.kind === "eventsOverflowed") confirmLockState(client, () => backend.lockStatus());
     if (event.kind === "walletRemoved") {
       heldNews.drop(event.walletId);
       forgetReceived(event.walletId);
+      forgetKeptCreate(event.walletId);
     }
     if (event.kind === "sessionOpened" || event.kind === "sessionClosed" || (event.kind === "vaultLockState" && event.state === "noVault")) {
       heldNews.clear();
       forgetReceived();
     }
+    if (event.kind === "vaultLockState" && event.state === "noVault") forgetKeptCreate();
     // A notice's detail can name a wallet or an asset lock: not while locked.
     if (event.kind === "notice") console.warn("engine notice", event.code, ...(walletGateClosed() ? [] : [event.detail]));
     // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
@@ -289,6 +290,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
     stopReconcile();
     stopHeldNews();
     stopGate();
+    disposeConfirm();
     stopTopUps();
     stopWithdrawals();
     stopMoves();

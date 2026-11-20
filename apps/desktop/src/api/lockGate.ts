@@ -10,7 +10,14 @@
 // opening status or a lock's answer from before a newer change is never applied.
 //
 // A lost event queue may have held a lock, so it closes the gate as a lock does, and only a status
-// read that succeeds opens it again; a failed read is tried again, never taken as unlocked.
+// read that succeeds opens it again (`confirmLockState`):
+// - each read has a token and a deadline: a reply after its deadline, or to a read superseded, is
+//   ignored, and a failure or a deadline never opens the gate but schedules the next read, after a
+//   wait that doubles up to `CONFIRM_RETRY_MAX_MS`, which nothing cuts short;
+// - a status opens the gate only in the generation it was read in, checked in the same step that
+//   writes it and opens the gate; a status from before a change is read again;
+// - a newer loss while a read is under way is answered by a read begun after it, and the bridge
+//   that started the confirmation ends it with its timers (`disposeConfirm`).
 
 import { useSyncExternalStore } from "react";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
@@ -35,6 +42,8 @@ export function forgetWalletContent(client: QueryClient) {
 
 let closed = true;
 let generation = 0;
+/** The generation the cached status was read in: it opens the gate only while that is current. */
+let statusGeneration = -1;
 holdWalletToasts(true);
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((l) => l());
@@ -56,15 +65,20 @@ export async function freshLockStatus(read: () => Promise<LockStatus>): Promise<
   for (;;) {
     const since = generation;
     const status = await read();
-    if (since === generation) return status;
+    if (since === generation) {
+      statusGeneration = since;
+      return status;
+    }
   }
 }
 
 /** The network opened with `status`, read from generation `since`: it stands for the lock status
  * unless the state changed meanwhile, when the status is read again. */
 export function seedLockStatus(client: QueryClient, status: LockStatus, since: number) {
-  if (since === generation) client.setQueryData(keys.lockStatus, status);
-  else void client.invalidateQueries({ queryKey: keys.lockStatus });
+  if (since === generation) {
+    statusGeneration = since;
+    client.setQueryData(keys.lockStatus, status);
+  } else void client.invalidateQueries({ queryKey: keys.lockStatus });
 }
 
 export function subscribeWalletGate(l: () => void): () => void {
@@ -104,72 +118,93 @@ function openWalletGate() {
 /** The first wait before a failed confirming read is tried again, and the longest. */
 export const CONFIRM_RETRY_MS = 1_000;
 export const CONFIRM_RETRY_MAX_MS = 30_000;
+/** How long a confirming read may take before it counts as failed. */
+export const CONFIRM_DEADLINE_MS = 10_000;
 
 /** A lost event queue's status still to be read: how, and for which cache. */
-let unconfirmed: { client: QueryClient; read: () => Promise<LockStatus>; failures: number } | null = null;
-let confirming: Promise<void> | null = null;
+let confirmation: { client: QueryClient; read: () => Promise<LockStatus>; failures: number } | null = null;
+/** The read under way: its token, and the timer of its deadline. */
+let inflight: { token: number; deadline: ReturnType<typeof setTimeout> } | null = null;
 let retry: ReturnType<typeof setTimeout> | undefined;
+let tokens = 0;
 
 function endConfirm() {
-  unconfirmed = null;
+  confirmation = null;
+  if (inflight) clearTimeout(inflight.deadline);
+  inflight = null;
   clearTimeout(retry);
   retry = undefined;
 }
 
-function confirm(): Promise<void> {
-  clearTimeout(retry);
-  retry = undefined;
-  const pending = unconfirmed;
-  if (confirming || !pending) return confirming ?? Promise.resolve();
-  const done: Promise<void> = freshLockStatus(pending.read)
-    .then(
-      (status) => {
-        if (unconfirmed !== pending) return;
-        endConfirm();
-        pending.client.setQueryData(keys.lockStatus, status);
-        if (status.state === "locked") closeWalletGate(pending.client);
-        else openWalletGate();
-      },
-      () => {
-        if (unconfirmed !== pending) return;
-        pending.failures++;
-        retry = setTimeout(() => void confirm(), Math.min(CONFIRM_RETRY_MAX_MS, CONFIRM_RETRY_MS * 2 ** (pending.failures - 1)));
-      },
-    )
-    .finally(() => {
-      if (confirming === done) confirming = null;
-    });
-  confirming = done;
-  return done;
+function startRead() {
+  const c = confirmation;
+  if (!c || inflight || retry !== undefined) return;
+  const token = ++tokens;
+  const since = generation;
+  inflight = { token, deadline: setTimeout(() => finish(token, since, null), CONFIRM_DEADLINE_MS) };
+  let reply: Promise<LockStatus>;
+  try {
+    reply = c.read();
+  } catch {
+    reply = Promise.reject(new Error("lock status unreadable"));
+  }
+  reply.then(
+    (status) => finish(token, since, status),
+    () => finish(token, since, null),
+  );
+}
+
+/** Read `token`, begun in generation `since`, answered `status`, or failed or ran out of time. */
+function finish(token: number, since: number, status: LockStatus | null) {
+  if (inflight?.token !== token) return;
+  clearTimeout(inflight.deadline);
+  inflight = null;
+  const c = confirmation;
+  if (!c) return;
+  if (status && since === generation) {
+    endConfirm();
+    statusGeneration = since;
+    c.client.setQueryData(keys.lockStatus, status);
+    if (status.state === "locked") closeWalletGate(c.client);
+    else openWalletGate();
+  } else if (status) startRead();
+  else {
+    c.failures++;
+    retry = setTimeout(() => {
+      retry = undefined;
+      startRead();
+    }, Math.min(CONFIRM_RETRY_MAX_MS, CONFIRM_RETRY_MS * 2 ** (c.failures - 1)));
+  }
 }
 
 /** Events were lost, a lock among them perhaps: the gate closes as for a lock, and opens only once
- * a status read succeeds and says the vault is not locked. A failed read is tried again, after a
- * wait that doubles up to `CONFIRM_RETRY_MAX_MS`, or at once on the next event or refused command. */
-export function confirmLockState(client: QueryClient, read: () => Promise<LockStatus>): Promise<void> {
+ * a status read begun since succeeds and says the vault is not locked. */
+export function confirmLockState(client: QueryClient, read: () => Promise<LockStatus>) {
   closeWalletGate(client);
-  // A read under way began before this loss: `freshLockStatus` reads again for it.
-  if (unconfirmed) Object.assign(unconfirmed, { client, read });
-  else unconfirmed = { client, read, failures: 0 };
-  return confirm();
+  // A read under way began before this loss: its answer is from an older generation, so the next
+  // read starts when it ends.
+  if (confirmation) Object.assign(confirmation, { client, read });
+  else confirmation = { client, read, failures: 0 };
+  startRead();
 }
 
-/** Something happened (an event, a refused command): a status still unconfirmed is read now. */
-export function confirmAgain() {
-  if (unconfirmed && !confirming) void confirm();
+/** The bridge that confirms goes: its reads answer nothing and its timers stop. */
+export function disposeConfirm() {
+  endConfirm();
 }
 
 /** Whether a lost event queue's status is still to be read. */
-export const lockUnconfirmed = (): boolean => unconfirmed !== null;
+export const lockUnconfirmed = (): boolean => confirmation !== null;
 
-/** Keeps the gate on the cached lock status: it opens only once a status read says the vault is
- * not locked. Returns the unsubscribe. */
+/** Keeps the gate on the cached lock status: it opens only once a status read in the current
+ * generation says the vault is not locked; an older one is read again. Returns the unsubscribe. */
 export function followLockStatus(client: QueryClient): () => void {
   const apply = () => {
     const status = client.getQueryData<LockStatus>(keys.lockStatus);
     if (!status) return;
     if (status.state === "locked") closeWalletGate(client);
-    else openWalletGate();
+    else if (statusGeneration === generation) openWalletGate();
+    else void client.invalidateQueries({ queryKey: keys.lockStatus });
   };
   apply();
   return client.getQueryCache().subscribe((e) => {
@@ -213,7 +248,7 @@ export const refusedWhileLocked = (e: unknown): boolean => e === LOCKED;
 const UNGUARDED = Symbol("unguarded");
 
 /** `backend`, refusing every command outside `LOCKED_COMMANDS` while the gate is closed, without
- * asking the engine. A refused command reads a status still unconfirmed again. */
+ * asking the engine. */
 export function guardWhileLocked<B extends Backend>(backend: B): B {
   return new Proxy(backend, {
     get(target, prop, receiver) {
@@ -221,9 +256,7 @@ export function guardWhileLocked<B extends Backend>(backend: B): B {
       const value = Reflect.get(target, prop, receiver);
       if (typeof value !== "function" || typeof prop !== "string" || NOT_COMMANDS.has(prop) || LOCKED_COMMANDS.has(prop)) return value;
       return (...args: unknown[]) => {
-        if (!closed) return value.apply(target, args);
-        confirmAgain();
-        return Promise.reject(LOCKED);
+        return closed ? Promise.reject(LOCKED) : value.apply(target, args);
       };
     },
   });
@@ -239,7 +272,7 @@ export async function walletNamesForRecovery(backend: Backend): Promise<{ wallet
 export function resetWalletGate(closedNow = false) {
   closed = closedNow;
   endConfirm();
-  confirming = null;
+  statusGeneration = generation;
   holdWalletToasts(closedNow);
   notify();
 }
