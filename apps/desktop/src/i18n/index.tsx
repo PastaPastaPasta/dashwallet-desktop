@@ -4,7 +4,7 @@
 
 import { Fragment, useLayoutEffect, useMemo, type ReactNode } from "react";
 import { ui, useUi } from "../app/ui";
-import { build, fill, flatten, pluralForm, pseudoCatalog, type At, type KeyOf, type Message, type ParamNames, type TagNames } from "./core";
+import { build, fill, flatten, own, pluralForm, pseudoCatalog, renderTag, type At, type KeyOf, type Message, type Params, type ParamNames, type TagNames } from "./core";
 import { en } from "./en";
 
 export type { Catalog } from "./core";
@@ -91,12 +91,12 @@ export function formatLocale(base: string | undefined, choice: string | null = u
   return own !== undefined && primary(own) === primary(chosen.tag) ? base : chosen.tag;
 }
 
-type Args<K extends Key> = [ParamNames<At<typeof en, K>>] extends [never] ? [] : [values: Record<ParamNames<At<typeof en, K>>, string | number>];
-type RichArgs<K extends Key> = [values: Record<ParamNames<At<typeof en, K>>, ReactNode> & Record<TagNames<At<typeof en, K>>, (children: ReactNode) => ReactNode>];
+type Args<K extends Key> = [ParamNames<At<typeof en, K>>] extends [never] ? [] : [values: Params<At<typeof en, K>, string | number>];
+type RichArgs<K extends Key> = [values: Params<At<typeof en, K>, ReactNode> & Record<TagNames<At<typeof en, K>>, (children: ReactNode) => ReactNode>];
 
 function lookup(language: Language, key: string, values: Record<string, unknown>): string {
   const message = language.messages.get(key) ?? english.get(key) ?? key;
-  return pluralForm(message, values.count, language.tag);
+  return pluralForm(message, own(values, "count"), language.tag);
 }
 
 function translate(language: Language, locale: string | undefined, key: string, values: Record<string, unknown> = {}): string {
@@ -104,10 +104,7 @@ function translate(language: Language, locale: string | undefined, key: string, 
 }
 
 function translateRich(language: Language, locale: string | undefined, key: string, values: Record<string, unknown>): ReactNode {
-  const parts = build<ReactNode>(lookup(language, key, values), values, { locale, isolate: language.dir === "rtl" }, (tag, children) => {
-    const render = values[tag];
-    return typeof render === "function" ? (render as (c: ReactNode) => ReactNode)(children) : children;
-  });
+  const parts = build<ReactNode>(lookup(language, key, values), values, { locale, isolate: language.dir === "rtl" }, (tag, children) => renderTag<ReactNode>(values, tag, children) as ReactNode);
   return parts.map((p, i) => <Fragment key={i}>{p}</Fragment>);
 }
 

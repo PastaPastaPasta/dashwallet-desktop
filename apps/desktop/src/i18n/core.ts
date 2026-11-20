@@ -36,6 +36,8 @@ type Texts<M> = M extends string ? M : M extends Plural ? NonNullable<M[keyof Pl
 export type ParamNames<M> = Placeholders<Texts<M>> | (M extends Plural ? "count" : never);
 /** The tags a rich-text message wraps text in. */
 export type TagNames<M> = Tags<Texts<M>>;
+/** The values a message takes, each of type `V`; a plural's `count` is a number. */
+export type Params<M, V> = { [P in ParamNames<M>]: P extends "count" ? (M extends Plural ? number : V) : V };
 
 /** Another language's catalog: any of English's keys, no other (an extra or mistyped key fails
  * `tsc`); a missing key falls back to English. */
@@ -51,6 +53,11 @@ export function flatten(tree: Tree, prefix = "", into = new Map<string, Message>
 }
 
 export type Values = Record<string, unknown>;
+
+/** The value given for `name`: an own property of `values`, never an inherited one. */
+export function own(values: Values, name: string): unknown {
+  return Object.prototype.hasOwnProperty.call(values, name) ? values[name] : undefined;
+}
 
 /** The form of `message` for `count` in `language`. */
 export function pluralForm(message: Message, count: unknown, language: string): string {
@@ -88,13 +95,21 @@ export interface Fill {
 /** `message` with its placeholders filled. Tags are dropped, their text kept. */
 export function fill(message: string, values: Values, how: Fill): string {
   return tokenize(message)
-    .map((t) => (t.kind === "text" ? t.text : t.kind === "param" ? show(values[t.name], how) : ""))
+    .map((t) => (t.kind === "text" ? t.text : t.kind === "param" ? show(own(values, t.name), how) : ""))
     .join("");
 }
 
 export function show(value: unknown, { locale, isolate }: Fill): string {
   const text = typeof value === "number" ? new Intl.NumberFormat(locale).format(value) : String(value ?? "");
   return isolate ? `\u2068${text}\u2069` : text;
+}
+
+/** Wraps a tag's children with the renderer given for it: an own property of `values` that is a
+ * function. Any other tag (an inherited name such as `constructor`, or none given) keeps its
+ * children unwrapped. */
+export function renderTag<N>(values: Values, tag: string, children: (N | string)[]): N | (N | string)[] {
+  const render = own(values, tag);
+  return typeof render === "function" ? (render as (c: (N | string)[]) => N)(children) : children;
 }
 
 /** A rich-text message as a tree: text, filled placeholders, and each tag's children handed to
@@ -105,7 +120,7 @@ export function build<N>(message: string, values: Values, how: Fill, wrap: (tag:
     const top = stack[stack.length - 1];
     if (t.kind === "text") top.children.push(t.text);
     else if (t.kind === "param") {
-      const v = values[t.name];
+      const v = own(values, t.name);
       top.children.push(typeof v === "string" || typeof v === "number" || v === undefined || v === null ? show(v, how) : (v as N));
     } else if (t.kind === "open") stack.push({ tag: t.tag, children: [] });
     else if (stack.length > 1 && top.tag === t.tag) {

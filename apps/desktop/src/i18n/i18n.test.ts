@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { DEFAULT_PREFS, ui } from "../app/ui";
-import { build, fill, flatten, pluralForm, pseudoCatalog, tokenize, type Catalog } from "./core";
+import { build, fill, flatten, pluralForm, pseudoCatalog, renderTag, tokenize, type Catalog } from "./core";
 import { en } from "./en";
 import { formatLocale, isComplete, LANGUAGES, resolveLanguage, systemLanguage, t, type Language } from "./index";
 
@@ -64,6 +64,18 @@ describe("t", () => {
     ]);
   });
 
+  it("finds tag renderers and values among own properties only", () => {
+    const wrap = (values: Record<string, unknown>) => (tag: string, c: string[]) => {
+      const r = renderTag<string>(values, tag, c);
+      return Array.isArray(r) ? r.join("") : r;
+    };
+    const inherited = Object.create({ link: (c: string[]) => `[link:${c.join("")}]` }) as Record<string, unknown>;
+    expect(build<string>("<link>open</link> <constructor>x</constructor>", inherited, { locale: "en", isolate: false }, wrap(inherited)).join("")).toBe("open x");
+    const given = { link: (c: string[]) => `[link:${c.join("")}]` };
+    expect(build<string>("<link>open</link>", given, { locale: "en", isolate: false }, wrap(given)).join("")).toBe("[link:open]");
+    expect(fill("{toString}|{constructor}", {}, { locale: "en", isolate: false })).toBe("|");
+  });
+
   it("types keys and parameters from the English catalog", () => {
     // @ts-expect-error: not a key
     expect(t("shell.status.nope")).toBe("shell.status.nope");
@@ -71,6 +83,8 @@ describe("t", () => {
     t("network.confirmTitle");
     // @ts-expect-error: a plural takes `count`
     t("shell.status.peers", {});
+    // @ts-expect-error: a plural's `count` is a number
+    expect(t("shell.status.peers", { count: "1" })).toBe("1 peers");
     // @ts-expect-error: no placeholder named `who`
     t("network.confirmTitle", { who: "x" });
     const ok: Catalog<typeof en> = { shell: { status: { synced: "Synkd", peers: { one: "a", other: "b" } } } };
