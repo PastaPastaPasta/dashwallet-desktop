@@ -927,16 +927,19 @@ pub(crate) const ISSUED_SETTING: &str = "bip44.legacy_issued";
 
 impl NetworkSession {
     /// Derives account 0's receive and change chains up to the last address
-    /// Core derived on each, marks it used and keeps the gap past it. The
-    /// two counters are not one lookahead, and either can be past the
-    /// largest gap limit.
+    /// Core derived on each and keeps the gap past it. The two counters are
+    /// not one lookahead, and either can be past the largest gap limit.
+    /// Core may have handed out any address below its counter, so each one
+    /// not yet paid is held reserved: no receive or change address is picked
+    /// below the counter, and none is reported used before a payment marks
+    /// it. A reservation stamped 0 never expires.
     pub(crate) async fn cover_issued(
         &self,
         manager: &crate::session::Manager,
         id: WalletId,
         (external, internal): (u32, u32),
     ) -> Result<(), EngineError> {
-        use key_wallet::managed_account::address_pool::AddressPoolType;
+        use key_wallet::managed_account::address_pool::{AddressPoolType, AddressState};
         let unsupported = || {
             EngineError::from(CompatFailure::UnsupportedFormat(
                 "HD account 0 cannot be restored".into(),
@@ -968,7 +971,12 @@ impl NetworkSession {
             };
             pool.generate_up_to(last, &key)
                 .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
-            pool.mark_index_used(last);
+            for info in pool.addresses.range_mut(..=last).map(|(_, info)| info) {
+                if info.is_available() {
+                    info.state = AddressState::Reserved { at: 0 };
+                }
+            }
+            pool.highest_used = pool.highest_used.max(Some(last));
             pool.maintain_gap_limit(&key)
                 .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
         }
@@ -1474,6 +1482,65 @@ mod tests {
         );
         assert!(created.0.lock().unwrap().is_empty());
         assert!(has_no_core_rows(&s, id));
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// After a legacy import, and after a reload, neither the receive nor
+    /// the change address the wallet picks is one Core may have handed out
+    /// (below its counter on that chain); none of them is reported used
+    /// without a payment, and the whole derived range plus the gap is
+    /// still watched.
+    #[test]
+    fn core_issued_addresses_are_not_handed_out_again() {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let (_dir, engine, s, _created) = regtest_session();
+        let id = import(&engine, &s, "bdb_wide_range.dat");
+        let (external, internal) = (1001, 2);
+        let check = |s: &Arc<NetworkSession>| {
+            let current = engine.block_on(s.current_receive_address(id)).unwrap();
+            assert!(current.index >= external, "{current:?}");
+            let issued = engine.block_on(s.next_receive_address(id, None)).unwrap();
+            assert!(issued.index >= external, "{issued:?}");
+            let (change, watched) = engine.block_on(async {
+                let manager = s.manager().unwrap();
+                let wallet = manager.get_wallet(&id.0).await.unwrap();
+                let change = wallet
+                    .core()
+                    .next_change_address_for_account(0)
+                    .await
+                    .unwrap();
+                let wm = manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                let watched = (wm.get_wallet_info(&id.0).unwrap().core_wallet)
+                    .monitored_addresses()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<std::collections::HashSet<_>>();
+                (change.to_string(), watched)
+            });
+            let addresses = addresses_of(&engine, s, id);
+            let change = addresses.iter().find(|a| a.address == change).unwrap();
+            assert_eq!(change.chain, AddressChain::Change);
+            assert!(change.index >= internal, "{change:?}");
+            assert!(
+                addresses.iter().all(|a| !a.used),
+                "an address reported used without a payment"
+            );
+            for (chain, counter) in [
+                (AddressChain::Receiving, external),
+                (AddressChain::Change, internal),
+            ] {
+                let derived: Vec<_> = (addresses.iter())
+                    .filter(|a| a.chain == chain && a.index < counter)
+                    .collect();
+                assert_eq!(derived.len(), counter as usize, "{chain:?}");
+                assert!(derived.iter().all(|a| watched.contains(&a.address)));
+                assert!(highest(&addresses, chain) >= counter - 1 + CORE_COMPAT_LOOKAHEAD);
+            }
+        };
+        check(&s);
+        let s = reopen(&engine, s);
+        check(&s);
         engine.block_on(engine.shutdown()).unwrap();
     }
 
