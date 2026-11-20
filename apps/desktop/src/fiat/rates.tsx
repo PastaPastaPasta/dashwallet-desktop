@@ -6,6 +6,8 @@ import { useQuery } from "@tanstack/react-query";
 import type { RatesView } from "../api/generated/RatesView";
 import { keys, useBackend } from "../api/queries";
 import { fiatText } from "../format/fiat";
+import { messageTable, t } from "../i18n";
+import { en } from "../i18n/en";
 
 export function useRates() {
   const b = useBackend();
@@ -50,7 +52,7 @@ export function useFiat(): Fiat {
     view,
     shown: rate !== null,
     stale: rate?.stale ?? false,
-    staleTitle: rate?.stale ? `Price from ${time}, may be out of date` : undefined,
+    staleTitle: rate?.stale ? t("rates.staleTitle", { time }) : undefined,
     text: (duffs) => (rate && typeof duffs === "number" ? fiatText(duffs, rate.price, rate.currency, b.locale) : null),
   };
 }
@@ -75,44 +77,41 @@ export function ratesNote(view: RatesView | undefined): { text: string; tone: "c
     case "off":
       return null;
     case "fresh":
-      return view.volatile ? { text: "Prices moved more than 50% since the last update.", tone: "caution" } : null;
+      return view.volatile ? { text: t("rates.movedHalf"), tone: "caution" } : null;
     case "stale":
-      return { text: "Prices are over 30 minutes old.", tone: "caution" };
+      return { text: t("rates.overHalfHour"), tone: "caution" };
     case "unavailable":
-      return { text: "Prices unavailable", tone: "quiet", title: UNAVAILABLE_TEXT[view.state.reason] };
+      return { text: t("rates.unavailable"), tone: "quiet", title: UNAVAILABLE_TEXT[view.state.reason] };
   }
 }
 
-export const UNAVAILABLE_TEXT: Record<Extract<RatesView["state"], { kind: "unavailable" }>["reason"], string> = {
-  neverFetched: "Prices have not been fetched yet.",
-  failed: "Prices could not be fetched. The wallet tries again in a few minutes.",
-  expired: "The last prices are over 24 hours old, so none are shown.",
-  noCurrency: "Choose a local currency in Settings ▸ General.",
-  currencyMissing: "There is no price for the chosen currency. Choose another in Settings ▸ General.",
-};
+type UnavailableReason = Extract<RatesView["state"], { kind: "unavailable" }>["reason"];
+export const UNAVAILABLE_TEXT: Readonly<Record<UnavailableReason, string>> = messageTable(
+  "rates.reason",
+  Object.keys(en.rates.reason satisfies Record<UnavailableReason, string>) as UnavailableReason[],
+);
 
-const SOURCE_TEXT = { ctx: "rates.ctx.com", bitPayDashCentral: "BitPay and DashCentral" } as const;
+const SOURCE_NAME = { ctx: "rates.ctx.com", bitPayDashCentral: null } as const;
+const sourceText = (source: keyof typeof SOURCE_NAME) => SOURCE_NAME[source] ?? t("rates.sourceFallback");
 
-const TEST_ONLY_TEXT = "Test coins have no price: prices are fetched only while Mainnet is open.";
 
 /** The status line: when the shown price is from, or why there is none. */
 export function ratesStatusText(view: RatesView, locale: string | undefined): string | null {
-  const failed = view.lastAttemptFailed && view.lastAttemptAt !== null ? `Last update failed at ${timeText(view.lastAttemptAt, locale)}.` : null;
+  const failed = view.lastAttemptFailed && view.lastAttemptAt !== null ? t("rates.lastFailed", { time: timeText(view.lastAttemptAt, locale) }) : null;
   switch (view.state.kind) {
     case "off":
-      return view.state.reason === "notMainnet" ? TEST_ONLY_TEXT : null;
+      return view.state.reason === "notMainnet" ? t("rates.testOnly") : null;
     case "unavailable":
       return UNAVAILABLE_TEXT[view.state.reason];
     case "fresh":
     case "stale": {
       const r = view.rate!;
-      const from = `Updated ${timeText(r.rateAt, locale)} from ${SOURCE_TEXT[r.source]}.`;
-      const stale = view.state.kind === "stale" ? " Prices are over 30 minutes old." : "";
-      return [from + stale, failed].filter(Boolean).join(" ");
+      const from = t("rates.updated", { time: timeText(r.rateAt, locale), source: sourceText(r.source) });
+      const stale = view.state.kind === "stale" ? t("rates.overHalfHour") : null;
+      return [from, stale, failed].filter(Boolean).join(" ");
     }
   }
 }
 
 /** The disclosure, word for word, wherever it is shown (onboarding, Home's card, Settings). */
-export const RATES_DISCLOSURE =
-  "The wallet asks rates.ctx.com for DASH prices about every 5 minutes, and BitPay and DashCentral when it cannot reach it. No address, balance or transaction is sent; the requests show these services your IP address, the time, and that a Dash wallet is running.";
+export const RATES_DISCLOSURE = en.rates.disclosure;

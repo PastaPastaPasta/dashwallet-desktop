@@ -119,7 +119,7 @@ describe("fixture contact payment", () => {
       W,
       PASS,
     );
-    const lease = await cmd.beginFlow(W, "acceptAndPay", grants.map((g) => g.id));
+    const lease = await cmd.beginFlow(W, "acceptAndPay", grants.map((g) => g.id), null);
     expect(await cmd.dashpayAcceptRequest(W, ME, IDENTITY.grace, lease)).toMatchObject({ kind: "established" });
     const p = await cmd.draftPrepare(d, lease);
     expect(p.summary.outputs[0]).toMatchObject({ isMine: false, amount: 1_000_000 });
@@ -131,14 +131,32 @@ describe("fixture contact payment", () => {
     expect(await refusal(cmd.draftPrepare(d, lease))).toMatchObject({ code: "send.grant_invalid" });
   });
 
+  it("takes the payment's source in begin_flow: core as today, other balances off, grants kept", async () => {
+    const quote = await cmd.grantRequest(W, ME, { kind: "acceptRequest" });
+    const grants = await cmd.authorizeSet(
+      [
+        { kind: "platformOp", maxDuffs: quote.maxDuffs, maxCredits: quote.maxCredits },
+        { kind: "spend", maxDuffs: 10_000_000 },
+      ],
+      W,
+      PASS,
+    );
+    const ids = grants.map((g) => g.id);
+    expect(await refusal(cmd.beginFlow(W, "acceptAndPay", ids, "shielded"))).toMatchObject({ code: "platform.feature_off", data: { feature: "shielded_contact_payment" } });
+    expect(await refusal(cmd.beginFlow(W, "contactPayFromBalance", [], "platform"))).toMatchObject({ code: "platform.feature_off", data: { feature: "platform_contact_payment" } });
+    expect(await refusal(cmd.beginFlow(W, "contactPayFromBalance", [], null))).toMatchObject({ code: "invalid_argument" });
+    expect(await refusal(cmd.beginFlow(W, "contactPayment", [ids[1]], "core"))).toMatchObject({ code: "invalid_argument" });
+    await cmd.endFlow(await cmd.beginFlow(W, "acceptAndPay", ids, "core"));
+  });
+
   it("refuses a lease of another flow, and a revoked one is cancelled", async () => {
     const d = await draftFor(to("bob"));
     const quote = await cmd.grantRequest(W, ME, { kind: "acceptRequest" });
     const [op] = await cmd.authorizeSet([{ kind: "platformOp", maxDuffs: quote.maxDuffs, maxCredits: quote.maxCredits }], W, PASS);
-    const accept = await cmd.beginFlow(W, "accept", [op.id]);
+    const accept = await cmd.beginFlow(W, "accept", [op.id], null);
     expect(await refusal(cmd.draftPrepare(d, accept))).toMatchObject({ code: "send.grant_invalid" });
     const [spend] = await cmd.authorizeSet([{ kind: "spend", maxDuffs: 10_000_000 }], W, PASS);
-    const pay = await cmd.beginFlow(W, "contactPayment", [spend.id]);
+    const pay = await cmd.beginFlow(W, "contactPayment", [spend.id], null);
     await cmd.lock();
     await cmd.unlock(FIXTURE_PASSPHRASE);
     expect(await refusal(cmd.draftPrepare(d, pay))).toMatchObject({ code: "send.cancelled" });

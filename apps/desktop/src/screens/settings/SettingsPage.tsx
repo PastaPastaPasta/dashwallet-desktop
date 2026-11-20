@@ -3,6 +3,7 @@
 
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { ui, useUi, type SettingsTab } from "../../app/ui";
+import { useT } from "../../i18n";
 import { Page, Tabs, type Tab } from "../Routes";
 import { AboutTab } from "./About";
 import { BackupsTab } from "./Backups";
@@ -12,21 +13,15 @@ import { AdvancedTab } from "./Identities";
 import { SecurityTab } from "./Security";
 import { WalletsTab } from "./Wallets";
 
-const SETTINGS_TABS: Tab<SettingsTab>[] = [
-  { id: "general", title: "General" },
-  { id: "security", title: "Security" },
-  { id: "wallets", title: "Wallets" },
-  { id: "coinjoin", title: "CoinJoin (experimental)" },
-  { id: "backups", title: "Backups" },
-  { id: "advanced", title: "Advanced" },
-  { id: "about", title: "About" },
-];
+const SETTINGS_TABS: SettingsTab[] = ["general", "security", "wallets", "coinjoin", "backups", "advanced", "about"];
 
 export function SettingsPage({ network }: { network: NetworkInfo }) {
+  const t = useT();
   const tab = useUi((s) => s.settingsTab);
+  const tabs: Tab<SettingsTab>[] = SETTINGS_TABS.map((id) => ({ id, title: t(`settings.tabs.${id}`) }));
   return (
     <Page route="settings">
-      <Tabs label="Settings" tabs={SETTINGS_TABS} current={tab} onSelect={(settingsTab) => ui.set({ settingsTab })} testId="settings-tabs">
+      <Tabs label={t("routes.settings")} tabs={tabs} current={tab} onSelect={(settingsTab) => ui.set({ settingsTab })} testId="settings-tabs">
         {tab === "general" && <GeneralTab />}
         {tab === "security" && <SecurityTab />}
         {tab === "wallets" && <WalletsTab />}
