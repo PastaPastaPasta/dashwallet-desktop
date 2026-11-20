@@ -739,6 +739,34 @@ fn a_lease_does_not_compose_window_grants_past_the_spend_limit() {
     f.lease(FlowKind::AcceptAndPay, &[platform, typed]).unwrap();
 }
 
+/// A lease made from signing-window grants keeps the signers it issued
+/// when the window ends: they run to the lease's own caps and lifetime.
+/// Window grants not yet in a lease end with the window.
+#[test]
+fn a_lease_from_window_grants_outlives_the_window() {
+    let f = fixture(true);
+    f.credit(1, COIN);
+    let spend = |max_duffs| f.grant(GrantPurpose::Spend { max_duffs }, Credential::None);
+    let grants = [f.platform_op(0, 1_000), spend(5_000_000)];
+    let unused = [f.platform_op(0, 1_000), spend(1_000_000)];
+    let l = f.lease(FlowKind::AcceptAndPay, &grants).unwrap();
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            v.end_signing_window();
+            Ok(())
+        }))
+        .unwrap();
+
+    let d = f.draft(1_000_000);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    assert!(spend_of(&l).unwrap() > 1_000_000);
+    f.engine.block_on(d.abandon(p)).unwrap();
+    assert_eq!(
+        f.lease(FlowKind::AcceptAndPay, &unused).unwrap_err(),
+        LeaseError::Invalid
+    );
+}
+
 #[test]
 fn a_txdraft_under_a_lease_is_charged_fenced_and_refunded() {
     let f = fixture(false);

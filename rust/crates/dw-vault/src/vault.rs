@@ -418,6 +418,8 @@ enum TokenBinding {
     OtherVault,
     /// Redeemed by this vault before its epoch last changed.
     EndedEpoch,
+    /// Redeemed from a signing window that has ended since.
+    EndedWindow,
 }
 
 /// Wall and monotonic clocks at one look. A suspend that freezes the
@@ -467,6 +469,7 @@ fn window_allowed(inner: &Inner) -> bool {
 }
 
 fn clear_signing_window(inner: &mut Inner) {
+    inner.window_generation = inner.window_generation.wrapping_add(1);
     inner.signing_deadline = None;
     inner.window_charged = 0;
     inner.sleep_sample = None;
@@ -565,6 +568,9 @@ struct Inner {
     /// The vault id the host said uses the signing window. Any other vault,
     /// one made by a recovery included, has none until the host says so.
     window_vault: Option<Vec<u8>>,
+    /// Which signing window is open: changes whenever one ends or opens,
+    /// so a token redeemed from an earlier one is refused.
+    window_generation: u64,
     #[cfg(test)]
     gate_log: Option<Vec<GateEvent>>,
 }
@@ -715,6 +721,7 @@ impl Vault {
                     window_charged: 0,
                     sleep_sample: None,
                     window_vault: None,
+                    window_generation: 0,
                     #[cfg(test)]
                     gate_log: None,
                 }),
@@ -1708,6 +1715,7 @@ impl Vault {
             wallet: issued.grant.wallet,
             vault_instance: self.shared.instance,
             epoch: inner.epoch,
+            window: issued.from_window.then_some(inner.window_generation),
             key: issued
                 .key
                 .map_or(KeySource::Vault, |key| KeySource::Own(Arc::new(key))),
@@ -1851,26 +1859,36 @@ impl Vault {
     /// vault (even one with the same wallet id and epoch number) and of an
     /// earlier opening of this vault's file; the epoch refuses a token
     /// redeemed before a lock, unlock, scope or passphrase change of this one.
+    /// A token from the signing window is refused once that window has
+    /// ended (its deadline passed, or it was closed).
     fn token_binding(&self, inner: &Inner, token: &GrantToken) -> TokenBinding {
         let same_vault = self.shared.instance.ct_eq(&token.vault_instance);
         let same_epoch = inner.epoch.ct_eq(&token.epoch);
+        let window_ended = token.window.is_some_and(|window| {
+            window != inner.window_generation
+                || inner
+                    .signing_deadline
+                    .is_none_or(|deadline| self.clock_mono() >= deadline)
+        });
         if !bool::from(same_vault) {
             TokenBinding::OtherVault
         } else if !bool::from(same_epoch) {
             TokenBinding::EndedEpoch
+        } else if window_ended {
+            TokenBinding::EndedWindow
         } else {
             TokenBinding::Current
         }
     }
 
     /// `token`'s binding as the error its use is refused with:
-    /// `GrantInvalid` for a token of another vault, `Locked` for one whose
-    /// epoch has ended (a lock, unlock, scope change or passphrase change
-    /// since redemption).
+    /// `GrantInvalid` for a token of another vault or of an ended signing
+    /// window, `Locked` for one whose epoch has ended (a lock, unlock, scope
+    /// change or passphrase change since redemption).
     fn token_current(&self, inner: &Inner, token: &GrantToken) -> Result<(), VaultError> {
         match self.token_binding(inner, token) {
             TokenBinding::Current => Ok(()),
-            TokenBinding::OtherVault => Err(VaultError::GrantInvalid),
+            TokenBinding::OtherVault | TokenBinding::EndedWindow => Err(VaultError::GrantInvalid),
             TokenBinding::EndedEpoch => Err(VaultError::Locked),
         }
     }
@@ -2695,7 +2713,8 @@ impl Vault {
         if matches!(token.key, KeySource::Vault) {
             self.full_dek()?;
         }
-        let inner = self.inner();
+        let mut inner = self.inner();
+        settle_window(&mut inner, self.clock_mono());
         if self.token_binding(&inner, token) != TokenBinding::Current {
             return Err(VaultError::GrantInvalid);
         }

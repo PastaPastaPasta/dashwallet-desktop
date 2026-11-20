@@ -5,11 +5,14 @@
 mod common;
 
 use common::*;
+use std::str::FromStr;
 use std::sync::Arc;
+
+use key_wallet::bip32::DerivationPath;
 
 use dw_vault::{
     Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, LockState,
-    SIGNING_WINDOW_SECS, UnlockScope, VaultError,
+    SIGNING_WINDOW_SECS, UnlockScope, VaultError, WalletSigner,
 };
 
 fn spend(max_duffs: u64) -> GrantPurpose {
@@ -570,4 +573,63 @@ fn only_the_payment_in_a_mixed_set_is_the_windows() {
     );
     v.check_grant(&ids[1], GrantKind::IdentityScan, Some(&w))
         .unwrap();
+}
+
+/// A token redeemed from the window issues no signer once that window has
+/// ended: at its deadline, when it is closed, or when an unlock opens a new
+/// one. A signer it issued before then runs to its own limits, and a
+/// passphrase token is not bound to the window.
+#[tokio::test]
+async fn a_window_token_does_not_outlive_its_window() {
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    let bip44 = DerivationPath::from_str("m/44'/1'/0'/0/0").unwrap();
+    let redeem = |credential| {
+        let grant = v.authorize(spend(1), Some(&w), credential).unwrap();
+        v.redeem_grant(&grant.id, GrantKind::Spend, Some(&w))
+            .unwrap()
+    };
+
+    let started = redeem(Credential::None);
+    let signer = v.signer(&w, &started).unwrap();
+    let waiting = redeem(Credential::None);
+    let typed = redeem(Credential::Passphrase(PASS));
+    fx.clock.advance(SIGNING_WINDOW_SECS);
+    assert_eq!(
+        v.signer(&w, &waiting).map(drop),
+        Err(VaultError::GrantInvalid)
+    );
+    assert_eq!(
+        v.signer(&w, &started).map(drop),
+        Err(VaultError::GrantInvalid)
+    );
+    signer.sign_message(&bip44, b"m").await.unwrap();
+    v.signer(&w, &typed)
+        .unwrap()
+        .sign_message(&bip44, b"m")
+        .await
+        .unwrap();
+
+    let id = v.vault_id().unwrap();
+    for close in 0..3 {
+        v.unlock(PASS, UnlockScope::Full).unwrap();
+        let waiting = redeem(Credential::None);
+        match close {
+            0 => v.end_signing_window(),
+            1 => {
+                v.set_signing_window_allowed(&id, false);
+                v.set_signing_window_allowed(&id, true);
+            }
+            _ => {
+                v.unlock(PASS, UnlockScope::Full).unwrap();
+                assert!(v.signing_window_open());
+            }
+        }
+        assert_eq!(
+            v.signer(&w, &waiting).map(drop),
+            Err(VaultError::GrantInvalid),
+            "case {close}"
+        );
+    }
 }

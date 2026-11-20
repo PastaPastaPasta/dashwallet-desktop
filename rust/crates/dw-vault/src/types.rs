@@ -255,7 +255,9 @@ pub struct AuthGrant {
 /// vault, so holding one means the authorization check passed. Bound to
 /// the vault that redeemed it: another vault, or the same vault file
 /// opened again, refuses it (review DW-E0-03 r2 M1). Valid until that
-/// vault locks, changes unlock scope or changes its passphrase.
+/// vault locks, changes unlock scope or changes its passphrase; a token
+/// from a signing-window grant also ends with its window. A signer it
+/// issued before then runs to its own limits.
 pub struct GrantToken {
     pub(crate) purpose: GrantPurpose,
     pub(crate) wallet: Option<WalletId>,
@@ -263,6 +265,8 @@ pub struct GrantToken {
     pub(crate) vault_instance: [u8; 32],
     /// That vault's epoch at redemption.
     pub(crate) epoch: u64,
+    /// The signing window a credential-free grant came from.
+    pub(crate) window: Option<u64>,
     /// Which data key the token acts with.
     pub(crate) key: KeySource,
     /// Set when the token first issues a signer and never cleared: such a
