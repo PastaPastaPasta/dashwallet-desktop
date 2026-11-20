@@ -2851,20 +2851,22 @@ export function refreshRates(): Promise<RatesView> {
 }
 
 /**
- * Whether this copy can update itself, its version, and where this
- * run is in finding and installing an update. Fetches nothing.
+ * Whether this copy can update itself, and where this run is in
+ * finding and installing an update. Fetches nothing.
  */
 export function updateStatus(): Promise<UpdateStatus> {
   return invoke<UpdateStatus>("update_status");
 }
 
 /**
- * Asks the stable feed for a newer release: the user's "Check for
- * updates", or the automatic check they turned on. The request carries
- * no wallet data and no identifier. `app.updates_unavailable` when this
- * copy cannot update itself, `app.update_check` when the feed cannot be
- * read (the status stays as it was). While an install is under way it
- * fetches nothing.
+ * Asks the stable feed for a newer release, for at most 30 s: the
+ * user's "Check for updates", or the automatic check they turned on.
+ * The request carries no wallet data and no identifier.
+ * `app.updates_unavailable` when this copy cannot update itself,
+ * `app.update_not_published` when the Latest release has no feed,
+ * `app.update_check` when the feed cannot be reached or read (the
+ * status stays as it was). While an install is under way it fetches
+ * nothing.
  */
 export function checkForUpdate(): Promise<UpdateStatus> {
   return invoke<UpdateStatus>("check_for_update");
@@ -2874,10 +2876,13 @@ export function checkForUpdate(): Promise<UpdateStatus> {
  * Downloads the offered `version`, checks its signature and puts it in
  * place; the app runs it after `restart_to_update`. On Windows the
  * installer replaces the running app: the engine is shut down as on
- * quit, the app closes and the installer opens the new one.
- * `app.update_state` when `version` is not the one on offer;
- * `app.update_signature` when the signature does not verify (nothing is
- * installed); `app.update_download` or `app.update_install` otherwise.
+ * quit, the app closes and the installer opens the new one; if the
+ * installer then fails, the phase is `restartRequired`.
+ * `app.update_busy` while something runs that this would cut
+ * ([`refuse_while_busy`]); `app.update_state` when `version` is not
+ * the one on offer; `app.update_signature` when the signature does not
+ * verify (nothing is installed); `app.update_download` or
+ * `app.update_install` otherwise.
  */
 export function installUpdate(version: string): Promise<UpdateStatus> {
   return invoke<UpdateStatus>("install_update", { version });
@@ -2885,19 +2890,12 @@ export function installUpdate(version: string): Promise<UpdateStatus> {
 
 /**
  * Quits through the normal exit path (the engine flushes and closes)
- * and starts the installed update. `app.update_state` before an update
- * is installed.
+ * and starts the installed update, or restarts after a failed Windows
+ * install (`restartRequired`). `app.update_busy` as for
+ * `install_update`; `app.update_state` before an update is installed.
  */
 export function restartToUpdate(): Promise<null> {
   return invoke<null>("restart_to_update");
-}
-
-/**
- * Opens the release notes of the update on offer in the system browser.
- * Only that release's page on this repository may be opened.
- */
-export function openUpdateNotes(): Promise<null> {
-  return invoke<null>("open_update_notes");
 }
 
 /**
@@ -3280,7 +3278,6 @@ export type CommandArgs = {
   check_for_update: {  };
   install_update: { version: string };
   restart_to_update: {  };
-  open_update_notes: {  };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -3615,7 +3612,6 @@ export type CommandResults = {
   check_for_update: UpdateStatus;
   install_update: UpdateStatus;
   restart_to_update: null;
-  open_update_notes: null;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -3952,7 +3948,6 @@ export const COMMANDS: Record<CommandName, string> = {
   check_for_update: "updates",
   install_update: "updates",
   restart_to_update: "updates",
-  open_update_notes: "updates",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -3986,10 +3981,12 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.browser_open",
   "app.updates_unavailable",
   "app.update_check",
+  "app.update_not_published",
   "app.update_download",
   "app.update_signature",
   "app.update_install",
   "app.update_state",
+  "app.update_busy",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

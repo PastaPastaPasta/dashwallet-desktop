@@ -3,4 +3,4 @@
 /**
  * Where this run is in finding and installing an update.
  */
-export type UpdatePhase = { "kind": "idle" } | { "kind": "checking" } | { "kind": "upToDate", checkedAt: number, } | { "kind": "found", version: string, } | { "kind": "downloading", version: string, received: number, total: number | null, } | { "kind": "installing", version: string, } | { "kind": "installed", version: string, };
+export type UpdatePhase = { "kind": "idle" } | { "kind": "checking" } | { "kind": "upToDate" } | { "kind": "found", version: string, } | { "kind": "downloading", version: string, received: number, total: number | null, } | { "kind": "installing", version: string, } | { "kind": "installed", version: string, } | { "kind": "restartRequired", version: string, };

@@ -1,33 +1,12 @@
-//! Updates from the signed GitHub Releases feed (PK-03), off unless the
-//! build, the install and the user all allow them.
-//!
-//! - The build: only a build made with the updater signing key has the feed.
-//!   release.yml merges `tauri.updater.conf.json` (the feed URL, and
-//!   `bundle.createUpdaterArtifacts`) only when the key secret exists, and
-//!   the public key in `tauri.conf.json` is [`PUBKEY_PLACEHOLDER`] until the
-//!   release key exists ([`build_has_updater`]). Without both, the plugin is
-//!   not even registered.
-//! - The install: a Flatpak updates through Flatpak, and a .deb or .rpm
-//!   through the system's package manager ([`availability`]).
-//! - The user: nothing is fetched until the renderer asks, either from
-//!   "Check for updates" or from the automatic check the user turned on in
-//!   Settings (`UiSettings::check_updates_automatically`, off by default).
-//!
-//! A found update is only shown. It is downloaded, its signature checked
-//! and installed when the user clicks Install, and the app restarts when the
-//! user clicks Restart, through the quit path (`RunEvent::Exit` flushes and
-//! closes the engine). On Windows the installer has to replace the running
-//! app, so Install closes it, after the same engine shutdown.
-//!
-//! Only stable releases are offered, and only newer ones ([`is_offered`]);
-//! the signature must name the version the feed announced
-//! (`requireSignedVersion`), so an old signed build cannot be relabelled.
-//! The request carries no wallet data and no identifier: the static feed
-//! URL, the plugin's user agent and an `Accept` header.
+//! Opt-in updates from the signed GitHub Releases feed (PK-03). The build,
+//! the install and the user each have to allow them: docs/release/updater.md.
 
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use semver::Version;
 use serde::Serialize;
@@ -37,7 +16,6 @@ use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_updater::UpdaterExt;
 use ts_rs::TS;
 
-use crate::api::app::RELEASES_URL;
 use crate::error::{AppCode, AppError};
 
 /// The stable channel's feed: the `latest.json` of the newest full release.
@@ -49,6 +27,10 @@ pub const FEED_URL: &str =
 /// exists (docs/release/updater.md): a build with it has no updater.
 pub const PUBKEY_PLACEHOLDER: &str =
     "UPDATER-DISABLED: replace with the release public key (docs/release/updater.md)";
+
+/// How long a check may take, and a download may go without data.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_IDLE: Duration = Duration::from_secs(60);
 
 /// Whether this copy of the app can update itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -64,6 +46,9 @@ pub enum UpdateAvailability {
     /// Not run from an installed bundle (a development build, an extracted
     /// AppImage).
     NotInstalled,
+    /// A macOS app run from its disk image or a translocated path, which it
+    /// cannot replace: it has to be moved to Applications first.
+    MoveToApplications,
 }
 
 /// What [`availability`] needs to know about the running copy.
@@ -73,6 +58,8 @@ pub struct Install {
     pub bundle: Option<BundleType>,
     /// Run as an AppImage (`$APPIMAGE` names the file the update replaces).
     pub appimage: bool,
+    /// A macOS app that cannot replace itself where it runs ([`movable_only`]).
+    pub read_only: bool,
 }
 
 impl Install {
@@ -84,10 +71,13 @@ impl Install {
             let _ = app;
             false
         };
+        let read_only = cfg!(target_os = "macos")
+            && std::env::current_exe().is_ok_and(|exe| movable_only(&exe));
         Install {
             flatpak: is_flatpak(),
             bundle: tauri::utils::platform::bundle_type(),
             appimage,
+            read_only,
         }
     }
 }
@@ -97,6 +87,13 @@ fn is_flatpak() -> bool {
     cfg!(target_os = "linux")
         && (std::path::Path::new("/.flatpak-info").exists()
             || std::env::var_os("FLATPAK_ID").is_some())
+}
+
+/// A macOS executable that Gatekeeper translocated, or that runs from a
+/// mounted volume such as the disk image.
+pub fn movable_only(exe: &Path) -> bool {
+    let path = exe.to_string_lossy();
+    path.contains("/AppTranslocation/") || path.starts_with("/Volumes/")
 }
 
 /// The build has the updater: a real public key, the official feed as its
@@ -132,6 +129,7 @@ pub fn availability(config: &tauri::Config, install: &Install) -> UpdateAvailabi
     match install.bundle {
         Some(BundleType::Deb | BundleType::Rpm) => A::PackageManager,
         Some(BundleType::AppImage) if install.appimage => A::Available,
+        Some(BundleType::App) if install.read_only => A::MoveToApplications,
         Some(BundleType::Nsis | BundleType::App) => A::Available,
         _ => A::NotInstalled,
     }
@@ -150,11 +148,6 @@ pub fn plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R, tauri_plugin_update
         .build()
 }
 
-/// The page of a release's notes.
-pub fn notes_url(version: &str) -> String {
-    format!("{RELEASES_URL}/tag/v{version}")
-}
-
 /// Where this run is in finding and installing an update.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(
@@ -166,10 +159,8 @@ pub enum UpdatePhase {
     /// Nothing checked yet in this run.
     Idle,
     Checking,
-    /// The last check found nothing newer, at `checked_at` (UNIX seconds).
-    UpToDate {
-        checked_at: u64,
-    },
+    /// The last check found nothing newer.
+    UpToDate,
     /// A newer stable release, not downloaded.
     Found {
         version: String,
@@ -188,6 +179,11 @@ pub enum UpdatePhase {
     Installed {
         version: String,
     },
+    /// The engine was shut down for the Windows installer, which then failed
+    /// to start: only a restart brings the wallets back.
+    RestartRequired {
+        version: String,
+    },
 }
 
 /// `update_status`: what Settings shows.
@@ -195,7 +191,6 @@ pub enum UpdatePhase {
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
     pub availability: UpdateAvailability,
-    pub current_version: String,
     pub phase: UpdatePhase,
 }
 
@@ -228,6 +223,9 @@ pub struct Updates {
     current_version: String,
     feed: Option<Box<dyn Feed>>,
     state: Mutex<Session>,
+    engine_closed: AtomicBool,
+    check_timeout: Duration,
+    download_idle: Duration,
 }
 
 struct Session {
@@ -250,15 +248,33 @@ impl Updates {
                 phase: UpdatePhase::Idle,
                 release: None,
             }),
+            engine_closed: AtomicBool::new(false),
+            check_timeout: CHECK_TIMEOUT,
+            download_idle: DOWNLOAD_IDLE,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_timeouts(mut self, check: Duration, download_idle: Duration) -> Self {
+        self.check_timeout = check;
+        self.download_idle = download_idle;
+        self
     }
 
     /// The app's: the plugin's feed when this copy can update itself.
     pub fn for_app<R: Runtime>(app: &AppHandle<R>) -> Self {
         let availability = availability(app.config(), &Install::current(app));
-        let feed = (availability == UpdateAvailability::Available)
-            .then(|| Box::new(PluginFeed { app: app.clone() }) as Box<dyn Feed>);
-        Self::new(availability, app.package_info().version.to_string(), feed)
+        let feed = PluginFeed { app: app.clone() };
+        Self::new(
+            availability,
+            app.package_info().version.to_string(),
+            Some(Box::new(feed)),
+        )
+    }
+
+    /// The version the feed is compared with, which About shows too.
+    pub fn current_version(&self) -> &str {
+        &self.current_version
     }
 
     fn session(&self) -> std::sync::MutexGuard<'_, Session> {
@@ -266,14 +282,18 @@ impl Updates {
     }
 
     pub fn status(&self) -> UpdateStatus {
+        self.status_of(&self.session())
+    }
+
+    fn status_of(&self, s: &Session) -> UpdateStatus {
         UpdateStatus {
             availability: self.availability,
-            current_version: self.current_version.clone(),
-            phase: self.session().phase.clone(),
+            phase: s.phase.clone(),
         }
     }
 
-    fn feed(&self) -> Result<&dyn Feed, AppError> {
+    /// `app.updates_unavailable` when this copy cannot update itself.
+    pub(crate) fn feed(&self) -> Result<&dyn Feed, AppError> {
         self.feed.as_deref().ok_or_else(|| {
             AppError::app(
                 AppCode::UpdatesUnavailable,
@@ -282,21 +302,28 @@ impl Updates {
         })
     }
 
-    /// Asks the feed once. While a check, download or install is under way,
-    /// or once an update is installed, it fetches nothing and returns the
-    /// status. A failed check leaves the status as it was.
+    /// Asks the feed once, for at most 30 s. While a check, download or
+    /// install is under way, or once an update is installed, it fetches
+    /// nothing and returns the status. A failed check leaves the status as
+    /// it was.
     pub async fn check(&self) -> Result<UpdateStatus, AppError> {
         let feed = self.feed()?;
-        let (prev_phase, prev_release) = {
+        let prev = {
             let mut s = self.session();
             match s.phase {
-                UpdatePhase::Idle | UpdatePhase::UpToDate { .. } | UpdatePhase::Found { .. } => {}
+                UpdatePhase::Idle | UpdatePhase::UpToDate | UpdatePhase::Found { .. } => {}
                 _ => return Ok(self.status_of(&s)),
             }
-            let prev = std::mem::replace(&mut s.phase, UpdatePhase::Checking);
-            (prev, s.release.clone())
+            std::mem::replace(&mut s.phase, UpdatePhase::Checking)
         };
-        let found = feed.check().await;
+        let found = tokio::time::timeout(self.check_timeout, feed.check())
+            .await
+            .unwrap_or_else(|_| {
+                Err(AppError::app(
+                    AppCode::UpdateCheck,
+                    "the update check timed out",
+                ))
+            });
         let mut s = self.session();
         match found {
             Ok(Some(release)) => {
@@ -306,31 +333,21 @@ impl Updates {
                 s.release = Some(release);
             }
             Ok(None) => {
-                s.phase = UpdatePhase::UpToDate {
-                    checked_at: unix_now(),
-                };
+                s.phase = UpdatePhase::UpToDate;
                 s.release = None;
             }
             Err(e) => {
-                s.phase = prev_phase;
-                s.release = prev_release;
+                s.phase = prev;
                 return Err(e);
             }
         }
         Ok(self.status_of(&s))
     }
 
-    fn status_of(&self, s: &Session) -> UpdateStatus {
-        UpdateStatus {
-            availability: self.availability,
-            current_version: self.current_version.clone(),
-            phase: s.phase.clone(),
-        }
-    }
-
     /// Downloads, verifies and installs the offered `version`: the one the
     /// user saw. Refuses `app.update_state` when no update, or another
-    /// version, is on offer, or one is already being installed.
+    /// version, is on offer, or one is already being installed. A download
+    /// that receives nothing for 60 s fails with `app.update_download`.
     pub async fn install(&self, version: &str) -> Result<UpdateStatus, AppError> {
         self.feed()?;
         let release = {
@@ -348,23 +365,28 @@ impl Updates {
                 (phase, _) => return Err(state_error(format!("install {version} in {phase:?}"))),
             }
         };
-        let back_to_found = |e: AppError| {
-            self.session().phase = UpdatePhase::Found {
-                version: version.into(),
+        let failed = |e: AppError| {
+            let version = version.into();
+            self.session().phase = if self.engine_closed.load(Ordering::SeqCst) {
+                UpdatePhase::RestartRequired { version }
+            } else {
+                UpdatePhase::Found { version }
             };
             e
         };
+        let last_data = Mutex::new(Instant::now());
         let progress = |received: u64, total: Option<u64>| {
-            let mut s = self.session();
-            if let UpdatePhase::Downloading { .. } = s.phase {
-                s.phase = UpdatePhase::Downloading {
-                    version: version.into(),
-                    received,
-                    total,
-                };
-            }
+            *last_data.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+            self.session().phase = UpdatePhase::Downloading {
+                version: version.into(),
+                received,
+                total,
+            };
         };
-        let bytes = release.download(&progress).await.map_err(back_to_found)?;
+        let bytes = self
+            .unless_idle(release.download(&progress), &last_data)
+            .await
+            .map_err(failed)?;
         self.session().phase = UpdatePhase::Installing {
             version: version.into(),
         };
@@ -373,7 +395,7 @@ impl Updates {
             .await
             .map_err(|e| AppError::app(AppCode::UpdateInstall, e.to_string()))
             .and_then(|r| r)
-            .map_err(back_to_found)?;
+            .map_err(failed)?;
         let mut s = self.session();
         s.phase = UpdatePhase::Installed {
             version: version.into(),
@@ -381,40 +403,57 @@ impl Updates {
         Ok(self.status_of(&s))
     }
 
-    /// Restarts into the installed update; `app.update_state` before one is.
+    /// `download`, unless no data arrives for `download_idle`.
+    async fn unless_idle<T>(
+        &self,
+        download: impl Future<Output = Result<T, AppError>>,
+        last_data: &Mutex<Instant>,
+    ) -> Result<T, AppError> {
+        tokio::pin!(download);
+        loop {
+            let quiet = last_data
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .elapsed();
+            let Some(wait) = self
+                .download_idle
+                .checked_sub(quiet)
+                .filter(|w| !w.is_zero())
+            else {
+                return Err(AppError::app(
+                    AppCode::UpdateDownload,
+                    "the download stalled",
+                ));
+            };
+            tokio::select! {
+                done = &mut download => return done,
+                _ = tokio::time::sleep(wait) => {}
+            }
+        }
+    }
+
+    /// The Windows installer's hook ran: the engine is shut down.
+    pub(crate) fn engine_closed(&self) {
+        self.engine_closed.store(true, Ordering::SeqCst);
+    }
+
+    /// Restarts into the installed update, or after a failed Windows install
+    /// shut the engine down; `app.update_state` otherwise.
     pub fn restart(&self) -> Result<(), AppError> {
         let feed = self.feed()?;
         let phase = self.session().phase.clone();
         match phase {
-            UpdatePhase::Installed { .. } => {
+            UpdatePhase::Installed { .. } | UpdatePhase::RestartRequired { .. } => {
                 feed.restart();
                 Ok(())
             }
             phase => Err(state_error(format!("restart in {phase:?}"))),
         }
     }
-
-    /// The notes page of the update on offer or installed.
-    pub fn notes_url(&self) -> Result<String, AppError> {
-        match &self.session().phase {
-            UpdatePhase::Found { version }
-            | UpdatePhase::Downloading { version, .. }
-            | UpdatePhase::Installing { version }
-            | UpdatePhase::Installed { version } => Ok(notes_url(version)),
-            phase => Err(state_error(format!("notes in {phase:?}"))),
-        }
-    }
 }
 
 fn state_error(message: String) -> AppError {
     AppError::app(AppCode::UpdateState, message)
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default()
 }
 
 /// The feed as the plugin reads it.
@@ -427,11 +466,13 @@ impl<R: Runtime> PluginFeed<R> {
         let app = self.app.clone();
         self.app
             .updater_builder()
+            .timeout(CHECK_TIMEOUT)
             .on_before_exit(move || {
-                if let Some(state) = app.try_state::<crate::state::AppState>()
-                    && let Err(e) = tauri::async_runtime::block_on(state.shutdown_engine())
-                {
-                    eprintln!("dash-wallet: engine shutdown before the update: {e}");
+                if let Some(state) = app.try_state::<crate::state::AppState>() {
+                    state.updates.engine_closed();
+                    if let Err(e) = tauri::async_runtime::block_on(state.shutdown_engine()) {
+                        eprintln!("dash-wallet: engine shutdown before the update: {e}");
+                    }
                 }
                 app.cleanup_before_exit();
             })
@@ -442,8 +483,7 @@ impl<R: Runtime> PluginFeed<R> {
 impl<R: Runtime> Feed for PluginFeed<R> {
     fn check(&self) -> BoxFuture<'_, Result<Option<Arc<dyn Release>>, AppError>> {
         Box::pin(async move {
-            let check =
-                |e: tauri_plugin_updater::Error| AppError::app(AppCode::UpdateCheck, e.to_string());
+            let check = |e| plugin_error(e, AppCode::UpdateCheck);
             let update = self
                 .updater()
                 .map_err(check)?
@@ -459,8 +499,10 @@ impl<R: Runtime> Feed for PluginFeed<R> {
     }
 }
 
-/// A signature that does not verify, or names another version, is
-/// `app.update_signature`; anything else is `otherwise`.
+/// A signature that does not verify, or names another version or none, is
+/// `app.update_signature`; a feed that answers without a release (a Latest
+/// release with no `latest.json`) is `app.update_not_published`; anything
+/// else is `otherwise`.
 pub(crate) fn plugin_error(e: tauri_plugin_updater::Error, otherwise: AppCode) -> AppError {
     use tauri_plugin_updater::Error as E;
     let code = match e {
@@ -469,6 +511,7 @@ pub(crate) fn plugin_error(e: tauri_plugin_updater::Error, otherwise: AppCode) -
         | E::SignatureUtf8(_)
         | E::SignedVersionMismatch { .. }
         | E::MissingSignedVersion => AppCode::UpdateSignature,
+        E::ReleaseNotFound => AppCode::UpdateNotPublished,
         _ => otherwise,
     };
     AppError::app(code, e.to_string())

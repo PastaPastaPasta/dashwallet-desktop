@@ -1,4 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::io::{Read as _, Write as _};
+use std::sync::atomic::AtomicUsize;
 
 use base64::Engine as _;
 use serde_json::json;
@@ -7,8 +8,8 @@ use tauri_plugin_updater::UpdaterExt;
 
 use super::*;
 
-fn conf(text: &str) -> tauri::Config {
-    serde_json::from_str(text).unwrap()
+fn conf(value: &serde_json::Value) -> tauri::Config {
+    serde_json::from_value(value.clone()).unwrap()
 }
 
 fn shipped() -> serde_json::Value {
@@ -31,11 +32,21 @@ fn merge(base: &mut serde_json::Value, patch: &serde_json::Value) {
     }
 }
 
+/// The shipped config as a build with the signing key has it: the overlay
+/// merged, and `pubkey` in place of the placeholder.
+fn keyed(pubkey: &str) -> serde_json::Value {
+    let mut merged = shipped();
+    merge(&mut merged, &overlay());
+    merged["plugins"]["updater"]["pubkey"] = json!(pubkey);
+    merged
+}
+
 fn installed(bundle: Option<BundleType>) -> Install {
     Install {
         flatpak: false,
         bundle,
         appimage: true,
+        read_only: false,
     }
 }
 
@@ -66,9 +77,13 @@ impl TestKey {
     }
 
     /// A feed entry's `signature`: the .sig file, base64, with the trusted
-    /// comment the Tauri CLI writes.
-    fn sign(&self, bytes: &[u8], version: &str) -> String {
-        let comment = format!("timestamp:1790000000\tfile:payload\tversion:{version}");
+    /// comment the Tauri CLI writes (`version` `None`: an older CLI's, which
+    /// names no version).
+    fn sign_as(&self, bytes: &[u8], version: Option<&str>) -> String {
+        let comment = match version {
+            Some(v) => format!("timestamp:1790000000\tfile:payload\tversion:{v}"),
+            None => "timestamp:1790000000\tfile:payload".into(),
+        };
         let sig = minisign::sign(
             Some(&self.0.pk),
             &self.0.sk,
@@ -78,6 +93,10 @@ impl TestKey {
         )
         .unwrap();
         base64::engine::general_purpose::STANDARD.encode(sig.to_string())
+    }
+
+    fn sign(&self, bytes: &[u8], version: &str) -> String {
+        self.sign_as(bytes, Some(version))
     }
 }
 
@@ -90,7 +109,6 @@ fn the_shipped_build_has_no_updater() {
     let pubkey = shipped["plugins"]["updater"]["pubkey"].as_str().unwrap();
     assert!(!pubkey.trim().is_empty());
     assert_eq!(shipped["plugins"]["updater"]["endpoints"], json!([]));
-    assert_eq!(shipped["plugins"]["updater"]["requireSignedVersion"], true);
     assert!(shipped["bundle"].get("createUpdaterArtifacts").is_none());
     for pubkey in [
         json!(pubkey),
@@ -99,7 +117,7 @@ fn the_shipped_build_has_no_updater() {
     ] {
         let mut c = shipped.clone();
         c["plugins"]["updater"]["pubkey"] = pubkey;
-        let config = conf(&c.to_string());
+        let config = conf(&c);
         assert!(!build_has_updater(&config));
         for bundle in EVERY_BUNDLE {
             assert_eq!(
@@ -119,25 +137,30 @@ fn the_key_overlay_adds_the_stable_feed_and_the_artifacts() {
         json!([FEED_URL])
     );
     assert!(overlay["plugins"]["updater"].get("pubkey").is_none());
-    let mut merged = shipped();
-    merge(&mut merged, &overlay);
-    // The overlay with the placeholder: still off.
-    merged["plugins"]["updater"]["pubkey"] = json!(PUBKEY_PLACEHOLDER);
-    assert!(!build_has_updater(&conf(&merged.to_string())));
-    // With a release key in place of the placeholder, the build has it.
-    merged["plugins"]["updater"]["pubkey"] = json!(TestKey::new().pubkey());
-    assert!(build_has_updater(&conf(&merged.to_string())));
+    assert!(!build_has_updater(&conf(&keyed(PUBKEY_PLACEHOLDER))));
+    assert!(build_has_updater(&conf(&keyed(&TestKey::new().pubkey()))));
+}
+
+/// The flag the plugin itself reads from the shipped config with the
+/// overlay: signatures must name the version the feed announces.
+#[test]
+fn a_keyed_build_requires_signed_versions() {
+    let keyed = keyed(&TestKey::new().pubkey());
+    let config: tauri_plugin_updater::Config =
+        serde_json::from_value(keyed["plugins"]["updater"].clone()).unwrap();
+    assert!(config.require_signed_version);
+    assert!(!config.dangerous_insecure_transport_protocol);
+    assert_eq!(config.endpoints.len(), 1);
+    assert_eq!(config.endpoints[0].as_str(), FEED_URL);
 }
 
 #[test]
 fn only_the_official_feed_with_signed_versions_counts() {
-    let mut merged = shipped();
-    merge(&mut merged, &overlay());
-    merged["plugins"]["updater"]["pubkey"] = json!(TestKey::new().pubkey());
+    let merged = keyed(&TestKey::new().pubkey());
     let with = |path: &str, value: serde_json::Value| {
         let mut c = merged.clone();
         c["plugins"]["updater"][path] = value;
-        build_has_updater(&conf(&c.to_string()))
+        build_has_updater(&conf(&c))
     };
     assert!(!with(
         "endpoints",
@@ -149,20 +172,23 @@ fn only_the_official_feed_with_signed_versions_counts() {
     ));
     assert!(!with("requireSignedVersion", json!(false)));
     assert!(!with("pubkey", json!(" ")));
+    let mut dropped = merged.clone();
+    dropped["plugins"]["updater"]
+        .as_object_mut()
+        .unwrap()
+        .remove("requireSignedVersion");
+    assert!(!build_has_updater(&conf(&dropped)));
     let mut no_plugin = merged.clone();
     no_plugin["plugins"]
         .as_object_mut()
         .unwrap()
         .remove("updater");
-    assert!(!build_has_updater(&conf(&no_plugin.to_string())));
+    assert!(!build_has_updater(&conf(&no_plugin)));
 }
 
 #[test]
 fn the_install_decides_in_a_build_with_the_updater() {
-    let mut merged = shipped();
-    merge(&mut merged, &overlay());
-    merged["plugins"]["updater"]["pubkey"] = json!(TestKey::new().pubkey());
-    let config = conf(&merged.to_string());
+    let config = conf(&keyed(&TestKey::new().pubkey()));
     let of = |install: Install| availability(&config, &install);
     use UpdateAvailability as A;
     assert_eq!(of(installed(Some(BundleType::AppImage))), A::Available);
@@ -179,14 +205,34 @@ fn the_install_decides_in_a_build_with_the_updater() {
         }),
         A::NotInstalled
     );
+    assert_eq!(
+        of(Install {
+            read_only: true,
+            ..installed(Some(BundleType::App))
+        }),
+        A::MoveToApplications
+    );
+}
+
+#[test]
+fn a_mac_app_on_the_disk_image_or_translocated_cannot_replace_itself() {
+    for exe in [
+        "/Volumes/Dash Wallet/Dash Wallet.app/Contents/MacOS/dash-wallet",
+        "/private/var/folders/x1/abc/T/AppTranslocation/0A1B2C/d/Dash Wallet.app/Contents/MacOS/dash-wallet",
+    ] {
+        assert!(movable_only(Path::new(exe)), "{exe}");
+    }
+    for exe in [
+        "/Applications/Dash Wallet.app/Contents/MacOS/dash-wallet",
+        "/Users/me/Applications/Dash Wallet.app/Contents/MacOS/dash-wallet",
+    ] {
+        assert!(!movable_only(Path::new(exe)), "{exe}");
+    }
 }
 
 #[test]
 fn a_flatpak_never_updates_itself() {
-    let mut merged = shipped();
-    merge(&mut merged, &overlay());
-    merged["plugins"]["updater"]["pubkey"] = json!(TestKey::new().pubkey());
-    for config in [conf(&merged.to_string()), conf(&shipped().to_string())] {
+    for config in [conf(&keyed(&TestKey::new().pubkey())), conf(&shipped())] {
         for bundle in EVERY_BUNDLE {
             let install = Install {
                 flatpak: true,
@@ -211,44 +257,34 @@ fn only_newer_stable_releases_are_offered() {
     assert!(is_offered(&v("0.7.0-rc.1"), &v("0.7.0")));
 }
 
-#[test]
-fn notes_open_the_release_page_of_the_tag() {
-    assert_eq!(
-        notes_url("0.6.0"),
-        "https://github.com/PastaPastaPasta/dashwallet-desktop/releases/tag/v0.6.0"
-    );
-}
-
-/// The app with the updater plugin, as a build with the release key has
-/// it, `pubkey` being the test key's.
+/// The app with the updater plugin, configured as the shipped config with
+/// the overlay, the test key in place of the release key.
 fn app_with_updater(pubkey: &str) -> tauri::App<MockRuntime> {
     let mut context = mock_context(noop_assets());
     context.config_mut().plugins.0.insert(
         "updater".into(),
-        json!({
-            "pubkey": pubkey,
-            "endpoints": [FEED_URL],
-            "requireSignedVersion": true,
-        }),
+        keyed(pubkey)["plugins"]["updater"].clone(),
     );
     assert!(build_has_updater(context.config()));
     mock_builder().plugin(plugin()).build(context).expect("app")
 }
 
-/// A `latest.json` with one entry for this system.
-fn feed(version: &str, signature: &str) -> serde_json::Value {
+/// A `latest.json` with one entry for this system, its package at `url`.
+fn feed_at(version: &str, signature: &str, url: &str) -> serde_json::Value {
     let target = tauri_plugin_updater::target().expect("an updater target");
     json!({
         "version": version,
         "notes": "See the release page.",
         "pub_date": "2026-11-29T00:00:00Z",
-        "platforms": {
-            target: {
-                "url": format!("https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/v{version}/payload"),
-                "signature": signature,
-            }
-        }
+        "platforms": { target: { "url": url, "signature": signature } }
     })
+}
+
+fn feed(version: &str, signature: &str) -> serde_json::Value {
+    let url = format!(
+        "https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/v{version}/payload"
+    );
+    feed_at(version, signature, &url)
 }
 
 /// The feed entry as the plugin reads it, with no request made.
@@ -262,6 +298,57 @@ fn offered(
         .unwrap()
         .restore_update(feed)
         .unwrap()
+}
+
+/// A loopback HTTP server that answers each path `files` gives (with the
+/// server's base URL) with its body, and anything else with 404: the real
+/// check and download, off the network.
+fn serve(files: impl FnOnce(&str) -> Vec<(&'static str, Vec<u8>)>) -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let files = files(&base);
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let line = String::from_utf8_lossy(&request);
+            let path = line.split_whitespace().nth(1).unwrap_or_default();
+            let (status, body) = match files.iter().find(|(p, _)| *p == path) {
+                Some((_, body)) => ("200 OK", body.clone()),
+                None => ("404 Not Found", Vec::new()),
+            };
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(&body);
+        }
+    });
+    base
+}
+
+/// The app's check of a feed at `base`, as a keyed build makes it, then
+/// the download of what it offers.
+fn check_and_download(
+    app: &tauri::App<MockRuntime>,
+    base: &str,
+) -> Result<Vec<u8>, tauri_plugin_updater::Error> {
+    let endpoint = format!("{base}/latest.json").parse().unwrap();
+    let update = run(app
+        .updater_builder()
+        .endpoints(vec![endpoint])?
+        .no_proxy()
+        .build()?
+        .check())?
+    .expect("the feed offers an update");
+    run(update.download(|_, _| {}, || {}))
 }
 
 const PAYLOAD: &[u8] = b"the 0.2.0 AppImage";
@@ -297,20 +384,60 @@ fn a_bad_signature_is_refused() {
     assert_eq!(code(e), "app.update_signature");
 }
 
+/// Through the app's own check and download, configured as shipped: a
+/// signature of the announced version installs; an old signed build
+/// relabelled as new, or a signature that names no version, does not.
 #[test]
-fn an_old_signed_build_relabelled_as_new_is_refused() {
+fn the_configured_check_binds_the_signed_version() {
     let key = TestKey::new();
     let app = app_with_updater(&key.pubkey());
-    // A genuine signature of 0.1.0, announced as 0.2.0: a downgrade in disguise.
-    let update = offered(&app, feed("0.2.0", &key.sign(PAYLOAD, "0.1.0"))).unwrap();
-    let e = update.verify(PAYLOAD).unwrap_err();
+    let at = |signature: String| {
+        let base = serve(|base| {
+            let latest = feed_at("0.2.0", &signature, &format!("{base}/payload"));
+            vec![
+                ("/latest.json", latest.to_string().into_bytes()),
+                ("/payload", PAYLOAD.to_vec()),
+            ]
+        });
+        check_and_download(&app, &base)
+    };
+    assert_eq!(at(key.sign(PAYLOAD, "0.2.0")).unwrap(), PAYLOAD);
+    let relabelled = at(key.sign(PAYLOAD, "0.1.0")).unwrap_err();
     assert!(
-        matches!(e, tauri_plugin_updater::Error::SignedVersionMismatch { .. }),
+        matches!(
+            relabelled,
+            tauri_plugin_updater::Error::SignedVersionMismatch { .. }
+        ),
+        "{relabelled}"
+    );
+    let unversioned = at(key.sign_as(PAYLOAD, None)).unwrap_err();
+    assert!(
+        matches!(
+            unversioned,
+            tauri_plugin_updater::Error::MissingSignedVersion
+        ),
+        "{unversioned}"
+    );
+    for e in [relabelled, unversioned] {
+        assert_eq!(
+            plugin_error(e, AppCode::UpdateInstall).code_str(),
+            "app.update_signature"
+        );
+    }
+}
+
+/// A Latest release without `latest.json` answers 404: not "unreachable".
+#[test]
+fn a_feed_that_is_not_published_says_so() {
+    let app = app_with_updater(&TestKey::new().pubkey());
+    let e = check_and_download(&app, &serve(|_| vec![])).unwrap_err();
+    assert!(
+        matches!(e, tauri_plugin_updater::Error::ReleaseNotFound),
         "{e}"
     );
     assert_eq!(
-        plugin_error(e, AppCode::UpdateInstall).code_str(),
-        "app.update_signature"
+        plugin_error(e, AppCode::UpdateCheck).code_str(),
+        "app.update_not_published"
     );
 }
 
@@ -326,7 +453,8 @@ fn a_downgrade_or_a_pre_release_is_not_offered() {
 
 type Answer = Result<Option<Arc<dyn Release>>, AppError>;
 
-/// A feed that answers from a script and counts what it is asked.
+/// A feed that answers from a script and counts what it is asked; with no
+/// answer left it never answers.
 #[derive(Default)]
 struct FakeFeed {
     answers: Mutex<Vec<Answer>>,
@@ -337,7 +465,11 @@ struct FakeFeed {
 impl Feed for Arc<FakeFeed> {
     fn check(&self) -> BoxFuture<'_, Answer> {
         self.checks.fetch_add(1, Ordering::SeqCst);
-        let answer = self.answers.lock().unwrap().remove(0);
+        let mut answers = self.answers.lock().unwrap();
+        if answers.is_empty() {
+            return Box::pin(std::future::pending());
+        }
+        let answer = answers.remove(0);
         Box::pin(async move { answer })
     }
 
@@ -346,9 +478,12 @@ impl Feed for Arc<FakeFeed> {
     }
 }
 
+#[derive(Default)]
 struct FakeRelease {
     version: &'static str,
-    download: Result<(), AppCode>,
+    download: Option<AppCode>,
+    stalls: bool,
+    install: Option<AppCode>,
     installs: AtomicUsize,
 }
 
@@ -356,8 +491,7 @@ impl FakeRelease {
     fn new(version: &'static str) -> Arc<Self> {
         Arc::new(FakeRelease {
             version,
-            download: Ok(()),
-            installs: AtomicUsize::new(0),
+            ..Default::default()
         })
     }
 }
@@ -370,10 +504,13 @@ impl Release for FakeRelease {
     fn download<'a>(&'a self, progress: Progress<'a>) -> BoxFuture<'a, Result<Vec<u8>, AppError>> {
         Box::pin(async move {
             progress(5, Some(10));
+            if self.stalls {
+                std::future::pending::<()>().await;
+            }
             progress(10, Some(10));
             match self.download {
-                Ok(()) => Ok(PAYLOAD.to_vec()),
-                Err(code) => Err(AppError::app(code, "refused")),
+                None => Ok(PAYLOAD.to_vec()),
+                Some(code) => Err(AppError::app(code, "refused")),
             }
         })
     }
@@ -381,7 +518,10 @@ impl Release for FakeRelease {
     fn install(&self, bytes: &[u8]) -> Result<(), AppError> {
         assert_eq!(bytes, PAYLOAD);
         self.installs.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        match self.install {
+            None => Ok(()),
+            Some(code) => Err(AppError::app(code, "the installer did not start")),
+        }
     }
 }
 
@@ -394,8 +534,21 @@ fn session(answers: Vec<Answer>) -> (Updates, Arc<FakeFeed>) {
         UpdateAvailability::Available,
         "0.1.0".into(),
         Some(Box::new(Arc::clone(&fake))),
-    );
+    )
+    .with_timeouts(Duration::from_millis(200), Duration::from_millis(200));
     (updates, fake)
+}
+
+fn offering(release: &Arc<FakeRelease>) -> (Updates, Arc<FakeFeed>) {
+    let (updates, fake) = session(vec![Ok(Some(release.clone() as Arc<dyn Release>))]);
+    run(updates.check()).unwrap();
+    (updates, fake)
+}
+
+fn found(version: &str) -> UpdatePhase {
+    UpdatePhase::Found {
+        version: version.into(),
+    }
 }
 
 fn run<T>(f: impl Future<Output = T>) -> T {
@@ -409,6 +562,7 @@ fn an_unavailable_copy_fetches_nothing() {
         UpdateAvailability::Flatpak,
         UpdateAvailability::PackageManager,
         UpdateAvailability::NotInstalled,
+        UpdateAvailability::MoveToApplications,
     ] {
         let fake = Arc::new(FakeFeed::default());
         let updates = Updates::new(
@@ -438,15 +592,8 @@ fn a_found_update_waits_for_install_then_for_restart() {
         updates.restart().unwrap_err().code_str(),
         "app.update_state"
     );
-    let status = run(updates.check()).unwrap();
-    assert_eq!(
-        status.phase,
-        UpdatePhase::Found {
-            version: "0.2.0".into()
-        }
-    );
+    assert_eq!(run(updates.check()).unwrap().phase, found("0.2.0"));
     assert_eq!(release.installs.load(Ordering::SeqCst), 0);
-    assert_eq!(updates.notes_url().unwrap(), notes_url("0.2.0"));
     assert_eq!(
         updates.restart().unwrap_err().code_str(),
         "app.update_state"
@@ -480,20 +627,14 @@ fn a_found_update_waits_for_install_then_for_restart() {
 fn a_refused_signature_installs_nothing_and_keeps_the_offer() {
     let release = Arc::new(FakeRelease {
         version: "0.2.0",
-        download: Err(AppCode::UpdateSignature),
-        installs: AtomicUsize::new(0),
+        download: Some(AppCode::UpdateSignature),
+        ..Default::default()
     });
-    let (updates, _) = session(vec![Ok(Some(release.clone() as Arc<dyn Release>))]);
-    run(updates.check()).unwrap();
+    let (updates, _) = offering(&release);
     let e = run(updates.install("0.2.0")).unwrap_err();
     assert_eq!(e.code_str(), "app.update_signature");
     assert_eq!(release.installs.load(Ordering::SeqCst), 0);
-    assert_eq!(
-        updates.status().phase,
-        UpdatePhase::Found {
-            version: "0.2.0".into()
-        }
-    );
+    assert_eq!(updates.status().phase, found("0.2.0"));
 }
 
 #[test]
@@ -503,32 +644,79 @@ fn up_to_date_and_a_failed_check_keep_what_was_known() {
         Ok(Some(FakeRelease::new("0.2.0") as Arc<dyn Release>)),
         Err(AppError::app(AppCode::UpdateCheck, "offline")),
     ]);
-    assert!(matches!(
-        run(updates.check()).unwrap().phase,
-        UpdatePhase::UpToDate { checked_at } if checked_at > 0
-    ));
-    assert_eq!(
-        updates.notes_url().unwrap_err().code_str(),
-        "app.update_state"
-    );
+    assert_eq!(run(updates.check()).unwrap().phase, UpdatePhase::UpToDate);
     run(updates.check()).unwrap();
     let e = run(updates.check()).unwrap_err();
     assert_eq!(e.code_str(), "app.update_check");
-    assert_eq!(
-        updates.status().phase,
-        UpdatePhase::Found {
-            version: "0.2.0".into()
-        }
-    );
+    assert_eq!(updates.status().phase, found("0.2.0"));
     run(updates.install("0.2.0")).unwrap();
+}
+
+/// A stalled check or download gives up, and the next check and the
+/// install button work again.
+#[test]
+fn a_stalled_check_or_download_gives_up() {
+    let stalls = Arc::new(FakeRelease {
+        version: "0.2.0",
+        stalls: true,
+        ..Default::default()
+    });
+    let (updates, fake) = session(vec![]);
+    let e = run(updates.check()).unwrap_err();
+    assert_eq!(e.code_str(), "app.update_check");
+    assert_eq!(updates.status().phase, UpdatePhase::Idle);
+    fake.answers
+        .lock()
+        .unwrap()
+        .push(Ok(Some(stalls.clone() as Arc<dyn Release>)));
+    assert_eq!(run(updates.check()).unwrap().phase, found("0.2.0"));
+    let e = run(updates.install("0.2.0")).unwrap_err();
+    assert_eq!(e.code_str(), "app.update_download");
+    assert_eq!(updates.status().phase, found("0.2.0"));
+    assert_eq!(stalls.installs.load(Ordering::SeqCst), 0);
+}
+
+/// The Windows installer failing after its hook shut the engine down: the
+/// update is not offered again, a restart is.
+#[test]
+fn a_failed_install_after_the_engine_closed_asks_for_a_restart() {
+    let fails = || {
+        Arc::new(FakeRelease {
+            version: "0.2.0",
+            install: Some(AppCode::UpdateInstall),
+            ..Default::default()
+        })
+    };
+    let (updates, _) = offering(&fails());
+    let e = run(updates.install("0.2.0")).unwrap_err();
+    assert_eq!(e.code_str(), "app.update_install");
+    assert_eq!(updates.status().phase, found("0.2.0"));
+
+    let (updates, fake) = offering(&fails());
+    updates.engine_closed();
+    let e = run(updates.install("0.2.0")).unwrap_err();
+    assert_eq!(e.code_str(), "app.update_install");
+    let restart = UpdatePhase::RestartRequired {
+        version: "0.2.0".into(),
+    };
+    assert_eq!(updates.status().phase, restart);
+    assert_eq!(run(updates.check()).unwrap().phase, restart);
+    assert_eq!(
+        run(updates.install("0.2.0")).unwrap_err().code_str(),
+        "app.update_state"
+    );
+    updates.restart().unwrap();
+    assert_eq!(fake.restarts.load(Ordering::SeqCst), 1);
 }
 
 #[test]
 fn the_app_without_the_updater_reports_it_over_ipc() {
     let demo = crate::ipc_tests::Demo::new();
     let status = demo.ok("update_status", json!({}));
-    assert_eq!(status["availability"], "notInThisBuild");
-    assert_eq!(status["phase"], json!({ "kind": "idle" }));
+    assert_eq!(
+        status,
+        json!({ "availability": "notInThisBuild", "phase": { "kind": "idle" } })
+    );
     demo.err("check_for_update", json!({}), "app.updates_unavailable");
     demo.err(
         "install_update",
@@ -536,7 +724,27 @@ fn the_app_without_the_updater_reports_it_over_ipc() {
         "app.updates_unavailable",
     );
     demo.err("restart_to_update", json!({}), "app.updates_unavailable");
-    demo.err("open_update_notes", json!({}), "app.update_state");
     let settings = demo.ok("ui_settings", json!({}));
     assert_eq!(settings["checkUpdatesAutomatically"], false);
+    let launch = demo.ok("launch_info", json!({}));
+    let state = demo.handle().state::<crate::state::AppState>();
+    assert_eq!(launch["appVersion"], state.updates.current_version());
+}
+
+/// Install and Restart wait for a payment's broadcast to return.
+#[test]
+fn install_and_restart_wait_for_a_payment() {
+    let demo = crate::ipc_tests::Demo::new();
+    demo.open();
+    let state = demo.handle().state::<crate::state::AppState>();
+    run(crate::api::updates::refuse_while_busy(&state)).unwrap();
+    let sending = state.broadcasting();
+    let e = run(crate::api::updates::refuse_while_busy(&state)).unwrap_err();
+    assert_eq!(e.code_str(), "app.update_busy");
+    assert_eq!(
+        serde_json::to_value(&e).unwrap()["data"],
+        json!({ "kind": "updateBusy", "reason": "payment" })
+    );
+    drop(sending);
+    run(crate::api::updates::refuse_while_busy(&state)).unwrap();
 }

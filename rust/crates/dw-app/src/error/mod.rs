@@ -172,9 +172,12 @@ codes! {
         /// This copy cannot update itself (`UpdateAvailability`: a build
         /// without the updater key, a Flatpak, a package-manager install).
         UpdatesUnavailable = "app.updates_unavailable",
-        /// The update feed could not be reached or read.
+        /// The update feed could not be reached or read, or did not answer
+        /// within 30 s.
         UpdateCheck = "app.update_check",
-        /// The update could not be downloaded.
+        /// The Latest release publishes no update feed (`latest.json`).
+        UpdateNotPublished = "app.update_not_published",
+        /// The update could not be downloaded, or no data came for 60 s.
         UpdateDownload = "app.update_download",
         /// The update's signature does not verify against the release key,
         /// or names another version than the feed announced: nothing was
@@ -186,6 +189,9 @@ codes! {
         /// version) on offer, one already being installed, or a restart
         /// before the install.
         UpdateState = "app.update_state",
+        /// Install or Restart would close the engine while something runs
+        /// ([`ErrorData::UpdateBusy`] names it). Nothing changed.
+        UpdateBusy = "app.update_busy",
     }
 }
 
@@ -197,6 +203,20 @@ pub enum CloseRefusalReason {
     WalletOpening,
     /// A shielded spend's result is not known yet.
     ShieldedSpendUnresolved,
+}
+
+/// What `app.update_busy` waits for ([`ErrorData::UpdateBusy`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum UpdateBusyReason {
+    /// The engine is still starting.
+    Startup,
+    /// A payment's broadcast has not returned.
+    Payment,
+    /// A wallet mixes.
+    Mixing,
+    /// A Dash Platform flow holds a lease.
+    Platform,
 }
 
 /// Fields some codes carry. Credit amounts are decimal strings (see
@@ -225,6 +245,8 @@ pub enum ErrorData {
         /// time; nothing else is named.
         draining: bool,
     },
+    /// `app.update_busy`: what Install or Restart waits for.
+    UpdateBusy { reason: UpdateBusyReason },
     /// `wallet` or `shielded_spend_unresolved` from `switch_network`: the
     /// network's close refused itself. Nothing changed.
     NetworkCloseRefused { reason: CloseRefusalReason },

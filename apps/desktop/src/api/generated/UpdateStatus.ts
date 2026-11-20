@@ -5,4 +5,4 @@ import type { UpdatePhase } from "./UpdatePhase";
 /**
  * `update_status`: what Settings shows.
  */
-export type UpdateStatus = { availability: UpdateAvailability, currentVersion: string, phase: UpdatePhase, };
+export type UpdateStatus = { availability: UpdateAvailability, phase: UpdatePhase, };

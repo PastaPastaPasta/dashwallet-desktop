@@ -3,4 +3,4 @@
 /**
  * Whether this copy of the app can update itself.
  */
-export type UpdateAvailability = "available" | "notInThisBuild" | "flatpak" | "packageManager" | "notInstalled";
+export type UpdateAvailability = "available" | "notInThisBuild" | "flatpak" | "packageManager" | "notInstalled" | "moveToApplications";

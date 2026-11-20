@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::{LockStatus, NetworkInfo, parse_network};
-use crate::error::{AppCode, AppError, CloseRefusalReason, ErrorData};
+use crate::error::{AppCode, AppError, CloseRefusalReason, ErrorData, UpdateBusyReason};
 use crate::ipc::commands;
 use crate::launch::LaunchOptions;
 use crate::state::AppState;
@@ -502,6 +502,28 @@ fn busy_of(leases: &[LeaseView], mixing: bool, broadcast: bool) -> Option<Busy> 
     busy.mixing = mixing;
     busy.broadcast = broadcast;
     (!busy.flows.is_empty() || busy.mixing || busy.broadcast).then_some(busy)
+}
+
+/// What runs on `session` that closing the engine for an update would cut
+/// (PK-03): a broadcast not yet returned, mixing or a Platform flow.
+pub(crate) fn running(
+    session: &NetworkSession,
+    broadcasts: &AtomicUsize,
+) -> Result<Option<UpdateBusyReason>, AppError> {
+    let busy = busy_of(
+        &session.leases()?,
+        session.mixing_busy(),
+        broadcasts.load(Ordering::SeqCst) > 0,
+    );
+    Ok(busy.map(|b| {
+        if b.broadcast {
+            UpdateBusyReason::Payment
+        } else if b.mixing {
+            UpdateBusyReason::Mixing
+        } else {
+            UpdateBusyReason::Platform
+        }
+    }))
 }
 
 fn busy_error(busy: Busy) -> AppError {
