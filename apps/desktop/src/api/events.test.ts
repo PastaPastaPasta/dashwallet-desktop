@@ -37,7 +37,10 @@ const bridged = async (...args: Parameters<typeof bridgeEvents>) => {
   return stop;
 };
 
-beforeEach(() => vi.stubGlobal("window", globalThis));
+beforeEach(() => {
+  vi.stubGlobal("window", globalThis);
+  resetWalletGate();
+});
 afterEach(() => {
   bridges.splice(0).forEach((stop) => stop());
   clearMocks();

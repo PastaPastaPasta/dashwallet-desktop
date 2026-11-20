@@ -1,13 +1,30 @@
 import { QueryClient } from "@tanstack/react-query";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Backend } from "./backend";
 import type { LockStatus } from "./generated/LockStatus";
-import { closeWalletGate, followLockStatus, forgetWalletContent, guardWhileLocked, keptWhileLocked, refusedWhileLocked, resetWalletGate, subscribeWalletGate, walletGateClosed } from "./lockGate";
+import {
+  closeWalletGate,
+  confirmLockState,
+  followLockStatus,
+  forgetWalletContent,
+  freshLockStatus,
+  guardWhileLocked,
+  keptWhileLocked,
+  lockGeneration,
+  lockStateChanged,
+  refusedWhileLocked,
+  resetWalletGate,
+  seedLockStatus,
+  subscribeWalletGate,
+  walletGateClosed,
+  walletNamesForRecovery,
+} from "./lockGate";
 import { keys } from "./queries";
 
 const STATUS: LockStatus = { state: "unlocked", encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] };
 
-afterEach(resetWalletGate);
+beforeEach(() => resetWalletGate());
+afterEach(() => resetWalletGate());
 
 describe("forgetWalletContent", () => {
   it("keeps the lock screen's reads and the network, and drops everything else", () => {
@@ -80,5 +97,89 @@ describe("the lock gate", () => {
     expect(backend.kind).toBe("fixture");
     expect(asked).toEqual(["balance", "unlock", "lockStatus"]);
     expect(refusedWhileLocked({ code: "vault.locked", message: "", data: null })).toBe(false);
+  });
+
+  it("stays closed from the start until a status says the vault is not locked", () => {
+    resetWalletGate(true);
+    const client = new QueryClient();
+    const stop = followLockStatus(client);
+    expect(walletGateClosed()).toBe(true);
+    seedLockStatus(client, STATUS, lockGeneration());
+    expect(walletGateClosed()).toBe(false);
+    stop();
+  });
+
+  it("keeps closed when the network's opening status was read before a lock event", () => {
+    resetWalletGate(true);
+    const client = new QueryClient();
+    const stop = followLockStatus(client);
+    const since = lockGeneration();
+    lockStateChanged();
+    closeWalletGate(client);
+    seedLockStatus(client, STATUS, since);
+    expect(walletGateClosed()).toBe(true);
+    expect(client.getQueryData(keys.lockStatus)).toBeUndefined();
+    stop();
+  });
+
+  it("does not close for a lock call that answers after a newer unlock", () => {
+    const client = new QueryClient();
+    client.setQueryData(keys.lockStatus, STATUS);
+    const stop = followLockStatus(client);
+    const since = lockGeneration();
+    lockStateChanged();
+    closeWalletGate(client);
+    lockStateChanged();
+    client.setQueryData(keys.lockStatus, STATUS);
+    expect(walletGateClosed()).toBe(false);
+    closeWalletGate(client, since);
+    expect(walletGateClosed()).toBe(false);
+    const now = lockGeneration();
+    closeWalletGate(client, now);
+    expect(walletGateClosed()).toBe(true);
+    stop();
+  });
+
+  it("reads the status again when the lock state changed during the read", async () => {
+    const answers: LockStatus[] = [STATUS, { ...STATUS, state: "locked" }];
+    let reads = 0;
+    const status = await freshLockStatus(async () => {
+      const s = answers[reads++];
+      if (reads === 1) lockStateChanged();
+      return s;
+    });
+    expect(reads).toBe(2);
+    expect(status.state).toBe("locked");
+  });
+
+  it("holds wallet commands after lost events until a fresh status, and refuses them when it says locked", async () => {
+    const client = new QueryClient();
+    const asked: string[] = [];
+    const backend = guardWhileLocked({ balance: async () => (asked.push("balance"), 1) } as unknown as Backend);
+    let answer!: (s: LockStatus) => void;
+    const confirmed = confirmLockState(client, () => new Promise<LockStatus>((r) => (answer = r)));
+    const read = backend.balance("w").catch((e: unknown) => e);
+    await Promise.resolve();
+    expect(asked).toEqual([]);
+    answer({ ...STATUS, state: "locked" });
+    await confirmed;
+    expect(refusedWhileLocked(await read)).toBe(true);
+    expect(asked).toEqual([]);
+    expect(walletGateClosed()).toBe(true);
+    resetWalletGate();
+    const again = confirmLockState(client, async () => STATUS);
+    const later = backend.balance("w");
+    await again;
+    expect(await later).toBe(1);
+    expect(asked).toEqual(["balance"]);
+  });
+
+  it("lets Forgot passphrase read the wallets' names alone while locked, and nothing else read them", async () => {
+    const client = new QueryClient();
+    const summary = { walletId: "w", name: "Main", balance: { confirmed: 5 }, network: "testnet" };
+    const backend = guardWhileLocked({ listWallets: async () => [summary] } as unknown as Backend);
+    closeWalletGate(client);
+    await expect(backend.listWallets()).rejects.toMatchObject({ code: "vault.locked" });
+    expect(await walletNamesForRecovery(backend)).toEqual([{ walletId: "w", name: "Main" }]);
   });
 });

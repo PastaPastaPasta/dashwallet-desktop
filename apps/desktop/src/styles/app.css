@@ -4,9 +4,11 @@
 
 /* ------------------------------------------------------------------ base */
 
-/* A page title focused after a link or menu opened its page (shellBridge.ts focusPage) shows no
-   ring: it is not a control. */
-.page h1[tabindex="-1"]:focus {
+/* A page title focused after a link, a menu or the unlock opened its page (shellBridge.ts
+   focusPage), or a sheet focused because nothing in it can be pressed, shows no ring: it is not a
+   control. */
+.page h1[tabindex="-1"]:focus,
+.sheet[tabindex="-1"]:focus {
   outline: none;
 }
 

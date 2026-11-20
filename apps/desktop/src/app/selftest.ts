@@ -7,6 +7,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { errorMessage, isAppError, type Backend } from "../api/backend";
 import type { LockStateName } from "../api/generated/LockStateName";
+import { keys } from "../api/queries";
 import { SELFTEST_LOCKED } from "./selftestText";
 import { tauriTools } from "../api/tauri";
 import { milestones, whenMarked } from "./startup";
@@ -292,6 +293,22 @@ function windowOpenProbe(): string {
  * first, so the screens show its wallet rather than the lock screen. A step that fails (a wrong
  * passphrase, a network that does not open) ends the run at once with a final report that says
  * why, rather than leaving the app open until the harness times out. */
+/** Resolves once the window's network opened; rejects with its failure. */
+export function networkOpen(client: QueryClient): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let stop = () => {};
+    const check = () => {
+      const state = client.getQueryState(keys.network);
+      if (state?.status === "success") resolve();
+      else if (state?.status === "error" && state.fetchStatus === "idle") reject(state.error);
+      else return;
+      stop();
+    };
+    stop = client.getQueryCache().subscribe(check);
+    check();
+  });
+}
+
 export async function runTauriSelftest(backend: Backend, client: QueryClient, pauseMs: number, canUnlock: boolean) {
   try {
     await selftestRun(backend, client, pauseMs, canUnlock);
@@ -304,6 +321,9 @@ export async function runTauriSelftest(backend: Backend, client: QueryClient, pa
 
 async function selftestRun(backend: Backend, client: QueryClient, pauseMs: number, canUnlock: boolean) {
   const shellPaintMs = await within(whenMarked("shell"), 60_000, null);
+  // The shell paints its splash before the network is open, and the lock state is read only once
+  // it is: a launch that cannot open it reports why, not that the network was not open.
+  await within(networkOpen(client), 180_000, null);
   const unlock = canUnlock ? tauriTools.selftestUnlock : null;
   if (unlock && (await backend.lockStatus()).state === "locked") await unlock();
   const blocked = selftestBlocked((await backend.lockStatus()).state, unlock !== null);

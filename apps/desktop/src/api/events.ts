@@ -16,11 +16,11 @@ import { mnKeys } from "../masternodes/queries";
 import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
 import { HeldNews } from "../payments/heldNews";
-import { announceReceived, forgetSealed, LOOKUP_TIMEOUT_MS, sealReceived } from "../payments/received";
+import { announceReceived, forgetReceived, LOOKUP_TIMEOUT_MS, sealReceived } from "../payments/received";
 import { onMoveSettled } from "../platform/move";
 import { onRecoverySettled } from "../recovery/model";
 import { onShieldedSettled } from "../shielded/flow";
-import { closeWalletGate, followLockStatus, subscribeWalletGate, walletGateClosed } from "./lockGate";
+import { closeWalletGate, confirmLockState, followLockStatus, lockStateChanged, subscribeWalletGate, walletGateClosed } from "./lockGate";
 import { keys, scanHeightsStale } from "./queries";
 import { announceable, feedSync } from "./syncDisplay";
 
@@ -188,17 +188,24 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
   };
   const unsubscribe = await backend.onEvent((event) => {
     if (ofOtherNetwork(event, network)) return;
-    // The lock is the engine's word: the gate closes before anything below reads again.
-    if (event.kind === "vaultLockState" && event.state === "locked") closeWalletGate(client);
+    // The lock is the engine's word: the gate closes before anything below reads again, and no
+    // status read or lock answer from before this event counts.
+    if (event.kind === "vaultLockState") {
+      lockStateChanged();
+      if (event.state === "locked") closeWalletGate(client);
+    }
+    // Lost events may have held a lock: wallet commands wait for a fresh status first.
+    if (event.kind === "eventsOverflowed") void confirmLockState(client, () => backend.lockStatus());
     if (event.kind === "walletRemoved") {
       heldNews.drop(event.walletId);
-      forgetSealed(event.walletId);
+      forgetReceived(event.walletId);
     }
     if (event.kind === "sessionOpened" || event.kind === "sessionClosed" || (event.kind === "vaultLockState" && event.state === "noVault")) {
       heldNews.clear();
-      forgetSealed();
+      forgetReceived();
     }
-    if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
+    // A notice's detail can name a wallet or an asset lock: not while locked.
+    if (event.kind === "notice") console.warn("engine notice", event.code, ...(walletGateClosed() ? [] : [event.detail]));
     // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
     // below. Not the query's, which only follows once its refetch is back.
     if (event.kind === "sync") feedSync(backend, event.status);

@@ -5,7 +5,7 @@ import type { LockStatus } from "../api/generated/LockStatus";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { closeWalletGate, forgetWalletContent, useWalletGateClosed } from "../api/lockGate";
+import { closeWalletGate, forgetWalletContent, lockGeneration, useWalletGateClosed } from "../api/lockGate";
 import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { EMPTY, walletListGate, walletReadyToOpen } from "../components/emptyStates";
@@ -94,15 +94,16 @@ function useAutoLock(backend: Backend, client: QueryClient, status: LockStatus |
   useEffect(() => {
     if (!armed || secs === null) return;
     const timer = new AutoLockTimer();
-    timer.arm(secs, () =>
-      backend.lock().then(
+    timer.arm(secs, () => {
+      const since = lockGeneration();
+      return backend.lock().then(
         () => {
-          closeWalletGate(client);
+          closeWalletGate(client, since);
           showShellToast(SecurityText.lockedAutomatically);
         },
         (e) => showShellToast(`Could not lock: ${errorMessage(e)}`),
-      ),
-    );
+      );
+    });
     const onActivity = () => timer.activity();
     for (const e of ACTIVITY_EVENTS) window.addEventListener(e, onActivity, { capture: true, passive: true });
     return () => {
@@ -259,8 +260,10 @@ function Shell() {
   const [noticeClosed, setNoticeClosed] = useState(false);
   const notice = !noticeSaved && !noticeClosed;
   const lock = useLockStatus();
-  // Closed from the lock's event until a status read says unlocked (api/lockGate.ts).
+  // Closed until a status says the vault is not locked, and from the lock's event until a status
+  // read says so again (api/lockGate.ts). Before the first status there is nothing to show.
   const locked = useWalletGateClosed();
+  const lockShown = lock.data?.state === "locked";
   // The gate dropped the wallet's queries as it closed; anything a view still mounted then asked
   // for goes too, now that the views are gone.
   useLayoutEffect(() => {
@@ -273,20 +276,22 @@ function Shell() {
   // or a menu leaves it.
   const backFromLock = useRef(false);
   useEffect(() => {
-    if (locked) backFromLock.current = true;
-    else if (backFromLock.current && wallet) {
+    if (locked && lockShown) backFromLock.current = true;
+    else if (!locked && backFromLock.current && wallet) {
       backFromLock.current = false;
       if (document.activeElement === null || document.activeElement === document.body) focusPage();
     }
-  }, [locked, wallet]);
+  }, [locked, lockShown, wallet]);
 
   const canLock = lock.data?.encrypted === true && !locked;
   const lockNow = () => {
-    if (canLock)
-      backend.lock().then(
-        () => closeWalletGate(client),
-        (e) => showShellToast(`Could not lock: ${errorMessage(e)}`),
-      );
+    if (!canLock) return;
+    // The answer closes the gate unless the lock state moved on before it came (its event, an unlock).
+    const since = lockGeneration();
+    backend.lock().then(
+      () => closeWalletGate(client, since),
+      (e) => showShellToast(`Could not lock: ${errorMessage(e)}`),
+    );
   };
   useShellBridge(backend, network.dirName, launch.selftestLinkTrace, lockNow);
   useAutoLock(backend, client, lock.data, useUi((s) => s.prefs.autoLockSecs));
@@ -376,7 +381,7 @@ function Shell() {
       {shown === "savedLinks" && <SavedLinksSheet onClose={closeDialog} />}
       {onboarding && <Onboarding network={network} inert={notice} onCancel={noWallet ? null : closeOnboarding} onDone={finishOnboarding} />}
       {/* In place of the wallet's views, not over them: a locked window holds nothing of the wallet. */}
-      {locked && <LockScreen network={network} covered={forgot || notice} onForgot={() => ui.set({ forgotPassphrase: true })} />}
+      {locked && lockShown && <LockScreen network={network} covered={forgot || notice} onForgot={() => ui.set({ forgotPassphrase: true })} />}
       {/* Over the lock screen, and still open once the recovery unlocked the vault (U-02 D11). */}
       {forgot && !onboarding && !notice && <ForgotPassphraseSheet onClose={closeForgot} />}
       {/* Over everything, the lock screen too: the first thing a new install shows. */}

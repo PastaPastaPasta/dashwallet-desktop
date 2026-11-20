@@ -1,8 +1,13 @@
-// The renderer's lock gate: closed from the moment the vault locks (its `vaultLockState` event, or
-// the renderer's own lock answered) until the lock status says it is not locked. While it is
-// closed the shell shows the lock screen in place of the wallet's views, the cache keeps only the
-// lock screen's own reads, wallet toasts are held, and the backend refuses every command but the
-// ones the locked window needs (`guardWhileLocked`), so no wallet read starts in between.
+// The renderer's lock gate: closed at start until a status says the vault is not locked, and from
+// the moment the vault locks (its `vaultLockState` event, or the renderer's own lock answered)
+// until a status read since says so again. While it is closed the shell shows no wallet view, the
+// cache keeps only the lock screen's own reads, wallet toasts are held, and the backend refuses
+// every command but the ones the locked window needs (`guardWhileLocked`), so no wallet read
+// starts in between.
+//
+// Every report of the lock state counts against one generation, bumped by each change the engine
+// announces (its events, a lock answered) and by a lost event queue: a status read, the network's
+// opening status or a lock's answer from before a newer change is never applied.
 
 import { useSyncExternalStore } from "react";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
@@ -13,9 +18,11 @@ import type { LockStatus } from "./generated/LockStatus";
 import type { IpcBackend } from "./tauri";
 import { keys } from "./queries";
 
-const KEPT = new Set<unknown>([keys.network[0], keys.lockStatus[0], keys.lastLockReport[0], keys.lockReconcile[0], keys.lockDrain[0]]);
+// Read when first asked: queries.ts imports this module too.
+let kept: Set<unknown> | undefined;
 
-export const keptWhileLocked = (key: QueryKey): boolean => KEPT.has(key[0]);
+export const keptWhileLocked = (key: QueryKey): boolean =>
+  (kept ??= new Set<unknown>([keys.network[0], keys.lockStatus[0], keys.lastLockReport[0], keys.lockReconcile[0], keys.lockDrain[0]])).has(key[0]);
 
 /** Removes every query the lock screen does not read. A read still under way is cancelled with
  * its query, so its answer lands nowhere. */
@@ -23,11 +30,39 @@ export function forgetWalletContent(client: QueryClient) {
   client.removeQueries({ predicate: (q) => !keptWhileLocked(q.queryKey) });
 }
 
-let closed = false;
+let closed = true;
+let generation = 0;
+holdWalletToasts(true);
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((l) => l());
 
 export const walletGateClosed = (): boolean => closed;
+
+/** The lock state's generation: a status read, or a lock's answer, begun under another is older
+ * than what the window knows. */
+export const lockGeneration = (): number => generation;
+
+/** The engine announced a lock state, or events were lost that may have: older reports go. */
+export function lockStateChanged() {
+  generation++;
+}
+
+/** Reads the lock status, again while the lock state changed during the read, so the status is
+ * never older than the last change. */
+export async function freshLockStatus(read: () => Promise<LockStatus>): Promise<LockStatus> {
+  for (;;) {
+    const since = generation;
+    const status = await read();
+    if (since === generation) return status;
+  }
+}
+
+/** The network opened with `status`, read from generation `since`: it stands for the lock status
+ * unless the state changed meanwhile, when the status is read again. */
+export function seedLockStatus(client: QueryClient, status: LockStatus, since: number) {
+  if (since === generation) client.setQueryData(keys.lockStatus, status);
+  else void client.invalidateQueries({ queryKey: keys.lockStatus });
+}
 
 export function subscribeWalletGate(l: () => void): () => void {
   listeners.add(l);
@@ -38,8 +73,11 @@ export const useWalletGateClosed = (): boolean => useSyncExternalStore(subscribe
 
 /** The vault locked: the gate closes at once, before anything is invalidated or read again. A
  * status read already under way may predate the lock, so it is dropped and the cached status
- * says locked until a read begun since answers. */
-export function closeWalletGate(client: QueryClient) {
+ * says locked until a read begun since answers. `since`: the generation a lock call began in,
+ * whose answer counts only if nothing changed since (an unlock after it, say). */
+export function closeWalletGate(client: QueryClient, since?: number) {
+  if (since !== undefined && since !== generation) return;
+  generation++;
   const status = client.getQueryData<LockStatus>(keys.lockStatus);
   if (status && status.state !== "locked") {
     void client.cancelQueries({ queryKey: keys.lockStatus });
@@ -57,6 +95,28 @@ function openWalletGate() {
   closed = false;
   holdWalletToasts(false);
   notify();
+}
+
+let confirming: Promise<void> | null = null;
+
+/** Events were lost, a lock among them perhaps: wallet commands wait (`guardWhileLocked`) for a
+ * fresh status, which closes the gate if it says locked. */
+export function confirmLockState(client: QueryClient, read: () => Promise<LockStatus>): Promise<void> {
+  lockStateChanged();
+  const done: Promise<void> = freshLockStatus(read)
+    .then(
+      (status) => {
+        client.setQueryData(keys.lockStatus, status);
+        if (status.state === "locked") closeWalletGate(client);
+        else openWalletGate();
+      },
+      () => undefined,
+    )
+    .finally(() => {
+      if (confirming === done) confirming = null;
+    });
+  confirming = done;
+  return done;
 }
 
 /** Keeps the gate on the cached lock status: it opens only once a status read says the vault is
@@ -88,7 +148,6 @@ export const LOCKED_COMMANDS: ReadonlySet<string> = new Set<keyof IpcBackend>([
   "lastLockReport",
   "leases",
   "dispatchStatus",
-  "listWallets",
   "checkMnemonic",
   "recoverWithMnemonic",
   "takeLinks",
@@ -108,21 +167,36 @@ const LOCKED: AppError = { code: "vault.locked", message: "The wallet is locked.
 /** A command `guardWhileLocked` refused: the engine was never asked. */
 export const refusedWhileLocked = (e: unknown): boolean => e === LOCKED;
 
+const UNGUARDED = Symbol("unguarded");
+
 /** `backend`, refusing every command outside `LOCKED_COMMANDS` while the gate is closed, without
- * asking the engine. `listWallets` is Forgot passphrase's, which names the wallets it can recover. */
+ * asking the engine, and holding them while a lost event queue's status is read again. */
 export function guardWhileLocked<B extends Backend>(backend: B): B {
   return new Proxy(backend, {
     get(target, prop, receiver) {
+      if (prop === UNGUARDED) return target;
       const value = Reflect.get(target, prop, receiver);
       if (typeof value !== "function" || typeof prop !== "string" || NOT_COMMANDS.has(prop) || LOCKED_COMMANDS.has(prop)) return value;
-      return (...args: unknown[]) => (closed ? Promise.reject(LOCKED) : value.apply(target, args));
+      return (...args: unknown[]) => {
+        if (closed) return Promise.reject(LOCKED);
+        const wait = confirming;
+        if (!wait) return value.apply(target, args);
+        return wait.then(() => (closed ? Promise.reject(LOCKED) : value.apply(target, args)));
+      };
     },
   });
 }
 
-/** Tests: the gate as at start. */
-export function resetWalletGate() {
-  closed = false;
-  holdWalletToasts(false);
+/** The wallets Forgot passphrase can name while locked: their ids and names, nothing else. */
+export async function walletNamesForRecovery(backend: Backend): Promise<{ walletId: string; name: string }[]> {
+  const unguarded = ((backend as unknown as Record<symbol, Backend | undefined>)[UNGUARDED] ?? backend) as Backend;
+  return (await unguarded.listWallets()).map(({ walletId, name }) => ({ walletId, name }));
+}
+
+/** Tests: the gate as at start, or open (`closedNow` false). */
+export function resetWalletGate(closedNow = false) {
+  closed = closedNow;
+  confirming = null;
+  holdWalletToasts(closedNow);
   notify();
 }
