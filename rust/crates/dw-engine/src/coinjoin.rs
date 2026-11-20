@@ -305,6 +305,13 @@ pub struct SweepResult {
 const SETTINGS_KEY: &str = "coinjoin.settings";
 /// Per-wallet salt, display hex (`coinjoinsalt get`).
 const SALT_KEY: &str = "coinjoin.salt";
+
+/// The setting that stores `salt`, read from a Dash Core wallet
+/// (`cj_salt`) at import.
+pub(crate) fn salt_setting(salt: &[u8; 32]) -> (&'static str, String) {
+    (SALT_KEY, rounds::salt_to_display_hex(salt))
+}
+
 /// The restore lookahead a recovery scan raises the accounts to.
 pub const RECOVERY_LOOKAHEAD: u32 = 1_000;
 /// How long inputs of a successful session stay locked waiting for the
@@ -1039,15 +1046,6 @@ impl NetworkSession {
         let hex = rounds::salt_to_display_hex(&salt);
         self.set_coinjoin_salt(wallet_id, hex.clone()).await?;
         Ok(hex)
-    }
-
-    /// Stores a salt read from a Dash Core wallet (`cj_salt`) at import.
-    pub(crate) async fn import_coinjoin_salt(
-        &self,
-        wallet_id: WalletId,
-        salt: [u8; 32],
-    ) -> Result<(), EngineError> {
-        self.store_salt(wallet_id, &salt).await
     }
 
     async fn store_salt(&self, wallet_id: WalletId, salt: &[u8; 32]) -> Result<(), EngineError> {

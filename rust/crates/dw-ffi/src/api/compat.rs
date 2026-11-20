@@ -31,7 +31,8 @@ pub enum WalletFileKind {
         encrypted: bool,
         has_mnemonic: bool,
     },
-    /// Legacy Berkeley DB `wallet.dat`: detected; import lands in M6.
+    /// Legacy Berkeley DB `wallet.dat`. `encrypted` is `None` when the
+    /// file is recognised but does not parse.
     WalletDatBdb {
         encrypted: Option<bool>,
     },
@@ -390,11 +391,9 @@ impl NetworkSession {
     }
 
     /// Restores from a Dash Core `wallet.dat` (QT-106): SQLite descriptor
-    /// wallets in M2 (decrypts `walletdescriptorckey` with `mkey` and the
-    /// passphrase, extracts mnemonic and passphrase). Berkeley DB files
-    /// return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6;
-    /// descriptor wallets without a phrase
-    /// `NotImplemented{call: "import_wallet_dat.xprv"}`.
+    /// wallets and legacy Berkeley DB wallets. Decrypts with the wallet
+    /// passphrase when the file is encrypted. A descriptor wallet without
+    /// a phrase returns `NotImplemented{call: "import_wallet_dat.xprv"}`.
     pub async fn import_wallet_dat(
         &self,
         path: String,

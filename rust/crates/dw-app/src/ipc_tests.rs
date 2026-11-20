@@ -149,7 +149,7 @@ impl Demo {
 }
 
 /// [`Demo::call`] without the app, so several threads can invoke at once.
-fn invoke(
+pub(crate) fn invoke(
     webview: &WebviewWindow<MockRuntime>,
     invoke_key: &str,
     cmd: &str,

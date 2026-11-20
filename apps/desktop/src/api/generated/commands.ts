@@ -139,6 +139,7 @@ import type { PlatformReachability } from "./PlatformReachability";
 import type { PlatformReceiveAddress } from "./PlatformReceiveAddress";
 import type { PlatformSendOutcome } from "./PlatformSendOutcome";
 import type { PlatformSendQuote } from "./PlatformSendQuote";
+import type { PlatformShieldQuote } from "./PlatformShieldQuote";
 import type { PreparedTxHandle } from "./PreparedTxHandle";
 import type { PreparedTxSummary } from "./PreparedTxSummary";
 import type { PrivateContactDetails } from "./PrivateContactDetails";
@@ -1132,9 +1133,8 @@ export function importDumpWallet(path: string, options: ImportOptions): Promise<
 }
 
 /**
- * Restores from a Dash Core `wallet.dat` (SQLite descriptor wallets;
- * Berkeley DB is `not_implemented`). `walletPassphrase` opens an
- * encrypted file.
+ * Restores from a Dash Core `wallet.dat` (SQLite descriptor wallets
+ * and legacy Berkeley DB). `walletPassphrase` opens an encrypted file.
  */
 export function importWalletDat(path: string, walletPassphrase: string | null, options: ImportOptions): Promise<CoreImportReport> {
   return invoke<CoreImportReport>("import_wallet_dat", { path, walletPassphrase, options });
@@ -1847,6 +1847,14 @@ export function platformAddressesSync(walletId: string): Promise<PlatformAddress
  */
 export function platformMoveToCoreQuote(walletId: string, amount: WithdrawAmount): Promise<MoveToCoreQuote> {
   return invoke<MoveToCoreQuote>("platform_move_to_core_quote", { walletId, amount });
+}
+
+/**
+ * What moving `amount` of the Platform addresses' credits into the
+ * wallet's own shielded account takes.
+ */
+export function platformShieldQuote(walletId: string, amount: WithdrawAmount): Promise<PlatformShieldQuote> {
+  return invoke<PlatformShieldQuote>("platform_shield_quote", { walletId, amount });
 }
 
 /**
@@ -3105,6 +3113,7 @@ export type CommandArgs = {
   platform_activity: { walletId: string };
   platform_addresses_sync: { walletId: string };
   platform_move_to_core_quote: { walletId: string; amount: WithdrawAmount };
+  platform_shield_quote: { walletId: string; amount: WithdrawAmount };
   platform_move_to_core: { walletId: string; amount: WithdrawAmount; to: string; grant: string };
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
@@ -3436,6 +3445,7 @@ export type CommandResults = {
   platform_activity: Array<PlatformActivity>;
   platform_addresses_sync: PlatformAddressBalance;
   platform_move_to_core_quote: MoveToCoreQuote;
+  platform_shield_quote: PlatformShieldQuote;
   platform_move_to_core: MoveToCoreOutcome;
   platform_receive_address: PlatformReceiveAddress;
   platform_send_quote: PlatformSendQuote;
@@ -3769,6 +3779,7 @@ export const COMMANDS: Record<CommandName, string> = {
   platform_activity: "identity",
   platform_addresses_sync: "identity",
   platform_move_to_core_quote: "identity",
+  platform_shield_quote: "identity",
   platform_move_to_core: "identity",
   platform_receive_address: "identity",
   platform_send_quote: "identity",

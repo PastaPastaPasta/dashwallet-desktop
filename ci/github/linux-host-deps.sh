@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # GitHub Actions: apt packages on an ubuntu-24.04 runner.
 #
-#   ci/github/linux-host-deps.sh rust|tauri|swiftcrossui
+#   ci/github/linux-host-deps.sh rust|tauri|flatpak|swiftcrossui
 #
 #   rust          what `cargo build --workspace` needs beyond the runner image: the WebKitGTK
 #                 development packages of the Tauri crate rust/crates/dw-app (G-01; list from
@@ -9,6 +9,7 @@
 #                 and dbus-daemon for dw-app's portal tests on a private bus;
 #   tauri         those plus Xvfb, AT-SPI, xdotool, the WebKitGTK WebDriver, D-Bus and xdg-utils for
 #                 the gate harness and the link checks (apps/desktop/README.md);
+#   flatpak       flatpak-builder and the launch check's Xvfb, D-Bus and ImageMagick (release.yml);
 #   swiftcrossui  GTK 4, Xvfb and the AT-SPI stack (ci/linux/Dockerfile.swift-gtk).
 set -euo pipefail
 
@@ -16,11 +17,12 @@ webkit=(libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-d
   librsvg2-dev)
 gui=(xvfb xauth x11-utils x11-apps netpbm dbus-x11 at-spi2-core gir1.2-atspi-2.0 python3-pyatspi python3-gi)
 
-case "${1:?usage: $0 rust|tauri|swiftcrossui}" in
+case "${1:?usage: $0 rust|tauri|flatpak|swiftcrossui}" in
   rust) packages=("${webkit[@]}" dbus) ;;
   # Ubuntu 24.04 calls the WebDriver package webkit2gtk-driver (26.04: webkitgtk-webdriver).
   # dbus and xdg-utils: second launches and links the OS opens (U-01, ci/github/deep-links.sh).
   tauri) packages=("${webkit[@]}" "${gui[@]}" xdotool imagemagick webkit2gtk-driver dbus xdg-utils) ;;
+  flatpak) packages=(flatpak flatpak-builder "${gui[@]}" imagemagick dbus) ;;
   swiftcrossui) packages=(libgtk-4-dev "${gui[@]}" gsettings-desktop-schemas adwaita-icon-theme fonts-dejavu-core) ;;
   *) echo "unknown package set $1" >&2; exit 2 ;;
 esac
@@ -34,6 +36,7 @@ install=(apt-get "${apt_opts[@]}" install -y --no-install-recommends)
 # apt leaves a stalled mirror too slowly to finish under the deadline, and on 2026-11-19 all three
 # were down together. So a failed attempt puts the Azure mirror first, drops the mirrors listed
 # ahead of archive.ubuntu.com, and reads noble-security from the same mirror list.
+# DW_APT_DOWNLOAD_DEADLINE (seconds, default 360) bounds each download attempt.
 mirrors=${DW_APT_MIRRORS:-/etc/apt/apt-mirrors.txt}
 sources=${DW_APT_SOURCES:-/etc/apt/sources.list.d/ubuntu.sources}
 fallback=http://azure.archive.ubuntu.com/ubuntu/
@@ -59,7 +62,7 @@ use_fallback_mirror() {
 downloaded=
 for attempt in 1 2 3; do
   if sudo timeout --verbose 120 apt-get "${apt_opts[@]}" update &&
-    sudo DEBIAN_FRONTEND=noninteractive timeout --verbose 360 "${install[@]}" --download-only "${packages[@]}"; then
+    sudo DEBIAN_FRONTEND=noninteractive timeout --verbose "${DW_APT_DOWNLOAD_DEADLINE:-360}" "${install[@]}" --download-only "${packages[@]}"; then
     downloaded=1
     break
   fi
