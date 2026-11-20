@@ -16,15 +16,16 @@ owner updates the State column as items land and reports against it daily.
 - State on 2026-11-20, 14:00 UTC: 17 issues are open on the "1.0 RC must-fix" milestone and 8 are closed.
   - Merged on 11-20: #84, #85 and #87 (#123), #108 (#115), #125 (#124), six of #81's `wallet.dat`
     follow-ups (#119), the interim lock for #105 (#132; the SQLite bump follows with the Platform re-pin due
-    by 11-25), Home and Activity while the wallet syncs (#140), the localization foundation (#146), and the
-    upgrade-path check from v0.2.0, which closes part of #101 (#152).
-  - In a pull request: #68, #69 and #74 (#121, a draft with changes asked for in review), #88 (#134, a draft),
-    the renderer part of #133 (#137, a draft in its fifth review round), #122 (#147) and #113 (#154).
-  - Being written: #45, #46 and #47 (fixes on branches of the rust-dashcore and platform forks, being built
-    and tested; due 11-23 for the re-pin), #78, and #141.
+    by 11-25), the balance on Home while the wallet syncs (#140; Activity already showed the payment), the
+    localization foundation (#146), and the upgrade-path check from v0.2.0, which closes part of #101 (#152).
+  - In a pull request: #68, #69 and the engine part of #74 (#121, a draft with changes asked for in review;
+    the dash-spv part of #74 is #120), #88 (#134, a draft), the renderer part of #133 (#137, a draft),
+    #122 (#147), #113 (#154) and #141 (#158).
+  - Being written: #45, #46, #47 and #120 (the fixes are on branches of the rust-dashcore and platform forks,
+    not yet pinned here; due 11-23 for the re-pin), and #78.
   - Waiting: #73 and #86, which go on top of #134.
-  - Not started: the rest of #101, and what is left of #81 apart from its two watch-only rewind items, which
-    are in #121.
+  - Not started: the rest of #101, and what is left of #81 apart from the watch-only rewind and the retry of
+    a stored range that fails at load, which are in #121.
 - Remaining, checked against the code on 2026-11-18: about 200 agent-days without the partner integrations
   (about 225 with them). In 14 days that needs 14–16 lanes running the whole time, so review and CI
   turnaround, not writing code, sets the pace.
@@ -51,22 +52,22 @@ thread; "MG" is the masternode and governance thread, which is also the release 
 
 | Lane | Owner | Items, in order | Days | State |
 |---|---|---|---|---|
-| A Payments | PO | **P1** instant incoming payments: engine, then Home and Activity while syncing | 11-18 → 11-21 | engine merged (#42, 11-19); Home and Activity while syncing merged (#140, 11-20); a payment that arrives during sync is not announced yet (#141, being written) |
+| A Payments | PO | **P1** instant incoming payments: engine, then Home and Activity while syncing | 11-18 → 11-21 | engine merged (#42, 11-19); the balance on Home while syncing merged (#140, 11-20; Activity already showed the payment); announcing a payment that arrives during sync is in a pull request (#158, for #141) |
 | B Launch | PO | **P5** window in two seconds: the shell. Cut on 11-20: last-known balance at once | 11-18 → 11-21 | the blank-launch fix merged (#33, 11-19): the window no longer waits about 30 s on a desktop whose portal does not answer. The two-second target is not shown yet: #33 measured the splash at 0.9–1.4 s on a warm launch at lower load, and within 2 s in one of five launches on a heavily loaded machine; it is measured on each OS in the QA pass (H-08). Last-known balance at once was looked at on 11-20 and not built: the whole wait is under the start-up splash, before the app knows whether it is locked, so it would show a balance before the lock is known, against #133. Moved to 1.0.x on 11-20 (the project manager's decision) |
 | C Shielded and Platform | MG | finish item 0 (BL-617) → Platform ↔ Shielded → Max drains → top-up from Shielded or Platform → funding-source picker with shielded-funded identity → pay a contact from any balance → withdrawal to own Platform address → protocol advisory banner → vault scopes and viewing-key cache | 11-18 → 11-27 | item 0 part A3b (#26), Max on Send from Shielded (#63) and the Platform → Shielded quote (#110, 11-20) merged; #49 in review |
 | D Masternode screens | MG | MG-10 app bindings → My masternodes → registration wizard → ProUpRegTx → MG-10b shared masternodes → shown by default when the wallet holds keys → voting-key import → contested-vote polish | 11-19 → 11-25 | engine done; the first app bindings (#51) and the shared abandon spends (#94) merged; the api wrappers and fixture world in review (#55) |
 | E Masternode checks | MG | MG-08 `dwcli` owner commands and regtest suites → MG-12 signing-path review and BL-582..585 | 11-19 → 11-26 | the owner gov commands and nightly regtest suites merged (#35); of MG-12, voting keys refusing plain message signing merged (#44) |
-| F CoinJoin | PO | BL-614 → BL-615 → V24 promotion and demotion → mixed-send warnings. Cut: sleep prevention, start on login | 11-19 → 11-25 | BL-614 (#38) and BL-615 (#39) merged (11-19); their follow-up fixes (#68, #69, #74) are in #121, a draft with changes asked for in review; V24 promotion and demotion is written on a branch and being built and tested, no pull request yet; the mixed-send warnings are not started (they follow #137) |
-| G Core compatibility | PO | legacy Berkeley DB `wallet.dat`. Cut: MP-07 sweep and BIP38, MP-06 phrase repair, MP-05 BIP70, spend unconfirmed change, per-transaction notifications | 11-19 → 11-23 | `wallet.dat` merged (#34, 11-20); six fixes from its last review merged (#119, 11-20); what is left is listed in #81: its two watch-only rewind items are in #121, the rest is not started |
+| F CoinJoin | PO | BL-614 → BL-615 → V24 promotion and demotion → mixed-send warnings. Cut: sleep prevention, start on login | 11-19 → 11-25 | BL-614 (#38) and BL-615 (#39) merged (11-19); their follow-up fixes (#68, #69 and the engine part of #74) are in #121, a draft with changes asked for in review; V24 promotion and demotion is on a branch, no pull request yet; the mixed-send warnings are not started (they follow #137) |
+| G Core compatibility | PO | legacy Berkeley DB `wallet.dat`. Cut: MP-07 sweep and BIP38, MP-06 phrase repair, MP-05 BIP70, spend unconfirmed change, per-transaction notifications | 11-19 → 11-23 | `wallet.dat` merged (#34, 11-20); six fixes from its last review merged (#119, 11-20); what is left is listed in #81: the watch-only rewind and the retry of a stored range that fails at load are in #121, the rest is not started |
 | H Marketplace | PO | Cut: X4 (browse, buy, extra names, instant-name offer), identity-verify link | — | cut to 1.0.x |
 | I Invitations | PO | Cut: the storage patch, X3 create, share and history, shielded-funded and small invites, the Home claim card, scanning an invitation's QR code. Claiming an invitation from a link or pasted text shipped in 0.1 and stays | — | cut to 1.0.x |
 | J DashConnect | PO | Cut: App Connect v1 and v2 | — | cut to 1.0.x |
 | K Everyday polish | PO | #25 empty states → P7 unlock once → P15 PSBT under Advanced. Cut: MP-04 tax categories, lock-screen receive and scan, log export, the support path and the backup reminder, transaction metadata sync and restore on Platform | 11-18 → 11-24 | all three merged on 11-19 (#25, #37, #57); what is left of unlock once is #78, being written |
-| P Localization | PO | MP-14, translated in this repository by agents (no Transifex): the message catalog, locale choice, plurals and the right-to-left check, with one screen converted as the pattern (11-19 → 11-21) → every screen's copy moved into the catalog, one small pull request per screen area, each after that area's open pull requests have merged (11-21 → 11-26) → copy freeze 11-27 → the translations, each checked by a second pass (11-27 → 11-29) | 11-19 → 11-29 | the foundation merged (#146, 11-20): the catalog, the language choice, plurals and two pseudo-locales, with the shell, the lock screen and Settings ▸ General converted; what must be fixed before the first translation and the first right-to-left language ship is listed in #155; the per-area conversions start 11-21 |
+| P Localization | PO | MP-14, translated in this repository by agents (no Transifex): the message catalog, locale choice, plurals and the right-to-left check, with one screen converted as the pattern (11-19 → 11-21) → every screen's copy moved into the catalog, one small pull request per screen area, each after that area's open pull requests have merged (11-21 → 11-26) → copy freeze 11-27 → the translations, each checked by a second pass (11-27 → 11-29) | 11-19 → 11-29 | the foundation merged (#146, 11-20): the catalog, the language choice, plurals and two fixture-only pseudo-locales, with the shell, the lock screen and Settings ▸ General converted; what must be fixed before the first translation and the first right-to-left language ship is listed in #155; the per-area conversions start 11-21 |
 | L Commerce | PO | Cut: MP-09 Explore, MP-13 CrowdNode withdraw, MP-10, MP-11, MP-12 | — | cut to 1.0.x |
 | M Hardening | PO | H-02 fuzzing → H-03 kill -9 matrix → H-06 performance → H-09 trust gate on by default → **H-01 security review (11-27 → 11-29)**. Cut: H-10 node pinning, Tor/SOCKS5, MP-03, MP-15 | 11-19 → 11-29 | H-02 is in review (#149): ten fuzz targets, a seed replay in the test suite and a nightly job; a PSBT defect its fuzzing found is fixed (#130, 11-20); the rest not started |
 | N Release and packaging | MG | cut 0.2 → `parity.md` redone for the Tauri app → PK-03 auto-update → W-02 Windows services → Flatpak → SBOM and checklist → retire Swift (U-08) → each release cut. Cut: Windows Hello in W-02 (passphrase only on Windows), and what is left of the tray companion on Windows and Linux | 11-19 → 12-02 | 0.2.0 published 11-20; `parity.md` redone (#32); SBOM and checklist merged (#54); Flatpak in review (#56) |
-| O Test suites and QA | PO | DP2-06 (never-cut), DP1-07, DP3-05 suites → visual baselines refresh, issue #29 → iOS/Android restore test → H-04 real-node flows → H-08 full QA pass on three OSes → H-05 accessibility → H-07 mainnet canary, all done by 11-30 for the release candidate; 12-01 is for its fixes | 11-19 → 11-30 | the three suites are in one pull request (#129), in its last review round, with the harness gaps that stay open listed for a follow-up issue; the nightly is installed after it merges; the upgrade-path checks from v0.1.0 (#102) and from v0.2.0 (#152) merged on 11-20, and what is left is in #101; visual baselines refresh not started, and it now has to cover the whole set (about 150 images differ on `main`) |
+| O Test suites and QA | PO | DP2-06 (never-cut), DP1-07, DP3-05 suites → visual baselines refresh, issue #29 → iOS/Android restore test → H-04 real-node flows → H-08 full QA pass on three OSes → H-05 accessibility → H-07 mainnet canary, all done by 11-30 for the release candidate; 12-01 is for its fixes | 11-19 → 11-30 | the three suites are in one pull request (#129), with changes asked for in review; the nightly is installed after it merges; the upgrade-path checks from v0.1.0 (#102) and from v0.2.0 (#152) merged on 11-20, and what is left is in #101; visual baselines refresh not started, and it now has to cover the whole set (about 150 images differ on `main`) |
 
 ## Cuts applied 2026-11-19
 
@@ -139,15 +140,15 @@ the same wallets, balances, history, labels, settings and keys.
 **Linux, automated.** `testdata/upgrade/<tag>/` holds a data root written by that release's own Linux binary
 (`apps/desktop/scripts/upgrade-fixture.sh <tag>`; how, in `testdata/upgrade/README.md`) and the release's answers to
 its read commands (46 for v0.1.0, 61 for v0.2.0). `dw-app`'s `upgrade_path_tests` opens a copy twice with the current
-build and requires the same answers and the same message signatures. Each committed `expected.json` is pinned by its
-SHA-256 in the test, so an answer cannot be edited to hide a difference. It runs in `cargo test --workspace`: "Rust
-tests (Linux)" on every pull request, and the macOS job on `main`. A new release is covered by committing its
-directory:
+build and requires the same answers and the same message signatures, apart from the differences the test lists as
+known. Each committed `expected.json` is pinned by its SHA-256 in the test, so an answer cannot be edited to hide a
+difference. It runs in `cargo test --workspace`: "Rust tests (Linux)" on every pull request that changes code, and the
+macOS job on `main`. A new release is covered by committing its directory:
 
 ```sh
-cd apps/desktop && DASHD=<dir>/dashd scripts/upgrade-fixture.sh v0.3.0 <sha256 of its .deb>
-# then commit testdata/upgrade/v0.3.0 and add its digest to SNAPSHOT_SHA256
-cd rust && cargo test -p dw-app --lib upgrade_path_tests                  # test upgrade_path_tests::… ok
+(cd apps/desktop && DASHD=<dir>/dashd scripts/upgrade-fixture.sh v0.3.0 <sha256 of the release's .deb>)
+# commit testdata/upgrade/v0.3.0 and pin the SHA-256 of its expected.json in SNAPSHOT_SHA256
+(cd rust && cargo test -p dw-app --lib upgrade_path_tests)                # test upgrade_path_tests::… ok
 ```
 
 **macOS and Windows, by hand in the QA pass** (not run yet; a test user account with no
