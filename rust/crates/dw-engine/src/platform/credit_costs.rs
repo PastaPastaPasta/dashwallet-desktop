@@ -26,7 +26,12 @@
 //! - the top-up fee at dpp's own minimum for an `IdentityTopUp`;
 //! - a withdrawal's metered fee (DP6-02) at the bound on its `withdrawal`
 //!   document of the withdrawals contract, the same way, plus the
-//!   network's threshold-signing charge and [`WITHDRAWAL_IDENTITY_OPS`].
+//!   network's threshold-signing charge and [`WITHDRAWAL_IDENTITY_OPS`];
+//! - a transfer to a Platform address's metered fee (C-routes C6-5) at the
+//!   version's `identity_update` minimum and [`WITHDRAWAL_IDENTITY_OPS`],
+//!   plus [`ADDRESS_ENTRY_STORED_BYTES`] at the version's per-byte rates,
+//!   the processing doubled (Drive's address-balance estimator is
+//!   server-only, so the byte bound is the engine's).
 //!
 //! The write paths' grants (`flows.rs`) stay bounds above these figures;
 //! a test holds them above the table at every known protocol version.
@@ -77,6 +82,11 @@ pub(super) const MAX_TREE_ENTRIES: u64 = 1 << 48;
 /// past what they write (`withdrawal_tests.rs` holds the whole bound under
 /// dpp's minimum fee).
 const WITHDRAWAL_IDENTITY_OPS: u64 = 20_000_000;
+/// One new Platform address entry's stored bytes, bounded generously: its
+/// 21-byte key, its nonce and balance item with the sum it carries, and its
+/// Merk node's hashes and links. Platform's own per-output price
+/// (`address_funds_transfer_output_cost`) is about 220 bytes at its rates.
+const ADDRESS_ENTRY_STORED_BYTES: u64 = 1_024;
 /// Drive's estimator holds the processing it estimates within this factor
 /// of Drive's charge (its `…within_a_factor_of_two` test).
 const ESTIMATED_PROCESSING_FACTOR: u64 = 2;
@@ -165,6 +175,17 @@ pub(crate) fn withdrawal_metered_bound(network: &PlatformVersion) -> Result<u64,
                 .perform_network_threshold_signing,
         )
         .saturating_add(WITHDRAWAL_IDENTITY_OPS))
+}
+
+/// A bound on the fee Platform meters for a transfer of an identity's
+/// credits to one new Platform address at `network` (module doc).
+pub(crate) fn transfer_to_address_metered_bound(network: &PlatformVersion) -> u64 {
+    let fees = &network.fee_version;
+    let per_byte = fees.storage.storage_disk_usage_credit_per_byte
+        + ESTIMATED_PROCESSING_FACTOR * fees.storage.storage_processing_credit_per_byte;
+    (fees.state_transition_min_fees.identity_update)
+        .saturating_add(WITHDRAWAL_IDENTITY_OPS)
+        .saturating_add(ADDRESS_ENTRY_STORED_BYTES * per_byte)
 }
 
 /// The version the estimator prices with: `network` when it follows its
