@@ -135,9 +135,11 @@ impl PartiallySignedTransaction {
                                     let type_bytes: u16 =
                                         Decodable::consensus_decode(&mut decoder)?;
                                     // As Core and `Transaction`'s decoder: a payload only
-                                    // from version 3.
+                                    // from version 3, and a type this crate does not
+                                    // know keeps its payload raw.
                                     let transaction_type = if version as i16 >= 3 {
-                                        TransactionType::try_from(type_bytes)?
+                                        TransactionType::try_from(type_bytes)
+                                            .unwrap_or(TransactionType::Unknown(type_bytes))
                                     } else if type_bytes == 0 {
                                         TransactionType::Classic
                                     } else {
