@@ -1039,6 +1039,7 @@ impl NetworkSession {
         self.vault.lock();
         // A picture toggle's write lands before the session ends (DP4-02 D37).
         self.platform.avatars.settled().await;
+        self.platform.avatars.close();
         self.platform.deactivate(true).await;
         self.platform.contacts.close().await;
         // A retained session handle keeps no scanned key (DP2-03).

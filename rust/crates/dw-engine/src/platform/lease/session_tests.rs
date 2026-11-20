@@ -849,13 +849,24 @@ fn a_recovery_keeps_a_payment_choice_changed_while_it_waited() {
     assert!(!f.session.vault().signing_window_allowed());
 }
 
+/// A closed session its host still holds keeps no app database: the close
+/// released it, so the file can be replaced (issue #190).
+#[test]
+fn a_closed_session_still_held_keeps_no_app_database() {
+    let f = fixture(true);
+    let appdb = Arc::downgrade(&f.session.live().unwrap().appdb);
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    assert!(
+        appdb.upgrade().is_none(),
+        "the closed session still holds the app database"
+    );
+}
+
 /// "Ask every payment" is stored durably: once turning it on returns, a
 /// power loss does not bring back the window.
 #[test]
-#[cfg_attr(
-    windows,
-    ignore = "app.sqlite is still held open when the power loss is simulated (issue #190)"
-)]
 fn an_acknowledged_ask_every_payment_survives_a_power_loss() {
     use dw_appdb::durability_sim::{arm, power_loss};
     let mut f = fixture(true);

@@ -799,6 +799,12 @@ impl AvatarRuntime {
         self.pictures.settled().await;
     }
 
+    /// Drops the session's pipeline, and with it its hold on the app
+    /// database (at close): a retained session handle keeps no database.
+    pub(crate) fn close(&self) {
+        guard(&self.pipeline).take();
+    }
+
     /// Keeps `candidate` and returns its id, dropping expired ones and the
     /// wallet's oldest past [`CANDIDATES`] (another wallet's stay).
     pub(super) fn insert(&self, candidate: Candidate) -> String {
