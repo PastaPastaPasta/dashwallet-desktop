@@ -200,8 +200,11 @@ Decided 2026-11-20 with the release owner. The fixes for #88 (#134), for #68, #6
 coin, or let a payment through without the credential the user chose; the rest are for 1.0.x. The cases are
 listed in #170, #172 and #173.
 
-**#170, the balance after a restart.** Nine cases are RC must-fix. Sizes are working days with tests and
-review, from reading the code; nothing was built.
+**#170, the balance after a restart.** Ten cases are RC must-fix. Nine are in the table. The tenth, case
+15 (a failed write of the claim repair can leave a freed coin stored as spent), was added on 11-20 from a
+review of #134; it has no size and no term yet, and gets both when the fix being added to #134 shows
+whether it closes it. Sizes are working days with tests and review, from reading the code; nothing was
+built.
 
 | Case of #170 | For the release candidate | Days | State |
 |---|---|---|---|
@@ -215,7 +218,8 @@ review, from reading the code; nothing was built.
 | 6: a reorg that disconnects a plain block | expected in 1.0.x; needs the platform fork and a pin bump | 3 to 4.5 | not started |
 
 - Each case gets its own pull request, with a review and a test that fails without the fix. They are worked
-  in the order of the table: two lanes from 11-21, and a third when #121, #159 or #160 frees one.
+  in the order of the table: two lanes from 11-21, and a third when the lane on #159 frees (the lanes #121
+  and #160 free go to #172 and #173, below).
 - **Promised.** If a promised case is not merged by 11-28 18:00 UTC, the release owner decides then, in
   writing, whether the release candidate moves or the case becomes a line in its notes. Nothing slips by
   default.
@@ -237,33 +241,38 @@ built. Every fix is in this repository, with no pin bump.
 | #172: a wallet whose birth is below dash-spv's header anchor never sees its older coins | promised | 2.5 to 4 | not started; follows #121 |
 | #173 item 6: lowering the spending limit leaves issued window grants usable | promised | 0.5 | not started; follows #160 |
 | #172: attaching keys with an earlier birth height rescans nothing | promised | 0.5 to 1 | not started |
-| #172: CoinJoin Recovery stores its start and its address range apart | promised | 0.5 to 1 | not started |
-| #172: wallets an older build scanned, restored or created here and mixed elsewhere (two cases) | attempted; waits on a measurement of the replay it costs | 0.5 to 1 | not started |
-| #172: an older-build wallet loaded, then a quit before widening | attempted, with the row above | 0.5 to 1 | not started |
-| #173 item 1: an older manifest and spending limit put back together | attempted; otherwise stated as a known limit | 2 to 3 | not started |
+| #172: CoinJoin Recovery stores its start and its address range in two writes | promised | 0.5 to 1 | not started |
+| #172: older-build wallets not replayed on upgrade: a restored seed whose only CoinJoin use the narrow scan missed, and a seed created here but mixed elsewhere (two cases, one fix) | attempted; waits on a measurement of the replay it costs | 0.5 to 1.25 | not started |
+| #172: an older-build wallet loaded, then a quit before widening | attempted, after the row above | 0.5 to 1 after that fix; 1 to 1.5 without it | not started |
+| #173 item 1: an older manifest and spending limit put back together | attempted; a known limit remains even with the fix (both files rolled back together) | 2 to 3 | not started |
 
 - The same dates apply as for #170: a promised case not merged by 11-28 18:00 UTC is decided in writing by
   the release owner; an attempted case not in review by 11-27 18:00 UTC goes into the notes.
-- Promised work is nine cases: #170's five (7 to 11 days) and four here (4 to 6.5 days), on three lanes. The
-  release owner checks it against what has merged on 11-25 18:00 UTC; if the promised cases are not on track
+- Promised work is nine cases: #170's five (7 to 11 days) and four here (4 to 6.5 days). The release owner checks it against what has merged on 11-25 18:00 UTC; if the promised cases are not on track
   then, the release candidate moves or scope is cut in writing that day, not on 11-28.
 - **The header-anchor case is the most harmful of the eight, and it is ordinary use, not a fault.** A
   restore without a date scans from the first block, and dash-spv sets its header anchor once. Anyone who
-  restores an older wallet after another wallet has synced sees none of its payments from before the first
-  wallet's birth, on `main` and in 0.2 today. Until the fix: Tools ▸ Repair ▸ "Reset chain data and resync".
-  Its size depends on whether SPV can be restarted safely while mixing or a Platform pass runs. For 0.3 its
-  notes say so, and a detection-only change is sized in the first hour after #121 merges: when a wallet is
+  restores an older wallet after another wallet has synced sees none of its payments below that anchor
+  (the checkpoint at or below the first wallet's birth), on `main` and in 0.2 today. Until the fix: Tools ▸
+  Repair ▸ "Reset chain data and resync". Its size depends on whether SPV can be restarted safely while
+  mixing or a Platform pass runs. It cannot start before #121 merges, so #121 has to merge by about 11-23
+  for this promise to hold; the 11-24 report below covers it. 0.3's release notes carry the workaround,
+  and a detection-only change is sized in the first hour after #121 merges: when a wallet is
   restored or added, or its birth is lowered, below the stored header start, the app shows a notice with a
   button to that Repair action, and resets nothing itself. It ships in 0.3 only if it is about 50 lines or
   fewer outside tests; otherwise the notes line stands alone.
-- **The older-build cases** have one workable fix: every wallet upgraded from 0.1 or 0.2 is replayed once
-  from its birth, with sends held until it catches up. Whether that cost is acceptable is the product
-  owner's decision, due 11-23 after the replay is timed on mainnet. If the replay is chosen, the first start
-  after the upgrade says why sends are held and roughly for how long.
-- Lanes: the header-anchor case goes to the #121 lane when #121 merges (the same functions); #173's two go
-  to the #160 lane when #160 merges; the two half-day cases fit behind either. The two #170 lanes are not
-  used for these. If neither lane has freed by 11-24, the product owner reports it that day and the release
-  owner decides what they displace.
+- **The older-build cases.** The two not-replayed cases have one workable fix: every wallet upgraded from
+  0.1 or 0.2 is replayed once from its birth, with sends held until it catches up. Whether that cost is
+  acceptable is the product owner's decision, due 11-23 after the replay is timed on mainnet. If the replay
+  is chosen, the first start after the upgrade says why sends are held and roughly for how long, and the
+  loaded-then-quit case is fixed on top of it. If it is not chosen, the two not-replayed cases become a
+  notes line (a rescan from the wallet's birth after upgrading), and the loaded-then-quit case is fixed on
+  its own at the larger size.
+- Lanes: the header-anchor case goes to the #121 lane when #121 merges (the same functions), and the
+  older-build cases follow it there. #173's two go to the #160 lane when #160 merges, and the attach-keys
+  and Recovery cases follow them there. The two #170 lanes are not used for these, so four lanes work on
+  the RC must-fix cases once #121 and #160 have merged. If neither lane has freed by 11-24, the product
+  owner reports it that day and the release owner decides what they displace.
 
 ## What only pasta can unblock
 
@@ -288,9 +297,10 @@ No longer on this list: partner credentials and Explore database access (lane L 
   warnings, CoinJoin V24, then the later items of lane C.
 - **Review and CI throughput.** A full CI run takes about 90 minutes on macOS. With 12 lanes active the runners
   queue; engine-only and renderer-only pull requests should not wait on each other's jobs.
-- **The RC must-fix list grew on 11-20.** The three funds fixes left 17 RC must-fix cases between them
-  (#170, #172, #173). #170's nine add up to about 16.5 to 25 working days by its table (13.5 to 20.5
-  without case 6, which is expected in 1.0.x); the other eight add up to 7 to 11.5. The tables above say
+- **The RC must-fix list grew on 11-20.** The three funds fixes left 18 RC must-fix cases between them
+  (#170 ten, #172 six, #173 two). Nine of #170's add up to about 16.5 to 25 working days by its table (13.5
+  to 20.5 without case 6, which is expected in 1.0.x), and its case 15 is not sized; the other eight add up
+  to 7 to 11.75. The tables above say
   which cases are promised, which are attempted and when each is decided.
 - **Security review on new code.** H-01 runs 11-27 → 11-29 over code written the same fortnight. Its
   findings land before the release candidate or the affected feature ships disabled.
