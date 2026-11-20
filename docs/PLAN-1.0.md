@@ -228,14 +228,42 @@ review, from reading the code; nothing was built.
   this repository) takes 12 to 17 days at the shortest. It leaves the 1.0 plan and is a 1.1 item. No RC
   must-fix case needs it, and it would close cases 5 and 14 only partly.
 
-**#172, CoinJoin and restored wallets, and #173, the signing window.** #172 holds six RC must-fix cases;
-#173 holds two. They have no promised or attempted terms yet. The issues give rough sizes without review:
-about 3.5 days for four of #172's cases and 2.5 days for #173's two. Two of #172's cases have no size: a
-wallet whose birth is below dash-spv's header anchor, and a seed created here but mixed elsewhere, for which
-a hint on the Rescan screen and a notes line may stand in for a code fix. A table like the one above, with
-the targeted fix of each and its size with review, is due by 11-21 18:00 UTC and goes here with their terms.
-They are worked on the third lane. If no lane has freed for them by 11-24, the product owner reports it
-that day and the release owner decides what they displace.
+**#172, CoinJoin and restored wallets, and #173, the signing window.** #172 holds six RC must-fix cases
+and #173 two. Sizes are working days with tests and review, from a read of the code on 11-20; nothing was
+built. Every fix is in this repository, with no pin bump.
+
+| Case | For the release candidate | Days | State |
+|---|---|---|---|
+| #172: a wallet whose birth is below dash-spv's header anchor never sees its older coins | promised | 2.5 to 4 | not started; follows #121 |
+| #173 item 6: lowering the spending limit leaves issued window grants usable | promised | 0.5 | not started; follows #160 |
+| #172: attaching keys with an earlier birth height rescans nothing | promised | 0.5 to 1 | not started |
+| #172: CoinJoin Recovery stores its start and its address range apart | promised | 0.5 to 1 | not started |
+| #172: wallets an older build scanned, restored or created here and mixed elsewhere (two cases) | attempted; waits on a measurement of the replay it costs | 0.5 to 1 | not started |
+| #172: an older-build wallet loaded, then a quit before widening | attempted, with the row above | 0.5 to 1 | not started |
+| #173 item 1: an older manifest and spending limit put back together | attempted; otherwise stated as a known limit | 2 to 3 | not started |
+
+- The same dates apply as for #170: a promised case not merged by 11-28 18:00 UTC is decided in writing by
+  the release owner; an attempted case not in review by 11-27 18:00 UTC goes into the notes.
+- Promised work is nine cases: #170's five (7 to 11 days) and four here (4 to 6.5 days), on three lanes. The
+  release owner checks it against what has merged on 11-25 18:00 UTC; if the promised cases are not on track
+  then, the release candidate moves or scope is cut in writing that day, not on 11-28.
+- **The header-anchor case is the most harmful of the eight, and it is ordinary use, not a fault.** A
+  restore without a date scans from the first block, and dash-spv sets its header anchor once. Anyone who
+  restores an older wallet after another wallet has synced sees none of its payments from before the first
+  wallet's birth, on `main` and in 0.2 today. Until the fix: Tools ▸ Repair ▸ "Reset chain data and resync".
+  Its size depends on whether SPV can be restarted safely while mixing or a Platform pass runs. For 0.3 its
+  notes say so, and a detection-only change is sized in the first hour after #121 merges: when a wallet is
+  restored or added, or its birth is lowered, below the stored header start, the app shows a notice with a
+  button to that Repair action, and resets nothing itself. It ships in 0.3 only if it is about 50 lines or
+  fewer outside tests; otherwise the notes line stands alone.
+- **The older-build cases** have one workable fix: every wallet upgraded from 0.1 or 0.2 is replayed once
+  from its birth, with sends held until it catches up. Whether that cost is acceptable is the product
+  owner's decision, due 11-23 after the replay is timed on mainnet. If the replay is chosen, the first start
+  after the upgrade says why sends are held and roughly for how long.
+- Lanes: the header-anchor case goes to the #121 lane when #121 merges (the same functions); #173's two go
+  to the #160 lane when #160 merges; the two half-day cases fit behind either. The two #170 lanes are not
+  used for these. If neither lane has freed by 11-24, the product owner reports it that day and the release
+  owner decides what they displace.
 
 ## What only pasta can unblock
 
@@ -261,10 +289,8 @@ No longer on this list: partner credentials and Explore database access (lane L 
 - **Review and CI throughput.** A full CI run takes about 90 minutes on macOS. With 12 lanes active the runners
   queue; engine-only and renderer-only pull requests should not wait on each other's jobs.
 - **The RC must-fix list grew on 11-20.** The three funds fixes left 17 RC must-fix cases between them
-  (#170, #172, #173). #170's nine add up to about 16.5 to 25 working days by the table above (13.5 to 20.5
-  without case 6, which is expected in 1.0.x); the other eight are sized only roughly, or not at all. For
-  #170 the terms above say which cases are promised, which are attempted and when each is decided. If the
-  table for #172 and #173 on 11-21 shows they do not fit by 11-28, that is reported the same day with notes
-  lines.
+  (#170, #172, #173). #170's nine add up to about 16.5 to 25 working days by its table (13.5 to 20.5
+  without case 6, which is expected in 1.0.x); the other eight add up to 7 to 11.5. The tables above say
+  which cases are promised, which are attempted and when each is decided.
 - **Security review on new code.** H-01 runs 11-27 → 11-29 over code written the same fortnight. Its
   findings land before the release candidate or the affected feature ships disabled.
