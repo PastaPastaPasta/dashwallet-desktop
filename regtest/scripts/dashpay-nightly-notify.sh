@@ -10,5 +10,6 @@ set -euo pipefail
 unit=${1:-dw-dashpay-nightly.service}
 result=$(systemctl --user show -p Result --value "$unit" 2>/dev/null || true)
 code=$(systemctl --user show -p ExecMainStatus --value "$unit" 2>/dev/null || true)
-last=$(find "$DW_DP_STATE/nightly" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null | sort | tail -n 1)
+# Best effort: before the first run there is no nightly directory, and the notice still goes out.
+last=$(find "$DW_DP_STATE/nightly" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' 2>/dev/null | sort | tail -n 1 || true)
 exec "$DW_DP_NOTIFY" "$unit: result=${result:-unknown} exit=${code:-unknown}; artifacts: ${last:-none yet}"

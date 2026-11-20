@@ -18,10 +18,11 @@ Two fresh members A and B, each on its own data root (its own device) with a reg
    channel, and the payment is not in A's activity yet. Only then does a session with peers run
    the wallet's first scan from the birth height, which finds the payment, attributed to A.
 
-The one-way contact (a request sent but never answered, paid to) needs the sender to build its
-receiving account from a sent-only request. The pinned platform-wallet collects account-building
-candidates only from established contacts (`collect_account_build_candidates`), so a sent-only
-request never gets a receiving account; platform #4740 (v5.1-dev) adds that. The case is skipped
+The one-way contact (a request sent but never answered, paid to) needs the sender's receiving
+account for it. The pinned platform-wallet registers that account when the request is sent, but
+cannot build it again from a sent-only request: discovery collects account-building candidates
+only from established contacts (`collect_account_build_candidates`), so a restored wallet has no
+receiving account for such a request. Platform #4740 (v5.1-dev) adds that. The case is skipped
 until a pin bump (ROADMAP E0-14) brings it.
 """
 
@@ -136,7 +137,7 @@ def test_restore_has_contact_accounts_before_spv(dp, pair, contacts):
 
 
 @pytest.mark.skip(reason="one-way contacts need platform #4740 (ROADMAP E0-14): the pinned platform-wallet "
-                         "collects receiving-account candidates only from established contacts, not from "
-                         "sent-only requests; enable once it queues receiving accounts for sent-only requests")
+                         "registers the receiving account when a request is sent, but cannot build it again "
+                         "from a sent-only request (a restore); enable once discovery does")
 def test_one_way_contact():
     raise AssertionError("unreachable")

@@ -783,3 +783,18 @@ def test_relay_holds_a_tx_by_its_txid_until_released():
     finally:
         relay.close()
         upstream.close()
+
+
+def test_the_failure_notice_goes_out_before_any_run_left_a_directory(tmp_path):
+    """The notifier's install-time test, and a first run that fails early, have no nightly directory."""
+    notifier = tmp_path / "notify"
+    notifier.write_text('#!/bin/sh\nprintf %s "$1" > "$(dirname "$0")/sent"\n')
+    notifier.chmod(0o700)
+    env = {**os.environ, "DW_DP_NOTIFY": str(notifier), "DW_DP_STATE": str(tmp_path / "state")}
+    notify = ["bash", str(REPO / "regtest/scripts/dashpay-nightly-notify.sh"), "dw-no-such.service"]
+    subprocess.run(notify, env=env, check=True, timeout=60)
+    assert (tmp_path / "sent").read_text().endswith("artifacts: none yet")
+    run = tmp_path / "state" / "nightly" / "20261120"
+    run.mkdir(parents=True)
+    subprocess.run(notify, env=env, check=True, timeout=60)
+    assert (tmp_path / "sent").read_text().endswith(f"artifacts: {run}")
