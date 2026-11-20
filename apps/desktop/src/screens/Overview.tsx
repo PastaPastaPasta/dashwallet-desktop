@@ -10,7 +10,7 @@ import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { errorMessage } from "../api/backend";
-import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
+import { useBackend, useBalance, useHeroSync, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
 import { historyEmptyCopy, listDisplay, type ListArrival } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
@@ -236,7 +236,8 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   const balance = useBalance(walletId);
   const pools = usePoolBalances(walletId);
   const sync = useSyncStatus();
-  const { arrival, recheck, blocksBehind, scanPending } = useWalletCatchUp(walletId);
+  const { arrival, recheck } = useWalletCatchUp(walletId);
+  const hero = useHeroSync(walletId);
   const recent = useHistory(walletId, RECENT_FILTER, RECENT_COUNT);
   const discreet = useUi((s) => s.discreet);
   const rows = recent.data?.pages[0]?.rows ?? [];
@@ -263,9 +264,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   return (
     <main className="page page-overview" data-testid="page-home">
       <div className="hero-band" data-testid="hero-band">
-        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network}
-          hero={{ arrival, running: !!sync.raw?.running, networkCaughtUp: !!sync.data?.caughtUp, blocksBehind, scanPending }}
-        />
+        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} hero={hero} />
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">

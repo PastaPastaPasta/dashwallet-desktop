@@ -175,14 +175,33 @@ test("a new block on a synced wallet does not touch the hero line while the scan
   await checked(page, errors);
 });
 
-test("a synced wallet's hero says nothing while its first scan-height read is out", async ({ page }) => {
+test("a synced wallet's hero is empty for 2 s while its first scan-height read is out, then the caveat, then empty once it returns", async ({ page }) => {
   const errors = trackPageErrors(page);
+  await page.addInitScript(() => {
+    const seen: { text: string; at: number }[] = [];
+    (window as unknown as { __heroLines: typeof seen }).__heroLines = seen;
+    const read = () => {
+      const el = document.querySelector('[data-testid="hero-sync-line"]');
+      if (!el) return;
+      const text = el.textContent ?? "";
+      if (seen.length === 0 || seen[seen.length - 1].text !== text) seen.push({ text, at: performance.now() });
+    };
+    new MutationObserver(read).observe(document, { childList: true, characterData: true, subtree: true });
+  });
+  const lines = () => page.evaluate(() => (window as unknown as { __heroLines: { text: string; at: number }[] }).__heroLines);
+  const scanReads = () => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "wallet_scan_height").length);
+
   await page.goto(fixtureUrl("funded", "light", "&hold=wallet_scan_height"));
   await expect(page.getByTestId("hero-amount")).toContainText("32.04", { timeout: 15_000 });
-  await page.waitForTimeout(1000);
-  await expect(page.getByTestId("hero-sync-line")).toHaveText("");
+  expect(await scanReads()).toBe(1);
+  await expectLine(page, SYNCING);
+  expect(await scanReads()).toBe(1);
+  const pending = await lines();
+  expect(pending.map((l) => l.text)).toEqual(["", SYNCING]);
+  expect(pending[1].at - pending[0].at).toBeGreaterThanOrEqual(1_500);
+
   await page.evaluate(() => window.__dwFixture!.release("wallet_scan_height"));
-  await expect(page.getByTestId("history-header")).toBeVisible();
-  await expect(page.getByTestId("hero-sync-line")).toHaveText("");
+  await expect(page.getByTestId("hero-sync-line")).toHaveText("", { timeout: 15_000 });
+  expect((await lines()).map((l) => l.text)).toEqual(["", SYNCING, ""]);
   expect(errors).toEqual([]);
 });
