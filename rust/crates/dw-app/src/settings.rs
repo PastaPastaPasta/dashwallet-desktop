@@ -46,6 +46,10 @@ pub struct UiSettings {
     /// route (Governance, Username voting) are hidden until it is on (MG-00
     /// D1, D2; the 0.1 release plan).
     pub show_masternodes: bool,
+    /// The Masternodes page's open tab (MG-10 D1); a tab this build doesn't
+    /// know opens the default.
+    #[serde(deserialize_with = "MasternodesTab::lenient")]
+    pub masternodes_tab: MasternodesTab,
     /// The 0.1 pre-release notice was dismissed: it is shown once, on the
     /// first run.
     pub pre_release_notice_dismissed: bool,
@@ -65,6 +69,7 @@ impl Default for UiSettings {
             auto_lock_secs: None,
             subtract_fee_by_default: false,
             show_masternodes: false,
+            masternodes_tab: MasternodesTab::MyMasternodes,
             pre_release_notice_dismissed: false,
             language: None,
         }
@@ -83,6 +88,23 @@ fn is_language_tag(tag: &str) -> bool {
         && (2..=3).contains(&lang.len())
         && lang.bytes().all(|b| b.is_ascii_alphabetic())
         && parts.all(|p| (1..=8).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
+impl MasternodesTab {
+    fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(d)?;
+        Ok(Self::deserialize(value).unwrap_or_default())
+    }
+}
+
+/// A tab of the Masternodes page (MG-00 D3 order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum MasternodesTab {
+    #[default]
+    MyMasternodes,
+    Governance,
+    Names,
 }
 
 impl UiSettings {
@@ -186,12 +208,35 @@ mod tests {
             auto_lock_secs: Some(300),
             subtract_fee_by_default: true,
             show_masternodes: true,
+            masternodes_tab: MasternodesTab::Names,
             pre_release_notice_dismissed: true,
             language: Some("pt-BR".into()),
         };
         write(dir.path(), &s).unwrap();
         assert_eq!(read(dir.path()), s);
         assert!(!dir.path().join("settings.json.tmp").exists());
+    }
+
+    #[test]
+    fn a_file_without_the_tab_opens_my_masternodes() {
+        let dir = root();
+        std::fs::write(path(dir.path()), r#"{"showMasternodes":true}"#).unwrap();
+        assert_eq!(
+            read(dir.path()).masternodes_tab,
+            MasternodesTab::MyMasternodes
+        );
+    }
+
+    #[test]
+    fn an_unknown_tab_opens_my_masternodes_and_keeps_the_rest() {
+        let dir = root();
+        for tab in [r#""keys""#, "7", "null"] {
+            let file = format!(r#"{{"showMasternodes":true,"masternodesTab":{tab}}}"#);
+            std::fs::write(path(dir.path()), file).unwrap();
+            let s = read(dir.path());
+            assert_eq!(s.masternodes_tab, MasternodesTab::MyMasternodes);
+            assert!(s.show_masternodes);
+        }
     }
 
     #[test]

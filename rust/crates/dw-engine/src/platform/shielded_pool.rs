@@ -112,7 +112,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::future::Future;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, Weak};
 use std::time::Duration;
 
@@ -1865,7 +1865,9 @@ async fn set_dispatch(
 /// after it stored a spend's signed transition, unsent, and before it
 /// sends it for the first time; it calls [`Self::admit`] before a sync
 /// pass re-sends a spend stored under a hook. Both refuse unless every
-/// check passes, and a refusal sends nothing.
+/// check passes, and a refusal sends nothing: from the start of the
+/// session's close (a quit's too) and while a drain of the passes runs
+/// ([`HookFence`]) they refuse whatever they are asked.
 pub(crate) struct EngineDispatch {
     session: Weak<NetworkSession>,
     /// Weak: the coordinator owns the hook.
@@ -1874,6 +1876,44 @@ pub(crate) struct EngineDispatch {
 
 fn refused(reason: impl Into<String>) -> DispatchRefused {
     DispatchRefused::new(reason)
+}
+
+/// When the session's dispatch hook refuses: once its close has begun
+/// (`NetworkSession::close`, before anything of it is torn down), and while
+/// a lock, a revocation or the close waits for the shielded passes
+/// ([`drain_passes`]). A spend between its store and its first broadcast is
+/// then refused, so the library records it `NotExecuted(Refused)` and frees
+/// its notes, and a pass in flight re-sends nothing more. `dispatch` checks
+/// again right before it writes the artifact; one already past that check
+/// completes, and the close's gate waits for its call.
+#[derive(Default)]
+pub(crate) struct HookFence {
+    closing: AtomicBool,
+    draining: AtomicUsize,
+}
+
+impl HookFence {
+    pub(crate) fn close(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn refusal(&self) -> Option<&'static str> {
+        if self.closing.load(Ordering::SeqCst) {
+            Some("the network session is closing")
+        } else if self.draining.load(Ordering::SeqCst) > 0 {
+            Some("a drain of the shielded passes is running")
+        } else {
+            None
+        }
+    }
+}
+
+struct Draining<'a>(&'a AtomicUsize);
+
+impl Drop for Draining<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl EngineDispatch {
@@ -1887,16 +1927,21 @@ impl EngineDispatch {
         }
     }
 
-    /// The session and its coordinator while the session is open: not once
-    /// its close has shut the gate, nor after it is gone.
+    /// The session and its coordinator while the session is open and its
+    /// [`HookFence`] lets the hook answer: not once its close has begun, nor
+    /// while a drain of the passes runs, nor after it is gone.
     fn open(
         &self,
     ) -> Result<(Arc<NetworkSession>, Arc<NetworkShieldedCoordinator>), DispatchRefused> {
         let session = self.session.upgrade().filter(|s| s.is_open());
-        match (session, self.coordinator.upgrade()) {
-            (Some(session), Some(coordinator)) => Ok((session, coordinator)),
-            _ => Err(refused("the network session is closing")),
+        let (session, coordinator) = match (session, self.coordinator.upgrade()) {
+            (Some(session), Some(coordinator)) => (session, coordinator),
+            _ => return Err(refused("the network session is closing")),
+        };
+        if let Some(why) = session.platform.hook_fence.refusal() {
+            return Err(refused(why));
         }
+        Ok((session, coordinator))
     }
 
     /// The engine's one shielded account: the journal keys an artifact by
@@ -1973,6 +2018,9 @@ impl ShieldedDispatch for EngineDispatch {
             selected: selected.into_iter().collect(),
             published: payload.published_nullifiers,
         };
+        if let Some(why) = session.platform.hook_fence.refusal() {
+            return Err(refused(why));
+        }
         let wallet = WalletId(payload.wallet_id);
         match (session.leases.record_shielded_artifact(wallet, artifact)).await {
             Ok(true) => Ok(()),
@@ -2732,17 +2780,30 @@ pub(crate) async fn admit_pass(
 }
 
 /// Whether wallet `id` holds a spend whose result is not known, stored by
-/// the library for its identical-bytes redrive (every row of the wallet in
-/// `shielded_pending_spends`, rehydrated at the store's open). Removing the
-/// wallet from the manager would delete it (DEC-1046,
-/// `PlatformRuntime::remove_from_manager`). No coordinator: nothing is
-/// purged, so nothing is held. A store that cannot be read holds.
+/// the library: a record for its identical-bytes redrive (every row of the
+/// wallet in `shielded_pending_spends`, rehydrated at the store's open, one
+/// stored under the hook and not sent yet included), or an `Executed` or
+/// `Unresolved` disposition not acknowledged yet, which holds its notes.
+/// Removing the wallet from the manager would delete the record and leave
+/// the disposition's hold to the next scan instead of an acknowledgement
+/// (DEC-1046, `PlatformRuntime::remove_from_manager`). No coordinator:
+/// nothing is purged, so nothing is held. A store that cannot be read
+/// holds.
 pub(crate) async fn holds_stored_spends(manager: &Manager, id: WalletId) -> bool {
     let Some(coordinator) = manager.shielded_coordinator().await else {
         return false;
     };
-    let stored = (coordinator.store().read().await).pending_redrives_for_wallet(id.0);
-    stored.map_or(true, |stored| !stored.is_empty())
+    let store = coordinator.store().read().await;
+    let (stored, dispositions) = (
+        store.pending_redrives_for_wallet(id.0),
+        store.dispositions(id.0),
+    );
+    let (Ok(stored), Ok(dispositions)) = (stored, dispositions) else {
+        return true;
+    };
+    !stored.is_empty()
+        || (dispositions.iter())
+            .any(|d| !matches!(d.disposition, ShieldedSpendDisposition::NotExecuted(_)))
 }
 
 /// Whether wallet `id` holds a spend whose result is not known: one the
@@ -2782,7 +2843,11 @@ pub(crate) const SHIELDED_PASS_DRAIN: Duration = Duration::from_secs(10);
 /// The worst case is therefore a pass's call count times about 160 s; on
 /// a reachable network a pass takes seconds (testnet, 6,430 notes: about 1
 /// s).
-pub(crate) async fn drain_passes(passes: &tokio::sync::RwLock<()>) {
+///
+/// The dispatch hook refuses meanwhile ([`HookFence`]).
+pub(crate) async fn drain_passes(passes: &tokio::sync::RwLock<()>, fence: &HookFence) {
+    fence.draining.fetch_add(1, Ordering::SeqCst);
+    let _draining = Draining(&fence.draining);
     // One acquire, kept across the log: its place in the lock's queue too.
     let write = passes.write();
     tokio::pin!(write);

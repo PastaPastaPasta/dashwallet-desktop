@@ -8,7 +8,7 @@ import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { WalletSummary } from "../api/generated/WalletSummary";
 import { useBackend } from "../api/queries";
-import { navigate, ui, useUi, type Route } from "../app/ui";
+import { navigate, switchWallet, ui, useUi, type Route } from "../app/ui";
 import { namesState, type NamesState } from "../dashpay/status";
 import { useT, type Translate } from "../i18n";
 import { ExperimentalBadge } from "./basics";
@@ -241,7 +241,7 @@ function WalletPicker({ wallets, current }: { wallets: WalletSummary[]; current:
       data-testid="toolbar-wallet-picker"
       aria-label={t("shell.toolbar.wallet")}
       value={current?.walletId}
-      onChange={(e) => ui.set({ walletId: e.target.value, detail: null })}
+      onChange={(e) => switchWallet(e.target.value)}
     >
       {wallets.map((w) => (
         <option key={w.walletId} value={w.walletId}>

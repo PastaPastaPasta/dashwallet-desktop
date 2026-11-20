@@ -29,6 +29,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   autoLockSecs: null,
   subtractFeeByDefault: false,
   showMasternodes: false,
+  masternodesTab: "myMasternodes",
   // dw-app's default is false (the first-run notice); the fixture starts past it so a scenario
   // opens on its screen, and `pre-release-notice` is the one that shows it.
   preReleaseNoticeDismissed: true,

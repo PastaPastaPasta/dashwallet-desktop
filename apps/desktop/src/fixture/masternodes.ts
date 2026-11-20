@@ -20,6 +20,7 @@ import type { MasternodePayout } from "../api/generated/MasternodePayout";
 import type { MasternodeRow } from "../api/generated/MasternodeRow";
 import type { RegistrarCapabilityName } from "../api/generated/RegistrarCapabilityName";
 import type { ThemeName } from "../api/generated/ThemeName";
+import type { TxRow } from "../api/generated/TxRow";
 import type { Ctx, Handlers } from "./handlers";
 import { FIXTURE_WALLET_ID, type FixtureWallet, type World } from "./scenarios";
 import { FIXTURE_NOW, secs } from "./wallet";
@@ -454,10 +455,32 @@ export function masternodesHandlers({ wallet, useGrant }: { wallet: (w: World, w
 
 type Base = (theme: ThemeName | null) => World;
 
+/** The main wallet's history holds every payout as a Generated record (Activity's filters, §1.9). */
+function payoutRows(m: MasternodesWorld): TxRow[] {
+  const byTxid = new Map(Object.values(m.payouts).flat().map((p) => [p.txid, p]));
+  return [...byTxid.values()].map((p) => ({
+    txid: p.txid,
+    recordIndex: 0,
+    txType: "generated",
+    category: "reward",
+    status: { kind: "confirmed", confirmations: 101, instantLocked: false, chainLocked: true, maturesIn: null },
+    timestamp: p.timestamp,
+    blockHeight: p.height,
+    amount: p.amount,
+    fee: null,
+    address: p.address,
+    label: null,
+    countsTowardBalance: true,
+    involvesWatchOnly: false,
+  }));
+}
+
 function mnBase(base: Base, theme: ThemeName | null, patch?: (m: MasternodesWorld, w: World) => void): World {
   const w = base(theme);
   w.settings.ui = { ...w.settings.ui, showMasternodes: true };
   patch?.(w.masternodes, w);
+  const main = w.wallets[0];
+  main.rows = [...main.rows, ...payoutRows(w.masternodes)].sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
   return w;
 }
 
@@ -510,11 +533,12 @@ export function masternodesScenarios(base: Base) {
       mnBase(base, t, (_, w) => {
         w.wallets[0].summary = { ...w.wallets[0].summary, watchOnly: true };
       }),
-    /** Locked vault: no attached keys shown; Club's registration is held here, so it reads `vault_locked`. */
+    /** Unlocked for mixing only (a locked vault is under the lock screen): no attached keys shown;
+     * Club's registration is held here, so it reads `vault_locked`. */
     "mn-locked": (t: ThemeName | null) =>
       mnBase(base, t, (m, w) => {
         m.registrations.push(CLUB);
-        w.lock = { ...w.lock, state: "locked" };
+        w.lock = { ...w.lock, state: "unlockedMixingOnly" };
       }),
     /** Office's ban, with its keys here (`available`). */
     "mn-banned": (t: ThemeName | null) => mnBase(base, t, (m) => (m.rows = m.rows.filter((r) => r.proTxHash === HOME || r.proTxHash === OFFICE))),

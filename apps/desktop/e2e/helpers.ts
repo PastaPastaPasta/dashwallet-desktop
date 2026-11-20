@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { expect, type Page, type TestInfo } from "@playwright/test";
+import type { ToolsTab } from "../src/api/generated/ToolsTab";
 
 export type Theme = "light" | "dark";
 export const THEMES: Theme[] = ["light", "dark"];
@@ -66,6 +67,21 @@ export async function authorize(page: Page, passphrase = "demo") {
   await sheet.locator("input[type=password]").fill(passphrase);
   await sheet.locator("input[type=password]").press("Enter");
   await expect(sheet).toHaveCount(0);
+}
+
+/** Opens a Tools tab as the menu does. The command focuses the page's heading on the next frame;
+ * under load that frame came after the tab showed and took the focus from a fill in progress,
+ * which then typed nowhere (U-05 D25). So the focus is let go first and the heading's is waited for. */
+export async function openToolsTab(page: Page, tab: ToolsTab) {
+  await page.evaluate((t) => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    window.__dwFixture!.shellCommand({ kind: "tools", tab: t });
+  }, tab);
+  await expect(page.getByTestId(`tools-tabs-${tab}`)).toHaveAttribute("aria-selected", "true");
+  await page.waitForFunction(() => {
+    const main = document.querySelector<HTMLElement>(".app-body > main");
+    return document.activeElement !== null && document.activeElement === (main?.querySelector("h1") ?? main);
+  });
 }
 
 /** Frames that come late, on demand: once `late(true)` runs, each `requestAnimationFrame`
