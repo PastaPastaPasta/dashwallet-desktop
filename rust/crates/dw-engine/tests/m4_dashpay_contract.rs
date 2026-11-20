@@ -221,8 +221,8 @@ const FACADE: &[&str] = &[
 /// the invitation checks with their tests (DP5-02), the network's
 /// protocol version (release 0.1), the shielded funds' library side
 /// with its tests (0.1 E1), the unfinished transfers' kinds and runner
-/// with their tests (0.2 recovery), and the input-0 planner with its
-/// tests (1.0 C1a-1).
+/// with their tests (0.2 recovery), the input-0 planner with its tests
+/// (1.0 C1a-1), and the parsers dw-fuzz drives (H-02, `fuzzing` feature).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -240,7 +240,12 @@ const NOT_FACADE: &[&str] = &[
     "contacts_tests.rs",
     "contest_watch.rs",
     "contest_watch_tests.rs",
+    "core_max.rs",
+    "core_max_fund_tests.rs",
+    "core_max_lib_tests.rs",
+    "core_max_tests.rs",
     "credit_costs.rs",
+    "fuzzing.rs",
     "identity_reads.rs",
     "identity_tests.rs",
     "identity_writes.rs",
@@ -1117,6 +1122,9 @@ fn error_codes_match_the_contract() {
                 txid: String::new(),
             },
             CreditsError::TooManyInputs { inputs: 0, max: 0 },
+            CreditsError::CoinsChanged,
+            CreditsError::MixingActive,
+            CreditsError::MoveRunning,
         ],
         CreditsError::code,
     );
@@ -1618,8 +1626,12 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.shielded_status().await.map(drop),
             dp.shielded_sync().await.map(drop),
             dp.shielded_receive_address().await.map(drop),
-            dp.shield_quote(1).await.map(drop),
-            dp.shield_from_core(1, s()).await.map(drop),
+            dp.shield_quote(FundAmount::Duffs { duffs: 1 })
+                .await
+                .map(drop),
+            dp.shield_from_core(FundAmount::Duffs { duffs: 1 }, s())
+                .await
+                .map(drop),
             dp.resume_shield(s(), s()).await.map(drop),
             dp.shield_mixed_quote().await.map(drop),
             dp.stuck_shield_fundings().await.map(drop),

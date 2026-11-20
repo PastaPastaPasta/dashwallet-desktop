@@ -2720,7 +2720,7 @@ async fn the_quote_waits_while_platform_catches_up_and_stops_at_its_bound() {
     ));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn the_pre_sign_wait_runs_outside_the_identity_lock_and_before_the_grant() {
     // A masternode of its own: no other test holds its lock.
     let f = Fx::new(pro_tx(0x90));

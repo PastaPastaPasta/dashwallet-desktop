@@ -294,6 +294,11 @@ pub struct NetworkSession {
     pub(crate) withdrawal_nonces: crate::platform::withdrawal::WithdrawalNonces,
 }
 
+/// Tests: an operation [`NetworkSession::on_runtime`] spawns, boxed so the
+/// tests' task-locals can wrap it.
+#[cfg(test)]
+type TestRun<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, EngineError>> + Send>>;
+
 impl NetworkSession {
     /// Opens the session. Must run on the engine runtime: the manager spawns
     /// its persistence adapter task with `tokio::spawn`.
@@ -429,8 +434,10 @@ impl NetworkSession {
         );
         // dash-qt loads only the wallets of its settings list; a missing
         // list loads every wallet, and so does one that would load none of
-        // them: with no wallet open, closed ones cannot be reached.
-        let startup_list = {
+        // them: with no wallet open, closed ones cannot be reached. Such a
+        // list is stored again with every wallet on it, so what Settings
+        // shows is what this start did.
+        let mut startup_list = {
             let appdb = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::multiwallet::read_startup_list(&appdb))
                 .await??
@@ -449,6 +456,19 @@ impl NetworkSession {
                         .filter(|id| !list.contains(&WalletId(*id)))
                         .collect()
                 } else {
+                    if !registered.is_empty() {
+                        let every: std::collections::BTreeSet<WalletId> =
+                            registered.iter().copied().map(WalletId).collect();
+                        let (appdb, stored) = (Arc::clone(&appdb), every.clone());
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            crate::multiwallet::write_startup_list(&appdb, &stored)
+                        })
+                        .await?
+                        {
+                            tracing::warn!(error = %e, "could not repair the load-on-startup list");
+                        }
+                        startup_list = Some(every);
+                    }
                     Default::default()
                 }
             }
@@ -897,14 +917,19 @@ impl NetworkSession {
         F: Future<Output = Result<T, EngineError>> + Send + 'static,
         T: Send + 'static,
     {
-        // Tests: a held app.sqlite job stays held in the spawned task.
+        // Tests: a held app.sqlite job and the gate's holds stay with the
+        // spawned task.
         #[cfg(test)]
-        if let Ok(pause) = crate::coins::HOLD_APPDB_JOB.try_with(Arc::clone) {
-            return self
-                .rt
-                .spawn(crate::coins::HOLD_APPDB_JOB.scope(pause, fut))
-                .await?;
-        }
+        let fut = {
+            let mut fut: TestRun<T> = Box::pin(fut);
+            if let Ok(pause) = crate::coins::HOLD_APPDB_JOB.try_with(Arc::clone) {
+                fut = Box::pin(crate::coins::HOLD_APPDB_JOB.scope(pause, fut));
+            }
+            if let Ok(holds) = crate::coins::GATE_HOLDS.try_with(Arc::clone) {
+                fut = Box::pin(crate::coins::GATE_HOLDS.scope(holds, fut));
+            }
+            fut
+        };
         self.rt.spawn(fut).await?
     }
 

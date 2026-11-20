@@ -15,6 +15,7 @@ import type { MoveToCoreQuote } from "./generated/MoveToCoreQuote";
 import type { PlatformReceiveAddress } from "./generated/PlatformReceiveAddress";
 import type { PendingPlatformFund } from "./generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "./generated/PlatformFundOutcome";
+import type { FundAmount } from "./generated/FundAmount";
 import type { PlatformFundQuote } from "./generated/PlatformFundQuote";
 import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
@@ -247,8 +248,8 @@ export interface Backend {
   /** The account's receive address, for Receive and its QR. */
   shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress>;
   /** Core → Shielded: what `duffs` cost and buy. */
-  shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote>;
-  shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome>;
+  shieldQuote(walletId: string, amount: FundAmount): Promise<ShieldQuote>;
+  shieldFromCore(walletId: string, amount: FundAmount, grant: string): Promise<ShieldOutcome>;
   /** Applies a pending lock. */
   resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome>;
   /** The Core → Shielded locks Platform is not known to have applied; `null` while dw-app has no such command. */
@@ -284,9 +285,9 @@ export interface Backend {
   /** Sends the quoted `operation` (single use) from the Platform addresses under a fresh `platformOp` `grant` (`platform_send`). */
   platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome>;
   /** What "Add from Dash wallet" of `duffs` costs and adds (`platform_fund_quote`). */
-  platformFundQuote(walletId: string, duffs: number): Promise<PlatformFundQuote>;
+  platformFundQuote(walletId: string, amount: FundAmount): Promise<PlatformFundQuote>;
   /** Locks `duffs` of the Dash wallet and funds the wallet's Platform receive address under `grant` (`platform_fund`). */
-  platformFund(walletId: string, duffs: number, grant: string): Promise<PlatformFundOutcome>;
+  platformFund(walletId: string, amount: FundAmount, grant: string): Promise<PlatformFundOutcome>;
   /** The locks not yet applied (`pending_platform_funds`); `null` while dw-app has no such command. */
   pendingPlatformFunds(walletId: string): Promise<PendingPlatformFund[] | null>;
   /** Applies a pending lock (`resume_platform_fund`). */

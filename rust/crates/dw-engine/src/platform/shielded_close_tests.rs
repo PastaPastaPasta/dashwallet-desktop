@@ -1099,7 +1099,9 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
         };
         assert_eq!((code(sent), code(unshielded)), want);
     }
-    let shield = engine.block_on(dp.shield_quote(100_000)).unwrap_err();
+    let shield = engine
+        .block_on(dp.shield_quote(crate::platform::FundAmount::Duffs { duffs: 100_000 }))
+        .unwrap_err();
     assert_ne!(shield.code(), "shielded.unrecorded_spend", "{shield:?}");
 }
 

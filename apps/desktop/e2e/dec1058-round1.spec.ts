@@ -91,7 +91,7 @@ test.describe("catch-up is not news", () => {
   const unseen = (page: Page) =>
     page.evaluate(`(() => { const w = window.__dwFixture.world.wallets[0]; const r = w.rows.find((x) => x.txType === "recvWithAddress" && x.amount > 0); return r.txid; })()`) as Promise<string>;
   const catchUp = (page: Page, txid: string) =>
-    page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [${JSON.stringify(txid)}], count: 1, catchUp: true }); })()`);
+    page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [${JSON.stringify(txid)}], live: [false], count: 1, catchUp: true }); })()`);
   const noticeCalls = (page: Page) => page.evaluate(`window.__dwFixture.calls.filter((c) => c === "tx_notices").length`) as Promise<number>;
 
   test("a far-behind sync event, its read still pending, and a catch-up batch announce nothing", async ({ page }) => {
@@ -188,7 +188,7 @@ test.describe("round 2: stale sync replies", () => {
     // The old reply did not restore a caught-up reading: once the notification allowance (10 minutes
     // since the last one) has passed, a catch-up batch is history, not news.
     await page.clock.runFor(10 * 60_000);
-    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [${JSON.stringify(txid)}], count: 1, catchUp: true }); })()`);
+    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [${JSON.stringify(txid)}], live: [false], count: 1, catchUp: true }); })()`);
     await page.clock.runFor(500);
     expect(await page.evaluate(`window.__dwFixture.calls.filter((c) => c === "tx_notices").length`)).toBe(0);
     expect(await toastText(page)).toBe("");
@@ -202,7 +202,7 @@ test.describe("round 2: catch-up near the tip", () => {
     const txid = (await page.evaluate(
       `(() => { const w = window.__dwFixture.world.wallets[0]; return w.rows.find((x) => x.txType === "recvWithAddress" && x.amount > 0).txid; })()`,
     )) as string;
-    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [${JSON.stringify(txid)}], count: 1, catchUp: true }); })()`);
+    await page.evaluate(`(() => { const f = window.__dwFixture; f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [${JSON.stringify(txid)}], live: [false], count: 1, catchUp: true }); })()`);
     await page.waitForTimeout(500);
     expect(await page.evaluate(`window.__dwFixture.calls.filter((c) => c === "tx_notices").length`)).toBe(0);
     expect(await toastText(page)).toBe("");

@@ -404,7 +404,7 @@ const BLACKHOLED_LOOPS: [&str; 5] = [
 /// Whether `stopped` is the stop's refusal naming the loops still in flight
 /// at its deadline (`bringup.rs` `stop_platform`): at least one, and only
 /// [`BLACKHOLED_LOOPS`]. Which of them are still in flight depends on timing.
-fn names_only_stuck_loops(stopped: &Result<(), EngineError>) -> bool {
+pub(super) fn names_only_stuck_loops(stopped: &Result<(), EngineError>) -> bool {
     let Err(EngineError::Sdk(detail)) = stopped else {
         return false;
     };

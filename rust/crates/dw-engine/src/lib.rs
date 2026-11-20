@@ -51,6 +51,8 @@ mod restore;
 mod restore_tests;
 pub(crate) mod send;
 mod session;
+#[cfg(test)]
+mod startup_list_tests;
 mod store;
 pub mod sync;
 // Present only with the `test-support` feature, which dwcli's

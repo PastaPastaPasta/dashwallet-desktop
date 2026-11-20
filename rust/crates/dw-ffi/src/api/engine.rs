@@ -237,6 +237,7 @@ impl EngineEvent {
                 wallet_id,
                 txids,
                 catch_up,
+                ..
             } => Self::NewTransactions {
                 network: network.into(),
                 wallet_id: wallet_id.to_string(),

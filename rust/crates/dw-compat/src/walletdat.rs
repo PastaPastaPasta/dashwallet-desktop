@@ -346,6 +346,29 @@ impl std::fmt::Debug for HdRoot {
 }
 
 impl SqliteWallet {
+    /// The wallet the `(key, value)` records of its `main` table describe,
+    /// as [`read_sqlite`] and [`read_bdb_bytes`] read them. Each record is
+    /// parsed and dropped before the next is read, and the first error,
+    /// from the source or from a record, ends the read.
+    pub fn from_records<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        records: impl IntoIterator<Item = Result<(K, V), WalletDatError>>,
+    ) -> Result<Self, WalletDatError> {
+        let mut wallet = empty_wallet();
+        let mut gather = Gather::default();
+        for record in records {
+            let (key, value) = record?;
+            parse_record(key.as_ref(), value.as_ref(), &mut wallet, &mut gather)?;
+        }
+        finish(&mut wallet, gather)?;
+        Ok(wallet)
+    }
+
+    /// The key derivation rounds a passphrase costs here: every `mkey`
+    /// record's together (at most [`crypter::MAX_ROUNDS`]).
+    pub fn derivation_rounds(&self) -> u64 {
+        self.master_keys.iter().map(|m| u64::from(m.rounds)).sum()
+    }
+
     /// Whether the wallet has a master key record (`encryptwallet` ran).
     pub fn encrypted(&self) -> bool {
         !self.master_keys.is_empty()
@@ -894,15 +917,10 @@ pub fn read_sqlite(path: &Path) -> Result<SqliteWallet, WalletDatError> {
             Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
         })
         .map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
-    let mut wallet = empty_wallet();
-    let mut gather = Gather::default();
-    for row in rows {
+    SqliteWallet::from_records(rows.map(|row| {
         let (key, value) = row.map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
-        let value = Zeroizing::new(value);
-        parse_record(&key, &value, &mut wallet, &mut gather)?;
-    }
-    finish(&mut wallet, gather)?;
-    Ok(wallet)
+        Ok((key, Zeroizing::new(value)))
+    }))
 }
 
 /// Reads a legacy Berkeley DB `wallet.dat` (or a descriptor wallet stored in
@@ -958,14 +976,7 @@ fn read_into_fixed(
 
 /// [`read_bdb`] over bytes already in memory.
 pub fn read_bdb_bytes(bytes: &[u8]) -> Result<SqliteWallet, WalletDatError> {
-    let pairs = crate::bdb::read_pairs(bytes)?;
-    let mut wallet = empty_wallet();
-    let mut gather = Gather::default();
-    for (key, value) in pairs {
-        parse_record(&key, &value, &mut wallet, &mut gather)?;
-    }
-    finish(&mut wallet, gather)?;
-    Ok(wallet)
+    SqliteWallet::from_records(crate::bdb::read_pairs(bytes)?.into_iter().map(Ok))
 }
 
 fn empty_wallet() -> SqliteWallet {
@@ -1501,6 +1512,35 @@ mod tests {
         assert!(root.mnemonic.is_none());
     }
 
+    /// Records are parsed as SQLite yields them, so a malformed record is
+    /// reported before an unreadable row after it.
+    #[test]
+    fn a_bad_record_is_reported_before_a_later_unreadable_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.dat");
+        std::fs::copy(vector("desc_nomnemonic.dat"), &path).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let updated = conn
+                .execute(
+                    "UPDATE main SET value = ?1 WHERE key = ?2",
+                    rusqlite::params![vec![1u8], db_key("flags")],
+                )
+                .unwrap();
+            assert_eq!(updated, 1);
+            conn.execute(
+                "INSERT INTO main (key, value) VALUES (?1, 7)",
+                rusqlite::params![db_key("zzzz")],
+            )
+            .unwrap();
+        }
+        let got = read_sqlite(&path);
+        assert!(
+            matches!(&got, Err(WalletDatError::Corrupt(d)) if d.contains("flags")),
+            "{got:?}"
+        );
+    }
+
     /// Review M1: an `mkey` record asking for more than 10^7 rounds is
     /// corrupt instead of hanging the import.
     #[test]
@@ -1743,6 +1783,8 @@ mod tests {
         Address::p2pkh(&pk, Network::Regtest).to_string()
     }
 
+    type Records = Vec<(Vec<u8>, Vec<u8>)>;
+
     struct Built {
         bytes: Vec<u8>,
         seed: Vec<u8>,
@@ -1750,6 +1792,75 @@ mod tests {
     }
 
     fn plain_hd_wallet(swap: bool) -> Built {
+        let (pairs, seed, address) = plain_hd_records();
+        let refs: Vec<(&[u8], &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        Built {
+            bytes: build::pairs(&refs, swap),
+            seed,
+            address,
+        }
+    }
+
+    /// [`plain_hd_wallet`] laid out as a larger file is: an internal root
+    /// over two leaves, with the `hdchain` record's value in a two-page
+    /// overflow chain.
+    fn tree_overflow_hd_wallet() -> Vec<u8> {
+        let (pairs, _, _) = plain_hd_records();
+        let leaf = |page_num: u32, pairs: &[(Vec<u8>, Vec<u8>)], first: Vec<Vec<u8>>| {
+            let mut items = first;
+            for (k, v) in pairs {
+                items.push(build::data_item(k, false, false));
+                items.push(build::data_item(v, false, false));
+            }
+            build::pack(page_num, &items, TYPE_LEAF, 1, 0, false)
+        };
+        let (chain_key, chain) = &pairs[0];
+        assert_eq!(Reader::new(chain_key).bytes(), Some(b"hdchain".as_slice()));
+        let half = chain.len() / 2;
+        let root = build::pack(
+            3,
+            &[build::child_item(4, false), build::child_item(5, false)],
+            TYPE_INTERNAL,
+            2,
+            0,
+            false,
+        );
+        let first = vec![
+            build::data_item(chain_key, false, false),
+            build::overflow_item(6, chain.len() as u32, false),
+        ];
+        build::assemble(
+            &[
+                root,
+                leaf(4, &pairs[1..5], first),
+                leaf(5, &pairs[5..], Vec::new()),
+                build::overflow_page(6, &chain[..half], 7, false),
+                build::overflow_page(7, &chain[half..], 0, false),
+            ],
+            false,
+        )
+    }
+
+    #[test]
+    fn a_tree_with_an_overflow_chain_reads_as_its_records() {
+        let flat = read_bdb_bytes(&plain_hd_wallet(false).bytes).unwrap();
+        let tree = read_bdb_bytes(&tree_overflow_hd_wallet()).unwrap();
+        assert_eq!(
+            tree.legacy.as_ref().unwrap().seed.as_slice(),
+            flat.legacy.as_ref().unwrap().seed.as_slice()
+        );
+        assert_eq!(tree.loose_keys, flat.loose_keys);
+        assert_eq!(tree.address_book.len(), flat.address_book.len());
+        assert_eq!(
+            tree.hd_root(None).unwrap().master_pubkey,
+            flat.hd_root(None).unwrap().master_pubkey
+        );
+    }
+
+    fn plain_hd_records() -> (Records, Vec<u8>, String) {
         let seed = core_seed(PHRASE.as_bytes(), MNEMONIC_PASS.as_bytes());
         let id = sha256d(&seed[..]);
         let address = receive_address(&seed[..]);
@@ -1811,15 +1922,7 @@ mod tests {
             (db_key("cj_salt"), [0xab; 32].to_vec()),
             (db_key("watchs"), vec![b'1']),
         ];
-        let refs: Vec<(&[u8], &[u8])> = pairs
-            .iter()
-            .map(|(k, v)| (k.as_slice(), v.as_slice()))
-            .collect();
-        Built {
-            bytes: build::pairs(&refs, swap),
-            seed: seed.to_vec(),
-            address,
-        }
+        (pairs.to_vec(), seed.to_vec(), address)
     }
 
     fn encrypted_hd_wallet() -> Vec<u8> {
@@ -2689,10 +2792,16 @@ mod tests {
             .join("../../../testdata/compat/walletdat");
         let plain = plain_hd_wallet(false);
         let encrypted = encrypted_hd_wallet();
+        let tree = tree_overflow_hd_wallet();
         if std::env::var_os("DW_WRITE_BDB_FIXTURES").is_some() {
             std::fs::write(dir.join("bdb_hd_plain.dat"), &plain.bytes).unwrap();
             std::fs::write(dir.join("bdb_hd_encrypted.dat"), &encrypted).unwrap();
+            std::fs::write(dir.join("bdb_tree_overflow.dat"), &tree).unwrap();
         }
+        assert_eq!(
+            std::fs::read(dir.join("bdb_tree_overflow.dat")).unwrap(),
+            tree
+        );
         assert_eq!(
             std::fs::read(dir.join("bdb_hd_plain.dat")).unwrap(),
             plain.bytes
