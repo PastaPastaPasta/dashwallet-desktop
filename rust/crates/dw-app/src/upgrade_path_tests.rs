@@ -146,6 +146,16 @@ fn snapshot_problems(tag: &str, expected: &Value) -> Vec<String> {
                 "list_wallets has {undeclared} wallets the snapshot does not declare"
             ));
         }
+        let stray = calls
+            .iter()
+            .filter_map(|c| c["args"].get("walletId"))
+            .filter(|id| !every_wallet.contains(id))
+            .count();
+        if stray != 0 {
+            problems.push(format!(
+                "{stray} recorded calls name a wallet the snapshot does not declare"
+            ));
+        }
         problems.extend(funded_signature_problems(&wallets, calls, expected));
         problems.extend(balance_problems(&every_wallet, calls, &expected["dashd"]));
     }
@@ -894,6 +904,16 @@ fn a_snapshot_without_a_funded_signature_or_with_an_unaccounted_balance_is_refus
         }
     }
     assert!(!snapshot_problems("v0.2.0", &watch_only_unlisted).is_empty());
+    let mut watch_only_unbalanced = watch_only_unlisted.clone();
+    watch_only_unbalanced["calls"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|c| c["cmd"] != "balance" || c["args"]["walletId"] != watch_only.as_str());
+    assert_eq!(
+        watch_only_unbalanced["calls"].as_array().unwrap().len(),
+        full["calls"].as_array().unwrap().len() - 1
+    );
+    assert!(!snapshot_problems("v0.2.0", &watch_only_unbalanced).is_empty());
     let mut coin_dropped = full.clone();
     let mut gone = None;
     for call in coin_dropped["calls"].as_array_mut().unwrap() {
