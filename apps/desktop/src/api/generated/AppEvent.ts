@@ -19,6 +19,12 @@ export type AppEvent = { "kind": "sessionOpened", network: string, } | { "kind":
  */
 txids: Array<string>,
 /**
+ * One per `txids`: whether the engine learned of it live (the
+ * mempool, an InstantSend lock or a block near the network tip)
+ * rather than by the catch-up scan.
+ */
+live: Array<boolean>,
+/**
  * The batch's size.
  */
 count: number, catchUp: boolean, } | { "kind": "walletLoadChanged", network: string, walletId: string, loaded: boolean, } | { "kind": "coinJoin", network: string, walletId: string, } | { "kind": "platform", network: string, walletId: string, change: PlatformChangeName, } | { "kind": "masternodes", network: string, } | { "kind": "leaseChanged", network: string, lease: Lease, } | { "kind": "lockProgress", network: string, progress: LockProgress, } | { "kind": "dispatchResolved", network: string, settled: DispatchSettled, } | { "kind": "dashPayNews", network: string, walletId: string, identity: string, events: Array<DashPayEventInfo>, more: number, } | { "kind": "governance", network: string, } | { "kind": "rates" };

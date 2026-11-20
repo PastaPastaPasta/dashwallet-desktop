@@ -24,6 +24,9 @@ test-mix-shield = []
 # Debug builds only: the engine's masternode-withdrawal fault points and
 # `DW_FAULT=<point>` (MG-13 §3 fault sweep, T2 (4)), with dw-appdb's.
 fault-inject = ["dw-appdb/fault-inject"]
+# `platform::fuzzing`: the avatar decoder and the invitation parser for
+# dw-fuzz's libFuzzer targets (H-02), enabled only by its `engine` feature.
+fuzzing = []
 
 [dependencies]
 platform-wallet = { workspace = true }

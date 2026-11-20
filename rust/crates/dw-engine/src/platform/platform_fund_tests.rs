@@ -25,6 +25,7 @@ use platform_wallet::{
     AssetLockFundingType, AssetLockStatus, PlatformWalletError, TrackedAssetLock,
 };
 
+use super::credits::FundAmount;
 use super::errors::{CreditsError, PlatformError};
 use super::flows::{BudgetPurpose, FlowKind, RevokeCause};
 use super::lease::{CallPermit, FlowOutcome, FundingKey, Lease, StoredLock};
@@ -135,8 +136,18 @@ struct FakeFund {
     in_fund: AtomicBool,
     /// The next funding waits for this once it is in.
     fund_gate: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    /// The next apply, its funding call over, waits before its call
+    /// permit: `(in, release)`, the first notified once it waits there.
+    apply_gate: Mutex<Option<ApplyGate>>,
     /// The next apply locks the vault before it signs.
     lock_vault_in_apply: AtomicBool,
+    /// BIP44 account 0 as a Core Max reads it; the coins its build spends
+    /// (the plan's when unset); each Core Max lock's inputs; whether each
+    /// Core Max build ran with the wallet's coin fence held.
+    core: Mutex<super::core_max::CoreCoins>,
+    core_built: Mutex<Option<Vec<super::shield_drain::DrainCoin>>>,
+    core_drained: Mutex<Vec<Vec<OutPoint>>>,
+    core_fenced: Mutex<Vec<bool>>,
 }
 
 impl FakeFund {
@@ -164,7 +175,12 @@ impl FakeFund {
             receive: PlatformAddress::P2pkh([0x42; 20]),
             in_fund: AtomicBool::new(false),
             fund_gate: Mutex::default(),
+            apply_gate: Mutex::default(),
             lock_vault_in_apply: AtomicBool::new(false),
+            core: Mutex::default(),
+            core_built: Mutex::default(),
+            core_drained: Mutex::default(),
+            core_fenced: Mutex::default(),
         }
     }
 
@@ -240,6 +256,11 @@ impl FundLib for FakeFund {
     }
 
     async fn credit_script(&self, outpoint: OutPoint) -> Option<ScriptBuf> {
+        let gate = self.apply_gate.lock().unwrap().take();
+        if let Some((waiting, release)) = gate {
+            waiting.notify_one();
+            release.notified().await;
+        }
         fund::credit_script_of(&*self.tracked.lock().unwrap(), outpoint)
     }
 
@@ -382,7 +403,63 @@ impl FundLib for FakeFund {
     async fn sync_now(&self) {
         self.syncs.fetch_add(1, Ordering::SeqCst);
     }
+
+    async fn core_coins(
+        &self,
+        _: &crate::coins::CoinFence,
+    ) -> Result<super::core_max::CoreCoins, PlatformError> {
+        Ok(self.core.lock().unwrap().clone())
+    }
+
+    /// The library's drain build (`core_built`'s coins, else the plan's)
+    /// shown to and signed by the call's drain signer, then tracked as a
+    /// proved lock of its credit and recorded as the step's own.
+    async fn fund_core_max(
+        &self,
+        coins: &[super::shield_drain::DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        use super::shielded_tests::{fake_credit_script, sign_fake_drain};
+        let free = self.session.try_coin_fence(self.wallet).await.unwrap();
+        self.core_fenced.lock().unwrap().push(free.is_none());
+        drop(free);
+        let signer = super::shield_drain::drain_signer(
+            permit,
+            coins,
+            total_duffs,
+            minimum_lock_duffs,
+            fake_credit_script(),
+            true,
+        )?;
+        let built = (self.core_built.lock().unwrap().clone()).unwrap_or_else(|| coins.to_vec());
+        let (tx, sighashes) = sign_fake_drain(&signer, permit, &built).await?;
+        let n = self.funds.fetch_add(1, Ordering::SeqCst) as u8 + 0x70;
+        let row = self.lock(
+            n,
+            tx.output[0].value,
+            AssetLockStatus::InstantSendLocked,
+            true,
+        );
+        let outpoint = row.out_point;
+        let inputs: Vec<OutPoint> = built.iter().map(|c| c.outpoint).collect();
+        self.session.leases.record_signed_locks(
+            self.wallet,
+            &[StoredLock {
+                txid: outpoint.txid,
+                inputs: inputs.clone(),
+                sighashes: Some(sighashes),
+                built: true,
+            }],
+        );
+        self.core_drained.lock().unwrap().push(inputs);
+        self.track(row);
+        Ok(outpoint)
+    }
 }
+
+type ApplyGate = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 
 fn run<T: Send + 'static, Fut>(
     fx: &Fixture,
@@ -419,7 +496,7 @@ fn quote_of(
 ) -> Result<PlatformFundQuote, CreditsError> {
     let wallet = fx.wallet;
     run(fx, lib, move |s, lib| async move {
-        fund::quote(&s, wallet, &*lib, duffs).await
+        fund::quote(&s, wallet, &*lib, FundAmount::Duffs { duffs }).await
     })
 }
 
@@ -438,7 +515,14 @@ fn exact_grant(fx: &Fixture, duffs: u64) -> u64 {
 fn fund_of(fx: &Fixture, lib: &Arc<FakeFund>) -> Result<PlatformFundOutcome, CreditsError> {
     let (wallet, grant) = (fx.wallet, grant(fx, exact_grant(fx, 1_000_000), 0));
     run(fx, lib, move |s, lib| async move {
-        fund::fund(&s, wallet, &*lib, 1_000_000, &grant).await
+        fund::fund(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &grant,
+        )
+        .await
     })
 }
 
@@ -1401,7 +1485,13 @@ fn a_fund_in_the_handoff_to_the_apply_refuses_the_next() {
     let exact = exact_grant(&fx, 1_000_000);
     let (wallet, ga, gb) = (fx.wallet, grant(&fx, exact, 0), grant(&fx, exact, 0));
     let (a, b) = run(&fx, &lib, move |s, lib| async move {
-        let first = fund::fund(&s, wallet, &*lib, 1_000_000, &ga);
+        let first = fund::fund(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &ga,
+        );
         let in_fund = || lib.in_fund.load(Ordering::SeqCst);
         let second = async {
             while !in_fund() {
@@ -1409,7 +1499,14 @@ fn a_fund_in_the_handoff_to_the_apply_refuses_the_next() {
             }
             // Queued on the fund lock while the first holds it: the lock is
             // fair, so this one has it before the first's runner.
-            fund::fund(&s, wallet, &*lib, 1_000_000, &gb).await
+            fund::fund(
+                &s,
+                wallet,
+                &*lib,
+                FundAmount::Duffs { duffs: 1_000_000 },
+                &gb,
+            )
+            .await
         };
         let open = async {
             while !in_fund() {
@@ -2272,7 +2369,14 @@ fn a_fund_under_exactly_its_quote_grant_applies_its_lock() {
     lib.answer(Answer::Done(Some(944_000_000)));
     let (wallet, grant) = (fx.wallet, grant(&fx, quote.grant.max_duffs, 0));
     let out = run(&fx, &lib, move |s, lib| async move {
-        fund::fund(&s, wallet, &*lib, 1_000_000, &grant).await
+        fund::fund(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &grant,
+        )
+        .await
     })
     .unwrap();
     assert_eq!(
@@ -2392,11 +2496,25 @@ fn an_exact_grant_funds_one_lock() {
     let (wallet, grant) = (fx.wallet, grant(&fx, exact_grant(&fx, 1_000_000), 0));
     let again = grant.clone();
     run(&fx, &lib, move |s, lib| async move {
-        fund::fund(&s, wallet, &*lib, 1_000_000, &grant).await
+        fund::fund(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &grant,
+        )
+        .await
     })
     .unwrap();
     let second = run(&fx, &lib, move |s, lib| async move {
-        fund::fund(&s, wallet, &*lib, 1_000_000, &again).await
+        fund::fund(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &again,
+        )
+        .await
     });
     assert_eq!(code(second), "platform.grant_invalid");
     assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "one Core lock");
@@ -2455,60 +2573,107 @@ fn an_unapplied_exact_grant_lock_finishes_on_a_fresh_lease_after_a_reopen() {
 
 /// The fund's lease revoked between its funding call and its apply: the
 /// kept signer applies nothing (the apply's call permit is refused), the
-/// fund ends `NotApplied` with the revocation's code, the lock stays
-/// pending, and a later Finish applies it once.
+/// fund ends `NotApplied`, the lock stays pending, and a later Finish
+/// applies it once. A permit asked while the revoking call still holds the
+/// barrier is refused as `platform.cancelled`; once the barrier is clear,
+/// as `platform.lease_revoked`. The fund's copy reads both as the approval
+/// ending with the lock pending.
 #[test]
 fn a_lease_revoked_between_the_funding_and_the_apply_leaves_the_lock_for_finish() {
+    for (during_the_revocation, error) in [
+        (false, "platform.lease_revoked"),
+        (true, "platform.cancelled"),
+    ] {
+        let (fx, lib, out) = revoked_before_the_apply(during_the_revocation);
+        assert_eq!(
+            out.state,
+            PlatformFundState::NotApplied {
+                error: error.into()
+            },
+            "{error}"
+        );
+        let outpoint = lib.outpoint(0);
+        assert!(
+            lib.applied().is_empty(),
+            "nothing applied on the revoked lease"
+        );
+        assert!(lib.signed.lock().unwrap().is_empty());
+        assert_eq!(
+            pending_of(&fx, &lib),
+            [(outpoint.txid.to_string(), true, false)]
+        );
+        assert_eq!(
+            resume_of(&fx, &lib, outpoint).unwrap(),
+            PlatformFundState::Applied {
+                credits: 944_000_000
+            }
+        );
+        assert_eq!(lib.applied(), [outpoint], "applied once");
+        assert_eq!(*lib.signed.lock().unwrap(), [true], "Finish signed it");
+        assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "no new lock");
+    }
+}
+
+/// Only guards against a hang: a correct run ends in well under a second.
+const HANDSHAKE_GUARD: Duration = Duration::from_secs(300);
+
+/// A fund whose lease a passphrase change revokes once its funding call is
+/// over and before its apply's call permit: with the apply asked while the
+/// revoking call is still running (`during_the_revocation`), or after it.
+fn revoked_before_the_apply(
+    during_the_revocation: bool,
+) -> (Fixture, Arc<FakeFund>, PlatformFundOutcome) {
     let fx = Fixture::new(0);
     let lib = Arc::new(FakeFund::new(&fx));
-    let release = Arc::new(tokio::sync::Notify::new());
-    *lib.fund_gate.lock().unwrap() = Some(Arc::clone(&release));
+    let (waiting, release) = (Arc::default(), Arc::default());
+    *lib.apply_gate.lock().unwrap() = Some((Arc::clone(&waiting), Arc::clone(&release)));
     lib.answer(Answer::Done(Some(944_000_000)));
     let (wallet, grant) = (fx.wallet, grant(&fx, exact_grant(&fx, 1_000_000), 0));
     let out = run(&fx, &lib, move |s, lib| async move {
-        let in_fund = || lib.in_fund.load(Ordering::SeqCst);
-        let revoke = async {
-            while !in_fund() {
-                tokio::task::yield_now().await;
-            }
-            let revoking = s.revoking_vault_op(RevokeCause::PassphraseChange, |_| Ok(()));
-            let open = async {
-                for _ in 0..100 {
-                    tokio::task::yield_now().await;
-                }
-                release.notify_one();
-            };
-            let (revoked, ()) = tokio::join!(revoking, open);
-            revoked.unwrap();
+        let (in_gate, gate_open) = (tokio::sync::oneshot::channel(), std::sync::mpsc::channel());
+        let (in_gate_tx, in_gate_rx) = in_gate;
+        let (open_tx, open_rx) = gate_open;
+        let fund = async {
+            let amount = FundAmount::Duffs { duffs: 1_000_000 };
+            let out = fund::fund(&s, wallet, &*lib, amount, &grant).await;
+            let _ = open_tx.send(());
+            out
         };
-        let (out, ()) = tokio::join!(fund::fund(&s, wallet, &*lib, 1_000_000, &grant), revoke);
-        out
+        tokio::pin!(fund);
+        let handshake = async {
+            tokio::select! {
+                early = &mut fund => panic!("the fund ended before its apply: {early:?}"),
+                () = waiting.notified() => {}
+            }
+            let revoking = s.revoking_vault_op(RevokeCause::PassphraseChange, move |_| {
+                if during_the_revocation {
+                    in_gate_tx.send(()).unwrap();
+                    open_rx.recv_timeout(HANDSHAKE_GUARD).unwrap();
+                }
+                Ok(())
+            });
+            let revoke = async {
+                if during_the_revocation {
+                    let apply = async {
+                        in_gate_rx.await.unwrap();
+                        release.notify_one();
+                    };
+                    let (revoked, ()) = tokio::join!(revoking, apply);
+                    revoked.unwrap();
+                } else {
+                    revoking.await.unwrap();
+                    release.notify_one();
+                }
+            };
+            let (out, ()) = tokio::join!(&mut fund, revoke);
+            out
+        };
+        tokio::time::timeout(HANDSHAKE_GUARD, handshake)
+            .await
+            .expect("hang guard: the fund's apply checkpoint, the revocation and the fund's end")
     })
     .unwrap();
-    assert_eq!(
-        out.state,
-        PlatformFundState::NotApplied {
-            error: "platform.lease_revoked".into()
-        }
-    );
-    let outpoint = lib.outpoint(0);
-    assert!(
-        lib.applied().is_empty(),
-        "nothing applied on the revoked lease"
-    );
-    assert!(lib.signed.lock().unwrap().is_empty());
-    assert_eq!(
-        pending_of(&fx, &lib),
-        [(outpoint.txid.to_string(), true, false)]
-    );
-    assert_eq!(
-        resume_of(&fx, &lib, outpoint).unwrap(),
-        PlatformFundState::Applied {
-            credits: 944_000_000
-        }
-    );
-    assert_eq!(lib.applied(), [outpoint], "applied once");
-    assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "no new lock");
+    (fx, lib, out)
 }
 
 /// Closes the fixture's session and opens it again over the same
@@ -2603,3 +2768,6 @@ fn a_persistence_failure_leaves_a_restored_fund_lock_unfinished() {
     );
     assert!(reported(&fx, &lib).is_empty());
 }
+
+#[path = "core_max_fund_tests.rs"]
+mod core_max_fund_tests;

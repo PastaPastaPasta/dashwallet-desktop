@@ -8,7 +8,7 @@ job's `GITHUB_TOKEN` is read-only (`contents: read`).
 | Workflow | Triggers | What it runs |
 |---|---|---|
 | [`ci.yml`](../.github/workflows/ci.yml) | pull requests (Linux checks only; for docs-only changes just the `changes` job); push to `main`, 02:47 UTC daily and manual (every job but Windows Swift, which runs only daily and manually) | T0 on Linux, macOS and Windows; UI tests (Playwright, axe, tauri-driver); app launches with screenshots |
-| [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the shielded prover warm-up; the MG-04b release check; the Linux GUI (AT-SPI) demo |
+| [`nightly.yml`](../.github/workflows/nightly.yml) | 03:17 UTC daily (default branch only), manual | T1 regtest suites; the shielded prover warm-up; the MG-04b release check; fuzzing (H-02); the Linux GUI (AT-SPI) demo |
 | [`gate.yml`](../.github/workflows/gate.yml) | manual only | G-02 / G-03 measurement scripts on the chosen OSes |
 | [`tauri-selftest.yml`](../.github/workflows/tauri-selftest.yml) | manual only | the Tauri app (G-01) built, run with `--selftest` and launched for a screenshot on macOS and Windows |
 
@@ -236,12 +236,67 @@ purpose. The per-state screenshots of the other suites are artifacts only.
 | Shielded prover warm-up (E0-12) | The `shielded_warmup` example (`cargo build -p dw-engine --example shielded_warmup --locked`), run in a cold process: it builds the Halo 2 proving key (no network). The shielded pool (`platform-wallet/shielded`, `platform-wallet-storage/shielded`: halo2, orchard) is on in every build since 0.1, so PR CI builds, lints and tests it. Cost: [`docs/research/shielded-cost.md`](research/shielded-cost.md). |
 | Release check (MG-04b sending override) | The release leg of `dw-engine`'s `tests/mg04b_release_check.rs` (MG-04b D71): `cargo test --release -p dw-engine --features test-support --test mg04b_release_check --locked`. Its `const` assert fails the build if the shared-masternode sending override is compiled into a release build; PR CI runs only the debug legs. |
 | Release check (dwcli `mix-shield-test`) | The release leg of `dw-engine`'s `tests/mix_shield_release_check.rs`: `cargo test --release -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked`. Its `const` assert fails the build if the regtest suite's test-only CoinJoin calls (`mix_shield_test`) are compiled into a release build; the nightly builds its `dwcli` with `--features mix-shield-test` (debug) for `move-mixed`. |
+| Fuzz the untrusted-input parsers (H-02) | `scripts/fuzz.sh .fuzz 600`: every libFuzzer target of `rust/fuzz` for 10 minutes, Linux only, never on pull requests (see "Fuzzing" below). The corpus carries over from night to night in the Actions cache (`fuzz-corpus-*`); findings and logs are uploaded as `fuzz-findings`. |
 | SwiftCrossUI AT-SPI demo (GUI, Linux) | **non-blocking** (see "Known gaps"): `scripts/crossui-linux-demo.sh` with `DWD_CROSSUI_SUITE=m2` (the M1 flows, then the M2 flows), uploaded as `crossui-linux-demo` |
 
 GitHub runs `schedule` triggers only from the repository's default branch, which is `main`. To start a run by
 hand: `gh workflow run nightly.yml --ref main`. The nightly's overall status is the regtest,
-shielded and release-check jobs': the AT-SPI demo shows its own red X without failing the run, so check its log
+shielded, release-check and fuzz jobs': the AT-SPI demo shows its own red X without failing the run, so check its log
 separately.
+
+### Fuzzing (H-02)
+
+`rust/fuzz` (crate `dw-fuzz`, a workspace member) has ten libFuzzer targets for the outside data below, each
+calling the entry points the app calls with it:
+
+| Target | Input | Entry points |
+|---|---|---|
+| `link` | an opened, dropped, pasted or scanned link | `dw_uri::deeplink` (`classify_link`, `normalize_invitation`, `DashPayUserLink::parse`, `DashPayContactCode::parse`, `dpns_label`), `dw_uri::ext::parse_payment_uri` / `parse_payment_string`, `dw_uri::redact`; checks that a link the stash keeps is cut whole from a log line |
+| `send_input` | text pasted on the Send screen or typed as an address | `dw_uri::core::handle_uri` (every network), `dw_uri::keyio` (`classify_address`, `decode_destination`, `decode_platform_destination`, `decode_secret`), amounts, `qr_matrix`; checks address and amount round trips |
+| `qr_image` | an image scanned for QR codes | `dw_desktop::qr::decode` |
+| `psbt` | a PSBT file or clipboard text | `dw_psbt::parse`, then `analyze`, `spent_output`, `input_signed`, `finalize`, `extract`, `fee_rate_per_kb`; checks the binary and base64 round trips |
+| `dumpwallet` | a `dumpwallet` file | `dw_compat::dump::parse`, `write`, the label escaping, the mnemonic check |
+| `listdescriptors` | `listdescriptors true` output, a descriptor | `dw_compat::descriptor::parse_listdescriptors`, `PkhDescriptor::parse` (checks that a written descriptor reads back when its checksum can be computed; a key outside the descriptor charset, such as `pkh(é/0/*)`, still goes to the parser) |
+| `walletdat` | an SQLite wallet.dat's records (SQLite itself is fuzzed upstream) | `dw_compat::walletdat::SqliteWallet::from_records` (what `read_sqlite` streams its rows into), `hd_root` without a passphrase and, for an encrypted wallet, with the passphrase the input carries |
+| `walletdat_bdb` | a legacy Berkeley DB wallet.dat file, with a passphrase | `dw_compat::walletdat::read_bdb_bytes` (`dw_compat::bdb`'s page, internal-node and overflow reader, then the record parser), `hd_root` as for `walletdat` |
+| `avatar` | avatar bytes from a profile's URL with its zoom crop; a picked picture with its crop | dw-engine's avatar decoder (`ingest`, `ingest_file`, through the `fuzzing` feature's `platform::fuzzing`) |
+| `invitation` | an invitation link | the claim's parser (DP5-01's normalization, then platform-wallet's `parse_invitation_uri`) |
+
+The wallet targets try the passphrase only when the wallet's `mkey` records ask for 50 000 key derivation rounds or
+fewer in total (`FUZZ_ROUNDS`); the import itself allows up to 10 000 000. Above the cutoff a passphrase attempt
+takes long enough that libFuzzer would report a slow input, so those inputs stop after the unencrypted checks.
+
+Seeds (`rust/fuzz/src/seeds.rs`) are the existing test vectors (`testdata/`, dw-uri's link corpus), plus inputs
+built from fixture keys: avatar pictures with generated pixels; a version 3 special-transaction PSBT; the records
+of `desc_plain.dat` encrypted as Core encrypts them, but under a 25-round `mkey` so the passphrase attempt decrypts
+them; `bdb_tree_overflow.dat` (the plain HD wallet as an internal root over two leaves, with one value in an
+overflow chain); and claimable regtest invitation links the library encodes (with `--features engine`). `rust/fuzz/regressions/psbt/` holds one fuzz
+mutation, the input that found the special-payload bug; it is replayed as a rejection, and the accepted version 3
+PSBT seed replays the fix.
+
+`cargo test --workspace` replays every seed of the eight targets that build without the `engine` feature, and
+every input saved under `rust/fuzz/regressions/<target>/` (a minimised finding kept after its fix), through the
+same harness on stable, in about 3 seconds of a debug build on a desktop-class x86-64 workstation (about 2 s of CPU time); `cargo test -p dw-fuzz --features engine` adds `avatar` and `invitation`.
+
+No target covers yet: image-to-route dispatch, the InstantLock decoding of an invitation at claim time, peer
+frames and governance messages, Platform profile and contact documents, native backup headers and bodies, vault
+files, and `settings.json`. The roadmap's H-02 criterion of 24 hours without a crash has not been met yet: the
+targets have run for 60 seconds each, and nightly runs 10 minutes each.
+
+Run it locally with cargo-fuzz 0.13.2 and the pinned nightly (`rustup toolchain install nightly-2026-10-09`,
+`cargo install cargo-fuzz --version 0.13.2 --locked`):
+
+```sh
+scripts/fuzz.sh ~/dw-fuzz 1200         # every target, 20 minutes each
+scripts/fuzz.sh ~/dw-fuzz 600 psbt link # some targets
+```
+
+The build is release with debug assertions, overflow checks and AddressSanitizer. A target that finds a crash,
+an input slower than 30 s (`DW_FUZZ_TIMEOUT`) or more than 4 GB of memory (`DW_FUZZ_RSS_MB`) leaves the input in
+`<work dir>/artifacts/<target>/` and fails the script. To fix one, from `rust/`: reproduce it with
+`cargo +nightly-2026-10-09 fuzz run --fuzz-dir fuzz --target-dir target/fuzz --features libfuzzer,engine <target> <input>`,
+minimise it with `cargo … fuzz tmin … <target> <input>`, fix the parser, and commit the minimised input under
+`rust/fuzz/regressions/<target>/` so the replay test fails without the fix.
 
 ## `gate.yml` (UI gate, G-02 and G-03)
 

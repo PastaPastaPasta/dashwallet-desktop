@@ -20,7 +20,7 @@ import { landSend, PENDING_HANDLERS, switchedWorld } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
 import { restarted } from "./registration";
 import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type ScenarioName, type World } from "./scenarios";
-import { receivePayment } from "./send";
+import { receivePayment, type PaymentSource } from "./send";
 import { FIXTURE_NOW } from "./wallet";
 import { isLanguage } from "../i18n";
 
@@ -55,8 +55,9 @@ export interface FixtureHandle {
   /** Sends an engine event, as dw-app's bridge would. */
   emit(event: AppEvent): void;
   /** A payment of `duffs` arrives at the wallet's current receiving address (the next one is current
-   * from then on): its row, `historyChanged` and `newTransactions`. Returns the address paid. */
-  receivePayment(duffs: number, walletId?: string, to?: string): string;
+   * from then on): its row, `historyChanged` and `newTransactions`, learned live or by the catch-up
+   * scan (`source`). Returns the address paid. */
+  receivePayment(duffs: number, walletId?: string, to?: string, source?: PaymentSource): string;
   /** Queues links as dw-app's shell routed them and says so (`linksPending`), as a clicked link
    * or a second launch would. */
   deliverLinks(routes: LinkRoute[]): void;
@@ -164,7 +165,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
     scenario: opts.scenario,
     world,
     emit: ctx.emit,
-    receivePayment: (duffs, walletId = FIXTURE_WALLET_ID, to) => receivePayment(ctx, walletId, duffs, to),
+    receivePayment: (duffs, walletId = FIXTURE_WALLET_ID, to, source) => receivePayment(ctx, walletId, duffs, to, source),
     deliverLinks: (routes) => {
       world.links.push(...routes);
       void emit(SHELL_EVENT, { kind: "linksPending" } satisfies ShellEvent);
