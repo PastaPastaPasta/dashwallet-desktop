@@ -2185,6 +2185,68 @@ fn a_watch_only_import_whose_registration_fails_puts_the_marker_back() {
     );
 }
 
+/// A watch-only import with a lookahead whose registration fails puts the
+/// stored lookahead back as it was (here none): a retry with the default
+/// scans with the default gap after a restart, not the failed request's.
+#[test]
+fn a_watch_only_import_whose_registration_fails_puts_the_lookahead_back() {
+    use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[12; 64]).unwrap();
+    let path: DerivationPath = "m/44'/1'/0'".parse().unwrap();
+    let xpub = ExtendedPubKey::from_priv(&master.derive_priv(&path).unwrap());
+    let id = crate::multiwallet::watch_only_wallet_id(&xpub, dashcore::Network::Regtest);
+    (crate::keys::FAIL_REGISTRATION_IN.lock().unwrap()).push(session.data_dir().to_path_buf());
+
+    let refused = engine.block_on(session.import_watch_only(
+        xpub.to_string(),
+        crate::WatchOnlyOptions {
+            lookahead: Some(1),
+            ..Default::default()
+        },
+    ));
+
+    assert!(refused.is_err());
+    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    let imported = engine
+        .block_on(session.import_watch_only(xpub.to_string(), crate::WatchOnlyOptions::default()));
+    assert_eq!(imported.unwrap(), id);
+    let session = reopen(&engine, session);
+    assert_eq!(gap(&engine, &session, id, bip44()), 30);
+}
+
+/// A watch-only import whose registration fails puts back a lookahead that
+/// was stored before it, as well as the absence of one.
+#[test]
+fn a_watch_only_import_whose_registration_fails_keeps_the_lookahead_stored_before() {
+    use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[14; 64]).unwrap();
+    let path: DerivationPath = "m/44'/1'/0'".parse().unwrap();
+    let xpub = ExtendedPubKey::from_priv(&master.derive_priv(&path).unwrap());
+    let id = crate::multiwallet::watch_only_wallet_id(&xpub, dashcore::Network::Regtest);
+    store_setting(&engine, &session, id, crate::keys::LOOKAHEAD_SETTING, "200");
+    (crate::keys::FAIL_REGISTRATION_IN.lock().unwrap()).push(session.data_dir().to_path_buf());
+
+    let refused = engine.block_on(session.import_watch_only(
+        xpub.to_string(),
+        crate::WatchOnlyOptions {
+            lookahead: Some(1),
+            ..Default::default()
+        },
+    ));
+
+    assert!(refused.is_err());
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(200)
+    );
+}
+
 /// An import of a seed the vault already holds, whose registration fails,
 /// puts the wallet's marker back as it was before the import wrote its own.
 #[test]
@@ -2647,6 +2709,48 @@ fn a_rescan_that_cannot_widen_a_wallet_without_a_marker_marks_it_owed() {
         wide_scan(&engine, &session, id),
         Some(crate::keys::WideScan::From(699))
     );
+}
+
+/// A recovery scan of a wallet that is not open is refused before anything
+/// is stored for it: its marker stays as its unload left it, not owed from
+/// block 0, which would lower its birth to block 1 at the next load.
+#[test]
+fn a_recovery_scan_of_an_unloaded_wallet_stores_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = born_at_700(&engine, &session);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let before = wide_scan(&engine, &session, id);
+    assert_ne!(before, Some(crate::keys::WideScan::From(0)));
+    start_offline_spv(&engine, &session);
+
+    let recovered = engine.block_on(session.coinjoin_recovery_scan(id));
+
+    assert!(
+        matches!(recovered, Err(EngineError::WalletNotFound(_))),
+        "{recovered:?}"
+    );
+    assert_eq!(wide_scan(&engine, &session, id), before);
+}
+
+/// A recovery scan of a wallet id never registered here is refused with
+/// nothing stored for it.
+#[test]
+fn a_recovery_scan_of_an_unknown_wallet_stores_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    start_offline_spv(&engine, &session);
+    let id = WalletId([7; 32]);
+
+    let recovered = engine.block_on(session.coinjoin_recovery_scan(id));
+
+    assert!(
+        matches!(recovered, Err(EngineError::WalletNotFound(_))),
+        "{recovered:?}"
+    );
+    assert_eq!(wide_scan(&engine, &session, id), None);
 }
 
 /// A wallet born at block 700 and scanned to 1,000.

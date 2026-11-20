@@ -403,6 +403,23 @@ mod tests {
         assert_eq!(picked(&wallet(), &[row(1, &[4])]).unwrap(), [4]);
     }
 
+    /// One denomination is enough to conflict with a lock and pay the fee:
+    /// the other is not spent with it, which would link the two.
+    #[test]
+    fn a_lock_of_two_denominations_takes_one_of_them() {
+        assert_eq!(picked(&wallet(), &[row(1, &[4, 5])]).unwrap(), [4]);
+    }
+
+    /// A lock already conflicted through a denomination another lock's
+    /// repair spends adds none of its own.
+    #[test]
+    fn locks_sharing_a_denomination_take_it_alone() {
+        assert_eq!(
+            picked(&wallet(), &[row(1, &[4]), row(2, &[5, 4])]).unwrap(),
+            [4]
+        );
+    }
+
     #[test]
     fn locks_of_both_kinds_are_refused() {
         let refused = picked(&wallet(), &[row(1, &[1]), row(2, &[4])]);
