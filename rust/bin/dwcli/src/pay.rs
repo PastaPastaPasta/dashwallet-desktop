@@ -503,11 +503,11 @@ pub fn run(
                             println!("rebroadcast {repeats}");
                         }
                         Err(err) => {
-                            let outcome =
-                                match engine.block_on(draft.abandon(Arc::clone(&prepared))) {
-                                    Ok(()) => "not_sent",
-                                    Err(_) => "unknown",
-                                };
+                            let outcome = failed_broadcast_outcome(&err, || {
+                                engine
+                                    .block_on(draft.abandon(Arc::clone(&prepared)))
+                                    .is_ok()
+                            });
                             return Err(failed(&err, outcome, Some(&s.txid)));
                         }
                     }
@@ -582,6 +582,33 @@ pub fn run(
     Ok(())
 }
 
+/// A failed broadcast's outcome word. `not_sent` only when the prepared
+/// transaction was abandoned. A panicked broadcast task may have sent the
+/// payment and the engine may not answer again, so it is never abandoned
+/// and stays `unknown`.
+fn failed_broadcast_outcome(err: &EngineError, abandon: impl FnOnce() -> bool) -> &'static str {
+    if !err.is_task_panic() && abandon() {
+        "not_sent"
+    } else {
+        "unknown"
+    }
+}
+
 fn hex_encode(bytes: Vec<u8>) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_broadcast_panic_stays_unknown_without_an_abandon() {
+        let panicked = EngineError::Internal(dw_engine::TASK_PANICKED.into());
+        let outcome = failed_broadcast_outcome(&panicked, || panic!("abandon after a panic"));
+        assert_eq!(outcome, "unknown");
+        let no_peers = EngineError::Send(SendFailure::NoPeers);
+        assert_eq!(failed_broadcast_outcome(&no_peers, || true), "not_sent");
+        assert_eq!(failed_broadcast_outcome(&no_peers, || false), "unknown");
+    }
 }
