@@ -94,6 +94,9 @@ pub struct AppState {
     /// Deep links and the native menus' state (U-01). The same `Arc` is
     /// Tauri-managed, for the callbacks that run before this state exists.
     pub shell: Arc<Shell>,
+    /// Updates (PK-03): unavailable unless the build, the install and the
+    /// user allow them.
+    pub updates: crate::updates::Updates,
     /// The data root's instance lock, when `run` did not take it already
     /// (it does, before any window exists, and keeps it Tauri-managed; the
     /// mock-runtime builders do not). Declared after `engine`, so it is
@@ -603,6 +606,7 @@ impl AppState {
             memory,
             payment_policy: Arc::default(),
             shell,
+            updates: crate::updates::Updates::for_app(app),
             _instance: instance,
             #[cfg(test)]
             payment_seam: StdMutex::default(),

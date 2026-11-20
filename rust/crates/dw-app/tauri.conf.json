@@ -56,12 +56,21 @@
         "scan",
         "governance",
         "masternodes",
-        "rates"
+        "rates",
+        "updates"
       ]
     },
     "withGlobalTauri": false
   },
   "plugins": {
+    "updater": {
+      "pubkey": "UPDATER-DISABLED: replace with the release public key (docs/release/updater.md)",
+      "endpoints": [],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    },
     "deep-link": {
       "desktop": {
         "schemes": [

@@ -34,6 +34,7 @@ import type { ShieldedStatus } from "./generated/ShieldedStatus";
 import type { ShieldOutcome } from "./generated/ShieldOutcome";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
+import type { UpdateStatus } from "./generated/UpdateStatus";
 import type { Balances } from "./generated/Balances";
 import type { CurrencyRate } from "./generated/CurrencyRate";
 import type { RatesSettings } from "./generated/RatesSettings";
@@ -359,6 +360,16 @@ export interface Backend {
   uiSettings(): Promise<UiSettings>;
   /** Saves them; dw-app also sets the window's theme unless `--theme` was given (D3). */
   setUiSettings(settings: UiSettings): Promise<UiSettings>;
+  // Updates (PK-03): each step on the user's request; `updateStatus` fetches nothing.
+  updateStatus(): Promise<UpdateStatus>;
+  /** Reads the stable feed once. */
+  checkForUpdate(): Promise<UpdateStatus>;
+  /** Downloads, verifies and installs `version`, the one on offer. On Windows the app closes. */
+  installUpdate(version: string): Promise<UpdateStatus>;
+  /** Quits through the normal exit path and starts the installed update. */
+  restartToUpdate(): Promise<null>;
+  /** Opens the release notes of the update on offer in the system browser. */
+  openUpdateNotes(): Promise<null>;
   // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.
   ratesStatus(): Promise<RatesView>;
   ratesCurrencies(): Promise<CurrencyRate[]>;

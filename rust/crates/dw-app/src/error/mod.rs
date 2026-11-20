@@ -169,6 +169,23 @@ codes! {
         ExplorerOpen = "app.explorer_open",
         /// The system browser could not be opened (`open_releases_page`).
         BrowserOpen = "app.browser_open",
+        /// This copy cannot update itself (`UpdateAvailability`: a build
+        /// without the updater key, a Flatpak, a package-manager install).
+        UpdatesUnavailable = "app.updates_unavailable",
+        /// The update feed could not be reached or read.
+        UpdateCheck = "app.update_check",
+        /// The update could not be downloaded.
+        UpdateDownload = "app.update_download",
+        /// The update's signature does not verify against the release key,
+        /// or names another version than the feed announced: nothing was
+        /// installed.
+        UpdateSignature = "app.update_signature",
+        /// The verified update could not be put in place.
+        UpdateInstall = "app.update_install",
+        /// The step does not fit the update's state: no update (or another
+        /// version) on offer, one already being installed, or a restart
+        /// before the install.
+        UpdateState = "app.update_state",
     }
 }
 

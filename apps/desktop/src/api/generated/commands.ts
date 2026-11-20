@@ -199,6 +199,7 @@ import type { TxTypeName } from "./TxTypeName";
 import type { UiSettings } from "./UiSettings";
 import type { UnfinishedTransfers } from "./UnfinishedTransfers";
 import type { UntrackOutcome } from "./UntrackOutcome";
+import type { UpdateStatus } from "./UpdateStatus";
 import type { UriParse } from "./UriParse";
 import type { UserHit } from "./UserHit";
 import type { UsernameCheck } from "./UsernameCheck";
@@ -2848,6 +2849,56 @@ export function refreshRates(): Promise<RatesView> {
 }
 
 /**
+ * Whether this copy can update itself, its version, and where this
+ * run is in finding and installing an update. Fetches nothing.
+ */
+export function updateStatus(): Promise<UpdateStatus> {
+  return invoke<UpdateStatus>("update_status");
+}
+
+/**
+ * Asks the stable feed for a newer release: the user's "Check for
+ * updates", or the automatic check they turned on. The request carries
+ * no wallet data and no identifier. `app.updates_unavailable` when this
+ * copy cannot update itself, `app.update_check` when the feed cannot be
+ * read (the status stays as it was). While an install is under way it
+ * fetches nothing.
+ */
+export function checkForUpdate(): Promise<UpdateStatus> {
+  return invoke<UpdateStatus>("check_for_update");
+}
+
+/**
+ * Downloads the offered `version`, checks its signature and puts it in
+ * place; the app runs it after `restart_to_update`. On Windows the
+ * installer replaces the running app: the engine is shut down as on
+ * quit, the app closes and the installer opens the new one.
+ * `app.update_state` when `version` is not the one on offer;
+ * `app.update_signature` when the signature does not verify (nothing is
+ * installed); `app.update_download` or `app.update_install` otherwise.
+ */
+export function installUpdate(version: string): Promise<UpdateStatus> {
+  return invoke<UpdateStatus>("install_update", { version });
+}
+
+/**
+ * Quits through the normal exit path (the engine flushes and closes)
+ * and starts the installed update. `app.update_state` before an update
+ * is installed.
+ */
+export function restartToUpdate(): Promise<null> {
+  return invoke<null>("restart_to_update");
+}
+
+/**
+ * Opens the release notes of the update on offer in the system browser.
+ * Only that release's page on this repository may be opened.
+ */
+export function openUpdateNotes(): Promise<null> {
+  return invoke<null>("open_update_notes");
+}
+
+/**
  * `--selftest`: writes the renderer's report, and exits once the report
  * is final (`"final": false` is a checkpoint before a probe that could
  * end the page).
@@ -3223,6 +3274,11 @@ export type CommandArgs = {
   rates_currencies: {  };
   set_rates_settings: { settings: RatesSettings };
   refresh_rates: {  };
+  update_status: {  };
+  check_for_update: {  };
+  install_update: { version: string };
+  restart_to_update: {  };
+  open_update_notes: {  };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -3553,6 +3609,11 @@ export type CommandResults = {
   rates_currencies: Array<CurrencyRate>;
   set_rates_settings: RatesView;
   refresh_rates: RatesView;
+  update_status: UpdateStatus;
+  check_for_update: UpdateStatus;
+  install_update: UpdateStatus;
+  restart_to_update: null;
+  open_update_notes: null;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -3885,6 +3946,11 @@ export const COMMANDS: Record<CommandName, string> = {
   rates_currencies: "rates",
   set_rates_settings: "rates",
   refresh_rates: "rates",
+  update_status: "updates",
+  check_for_update: "updates",
+  install_update: "updates",
+  restart_to_update: "updates",
+  open_update_notes: "updates",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",
@@ -3916,6 +3982,12 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "app.network_switch_failed",
   "app.explorer_open",
   "app.browser_open",
+  "app.updates_unavailable",
+  "app.update_check",
+  "app.update_download",
+  "app.update_signature",
+  "app.update_install",
+  "app.update_state",
   "invalid_config",
   "invalid_argument",
   "network_not_open",

@@ -133,6 +133,11 @@ The Release run on the tag (`.github/workflows/release.yml`):
    - `dash-wallet-X.Y.Z-sbom-rust.cdx.json`, `dash-wallet-X.Y.Z-sbom-npm.cdx.json` (CycloneDX JSON);
    - `SHA256SUMS`.
 3. A tag does not touch `continuous` or the per-build releases of `main`.
+4. **When available (the updater key, [`updater.md`](updater.md)):** with the `TAURI_SIGNING_PRIVATE_KEY` secret set,
+   the tag's builds carry the update feed and Tauri signs their updater artifacts. For a final `vX.Y.Z` only,
+   `checksums` writes `latest.json` (`ci/github/release-feed.sh`) and the release gains two more assets, both attested:
+   `latest.json` and `dash-wallet-X.Y.Z-macos-universal.app.tar.gz`. A candidate never gets a feed. Without the
+   secret, nothing changes: the app says it does not update itself.
 
 Signing that the workflow does not do yet:
 
@@ -142,6 +147,9 @@ Signing that the workflow does not do yet:
 - [ ] **When available (B2):** Windows code signing of the installer (W-03).
 - [ ] Until both exist, the notes' Known limitations and Install sections say the builds are not notarized and not
       signed, and what the first launch shows.
+- [ ] **When available (the updater key):** turning updates on is once: make the key, put its public key in
+      `tauri.conf.json`, add the two secrets ([`updater.md`](updater.md), "Turning it on"). The first signed release
+      cannot reach copies installed before it; its notes say to install it by hand.
 - [ ] **When available (the real release key, required for 1.0):** sign `SHA256SUMS` once the release is published
       and add the signature to it (`gh release upload vX.Y.Z <signature file>`). This is the RELEASE-PLAN fallback
       when the certificates don't exist: unsigned binaries, signed checksums. The notes' Verify section then says
@@ -171,6 +179,12 @@ jq -r '.metadata.component.name, (.components | length)' dash-wallet-X.Y.Z-sbom-
       `X.Y.Z-notes.md`, and the final tag is Latest.
 - [ ] Install each bundle once more from the published files (the screenshots of section 4 can be these):
       Settings ▸ About shows `X.Y.Z`, and Tools ▸ Information shows no test-build warning on the final tag.
+- [ ] With the updater key: the release has `latest.json` and the macOS app archive too, and the feed names this
+      release (`gh release download vX.Y.Z -p latest.json -O - | jq '.version, .platforms[].url'`: `X.Y.Z`, and every
+      URL under `/releases/download/vX.Y.Z/`). The feed URL answers with it once the release is Latest:
+      `curl -sL https://github.com/PastaPastaPasta/dashwallet-desktop/releases/latest/download/latest.json | jq .version`.
+- [ ] With the updater key: the previous signed release, installed as an AppImage, finds the update in Settings ▸
+      About ▸ Check for updates, installs it and restarts into `X.Y.Z` (and the same on macOS and Windows, by hand).
 - [ ] Update the State column of `docs/PLAN-1.0.md` and the README's tagged-release mention if it names a version.
 
 ## 8. Rollback
@@ -182,6 +196,9 @@ bytes. So:
       --prerelease --latest=false` and a warning at the top of its notes (`--notes-file`). Make the previous release
       Latest again, explicitly: `gh release edit v<previous> --repo PastaPastaPasta/dashwallet-desktop --latest`,
       and check the Releases page. Then ship the fix as `vX.Y.(Z+1)`, with a candidate if time allows.
+- [ ] With the updater key, the bad release is also what the feed offers while it is Latest. Marking it as a
+      prerelease (above) takes it out of the feed at once: the feed is the Latest release's `latest.json`. Copies that
+      already installed it stay on it (no downgrade is ever offered), so the fix ships as a newer version.
 - [ ] Delete the release (`gh release delete vX.Y.Z --repo PastaPastaPasta/dashwallet-desktop --yes`) only when
       its files must not be downloaded at all (for example, they lose funds). Keep the tag: the version is used and
       is never re-cut with other bytes.

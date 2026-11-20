@@ -162,6 +162,11 @@ export class IpcBackend implements Backend {
   setQuickUnlockSpendLimit = cmd.setQuickUnlockSpendLimit;
   uiSettings = () => cmd.uiSettings();
   setUiSettings = cmd.setUiSettings;
+  updateStatus = () => cmd.updateStatus();
+  checkForUpdate = () => cmd.checkForUpdate();
+  installUpdate = cmd.installUpdate;
+  restartToUpdate = () => cmd.restartToUpdate();
+  openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();
   setRatesSettings = cmd.setRatesSettings;

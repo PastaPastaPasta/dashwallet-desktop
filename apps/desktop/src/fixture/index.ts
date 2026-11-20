@@ -14,6 +14,7 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { NetworkKind } from "../api/generated/NetworkKind";
+import type { UpdateAvailability } from "../api/generated/UpdateAvailability";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
 import { landSend, PENDING_HANDLERS, switchedWorld } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
@@ -41,6 +42,10 @@ export interface FixtureOptions {
   /** The saved language (`lang=<tag>`, MP-14): a shipped one or a pseudo-locale (`en-XA` long,
    * `ar-XB` right to left). */
   language?: string;
+  /** This copy's update availability (`updates=<availability>`, PK-03); with `update=<version>`, the
+   * version the stable feed serves. */
+  updates?: UpdateAvailability;
+  updateServes?: string;
 }
 
 export interface FixtureHandle {
@@ -89,6 +94,8 @@ const notImplemented = (call: string): AppError => ({
   data: { kind: "call", call },
 });
 
+const UPDATE_AVAILABILITIES: UpdateAvailability[] = ["available", "notInThisBuild", "flatpak", "packageManager", "notInstalled"];
+
 /** Where `relaunch` leaves the world for the next page load (one tab's session). */
 const RELAUNCH_KEY = "dw-fixture-relaunch";
 
@@ -104,6 +111,8 @@ function relaunchedWorld(): World | null {
 export function installFixture(opts: FixtureOptions): FixtureHandle {
   const world = relaunchedWorld() ?? switchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
   if (opts.language) world.settings.ui = { ...world.settings.ui, language: opts.language };
+  if (opts.updates) world.updates.availability = opts.updates;
+  if (opts.updateServes) world.updates.serves = opts.updateServes;
   if (opts.network) {
     world.launch.network = { kind: opts.network, dirName: opts.network, unitName: opts.network === "mainnet" ? "DASH" : "tDASH" };
     world.pending.networkChoice = { chosen: opts.network === "testnet" ? "mainnet" : "testnet", saved: true };
@@ -179,7 +188,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   };
 }
 
-/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
+/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&updates=<availability>&update=<version>&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
  * `error-<class>` scenario is `funded` with `list_wallets` failing with that class. Unknown
  * names throw, so a typo in a test URL fails loudly instead of showing the default. */
 export function fixtureOptionsFromUrl(search: string): FixtureOptions {
@@ -211,6 +220,10 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
   }
   const language = p.get("lang") ?? undefined;
   if (language !== undefined && !isLanguage(language)) throw new Error(`unknown language ${language}`);
+  const u = p.get("updates");
+  if (u !== null && !UPDATE_AVAILABILITIES.includes(u as UpdateAvailability)) throw new Error(`unknown updates=${u}`);
+  const updates = (u ?? undefined) as UpdateAvailability | undefined;
+  const updateServes = p.get("update") ?? undefined;
   const delay = Number(p.get("delay") ?? 0);
-  return { scenario, theme, network, failures, holds, language, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
+  return { scenario, theme, network, failures, holds, language, updates, updateServes, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
 }

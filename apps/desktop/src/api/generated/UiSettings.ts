@@ -53,4 +53,9 @@ preReleaseNoticeDismissed: boolean,
  * `null` follows the system (MP-14). The renderer decides which tags it
  * has a catalog for.
  */
-language: string | null, };
+language: string | null,
+/**
+ * Settings ▸ About ▸ Check for updates automatically (PK-03): off until
+ * the user turns it on; only a copy that can update itself checks.
+ */
+checkUpdatesAutomatically: boolean, };

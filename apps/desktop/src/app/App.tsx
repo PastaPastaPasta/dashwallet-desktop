@@ -47,6 +47,7 @@ import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
 import { useLanguageAttributes } from "../i18n";
 import { savePrefs } from "../settings/prefs";
+import { useAutomaticUpdateCheck } from "../settings/updates";
 import { navigate, ui, useUi } from "./ui";
 
 const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null });
@@ -323,6 +324,8 @@ export function App() {
   // Opening the network loads the wallet database; the splash is up meanwhile.
   const network = useOpenNetwork();
   useEffect(() => mark("shell"), []);
+  // Updates (PK-03): nothing is fetched unless the user turned the automatic check on.
+  useAutomaticUpdateCheck(useBackend());
   // A network switch that failed booted this page again; it says what happened (row 74).
   useEffect(() => {
     const note = takeSwitchNote();

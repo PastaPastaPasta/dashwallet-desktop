@@ -359,6 +359,48 @@ seed_old; echo x > "$work/x"; FS=$FS bash -c 'echo 200 > "$FS/next"; printf "200
 FAKE_RELEASES="$tag" FAKE_API_ERROR=assets publish_only
 check "leftovers and an unreadable asset list: fails before any write" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
 
+# --- the update feed (PK-03): release-feed.sh writes it, and only a stable release tag publishes it
+feed_in() { # the staged updater files of version $1 (any of the four names listed after it)
+  local v=$1; shift
+  rm -rf "$work/fin" "$work/fout"; mkdir -p "$work/fin"
+  for f in "$@"; do printf 'c2lnbmF0dXJlIG9mICVz\n' > "$work/fin/dash-wallet-$v-$f"; done
+}
+ALL_UPDATER=(linux-x86_64.AppImage.sig windows-x64-setup.exe.sig macos-universal.app.tar.gz macos-universal.app.tar.gz.sig)
+feed_in 0.1.0 "${ALL_UPDATER[@]}"
+fs=0; "$here/release-feed.sh" feed "$work/fin" "$work/fout" 0.1.0 o/r > /dev/null 2>&1 || fs=$?
+check "feed: latest.json with the AppImage, NSIS and macOS app entries, on the tag's download URLs" \
+  '[[ $fs -eq 0 ]] && jq -e ".version == \"0.1.0\" and (.platforms | keys) == [\"darwin-aarch64-app\",\"darwin-x86_64-app\",\"linux-x86_64-appimage\",\"windows-x86_64-nsis\"] and .platforms[\"linux-x86_64-appimage\"].url == \"https://github.com/o/r/releases/download/v0.1.0/dash-wallet-0.1.0-linux-x86_64.AppImage\" and .platforms[\"windows-x86_64-nsis\"].signature == \"c2lnbmF0dXJlIG9mICVz\"" "$work/fout/latest.json" > /dev/null && [[ $(ls "$work/fout" | wc -l) -eq 2 ]]'
+tag_bundles 0.1.0; fs_reset
+FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 with the feed: latest.json and the macOS archive are attested and published with the release" \
+  '[[ $status -eq 0 && -f "$OUT/attest/latest.json" && -f "$OUT/attest/dash-wallet-0.1.0-macos-universal.app.tar.gz" ]] && log_has "release create v0.1.0 " && log_has "/latest.json" && ! log_has "--prerelease"'
+FEED=$work/fout DIST=$work/tagdist FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=10 run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 with the feed, rerun: the complete release (10 assets) is left as it is" '[[ $status -eq 0 ]] && ! log_has "release create"'
+fs_reset
+FEED=$work/empty-feed DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+check "tag v0.1.0 without a feed (no updater key): the release as before" '[[ $status -eq 0 && ! -f "$OUT/attest/latest.json" ]] && ! log_has "latest.json"'
+feed_in 0.1.0-rc.1 "${ALL_UPDATER[@]}"
+fs=0; "$here/release-feed.sh" feed "$work/fin" "$work/fout" 0.1.0-rc.1 o/r > /dev/null 2>&1 || fs=$?
+check "feed: a release candidate gets none" '[[ $fs -eq 0 && ! -e "$work/fout" ]]'
+feed_in 0.1.0
+fs=0; "$here/release-feed.sh" feed "$work/fin" "$work/fout" 0.1.0 o/r > /dev/null 2>&1 || fs=$?
+check "feed: a build without the key gets none" '[[ $fs -eq 0 && ! -e "$work/fout" ]]'
+feed_in 0.1.0 linux-x86_64.AppImage.sig windows-x64-setup.exe.sig
+fs=0; "$here/release-feed.sh" feed "$work/fin" "$work/fout" 0.1.0 o/r > /dev/null 2>&1 || fs=$?
+check "feed: an OS without its updater files fails" '[[ $fs -ne 0 ]]'
+# a feed that reaches the publish job anyway is refused anywhere but a stable tag
+feed_in 0.1.0-rc.1 "${ALL_UPDATER[@]}"; mkdir -p "$work/fout"; cp "$work/fin/dash-wallet-0.1.0-rc.1-macos-universal.app.tar.gz" "$work/fout/"
+jq -n '{version: "0.1.0-rc.1", platforms: {a: {url: "https://github.com/o/r/releases/download/v0.1.0-rc.1/x"}, b: {url: "https://github.com/o/r/releases/download/v0.1.0-rc.1/x"}, c: {url: "https://github.com/o/r/releases/download/v0.1.0-rc.1/x"}, d: {url: "https://github.com/o/r/releases/download/v0.1.0-rc.1/x"}}}' > "$work/fout/latest.json"
+tag_bundles 0.1.0-rc.1; fs_reset
+FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1; refused "a release candidate never publishes a feed"
+fs_reset; unset FAKE_CONT_RELEASE
+FEED=$work/fout run push refs/heads/main "$c2" "$ver";                              refused "main never publishes a feed"
+feed_in 0.0.9 "${ALL_UPDATER[@]}"; "$here/release-feed.sh" feed "$work/fin" "$work/fout" 0.0.9 o/r > /dev/null 2>&1
+mv "$work/fout/dash-wallet-0.0.9-macos-universal.app.tar.gz" "$work/fout/dash-wallet-0.1.0-macos-universal.app.tar.gz"
+tag_bundles 0.1.0; fs_reset
+FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0;         refused "another version's feed is refused"
+export GITHUB_SHA=$c2
+
 # --- classify and decide
 check "classify: main push" '[[ $(GITHUB_EVENT_NAME=push GITHUB_REF=refs/heads/main "$here/release-publish.sh" classify) == main ]]'
 check "classify: release tag" '[[ $(GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v0.1.0-rc.2 "$here/release-publish.sh" classify) == tag ]]'
