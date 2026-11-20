@@ -221,8 +221,8 @@ const FACADE: &[&str] = &[
 /// the invitation checks with their tests (DP5-02), the network's
 /// protocol version (release 0.1), the shielded funds' library side
 /// with its tests (0.1 E1), the unfinished transfers' kinds and runner
-/// with their tests (0.2 recovery), and the input-0 planner with its
-/// tests (1.0 C1a-1).
+/// with their tests (0.2 recovery), the input-0 planner with its tests
+/// (1.0 C1a-1), and the parsers dw-fuzz drives (H-02, `fuzzing` feature).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -245,6 +245,7 @@ const NOT_FACADE: &[&str] = &[
     "core_max_lib_tests.rs",
     "core_max_tests.rs",
     "credit_costs.rs",
+    "fuzzing.rs",
     "identity_reads.rs",
     "identity_tests.rs",
     "identity_writes.rs",
