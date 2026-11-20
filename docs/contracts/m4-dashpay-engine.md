@@ -723,6 +723,24 @@ transition, unsent, before anything is broadcast, then asks the engine, and send
   through. The engine never releases such notes by itself.
 - The marker of a spend the library kept no record of (schema 10, "Unrecorded spends" below) is still written and gates
   as below. The schema-9 journal row is written only for a spend stored before any hook was set, at pass admission.
+- **The library's outcomes (version 71).** At the end of each pass and when it opens `shielded.sqlite`, the engine
+  reads the outcome the library recorded for each ended spend (its disposition) into the spend's artifact by
+  Platform's hash of the transition, and only then acknowledges it, which lets the library drop the outcome and its
+  hold on the notes. A crash between the two repeats both. `NotExecuted` (nothing was sent, the notes are free) reads
+  not executed and is acknowledged, also for a spend the hook refused (it has no artifact). `Executed` reads executed
+  and is acknowledged once each note it holds reads spent in the journal (the wallet store took that spent state), so
+  no note it held becomes selectable while the wallet store could still read it unspent; until then each later pass
+  checks again. If the journal never took that spent state (a failed write), it stays held, and Close Wallet refused,
+  until Tools ▸ Repair. `Unresolved` reads unresolved (being confirmed) and is never acknowledged by the engine: its notes
+  stay held until a later scan or the user settles it. One the library could not attribute (`Unattributable`) whose
+  history row reads `confirmed` reads executed, never failed: it is no proof, so it is not acknowledged either, nothing
+  of it is re-sent or rebuilt, and no gate (`confirm_unrecorded` included) is relaxed by it. An outcome this build
+  cannot read is acknowledged by its key only once each note it holds reads spent in the journal (its artifact reads
+  unresolved, and the hook no longer admits a send of it); until then the wallet's other outcomes wait. One that lists
+  no notes, or whose note list cannot be read, is never acknowledged by the engine: the wallet's other outcomes wait
+  for Tools ▸ Repair. An outcome of a spend with no artifact (a spend stored
+  before any hook was set) or with an unclassified one waits, as does every outcome while the journal is unavailable.
+  So Close Wallet and a switch stay refused (DEC-1046, below) only while an outcome is not acknowledged.
 - **No way back.** Once a build with the hook has run on a data directory, a build on a platform-wallet older than
   the hooked one must not open that directory: it knows neither the unsent mark of a stored spend nor the outcomes
   the hooked library recorded.
@@ -4417,6 +4435,11 @@ renames or reshapes them takes the next version bump:
     no row. `begin_flow` takes the payment's source (P15) and `FlowKind::ContactPayFromBalance` is a plain payout's
     lease, which redeems no grant until a source lands. An older build cannot open an app.sqlite with this migration
     (refinery's `abort_missing`), so it never pays a contact a payout row locks.
+91. **The library's spend outcomes, read and acknowledged (version 71).** After each pass and at the shielded store's
+    open the engine settles each spend's artifact from the library's disposition, then acknowledges it: `NotExecuted`
+    at once, `Executed` once its notes read spent in the journal, an unreadable one by its key once its held notes read
+    spent; never an `Unresolved` one. `Unattributable` with a confirmed history row reads done, with no retry and no
+    gate relaxed (§2.13 "The dispatch hook").
 
 92. **Core Max for Shielded and Platform (1.0 C2a, version 72; C-routes D-C2).** `shield_quote`, `shield_from_core`,
     `platform_fund_quote` and `platform_fund` take a `FundAmount` (`Duffs{duffs}` or `All`) for their `duffs`; the

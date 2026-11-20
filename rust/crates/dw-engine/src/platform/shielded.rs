@@ -232,7 +232,10 @@ pub enum ShieldedSpendState {
     /// (done), or `failed` when the library's prune backstop releases them
     /// (not executed). Meanwhile the library re-sends the same signed
     /// transition (`transition`) during sync passes, at most 3 times. The
-    /// facade offers no resend and the host offers no retry.
+    /// facade offers no resend and the host offers no retry. A spend the
+    /// library resolves without attributing its notes' spend to it
+    /// (`Unattributable`) while its history row reads `confirmed` is done
+    /// too: never failed, and never retried, rebuilt or re-sent.
     Pending,
 }
 
