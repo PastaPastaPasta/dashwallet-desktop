@@ -1027,6 +1027,31 @@ for (const theme of THEMES) {
   });
 }
 
+// MG-10 S1: Masternodes ▸ My masternodes, under MG-00's frame names. `mn-banned` selects Office,
+// `mn-v24-payouts` Home with its flagged payouts, `mn-locked` Club with its unlock line.
+const MY_MASTERNODES: Record<string, string | null> = {
+  "mn-list": null,
+  "mn-empty": null,
+  "mn-banned": null,
+  "mn-watchonly": null,
+  "mn-locked": "c1",
+  "mn-v24-payouts": "4e",
+};
+for (const theme of THEMES) {
+  for (const [scenario, pick] of Object.entries(MY_MASTERNODES)) {
+    test(`visual ${scenario} ${theme}`, async ({ page }) => {
+      await page.clock.setFixedTime(FIXTURE_NOW);
+      await page.goto(fixtureUrl(scenario, theme));
+      await page.getByTestId("toolbar").waitFor();
+      await page.getByTestId("sidebar-masternodes").click();
+      if (pick) await page.getByTestId(`mn-row-${pick.repeat(32)}`).click();
+      await page.getByTestId(scenario === "mn-empty" ? "mn-empty" : "mn-facts").waitFor();
+      await page.mouse.move(0, 0);
+      await shoot(page, scenario, theme);
+    });
+  }
+}
+
 // Unfinished transfers on Home: the card for a restored Core → Shielded lock in each state, and
 // the Details sheet with a lock this version can't finish.
 for (const theme of THEMES) {

@@ -1,17 +1,21 @@
 // Masternodes ▸ Governance (MG-09, UX-SPEC §4.25.1, §4.25.3): the clock and budget cards, the
 // proposal list with search, filters and sort, the detail pane, and Mine. MG-11 adds the tab bar
-// with Username voting (NamesTab.tsx, MG-11 D1); MG-10 adds My masternodes to it. The sheets
+// with Username voting (NamesTab.tsx, MG-11 D1); MG-10 adds My masternodes to it and keeps the
+// open tab in the saved settings (MG-10 D1). The sheets
 // (vote, create, numbers) live here, so a list that changes under an open sheet (a filter, a
 // re-sort, a resync) keeps it (D31).
 
 import { useMemo, useState } from "react";
 import { errorMessage } from "../../api/backend";
 import type { GovernanceInfo } from "../../api/generated/GovernanceInfo";
+import type { MasternodesTab } from "../../api/generated/MasternodesTab";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { ProposalRow } from "../../api/generated/ProposalRow";
 import type { VotingMasternode } from "../../api/generated/VotingMasternode";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { useBackend } from "../../api/queries";
+import { useLaunch } from "../../app/App";
+import { useUi } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton, Icon } from "../../components/basics";
 import { EmptyState, LoadingState } from "../../components/history";
@@ -36,10 +40,14 @@ import {
 } from "../../governance/model";
 import { useGovernanceInfo, useGovernanceRefresh, useGovernanceSyncState, useMyProposals, useProposals, useTurnOnGovernance, useVotingByProposal } from "../../governance/queries";
 import { NameText } from "../../governance/names";
+import { MnText } from "../../masternodes/model";
+import { useMasternodeListState } from "../../masternodes/queries";
+import { savePrefs } from "../../settings/prefs";
 import { Tabs, type Tab } from "../Routes";
 import { MoreMenu, Notice, StatusChip, useNowSecs, VoteBar } from "./common";
 import { CreateProposalSheet } from "./CreateProposalSheet";
 import { MineList } from "./Mine";
+import { MyMasternodes } from "./MyMasternodes";
 import { NamesTab } from "./NamesTab";
 import { NumbersSheet } from "./NumbersSheet";
 import { ProposalPane } from "./ProposalPane";
@@ -47,15 +55,23 @@ import { VoteSheet } from "./VoteSheet";
 
 const SEARCH_DEBOUNCE_MS = 200;
 
-type MasternodesTab = "governance" | "names";
 const TABS: Tab<MasternodesTab>[] = [
+  { id: "myMasternodes", title: MnText.tab },
   { id: "governance", title: "Governance" },
   { id: "names", title: NameText.tab },
 ];
 
 export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; network: NetworkInfo }) {
-  // Page state, not `ui`: the page opens on Governance (MG-11 D2).
-  const [tab, setTab] = useState<MasternodesTab>("governance");
+  const backend = useBackend();
+  const launch = useLaunch();
+  const saved = useUi((s) => s.prefs.masternodesTab);
+  // Shown at once; the setting follows (a failed save keeps the page on the chosen tab this time).
+  const [tab, setShownTab] = useState<MasternodesTab>(saved);
+  const setTab = (t: MasternodesTab) => {
+    setShownTab(t);
+    void savePrefs(backend, launch, { masternodesTab: t }).catch(() => undefined);
+  };
+  const mnList = useMasternodeListState();
   const [showEnded, setShowEnded] = useState(false);
   const [filter, setFilter] = useState<ListFilter>("all");
   const [sheet, setSheet] = useState<"create" | "numbers" | null>(null);
@@ -66,7 +82,6 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   const info = useGovernanceInfo();
   const mine = useMyProposals(walletId);
   const { turnOn, busy: turningOn } = useTurnOnGovernance();
-  const backend = useBackend();
   const refresh = useGovernanceRefresh();
   const shown = useDisplay(network);
   const state = sync.data ? listState(sync.data) : null;
@@ -166,7 +181,25 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
           )}
         </header>
         <Tabs label="Masternodes" tabs={TABS} current={tab} onSelect={setTab} testId="masternodes-tabs">
-          {tab === "governance" ? body : <NamesTab wallet={wallet} network={network} />}
+          {!mnList.isError && mnList.data?.synced && mnList.data.height !== null && (
+            <p className="mg-muted mg-small" data-testid="mn-list-height">
+              {MnText.listHeight(mnList.data.height)}
+            </p>
+          )}
+          {tab === "myMasternodes" ? (
+            <MyMasternodes
+              wallet={wallet}
+              network={network}
+              onVote={() => {
+                setFilter("needsVote");
+                setTab("governance");
+              }}
+            />
+          ) : tab === "governance" ? (
+            body
+          ) : (
+            <NamesTab wallet={wallet} network={network} />
+          )}
         </Tabs>
       </div>
       {sheet === "numbers" && info.data && <NumbersSheet info={info.data} network={network} onClose={() => setSheet(null)} />}

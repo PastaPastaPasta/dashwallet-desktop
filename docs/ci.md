@@ -83,7 +83,10 @@ are all on disk. The runner image lists its regional Ubuntu mirror first, then `
 slowly to finish under the deadline, and all three can be down together (2026-11-19). So when a download
 attempt fails, the script puts `azure.archive.ubuntu.com` first, drops the mirrors listed ahead of
 `archive.ubuntu.com`, and points the `noble-security` source at the same mirror list, so it keeps
-`archive.ubuntu.com` and `security.ubuntu.com` as fallbacks. apt checks every package against Ubuntu's
+`archive.ubuntu.com` and `security.ubuntu.com` as fallbacks. When the mirror that failed is the Azure one
+(some runners have it as their regional mirror, and on 2026-11-20 it was too slow for three attempts), it
+goes last instead, so `archive.ubuntu.com` serves the next attempt; apt keeps what the failed attempt
+downloaded. apt checks every package against Ubuntu's
 signed indexes whichever mirror serves it. The download deadline is 6 minutes (`DW_APT_DOWNLOAD_DEADLINE`);
 the two Rust jobs set 1 minute, since a download takes seconds and a stalled regional mirror otherwise
 held them for the whole 6 minutes before the Azure mirror served the packages in about a second.

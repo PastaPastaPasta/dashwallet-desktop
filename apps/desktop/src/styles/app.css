@@ -3071,17 +3071,16 @@ input[type="radio"]:disabled {
   font-weight: 600;
 }
 
+/* A group, not a fieldset: WebKitGTK sizes a flex fieldset's rendered legend twice when the
+   step mounts, so the first click's blur moved the step under the pointer (issue 108). */
 .scan-start {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-s);
-  margin: 0;
-  padding: 0;
-  border: 0;
 }
 
-.scan-start legend {
-  margin-bottom: var(--dw-space-s);
+.scan-start-title {
+  padding-inline: 2px;
   font-size: var(--dw-type-footnote-medium-size);
   font-weight: var(--dw-type-footnote-medium-weight);
 }
@@ -6303,4 +6302,119 @@ button.bell-row-open:focus-visible {
     transform: none;
   }
   .page-overview > .page-column { padding-top: var(--dw-space-l); }
+}
+
+/* My masternodes (MG-10 §1.2), from MG-00's frames. */
+.mg-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: var(--dw-space-l);
+  padding: var(--dw-space-m) 0;
+  border-radius: var(--dw-radius-group);
+}
+
+.mg-summary > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--dw-space-xxxs);
+  padding: 0 var(--dw-space-l);
+}
+
+.mg-summary > div + div {
+  border-left: 1px solid var(--dw-role-separator);
+}
+
+.mg-summary-label {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption1-size);
+  line-height: var(--dw-type-caption1-line);
+}
+
+.mg-summary-value {
+  font-size: var(--dw-type-headline-size);
+  font-weight: var(--dw-type-headline-weight);
+  line-height: var(--dw-type-headline-line);
+}
+
+.mg-summary-note {
+  color: var(--dw-role-text-secondary);
+  font-size: var(--dw-type-caption2-size);
+  line-height: var(--dw-type-caption2-line);
+}
+
+.mg-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--dw-space-m);
+  padding: var(--dw-space-xxxl) var(--dw-space-xxl);
+  border-radius: var(--dw-radius-card);
+  text-align: center;
+}
+
+.mg-empty h2 {
+  margin: 0;
+  font-size: var(--dw-type-title3-size);
+  font-weight: var(--dw-type-title3-weight);
+  line-height: var(--dw-type-title3-line);
+}
+
+.mg-empty p {
+  max-width: 520px;
+  margin: 0;
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-empty-points {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--dw-space-l);
+  max-width: 680px;
+  margin: var(--dw-space-s) 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+  font-size: var(--dw-type-footnote-size);
+  line-height: var(--dw-type-footnote-line);
+}
+
+.mg-empty-points strong {
+  display: block;
+  margin-bottom: var(--dw-space-xxxs);
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-empty-points span {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-roles .mg-held::before,
+.mg-roles .mg-elsewhere::before {
+  flex: none;
+  width: 14px;
+  font-weight: var(--dw-type-footnote-medium-weight);
+}
+
+.mg-roles .mg-held::before {
+  content: "✓";
+  color: var(--dw-role-success);
+}
+
+.mg-roles .mg-elsewhere::before {
+  content: "–";
+  color: var(--dw-role-text-tertiary);
+}
+
+.mg-roles .mg-elsewhere {
+  color: var(--dw-role-text-secondary);
+}
+
+.mg-notice-danger {
+  background: var(--dw-role-danger-tint);
+}
+
+/* The selected row's tint under a "PoSe banned" chip keeps the text at AA, as with .chip-warning (axe). */
+.mg-row .chip-danger {
+  background: linear-gradient(var(--dw-role-danger-tint), var(--dw-role-danger-tint)), var(--dw-role-card);
 }

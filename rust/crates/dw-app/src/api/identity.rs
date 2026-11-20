@@ -45,6 +45,7 @@ use self::startup::{
 };
 use self::unfinished::{LockFinish, LockKind, UnfinishedTransfers};
 use crate::api::send::BroadcastOutcome;
+use crate::api::social::PaymentSourceName;
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
 use crate::ipc::commands;
 use crate::state::parse_wallet_id;
@@ -615,17 +616,21 @@ commands! {
 
     /// Redeems `grants` (vault grant ids) into one lease for `flow` and
     /// returns its id, which the wallet's calls accept as their `grant` for
-    /// the purposes the lease carries. `endFlow` releases it.
+    /// the purposes the lease carries. `endFlow` releases it. `source`: the
+    /// payment's, for `acceptAndPay` (`null` is `core`) and
+    /// `contactPayFromBalance`; `null` for every other flow.
     #[facade("NetworkSession::begin_flow")]
     fn begin_flow(
         state,
         wallet_id: String,
         flow: FlowKindName,
         grants: Vec<String>,
+        source: Option<PaymentSourceName>,
     ) -> String {
         let id = parse_wallet_id(&wallet_id)?;
         let session = state.session().await?;
-        Ok(session.begin_flow(id, FlowKind::from(flow), grants).await?)
+        let source = source.map(Into::into);
+        Ok(session.begin_flow(id, FlowKind::from(flow), grants, source).await?)
     }
 
     /// Releases a lease. Idempotent.
