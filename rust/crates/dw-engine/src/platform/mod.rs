@@ -28,10 +28,13 @@ pub(crate) mod contest_watch;
 mod contest_watch_tests;
 pub(crate) mod core_max;
 mod credit_costs;
+mod credit_transfer;
 mod credits;
 mod dashpay;
 mod errors;
 mod flows;
+#[cfg(feature = "fuzzing")]
+pub mod fuzzing;
 mod identity;
 mod identity_reads;
 mod identity_writes;
@@ -123,8 +126,8 @@ pub use contacts::{
 };
 pub use credits::{
     CoreMax, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding, TopUpOutcome,
-    TopUpQuote, TopUpState, WithdrawAmount, WithdrawOutcome, WithdrawQuote, Withdrawal,
-    WithdrawalStatus,
+    TopUpQuote, TopUpState, WithdrawAmount, WithdrawOutcome, WithdrawQuote,
+    WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal, WithdrawalStatus,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{

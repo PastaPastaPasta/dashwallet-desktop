@@ -1,0 +1,114 @@
+[package]
+name = "dw-fuzz"
+description = "Fuzz harnesses for the parsers of untrusted input (H-02): libFuzzer targets and their stable replay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[package.metadata]
+cargo-fuzz = true
+
+[features]
+# The avatar decoder and the invitation parser, through dw-engine's
+# `platform::fuzzing`.
+engine = ["dep:dw-engine", "dw-engine/fuzzing"]
+# The libFuzzer targets (`cargo fuzz`, nightly; scripts/fuzz.sh). `avatar` and
+# `invitation` also need `engine`.
+libfuzzer = ["dep:libfuzzer-sys"]
+
+[dependencies]
+dashcore = { workspace = true }
+dw-compat = { workspace = true }
+dw-desktop = { workspace = true }
+dw-engine = { workspace = true, optional = true }
+dw-psbt = { workspace = true }
+dw-uri = { workspace = true }
+libfuzzer-sys = { version = "0.4", optional = true }
+# Seeds: QR and avatar images rendered from the test vectors, the records
+# of the wallet.dat vectors, and a special-transaction PSBT.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
+serde_json = "1"
+base64 = "0.22"
+
+[[bin]]
+name = "link"
+path = "fuzz_targets/link.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "send_input"
+path = "fuzz_targets/send_input.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "qr_image"
+path = "fuzz_targets/qr_image.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "psbt"
+path = "fuzz_targets/psbt.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "dumpwallet"
+path = "fuzz_targets/dumpwallet.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "listdescriptors"
+path = "fuzz_targets/listdescriptors.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "walletdat"
+path = "fuzz_targets/walletdat.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "walletdat_bdb"
+path = "fuzz_targets/walletdat_bdb.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
+name = "avatar"
+path = "fuzz_targets/avatar.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer", "engine"]
+
+[[bin]]
+name = "invitation"
+path = "fuzz_targets/invitation.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer", "engine"]

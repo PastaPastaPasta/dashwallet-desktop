@@ -162,6 +162,11 @@ pub enum EngineError {
     /// and its reservations (platform-wallet has no detach at the pin).
     #[error("a shielded payment is still being confirmed; wait, or quit and reopen the app")]
     ShieldedSpendUnresolved,
+    /// `set_load_on_startup` would leave no wallet on the load-on-startup
+    /// list: with no wallet open the app starts in onboarding, where closed
+    /// wallets cannot be reached.
+    #[error("at least one wallet opens at start")]
+    LastStartupWallet,
 }
 
 impl EngineError {
@@ -214,6 +219,7 @@ impl EngineError {
             EngineError::StuckFunding(_) => "stuck_funding",
             EngineError::Contact(_) => "contact",
             EngineError::ShieldedSpendUnresolved => "shielded_spend_unresolved",
+            EngineError::LastStartupWallet => "last_startup_wallet",
         }
     }
 }
