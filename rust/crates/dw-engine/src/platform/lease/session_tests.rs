@@ -1987,8 +1987,9 @@ fn repair_of_a_stuck_drain_is_refused_while_mixing_or_a_move_runs() {
 }
 
 /// E0-04 §6.5 (C9), commit 7, on a real session: Repair's "Resolve stuck
-/// funding" spends every coin of the funding accounts, the inputs of a
-/// tracked `Built` lock included, to a fresh address of the wallet. Its
+/// funding" spends every coin of the funding accounts of a wallet holding
+/// no denomination, the inputs of a tracked `Built` lock included, to a
+/// fresh address of the wallet. Its
 /// txid is in the journal before the library sees the transaction, and the
 /// step stays `MaybeSent` (no ChainLock yet). The exemption is the
 /// repair's alone: plain coin control still refuses the lock's input, a

@@ -1,12 +1,13 @@
-//! Repair's "Resolve stuck funding: send all coins to yourself" (E0-04
-//! §6.5, §2a.5, §16.10 C9): Mode B's way out of a funding that stays
-//! `MaybeSent` (or `WillBeSent` with no proof) with no time bound, such as
-//! a lock whose row a power loss lost and that a peer withholds.
+//! Repair's "Resolve stuck funding" (E0-04 §6.5, §2a.5, §16.10 C9; the
+//! renderer's label still reads "send all coins to yourself"): Mode B's way
+//! out of a funding that stays `MaybeSent` (or `WillBeSent` with no proof)
+//! with no time bound, such as a lock whose row a power loss lost and that
+//! a peer withholds.
 //!
-//! The self-spend is an engine `TxDraft` that spends every coin of the
-//! funding accounts (BIP44, BIP32, DashPay receiving: the accounts the
-//! library's asset-lock builds fund from), the inputs of every tracked
-//! `Built` and `Broadcast` asset lock of the wallet among them, to one
+//! The self-spend is an engine `TxDraft` that spends coins of the funding
+//! accounts (BIP44, BIP32, DashPay receiving: the accounts the library's
+//! asset-lock builds fund from), "Which coins" below, among them an input
+//! of every tracked `Built` and `Broadcast` asset lock of the step, to one
 //! fresh receive address of the wallet, under the caller's `Spend` grant or
 //! lease as any `TxDraft`. A lost lock spent some of those coins, so once
 //! the self-spend is ChainLocked the lock can no longer confirm, and the
@@ -28,14 +29,24 @@
 //! written, and the step's marker keeps standing (a new funding needs a
 //! new draft, as for any resolved marker).
 //!
-//! **Which coins.** Every coin of the funding accounts that consensus lets
-//! the self-spend spend (mature, not frozen by key-wallet), except the
-//! counted denominations (mixed coins a restored wallet holds there): no
-//! funding of this app selects one, and joining one to unmixed coins would
-//! link them. A lock that spent an unmixed coin is conflicted through it.
-//! A step whose locks spent only denominations is repaired with those
-//! denominations alone; a step with locks of both kinds is refused, as is
-//! a repair with only denominations left. The inputs of
+//! **Which coins.** Coins of the funding accounts that consensus lets the
+//! self-spend spend (mature, not frozen by key-wallet), picked by the
+//! step's own lock rows:
+//! - While one of them spent an unmixed coin: every unmixed coin, and no
+//!   counted denomination (the mixed coins a restored wallet holds there).
+//!   No funding of this app selects one, and joining one to unmixed coins
+//!   would link them. A lock that also spent a denomination is conflicted
+//!   through its unmixed input.
+//! - When every one of them spent only denominations: exactly those
+//!   denominations, and no unmixed coin. The self-spend turns those mixed
+//!   coins into one ordinary coin and links them to each other; it is the
+//!   only transaction that conflicts with such a lock.
+//! - A step with locks of both kinds is refused: this build repairs a step
+//!   with one transaction, and one spending both kinds would link the mixed
+//!   coins to the unmixed ones. So is a repair with only denominations
+//!   left.
+//!
+//! The inputs of
 //! tracked `Built`/`Broadcast` locks are reserved for every other build
 //! (`coins.rs`); this draft names exactly them as exempt. A coin the user
 //! locked, or one a pending payment of the engine reserves, is not
@@ -90,8 +101,7 @@ impl From<StuckFundingRefusal> for EngineError {
 }
 
 impl NetworkSession {
-    /// Repair's "Resolve stuck funding: send all coins to yourself" for
-    /// the Mode B funding `step` of `wallet_id` (`registration/<draft>/funding`,
+    /// Repair's "Resolve stuck funding" for the Mode B funding `step` of `wallet_id` (`registration/<draft>/funding`,
     /// `topup/<id>/funding` or `shield/<k>/funding`; module doc).
     /// `grant_id` is a `Spend` grant or a lease with a Spend budget, as for
     /// [`TxDraft::prepare`]: the self-spend's outflow is its fee.
@@ -294,7 +304,9 @@ fn funding_repair_coins<'a>(
     }
     if unmixed_lock {
         return Err(EngineError::InvalidArgument(
-            "one stuck lock spent only mixed coins and another unmixed ones: a repair would join them"
+            "this build cannot repair this funding: one of its stuck locks spent only mixed coins \
+             and another unmixed ones, and the one transaction a repair sends would link the \
+             mixed coins to the others"
                 .into(),
         ));
     }
@@ -391,7 +403,7 @@ mod tests {
     fn locks_of_both_kinds_are_refused() {
         let refused = picked(&wallet(), &[row(1, &[1]), row(2, &[4])]);
         assert!(
-            matches!(&refused, Err(EngineError::InvalidArgument(m)) if m.contains("join")),
+            matches!(&refused, Err(EngineError::InvalidArgument(m)) if m.contains("cannot repair")),
             "{refused:?}"
         );
     }

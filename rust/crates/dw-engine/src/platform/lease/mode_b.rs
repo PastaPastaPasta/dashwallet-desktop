@@ -539,9 +539,8 @@ pub(crate) struct FundingStepsUnavailable;
 /// A call that returned Ok (`status` `Sent`) and a row with a proof come
 /// first: the lock reached a proof, so a ChainLocked self-spend cannot have
 /// consumed its inputs, and §2a.5's first row ("a self-spend of one of the
-/// lock's inputs") does not apply. Repair's self-spend spends every coin of
-/// the funding accounts, among them an input of every tracked `Built` and
-/// `Broadcast` row of the step, and only while no other spend of the
+/// lock's inputs") does not apply. Repair's self-spend spends an input of
+/// every tracked `Built` and `Broadcast` row of the step, and only while no other spend of the
 /// wallet's coins is short of a ChainLock (`repair.rs`, which refuses
 /// otherwise), so once ChainLocked it reads `NotSent` over such a row too.
 /// A row that came after the self-spend cannot be the step's lock either:
