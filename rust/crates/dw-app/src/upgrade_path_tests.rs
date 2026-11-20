@@ -66,6 +66,21 @@ const KNOWN: &[(&str, &str, &str, &str)] = &[(
 /// Releases whose snapshot predates `fundedSignatures` and `dashd.deposits`.
 const BEFORE_FUNDED_SIGNATURES: &[&str] = &["v0.1.0"];
 
+/// How many calls each release's snapshot recorded. A recorded call that is
+/// deleted is a check that no longer runs, and the replay cannot notice: it
+/// asks only what is recorded.
+const RECORDED_CALLS: &[(&str, usize)] = &[("v0.1.0", 46), ("v0.2.0", 61)];
+
+/// Why the snapshot's call list is not the one its release recorded, if so.
+fn call_count_problem(tag: &str, expected: &Value) -> Option<String> {
+    let calls = expected["calls"].as_array().map_or(0, Vec::len);
+    match RECORDED_CALLS.iter().find(|(t, _)| *t == tag) {
+        Some((_, recorded)) if *recorded == calls => None,
+        Some((_, recorded)) => Some(format!("{calls} calls, the release recorded {recorded}")),
+        None => Some(format!("no call count is recorded for {tag}")),
+    }
+}
+
 /// Every release directory under `root`, each with a readable, parseable
 /// `expected.json`; files beside them (the README) are skipped. Any entry that
 /// cannot be read, or a directory without its snapshot, is an error naming it.
@@ -352,7 +367,8 @@ fn every_release_data_root_opens_with_the_same_answers() {
     let mut report = Vec::new();
     for (fixture, expected) in &fixtures {
         let tag = fixture.file_name().unwrap().to_string_lossy().into_owned();
-        let problems = snapshot_problems(&tag, expected);
+        let mut problems = snapshot_problems(&tag, expected);
+        problems.extend(call_count_problem(&tag, expected));
         assert!(
             problems.is_empty(),
             "{tag}: expected.json is incomplete: {}",
@@ -746,6 +762,13 @@ fn v0_1_0_snapshot() -> Value {
     )
 }
 
+fn v0_2_0_snapshot() -> Value {
+    read_json(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../testdata/upgrade/v0.2.0/expected.json"),
+    )
+}
+
 #[test]
 fn a_call_that_fails_on_one_open_and_answers_on_the_other_differs() {
     let answered = |result: Value| json!({ "calls": [{ "cmd": "tx_label", "args": {}, "result": result }], "signatures": [] });
@@ -813,6 +836,28 @@ fn discovery_names_a_release_directory_without_a_readable_snapshot() {
 }
 
 #[test]
+fn a_snapshot_with_a_call_removed_is_refused() {
+    assert_eq!(call_count_problem("v0.1.0", &v0_1_0_snapshot()), None);
+    let full = v0_2_0_snapshot();
+    assert_eq!(call_count_problem("v0.2.0", &full), None);
+    let payer = full["dashd"]["payment"]["walletId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut unaddressed = full.clone();
+    unaddressed["calls"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|c| c["cmd"] != "addresses" || c["args"]["walletId"] != payer.as_str());
+    assert_eq!(
+        snapshot_problems("v0.2.0", &unaddressed),
+        Vec::<String>::new()
+    );
+    assert!(call_count_problem("v0.2.0", &unaddressed).is_some());
+    assert!(call_count_problem("v9.9.9", &full).is_some());
+}
+
+#[test]
 fn a_thinned_snapshot_is_refused() {
     let full = v0_1_0_snapshot();
     assert_eq!(snapshot_problems("v0.1.0", &full), Vec::<String>::new());
@@ -833,10 +878,7 @@ fn a_thinned_snapshot_is_refused() {
 
 #[test]
 fn a_snapshot_without_a_funded_signature_or_with_an_unaccounted_balance_is_refused() {
-    let full = read_json(
-        &Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../testdata/upgrade/v0.2.0/expected.json"),
-    );
+    let full = v0_2_0_snapshot();
     assert_eq!(snapshot_problems("v0.2.0", &full), Vec::<String>::new());
     let mut change_unsigned = full.clone();
     change_unsigned["fundedSignatures"]
