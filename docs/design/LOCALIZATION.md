@@ -22,13 +22,24 @@ syntax and a loader.
 
 Settings ▸ General ▸ Language offers System default, then each shipped language named in its own
 language. The choice is saved with the other display settings (`UiSettings.language` in dw-app's
-`settings.json`, a BCP 47 tag; `null` follows the system). System default takes the system's first
+`settings.json`; `null` follows the system). The tag grammar dw-app accepts is deliberately narrower
+than BCP 47: a 2–3 letter language, then subtags of 1–8 letters or digits, each single-character
+subtag (an extension or private-use singleton) followed by a longer subtag, at most 35 bytes. So
+`de-u-co-phonebk` and `en-x-wallet` are accepted, `en-u`, `en-x` and private-use-only tags
+(`x-wallet`) are not. A `language` of the wrong type in a hand-edited file reads as `null` and leaves
+the other settings as saved; an IPC write with one is refused. System default takes the system's first
 language that has a **complete** catalog, by tag and then by language alone (`pt-PT` takes `pt`), and
 English otherwise. Reset options goes back to System default.
 
 The language sets `<html lang>` and `dir`, and the locale numbers, dates and fiat are formatted with
 (`Backend.locale`): the system's while the language follows the system or is the system's own language
-(so `en-GB` keeps its date order), the chosen language's otherwise.
+(so `en-GB` keeps its date order), the chosen language's otherwise. Under System default, numbers
+follow the system's formats even when the system's language has no catalog and the text falls back to
+English.
+
+The first local currency (prices turned on with no currency saved) comes from the system's region
+(`Backend.regionLocale`), never from the UI language; a saved currency always wins. Currency names,
+prices and dates use the display locale.
 
 ## Adding a string
 
@@ -43,12 +54,15 @@ const t = useT();
 - **Placeholders** are named: `"Switch to {network}?"`. `t` requires exactly the placeholders the
   English text has; numbers are formatted for the locale. Never build a sentence from pieces
   (`"Switch to " + name`): word order differs between languages.
-- **Plurals** are an object chosen by `count` through `Intl.PluralRules`:
+- **Plurals** are an object chosen by a numeric `count` (a string `count` fails `tsc`) through
+  `Intl.PluralRules`:
   `peers: { one: "{count} peer", other: "{count} peers" }`, read as `t("shell.status.peers", { count })`.
   English needs `one` and `other`; a translation gives the forms its language has (`few`, `many`, …).
 - **Rich text**: a sentence with a link or bold part is one message with tags,
   `"Read the <link>guide</link> first."`, read with
   `t.rich("…", { link: (text) => <a href={…}>{text}</a> })`. Placeholders of `t.rich` may be elements.
+  A tag's renderer and a placeholder's value are read from the values' own properties only; a tag
+  without one keeps its text unwrapped.
 - A text module that is read outside a component (`NetworkText`, `LockText`) reads `t` in a getter or a
   function, so it is read in the language of the render that reads it. A table becomes
   `messageTable(prefix, keys)`.
@@ -80,6 +94,39 @@ both pseudo-locales are on the pull request.
 Converted so far: the shell (sidebar, toolbar, status bar), the lock screen and the unlock sheet,
 Settings' tabs and Settings ▸ General, with the text modules they render (`network/choice.ts`,
 `onboarding/lock.ts`, `format/sync.ts`, the lock report's names, `fiat/rates.tsx`).
+
+Still English inside those areas, for the slices that convert the shared components they come from:
+
+- the full-unlock sheet's passphrase field label, its busy button ("Checking…") and the sheets' Close
+  button name (`components/passphrase.tsx`, `components/sheet.tsx`);
+- "Copy …" on copy buttons and the "Copied" toast (`components/detail.tsx`, `components/toast.tsx`);
+- "the payment" inside the refused network switch's message (`network/switch.ts`);
+- the renderer's own error texts by code, such as the dust setting's failure (`failureText`,
+  `onboarding/model.ts`);
+- the status bar's governance item (`screens/masternodes/StatusItem.tsx`) and the bell's popover.
+
+English pixel identity holds for the states shot on the pull request, not for every state: numbers in
+catalog messages are now formatted for the locale, so a peer count of 1234 reads "1,234 peers".
+
+### What the checks catch
+
+- `converted.test.ts` reads each converted `.tsx` file and fails on JSX text, on a string literal in a
+  text attribute or copy prop, on a template literal, and on the literal branches of `?:` and `??`/`||`.
+  It does not see text built elsewhere and passed in: a helper's return value (`title={helper()}`), an
+  imported constant, concatenation, a string handed to `showToast`, or an error-code mapping.
+- `e2e/i18n.spec.ts` walks the visible text nodes under the toolbar, sidebar, status bar and the page
+  or lock screen, and fails on plain Latin text that carries neither pseudo-locale's mark. A node with a
+  mark anywhere passes whole, so English interpolated into a translated sentence is not caught, and a
+  clipped string still has its closing bracket in the DOM. Accessible names, placeholders, unselected
+  options, a root that is not on the page (it is skipped) and states the spec does not open (the
+  unlock sheet, error and copy states) are not checked.
+- The overflow check runs at 1280×820 and 920×600 and fails on sideways scrolling and on an element
+  that sticks out of the toolbar, sidebar, status bar, page or lock column.
+- axe runs at 1280×820 only, for Settings ▸ General and the lock screen under both pseudo-locales,
+  light and dark, and fails on serious and critical violations of the WCAG 2.0/2.1 A and AA and
+  best-practice rules.
+- Settings' tabs follow the tablist's direction: in a right-to-left window ArrowRight moves to the
+  tab drawn on the right, the previous one.
 
 ## Not translated in 1.0
 
