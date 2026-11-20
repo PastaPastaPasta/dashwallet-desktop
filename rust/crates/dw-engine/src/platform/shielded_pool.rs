@@ -728,8 +728,9 @@ pub(crate) async fn observe_rest(
         clock = lib.rest_clock().await?;
     }
     let time = |k: &[u8; 32]| {
-        let times = [created.get(k), clock.seen.get(k)].into_iter().flatten();
-        times.copied().filter(|&t| t != 0).min()
+        let seen = clock.seen.get(k).copied().unwrap_or(now);
+        let times = [created.get(k).copied(), Some(seen)].into_iter().flatten();
+        times.filter(|&t| t != 0).min()
     };
     Ok(clock.scanned.then(|| keys.iter().filter_map(time).max()))
 }

@@ -310,6 +310,8 @@ struct FakeShielded {
     pub(super) fund_end: Mutex<Option<FundEnd>>,
     /// The rest clock as `app.sqlite` keeps it; `None` when unreadable.
     rest: Mutex<Option<pool::RestClock>>,
+    /// The clock's writes return `Ok` and keep nothing.
+    drops_rest: AtomicBool,
 }
 
 /// A funding that fails after its signatures, as platform-wallet ends one
@@ -451,6 +453,7 @@ impl Default for FakeShielded {
             drain_floors: Mutex::default(),
             fund_end: Mutex::default(),
             rest: Mutex::new(Some(pool::RestClock::default())),
+            drops_rest: AtomicBool::new(false),
         }
     }
 }
@@ -818,6 +821,9 @@ impl ShieldedLib for FakeShielded {
     ) -> Result<(), PlatformError> {
         let mut rest = self.rest.lock().unwrap();
         let clock = rest.as_mut().ok_or(PlatformError::Unavailable)?;
+        if self.drops_rest.load(Ordering::SeqCst) {
+            return Ok(());
+        }
         let at = if clock.scanned { now } else { at };
         for cmx in seen {
             clock.seen.entry(cmx).or_insert(at);
@@ -2632,6 +2638,30 @@ fn a_note_seen_after_the_first_scan_rests_three_hours_and_the_first_scans_at_onc
     let end = first + SHIELDED_REST_SECS;
     assert_eq!(rested(&later, end - 1), (false, Some(end)));
     assert_eq!(rested(&later, end), (true, None));
+}
+
+/// Ruling M9: a note the clock's write dropped (a removed wallet's insert
+/// is ignored, `Ok`) is first seen now, never rested.
+#[test]
+fn a_note_the_write_dropped_rests_from_now() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeShielded {
+        rest: Mutex::new(Some(pool::RestClock {
+            scanned: true,
+            ..Default::default()
+        })),
+        drops_rest: AtomicBool::new(true),
+        ..FakeShielded::default()
+    });
+    let now = crate::events::unix_now();
+    let facts = facts(&fx, &lib);
+    assert!(lib.rest.lock().unwrap().as_ref().unwrap().seen.is_empty());
+    let seen = facts.latest_incoming.unwrap();
+    assert!(seen >= now);
+    assert_eq!(
+        rested(&facts, now),
+        (false, Some(seen + SHIELDED_REST_SECS))
+    );
 }
 
 /// Ruling M2a: a rest clock that cannot be read is not rested, with no
