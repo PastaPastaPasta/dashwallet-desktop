@@ -852,6 +852,10 @@ fn a_recovery_keeps_a_payment_choice_changed_while_it_waited() {
 /// "Ask every payment" is stored durably: once turning it on returns, a
 /// power loss does not bring back the window.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "app.sqlite is still held open when the power loss is simulated (issue #190)"
+)]
 fn an_acknowledged_ask_every_payment_survives_a_power_loss() {
     use dw_appdb::durability_sim::{arm, power_loss};
     let mut f = fixture(true);
