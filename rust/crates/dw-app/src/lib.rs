@@ -274,7 +274,6 @@ pub fn run() {
         base = base.plugin(window_state);
     }
     base = base.plugin(tauri_plugin_dialog::init());
-    // Only a build made with the updater key has the plugin (PK-03).
     if updates::build_has_updater(context.config()) {
         base = base.plugin(updates::plugin());
     }

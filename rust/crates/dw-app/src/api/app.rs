@@ -20,7 +20,11 @@ commands! {
     /// `switchNetwork` changes.
     #[facade()]
     fn launch_info(state) -> LaunchInfo {
-        Ok(LaunchInfo::new(&state.launch, &state.window_network()))
+        Ok(LaunchInfo::new(
+            &state.launch,
+            &state.window_network(),
+            state.updates.current_version(),
+        ))
     }
 
     /// Of the last 64 engine notices, oldest first, those of the window's
