@@ -103,8 +103,7 @@ fn test_qt_106_107_inspect_and_import_through_ffi() {
             ImportOptions::default(),
         ))
         .unwrap_err();
-    assert_eq!(err.code(), "not_implemented");
-    assert!(err.to_string().ends_with("import_wallet_dat.bdb"), "{err}");
+    assert_eq!(err.code(), "compat.corrupt");
 
     let report =
         f.rt.block_on(f.session.import_dump_wallet(
