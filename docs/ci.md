@@ -246,7 +246,7 @@ separately.
 
 ### Fuzzing (H-02)
 
-`rust/fuzz` (crate `dw-fuzz`, a workspace member) has one libFuzzer target per channel of outside data, each
+`rust/fuzz` (crate `dw-fuzz`, a workspace member) has ten libFuzzer targets for the outside data below, each
 calling the entry points the app calls with it:
 
 | Target | Input | Entry points |
@@ -256,16 +256,32 @@ calling the entry points the app calls with it:
 | `qr_image` | an image scanned for QR codes | `dw_desktop::qr::decode` |
 | `psbt` | a PSBT file or clipboard text | `dw_psbt::parse`, then `analyze`, `spent_output`, `input_signed`, `finalize`, `extract`, `fee_rate_per_kb`; checks the binary and base64 round trips |
 | `dumpwallet` | a `dumpwallet` file | `dw_compat::dump::parse`, `write`, the label escaping, the mnemonic check |
-| `listdescriptors` | `listdescriptors true` output, a descriptor | `dw_compat::descriptor::parse_listdescriptors`, `PkhDescriptor::parse` (checks that a written descriptor reads back) |
-| `walletdat` | an SQLite wallet.dat's records (SQLite itself is fuzzed upstream) | `dw_compat::walletdat::SqliteWallet::from_records`, `hd_root` with and without the passphrase the input carries |
-| `walletdat_bdb` | a legacy Berkeley DB wallet.dat file, with a passphrase | `dw_compat::walletdat::read_bdb_bytes` (`dw_compat::bdb`'s page and overflow reader, then the record parser), `hd_root` with and without the passphrase |
+| `listdescriptors` | `listdescriptors true` output, a descriptor | `dw_compat::descriptor::parse_listdescriptors`, `PkhDescriptor::parse` (checks that a written descriptor reads back when its checksum can be computed; a key outside the descriptor charset, such as `pkh(é/0/*)`, still goes to the parser) |
+| `walletdat` | an SQLite wallet.dat's records (SQLite itself is fuzzed upstream) | `dw_compat::walletdat::SqliteWallet::from_records` (what `read_sqlite` streams its rows into), `hd_root` without a passphrase and, for an encrypted wallet, with the passphrase the input carries |
+| `walletdat_bdb` | a legacy Berkeley DB wallet.dat file, with a passphrase | `dw_compat::walletdat::read_bdb_bytes` (`dw_compat::bdb`'s page, internal-node and overflow reader, then the record parser), `hd_root` as for `walletdat` |
 | `avatar` | avatar bytes from a profile's URL with its zoom crop; a picked picture with its crop | dw-engine's avatar decoder (`ingest`, `ingest_file`, through the `fuzzing` feature's `platform::fuzzing`) |
 | `invitation` | an invitation link | the claim's parser (DP5-01's normalization, then platform-wallet's `parse_invitation_uri`) |
 
-Each target starts from seeds made from the test vectors (`testdata/`, dw-uri's link corpus;
-`rust/fuzz/src/seeds.rs`). `cargo test --workspace` replays every seed, and every input saved under
-`rust/fuzz/regressions/<target>/` (a minimised finding kept after its fix), through the same harness on stable;
-`cargo test -p dw-fuzz --features engine` adds the two engine targets.
+The wallet targets try the passphrase only when the wallet's `mkey` records ask for 50 000 key derivation rounds or
+fewer in total (`FUZZ_ROUNDS`); the import itself allows up to 10 000 000. Above the cutoff a passphrase attempt
+takes long enough that libFuzzer would report a slow input, so those inputs stop after the unencrypted checks.
+
+Seeds (`rust/fuzz/src/seeds.rs`) are the existing test vectors (`testdata/`, dw-uri's link corpus), plus inputs
+built from fixture keys: avatar pictures with generated pixels; a version 3 special-transaction PSBT; the records
+of `desc_plain.dat` encrypted as Core encrypts them, but under a 25-round `mkey` so the passphrase attempt decrypts
+them; `bdb_tree_overflow.dat` (the plain HD wallet as an internal root over two leaves, with one value in an
+overflow chain); and claimable regtest invitation links the library encodes (with `--features engine`). `rust/fuzz/regressions/psbt/` holds one fuzz
+mutation, the input that found the special-payload bug; it is replayed as a rejection, and the accepted version 3
+PSBT seed replays the fix.
+
+`cargo test --workspace` replays every seed of the eight targets that build without the `engine` feature, and
+every input saved under `rust/fuzz/regressions/<target>/` (a minimised finding kept after its fix), through the
+same harness on stable, in REPLAY_TIME; `cargo test -p dw-fuzz --features engine` adds `avatar` and `invitation`.
+
+No target covers yet: image-to-route dispatch, the InstantLock decoding of an invitation at claim time, peer
+frames and governance messages, Platform profile and contact documents, native backup headers and bodies, vault
+files, and `settings.json`. The roadmap's H-02 criterion of 24 hours without a crash has not been met yet: the
+targets have run for 60 seconds each, and nightly runs 10 minutes each.
 
 Run it locally with cargo-fuzz 0.13.2 and the pinned nightly (`rustup toolchain install nightly-2026-10-09`,
 `cargo install cargo-fuzz --version 0.13.2 --locked`):

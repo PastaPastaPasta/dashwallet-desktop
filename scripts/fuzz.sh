@@ -22,6 +22,13 @@ if [ $# -lt 2 ]; then
   exit 2
 fi
 
+case "$2" in
+  '' | *[!0-9]* | 0*)
+    echo "seconds per target must be a positive whole number, not '$2'" >&2
+    exit 2
+    ;;
+esac
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 mkdir -p "$1"
 work="$(cd "$1" && pwd)"
@@ -36,14 +43,34 @@ export CARGO_PROFILE_RELEASE_LTO=false
 fuzz=(cargo "+$toolchain" fuzz)
 opts=(--fuzz-dir fuzz --target-dir target/fuzz --features libfuzzer,engine --codegen-units 16)
 
+listing="$("${fuzz[@]}" list --fuzz-dir fuzz)"
+known=()
+while IFS= read -r line; do
+  [ -n "$line" ] && known+=("$line")
+done <<<"$listing"
+if [ "${#known[@]}" -eq 0 ]; then
+  echo "cargo fuzz list found no targets" >&2
+  exit 2
+fi
+
 if [ $# -gt 0 ]; then
   targets=("$@")
+  for target in "${targets[@]}"; do
+    found=0
+    for name in "${known[@]}"; do
+      [ "$name" = "$target" ] && found=1
+    done
+    if [ "$found" -eq 0 ]; then
+      echo "no fuzz target '$target' (targets: ${known[*]})" >&2
+      exit 2
+    fi
+  done
 else
-  mapfile -t targets < <("${fuzz[@]}" list --fuzz-dir fuzz)
+  targets=("${known[@]}")
 fi
 
 "${fuzz[@]}" build "${opts[@]}"
-cargo run -p dw-fuzz --example write_seeds --locked -- "$work/seeds"
+cargo run -p dw-fuzz --features engine --example write_seeds --locked -- "$work/seeds"
 
 status=0
 mkdir -p "$work/logs"

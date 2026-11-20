@@ -19,14 +19,15 @@ engine = ["dep:dw-engine", "dw-engine/fuzzing"]
 libfuzzer = ["dep:libfuzzer-sys"]
 
 [dependencies]
+dashcore = { workspace = true }
 dw-compat = { workspace = true }
 dw-desktop = { workspace = true }
 dw-engine = { workspace = true, optional = true }
 dw-psbt = { workspace = true }
 dw-uri = { workspace = true }
 libfuzzer-sys = { version = "0.4", optional = true }
-# Seeds: QR and avatar images rendered from the test vectors, and the
-# records of the wallet.dat vectors.
+# Seeds: QR and avatar images rendered from the test vectors, the records
+# of the wallet.dat vectors, and a special-transaction PSBT.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
 serde_json = "1"

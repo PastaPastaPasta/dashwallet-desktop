@@ -2627,6 +2627,7 @@ name = "dw-fuzz"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
+ "dashcore",
  "dw-compat",
  "dw-desktop",
  "dw-engine",
