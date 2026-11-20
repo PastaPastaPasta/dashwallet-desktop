@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, RwLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dash_sdk::SdkBuilder;
 use dash_sdk::dapi_grpc::tonic::transport::{Certificate, ClientTlsConfig, Endpoint};
@@ -87,6 +87,12 @@ pub struct WalletBalances {
     /// spendable balance (confirmed + unconfirmed) of the DIP9 CoinJoin
     /// accounts.
     pub coinjoin: u64,
+    /// The scan has not reached the wallet's birth block yet: the buckets
+    /// hold what the wallet has seen so far (mempool and InstantSend
+    /// payments included) and can miss coins in blocks not scanned yet.
+    /// `false` says only that the birth block was scanned: a wallet born
+    /// long ago is still behind the tip while SPV syncs (the sync snapshot).
+    pub catching_up: bool,
 }
 
 /// Result of [`NetworkSession::create_wallet`]: the wallet's seed is in the
@@ -292,6 +298,7 @@ impl NetworkSession {
         opts: SessionOptions,
         vault_config: VaultConfig,
     ) -> Result<Arc<Self>, EngineError> {
+        let opened = Instant::now();
         network.validate()?;
         let spv_peers = opts
             .spv_peers
@@ -366,23 +373,7 @@ impl NetworkSession {
             network.devnet_name().map(str::to_string),
             opts.quorum_url.clone(),
         ));
-        // First attempt off the async workers: construction does a blocking DNS check.
-        let ctx = Arc::clone(&context);
-        match tokio::task::spawn_blocking(move || ctx.get_or_try_init(true)).await? {
-            Ok(provider) => {
-                // Prefetch quorums, as the iOS SDK does after building a trusted SDK.
-                tokio::spawn(async move {
-                    if let Err(e) = provider.update_quorum_caches().await {
-                        tracing::warn!(error = %e, "quorum prefetch failed; continuing");
-                    }
-                });
-            }
-            Err(detail) => sink.emit(EngineEvent::Notice {
-                network: Some(network.clone()),
-                code: NoticeCode::PlatformContextUnavailable,
-                detail,
-            }),
-        }
+        init_quorum_context(&context, &network, sink.as_ref()).await?;
 
         let trust = Arc::new(TrustProvider::new(
             trust::DEFAULT_MODE,
@@ -425,8 +416,9 @@ impl NetworkSession {
             })
             .await??,
         );
-        // dash-qt loads only the wallets of its settings list; an empty or
-        // missing list loads every wallet.
+        // dash-qt loads only the wallets of its settings list; a missing
+        // list loads every wallet, and so does one that would load none of
+        // them: with no wallet open, closed ones cannot be reached.
         let startup_list = {
             let appdb = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::multiwallet::read_startup_list(&appdb))
@@ -440,10 +432,14 @@ impl NetworkSession {
                 })
                 .await?
                 .map_err(|e| EngineError::Storage(format!("wallet list: {e}")))?;
-                registered
-                    .into_iter()
-                    .filter(|id| !list.contains(&WalletId(*id)))
-                    .collect()
+                if registered.iter().any(|id| list.contains(&WalletId(*id))) {
+                    registered
+                        .into_iter()
+                        .filter(|id| !list.contains(&WalletId(*id)))
+                        .collect()
+                } else {
+                    Default::default()
+                }
             }
             None => Default::default(),
         };
@@ -705,6 +701,13 @@ impl NetworkSession {
                 }
             };
             let _ = live.tap.on_contact_profiles.set(Box::new(checked));
+            let weak = Arc::downgrade(&session);
+            let queued = move |wallet| {
+                if let Some(session) = weak.upgrade() {
+                    session.platform.contact_accounts_queued(wallet);
+                }
+            };
+            let _ = live.tap.on_contact_accounts_queued.set(Box::new(queued));
             let _ = live
                 .tap
                 .registrations
@@ -740,6 +743,10 @@ impl NetworkSession {
         }
         session.spawn_ensure_background();
         session.spawn_reverify();
+        tracing::info!(
+            elapsed_ms = opened.elapsed().as_millis() as u64,
+            "startup session-open"
+        );
         Ok(session)
     }
 
@@ -897,6 +904,9 @@ impl NetworkSession {
             .with_storage_path(self.data_dir.join(SPV_DIR))
             .with_user_agent(crate::tools::USER_AGENT);
         config.enable_masternodes = true;
+        // A payment and its InstantSend lock reach the wallet while the
+        // filters still sync, not only once they are done.
+        config = config.with_mempool_during_sync(true);
         for peer in &self.spv_peers {
             config.add_peer(*peer);
         }
@@ -957,6 +967,10 @@ impl NetworkSession {
     /// databases: it returns once the last reference to the wallet database
     /// is gone, within [`PERSISTER_RELEASE`]. Must run on the engine runtime.
     pub(crate) async fn close(&self) {
+        // From here the dispatch hook accepts no spend and allows no re-send:
+        // a quit is not refused by a signing call in flight; it revokes the
+        // leases and drains the passes before its gate waits for that call.
+        self.platform.hook_fence.close();
         // A running bring-up ends first (DASHPAY §3.2). It holds no
         // operation guard, so it is cancelled before waiting for the guards,
         // and again after, for a start admitted meanwhile; then its blocking
@@ -1261,6 +1275,33 @@ fn build_sdk(
     Ok(builder.build()?)
 }
 
+async fn init_quorum_context(
+    context: &Arc<LazyTrustedContext>,
+    network: &DashNetwork,
+    sink: &dyn EventSink,
+) -> Result<u64, EngineError> {
+    let ctx = Arc::clone(context);
+    let started = Instant::now();
+    let init = tokio::task::spawn_blocking(move || ctx.get_or_try_init(true)).await?;
+    let quorum_init_ms = started.elapsed().as_millis() as u64;
+    match init {
+        Ok(provider) => {
+            tokio::spawn(async move {
+                if let Err(e) = provider.update_quorum_caches().await {
+                    tracing::warn!(error = %e, "quorum prefetch failed; continuing");
+                }
+            });
+        }
+        Err(detail) => sink.emit(EngineEvent::Notice {
+            network: Some(network.clone()),
+            code: NoticeCode::PlatformContextUnavailable,
+            detail,
+        }),
+    }
+    tracing::info!(elapsed_ms = quorum_init_ms, "startup quorum-context-init");
+    Ok(quorum_init_ms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1434,5 +1475,37 @@ PRihiNYRunWtfhIwgcXNS8k8Aw/lDZNOwwt4ykNeDyMuBUM=\n\
             mnemonic: Zeroizing::new("secret words".into()),
         };
         assert!(!format!("{w:?}").contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn quorum_context_init_excludes_notice_delivery_time() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct SlowNoticeSink(AtomicUsize);
+        impl EventSink for SlowNoticeSink {
+            fn emit(&self, event: EngineEvent) {
+                if matches!(event, EngineEvent::Notice { .. }) {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            }
+        }
+
+        let context = Arc::new(LazyTrustedContext::new(
+            dashcore::Network::Regtest,
+            None,
+            Some("not a valid url".into()),
+        ));
+        let sink = SlowNoticeSink(AtomicUsize::new(0));
+        let total = Instant::now();
+        let init_ms = init_quorum_context(&context, &DashNetwork::Regtest, &sink)
+            .await
+            .unwrap();
+        let total_ms = total.elapsed().as_millis() as u64;
+        assert_eq!(sink.0.load(Ordering::SeqCst), 1);
+        assert!(
+            total_ms >= init_ms + 300,
+            "quorum init duration included slow notice delivery: {init_ms} of {total_ms} ms"
+        );
     }
 }

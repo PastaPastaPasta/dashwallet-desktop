@@ -955,6 +955,7 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::SendOutOfRange { min } => json!({"min": min}),
         CreditsError::FundPending { txid } => json!({"txid": txid}),
         CreditsError::TooManyInputs { inputs, max } => json!({"inputs": inputs, "max": max}),
+        CreditsError::Shielded(s) => shielded_params(s),
         CreditsError::Platform(p) => platform_params(p),
     }
 }
@@ -1022,18 +1023,34 @@ impl From<VaultError> for CliError {
     }
 }
 
+/// [`crate::masternodes::send_code`], kept for the process: one string per
+/// `SendFailure` variant.
+fn send_code_of(f: &SendFailure) -> &'static str {
+    static CODES: std::sync::Mutex<std::collections::BTreeSet<&'static str>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let code = crate::masternodes::send_code(f);
+    let mut codes = CODES.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(known) = codes.get(code.as_str()) {
+        return known;
+    }
+    let code: &'static str = Box::leak(code.into_boxed_str());
+    codes.insert(code);
+    code
+}
+
 impl From<EngineError> for CliError {
     fn from(e: EngineError) -> Self {
         match e {
             EngineError::Vault(v) => v.into(),
             EngineError::Contact(c) => c.into(),
             e if e.is_task_panic() => panic_error("an engine task", "the call"),
-            EngineError::Send(ref f) => {
-                let mut params = json!({"kind": crate::pay::send_failure_kind(f)});
-                if let Some(reason) = crate::pay::send_failure_reason(f) {
+            EngineError::Send(f) => {
+                let code = send_code_of(&f);
+                let mut params = json!({"kind": code.trim_start_matches("send.")});
+                if let Some(reason) = crate::pay::send_failure_reason(&f) {
                     params["reason"] = json!(reason);
                 }
-                Self::new(e.code(), &e, params)
+                Self::new(code, EngineError::Send(f), params)
             }
             e => Self::new(e.code(), &e, json!({})),
         }
@@ -1359,21 +1376,43 @@ fn injected_fault(point: &str) -> bool {
 /// that cannot start ends it, without a panic.
 #[cfg(debug_assertions)]
 fn wedge_engine(session: &Arc<NetworkSession>) {
-    loop {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let session = Arc::clone(session);
-        let spawned = std::thread::Builder::new().spawn(move || {
-            crate::teardown::wait(session.run_on_engine(async move {
-                let _ = tx.send(());
+    while park_engine_task(session)
+        .is_some_and(|task| task.started.recv_timeout(Duration::from_secs(1)).is_ok())
+    {}
+}
+
+/// An engine task that parks its worker for good: `queued` once the
+/// runtime has it, `started` once a worker runs it.
+#[cfg(debug_assertions)]
+struct Parked {
+    #[cfg_attr(not(test), allow(dead_code))]
+    queued: std::sync::mpsc::Receiver<()>,
+    started: std::sync::mpsc::Receiver<()>,
+}
+
+/// Hands the engine runtime one [`Parked`] task, from a thread that is
+/// left behind. `None` when that thread cannot start.
+#[cfg(debug_assertions)]
+fn park_engine_task(session: &Arc<NetworkSession>) -> Option<Parked> {
+    let (queued_tx, queued) = std::sync::mpsc::channel();
+    let (started_tx, started) = std::sync::mpsc::channel();
+    let session = Arc::clone(session);
+    std::thread::Builder::new()
+        .spawn(move || {
+            let mut task = std::pin::pin!(session.run_on_engine(async move {
+                let _ = started_tx.send(());
                 loop {
                     std::thread::park();
                 }
+            }));
+            crate::teardown::wait(std::future::poll_fn(|cx| {
+                let polled = std::future::Future::poll(task.as_mut(), cx);
+                let _ = queued_tx.send(());
+                polled
             }))
-        });
-        if spawned.is_err() || rx.recv_timeout(Duration::from_secs(1)).is_err() {
-            return;
-        }
-    }
+        })
+        .ok()?;
+    Some(Parked { queued, started })
 }
 
 /// The injected `dashpay status` faults (see [`injected_fault`]).
@@ -2499,6 +2538,33 @@ mod tests {
         assert_eq!(shielded_params(&e), json!({"reason": "journal"}));
     }
 
+    #[test]
+    fn each_send_failure_has_its_own_code() {
+        let code = |f: SendFailure| CliError::from(EngineError::Send(f)).code;
+        assert_eq!(code(SendFailure::NoPeers), "send.no_peers");
+        assert_eq!(
+            code(SendFailure::BroadcastRejected {
+                reason: "bad-txns".into()
+            }),
+            "send.broadcast_rejected"
+        );
+        assert_eq!(
+            code(SendFailure::BroadcastUnknown {
+                reason: "no verdict".into()
+            }),
+            "send.broadcast_unknown"
+        );
+        assert_eq!(code(SendFailure::Cancelled), "send.cancelled");
+        assert_eq!(code(SendFailure::TxTooLarge), "send.tx_too_large");
+        assert_eq!(
+            code(SendFailure::GrantExceeded {
+                max_duffs: 1,
+                outflow: 2
+            }),
+            "send.grant_exceeded"
+        );
+    }
+
     /// D15 (Sol r1): an accept that went through and a payment that did
     /// not is a partial success, never a plain error.
     #[test]
@@ -2510,7 +2576,7 @@ mod tests {
         assert_eq!(r["accepted"], json!(true));
         assert_eq!(r["paid"], json!(false));
         assert_eq!(r["grant"], grant);
-        assert_eq!(r["payment_error"]["code"], json!("send"));
+        assert_eq!(r["payment_error"]["code"], json!("send.cancelled"));
         assert_eq!(r["payment_error"]["message"], json!(message));
         assert!(r["next"].as_str().unwrap().contains("without --accept"));
 
@@ -2518,6 +2584,7 @@ mod tests {
             reason: "no verdict".into(),
         });
         let r = after_accept(grant.clone(), Err(PaymentFailed::Broadcast(unknown)));
+        assert_eq!(r["payment_error"]["code"], json!("send.broadcast_unknown"));
         assert_eq!(r["paid"], json!(false));
         assert!(r["next"].as_str().unwrap().contains("resolve-lock"));
 
@@ -3142,15 +3209,16 @@ mod tests {
     #[test]
     fn a_send_failure_names_its_kind_and_reason() {
         let rejected = CliError::from(EngineError::Send(SendFailure::BroadcastRejected {
-            reason: "SPV broadcast not sent: no connected peers".into(),
+            reason: "bad-txns-inputs-missingorspent".into(),
         }));
-        assert_eq!(rejected.code, "send");
         assert_eq!(
             rejected.params,
-            json!({"kind": "broadcast_rejected", "reason": "SPV broadcast not sent: no connected peers"})
+            json!({"kind": "broadcast_rejected", "reason": "bad-txns-inputs-missingorspent"})
         );
         let no_peers = CliError::from(EngineError::Send(SendFailure::NoPeers));
         assert_eq!(no_peers.params, json!({"kind": "no_peers"}));
+        let spent = CliError::from(EngineError::Send(SendFailure::PreparedTxSpent));
+        assert_eq!(spent.params, json!({"kind": "prepared_tx_spent"}));
     }
 
     #[test]
@@ -3394,18 +3462,30 @@ mod tests {
 
     /// A sink that, once armed, wedges the engine and panics on the next
     /// event `when` picks, in the engine task that emits it (Sol r4's and
-    /// r5's sketch).
+    /// r5's sketch). The engine has two workers. One task parks whichever
+    /// is free, however long it takes to come free; a second is queued for
+    /// the other, which is the emitting one until its task has unwound.
     struct WedgeOn {
         when: fn(&EngineEvent) -> bool,
         armed: AtomicBool,
         session: std::sync::Mutex<Option<Arc<NetworkSession>>>,
     }
 
+    const WEDGE_WAIT: Duration = Duration::from_secs(30);
+
     impl EventSink for WedgeOn {
         fn emit(&self, event: EngineEvent) {
             if (self.when)(&event) && self.armed.swap(false, Ordering::SeqCst) {
                 let session = self.session.lock().unwrap().clone().unwrap();
-                wedge_engine(&session);
+                let free = park_engine_task(&session).unwrap();
+                free.started
+                    .recv_timeout(WEDGE_WAIT)
+                    .expect("no worker came free to be parked");
+                let other = park_engine_task(&session).unwrap();
+                other
+                    .queued
+                    .recv_timeout(WEDGE_WAIT)
+                    .expect("the second parked task was never queued");
                 panic!("injected event callback panic");
             }
         }

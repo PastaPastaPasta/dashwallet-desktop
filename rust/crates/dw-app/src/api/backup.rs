@@ -140,7 +140,8 @@ pub enum WalletFileInfo {
         encrypted: bool,
         has_mnemonic: bool,
     },
-    /// Legacy Berkeley DB `wallet.dat`: detected, not importable yet.
+    /// Legacy Berkeley DB `wallet.dat`. `encrypted` is null when the file
+    /// is recognised but does not parse.
     WalletDatBdb { encrypted: Option<bool> },
     /// This app's `.dwbackup` (`restoreBackup`).
     DwBackup {
@@ -449,7 +450,12 @@ commands! {
         if path.is_empty() {
             return Err(AppError::invalid_argument("empty path"));
         }
-        let kind = state.engine.inspect_wallet_file(PathBuf::from(path)).await?;
+        let engines = state.engine.clone();
+        let kind = engines
+            .wait()
+            .await?
+            .inspect_wallet_file(PathBuf::from(path))
+            .await?;
         Ok(kind.into())
     }
 
@@ -469,9 +475,8 @@ commands! {
             .into())
     }
 
-    /// Restores from a Dash Core `wallet.dat` (SQLite descriptor wallets;
-    /// Berkeley DB is `not_implemented`). `walletPassphrase` opens an
-    /// encrypted file.
+    /// Restores from a Dash Core `wallet.dat` (SQLite descriptor wallets
+    /// and legacy Berkeley DB). `walletPassphrase` opens an encrypted file.
     #[facade("NetworkSession::import_wallet_dat")]
     fn import_wallet_dat(
         state,

@@ -120,36 +120,6 @@ pub(crate) fn outpoint(s: &str) -> Result<dashcore::OutPoint, String> {
     dashcore::OutPoint::from_str(s).map_err(|e| format!("bad outpoint {s:?}: {e}"))
 }
 
-/// A `SendFailure` as one snake_case word, for scripts that must tell
-/// failures apart without reading messages.
-pub(crate) fn send_failure_kind(f: &SendFailure) -> &'static str {
-    match f {
-        SendFailure::NoRecipients => "no_recipients",
-        SendFailure::InvalidAddress { .. } => "invalid_address",
-        SendFailure::PlatformAddress { .. } => "platform_address",
-        SendFailure::InvalidAmount { .. } => "invalid_amount",
-        SendFailure::DustAmount { .. } => "dust_amount",
-        SendFailure::DuplicateAddress { .. } => "duplicate_address",
-        SendFailure::AmountExceedsBalance { .. } => "amount_exceeds_balance",
-        SendFailure::AmountWithFeeExceedsBalance { .. } => "amount_with_fee_exceeds_balance",
-        SendFailure::AmountTooSmallAfterFee { .. } => "amount_too_small_after_fee",
-        SendFailure::InsufficientMixedFunds { .. } => "insufficient_mixed_funds",
-        SendFailure::OutpointUnavailable(_) => "outpoint_unavailable",
-        SendFailure::AbsurdFee { .. } => "absurd_fee",
-        SendFailure::TxTooLarge => "tx_too_large",
-        SendFailure::InvalidChangeAddress => "invalid_change_address",
-        SendFailure::WatchOnly => "watch_only",
-        SendFailure::VaultLocked => "vault_locked",
-        SendFailure::GrantInvalid => "grant_invalid",
-        SendFailure::GrantExceeded { .. } => "grant_exceeded",
-        SendFailure::PreparedTxSpent => "prepared_tx_spent",
-        SendFailure::NoPeers => "no_peers",
-        SendFailure::BroadcastRejected { .. } => "broadcast_rejected",
-        SendFailure::BroadcastUnknown { .. } => "broadcast_unknown",
-        SendFailure::Cancelled => "cancelled",
-    }
-}
-
 /// The library's reason for a rejected or unknown broadcast.
 pub(crate) fn send_failure_reason(f: &SendFailure) -> Option<&str> {
     match f {
@@ -166,9 +136,10 @@ pub(crate) fn send_failure_reason(f: &SendFailure) -> Option<&str> {
 /// transaction could still be abandoned, so it never reached the network.
 fn failed(err: &EngineError, outcome: &str, txid: Option<&str>) -> String {
     let (kind, reason) = match err {
-        EngineError::Send(f) => (send_failure_kind(f), send_failure_reason(f)),
-        other => (other.code(), None),
+        EngineError::Send(f) => (crate::masternodes::send_code(f), send_failure_reason(f)),
+        other => (other.code().to_string(), None),
     };
+    let kind = kind.trim_start_matches("send.");
     let reason = reason.map_or(String::new(), |r| {
         format!(" reason={}", r.replace('\n', " "))
     });
@@ -315,8 +286,8 @@ pub fn run(
                 .map_err(e)?
                 .ok_or_else(|| format!("balance of {id} still unknown at height {height}"))?;
             println!(
-                "synced {height} confirmed={} unconfirmed={} immature={} total={}",
-                b.confirmed, b.unconfirmed, b.immature, b.total
+                "synced {height} confirmed={} unconfirmed={} immature={} total={} catching_up={}",
+                b.confirmed, b.unconfirmed, b.immature, b.total, b.catching_up
             );
         }
         PayCommand::Utxos { wallet, all } => {

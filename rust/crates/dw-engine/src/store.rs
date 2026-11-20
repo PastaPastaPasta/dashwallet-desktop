@@ -6,7 +6,7 @@
 //! persister accepted goes on to `platform::journal`. Every other call goes
 //! straight to the SQLite persister.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use dashcore::Txid;
@@ -35,14 +35,22 @@ pub(crate) struct WalletStore {
     leases: std::sync::OnceLock<std::sync::Weak<crate::platform::lease::LeaseTable>>,
     /// The session's replay records, told of each committed checkpoint.
     replay: std::sync::OnceLock<std::sync::Weak<crate::replay_record::ReplayRecords>>,
+    /// Each wallet's filter checkpoint as `load` last read it.
+    loaded_at: std::sync::Mutex<HashMap<RawWalletId, u32>>,
     /// Tests: a store the predicate matches fails (`LockPoisoned`) and
     /// reaches neither the SQLite persister nor the tap.
     #[cfg(test)]
     pub(crate) fail_store: std::sync::Mutex<Option<StoreFailure>>,
+    /// Tests: runs once, after the store of a wallet's registration.
+    #[cfg(test)]
+    pub(crate) on_register: std::sync::Mutex<Option<RegisterHook>>,
 }
 
 #[cfg(test)]
 pub(crate) type StoreFailure = Box<dyn Fn(&PlatformWalletChangeSet) -> bool + Send>;
+
+#[cfg(test)]
+pub(crate) type RegisterHook = Box<dyn FnOnce(RawWalletId) + Send>;
 
 impl WalletStore {
     pub(crate) fn new(
@@ -56,8 +64,11 @@ impl WalletStore {
             tap,
             leases: std::sync::OnceLock::new(),
             replay: std::sync::OnceLock::new(),
+            loaded_at: Default::default(),
             #[cfg(test)]
             fail_store: Default::default(),
+            #[cfg(test)]
+            on_register: Default::default(),
         }
     }
 
@@ -87,6 +98,13 @@ impl WalletStore {
         } else {
             set.remove(&id)
         }
+    }
+
+    /// Wallet `id`'s filter checkpoint when it was last loaded.
+    pub(crate) fn loaded_checkpoint(&self, id: &RawWalletId) -> Option<u32> {
+        (self.loaded_at.lock().unwrap_or_else(|p| p.into_inner()))
+            .get(id)
+            .copied()
     }
 
     pub(crate) fn unloaded(&self) -> Vec<RawWalletId> {
@@ -143,6 +161,8 @@ impl PlatformWalletPersistence for WalletStore {
         if let Some(classified) = &classified {
             self.tap.note_signed(WalletId(wallet_id), classified);
         }
+        #[cfg(test)]
+        let registered = changeset.wallet_metadata.is_some();
         let core = changeset.core.is_some();
         // Committed when the call returns `Ok` (SQLite's `Immediate` mode).
         let committed = (changeset.core.as_ref())
@@ -188,6 +208,10 @@ impl PlatformWalletPersistence for WalletStore {
             self.tap.hold_record();
             (self.tap).record(WalletId(wallet_id), epoch, classified, self.inner.as_ref());
         }
+        #[cfg(test)]
+        if registered && let Some(hook) = self.on_register.lock().unwrap().take() {
+            hook(wallet_id);
+        }
         Ok(())
     }
 
@@ -218,6 +242,10 @@ impl PlatformWalletPersistence for WalletStore {
         state
             .platform_addresses
             .retain(|id, _| !unloaded.contains(id));
+        let mut loaded_at = self.loaded_at.lock().unwrap_or_else(|p| p.into_inner());
+        for (id, wallet) in &state.wallets {
+            loaded_at.insert(*id, wallet.wallet_info.metadata.synced_height);
+        }
         Ok(state)
     }
 

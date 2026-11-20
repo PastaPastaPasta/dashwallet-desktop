@@ -146,7 +146,7 @@ describe("fixture settings engine", () => {
       code: "compat.network_mismatch",
       data: { kind: "keysNetwork", mainnet: true },
     });
-    await expect(cmd.importWalletDat(FIXTURE_FILES.walletDatBdb, null, OPTIONS)).rejects.toMatchObject({ code: "not_implemented" });
+    expect(await cmd.importWalletDat(FIXTURE_FILES.walletDatBdb, null, OPTIONS)).toMatchObject({ walletId: expect.any(String) });
     await expect(cmd.importWalletDat(FIXTURE_FILES.walletDat, null, OPTIONS)).rejects.toMatchObject({ code: "compat.passphrase_required" });
     await expect(cmd.importWalletDat(FIXTURE_FILES.walletDat, "nope", OPTIONS)).rejects.toMatchObject({ code: "compat.wrong_passphrase" });
     expect(await cmd.importWalletDat(FIXTURE_FILES.walletDat, CORE_WALLET_PASSPHRASE, OPTIONS)).toMatchObject({ scriptsNotImported: 1 });

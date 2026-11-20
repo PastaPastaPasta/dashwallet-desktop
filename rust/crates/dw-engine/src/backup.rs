@@ -199,6 +199,61 @@ fn to_json(v: &SqlValue) -> serde_json::Value {
     }
 }
 
+/// Tests: the next stored-wallet delete of a rollback in a session on one
+/// of these data directories fails.
+#[cfg(test)]
+pub(crate) static FAIL_STORED_WALLET_DELETE_IN: std::sync::Mutex<Vec<PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The legacy address range a bundle's `settings_kv` rows of `id` carry,
+/// checked before anything is registered.
+fn bundled_issued(tables: &[TableRows], id: WalletId) -> Result<Option<(u32, u32)>, EngineError> {
+    let scope = id.to_string();
+    for t in tables.iter().filter(|t| t.table == "settings_kv") {
+        let col = |name: &str| t.columns.iter().position(|c| c == name);
+        let (Some(s), Some(k), Some(v)) = (col("scope"), col("key"), col("value")) else {
+            continue;
+        };
+        for row in &t.rows {
+            let text = |i: usize| match row.get(i) {
+                Some(SqlValue::Text(t)) => Some(t.as_str()),
+                _ => None,
+            };
+            if text(s) == Some(scope.as_str()) && text(k) == Some(crate::compat::ISSUED_SETTING) {
+                return text(v)
+                    .and_then(crate::compat::parse_issued)
+                    .map(Some)
+                    .ok_or_else(|| BackupFailure::Corrupt("legacy address range".into()).into());
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// A wallet a restore registered: its id, whether it is new, and the
+/// settings of one that was there before, to put back on a rollback.
+type Restored = (WalletId, bool, Option<dw_appdb::PriorRows>);
+
+/// The keys of wallet `id`'s settings rows in a bundle.
+fn bundled_setting_keys(tables: &[TableRows], id: WalletId) -> Vec<String> {
+    let scope = id.to_string();
+    let mut keys = Vec::new();
+    for t in tables.iter().filter(|t| t.table == "settings_kv") {
+        let col = |name: &str| t.columns.iter().position(|c| c == name);
+        let (Some(s), Some(k)) = (col("scope"), col("key")) else {
+            continue;
+        };
+        for row in &t.rows {
+            if let (Some(SqlValue::Text(sc)), Some(SqlValue::Text(key))) = (row.get(s), row.get(k))
+                && *sc == scope
+            {
+                keys.push(key.clone());
+            }
+        }
+    }
+    keys
+}
+
 fn from_json(v: &serde_json::Value) -> Result<SqlValue, EngineError> {
     let bad = || BackupFailure::Corrupt("app row value".into());
     if v.is_null() {
@@ -489,6 +544,8 @@ impl NetworkSession {
     /// Restores the wallets of a `.dwbackup` (QT-110): verifies it, stores
     /// each wallet's secrets under this vault's key (seed-safety order),
     /// registers it and inserts its app metadata. Returns the wallet ids.
+    /// Refused (`Storage`) before any bundle is opened while the dispatch
+    /// journal is unavailable.
     pub async fn restore_backup(
         self: &Arc<Self>,
         path: PathBuf,
@@ -505,6 +562,7 @@ impl NetworkSession {
         path: PathBuf,
         passphrase: Option<Zeroizing<Vec<u8>>>,
     ) -> Result<Vec<WalletId>, EngineError> {
+        self.require_journal()?;
         let tag = self.network.dir_name();
         let vault = self.vault.clone();
         // Refused before any bundle is opened, so no passphrase is checked
@@ -574,10 +632,11 @@ impl NetworkSession {
         // lock (DEC-210 (3b)), taken in that order.
         let _op = self.enter().await?;
         let held = self.wallet_lifecycle.hold().await;
-        // What this call registered, for the rollback (review L3): the id
-        // and whether the wallet was new (not keys attached to a watch-only
-        // wallet that was there before).
-        let mut done: Vec<(WalletId, bool)> = Vec::new();
+        // What this call registered, for the rollback (review L3): the id,
+        // whether the wallet was new (not keys attached to a watch-only
+        // wallet that was there before) and, for one that was there, its
+        // settings as they were before the restore wrote any.
+        let mut done: Vec<Restored> = Vec::new();
         // No bring-up is admitted for these wallets, from any entry point,
         // until the restore has committed (review r2 M4). Marked before any
         // seed is stored.
@@ -600,14 +659,14 @@ impl NetworkSession {
         // Only now, with every bundle restored and its app rows inserted:
         // a failed restore must leave no automatic backup of a wallet it
         // rolled back, and no bring-up holding its keys.
-        for &(id, _) in &done {
+        for &(id, _, _) in &done {
             self.platform
                 .signal_at(committed, PlatformSignal::WalletAdded(id));
             // E0-04 §8.6 (review L-4): as `load_wallet`.
             self.leases.wallet_opened(id);
             self.schedule_automatic_backup(id);
         }
-        Ok(done.into_iter().map(|(id, _)| id).collect())
+        Ok(done.into_iter().map(|(id, _, _)| id).collect())
     }
 
     /// Restores one opened bundle; pushes the wallet to `done` once it is
@@ -619,7 +678,7 @@ impl NetworkSession {
         id: WalletId,
         secret: dw_vault::WalletSecret,
         payload: Payload,
-        done: &mut Vec<(WalletId, bool)>,
+        done: &mut Vec<Restored>,
     ) -> Result<(), EngineError> {
         let derived = dw_vault::mnemonic::wallet_id_for_seed(&secret.seed, network)
             .map_err(|e| BackupFailure::Corrupt(e.to_string()))?;
@@ -642,7 +701,26 @@ impl NetworkSession {
                 })
             })
             .collect::<Result<Vec<_>, EngineError>>()?;
+        // A legacy wallet's range is applied before it is announced, as
+        // its file import does; its rows land after registration.
+        let state = crate::compat::ImportedState {
+            issued: bundled_issued(&tables, id)?,
+            ..Default::default()
+        };
         let existed = self.manager()?.get_wallet(&id.0).await.is_some();
+        // A wallet already there gets back, if the restore fails later, the
+        // settings it writes: its range and the bundle's rows (its salt).
+        let prior = if existed {
+            let mut keys = bundled_setting_keys(&tables, id);
+            if !keys.iter().any(|k| k == crate::compat::ISSUED_SETTING) {
+                keys.push(crate::compat::ISSUED_SETTING.to_owned());
+            }
+            let appdb = self.live()?.appdb;
+            let wid = id.to_string();
+            Some(tokio::task::spawn_blocking(move || appdb.prior_settings(&wid, &keys)).await??)
+        } else {
+            None
+        };
         let options = ImportOptions {
             birth_height: Some(payload.birth_height.unwrap_or(0)),
             core_compat: false,
@@ -656,10 +734,11 @@ impl NetworkSession {
                 secret,
                 AutoBackup::Caller,
                 Origin::Imported,
+                state,
             )
             .await
         {
-            Ok(_) => done.push((id, !existed)),
+            Ok(_) => done.push((id, !existed, prior)),
             Err(EngineError::WalletAlreadyExists(_)) => {
                 return Err(BackupFailure::AlreadyExists(id).into());
             }
@@ -677,16 +756,69 @@ impl NetworkSession {
         Ok(())
     }
 
+    /// Takes a wallet a failed call registered out of the manager and
+    /// deletes its stored wallet and rows, recording it as removed (DEC-210).
+    /// The caller has ended its discoveries and forgotten it in the platform
+    /// runtime.
+    pub(crate) async fn remove_registered(
+        self: &Arc<Self>,
+        id: WalletId,
+    ) -> Result<(), EngineError> {
+        let live = self.live()?;
+        // A wallet holding a stored shielded spend stays (DEC-1046), as does
+        // one with a marked spend (DEC-1057).
+        let removal = (self.platform)
+            .remove_from_manager(
+                &self.leases,
+                &live.manager,
+                id,
+                crate::platform::runtime::StoredSpends::Refuse,
+            )
+            .await;
+        // Again, now that it is out of the manager (or failed to leave it):
+        // a scan begun since the first forget passed the wallet check, and a
+        // names check begun since read the wallet (D33).
+        self.platform.users.scans.forget(&id);
+        self.platform.recovery.fence_names(&id);
+        removal?;
+        self.hub.forget_wallet(&id);
+        self.coin_fences.forget(&id);
+        let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+        #[cfg(test)]
+        let refused =
+            crate::keys::take_test_failure(&FAIL_STORED_WALLET_DELETE_IN, self.data_dir());
+        tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
+            // Both are attempted: rows left behind would outlive a failed
+            // delete of the stored wallet with no removal record.
+            #[cfg(test)]
+            let stored = if refused {
+                Err(EngineError::Storage(
+                    "test: stored wallet not deleted".into(),
+                ))
+            } else {
+                persister.delete_wallet(id.0).map_err(EngineError::from)
+            };
+            #[cfg(not(test))]
+            let stored = persister.delete_wallet(id.0).map_err(EngineError::from);
+            let rows = appdb
+                .delete_wallet(&id.to_string())
+                .map_err(|e| EngineError::Storage(e.to_string()));
+            stored.and(rows)
+        })
+        .await?
+    }
+
     /// Undoes what a failed restore registered, newest first: a new wallet
     /// is unloaded and its rows and vault records deleted; keys attached
-    /// to a watch-only wallet are deleted again. Best effort: a failing
-    /// step is logged and the rest still runs.
+    /// to a watch-only wallet are deleted again and its settings put back.
+    /// Best effort: a failing step is logged and the rest still runs.
     pub(crate) async fn roll_back_restore(
         self: &Arc<Self>,
         held: &Lifecycle<'_>,
-        done: &[(WalletId, bool)],
+        done: &[Restored],
     ) {
-        for &(id, created) in done.iter().rev() {
+        for (id, created, prior) in done.iter().rev() {
+            let (id, created) = (*id, *created);
             // Still marked as being restored, so no bring-up was admitted for
             // it; a status read since is stale. Its discoveries end, and none
             // starts until the rollback of it is done: the wallet out of the
@@ -694,43 +826,16 @@ impl NetworkSession {
             let _discoveries = self.platform.recovery.end_discoveries(id).await;
             self.platform.forget(&id);
             if created {
-                let removed = async {
-                    let live = self.live()?;
-                    // A wallet holding a stored shielded spend stays (DEC-1046),
-                    // as does one with a marked spend (DEC-1057).
-                    let removal = (self.platform)
-                        .remove_from_manager(
-                            &self.leases,
-                            &live.manager,
-                            id,
-                            crate::platform::runtime::StoredSpends::Refuse,
-                        )
-                        .await;
-                    // Again, now that it is out of the manager (or failed to
-                    // leave it): a scan begun since the first forget passed
-                    // the wallet check, and a names check begun since read
-                    // the wallet (D33).
-                    self.platform.users.scans.forget(&id);
-                    self.platform.recovery.fence_names(&id);
-                    removal?;
-                    self.hub.forget_wallet(&id);
-                    self.coin_fences.forget(&id);
-                    let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
-                    tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
-                        persister.delete_wallet(id.0)?;
-                        appdb
-                            .delete_wallet(&id.to_string())
-                            .map_err(|e| EngineError::Storage(e.to_string()))
-                    })
-                    .await?
-                }
-                .await;
+                let removed = self.remove_registered(id).await;
                 if let Err(EngineError::ShieldedSpendUnresolved) = removed {
                     // It stays whole, its seed with it: without the seed it
                     // would never hold a background lease again, and every
                     // shielded pass of the network would be held back.
                     tracing::warn!(wallet_id = %id, "a restored wallet holding a shielded spend stays");
                     continue;
+                }
+                if removed.is_ok() {
+                    self.list_on_startup(held, id, false).await;
                 }
                 if let Err(e) = removed {
                     tracing::warn!(wallet_id = %id, error = %e, "could not roll back a restored wallet");
@@ -742,6 +847,9 @@ impl NetworkSession {
                 live.tap.forget(&id);
             }
             self.forget_secret(held, id).await;
+            if let Some(prior) = prior {
+                self.restore_imported_state(prior.clone()).await;
+            }
             self.sink.emit(if created {
                 EngineEvent::WalletRemoved {
                     network: self.network.clone(),

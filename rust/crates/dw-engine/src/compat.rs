@@ -11,14 +11,15 @@
 //!
 //! What platform-wallet cannot hold is refused with a typed
 //! `NotImplemented`, never approximated: a master xprv without its seed
-//! (platform-wallet registers wallets from 64-byte seeds only), seeds of
-//! other lengths, and Berkeley DB `wallet.dat` files (M6).
+//! (platform-wallet registers wallets from 64-byte seeds only) and seeds of
+//! other lengths.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
+use dashcore::hashes::Hash;
 use dw_appdb::BookPurpose;
 use dw_compat::descriptor::{ImportRequest, PkhDescriptor, import_descriptors_json};
 use dw_compat::dump::{self, DumpFile, DumpHeader, HdAccount, KeyEntry, KeyRole};
@@ -26,6 +27,7 @@ use dw_compat::walletdat::{self, Container, WalletDatError};
 use dw_uri::keyio;
 use dw_vault::{GrantKind, SeedDerivation, WalletSecret, mnemonic};
 use key_wallet::bip32::{DerivationPath, ExtendedPrivKey};
+use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use zeroize::Zeroizing;
 
 use crate::events::unix_now;
@@ -39,6 +41,9 @@ use crate::{
 
 /// Largest dumpwallet file read (a wallet with a few hundred thousand keys).
 const MAX_DUMP_BYTES: u64 = 256 * 1024 * 1024;
+/// Most keys one legacy chain may have derived, keypool included. Past this
+/// the pool would be too large to build, so the file is refused.
+const MAX_ISSUED: u32 = walletdat::MAX_LEGACY_CHAIN_KEYS;
 /// Bytes read to recognise a file.
 const SNIFF_BYTES: usize = 4096;
 
@@ -121,7 +126,8 @@ pub enum WalletFileKind {
         encrypted: bool,
         has_mnemonic: bool,
     },
-    /// Berkeley DB: encryption cannot be told without the M6 reader.
+    /// Legacy Berkeley DB `wallet.dat`. `encrypted` is `None` when the file
+    /// is recognised but does not parse.
     WalletDatBdb {
         encrypted: Option<bool>,
     },
@@ -274,7 +280,10 @@ pub fn inspect_wallet_file(path: &Path) -> Result<WalletFileKind, EngineError> {
             });
         }
         Some(Container::BerkeleyDb) => {
-            return Ok(WalletFileKind::WalletDatBdb { encrypted: None });
+            let w = walletdat::read_bdb(path).map_err(walletdat_failure)?;
+            return Ok(WalletFileKind::WalletDatBdb {
+                encrypted: Some(w.encrypted()),
+            });
         }
         None => {}
     }
@@ -379,6 +388,7 @@ impl NetworkSession {
         self: &Arc<Self>,
         root: CoreRoot,
         options: ImportOptions,
+        state: ImportedState,
     ) -> Result<ImportReport, EngineError> {
         let options = ImportOptions {
             // A restored wallet may have funds anywhere in the chain.
@@ -418,7 +428,9 @@ impl NetworkSession {
             }
             Ok(secret)
         };
-        let wallet_id = self.import_secret_with(options, make_secret).await?;
+        let wallet_id = self
+            .import_secret_with_state(options, make_secret, state)
+            .await?;
         let labels_imported = self.import_labels(wallet_id, labels).await;
         Ok(ImportReport {
             wallet_id,
@@ -538,7 +550,9 @@ impl NetworkSession {
             used_per_chain,
             labels,
         };
-        let report = self.import_core_root(root, options).await?;
+        let report = self
+            .import_core_root(root, options, ImportedState::default())
+            .await?;
         Ok(ImportReport {
             keys_not_imported: report_keys,
             scripts_not_imported: report_scripts,
@@ -547,7 +561,7 @@ impl NetworkSession {
     }
 
     /// dash-qt "Restore wallet" from a `wallet.dat` (QT-106): SQLite
-    /// descriptor wallets; Berkeley DB returns `NotImplemented` until M6.
+    /// descriptor wallets and legacy Berkeley DB wallets.
     pub async fn import_wallet_dat(
         self: &Arc<Self>,
         path: PathBuf,
@@ -556,77 +570,122 @@ impl NetworkSession {
     ) -> Result<ImportReport, EngineError> {
         drop(self.try_enter()?);
         let network_mainnet = self.network == DashNetwork::Mainnet;
-        let (root, coinjoin_salt) = self
+        let WalletDatImport {
+            root,
+            loose_keys,
+            scripts,
+            state,
+        } = self
             .on_runtime(async move {
-                tokio::task::spawn_blocking(
-                    move || -> Result<(CoreRoot, Option<[u8; 32]>), EngineError> {
-                        match walletdat::sniff_container(&head(&path)?) {
-                            Some(Container::Sqlite) => {}
-                            Some(Container::BerkeleyDb) => {
-                                return Err(EngineError::NotImplemented(
-                                    "import_wallet_dat.bdb".into(),
-                                ));
-                            }
-                            None => {
-                                return Err(CompatFailure::UnsupportedFormat(
-                                    "not a wallet.dat".into(),
-                                )
-                                .into());
-                            }
+                tokio::task::spawn_blocking(move || -> Result<WalletDatImport, EngineError> {
+                    let wallet = match walletdat::sniff_container(&head(&path)?) {
+                        Some(Container::Sqlite) => {
+                            walletdat::read_sqlite(&path).map_err(walletdat_failure)?
                         }
-                        let wallet = walletdat::read_sqlite(&path).map_err(walletdat_failure)?;
-                        let root = wallet
-                            .hd_root(wallet_passphrase.as_deref().map(|p| &p[..]))
-                            .map_err(walletdat_failure)?;
-                        let mainnet = key_is_mainnet(&root.external.key);
-                        if mainnet.is_some_and(|m| m != network_mainnet) {
-                            return Err(CompatFailure::NetworkMismatch {
-                                mainnet: mainnet == Some(true),
-                            }
+                        Some(Container::BerkeleyDb) => {
+                            walletdat::read_bdb(&path).map_err(walletdat_failure)?
+                        }
+                        None => {
+                            return Err(CompatFailure::UnsupportedFormat(
+                                "not a wallet.dat".into(),
+                            )
                             .into());
                         }
-                        let Some(phrase) = root.mnemonic else {
+                    };
+                    let root = wallet
+                        .hd_root(wallet_passphrase.as_deref().map(|p| &p[..]))
+                        .map_err(walletdat_failure)?;
+                    let mainnet = key_is_mainnet(&root.external.key).ok_or_else(|| {
+                        CompatFailure::UnsupportedFormat(
+                            "the wallet's network cannot be established from its keys".into(),
+                        )
+                    })?;
+                    if mainnet != network_mainnet {
+                        return Err(CompatFailure::NetworkMismatch { mainnet }.into());
+                    }
+                    let mut issued = None;
+                    for (account, external, internal) in wallet.hd_accounts() {
+                        if account != 0 {
+                            return Err(CompatFailure::UnsupportedFormat(format!(
+                                "HD account {account} cannot be restored; only account 0 is"
+                            ))
+                            .into());
+                        }
+                        if external > MAX_ISSUED || internal > MAX_ISSUED {
+                            return Err(CompatFailure::UnsupportedFormat(
+                                "the wallet's address range is too large to restore".into(),
+                            )
+                            .into());
+                        }
+                        issued = Some((external, internal));
+                    }
+                    let labels = wallet
+                        .address_book
+                        .iter()
+                        .map(|e| {
+                            let purpose = if e.purpose.as_deref() == Some("send") {
+                                BookPurpose::Send
+                            } else {
+                                BookPurpose::Receive
+                            };
+                            (e.address.clone(), e.label.clone(), purpose)
+                        })
+                        .collect();
+                    let (phrase, seed) = match (root.mnemonic, root.hd_seed) {
+                        (Some(phrase), _) => (Some(phrase), None),
+                        (None, Some(seed)) => {
+                            let arr: [u8; 64] = match seed[..].try_into() {
+                                Ok(arr) => arr,
+                                Err(_) => {
+                                    return Err(EngineError::NotImplemented(format!(
+                                        "import_wallet_dat.seed_length.{}",
+                                        seed.len()
+                                    )));
+                                }
+                            };
+                            (None, Some(Zeroizing::new(arr)))
+                        }
+                        (None, None) if wallet.is_descriptor_wallet() => {
                             return Err(EngineError::NotImplemented(
                                 "import_wallet_dat.xprv".into(),
                             ));
-                        };
-                        let labels = wallet
-                            .address_book
-                            .iter()
-                            .map(|e| {
-                                let purpose = if e.purpose.as_deref() == Some("send") {
-                                    BookPurpose::Send
-                                } else {
-                                    BookPurpose::Receive
-                                };
-                                (e.address.clone(), e.label.clone(), purpose)
-                            })
-                            .collect();
-                        Ok((
-                            CoreRoot {
-                                phrase: Some(phrase),
-                                seed: None,
-                                master_pubkey: Some(root.master_pubkey),
-                                used_per_chain: wallet.next_index(),
-                                labels,
-                            },
-                            wallet.coinjoin_salt,
-                        ))
-                    },
-                )
+                        }
+                        (None, None) => return Err(CompatFailure::NoHdChain.into()),
+                    };
+                    let locks = wallet
+                        .locked_outpoints
+                        .iter()
+                        .map(|(txid, vout)| dashcore::OutPoint {
+                            txid: dashcore::Txid::from_byte_array(*txid),
+                            vout: *vout,
+                        })
+                        .collect();
+                    Ok(WalletDatImport {
+                        root: CoreRoot {
+                            phrase,
+                            seed,
+                            master_pubkey: Some(root.master_pubkey),
+                            used_per_chain: wallet.next_index(),
+                            labels,
+                        },
+                        loose_keys: wallet.loose_keys,
+                        scripts: wallet.scripts,
+                        state: ImportedState {
+                            issued,
+                            locks,
+                            coinjoin_salt: wallet.coinjoin_salt,
+                        },
+                    })
+                })
                 .await?
             })
             .await?;
-        let report = self.import_core_root(root, options).await?;
-        // The wallet keeps Dash Core's salt, so the same coins count as
-        // fully mixed (QT-043, m3-engine.md §5).
-        if let Some(salt) = coinjoin_salt {
-            let this = Arc::clone(self);
-            let id = report.wallet_id;
-            self.on_runtime(async move { this.import_coinjoin_salt(id, salt).await })
-                .await?;
-        }
-        Ok(report)
+        let report = self.import_core_root(root, options, state).await?;
+        Ok(ImportReport {
+            keys_not_imported: loose_keys,
+            scripts_not_imported: scripts,
+            ..report
+        })
     }
 
     /// Imports a wallet from an HD seed, xprv or `listdescriptors true` JSON
@@ -704,15 +763,15 @@ impl NetworkSession {
                 }
             }
         };
-        self.import_core_root(root, options).await
+        self.import_core_root(root, options, ImportedState::default())
+            .await
     }
 
     /// The warning for CoinJoin funds a legacy dash-qt wallet would not see.
     fn coinjoin_warning(&self, id: &WalletId) -> Option<ExportWarning> {
         self.hub
             .wallet_state(id)
-            .and_then(|s| s.balances())
-            .is_some_and(|b| b.coinjoin > 0)
+            .is_some_and(|s| s.balances().coinjoin > 0)
             .then_some(ExportWarning::CoinJoinAccountNotScannedByLegacyCore)
     }
 
@@ -839,6 +898,198 @@ impl NetworkSession {
     }
 }
 
+/// What a Dash Core file carries beside its root. It is stored before the
+/// wallet is registered and its range applied before anyone hears of the
+/// wallet.
+#[derive(Default)]
+pub(crate) struct ImportedState {
+    /// How many receive and change keys Core derived on account 0.
+    pub(crate) issued: Option<(u32, u32)>,
+    /// Core's persistent coin locks (`lockedutxo`).
+    pub(crate) locks: Vec<dashcore::OutPoint>,
+    pub(crate) coinjoin_salt: Option<[u8; 32]>,
+}
+
+/// What `import_wallet_dat` carries out of the blocking read.
+struct WalletDatImport {
+    root: CoreRoot,
+    loose_keys: u32,
+    scripts: u32,
+    state: ImportedState,
+}
+
+/// dw-appdb setting (wallet scope): `external,internal`, the counters of a
+/// legacy Core wallet's account 0, applied again at every load because
+/// key-wallet keeps its pools in memory.
+pub(crate) const ISSUED_SETTING: &str = "bip44.legacy_issued";
+
+impl NetworkSession {
+    /// Derives account 0's receive and change chains up to the last address
+    /// Core derived on each and keeps the gap past it. The two counters are
+    /// not one lookahead, and either can be past the largest gap limit.
+    /// Core may have handed out any address below its counter, so each one
+    /// not yet paid is held reserved: no receive or change address is picked
+    /// below the counter, and none is reported used before a payment marks
+    /// it. A reservation stamped 0 never expires.
+    pub(crate) async fn cover_issued(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        (external, internal): (u32, u32),
+    ) -> Result<(), EngineError> {
+        use key_wallet::managed_account::address_pool::{AddressPoolType, AddressState};
+        let unsupported = || {
+            EngineError::from(CompatFailure::UnsupportedFormat(
+                "HD account 0 cannot be restored".into(),
+            ))
+        };
+        let account = key_wallet::account::AccountType::Standard {
+            index: 0,
+            standard_account_type: key_wallet::account::StandardAccountType::BIP44Account,
+        };
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let (wallet, info) = wm
+            .get_wallet_and_info_mut(&id.0)
+            .ok_or_else(|| EngineError::WalletNotFound(id.to_string()))?;
+        let key = wallet.key_source_for_account(account);
+        let managed = info
+            .core_wallet
+            .accounts
+            .funds_account_mut(&account)
+            .ok_or_else(unsupported)?;
+        for pool in managed.managed_account_type_mut().address_pools_mut() {
+            let next = match pool.pool_type {
+                AddressPoolType::External => external,
+                AddressPoolType::Internal => internal,
+                _ => continue,
+            };
+            let Some(last) = next.checked_sub(1) else {
+                continue;
+            };
+            pool.generate_up_to(last, &key)
+                .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
+            for info in pool.addresses.range_mut(..=last).map(|(_, info)| info) {
+                if info.is_available() {
+                    info.state = AddressState::Reserved { at: 0 };
+                }
+            }
+            pool.highest_used = pool.highest_used.max(Some(last));
+            pool.maintain_gap_limit(&key)
+                .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
+        }
+        managed.bump_monitor_revision();
+        Ok(())
+    }
+
+    /// Stores `state` for wallet `id` in one transaction: the range
+    /// setting, Core's coin locks and its CoinJoin salt, so the same coins
+    /// count as fully mixed (QT-043, m3-engine.md §5). The salt replaces a
+    /// stored one; each stored counter of the range only rises, so an older
+    /// copy of the file does not narrow it; Core's locks are added to any
+    /// the wallet has. Returns what was replaced, for
+    /// [`Self::restore_imported_state`].
+    pub(crate) async fn write_imported_state(
+        self: &Arc<Self>,
+        id: WalletId,
+        state: &ImportedState,
+    ) -> Result<Option<dw_appdb::PriorRows>, EngineError> {
+        let mut settings = Vec::new();
+        if let Some((external, internal)) = state.issued {
+            settings.push((ISSUED_SETTING, format!("{external},{internal}")));
+        }
+        if let Some(salt) = state.coinjoin_salt {
+            settings.push(crate::coinjoin::salt_setting(&salt));
+        }
+        // The coins may not be synced yet; the lock row is what coin
+        // selection reads when they appear.
+        let locks: Vec<(String, u32)> = (state.locks.iter())
+            .map(|o| (o.txid.to_string(), o.vout))
+            .collect();
+        if settings.is_empty() && locks.is_empty() {
+            return Ok(None);
+        }
+        let key = id.to_string();
+        self.appdb_op(move |db| {
+            db.write_settings_and_locks(
+                &key,
+                &settings,
+                &widen_issued,
+                &locks,
+                crate::coins::now_secs(),
+            )
+        })
+        .await
+        .map(Some)
+    }
+
+    /// Puts back what [`Self::write_imported_state`] replaced.
+    pub(crate) async fn restore_imported_state(&self, prior: dw_appdb::PriorRows) {
+        if let Err(e) = self
+            .appdb_op(move |db| db.restore_settings_and_locks(&prior))
+            .await
+        {
+            tracing::warn!(error = %e, "could not put back the rows a failed import replaced");
+        }
+    }
+
+    /// Applies the range of `state` to registered wallet `id`, before it is
+    /// announced. The import fails if this does.
+    pub(crate) async fn cover_imported_range(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        state: &ImportedState,
+    ) -> Result<(), EngineError> {
+        let Some(issued) = state.issued else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        if crate::keys::take_test_failure(&FAIL_COVER_IN, self.data_dir()) {
+            return Err(EngineError::Internal("test: range not applied".into()));
+        }
+        self.cover_issued(manager, id, issued).await
+    }
+
+    /// Wallet `id`'s stored legacy counters, if valid ones are stored.
+    pub(crate) async fn stored_issued(&self, id: WalletId) -> Option<(u32, u32)> {
+        let appdb = Arc::clone(&self.live().ok()?.appdb);
+        let key = id.to_string();
+        let value = tokio::task::spawn_blocking(move || appdb.setting(&key, ISSUED_SETTING))
+            .await
+            .ok()?
+            .ok()??;
+        parse_issued(&value)
+    }
+}
+
+/// The range setting's value, if valid: `"<external>,<internal>"`, each at
+/// most [`MAX_ISSUED`].
+pub(crate) fn parse_issued(value: &str) -> Option<(u32, u32)> {
+    let (external, internal) = value.split_once(',')?;
+    let issued = (external.parse().ok()?, internal.parse().ok()?);
+    (issued.0 <= MAX_ISSUED && issued.1 <= MAX_ISSUED).then_some(issued)
+}
+
+/// The value stored for setting `key` when `stored` is there and `new` is
+/// written: the range setting keeps the larger counter of each chain, any
+/// other setting (or a stored range that does not parse) takes `new`.
+fn widen_issued(key: &str, stored: &str, new: &str) -> String {
+    match (
+        key == ISSUED_SETTING,
+        parse_issued(stored),
+        parse_issued(new),
+    ) {
+        (true, Some((e0, i0)), Some((e1, i1))) => format!("{},{}", e0.max(e1), i0.max(i1)),
+        _ => new.to_owned(),
+    }
+}
+
+/// Tests: the next legacy range an import applies in a session on one of
+/// these data directories fails.
+#[cfg(test)]
+pub(crate) static FAIL_COVER_IN: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
 fn walletdat_failure(e: WalletDatError) -> EngineError {
     match e {
         WalletDatError::Unreadable(d) => CompatFailure::FileUnreadable(d),
@@ -846,6 +1097,10 @@ fn walletdat_failure(e: WalletDatError) -> EngineError {
         WalletDatError::Corrupt(d) => CompatFailure::Corrupt(d),
         WalletDatError::PassphraseRequired => CompatFailure::PassphraseRequired,
         WalletDatError::WrongPassphrase => CompatFailure::WrongPassphrase,
+        WalletDatError::NoHdChain => CompatFailure::NoHdChain,
+        WalletDatError::SeedLength(n) => {
+            return EngineError::NotImplemented(format!("import_wallet_dat.seed_length.{n}"));
+        }
     }
     .into()
 }
@@ -1035,6 +1290,258 @@ mod tests {
             .join(rel)
     }
 
+    #[derive(Default)]
+    struct Created(std::sync::Mutex<Vec<WalletId>>);
+
+    impl crate::EventSink for Created {
+        fn emit(&self, event: crate::EngineEvent) {
+            if let crate::EngineEvent::WalletCreated { wallet_id, .. } = event {
+                self.0.lock().unwrap().push(wallet_id);
+            }
+        }
+    }
+
+    /// A regtest session with an unencrypted vault, its data dir private,
+    /// and what it announced.
+    fn regtest_session() -> (
+        tempfile::TempDir,
+        crate::Engine,
+        Arc<NetworkSession>,
+        Arc<Created>,
+    ) {
+        use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
+        let dir = dw_testutil::private_tempdir();
+        let created = Arc::new(Created::default());
+        let engine = crate::Engine::new(
+            crate::EngineConfig {
+                data_root: dir.path().join("data"),
+                worker_threads: Some(2),
+                vault: VaultConfig {
+                    kdf: KdfPolicy::Fixed(KdfParams::TEST),
+                    os_store: Arc::new(MemoryOsStore::new()),
+                    ..Default::default()
+                },
+            },
+            Arc::clone(&created) as Arc<dyn crate::EventSink>,
+        )
+        .unwrap();
+        let s = engine
+            .block_on(engine.open_network(DashNetwork::Regtest, offline()))
+            .unwrap();
+        engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+        (dir, engine, s, created)
+    }
+
+    fn offline() -> crate::SessionOptions {
+        crate::SessionOptions {
+            dapi_addresses: vec!["http://127.0.0.1:1".into()],
+            quorum_url: Some("http://127.0.0.1:1".into()),
+            spv_peers: vec!["127.0.0.1:1".into()],
+            ..Default::default()
+        }
+    }
+
+    /// Closes the session and opens it again: its wallets load from storage.
+    fn reopen(engine: &crate::Engine, s: Arc<NetworkSession>) -> Arc<NetworkSession> {
+        drop(s);
+        assert!(
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        );
+        engine
+            .block_on(engine.open_network(DashNetwork::Regtest, offline()))
+            .unwrap()
+    }
+
+    fn import(engine: &crate::Engine, s: &Arc<NetworkSession>, name: &str) -> WalletId {
+        let file = testdata(&format!("compat/walletdat/{name}"));
+        (engine.block_on(s.import_wallet_dat(file, None, ImportOptions::default())))
+            .unwrap()
+            .wallet_id
+    }
+
+    fn addresses_of(
+        engine: &crate::Engine,
+        s: &Arc<NetworkSession>,
+        id: WalletId,
+    ) -> Vec<crate::receive::AddressInfo> {
+        engine
+            .block_on(s.addresses(id, crate::receive::AddressFilter::default()))
+            .unwrap()
+    }
+
+    fn highest(addresses: &[crate::receive::AddressInfo], chain: AddressChain) -> u32 {
+        (addresses.iter())
+            .filter(|a| a.chain == chain)
+            .map(|a| a.index)
+            .max()
+            .unwrap()
+    }
+
+    /// Attaching an older copy of a wallet.dat to a wallet keeps the larger
+    /// counter of each chain, whichever copy it came from, and a reload
+    /// watches that range.
+    #[test]
+    fn an_older_wallet_dat_does_not_narrow_the_stored_range() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let id = wide_range_id();
+        let stored = |s: &NetworkSession| {
+            (s.live().unwrap().appdb)
+                .setting(&id.to_string(), ISSUED_SETTING)
+                .unwrap()
+        };
+        assert_eq!(import(&engine, &s, "bdb_wide_change.dat"), id);
+        assert_eq!(stored(&s).as_deref(), Some("4,2600"));
+        let attach = |name: &str| {
+            assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+            assert_eq!(import(&engine, &s, name), id);
+        };
+        attach("bdb_wide_range.dat");
+        assert_eq!(stored(&s).as_deref(), Some("1001,2600"));
+        attach("bdb_wide_change.dat");
+        assert_eq!(stored(&s).as_deref(), Some("1001,2600"));
+
+        let s = reopen(&engine, s);
+        let addresses = addresses_of(&engine, &s, id);
+        assert!(highest(&addresses, AddressChain::Receiving) >= 1000 + CORE_COMPAT_LOOKAHEAD);
+        assert!(highest(&addresses, AddressChain::Change) >= 2599 + CORE_COMPAT_LOOKAHEAD);
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// The id of `bdb_wide_range.dat`'s wallet (`abandon … about`).
+    fn wide_range_id() -> WalletId {
+        let phrase = b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+        let seed = mnemonic::derive_secret(phrase, b"", true).unwrap().seed;
+        WalletId(mnemonic::wallet_id_for_seed(&seed, dashcore::Network::Regtest).unwrap())
+    }
+
+    /// Whether wallet `id` has none of Core's rows: range, salt, locks.
+    fn has_no_core_rows(s: &NetworkSession, id: WalletId) -> bool {
+        let (db, wallet) = (s.live().unwrap().appdb, id.to_string());
+        db.setting(&wallet, ISSUED_SETTING).unwrap().is_none()
+            && db.setting(&wallet, "coinjoin.salt").unwrap().is_none()
+            && db.locks(&wallet).unwrap().is_empty()
+    }
+
+    /// A legacy wallet whose range cannot be applied is not announced: the
+    /// import fails, the wallet is taken out with its rows, and importing
+    /// the file again works.
+    #[test]
+    fn a_legacy_range_not_applied_fails_the_import_before_it_is_announced() {
+        let (_dir, engine, s, created) = regtest_session();
+        let id = wide_range_id();
+        let file = testdata("compat/walletdat/bdb_wide_range.dat");
+
+        FAIL_COVER_IN
+            .lock()
+            .unwrap()
+            .push(s.data_dir().to_path_buf());
+        let failed =
+            engine.block_on(s.import_wallet_dat(file.clone(), None, ImportOptions::default()));
+        assert!(
+            matches!(failed, Err(EngineError::Internal(_))),
+            "{failed:?}"
+        );
+        assert!(
+            created.0.lock().unwrap().is_empty(),
+            "the wallet was announced"
+        );
+        let manager = s.manager().unwrap();
+        assert!(engine.block_on(manager.get_wallet(&id.0)).is_none());
+        assert!(has_no_core_rows(&s, id));
+
+        let report = engine
+            .block_on(s.import_wallet_dat(file, None, ImportOptions::default()))
+            .unwrap();
+        assert_eq!(report.wallet_id, id);
+        assert_eq!(*created.0.lock().unwrap(), [id]);
+        assert_eq!(engine.block_on(s.locked_outpoints(id)).unwrap().len(), 1);
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// Taking out a wallet whose range was not applied deletes its rows even
+    /// when its stored wallet cannot be deleted.
+    #[test]
+    fn a_failed_stored_wallet_delete_still_deletes_the_rows() {
+        let (_dir, engine, s, created) = regtest_session();
+        let id = wide_range_id();
+        let dir = s.data_dir().to_path_buf();
+        FAIL_COVER_IN.lock().unwrap().push(dir.clone());
+        (crate::backup::FAIL_STORED_WALLET_DELETE_IN.lock().unwrap()).push(dir);
+        let failed = engine.block_on(s.import_wallet_dat(
+            testdata("compat/walletdat/bdb_wide_range.dat"),
+            None,
+            ImportOptions::default(),
+        ));
+        assert!(
+            matches!(failed, Err(EngineError::Internal(_))),
+            "{failed:?}"
+        );
+        assert!(created.0.lock().unwrap().is_empty());
+        assert!(has_no_core_rows(&s, id));
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// After a legacy import, and after a reload, neither the receive nor
+    /// the change address the wallet picks is one Core may have handed out
+    /// (below its counter on that chain); none of them is reported used
+    /// without a payment, and the whole derived range plus the gap is
+    /// still watched.
+    #[test]
+    fn core_issued_addresses_are_not_handed_out_again() {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let (_dir, engine, s, _created) = regtest_session();
+        let id = import(&engine, &s, "bdb_wide_range.dat");
+        let (external, internal) = (1001, 2);
+        let check = |s: &Arc<NetworkSession>| {
+            let current = engine.block_on(s.current_receive_address(id)).unwrap();
+            assert!(current.index >= external, "{current:?}");
+            let issued = engine.block_on(s.next_receive_address(id, None)).unwrap();
+            assert!(issued.index >= external, "{issued:?}");
+            let (change, watched) = engine.block_on(async {
+                let manager = s.manager().unwrap();
+                let wallet = manager.get_wallet(&id.0).await.unwrap();
+                let change = wallet
+                    .core()
+                    .next_change_address_for_account(0)
+                    .await
+                    .unwrap();
+                let wm = manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                let watched = (wm.get_wallet_info(&id.0).unwrap().core_wallet)
+                    .monitored_addresses()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<std::collections::HashSet<_>>();
+                (change.to_string(), watched)
+            });
+            let addresses = addresses_of(&engine, s, id);
+            let change = addresses.iter().find(|a| a.address == change).unwrap();
+            assert_eq!(change.chain, AddressChain::Change);
+            assert!(change.index >= internal, "{change:?}");
+            assert!(
+                addresses.iter().all(|a| !a.used),
+                "an address reported used without a payment"
+            );
+            for (chain, counter) in [
+                (AddressChain::Receiving, external),
+                (AddressChain::Change, internal),
+            ] {
+                let derived: Vec<_> = (addresses.iter())
+                    .filter(|a| a.chain == chain && a.index < counter)
+                    .collect();
+                assert_eq!(derived.len(), counter as usize, "{chain:?}");
+                assert!(derived.iter().all(|a| watched.contains(&a.address)));
+                assert!(highest(&addresses, chain) >= counter - 1 + CORE_COMPAT_LOOKAHEAD);
+            }
+        };
+        check(&s);
+        let s = reopen(&engine, s);
+        check(&s);
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
     /// Review L4: what the guard's drop runs replaces the private key.
     #[test]
     fn master_key_guard_erases_the_private_key() {
@@ -1072,8 +1579,10 @@ mod tests {
             }
         );
         assert_eq!(
-            inspect_wallet_file(&testdata("compat/walletdat/bdb_legacy_head.dat")).unwrap(),
-            WalletFileKind::WalletDatBdb { encrypted: None }
+            inspect_wallet_file(&testdata("compat/walletdat/bdb_hd_encrypted.dat")).unwrap(),
+            WalletFileKind::WalletDatBdb {
+                encrypted: Some(true)
+            }
         );
         assert_eq!(
             inspect_wallet_file(&testdata("compat/psbt/unsigned.b64")).unwrap(),
@@ -1087,6 +1596,24 @@ mod tests {
             inspect_wallet_file(&testdata("compat")),
             Err(EngineError::Compat(CompatFailure::FileUnreadable(_)))
         ));
+    }
+
+    /// A Berkeley DB file that does not parse is reported with its error,
+    /// as an import of it would be, not as a wallet.dat to import.
+    #[test]
+    fn inspecting_a_bdb_file_that_does_not_parse_returns_its_error() {
+        let dir = dw_testutil::private_tempdir();
+        let whole = std::fs::read(testdata("compat/walletdat/bdb_core24_hd_plain.dat")).unwrap();
+        let truncated = dir.path().join("truncated.dat");
+        std::fs::write(&truncated, &whole[..whole.len() / 2]).unwrap();
+        for path in [testdata("compat/walletdat/bdb_legacy_head.dat"), truncated] {
+            let got = inspect_wallet_file(&path);
+            assert!(
+                matches!(got, Err(EngineError::Compat(CompatFailure::Corrupt(_)))),
+                "{}: {got:?}",
+                path.display()
+            );
+        }
     }
 
     #[test]

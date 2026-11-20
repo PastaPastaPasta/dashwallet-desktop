@@ -694,6 +694,7 @@ struct Resolved {
     /// Funded by fully mixed CoinJoin coins (no change; signed by the
     /// engine, not key-wallet's builder, which would add change).
     coinjoin: bool,
+    fully_mixed_only: bool,
     /// A contact payment's pair (DP3-01): `recipients[0]` pays it.
     contact: Option<Pair>,
     /// The draft's `OP_RETURN` output with a value (MG-06 D1): the
@@ -1004,7 +1005,8 @@ impl TxDraft {
             self.session
                 .check_payment_lock(self.wallet_id, pair, None)?;
         }
-        let coinjoin = state.source == CoinSource::FullyMixedOnly || self.coinjoin_exempt;
+        let fully_mixed_only = state.source == CoinSource::FullyMixedOnly;
+        let coinjoin = fully_mixed_only || self.coinjoin_exempt;
         if coinjoin && !matches!(state.change, ChangeTarget::Auto) {
             return Err(EngineError::InvalidArgument(
                 "the CoinJoin source pays its change as fee; only the automatic change policy applies"
@@ -1056,6 +1058,7 @@ impl TxDraft {
             fee_rate: state.fee,
             height,
             coinjoin,
+            fully_mixed_only,
             contact: state.contact,
             data: state.data,
         };
@@ -1355,6 +1358,7 @@ impl TxDraft {
                 owner,
                 signed: Mutex::new(None),
                 mixed: Some(tx),
+                coinjoin_send: r.fully_mixed_only && r.data.is_none(),
                 phase: Mutex::new(Phase::Pending),
                 attempts: tokio::sync::Mutex::new(()),
                 lease: lease.map(|l| (l, artifact)),
@@ -1421,6 +1425,7 @@ impl TxDraft {
             owner,
             signed: Mutex::new(Some(Arc::new(signed))),
             mixed: None,
+            coinjoin_send: false,
             phase: Mutex::new(Phase::Pending),
             attempts: tokio::sync::Mutex::new(()),
             lease: lease.map(|l| (l, artifact)),
@@ -1463,6 +1468,7 @@ impl TxDraft {
             owner,
             signed: Mutex::new(None),
             mixed: Some(tx),
+            coinjoin_send: false,
             phase: Mutex::new(if maybe_out {
                 Phase::Unknown
             } else {
@@ -1856,13 +1862,36 @@ pub(crate) fn attempt_outcome(result: &Result<BroadcastOutcome, EngineError>) ->
     }
 }
 
+/// How a stored hand-off code reads (MG-10 §4.4 rule 3): `Refused` exactly
+/// for the codes of the errors [`attempt_outcome`] calls `NotSent`
+/// (dw-appdb `INHERITED_REFUSED_CODES`); anything else, the resend marker
+/// included, may have left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandoffOutcome {
+    Refused,
+    Unknown,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "read by the shared recovery read (MG-10 EP 4)")
+)]
+pub(crate) fn outcome_of_code(code: &str) -> HandoffOutcome {
+    if dw_appdb::INHERITED_REFUSED_CODES.contains(&code) {
+        HandoffOutcome::Refused
+    } else {
+        HandoffOutcome::Unknown
+    }
+}
+
 /// dash-spv's never-sent rejections: client not started, no connected peer.
-fn reason_means_no_peers(reason: &str) -> bool {
+pub(crate) fn reason_means_no_peers(reason: &str) -> bool {
     let r = reason.to_ascii_lowercase();
     r.contains("not started")
         || r.contains("not connected")
         || r.contains("notconnected")
         || r.contains("no peer")
+        || r.contains("no connected peer")
 }
 
 fn finalize_failure(e: PlatformWalletError) -> EngineError {
@@ -2042,6 +2071,8 @@ enum Phase {
     Released,
 }
 
+pub(crate) const COINJOIN_SEND_PREFIX: &str = "coinjoin.send.";
+
 /// A signed transaction with its inputs reserved. Only
 /// [`TxDraft::broadcast`] sends it; [`TxDraft::abandon`] or dropping it
 /// while pending releases the inputs.
@@ -2059,6 +2090,7 @@ pub struct PreparedTx {
     /// A CoinJoin-page payment (QT-051), signed by the engine: no
     /// key-wallet reservation, only the engine's pending spends.
     mixed: Option<Transaction>,
+    coinjoin_send: bool,
     phase: Mutex<Phase>,
     /// A contact payment's broadcasts, one at a time through the contact's
     /// settlement: a repeat waits for the attempt before it (DP3-01 D24).
@@ -2210,9 +2242,13 @@ impl NetworkSession {
             .map(|((a, l, _), mine)| (a.clone(), l.clone(), mine))
             .collect();
         let txid = prepared.summary.txid.clone();
+        let coinjoin_send = prepared.coinjoin_send;
         let id = wallet_id.to_string();
         self.appdb_op(move |db| {
             let now = now_secs();
+            if coinjoin_send {
+                db.set_setting(&id, &format!("{COINJOIN_SEND_PREFIX}{txid}"), Some("1"))?;
+            }
             if let Some(m) = &message {
                 db.set_tx_message(&id, &txid, Some(m), now)?;
             }
@@ -2334,6 +2370,21 @@ mod tests {
         assert!(FeeMode::PerKb(999).rate().is_err());
         assert_eq!(FeeMode::PerKb(1000).rate().unwrap(), FeeRate::new(1000));
         assert!(FeeMode::PerKb(MAX_FEE_PER_KB + 1).rate().is_err());
+    }
+
+    #[test]
+    fn the_libraries_no_peers_rejection_is_reported_as_no_peers() {
+        let library = "SPV broadcast not sent: no connected peers";
+        assert!(reason_means_no_peers(library));
+        let sent = broadcast_result(
+            Err(PlatformWalletError::TransactionBroadcast(library.into())),
+            true,
+        );
+        assert!(matches!(sent, Err(EngineError::Send(SendFailure::NoPeers))));
+        for old in ["not started", "NotConnected", "not connected", "no peers"] {
+            assert!(reason_means_no_peers(old), "{old}");
+        }
+        assert!(!reason_means_no_peers("bad-txns-inputs-missingorspent"));
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::platform::lease::table::LeaseState;
 fn started(f: &Fixture, script: &[IdentityAttempt]) -> (Arc<Fake>, i64) {
     let lib = f.fake();
     lib.w().identity_script = script.iter().copied().collect();
-    let grant = f.grant(COIN, 10 * COIN * 1000, Credential::None);
+    let grant = f.grant(COIN, 10 * COIN * 1000, f.credential());
     let draft = f
         .engine
         .block_on(registration::start(
@@ -40,7 +40,7 @@ fn identity_call(f: &Fixture, draft: i64) -> CallStepStatus {
 }
 
 fn regrant(f: &Fixture, lib: &Arc<Fake>, draft: i64) {
-    let grant = f.grant(COIN, 10 * COIN * 1000, Credential::None);
+    let grant = f.grant(COIN, 10 * COIN * 1000, f.credential());
     resume(f, lib, draft, Some(grant));
     f.settle(draft);
 }

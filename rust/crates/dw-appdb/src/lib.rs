@@ -21,7 +21,10 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
+use crate::conn::AppConn;
+
 mod avatar;
+mod conn;
 mod dashpay_journal;
 pub mod dispatch;
 #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
@@ -68,7 +71,10 @@ pub use registration::{
     RegistrationUpdate,
 };
 pub use rows::{SqlValue, TableRows};
-pub use shared_sessions::{SharedSessionRow, SharedSessionUpdate};
+pub use shared_sessions::{
+    AbandonOutcome, INHERITED_REFUSED_CODES, RESEND_IN_PROGRESS, SharedSessionRow,
+    SharedSessionUpdate,
+};
 pub use shared_standby::StandbyRow;
 
 mod embedded {
@@ -456,6 +462,18 @@ pub struct DpPaymentLockRow {
     pub inputs: String,
 }
 
+/// Settings and lock rows of one wallet as they were before
+/// [`AppDb::write_settings_and_locks`] replaced them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PriorRows {
+    wallet_id: String,
+    settings: Vec<(String, Option<String>)>,
+    locks: Vec<PriorLock>,
+}
+
+/// An outpoint and its lock row (reason, created, released), if it had one.
+type PriorLock = (String, u32, Option<(String, i64, Option<i64>)>);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockRow {
     pub txid: String,
@@ -475,7 +493,7 @@ impl LockRow {
 }
 
 pub struct AppDb {
-    conn: Mutex<Connection>,
+    conn: Mutex<AppConn>,
     /// A shared lock on the database's lock file for as long as this
     /// instance lives, a job still holding it after its session closed
     /// included: while it is held, no open forgets the removed wallets
@@ -533,7 +551,7 @@ impl AppDb {
         }
         // No URI and no symlink. The database file itself is never opened
         // here: closing a descriptor of it would drop SQLite's POSIX locks.
-        let conn = Connection::open_with_flags(
+        let conn = AppConn::open(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
@@ -581,17 +599,18 @@ impl AppDb {
 
     /// A private in-memory database (tests, fixture tooling).
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(AppConn::open_in_memory()?)
     }
 
-    fn init(mut conn: Connection) -> Result<Self> {
+    fn init(mut conn: AppConn) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         embedded::migrations::runner()
             .set_abort_divergent(true)
             .set_abort_missing(true)
-            .run(&mut conn)?;
+            .set_grouped(true)
+            .run(&mut *conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             _alive: None,
@@ -599,7 +618,7 @@ impl AppDb {
         })
     }
 
-    fn conn(&self) -> MutexGuard<'_, Connection> {
+    fn conn(&self) -> MutexGuard<'_, AppConn> {
         // A panic while holding the guard cannot leave SQLite half-written
         // (each statement or transaction is atomic), so a poisoned lock is
         // still a usable connection.
@@ -1097,6 +1116,106 @@ impl AppDb {
     /// Locks an outpoint by the user. Replaces a dust row (released or not).
     pub fn lock_manual(&self, wallet_id: &str, txid: &str, vout: u32, now: u64) -> Result<()> {
         Self::lock_manual_on(&self.conn(), wallet_id, txid, vout, now)
+    }
+
+    /// Sets `settings` in wallet scope `wallet_id` and a manual lock on each
+    /// of `locks`, all in one transaction, and returns what they replaced
+    /// for [`Self::restore_settings_and_locks`]. Where a key already has a
+    /// value, `merge(key, stored, new)` is what is stored, read and written
+    /// in the same transaction.
+    pub fn write_settings_and_locks(
+        &self,
+        wallet_id: &str,
+        settings: &[(&str, String)],
+        merge: &dyn Fn(&str, &str, &str) -> String,
+        locks: &[(String, u32)],
+        now: u64,
+    ) -> Result<PriorRows> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut prior = PriorRows {
+            wallet_id: wallet_id.to_owned(),
+            settings: Vec::with_capacity(settings.len()),
+            locks: Vec::with_capacity(locks.len()),
+        };
+        for (key, value) in settings {
+            let old = tx
+                .query_row(
+                    "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                    params![wallet_id, key],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?;
+            let value = match &old {
+                Some(stored) => merge(key, stored, value),
+                None => value.clone(),
+            };
+            Self::put_setting(&tx, wallet_id, key, Some(&value))?;
+            prior.settings.push(((*key).to_owned(), old));
+        }
+        for (txid, vout) in locks {
+            let old = tx
+                .query_row(
+                    "SELECT reason, created_at, released_at FROM utxo_locks
+                     WHERE wallet_id = ?1 AND txid = ?2 AND vout = ?3",
+                    params![wallet_id, txid, vout],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            Self::lock_manual_on(&tx, wallet_id, txid, *vout, now)?;
+            prior.locks.push((txid.clone(), *vout, old));
+        }
+        tx.commit()?;
+        Ok(prior)
+    }
+
+    /// What `keys` hold in wallet scope `wallet_id` now, for
+    /// [`Self::restore_settings_and_locks`] to put back after later writes.
+    pub fn prior_settings(&self, wallet_id: &str, keys: &[String]) -> Result<PriorRows> {
+        let conn = self.conn();
+        let mut settings = Vec::with_capacity(keys.len());
+        for key in keys {
+            let old = conn
+                .query_row(
+                    "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                    params![wallet_id, key],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?;
+            settings.push((key.clone(), old));
+        }
+        Ok(PriorRows {
+            wallet_id: wallet_id.to_owned(),
+            settings,
+            locks: Vec::new(),
+        })
+    }
+
+    /// Puts back, in one transaction, what
+    /// [`Self::write_settings_and_locks`] replaced.
+    pub fn restore_settings_and_locks(&self, prior: &PriorRows) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let id = &prior.wallet_id;
+        // Newest first, so a key or outpoint written twice ends as it began.
+        for (key, value) in prior.settings.iter().rev() {
+            Self::put_setting(&tx, id, key, value.as_deref())?;
+        }
+        for (txid, vout, old) in prior.locks.iter().rev() {
+            match old {
+                Some((reason, created_at, released_at)) => tx.execute(
+                    "UPDATE utxo_locks SET reason = ?4, created_at = ?5, released_at = ?6
+                     WHERE wallet_id = ?1 AND txid = ?2 AND vout = ?3",
+                    params![id, txid, vout, reason, created_at, released_at],
+                )?,
+                None => tx.execute(
+                    "DELETE FROM utxo_locks WHERE wallet_id = ?1 AND txid = ?2 AND vout = ?3",
+                    params![id, txid, vout],
+                )?,
+            };
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// [`Self::lock_manual`] on `conn`, inside a caller's transaction.
@@ -1738,7 +1857,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(APP_DB_FILE);
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), 2026111002);
+        assert_eq!(db.schema_version().unwrap(), 2026111901);
         db.set_wallet_name(W, "Main", 1).unwrap();
         drop(db);
         let db = AppDb::open(&path).unwrap();
@@ -2166,6 +2285,73 @@ mod tests {
         );
     }
 
+    /// Written settings and locks are put back as they were: a changed
+    /// value, a released lock, a key and a lock that did not exist.
+    #[test]
+    fn written_settings_and_locks_are_put_back() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(W, "a", Some("old")).unwrap();
+        assert!(db.lock_dust(W, "d", 1, 4).unwrap());
+        assert!(db.unlock(W, "d", 1, 5).unwrap());
+        let before = (db.setting(W, "a").unwrap(), db.locks(W).unwrap());
+        let locks = [
+            ("d".to_owned(), 1),
+            ("n".to_owned(), 2),
+            ("n".to_owned(), 2),
+        ];
+        let settings = [("a", "new".to_owned()), ("b", "x".to_owned())];
+        let prior = db
+            .write_settings_and_locks(W, &settings, &|_, _, new| new.to_owned(), &locks, 9)
+            .unwrap();
+        assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("new"));
+        assert_eq!(db.setting(W, "b").unwrap().as_deref(), Some("x"));
+        assert_eq!(
+            db.locks(W)
+                .unwrap()
+                .iter()
+                .filter(|r| r.is_locked())
+                .count(),
+            2
+        );
+        db.restore_settings_and_locks(&prior).unwrap();
+        assert_eq!((db.setting(W, "a").unwrap(), db.locks(W).unwrap()), before);
+        assert_eq!(db.setting(W, "b").unwrap(), None);
+    }
+
+    /// A stored value is merged with the written one; putting back restores
+    /// the stored value, not the merged one.
+    #[test]
+    fn written_settings_merge_with_stored_ones_and_are_put_back() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(W, "a", Some("old")).unwrap();
+        let merge = |key: &str, stored: &str, new: &str| format!("{key}:{stored}+{new}");
+        let settings = [("a", "new".to_owned()), ("b", "x".to_owned())];
+        let prior = db
+            .write_settings_and_locks(W, &settings, &merge, &[], 9)
+            .unwrap();
+        assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("a:old+new"));
+        assert_eq!(db.setting(W, "b").unwrap().as_deref(), Some("x"));
+        db.restore_settings_and_locks(&prior).unwrap();
+        assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("old"));
+        assert_eq!(db.setting(W, "b").unwrap(), None);
+    }
+
+    /// Settings read before later writes are put back: a changed value and
+    /// a key that did not exist.
+    #[test]
+    fn prior_settings_are_put_back() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(W, "a", Some("old")).unwrap();
+        let prior = db
+            .prior_settings(W, &["a".to_owned(), "b".to_owned()])
+            .unwrap();
+        db.set_setting(W, "a", Some("new")).unwrap();
+        db.set_setting(W, "b", Some("x")).unwrap();
+        db.restore_settings_and_locks(&prior).unwrap();
+        assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("old"));
+        assert_eq!(db.setting(W, "b").unwrap(), None);
+    }
+
     #[test]
     fn manual_and_dust_lock_lifecycle() {
         let db = AppDb::open_in_memory().unwrap();
@@ -2229,7 +2415,7 @@ mod tests {
         let in_file_alone = |key: &str| {
             let copy = dir.path().join("copy.sqlite");
             std::fs::copy(&path, &copy).unwrap();
-            let conn = Connection::open(&copy).unwrap();
+            let conn = AppConn::open(&copy, OpenFlags::default()).unwrap();
             let found: Option<String> = conn
                 .query_row("SELECT value FROM settings_kv WHERE key = ?1", [key], |r| {
                     r.get(0)
@@ -2245,7 +2431,7 @@ mod tests {
         db.checkpoint_full().unwrap();
         assert!(in_file_alone("wal_only"));
 
-        let reader = Connection::open(&path).unwrap();
+        let reader = AppConn::open(&path, OpenFlags::default()).unwrap();
         reader
             .execute_batch("BEGIN; SELECT * FROM settings_kv;")
             .unwrap();

@@ -18,6 +18,11 @@ denominated: number, normalizedAnonymized: number,
  */
 fullyMixed: number,
 /**
+ * Denominated, not fully mixed, on the CoinJoin account: mixing here
+ * can still finish them. Restored BIP44 denominations are not included.
+ */
+mixableUnfinished: number,
+/**
  * Every free coin of the CoinJoin account, mixed or not: the move card
  * shows while it is above zero.
  */

@@ -37,7 +37,9 @@ pub struct WalletInfo {
     /// When the wallet was added on this device; `None` for wallets added
     /// before names were stored.
     pub created_at: Option<u64>,
-    /// `None` until the scan has processed the birth block (review M-3).
+    /// The balance known so far (`WalletBalances::catching_up` until the scan
+    /// has processed the birth block, review M-3); `None` before the wallet's
+    /// state was first read.
     pub balances: Option<WalletBalances>,
 }
 
@@ -75,7 +77,7 @@ impl NetworkSession {
             hd: true,
             birth_height: state.as_ref().map(|s| s.birth_height),
             created_at: name.and_then(|n| n.created_at),
-            balances: state.and_then(|s| s.balances()),
+            balances: state.map(|s| s.balances()),
         }
     }
 
@@ -112,16 +114,23 @@ impl NetworkSession {
     }
 
     /// Height up to which the wallet's compact filters have been scanned
-    /// (its filter checkpoint). In-memory read.
+    /// (its filter checkpoint). A replay the user cancelled before it was
+    /// back counts as scanned only to where it stopped, until a rewind
+    /// replays what it skipped. In-memory read.
     pub fn wallet_scan_height(&self, id: &WalletId) -> Option<u32> {
-        self.hub.wallet_state(id).map(|s| s.synced_height)
+        self.hub.wallet_state(id).map(|s| {
+            s.replay_cancelled
+                .map_or(s.synced_height, |reached| s.synced_height.min(reached))
+        })
     }
 
-    /// Balance buckets; `None` while not known yet. In-memory read.
+    /// Balance buckets known so far (`WalletBalances::catching_up` while the
+    /// scan has not reached the birth block); `None` before the wallet's
+    /// state was first read. In-memory read.
     pub fn balances(&self, id: &WalletId) -> Result<Option<WalletBalances>, EngineError> {
         let _op = self.try_enter()?;
         self.require_wallet(id)?;
-        Ok(self.hub.wallet_state(id).and_then(|s| s.balances()))
+        Ok(self.hub.wallet_state(id).map(|s| s.balances()))
     }
 
     /// Stores the name of a wallet in dw-appdb and the in-memory cache.
@@ -193,7 +202,8 @@ impl NetworkSession {
 
     /// Removes a wallet: unloads it, deletes its wallet-state rows, its app
     /// metadata and finally its vault records (IOS-109, QT-101). Needs a
-    /// `Wipe` grant, redeemed after the wallet is found.
+    /// `Wipe` grant, redeemed after the wallet is found. Refused (`Storage`)
+    /// before anything changes while the dispatch journal is unavailable.
     ///
     /// Deleting the vault records needs a full-scope data key: the vault's,
     /// or the grant's own key when it was issued with the passphrase on a
@@ -231,6 +241,7 @@ impl NetworkSession {
             let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             this.require_wallet(&id)?;
+            this.require_journal()?;
             if this.vault.has_wallet_secret(&id.0) {
                 this.vault
                     .check_grant(&grant_id, GrantKind::Wipe, Some(&id.0))?;

@@ -10,7 +10,7 @@ public enum WalletFileKind: Sendable, Hashable {
         network: DashNetwork?, hasMnemonic: Bool, hasHDSeed: Bool, hasXprv: Bool, looseKeyCount: Int,
         scriptCount: Int, labelCount: Int)
     case walletDatSQLite(encrypted: Bool, hasMnemonic: Bool)
-    /// Detected; importing it lands in M6 (`not_implemented`).
+    /// Legacy Berkeley DB `wallet.dat`. `encrypted` is nil when the file does not parse.
     case walletDatBerkeleyDB(encrypted: Bool?)
     case dwBackup(network: DashNetwork, walletCount: Int, createdAt: Date, formatVersion: UInt32)
     case psbt
@@ -77,7 +77,7 @@ public struct CoreExportReport: Sendable, Hashable {
 public protocol WalletFileImporting: AnyObject, Sendable {
     func inspect(_ file: URL) async throws(ServiceError) -> WalletFileKind
     func importDumpWallet(_ file: URL, options: WalletImportOptions) async throws(ServiceError) -> WalletImportReport
-    /// SQLite descriptor wallets; Berkeley DB is `not_implemented` until M6.
+    /// SQLite descriptor wallets and legacy Berkeley DB wallets.
     func importWalletDat(_ file: URL, passphrase: (any SecretBuffer)?, options: WalletImportOptions)
         async throws(ServiceError) -> WalletImportReport
     func importKeyMaterial(_ material: KeyMaterial, options: WalletImportOptions) async throws(ServiceError)

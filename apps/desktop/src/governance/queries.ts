@@ -10,6 +10,8 @@ import { errorMessage } from "../api/backend";
 import { keys, useBackend } from "../api/queries";
 import { useUi } from "../app/ui";
 import { showToast } from "../components/toast";
+import { bannedCount } from "../masternodes/model";
+import { useMasternodes } from "../masternodes/queries";
 import { badgeCount, GovText, governanceErrorText, SUPERBLOCK_CHOICES } from "./model";
 
 const g = keys.governanceAll;
@@ -79,7 +81,8 @@ export function useMyProposals(walletId: string, enabled = true) {
 export function useMasternodesItem(walletId: string | null): { shown: boolean; badge: number } {
   const setting = useUi((s) => s.prefs.showMasternodes);
   const mine = useMyProposals(walletId ?? "", walletId !== null && setting);
-  return { shown: setting, badge: setting ? badgeCount(mine.data) : 0 };
+  const nodes = useMasternodes(walletId ?? "", walletId !== null && setting);
+  return { shown: setting, badge: setting ? badgeCount(mine.data) + bannedCount(nodes.data) : 0 };
 }
 
 export function useUpcomingSuperblocks() {
