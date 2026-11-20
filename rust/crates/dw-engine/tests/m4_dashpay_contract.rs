@@ -109,6 +109,9 @@ const IMPLEMENTED: &[&str] = &[
     // DP3-02: contact payments.
     "DashPay.contact_activity",
     "DashPay.frequent_contacts",
+    // C5-0: contact payments from the Shielded or Platform balance.
+    "DashPay.contact_pay_quote",
+    "DashPay.contact_pay",
     // BL-153: the banner state.
     "DashPay.status",
     // DP4-01: profiles.
@@ -1403,7 +1406,7 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         // tested in `platform::lease`.
         assert_eq!(
             session
-                .begin_flow(wallet, FlowKind::AcceptAndPay, vec![s()])
+                .begin_flow(wallet, FlowKind::AcceptAndPay, vec![s()], None)
                 .await,
             Err(PlatformError::WalletNotFound)
         );
@@ -1530,6 +1533,21 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
         assert_eq!(
             dp.frequent_contacts(s(), 5).unwrap_err().code(),
             "invalid_argument"
+        );
+        // C5-0: an unknown wallet is refused before the source.
+        assert_eq!(
+            (dp.contact_pay_quote(s(), s(), 1, PaymentSource::Shielded))
+                .await
+                .unwrap_err()
+                .code(),
+            "wallet_not_found"
+        );
+        assert_eq!(
+            (dp.contact_pay(s(), s(), 1, PaymentSource::Platform, None, s(), false))
+                .await
+                .unwrap_err()
+                .code(),
+            "wallet_not_found"
         );
 
         // DP4-01's: the limits are the contract's, so they read no wallet;

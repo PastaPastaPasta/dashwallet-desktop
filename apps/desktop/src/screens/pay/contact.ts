@@ -302,6 +302,7 @@ export async function acceptUnderLease(
       a.walletId,
       "acceptAndPay",
       grants.map((g) => g.id),
+      null,
     );
   } catch (e) {
     for (const g of grants) void api.revokeGrant(g.id).catch(() => null);

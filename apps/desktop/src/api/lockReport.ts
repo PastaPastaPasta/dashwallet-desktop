@@ -64,6 +64,8 @@ export const FLOW_NAME: Record<FlowKindName, string> = {
   shieldedSpend: "Shielded payment",
   // 0.2 MIX-SHIELD: the CoinJoin account's drain to Shielded.
   shieldDrain: "Moving mixed coins to Shielded",
+  // 1.0 C5-0: a payment to a contact from the Shielded or Platform balance.
+  contactPayFromBalance: "Contact payment",
 };
 
 const PENDING: ReadonlySet<FlowOutcomeName> = new Set(["maybeSent", "willBeSent"]);
