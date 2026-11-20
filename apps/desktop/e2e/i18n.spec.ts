@@ -116,6 +116,26 @@ for (const theme of THEMES) {
     await expect(page.getByTestId("settings-language")).toHaveValue("");
   });
 
+  for (const dir of ["ltr", "rtl"] as const) {
+    test(`Settings tabs: the arrow keys move focus to the tab drawn on that side, ${dir}, ${theme}`, async ({ page }) => {
+      await openSettings(page, theme, dir === "rtl" ? "ar-XB" : null);
+      await expect(page.locator("html")).toHaveAttribute("dir", dir);
+      const general = page.getByTestId("settings-tabs-general");
+      const security = page.getByTestId("settings-tabs-security");
+      const [toSecurity, back] = dir === "rtl" ? ["ArrowLeft", "ArrowRight"] : ["ArrowRight", "ArrowLeft"];
+      const g = (await general.boundingBox())!;
+      const s = (await security.boundingBox())!;
+      expect(dir === "rtl" ? s.x < g.x : s.x > g.x, "Security is drawn on the side its key points to").toBe(true);
+      await general.focus();
+      await page.keyboard.press(toSecurity);
+      await expect(security).toBeFocused();
+      await expect(security).toHaveAttribute("aria-selected", "true");
+      await page.keyboard.press(back);
+      await expect(general).toBeFocused();
+      await expect(general).toHaveAttribute("aria-selected", "true");
+    });
+  }
+
   for (const [lang, kind] of [
     ["en-XA", "long"],
     ["ar-XB", "rtl"],

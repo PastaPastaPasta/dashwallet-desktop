@@ -60,7 +60,15 @@ export interface Tab<T extends string> {
   title: string;
 }
 
-/** Tabs (WAI-ARIA tabs pattern): arrow keys move between them. */
+/** The tab a key moves to from tab `i` of `n`, or `null`: ArrowRight goes to the tab drawn on the
+ * right, which in a right-to-left tablist is the previous one. */
+export function tabTarget(key: string, i: number, n: number, rtl: boolean): number | null {
+  const step = rtl ? -1 : 1;
+  const to: Record<string, number> = { ArrowRight: i + step, ArrowLeft: i - step, Home: 0, End: n - 1 };
+  return key in to ? (to[key] + n) % n : null;
+}
+
+/** Tabs (WAI-ARIA tabs pattern): arrow keys move between them, in the tablist's direction. */
 export function Tabs<T extends string>({
   label,
   tabs,
@@ -77,12 +85,12 @@ export function Tabs<T extends string>({
   children: ReactNode;
 }) {
   const id = useId();
-  const onKeyDown = (e: React.KeyboardEvent) => {
+  const onKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
     const i = tabs.findIndex((t) => t.id === current);
-    const to: Record<string, number> = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 };
-    if (!(e.key in to)) return;
+    const to = tabTarget(e.key, i, tabs.length, getComputedStyle(e.currentTarget).direction === "rtl");
+    if (to === null) return;
     e.preventDefault();
-    const next = tabs[(to[e.key] + tabs.length) % tabs.length].id;
+    const next = tabs[to].id;
     onSelect(next);
     document.getElementById(`${id}-${next}`)?.focus();
   };
