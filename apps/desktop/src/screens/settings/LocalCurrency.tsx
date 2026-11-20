@@ -11,7 +11,7 @@ import { keys, useBackend } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { DashButton } from "../../components/basics";
 import { ratesStatusText, useRateCurrencies, useRates } from "../../fiat/rates";
-import { currencyName, fiatText, isLocalCurrency, localeCurrency } from "../../format/fiat";
+import { currencyName, fiatText, firstCurrency, isLocalCurrency } from "../../format/fiat";
 import { useT } from "../../i18n";
 import { failureText } from "../../onboarding/model";
 import { Hint, Problem, SettingsCard } from "./parts";
@@ -65,9 +65,9 @@ export function LocalCurrencyCard() {
           checked={on}
           disabled={busy}
           aria-describedby={`${id}-disclosure`}
-          // On: the disclosure beside it was seen, and a first currency comes from the locale.
+          // On: the disclosure beside it was seen, and a first currency comes from the system region.
           onChange={(e) =>
-            void save(e.target.checked ? { enabled: true, disclosed: true, currency: view.settings.currency ?? localeCurrency(b.locale) } : { enabled: false })
+            void save(e.target.checked ? { enabled: true, disclosed: true, currency: firstCurrency(view.settings.currency, b.regionLocale) } : { enabled: false })
           }
         />
         {t("settings.currency.switchLabel")}

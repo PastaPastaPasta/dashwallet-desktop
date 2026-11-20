@@ -640,7 +640,10 @@ export interface Backend {
   onShellEvent(listener: (event: ShellEvent) => void): Promise<() => void>;
   /** The clock and locale the screens format dates with (fixed in fixtures). */
   now(): Date;
+  /** The display locale: names, prices and dates. */
   readonly locale: string | undefined;
+  /** The system's own locale, for its region (the first local currency); never the UI language. */
+  readonly regionLocale: string | undefined;
 }
 
 const KNOWN_CODES: ReadonlySet<string> = new Set(ERROR_CODES);

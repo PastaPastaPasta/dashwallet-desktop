@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { Backend } from "./backend";
 import { orAbsent, orUnavailable } from "./pending";
-import { formatLocale } from "../i18n";
+import { formatLocale, systemRegionLocale } from "../i18n";
 import * as cmd from "./generated/commands";
 import type { AppEvent, ShellEvent } from "./generated/commands";
 import type { AddressPurposeName } from "./generated/AddressPurposeName";
@@ -59,6 +59,10 @@ export class IpcBackend implements Backend {
   /** The base locale, or the language chosen in Settings when it is not the system's (MP-14). */
   get locale(): string | undefined {
     return formatLocale(this.baseLocale);
+  }
+
+  get regionLocale(): string | undefined {
+    return this.baseLocale ?? systemRegionLocale();
   }
 
   launchInfo = () => cmd.launchInfo();

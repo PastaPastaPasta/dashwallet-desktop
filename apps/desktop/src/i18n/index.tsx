@@ -49,6 +49,19 @@ export function systemLanguages(): readonly string[] {
   return navigator.languages?.length ? navigator.languages : navigator.language ? [navigator.language] : [];
 }
 
+/** The system's locale for its region: its first language that names a region, else the runtime's
+ * default locale. Independent of the language chosen in Settings. */
+export function systemRegionLocale(system: readonly string[] = systemLanguages()): string | undefined {
+  const withRegion = system.find((s) => {
+    try {
+      return new Intl.Locale(s).region !== undefined;
+    } catch {
+      return false;
+    }
+  });
+  return withRegion ?? new Intl.DateTimeFormat().resolvedOptions().locale;
+}
+
 /** The system's first language that a complete, real catalog exists for, by tag and then by
  * language alone ("pt-PT" takes "pt"); English otherwise. */
 export function systemLanguage(system: readonly string[], languages: Language[] = LANGUAGES): Language {
