@@ -85,7 +85,8 @@ const SNAPSHOT_SHA256: &[(&str, &str)] = &[
 
 /// Why `text` is not the snapshot committed for `tag`, if so.
 fn snapshot_digest_problem(tag: &str, text: &str) -> Option<String> {
-    let digest = hex::encode(sha256::Hash::hash(text.replace('\r', "").as_bytes()).to_byte_array());
+    let digest =
+        hex::encode(sha256::Hash::hash(text.replace("\r\n", "\n").as_bytes()).to_byte_array());
     match SNAPSHOT_SHA256.iter().find(|(t, _)| *t == tag) {
         Some((_, pinned)) if *pinned == digest => None,
         Some(_) => Some(format!(
@@ -867,8 +868,13 @@ fn a_snapshot_that_is_not_the_committed_one_is_refused() {
     let text = snapshot_text("v0.2.0");
     assert_eq!(snapshot_digest_problem("v0.2.0", &text), None);
     assert_eq!(
-        snapshot_digest_problem("v0.2.0", &text.replace('\n', "\r\n")),
+        snapshot_digest_problem("v0.2.0", &text.replace("\r\n", "\n").replace('\n', "\r\n")),
         None
+    );
+    let network = "\"network\":";
+    assert!(text.contains(network));
+    assert!(
+        snapshot_digest_problem("v0.2.0", &text.replacen(network, "\"network\"\r:", 1)).is_some()
     );
     let full = v0_2_0_snapshot();
     let payer = full["dashd"]["payment"]["walletId"]
