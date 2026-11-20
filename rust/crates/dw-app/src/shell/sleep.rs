@@ -7,9 +7,11 @@
 //! have no power notification here without a new dependency. macOS and
 //! Windows therefore end the window from the one-second backstop, which
 //! also runs on Linux: a tick whose monotonic clock jumps, or whose wall
-//! clock runs ahead of it, is treated as a sleep. The vault still applies
-//! the wall-clock check at the next grant, so a missed tick does not leave
-//! the window open.
+//! clock moves away from it either way, is treated as a sleep. Every other
+//! tick is a heartbeat to the vault, which refuses window grants once the
+//! last one is more than three seconds old, so a grant asked for after a
+//! wake and before the next tick is refused too. The vault also compares
+//! its own clocks at the next grant.
 
 use std::time::{Duration, Instant, SystemTime};
 
@@ -42,18 +44,41 @@ fn watch<R: Runtime>(app: AppHandle<R>) {
         let wall = SystemTime::now();
         let mono = Instant::now();
         std::thread::sleep(TICK);
-        let wall_dt = SystemTime::now().duration_since(wall).unwrap_or_default();
         let mono_dt = Instant::now().saturating_duration_since(mono);
-        if gap_is_sleep(wall_dt, mono_dt, TICK) {
+        if gap_is_sleep(wall, SystemTime::now(), mono_dt, TICK) {
             end_window(&app);
+        } else {
+            heartbeat(&app);
         }
     }
 }
 
-/// A measured tick was a sleep: the wall clock ran ahead of the monotonic
-/// clock, or the monotonic clock jumped further than the tick allows.
-pub(crate) fn gap_is_sleep(wall_dt: Duration, mono_dt: Duration, tick: Duration) -> bool {
-    wall_dt > mono_dt.saturating_add(GAP) || mono_dt > tick.saturating_add(GAP)
+/// A measured tick was a sleep: the wall clock moved away from the
+/// monotonic clock, forward or back, or the monotonic clock jumped further
+/// than the tick allows.
+pub(crate) fn gap_is_sleep(
+    wall_from: SystemTime,
+    wall_to: SystemTime,
+    mono_dt: Duration,
+    tick: Duration,
+) -> bool {
+    let apart = match wall_to.duration_since(wall_from) {
+        Ok(wall_dt) => wall_dt.abs_diff(mono_dt),
+        Err(back) => back.duration().saturating_add(mono_dt),
+    };
+    apart > GAP || mono_dt > tick.saturating_add(GAP)
+}
+
+/// Tells the active session's vault the watcher is running. Skipped while
+/// a network opens or closes; the vault then ends the window if that takes
+/// more than its heartbeat allowance.
+fn heartbeat<R: Runtime>(app: &AppHandle<R>) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    if let Some(session) = state.session_now() {
+        session.vault().signing_window_heartbeat();
+    }
 }
 
 fn end_window<R: Runtime>(app: &AppHandle<R>) {
@@ -105,21 +130,16 @@ mod tests {
     #[test]
     fn a_stall_or_a_wall_jump_is_a_sleep_and_a_normal_tick_is_not() {
         let tick = Duration::from_secs(1);
-        assert!(!gap_is_sleep(tick, tick, tick));
-        assert!(gap_is_sleep(
-            Duration::from_secs(10),
-            Duration::from_secs(1),
-            tick
-        ));
-        assert!(gap_is_sleep(
-            Duration::from_secs(8),
-            Duration::from_secs(8),
-            tick
-        ));
-        assert!(!gap_is_sleep(
-            Duration::from_millis(1500),
-            Duration::from_millis(1400),
-            tick
-        ));
+        let start = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let ms = Duration::from_millis;
+        let forward = |wall: u64, mono: u64| gap_is_sleep(start, start + ms(wall), ms(mono), tick);
+        let back = |wall: u64, mono: u64| gap_is_sleep(start, start - ms(wall), ms(mono), tick);
+        assert!(!forward(1_000, 1_000));
+        assert!(!forward(1_500, 1_400));
+        assert!(forward(10_000, 1_000));
+        assert!(forward(8_000, 8_000));
+        assert!(!back(500, 1_000));
+        assert!(back(3_000, 1_000));
+        assert!(back(3_600_000, 1_000));
     }
 }

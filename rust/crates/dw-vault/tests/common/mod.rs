@@ -22,8 +22,8 @@ pub const TTL: u64 = 120;
 pub const T0: u64 = 1_800_000_000;
 
 /// A clock the test moves by hand. `advance` moves the wall clock and the
-/// monotonic clock together. `rewind_wall` moves only the wall clock, so a
-/// test can show that a deadline does not follow it.
+/// monotonic clock together. `rewind_wall` and `forward_wall` move only the
+/// wall clock: a clock step, or a suspend the monotonic clock did not count.
 pub struct TestClock {
     wall: AtomicU64,
     origin: std::time::Instant,
@@ -39,6 +39,10 @@ impl TestClock {
     pub fn rewind_wall(&self, secs: u64) {
         self.wall.fetch_sub(secs, Ordering::SeqCst);
     }
+
+    pub fn forward_wall(&self, secs: u64) {
+        self.wall.fetch_add(secs, Ordering::SeqCst);
+    }
 }
 
 impl Clock for TestClock {
@@ -48,6 +52,10 @@ impl Clock for TestClock {
 
     fn monotonic(&self) -> std::time::Instant {
         self.origin + std::time::Duration::from_secs(self.mono.load(Ordering::SeqCst))
+    }
+
+    fn wall(&self) -> std::time::SystemTime {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(self.now_secs())
     }
 }
 

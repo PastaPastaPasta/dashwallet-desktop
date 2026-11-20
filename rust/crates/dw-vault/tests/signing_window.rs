@@ -633,3 +633,79 @@ async fn a_window_token_does_not_outlive_its_window() {
         );
     }
 }
+
+/// The wall clock moving away from the monotonic clock ends the window:
+/// a suspend the monotonic clock did not count (Linux, macOS), a step
+/// back, and a suspend followed by a larger step back. A step within two
+/// seconds, or a wait that both clocks count, does not.
+#[test]
+fn the_wall_clock_leaving_the_monotonic_clock_ends_the_window() {
+    type Step = fn(&TestClock);
+    let cases: [(&str, Step, bool); 5] = [
+        ("one second back", |c| c.rewind_wall(1), true),
+        ("ten seconds back", |c| c.rewind_wall(10), false),
+        ("a suspend", |c| c.forward_wall(600), false),
+        (
+            "a suspend, then further back",
+            |c| {
+                c.forward_wall(600);
+                c.rewind_wall(3_600);
+            },
+            false,
+        ),
+        ("a minute's wait in both clocks", |c| c.advance(60), true),
+    ];
+    for (what, step, open) in cases {
+        let fx = Fixture::new();
+        let v = unlocked_with_wallet(&fx);
+        let w = wallet(1);
+        let grant = v.authorize(spend(1), Some(&w), Credential::None).unwrap();
+        step(&fx.clock);
+        assert_eq!(v.signing_window_open(), open, "{what}");
+        assert_eq!(
+            v.check_grant(&grant.id, GrantKind::Spend, Some(&w)).is_ok(),
+            open,
+            "{what}"
+        );
+        assert_eq!(
+            v.authorize(spend(1), Some(&w), Credential::None).is_ok(),
+            open,
+            "{what}"
+        );
+    }
+}
+
+/// Once the host's watcher beats, a window whose last beat is more than
+/// three seconds old admits nothing: a suspend that the monotonic clock
+/// counted (Windows) looks like a long wait in both clocks, and only the
+/// missing beats show it. A vault with no watcher keeps the old rule.
+#[test]
+fn a_stale_heartbeat_ends_the_window() {
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    fx.clock.advance(60);
+    assert!(v.signing_window_open());
+
+    v.signing_window_heartbeat();
+    fx.clock.advance(3);
+    assert!(v.signing_window_open());
+    let grant = v.authorize(spend(1), Some(&w), Credential::None).unwrap();
+    v.signing_window_heartbeat();
+    fx.clock.advance(4);
+    assert_eq!(
+        v.authorize(spend(1), Some(&w), Credential::None).map(drop),
+        Err(VaultError::CredentialRequired)
+    );
+    assert_eq!(
+        v.check_grant(&grant.id, GrantKind::Spend, Some(&w)),
+        Err(VaultError::GrantInvalid)
+    );
+    assert!(!v.signing_window_open());
+
+    v.signing_window_heartbeat();
+    assert!(!v.signing_window_open());
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert!(v.signing_window_open());
+    v.authorize(spend(1), Some(&w), Credential::None).unwrap();
+}

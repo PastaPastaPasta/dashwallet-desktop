@@ -107,8 +107,8 @@ use crate::file::{
 use crate::mnemonic;
 use crate::signer::{SignerScope, VaultSigner};
 use crate::types::{
-    AuthGrant, Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, GrantToken,
-    KeyHold, KeySource, LockState, PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS,
+    AuthGrant, Clock, Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose,
+    GrantToken, KeyHold, KeySource, LockState, PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS,
     QuickUnlockPolicy, RevealedMnemonic, SIGNING_WINDOW_SECS, SeedDerivation, SignerLife,
     UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
 };
@@ -423,9 +423,11 @@ enum TokenBinding {
 }
 
 /// Wall and monotonic clocks at one look. A suspend that freezes the
-/// monotonic clock moves only the wall clock; one that advances both shows
-/// up as a long gap since the last look. Either ends the signing window.
-/// The OS suspend notification is the real signal; this is the backstop.
+/// monotonic clock moves only the wall clock, and a wall-clock step moves
+/// it either way; when the two disagree the signing window ends. A suspend
+/// that advances both is caught by the host's heartbeat
+/// ([`Vault::signing_window_heartbeat`]). The OS suspend notification is
+/// the real signal; these are the backstop.
 struct SleepSample {
     wall: SystemTime,
     mono: Instant,
@@ -434,6 +436,21 @@ struct SleepSample {
 /// How far a clock may jump before this process treats the gap as a sleep.
 /// Larger than a normal NTP step.
 const SLEEP_GAP: Duration = Duration::from_secs(2);
+
+/// How old the host's last heartbeat may be while the window admits
+/// grants: its one-second tick plus [`SLEEP_GAP`].
+const HEARTBEAT_MAX: Duration = Duration::from_secs(3);
+
+/// The wall and monotonic clocks moved apart by more than [`SLEEP_GAP`]
+/// since `from`, in either direction.
+fn clocks_disagree(from: &SleepSample, wall: SystemTime, mono: Instant) -> bool {
+    let mono_dt = mono.saturating_duration_since(from.mono);
+    let apart = match wall.duration_since(from.wall) {
+        Ok(wall_dt) => wall_dt.abs_diff(mono_dt),
+        Err(back) => back.duration().saturating_add(mono_dt),
+    };
+    apart > SLEEP_GAP
+}
 
 /// The payments the signing window may issue without a passphrase.
 fn window_purpose(purpose: &GrantPurpose) -> bool {
@@ -449,13 +466,14 @@ fn window_purpose(purpose: &GrantPurpose) -> bool {
 /// its charge, so two windows never add up past the limit. It admits
 /// grants only while the user's setting allows it for this vault
 /// ([`Vault::set_signing_window_allowed`]).
-fn arm_signing_window(inner: &mut Inner, now: Instant) {
+fn arm_signing_window(inner: &mut Inner, clock: &dyn Clock) {
     clear_signing_window(inner);
-    inner.signing_deadline = Some(now + Duration::from_secs(SIGNING_WINDOW_SECS));
+    let mono = clock.monotonic();
+    inner.signing_deadline = Some(mono + Duration::from_secs(SIGNING_WINDOW_SECS));
     inner.window_charged = 0;
     inner.sleep_sample = Some(SleepSample {
-        wall: SystemTime::now(),
-        mono: Instant::now(),
+        wall: clock.wall(),
+        mono,
     });
 }
 
@@ -476,20 +494,20 @@ fn clear_signing_window(inner: &mut Inner) {
     inner.grants.retain(|_, grant| !grant.from_window);
 }
 
-/// Ends the window when the machine slept since the last look. A backward
-/// wall-clock step does not extend it.
-fn observe_sleep(inner: &mut Inner) {
+/// Ends the window when the wall and monotonic clocks disagree since the
+/// last look (a suspend the monotonic clock did not count, or a wall-clock
+/// step either way), or when the host's heartbeat is older than
+/// [`HEARTBEAT_MAX`] (a suspend that both clocks counted, or a host that
+/// stopped watching). A long gap in both clocks with a fresh heartbeat is a
+/// normal wait between looks.
+fn observe_sleep(inner: &mut Inner, wall: SystemTime, mono: Instant) {
     let Some(sample) = &inner.sleep_sample else {
         return;
     };
-    let wall = SystemTime::now();
-    let mono = Instant::now();
-    let wall_dt = wall.duration_since(sample.wall).unwrap_or_default();
-    let mono_dt = mono.saturating_duration_since(sample.mono);
-    // Only a wall clock that ran ahead of the monotonic clock. A long gap
-    // in both is a normal wait between looks, not a sleep; the process
-    // watcher measures its own one-second tick for that case.
-    if wall_dt > mono_dt.saturating_add(SLEEP_GAP) {
+    let stale_beat = inner
+        .heartbeat
+        .is_some_and(|beat| mono.saturating_duration_since(beat) > HEARTBEAT_MAX);
+    if clocks_disagree(sample, wall, mono) || stale_beat {
         clear_signing_window(inner);
         return;
     }
@@ -498,8 +516,9 @@ fn observe_sleep(inner: &mut Inner) {
     }
 }
 
-fn settle_window(inner: &mut Inner, now: Instant) {
-    observe_sleep(inner);
+fn settle_window(inner: &mut Inner, clock: &dyn Clock) {
+    let now = clock.monotonic();
+    observe_sleep(inner, clock.wall(), now);
     if inner
         .signing_deadline
         .is_some_and(|deadline| now >= deadline)
@@ -571,6 +590,9 @@ struct Inner {
     /// Which signing window is open: changes whenever one ends or opens,
     /// so a token redeemed from an earlier one is refused.
     window_generation: u64,
+    /// The host's last [`Vault::signing_window_heartbeat`]; none until the
+    /// first.
+    heartbeat: Option<Instant>,
     #[cfg(test)]
     gate_log: Option<Vec<GateEvent>>,
 }
@@ -722,6 +744,7 @@ impl Vault {
                     sleep_sample: None,
                     window_vault: None,
                     window_generation: 0,
+                    heartbeat: None,
                     #[cfg(test)]
                     gate_log: None,
                 }),
@@ -1012,7 +1035,7 @@ impl Vault {
         inner.backup_kek = backup_kek;
         if encrypted {
             inner.last_passphrase_at = Some(now);
-            arm_signing_window(&mut inner, self.clock_mono());
+            arm_signing_window(&mut inner, self.clock());
         }
         let mut status = self.status_of(&inner);
         drop(inner);
@@ -1100,7 +1123,7 @@ impl Vault {
             inner.install_key(dek, scope, &ops);
             inner.backup_kek = Some(backup_kek);
             if scope == UnlockScope::Full {
-                arm_signing_window(&mut inner, self.clock_mono());
+                arm_signing_window(&mut inner, self.clock());
             } else {
                 clear_signing_window(&mut inner);
             }
@@ -1481,7 +1504,7 @@ impl Vault {
         inner: &mut Inner,
         purposes: &[GrantPurpose],
     ) -> Result<u64, VaultError> {
-        settle_window(inner, self.clock_mono());
+        settle_window(inner, self.clock());
         if !window_allowed(inner) || inner.signing_deadline.is_none() {
             return Err(VaultError::CredentialRequired);
         }
@@ -1507,6 +1530,10 @@ impl Vault {
 
     fn clock_mono(&self) -> Instant {
         self.shared.config.clock.monotonic()
+    }
+
+    fn clock(&self) -> &dyn Clock {
+        &*self.shared.config.clock
     }
 
     /// The `QuickUnlock` arm of [`Self::authorize_set`].
@@ -1626,9 +1653,9 @@ impl Vault {
         expected: GrantKind,
         wallet: Option<&WalletId>,
         now: u64,
-        mono: Instant,
+        clock: &dyn Clock,
     ) -> Result<&'a IssuedGrant, VaultError> {
-        settle_window(inner, mono);
+        settle_window(inner, clock);
         inner.drop_expired_grants(now);
         let issued = inner.grants.get(grant_id).ok_or(VaultError::GrantInvalid)?;
         if issued.grant.purpose.kind() != expected || issued.grant.wallet.as_ref() != wallet {
@@ -1662,15 +1689,8 @@ impl Vault {
         let now = self.now();
         let mut inner = self.inner();
         let state = Self::state_of(&inner);
-        let found = Self::valid_grant(
-            &mut inner,
-            grant_id,
-            expected,
-            wallet,
-            now,
-            self.clock_mono(),
-        )
-        .map(|issued| (issued.key.is_some(), issued.grant.purpose));
+        let found = Self::valid_grant(&mut inner, grant_id, expected, wallet, now, self.clock())
+            .map(|issued| (issued.key.is_some(), issued.grant.purpose));
         match found {
             Ok((true, purpose)) => return Ok(purpose),
             // A missing grant on a locked vault was most likely revoked by
@@ -1698,14 +1718,7 @@ impl Vault {
     ) -> Result<GrantToken, VaultError> {
         let now = self.now();
         let mut inner = self.inner();
-        Self::valid_grant(
-            &mut inner,
-            grant_id,
-            expected,
-            wallet,
-            now,
-            self.clock_mono(),
-        )?;
+        Self::valid_grant(&mut inner, grant_id, expected, wallet, now, self.clock())?;
         let issued = inner
             .grants
             .remove(grant_id)
@@ -1805,7 +1818,7 @@ impl Vault {
                 GrantKind::PlatformOp,
                 Some(wallet),
                 self.now(),
-                self.clock_mono(),
+                self.clock(),
             )
             .map(|issued| issued.key.as_ref().map(|key| Zeroizing::new(**key)))
         };
@@ -2714,7 +2727,7 @@ impl Vault {
             self.full_dek()?;
         }
         let mut inner = self.inner();
-        settle_window(&mut inner, self.clock_mono());
+        settle_window(&mut inner, self.clock());
         if self.token_binding(&inner, token) != TokenBinding::Current {
             return Err(VaultError::GrantInvalid);
         }
@@ -2925,7 +2938,7 @@ impl Vault {
     /// again. A fresh open is closed.
     pub fn signing_window_open(&self) -> bool {
         let mut inner = self.inner();
-        settle_window(&mut inner, self.clock_mono());
+        settle_window(&mut inner, self.clock());
         window_allowed(&inner) && inner.signing_deadline.is_some()
     }
 
@@ -2934,7 +2947,7 @@ impl Vault {
     /// not authenticate.
     pub fn signing_window_remaining(&self) -> Option<u64> {
         let mut inner = self.inner();
-        settle_window(&mut inner, self.clock_mono());
+        settle_window(&mut inner, self.clock());
         inner.signing_deadline?;
         if !window_allowed(&inner) {
             return None;
@@ -2947,6 +2960,18 @@ impl Vault {
     /// clears it too. Grants the window issued are dropped.
     pub fn end_signing_window(&self) {
         clear_signing_window(&mut self.inner());
+    }
+
+    /// The host's sleep watcher is running and saw no sleep in its last
+    /// tick. Once it has called this, a window whose last heartbeat is
+    /// older than three seconds ends at the next look, so a suspend that
+    /// the monotonic clock counted (as on Windows) ends the window even
+    /// before the watcher's next tick notices it.
+    pub fn signing_window_heartbeat(&self) {
+        let clock = self.clock();
+        let mut inner = self.inner();
+        settle_window(&mut inner, clock);
+        inner.heartbeat = Some(clock.monotonic());
     }
 
     /// The user's "ask for my passphrase for every payment" for the vault
@@ -2980,7 +3005,7 @@ impl Vault {
     /// window has ended included, is `GrantInvalid`.
     pub fn window_lease_allowed(&self, ids: &[String]) -> Result<(), VaultError> {
         let mut inner = self.inner();
-        settle_window(&mut inner, self.clock_mono());
+        settle_window(&mut inner, self.clock());
         let mut total = 0u64;
         let mut any = false;
         for id in ids {
@@ -3022,10 +3047,12 @@ impl Vault {
     pub(crate) fn test_backdate_sleep_sample(&self, ago: Duration) {
         let mut inner = self.inner();
         inner.sleep_sample = Some(SleepSample {
-            wall: SystemTime::now()
+            wall: self
+                .clock()
+                .wall()
                 .checked_sub(ago)
                 .unwrap_or(SystemTime::UNIX_EPOCH),
-            mono: Instant::now(),
+            mono: self.clock_mono(),
         });
     }
 
@@ -3226,7 +3253,7 @@ impl Vault {
             inner.install_key(Zeroizing::new(*dek), UnlockScope::Full, &ops);
             inner.backup_kek = Some(backup_kek);
             inner.last_passphrase_at = Some(now);
-            arm_signing_window(&mut inner, self.clock_mono());
+            arm_signing_window(&mut inner, self.clock());
         }
         drop(ops);
         let disk = file::read(&self.shared.dir)?
@@ -3468,6 +3495,36 @@ mod tests {
         v.test_backdate_sleep_sample(Duration::from_secs(30));
         assert!(!v.signing_window_open());
         assert_eq!(v.status().state, LockState::Unlocked);
+    }
+
+    /// The decision behind the sleep backstop, on given clock readings: a
+    /// wall clock that moved more than two seconds away from the monotonic
+    /// clock, forward or back, is a disagreement; a long wait in both is not.
+    #[test]
+    fn the_clocks_disagree_either_way_past_the_gap() {
+        let mono = Instant::now();
+        let wall = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let from = SleepSample { wall, mono };
+        let secs = Duration::from_secs;
+        let at = |wall_dt: i64, mono_dt: u64| {
+            let wall = if wall_dt >= 0 {
+                wall + secs(wall_dt as u64)
+            } else {
+                wall - secs(wall_dt.unsigned_abs())
+            };
+            clocks_disagree(&from, wall, mono + secs(mono_dt))
+        };
+        assert!(!at(0, 0));
+        assert!(!at(600, 600));
+        assert!(!at(2, 0));
+        assert!(!at(-2, 0));
+        assert!(!at(0, 2));
+        assert!(at(3, 0));
+        assert!(at(-3, 0));
+        assert!(at(0, 3));
+        assert!(at(600, 0));
+        assert!(at(-3000, 0));
+        assert!(at(-1, 2));
     }
 
     /// What each mix of an older and a newer build leaves in the file: a

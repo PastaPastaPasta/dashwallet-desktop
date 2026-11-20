@@ -751,6 +751,12 @@ impl AppState {
         }
     }
 
+    /// The active session, unless an open or a close holds it right now;
+    /// never waits.
+    pub(crate) fn session_now(&self) -> Option<Arc<NetworkSession>> {
+        self.session.try_lock().ok().and_then(|slot| slot.clone())
+    }
+
     /// The active session; `network_not_open` before `open_network`.
     pub async fn session(&self) -> Result<Arc<NetworkSession>, AppError> {
         Ok(self.session_and_epoch().await?.0)

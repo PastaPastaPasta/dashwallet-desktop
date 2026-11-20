@@ -61,6 +61,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: a sleep in this process ends the window; lock drops it with the key",
     ),
     (
+        "Vault::signing_window_heartbeat",
+        "internal: the process sleep watcher beats on every tick it saw no sleep in",
+    ),
+    (
         "Vault::set_signing_window_allowed",
         "internal: the engine tells the vault the stored \"ask every payment\" choice",
     ),

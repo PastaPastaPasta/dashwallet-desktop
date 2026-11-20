@@ -516,6 +516,12 @@ pub trait Clock: Send + Sync {
     fn monotonic(&self) -> Instant {
         Instant::now()
     }
+
+    /// The wall clock, compared with [`Self::monotonic`] to notice a sleep
+    /// or a clock step. The default is the system clock.
+    fn wall(&self) -> SystemTime {
+        SystemTime::now()
+    }
 }
 
 /// [`Clock`] backed by `SystemTime`.
