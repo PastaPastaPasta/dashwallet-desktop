@@ -78,6 +78,7 @@ fn vault_with_store(
     )
     .unwrap();
     v.create(passphrase).unwrap();
+    v.set_signing_window_allowed(&v.vault_id().unwrap(), true);
     let secret = WalletSecret {
         mnemonic: Zeroizing::new(b"unused".to_vec()),
         mnemonic_passphrase: Zeroizing::new(Vec::new()),

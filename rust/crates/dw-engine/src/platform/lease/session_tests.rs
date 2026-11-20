@@ -123,6 +123,9 @@ pub(crate) fn fixture(encrypted: bool) -> Fixture {
     engine
         .block_on(session.vault_op(move |v| v.create(pass)))
         .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
+        .unwrap();
     let wallet = engine
         .block_on(session.import_wallet(
             Zeroizing::new(PHRASE.as_bytes().to_vec()),
@@ -734,6 +737,166 @@ fn a_lease_does_not_compose_window_grants_past_the_spend_limit() {
         Credential::Passphrase(PASS),
     );
     f.lease(FlowKind::AcceptAndPay, &[platform, typed]).unwrap();
+}
+
+/// A lease made from signing-window grants keeps the signers it issued
+/// when the window ends: they run to the lease's own caps and lifetime.
+/// Window grants not yet in a lease end with the window.
+#[test]
+fn a_lease_from_window_grants_outlives_the_window() {
+    let f = fixture(true);
+    f.credit(1, COIN);
+    let spend = |max_duffs| f.grant(GrantPurpose::Spend { max_duffs }, Credential::None);
+    let grants = [f.platform_op(0, 1_000), spend(5_000_000)];
+    let unused = [f.platform_op(0, 1_000), spend(1_000_000)];
+    let l = f.lease(FlowKind::AcceptAndPay, &grants).unwrap();
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            v.end_signing_window();
+            Ok(())
+        }))
+        .unwrap();
+
+    let d = f.draft(1_000_000);
+    let p = f.engine.block_on(d.prepare(l.id_string())).unwrap();
+    assert!(spend_of(&l).unwrap() > 1_000_000);
+    f.engine.block_on(d.abandon(p)).unwrap();
+    assert_eq!(
+        f.lease(FlowKind::AcceptAndPay, &unused).unwrap_err(),
+        LeaseError::Invalid
+    );
+}
+
+/// A lease begun while other window grants are being issued: the window
+/// charges every grant as it is issued, so the lease's grants and those
+/// issued beside it add up to the sealed limit at most, in any order.
+#[test]
+fn a_lease_racing_window_grants_stays_within_the_limit() {
+    const LIMIT: u64 = 10_000_000;
+    const PART: u64 = 2_000_000;
+    let f = fixture(true);
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            let change = v.authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(PASS),
+            )?;
+            v.set_quick_unlock_spend_limit(&change.id, LIMIT).map(drop)
+        }))
+        .unwrap();
+    let grants = [
+        f.platform_op(0, PART * 1_000),
+        f.grant(GrantPurpose::Spend { max_duffs: PART }, Credential::None),
+    ];
+    let wallet = f.wallet;
+    let beside = std::thread::scope(|scope| {
+        let issuing = scope.spawn(|| {
+            (0..10)
+                .filter(|_| {
+                    f.session
+                        .vault()
+                        .authorize(
+                            GrantPurpose::Spend { max_duffs: PART },
+                            Some(&wallet.0),
+                            Credential::None,
+                        )
+                        .is_ok()
+                })
+                .count() as u64
+        });
+        f.lease(FlowKind::AcceptAndPay, &grants).unwrap();
+        issuing.join().unwrap()
+    });
+    assert_eq!(beside, (LIMIT - 2 * PART) / PART);
+    assert_eq!(f.session.vault().signing_window_remaining(), Some(0));
+}
+
+/// A recovery reads the replaced vault's payment choice under the same
+/// lock as a change of it: a change that holds the lock when the recovery
+/// starts lands first, and the new vault keeps it rather than the value
+/// stored before the change.
+#[test]
+fn a_recovery_keeps_a_payment_choice_changed_while_it_waited() {
+    let f = fixture(true);
+    let old = f.session.vault().vault_id().unwrap();
+    assert!(f.session.vault().signing_window_allowed());
+    let setter = f.engine.block_on(f.session.payment_auth.lock());
+    std::thread::scope(|scope| {
+        let recovery = scope.spawn(|| {
+            f.engine.block_on(f.session.recover_vault(
+                f.wallet.0,
+                Zeroizing::new(PHRASE.as_bytes().to_vec()),
+                Zeroizing::new(Vec::new()),
+                Zeroizing::new(b"another pass phrase".to_vec()),
+            ))
+        });
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(f.session.vault().vault_id(), Some(old.clone()));
+        f.engine
+            .block_on(f.session.write_payment_auth(&old, true))
+            .unwrap();
+        drop(setter);
+        recovery.join().unwrap().unwrap();
+    });
+    assert_ne!(f.session.vault().vault_id(), Some(old));
+    assert!(
+        f.engine
+            .block_on(f.session.payment_authentication())
+            .unwrap()
+            .on
+    );
+    assert!(!f.session.vault().signing_window_allowed());
+}
+
+/// "Ask every payment" is stored durably: once turning it on returns, a
+/// power loss does not bring back the window.
+#[test]
+fn an_acknowledged_ask_every_payment_survives_a_power_loss() {
+    use dw_appdb::durability_sim::{arm, power_loss};
+    let mut f = fixture(true);
+    let appdb = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let reopen = |f: &mut Fixture| {
+        f.engine
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+    };
+    reopen(&mut f);
+    arm(&appdb, false);
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    assert!(
+        !f.engine
+            .block_on(f.session.payment_authentication())
+            .unwrap()
+            .on
+    );
+    let grant = f
+        .session
+        .vault()
+        .authorize(
+            GrantPurpose::ChangeCredential,
+            None,
+            Credential::Passphrase(PASS),
+        )
+        .unwrap();
+    f.engine
+        .block_on(f.session.set_payment_authentication(true, grant.id))
+        .unwrap();
+    reopen(&mut f);
+    power_loss(&appdb);
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    assert!(
+        f.engine
+            .block_on(f.session.payment_authentication())
+            .unwrap()
+            .on
+    );
 }
 
 #[test]

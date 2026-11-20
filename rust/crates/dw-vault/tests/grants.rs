@@ -35,6 +35,7 @@ fn platform_op(max_duffs: u64, max_credits: u64) -> GrantPurpose {
 fn encrypted(fx: &Fixture) -> Vault {
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
     v
 }

@@ -352,6 +352,7 @@ fn session_with(
     engine
         .block_on(s.vault_op(move |v| v.create(encrypted.then_some(PASSPHRASE))))
         .unwrap();
+    engine.block_on(s.adopt_signing_window_default()).unwrap();
     (engine, s)
 }
 

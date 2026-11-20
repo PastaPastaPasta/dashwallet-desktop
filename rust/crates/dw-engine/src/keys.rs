@@ -170,6 +170,23 @@ fn payment_auth_key(vault_id: &[u8]) -> String {
     format!("{PAYMENT_AUTH_KEY}{}", hex::encode(vault_id))
 }
 
+/// Tells the vault the stored choice for the vault it holds, so it opens a
+/// signing window only when the user chose one. A row that cannot be read
+/// asks every time.
+pub(crate) fn sync_signing_window(vault: &Vault, db: &dw_appdb::AppDb) {
+    let Some(vault_id) = vault.vault_id() else {
+        return;
+    };
+    let allowed = match db.setting(dw_appdb::GLOBAL_SCOPE, &payment_auth_key(&vault_id)) {
+        Ok(stored) => !asks_every_payment(stored.as_deref()),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the payment setting; every payment asks");
+            false
+        }
+    };
+    vault.set_signing_window_allowed(&vault_id, allowed);
+}
+
 /// "Require authentication for every payment" as read for one vault
 /// ([`NetworkSession::payment_authentication`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -408,9 +425,10 @@ impl NetworkSession {
 
     /// "Ask for my passphrase for every payment". While on, a host issues a
     /// payment grant on an encrypted vault only against a credential (dw-app
-    /// enforces it at its IPC boundary). While off, the vault's signing
-    /// window may issue one, up to the sealed spend limit for the whole
-    /// window. Stored per vault id. A vault that has no row yet is on:
+    /// enforces it at its IPC boundary), and the vault opens no signing
+    /// window ([`Vault::set_signing_window_allowed`]). While off, the
+    /// vault's signing window may issue one, up to the sealed spend limit
+    /// for the whole window. Stored per vault id. A vault that has no row yet is on:
     /// that is how every vault from before the window stored the default.
     /// [`Self::adopt_signing_window_default`] writes the window for a vault
     /// this build creates.
@@ -448,12 +466,16 @@ impl NetworkSession {
     /// `VaultError::NotEncrypted` without one. A vault with no passphrase
     /// has no credential to ask for, and a value stored then would carry
     /// over, unasked, to the vault once encrypted. The value is stored for
-    /// the vault that redeemed the grant.
+    /// the vault that redeemed the grant. The vault learns it too: "on"
+    /// ends the open window and drops its grants before the row is written;
+    /// "off" lets the window of a passphrase unlock admit payments once the
+    /// row is written.
     pub async fn set_payment_authentication(
         self: &Arc<Self>,
         on: bool,
         grant_id: String,
     ) -> Result<(), EngineError> {
+        let _auth = self.payment_auth.lock().await;
         let vault_id = self
             .vault_op(move |v| {
                 if !v.status().encrypted {
@@ -461,40 +483,216 @@ impl NetworkSession {
                 }
                 let vault_id = v.vault_id().ok_or(VaultError::NoVault)?;
                 v.redeem_grant(&grant_id, GrantKind::ChangeCredential, None)?;
+                if on {
+                    v.set_signing_window_allowed(&vault_id, false);
+                }
                 Ok(vault_id)
             })
             .await?;
-        let this = Arc::clone(self);
-        self.on_runtime(async move {
-            let _op = this.enter().await?;
-            let key = payment_auth_key(&vault_id);
-            let value = if on { "strict" } else { "window" };
-            this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some(value)))
-                .await
-        })
-        .await
+        self.write_payment_auth(&vault_id, on).await?;
+        if !on {
+            self.vault().set_signing_window_allowed(&vault_id, true);
+        }
+        Ok(())
     }
 
-    /// Writes the signing-window default for a vault this build just
-    /// created, when the vault has no row yet. An older vault is left
-    /// absent, which still asks every time.
-    pub async fn adopt_signing_window_default(self: &Arc<Self>) -> Result<(), EngineError> {
-        let Some(vault_id) = self.vault().vault_id() else {
-            return Ok(());
-        };
-        let key = payment_auth_key(&vault_id);
+    /// Stores the choice for `vault_id`: `"strict"` when `asks`, else
+    /// `"window"`, durable against power loss when it returns. The caller
+    /// holds `payment_auth`.
+    pub(crate) async fn write_payment_auth(
+        self: &Arc<Self>,
+        vault_id: &[u8],
+        asks: bool,
+    ) -> Result<(), EngineError> {
+        #[cfg(all(debug_assertions, feature = "test-support"))]
+        if self
+            .payment_auth_fault
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(EngineError::Storage(
+                "injected payment setting fault".into(),
+            ));
+        }
         let this = Arc::clone(self);
+        let key = payment_auth_key(vault_id);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            let value = if asks { "strict" } else { "window" };
             this.appdb_op(move |db| {
-                if db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.is_none() {
-                    db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some("window"))?;
-                }
-                Ok(())
+                db.set_setting_durable(dw_appdb::GLOBAL_SCOPE, &key, Some(value))
             })
             .await
         })
         .await
+    }
+
+    /// Whether the row stored for `vault_id` asks every payment.
+    async fn stored_asks(self: &Arc<Self>, vault_id: &[u8]) -> Result<bool, EngineError> {
+        let this = Arc::clone(self);
+        let key = payment_auth_key(vault_id);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.appdb_op(move |db| {
+                Ok(asks_every_payment(
+                    db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.as_deref(),
+                ))
+            })
+            .await
+        })
+        .await
+    }
+
+    /// Stores `asks` for `vault_id` and tells the vault. A failed write
+    /// leaves the vault asking every time and returns the error. The caller
+    /// holds `payment_auth`.
+    async fn carry_payment_authentication(
+        self: &Arc<Self>,
+        vault_id: &[u8],
+        asks: bool,
+    ) -> Result<(), EngineError> {
+        self.vault().set_signing_window_allowed(vault_id, false);
+        self.write_payment_auth(vault_id, asks).await?;
+        if !asks {
+            self.vault().set_signing_window_allowed(vault_id, true);
+        }
+        Ok(())
+    }
+
+    /// Forgot passphrase (IOS-014): replaces the vault with
+    /// `Vault::recover_with_mnemonic`, revoking every lease, and gives the
+    /// new vault the choice stored for the vault it replaced. The read, the
+    /// replacement and the write are one operation under the
+    /// payment-setting lock, in a task of their own that holds it to the
+    /// end: a change of the setting lands before the read, or after the
+    /// write, where its grant (the old vault's) is refused. The choice is
+    /// written only for a new vault id; a failed write leaves the new vault
+    /// asking every payment. Returns the wallets left without secrets.
+    pub async fn recover_vault(
+        self: &Arc<Self>,
+        wallet: dw_vault::WalletId,
+        mnemonic: Zeroizing<Vec<u8>>,
+        bip39_passphrase: Zeroizing<Vec<u8>>,
+        new_passphrase: Zeroizing<Vec<u8>>,
+    ) -> Result<Vec<dw_vault::WalletId>, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _auth = this.payment_auth.lock().await;
+            let old_id = this.vault().vault_id();
+            let asks = match &old_id {
+                Some(id) => this.stored_asks(id).await.unwrap_or(true),
+                None => true,
+            };
+            let lost = this
+                .revoking_vault_op(crate::platform::RevokeCause::Lock, move |v| {
+                    v.recover_with_mnemonic(&wallet, &mnemonic, &bip39_passphrase, &new_passphrase)
+                })
+                .await?;
+            let new_id = this
+                .vault()
+                .vault_id()
+                .filter(|id| old_id.as_ref() != Some(id));
+            if let Some(new_id) = new_id
+                && let Err(e) = this.carry_payment_authentication(&new_id, asks).await
+            {
+                tracing::warn!(error = %e, "the recovered vault's payment setting was not stored; every payment asks");
+            }
+            Ok(lost)
+        })
+        .await
+    }
+
+    /// dash-qt "Encrypt Wallet" (QT-111) and the payment choice it leaves.
+    /// The vault and the grant are checked first: a refusal (`NoVault`,
+    /// `AlreadyEncrypted`, a grant that is not a live `ChangeCredential`
+    /// one) changes nothing. Then "ask every payment" is stored durably for
+    /// the vault, whatever an earlier build stored, so the encrypted vault
+    /// never starts on the window unasked, and the vault is encrypted,
+    /// revoking every lease and leaving it locked. One operation under the
+    /// payment-setting lock, in a task of its own.
+    pub async fn encrypt_vault(
+        self: &Arc<Self>,
+        new_passphrase: Zeroizing<Vec<u8>>,
+        grant_id: String,
+    ) -> Result<dw_vault::VaultStatus, EngineError> {
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _auth = this.payment_auth.lock().await;
+            let grant = grant_id.clone();
+            let vault_id = this
+                .vault_op(move |v| {
+                    let status = v.status();
+                    if status.state == LockState::NoVault {
+                        return Err(VaultError::NoVault);
+                    }
+                    if status.encrypted {
+                        return Err(VaultError::AlreadyEncrypted);
+                    }
+                    v.check_grant(&grant, GrantKind::ChangeCredential, None)?;
+                    v.vault_id().ok_or(VaultError::NoVault)
+                })
+                .await?;
+            this.vault().set_signing_window_allowed(&vault_id, false);
+            this.write_payment_auth(&vault_id, true).await?;
+            this.revoking_vault_op(crate::platform::RevokeCause::Lock, move |v| {
+                v.encrypt(&new_passphrase, &grant_id)
+            })
+            .await
+        })
+        .await
+    }
+
+    /// The next write of "ask every payment" fails. Tests use it to prove
+    /// that creating a vault does not fail on it.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub fn fail_next_payment_auth_write_for_test(&self) {
+        self.payment_auth_fault
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Writes the signing-window default for an encrypted vault this build
+    /// just created, when the vault has no row yet. An older vault is left
+    /// absent, which still asks every time, and so is a vault without a
+    /// passphrase: encrypting it later starts on "ask every payment". The
+    /// vault then follows the row as stored; a failure leaves it asking
+    /// every time.
+    pub async fn adopt_signing_window_default(self: &Arc<Self>) -> Result<(), EngineError> {
+        let _auth = self.payment_auth.lock().await;
+        let Some(vault_id) = self.vault().vault_id() else {
+            return Ok(());
+        };
+        if !self.vault().status().encrypted {
+            return Ok(());
+        }
+        #[cfg(all(debug_assertions, feature = "test-support"))]
+        let fault = self
+            .payment_auth_fault
+            .swap(false, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(all(debug_assertions, feature = "test-support")))]
+        let fault = false;
+        let key = payment_auth_key(&vault_id);
+        let this = Arc::clone(self);
+        let stored = if fault {
+            Err(EngineError::Storage(
+                "injected payment setting fault".into(),
+            ))
+        } else {
+            self.on_runtime(async move {
+                let _op = this.enter().await?;
+                this.appdb_op(move |db| {
+                    if db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.is_none() {
+                        db.set_setting_durable(dw_appdb::GLOBAL_SCOPE, &key, Some("window"))?;
+                    }
+                    db.setting(dw_appdb::GLOBAL_SCOPE, &key)
+                })
+                .await
+            })
+            .await
+        };
+        let allowed = stored
+            .as_ref()
+            .is_ok_and(|stored| !asks_every_payment(stored.as_deref()));
+        self.vault().set_signing_window_allowed(&vault_id, allowed);
+        stored.map(drop)
     }
 
     /// Replaces this vault's payment-auth row. `None` deletes it, which is
@@ -509,13 +707,16 @@ impl NetworkSession {
             return Ok(());
         };
         let key = payment_auth_key(&vault_id);
+        let allowed = !asks_every_payment(value.as_deref());
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, value.as_deref()))
                 .await
         })
-        .await
+        .await?;
+        self.vault().set_signing_window_allowed(&vault_id, allowed);
+        Ok(())
     }
 
     /// Dash Core's `walletpassphrase` timer (console, QT-145): locks the

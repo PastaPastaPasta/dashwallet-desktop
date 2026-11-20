@@ -13,27 +13,33 @@ owner updates the State column as items land and reports against it daily.
 - Released: `v0.1.0` (2026-11-03) and `v0.2.0` (published 2026-11-20 00:27 UTC, a day after its date). 0.2 is
   `main` as it was at the release pull request (#72, 11-19) plus four changes made on the `release/0.2` branch
   (#92, #100, #104 and the notes, #107), all merged back into `main`. Everything else that merged to `main` after #72 ships in 0.3.
-- State on 2026-11-20, 18:40 UTC: 20 issues are open on the "1.0 RC must-fix" milestone and 12 are closed.
+- State on 2026-11-20, 19:45 UTC: 21 issues are open on the "1.0 RC must-fix" milestone and 12 are closed.
   - Merged on 11-20: #84, #85 and #87 (#123), #108 (#115), #125 (#124), six of #81's `wallet.dat`
     follow-ups (#119), the interim lock for #105 (#132; the SQLite bump follows with the Platform re-pin due
     by 11-25), the balance on Home while the wallet syncs (#140; Activity already showed the payment), the
     localization foundation (#146), the upgrade-path check from v0.2.0, which closes part of #101 (#152),
     #141 (#158), #122 (#147), #113 (#154), the H-02 fuzz targets with their nightly job (#149), the three
-    DashPay suites (#129), and capture protection on Import keys (#164).
+    DashPay suites (#129), capture protection on Import keys (#164), and the engine part of
+    withdrawing an identity's credits to the user's own Platform address (#169, lane C).
   - In a pull request, ready: #88 (#134) and #78 (#160). #134 is held: the reviews of its head found that a
     load which cannot read all of its evidence can hide a coin, and that fix is being written. #160 merges
     when its checks are green and the findings on its head are answered.
   - In a pull request, a draft: #68, #69 and the engine part of #74 (#121; a second check of its review
     fixes found one more defect, a replay that cannot finish after a quit, which is being fixed), the
     renderer part of #133 (#137; it waits for the #148 fix), and the
-    pin of the rust-dashcore and platform forks for #45, #46, #47 and #120 (#159; eight Rust tests fail on
-    it, and the fork lane's fixes are due on it on 11-20).
+    pin of the rust-dashcore and platform forks for #45, #46, #47 and #120 (#159; the fork lane's fixes
+    were pushed on 11-20, and the check of them found three cases worse than the current pins, which are
+    being fixed in one more round). #159 ships in 0.3 only if, by 11-22 18:00 UTC, that check is closed,
+    the upgrade-path tests from v0.1.0 and v0.2.0 pass on it, and its start-up repair can be undone;
+    otherwise 0.3 keeps the current pins and #159 goes to the release candidate.
   - Being written, no pull request yet: #148, and case 14 of #170.
   - Waiting: #73 and #86, which go on top of #134.
   - Not started: the rest of #101, what is left of #81 apart from the watch-only rewind and the retry of
-    a stored range that fails at load, which are in #121, and the rest of the cases the three funds fixes leave, filed
-    on 11-20 as #170 (after #134), #172 (after #121) and #173 (after #160). Their plan is in "What the funds
-    fixes leave for the release candidate".
+    a stored range that fails at load, which are in #121, and the rest of the cases the funds fixes leave, filed
+    on 11-20 as #170 (after #134), #172 (after #121), #173 (after #160) and #177 (after #159). Their plan is
+    in "What the funds fixes leave for the release candidate". Also filed on 11-20: what is open on the
+    lock screen after #137 (#174, for 1.0.x), and the traffic of an idle wallet's shielded sync (#178, for
+    the release candidate, in lane C).
 - Remaining, checked against the code on 2026-11-18: about 200 agent-days without the partner integrations
   (about 225 with them). In 14 days that needs 14–16 lanes running the whole time, so review and CI
   turnaround, not writing code, sets the pace.
@@ -62,7 +68,7 @@ thread; "MG" is the masternode and governance thread, which is also the release 
 |---|---|---|---|---|
 | A Payments | PO | **P1** instant incoming payments: engine, then Home and Activity while syncing | 11-18 → 11-21 | engine merged (#42, 11-19); the balance on Home while syncing merged (#140, 11-20; Activity already showed the payment); announcing a payment that arrives during sync is in a pull request (#158, for #141) |
 | B Launch | PO | **P5** window in two seconds: the shell. Cut on 11-20: last-known balance at once | 11-18 → 11-21 | the blank-launch fix merged (#33, 11-19): the window no longer waits about 30 s on a desktop whose portal does not answer. The two-second target is not shown yet: #33 measured the splash at 0.9–1.4 s on a warm launch at lower load, and within 2 s in one of five launches on a heavily loaded machine; it is measured on each OS in the QA pass (H-08). Last-known balance at once was looked at on 11-20 and not built: the whole wait is under the start-up splash, before the app knows whether it is locked, so it would show a balance before the lock is known, against #133. Moved to 1.0.x on 11-20 (the project manager's decision) |
-| C Shielded and Platform | MG | finish item 0 (BL-617) → Platform ↔ Shielded → Max drains → top-up from Shielded or Platform → funding-source picker with shielded-funded identity → pay a contact from any balance → withdrawal to own Platform address → protocol advisory banner → vault scopes and viewing-key cache | 11-18 → 11-27 | item 0 part A3b (#26), Max on Send from Shielded (#63) and the Platform → Shielded quote (#110, 11-20) merged; #49 in review |
+| C Shielded and Platform | MG | finish item 0 (BL-617) → Platform ↔ Shielded → Max drains → top-up from Shielded or Platform → funding-source picker with shielded-funded identity → pay a contact from any balance → withdrawal to own Platform address → protocol advisory banner → vault scopes and viewing-key cache → idle shielded-sync traffic (#178, RC) | 11-18 → 11-27 | item 0 part A3b (#26), Max on Send from Shielded (#63) and the Platform → Shielded quote (#110, 11-20) merged; the engine part of withdrawal to own Platform address merged (#169, 11-20); #49 in review |
 | D Masternode screens | MG | MG-10 app bindings → My masternodes → registration wizard → ProUpRegTx → MG-10b shared masternodes → shown by default when the wallet holds keys → voting-key import → contested-vote polish | 11-19 → 11-25 | engine done; the first app bindings (#51) and the shared abandon spends (#94) merged; the api wrappers and fixture world in review (#55) |
 | E Masternode checks | MG | MG-08 `dwcli` owner commands and regtest suites → MG-12 signing-path review and BL-582..585 | 11-19 → 11-26 | the owner gov commands and nightly regtest suites merged (#35); of MG-12, voting keys refusing plain message signing merged (#44) |
 | F CoinJoin | PO | BL-614 → BL-615 → V24 promotion and demotion → mixed-send warnings. Cut: sleep prevention, start on login | 11-19 → 11-25 | BL-614 (#38) and BL-615 (#39) merged (11-19); their follow-up fixes (#68, #69 and the engine part of #74) are in #121, a draft: the fixes from its review are pushed, one more defect found by the second check is being fixed, and what it leaves is listed in #172; V24 promotion and demotion is on a branch, no pull request yet; the mixed-send warnings are not started (they follow #137) |
@@ -195,10 +201,13 @@ available), so skip them for an upgrade from 0.1.0:
 
 ## What the funds fixes leave for the release candidate
 
-Decided 2026-11-20 with the release owner. The fixes for #88 (#134), for #68, #69 and #74 (#121) and for #78
-(#160) each leave cases open. A case is RC must-fix when it can hide a payment or coins, release a spent
-coin, or let a payment through without the credential the user chose; the rest are for 1.0.x. The cases are
-listed in #170, #172 and #173.
+Decided 2026-11-20 with the release owner. The fixes for #88 (#134), for #68, #69 and #74 (#121), for #78
+(#160) and for #45, #46, #47 and #120 (#159) each leave cases open. A case is RC must-fix when it can hide a
+payment or coins, release a spent coin, or let a payment through without the credential the user chose; the
+rest are for 1.0.x. One exemption, added on 11-20: a case is not RC must-fix when it only understates what
+the wallet holds, never offers a coin that cannot be spent, and corrects itself at the next block with
+nothing for the user to do. Such a case is for 1.0.x and gets a line in the release notes. The cases are
+listed in #170, #172, #173 and #177.
 
 **#170, the balance after a restart.** Ten cases are RC must-fix. Nine are in the table. The tenth, case
 15 (a failed write of the claim repair can leave a freed coin stored as spent), was added on 11-20 from a
@@ -242,13 +251,14 @@ built. Every fix is in this repository, with no pin bump.
 | #173 item 6: lowering the spending limit leaves issued window grants usable | promised | 0.5 | not started; follows #160 |
 | #172: attaching keys with an earlier birth height rescans nothing | promised | 0.5 to 1 | not started |
 | #172: CoinJoin Recovery stores its start and its address range in two writes | promised | 0.5 to 1 | not started |
-| #172: older-build wallets not replayed on upgrade: a restored seed whose only CoinJoin use the narrow scan missed, and a seed created here but mixed elsewhere (two cases, one fix) | attempted; waits on a measurement of the replay it costs | 0.5 to 1.25 | not started |
-| #172: an older-build wallet loaded, then a quit before widening | attempted, after the row above | 0.5 to 1 after that fix; 1 to 1.5 without it | not started |
+| #172: older-build wallets not replayed on upgrade: a restored seed whose only CoinJoin use the narrow scan missed, and a seed created here but mixed elsewhere (two cases, one fix) | promised (moved from attempted on 11-20, when the replay was timed and chosen), with the first-start message below | 0.5 to 1.25, plus the first-start message (not sized) | not started; follows the header-anchor case |
+| #172: an older-build wallet loaded, then a quit before widening | promised, on top of the row above | 0.5 to 1 | not started |
 | #173 item 1: an older manifest and spending limit put back together | attempted; a known limit remains even with the fix (both files rolled back together) | 2 to 3 | not started |
 
 - The same dates apply as for #170: a promised case not merged by 11-28 18:00 UTC is decided in writing by
   the release owner; an attempted case not in review by 11-27 18:00 UTC goes into the notes.
-- Promised work is nine cases: #170's five (7 to 11 days) and four here (4 to 6.5 days). The release owner checks it against what has merged on 11-25 18:00 UTC; if the promised cases are not on track
+- Promised work in these two tables is twelve cases: #170's five (7 to 11 days) and seven here (5 to 8.75 days, plus the first-start message, which is not sized). #177 adds two more (2.5 days), below. The release
+  owner checks it against what has merged on 11-25 18:00 UTC; if the promised cases are not on track
   then, the release candidate moves or scope is cut in writing that day, not on 11-28.
 - **The header-anchor case is the most harmful of the eight, and it is ordinary use, not a fault.** A
   restore without a date scans from the first block, and dash-spv sets its header anchor once. Anyone who
@@ -262,17 +272,50 @@ built. Every fix is in this repository, with no pin bump.
   button to that Repair action, and resets nothing itself. It ships in 0.3 only if it is about 50 lines or
   fewer outside tests; otherwise the notes line stands alone.
 - **The older-build cases.** The two not-replayed cases have one workable fix: every wallet upgraded from
-  0.1 or 0.2 is replayed once from its birth, with sends held until it catches up. Whether that cost is
-  acceptable is the product owner's decision, due 11-23 after the replay is timed on mainnet. If the replay
-  is chosen, the first start after the upgrade says why sends are held and roughly for how long, and the
-  loaded-then-quit case is fixed on top of it. If it is not chosen, the two not-replayed cases become a
-  notes line (a rescan from the wallet's birth after upgrading), and the loaded-then-quit case is fixed on
-  its own at the larger size.
+  0.1 or 0.2 that has a CoinJoin account or a stored address lookahead is replayed once from its birth,
+  with sends held until it catches up. The product owner chose it on 11-20, after timing it on mainnet
+  with 0.2.0: on an install that already holds the chain's filters, a rescan from the earliest block the
+  app scans (height 200,000, dash-spv's first checkpoint) took about 17 seconds, on a heavily loaded
+  machine, and downloaded nothing again. That was an empty wallet. A wallet with history matches more
+  blocks and downloads those not already stored, and an install whose stored filters start above the
+  wallet's birth downloads the missing range at first-sync speed (8 min 45 s for the whole range with
+  nothing on disk). Neither was measured. The promise includes the message: the first start after the
+  upgrade says why sends are held and roughly for how long. The message is not in the size above: it
+  needs the app to tell an upgrade replay from a rescan the user started, and its copy has to be in the
+  catalog before the copy freeze on 11-27. The loaded-then-quit case is fixed on top of the replay. In
+  0.2.0, a rescan started from Tools ▸ Repair does not hold sends, and nothing outside that tab shows it
+  is running; #121 holds sends while its replays run. If #121 is not in 0.3, 0.3's notes tell the user to
+  wait for a rescan to finish before sending.
 - Lanes: the header-anchor case goes to the #121 lane when #121 merges (the same functions), and the
   older-build cases follow it there. #173's two go to the #160 lane when #160 merges, and the attach-keys
   and Recovery cases follow them there. The two #170 lanes are not used for these, so four lanes work on
   the RC must-fix cases once #121 and #160 have merged. If neither lane has freed by 11-24, the product
-  owner reports it that day and the release owner decides what they displace.
+  owner reports it that day and the release owner decides what they displace. In one lane the
+  header-anchor and older-build cases take 3.5 to 6.25 days from #121's merge, so with #121 merging on
+  11-23 the top of that range misses 11-28. The older-build cases do not depend on the header-anchor fix
+  (different functions). If #121 has not merged by 11-23 18:00 UTC, they start in a lane of their own
+  that day (the release owner's decision, 11-20); otherwise the 11-24 report says whether they need one.
+
+**#177, after the fork pin, and #178.** #177 lists what #159 leaves. Three of its items are RC
+must-fix, ruled by the release owner on 11-20:
+
+| Item of #177 | For the release candidate | Days | State |
+|---|---|---|---|
+| 2: an identity-funding or DashPay payment status written before the upgrade keeps a finality that was never verified | promised | 1.5 | not started; follows #159 |
+| 6: transactions dropped as dead are remembered only until a restart, so a peer can have one credited again | promised | 1 | not started |
+| 8: the start-up repair does not follow a dropped transaction to what spends its outputs, or to another wallet it pays | attempted, after items 2 and 6 | 1 | not started |
+
+- The same dates apply as above: 11-28 18:00 UTC for the promised items, 11-27 18:00 UTC for the attempted
+  one, and the release owner's check on 11-25 18:00 UTC.
+- The fork lane takes them, in that order, the day #159 merges. If #159 is not in 0.3 they are still for
+  the release candidate, on its pins.
+- Item 1 (a payment to a newly used address of an already-synced wallet can stay unseen until it is
+  mined) falls under the exemption above: 1.0.x, with a notes line. Item 4 (a spend the wallet cannot
+  judge still debits the coin) is 1.0.x as long as no funds account can hold a coin a peer could claim
+  that way; the fork lane's reading so far is that none can, and one more answer is due.
+
+#178 is not a funds fault: a wallet that is merely open downloads about 0.5 GB an hour from Platform for
+shielded-note sync. It is an RC item in lane C, sized and scheduled by the release owner.
 
 ## What only pasta can unblock
 
@@ -297,10 +340,11 @@ No longer on this list: partner credentials and Explore database access (lane L 
   warnings, CoinJoin V24, then the later items of lane C.
 - **Review and CI throughput.** A full CI run takes about 90 minutes on macOS. With 12 lanes active the runners
   queue; engine-only and renderer-only pull requests should not wait on each other's jobs.
-- **The RC must-fix list grew on 11-20.** The three funds fixes left 18 RC must-fix cases between them
-  (#170 ten, #172 six, #173 two). Nine of #170's add up to about 16.5 to 25 working days by its table (13.5
-  to 20.5 without case 6, which is expected in 1.0.x), and its case 15 is not sized; the other eight add up
-  to 7 to 11.75. The tables above say
-  which cases are promised, which are attempted and when each is decided.
+- **The RC must-fix list grew on 11-20.** It holds 22 cases: 21 left by the four funds fixes (#170 ten,
+  #172 six, #173 two, #177 three) and #178 in lane C. Nine of #170's add up to about 16.5 to 25 working
+  days by its table (13.5 to 20.5 without case 6, which is expected in 1.0.x), and its case 15 is not
+  sized; #172's and #173's eight add up to 7 to 11.75, with the first-start message not sized; #177's
+  three add up to 3.5; #178 is not sized. Fourteen cases are promised. The tables above say which cases
+  are promised, which are attempted and when each is decided.
 - **Security review on new code.** H-01 runs 11-27 → 11-29 over code written the same fortnight. Its
   findings land before the release candidate or the affected feature ships disabled.

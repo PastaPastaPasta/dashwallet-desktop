@@ -263,6 +263,12 @@ pub struct NetworkSession {
     /// session, replaced by a later one, cancelled by `lock_vault` and
     /// `close`. (generation, task).
     pub(crate) relock: Mutex<Option<(u64, tokio::task::AbortHandle)>>,
+    /// Orders every write of "ask for my passphrase for every payment"
+    /// with what the vault is told of it (`keys.rs`).
+    pub(crate) payment_auth: tokio::sync::Mutex<()>,
+    /// Other crates' tests: the next write of that setting fails.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub(crate) payment_auth_fault: std::sync::atomic::AtomicBool,
     /// The resends' acceptance waits (QT-091), aborted before SPV stops
     /// (`stop_spv_inner`, and `close` before the manager's shutdown): each
     /// holds platform-wallet's SPV client read lock for dash-spv's acceptance
@@ -350,6 +356,11 @@ impl NetworkSession {
         .await?
         .map_err(|e| EngineError::Storage(format!("app database: {e}")))?;
         let appdb = Arc::new(appdb);
+        {
+            let (vault, db) = (vault.clone(), Arc::clone(&appdb));
+            tokio::task::spawn_blocking(move || crate::keys::sync_signing_window(&vault, &db))
+                .await?;
+        }
         // Owner-only whatever the umask (DASHPAY §3.4). The cache is
         // disposable, so a stray file, a symlink that cannot be resolved, or
         // an entry owned by another user (or a symlink loop) named `avatars`
@@ -637,6 +648,9 @@ impl NetworkSession {
             unclean_previous,
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
+            payment_auth: tokio::sync::Mutex::new(()),
+            #[cfg(all(debug_assertions, feature = "test-support"))]
+            payment_auth_fault: Default::default(),
             resends: Mutex::new(Vec::new()),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
             masternodes,
