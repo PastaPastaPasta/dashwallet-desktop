@@ -11,6 +11,7 @@ import { installFixture } from "../fixture";
 import { FIXTURE_WALLET_ID } from "../fixture/scenarios";
 import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
+import { mnKeys } from "../masternodes/queries";
 import { keys } from "./queries";
 import { IpcBackend } from "./tauri";
 
@@ -35,6 +36,7 @@ describe("event bridge", () => {
       ["receive", "w"],
       ["coins", "w"],
       ["dashpay", "contacts", "w"],
+      ["masternodes", "payouts", "w"],
     ]);
     expect(invalidationsFor({ kind: "balances", network: "testnet", walletId: "w", balances: null })).toEqual([
       keys.balance("w"),
@@ -43,7 +45,7 @@ describe("event bridge", () => {
       dashpayKeys.quote("w"),
       keys.coinjoinStatus("w"),
     ]);
-    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll]);
+    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll]);
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);
     // DP1-09 D14: a registration lease's change re-reads the rows, whose `waiting` moved.
     const registration = { flow: "registration" } as never;
@@ -51,9 +53,9 @@ describe("event bridge", () => {
     // A settled funding step re-reads the stuck top-up list (DP1-10 D3).
     expect(invalidationsFor({ kind: "dispatchResolved", network: "testnet", settled: {} as never })).toEqual([keys.lockReconcile, profileKeys.stuckTopUpsAll]);
     expect(invalidationsFor({ kind: "sessionOpened", network: "testnet" })).toBe("all");
-    // Every governance read, whichever changed (BL-232); masternodes has no screen yet.
+    // Every governance read, whichever changed (BL-232); every engine-local masternode read (MG-10 §3.5).
     expect(invalidationsFor({ kind: "governance", network: "testnet" })).toEqual([keys.governanceAll]);
-    expect(invalidationsFor({ kind: "masternodes", network: "testnet" })).toEqual([]);
+    expect(invalidationsFor({ kind: "masternodes", network: "testnet" })).toEqual([["masternodes"]]);
     expect(invalidationsFor({ kind: "eventsOverflowed" })).toBe("all");
     expect(invalidationsFor({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } })).toEqual([]);
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "names" } })).toEqual([keys.dashpayAll, keys.historyAll("w"), keys.txDetailAll("w"), keys.receiveAll("w")]);
@@ -74,8 +76,8 @@ describe("event bridge", () => {
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "events", identity: "i" } })).toEqual([keys.dashpayAll]);
     // The bring-up's outcome, and sync, move the DashPay status (BL-153 D8, D9).
     expect(invalidationsFor({ kind: "platform", network: "testnet", walletId: "w", change: { domain: "startup" } })).toEqual([keys.dashpayAll]);
-    expect(invalidationsFor({ kind: "spvStateChanged", network: "testnet", running: true })).toEqual([keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, keys.protocolCompatibility]);
-    expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toEqual([keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll]);
+    expect(invalidationsFor({ kind: "spvStateChanged", network: "testnet", running: true })).toEqual([keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, keys.protocolCompatibility, mnKeys.listState]);
+    expect(invalidationsFor({ kind: "sync", network: "testnet", status: {} as never })).toEqual([keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState]);
     // U-06: the engine's CoinJoin signal, and a balance change (D7), re-read the wallet's mixing status.
     expect(invalidationsFor({ kind: "coinJoin", network: "testnet", walletId: "w" })).toEqual([keys.coinjoinStatus("w"), keys.coinsAll("w")]);
     const report = REPORT;
