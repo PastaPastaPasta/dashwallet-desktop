@@ -835,7 +835,9 @@ def test_the_issue_notifier_opens_updates_and_closes_one_issue(tmp_path):
     def notify(notice):
         calls.write_text("")
         subprocess.run(["bash", str(tmp_path / "dashpay-nightly-issue.sh"), notice], env=env, check=True, timeout=60)
-        return calls.read_text().splitlines()[1:]
+        listed, *rest = calls.read_text().splitlines()
+        assert listed == "owner/name issue list --state open --label nightly-failure --limit 100 --json number,title"
+        return rest
 
     red = f"dw.service: result=exit-code exit=1; artifacts: {tmp_path}/state/nightly/20261120"
     opened.write_text(json.dumps([{"number": 3, "title": "Nightly failure: GitHub Actions"}]))
@@ -844,6 +846,8 @@ def test_the_issue_notifier_opens_updates_and_closes_one_issue(tmp_path):
     assert create.endswith("result=exit-code exit=1; artifacts: nightly/20261120 on the nightly's host")
     assert str(tmp_path) not in create
     assert notify("dw.service: result=success") == []
+    (never_ran,) = notify("dw.service: result=success exit=0; artifacts: none yet")
+    assert never_ran.startswith("owner/name issue create ")
     opened.write_text(json.dumps([{"number": 3, "title": "Nightly failure: GitHub Actions"}, {"number": 7, "title": title}]))
     (comment,) = notify(red)
     assert comment.startswith("owner/name issue comment 7 --body ") and str(tmp_path) not in comment

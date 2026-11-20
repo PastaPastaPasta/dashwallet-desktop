@@ -211,7 +211,7 @@ network.
 | `DW_DP_SCAN` | colon-separated extra files for the end-of-run secret scan |
 | `DW_DP_STRICT` | `1`: the unknown-outcome case fails instead of skipping when the relay is not configured |
 | `DWCLI` | the dwcli binary |
-| `DW_DP_NOTIFY` | nightly only: the absolute path of the site's notifier, an executable that delivers its one argument (the failure message) |
+| `DW_DP_NOTIFY` | nightly only: the absolute path of the site's notifier, an executable that delivers its one argument (a failure message, or `<unit>: result=success` after a run that passed) |
 | `DW_DP_HOLD_UPSTREAM` | `ip:port` of a testnet peer serving BIP157 filters, for the unknown-outcome relay (DP3); that case is skipped when unset (fails with `DW_DP_STRICT=1`) |
 
 The harness assumes `DW_DP_STATE` is private to it: mode 0700, owned by the user that runs the

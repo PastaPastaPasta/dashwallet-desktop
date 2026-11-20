@@ -2,7 +2,7 @@
 # One open issue per nightly source, labelled nightly-failure, for as long as that nightly is red.
 #
 #   nightly-issue.sh failed <source> <message>   opens "Nightly failure: <source>", or comments on it
-#   nightly-issue.sh green <source> <message>    comments on the open one and closes it
+#   nightly-issue.sh green <source> <message>    comments on every open one and closes it
 #
 # Needs gh (signed in, or GH_TOKEN, with issue access), jq, and GH_REPO or a checkout to take
 # the repository from. The message is posted as it is: the issues are public, so it carries no
@@ -11,8 +11,9 @@ set -euo pipefail
 state=${1:?failed or green}
 title="Nightly failure: ${2:?source}"
 message=${3:?message}
-number=$(gh issue list --state open --label nightly-failure --limit 100 --json number,title |
-  jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // empty')
+numbers=$(gh issue list --state open --label nightly-failure --limit 100 --json number,title |
+  jq -r --arg t "$title" '.[] | select(.title == $t) | .number')
+number=$(head -n 1 <<<"$numbers")
 case $state in
   failed)
     if [[ -n $number ]]; then
@@ -22,7 +23,9 @@ case $state in
     fi
     ;;
   green)
-    [[ -z $number ]] || gh issue close "$number" --comment "$message"
+    for number in $numbers; do
+      gh issue close "$number" --comment "$message"
+    done
     ;;
   *)
     echo "nightly-issue: unknown state: $state" >&2

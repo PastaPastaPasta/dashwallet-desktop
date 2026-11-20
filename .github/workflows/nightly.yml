@@ -307,10 +307,9 @@ jobs:
             .fuzz/logs/
           if-no-files-found: warn
 
-  # Non-blocking: on the runner the demo fails 4 AT-SPI checks, two of them known-intermittent
-  # (docs/ci.md, "Known gaps"). A red X here does not turn the nightly red; the regtest job does.
   # While a scheduled run is red, one open issue labelled nightly-failure names its failed jobs;
-  # the next green run closes it. crossui-linux is non-blocking and is left out.
+  # the next green run closes it. A cancelled job counts as red: a job that runs out of time may
+  # be reported so. crossui-linux is non-blocking and is left out.
   report:
     name: Report the nightly's result
     if: ${{ always() && github.event_name == 'schedule' }}
@@ -337,15 +336,17 @@ jobs:
         run: |
           what="The nightly run of $(date -u +%F) at ${GITHUB_SHA:0:8}"
           case " $RESULTS " in
-            *" failure "*)
+            *" failure "* | *" cancelled "*)
               failed=$(gh api "repos/$GH_REPO/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" \
-                --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | "- [\(.name)](\(.html_url))"')
+                --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | select(.name | startswith("SwiftCrossUI") | not) | "- [\(.name)](\(.html_url))"') ||
+                failed="(the failed jobs could not be listed)"
               ci/github/nightly-issue.sh failed "GitHub Actions" "$what failed: $RUN_URL"$'\n\n'"$failed"
               ;;
-            *" cancelled "*) echo "a job was cancelled: the issue is left as it is" ;;
             *) ci/github/nightly-issue.sh green "GitHub Actions" "$what passed: $RUN_URL" ;;
           esac
 
+  # Non-blocking: on the runner the demo fails 4 AT-SPI checks, two of them known-intermittent
+  # (docs/ci.md, "Known gaps"). A red X here does not turn the nightly red; the regtest job does.
   crossui-linux:
     name: SwiftCrossUI AT-SPI demo (GUI, Linux; non-blocking)
     runs-on: ubuntu-24.04
