@@ -165,6 +165,11 @@ pub enum UpdatePhase {
     Found {
         version: String,
     },
+    /// Downloaded and verified, kept while Install waited for something
+    /// running that closing the engine would cut (Windows).
+    Downloaded {
+        version: String,
+    },
     /// `received` of `total` bytes (`null` while the size is unknown).
     Downloading {
         version: String,
@@ -205,6 +210,8 @@ pub(crate) trait Feed: Send + Sync {
     fn check(&self) -> BoxFuture<'_, Result<Option<Arc<dyn Release>>, AppError>>;
     /// Ends the app through its quit path and starts the installed one.
     fn restart(&self);
+    /// Shows the main window again, which the Windows installer's hook hid.
+    fn reveal(&self);
 }
 
 /// An offered release.
@@ -224,6 +231,7 @@ pub struct Updates {
     feed: Option<Box<dyn Feed>>,
     state: Mutex<Session>,
     engine_closed: AtomicBool,
+    closes_engine: bool,
     check_timeout: Duration,
     download_idle: Duration,
 }
@@ -231,6 +239,7 @@ pub struct Updates {
 struct Session {
     phase: UpdatePhase,
     release: Option<Arc<dyn Release>>,
+    downloaded: Option<Vec<u8>>,
 }
 
 impl Updates {
@@ -247,8 +256,10 @@ impl Updates {
             state: Mutex::new(Session {
                 phase: UpdatePhase::Idle,
                 release: None,
+                downloaded: None,
             }),
             engine_closed: AtomicBool::new(false),
+            closes_engine: cfg!(windows),
             check_timeout: CHECK_TIMEOUT,
             download_idle: DOWNLOAD_IDLE,
         }
@@ -261,6 +272,13 @@ impl Updates {
         self
     }
 
+    /// As on Windows, whatever the test runs on.
+    #[cfg(test)]
+    pub(crate) fn closing_engine(mut self) -> Self {
+        self.closes_engine = true;
+        self
+    }
+
     /// The app's: the plugin's feed when this copy can update itself.
     pub fn for_app<R: Runtime>(app: &AppHandle<R>) -> Self {
         let availability = availability(app.config(), &Install::current(app));
@@ -270,6 +288,12 @@ impl Updates {
             app.package_info().version.to_string(),
             Some(Box::new(feed)),
         )
+    }
+
+    /// Installing closes the engine (Windows: the installer replaces the
+    /// running app). Elsewhere only the restart does.
+    pub fn install_closes_engine(&self) -> bool {
+        self.closes_engine
     }
 
     /// The version the feed is compared with, which About shows too.
@@ -348,48 +372,77 @@ impl Updates {
     /// user saw. Refuses `app.update_state` when no update, or another
     /// version, is on offer, or one is already being installed. A download
     /// that receives nothing for 60 s fails with `app.update_download`.
-    pub async fn install(&self, version: &str) -> Result<UpdateStatus, AppError> {
-        self.feed()?;
-        let release = {
+    /// Where installing closes the engine, `before_close` runs once the
+    /// download is done: when it refuses, the download is kept and the
+    /// phase is `Downloaded`, so a later Install does not fetch it again.
+    pub async fn install<F>(
+        &self,
+        version: &str,
+        before_close: impl FnOnce() -> F,
+    ) -> Result<UpdateStatus, AppError>
+    where
+        F: Future<Output = Result<(), AppError>>,
+    {
+        let feed = self.feed()?;
+        let (release, kept) = {
             let mut s = self.session();
-            match (&s.phase, &s.release) {
-                (UpdatePhase::Found { version: v }, Some(release)) if v == version => {
-                    let release = Arc::clone(release);
-                    s.phase = UpdatePhase::Downloading {
-                        version: version.into(),
-                        received: 0,
-                        total: None,
-                    };
-                    release
-                }
-                (phase, _) => return Err(state_error(format!("install {version} in {phase:?}"))),
-            }
+            let ready = matches!(&s.phase, UpdatePhase::Downloaded { version: v } if v == version);
+            let offered = matches!(&s.phase, UpdatePhase::Found { version: v } if v == version);
+            let release = match &s.release {
+                Some(release) if ready || offered => Arc::clone(release),
+                _ => return Err(state_error(format!("install {version} in {:?}", s.phase))),
+            };
+            let kept = if ready { s.downloaded.take() } else { None };
+            s.phase = UpdatePhase::Downloading {
+                version: version.into(),
+                received: 0,
+                total: None,
+            };
+            (release, kept)
         };
         let failed = |e: AppError| {
             let version = version.into();
-            self.session().phase = if self.engine_closed.load(Ordering::SeqCst) {
+            let closed = self.engine_closed.load(Ordering::SeqCst);
+            self.session().phase = if closed {
                 UpdatePhase::RestartRequired { version }
             } else {
                 UpdatePhase::Found { version }
             };
+            if closed {
+                feed.reveal();
+            }
             e
         };
-        let last_data = Mutex::new(Instant::now());
-        let progress = |received: u64, total: Option<u64>| {
-            *last_data.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
-            self.session().phase = UpdatePhase::Downloading {
-                version: version.into(),
-                received,
-                total,
-            };
+        let bytes = match kept {
+            Some(bytes) => bytes,
+            None => {
+                let last_data = Mutex::new(Instant::now());
+                let progress = |received: u64, total: Option<u64>| {
+                    *last_data.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+                    self.session().phase = UpdatePhase::Downloading {
+                        version: version.into(),
+                        received,
+                        total,
+                    };
+                };
+                self.unless_idle(release.download(&progress), &last_data)
+                    .await
+                    .map_err(failed)?
+            }
         };
-        let bytes = self
-            .unless_idle(release.download(&progress), &last_data)
-            .await
-            .map_err(failed)?;
         self.session().phase = UpdatePhase::Installing {
             version: version.into(),
         };
+        if self.closes_engine
+            && let Err(e) = before_close().await
+        {
+            let mut s = self.session();
+            s.downloaded = Some(bytes);
+            s.phase = UpdatePhase::Downloaded {
+                version: version.into(),
+            };
+            return Err(e);
+        }
         let installing = Arc::clone(&release);
         tauri::async_runtime::spawn_blocking(move || installing.install(&bytes))
             .await
@@ -435,6 +488,23 @@ impl Updates {
     /// The Windows installer's hook ran: the engine is shut down.
     pub(crate) fn engine_closed(&self) {
         self.engine_closed.store(true, Ordering::SeqCst);
+    }
+
+    /// The page of the release on offer, on this repository: what "Release
+    /// notes" opens. `app.update_state` when no release is on offer.
+    pub fn notes_url(&self) -> Result<String, AppError> {
+        let phase = self.session().phase.clone();
+        let version = match &phase {
+            UpdatePhase::Found { version }
+            | UpdatePhase::Downloaded { version }
+            | UpdatePhase::Downloading { version, .. }
+            | UpdatePhase::Installing { version }
+            | UpdatePhase::Installed { version }
+            | UpdatePhase::RestartRequired { version } => Version::parse(version)
+                .map_err(|e| state_error(format!("release notes of {version}: {e}")))?,
+            _ => return Err(state_error(format!("release notes in {phase:?}"))),
+        };
+        Ok(format!("{}/tag/v{version}", crate::api::app::RELEASES_URL))
     }
 
     /// Restarts into the installed update, or after a failed Windows install
@@ -483,13 +553,10 @@ impl<R: Runtime> PluginFeed<R> {
 impl<R: Runtime> Feed for PluginFeed<R> {
     fn check(&self) -> BoxFuture<'_, Result<Option<Arc<dyn Release>>, AppError>> {
         Box::pin(async move {
-            let check = |e| plugin_error(e, AppCode::UpdateCheck);
-            let update = self
+            let updater = self
                 .updater()
-                .map_err(check)?
-                .check()
-                .await
-                .map_err(check)?;
+                .map_err(|e| plugin_error(e, AppCode::UpdateCheck))?;
+            let update = check_feed(&updater, FEED_URL).await?;
             Ok(update.map(|u| Arc::new(u) as Arc<dyn Release>))
         })
     }
@@ -497,12 +564,43 @@ impl<R: Runtime> Feed for PluginFeed<R> {
     fn restart(&self) {
         self.app.request_restart();
     }
+
+    fn reveal(&self) {
+        crate::shell::reveal(&self.app);
+    }
+}
+
+/// The plugin's check of the feed at `url`. The plugin reports every
+/// non-2xx answer as "no release", so `url` is asked once more for its
+/// status: a 404 (the Latest release has no `latest.json`) is
+/// `app.update_not_published`, anything else `app.update_check`.
+pub(crate) async fn check_feed(
+    updater: &tauri_plugin_updater::Updater,
+    url: &str,
+) -> Result<Option<tauri_plugin_updater::Update>, AppError> {
+    match updater.check().await {
+        Err(tauri_plugin_updater::Error::ReleaseNotFound) => {
+            let status = async {
+                reqwest::Client::builder()
+                    .timeout(CHECK_TIMEOUT)
+                    .build()?
+                    .get(url)
+                    .send()
+                    .await
+                    .map(|r| r.status())
+            };
+            let code = match status.await {
+                Ok(reqwest::StatusCode::NOT_FOUND) => AppCode::UpdateNotPublished,
+                _ => AppCode::UpdateCheck,
+            };
+            Err(AppError::app(code, "the feed answered without a release"))
+        }
+        found => found.map_err(|e| plugin_error(e, AppCode::UpdateCheck)),
+    }
 }
 
 /// A signature that does not verify, or names another version or none, is
-/// `app.update_signature`; a feed that answers without a release (a Latest
-/// release with no `latest.json`) is `app.update_not_published`; anything
-/// else is `otherwise`.
+/// `app.update_signature`; anything else is `otherwise`.
 pub(crate) fn plugin_error(e: tauri_plugin_updater::Error, otherwise: AppCode) -> AppError {
     use tauri_plugin_updater::Error as E;
     let code = match e {
@@ -511,7 +609,6 @@ pub(crate) fn plugin_error(e: tauri_plugin_updater::Error, otherwise: AppCode) -
         | E::SignatureUtf8(_)
         | E::SignedVersionMismatch { .. }
         | E::MissingSignedVersion => AppCode::UpdateSignature,
-        E::ReleaseNotFound => AppCode::UpdateNotPublished,
         _ => otherwise,
     };
     AppError::app(code, e.to_string())

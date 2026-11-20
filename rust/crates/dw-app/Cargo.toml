@@ -39,6 +39,9 @@ tauri-plugin-dialog = "2.8"
 # (src/updates.rs); no capability grants the plugin's own commands. Without
 # `zip`: the feed carries v2 artifacts only.
 tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
+# The status of a feed the plugin found no release in (404 or not): the
+# plugin's own reqwest, with its TLS and proxy features.
+reqwest = { version = "0.13", default-features = false }
 semver = "1"
 # Byte payloads (avatars, raw transactions) cross IPC as base64 strings.
 base64 = "0.22"

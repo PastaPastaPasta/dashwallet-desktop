@@ -304,6 +304,14 @@ fn offered(
 /// server's base URL) with its body, and anything else with 404: the real
 /// check and download, off the network.
 fn serve(files: impl FnOnce(&str) -> Vec<(&'static str, Vec<u8>)>) -> String {
+    serve_or("404 Not Found", files)
+}
+
+/// [`serve`], answering a path it does not have with `missing`.
+fn serve_or(
+    missing: &'static str,
+    files: impl FnOnce(&str) -> Vec<(&'static str, Vec<u8>)>,
+) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let files = files(&base);
@@ -321,7 +329,7 @@ fn serve(files: impl FnOnce(&str) -> Vec<(&'static str, Vec<u8>)>) -> String {
             let path = line.split_whitespace().nth(1).unwrap_or_default();
             let (status, body) = match files.iter().find(|(p, _)| *p == path) {
                 Some((_, body)) => ("200 OK", body.clone()),
-                None => ("404 Not Found", Vec::new()),
+                None => (missing, Vec::new()),
             };
             let _ = write!(
                 stream,
@@ -426,19 +434,29 @@ fn the_configured_check_binds_the_signed_version() {
     }
 }
 
-/// A Latest release without `latest.json` answers 404: not "unreachable".
+/// A Latest release without `latest.json` answers 404: "not published".
+/// Any other failed answer stays "could not reach the update server".
 #[test]
-fn a_feed_that_is_not_published_says_so() {
+fn only_a_feed_that_answers_404_is_not_published() {
     let app = app_with_updater(&TestKey::new().pubkey());
-    let e = check_and_download(&app, &serve(|_| vec![])).unwrap_err();
-    assert!(
-        matches!(e, tauri_plugin_updater::Error::ReleaseNotFound),
-        "{e}"
-    );
-    assert_eq!(
-        plugin_error(e, AppCode::UpdateCheck).code_str(),
-        "app.update_not_published"
-    );
+    for (missing, code) in [
+        ("404 Not Found", "app.update_not_published"),
+        ("500 Internal Server Error", "app.update_check"),
+        ("403 Forbidden", "app.update_check"),
+    ] {
+        let url = format!("{}/latest.json", serve_or(missing, |_| vec![]));
+        let updater = app
+            .updater_builder()
+            .endpoints(vec![url.parse().unwrap()])
+            .unwrap()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let Err(e) = run(check_feed(&updater, &url)) else {
+            panic!("{missing}: the feed offered an update");
+        };
+        assert_eq!(e.code_str(), code, "{missing}");
+    }
 }
 
 #[test]
@@ -460,6 +478,7 @@ struct FakeFeed {
     answers: Mutex<Vec<Answer>>,
     checks: AtomicUsize,
     restarts: Arc<AtomicUsize>,
+    reveals: AtomicUsize,
 }
 
 impl Feed for Arc<FakeFeed> {
@@ -476,6 +495,10 @@ impl Feed for Arc<FakeFeed> {
     fn restart(&self) {
         self.restarts.fetch_add(1, Ordering::SeqCst);
     }
+
+    fn reveal(&self) {
+        self.reveals.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 #[derive(Default)]
@@ -485,6 +508,9 @@ struct FakeRelease {
     stalls: bool,
     install: Option<AppCode>,
     installs: AtomicUsize,
+    downloads: AtomicUsize,
+    /// Runs once, while the download is under way.
+    during_download: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl FakeRelease {
@@ -503,7 +529,11 @@ impl Release for FakeRelease {
 
     fn download<'a>(&'a self, progress: Progress<'a>) -> BoxFuture<'a, Result<Vec<u8>, AppError>> {
         Box::pin(async move {
+            self.downloads.fetch_add(1, Ordering::SeqCst);
             progress(5, Some(10));
+            if let Some(during) = self.during_download.lock().unwrap().take() {
+                during();
+            }
             if self.stalls {
                 std::future::pending::<()>().await;
             }
@@ -539,6 +569,11 @@ fn session(answers: Vec<Answer>) -> (Updates, Arc<FakeFeed>) {
     (updates, fake)
 }
 
+/// Updates whose next check offers `release`.
+fn offering_later(release: &Arc<FakeRelease>) -> (Updates, Arc<FakeFeed>) {
+    session(vec![Ok(Some(release.clone() as Arc<dyn Release>))])
+}
+
 fn offering(release: &Arc<FakeRelease>) -> (Updates, Arc<FakeFeed>) {
     let (updates, fake) = session(vec![Ok(Some(release.clone() as Arc<dyn Release>))]);
     run(updates.check()).unwrap();
@@ -553,6 +588,11 @@ fn found(version: &str) -> UpdatePhase {
 
 fn run<T>(f: impl Future<Output = T>) -> T {
     tauri::async_runtime::block_on(f)
+}
+
+/// An Install whose engine-closing step finds nothing running.
+fn ready() -> std::future::Ready<Result<(), AppError>> {
+    std::future::ready(Ok(()))
 }
 
 #[test]
@@ -574,7 +614,7 @@ fn an_unavailable_copy_fetches_nothing() {
         assert_eq!(updates.status().phase, UpdatePhase::Idle);
         for e in [
             run(updates.check()).unwrap_err(),
-            run(updates.install("0.2.0")).unwrap_err(),
+            run(updates.install("0.2.0", ready)).unwrap_err(),
             updates.restart().unwrap_err(),
         ] {
             assert_eq!(e.code_str(), "app.updates_unavailable");
@@ -600,10 +640,18 @@ fn a_found_update_waits_for_install_then_for_restart() {
     );
     // Not the version the user saw.
     assert_eq!(
-        run(updates.install("0.3.0")).unwrap_err().code_str(),
+        run(updates.install("0.3.0", ready)).unwrap_err().code_str(),
         "app.update_state"
     );
-    let status = run(updates.install("0.2.0")).unwrap();
+    // Installing does not close the engine here (macOS, Linux): nothing is
+    // asked about what runs.
+    let asked = AtomicUsize::new(0);
+    let busy = || {
+        asked.fetch_add(1, Ordering::SeqCst);
+        std::future::ready(Err(AppError::app(AppCode::UpdateBusy, "Mixing")))
+    };
+    let status = run(updates.install("0.2.0", busy)).unwrap();
+    assert_eq!(asked.load(Ordering::SeqCst), 0);
     assert_eq!(
         status.phase,
         UpdatePhase::Installed {
@@ -616,7 +664,7 @@ fn a_found_update_waits_for_install_then_for_restart() {
     assert_eq!(run(updates.check()).unwrap().phase, status.phase);
     assert_eq!(fake.checks.load(Ordering::SeqCst), 1);
     assert_eq!(
-        run(updates.install("0.2.0")).unwrap_err().code_str(),
+        run(updates.install("0.2.0", ready)).unwrap_err().code_str(),
         "app.update_state"
     );
     updates.restart().unwrap();
@@ -631,7 +679,7 @@ fn a_refused_signature_installs_nothing_and_keeps_the_offer() {
         ..Default::default()
     });
     let (updates, _) = offering(&release);
-    let e = run(updates.install("0.2.0")).unwrap_err();
+    let e = run(updates.install("0.2.0", ready)).unwrap_err();
     assert_eq!(e.code_str(), "app.update_signature");
     assert_eq!(release.installs.load(Ordering::SeqCst), 0);
     assert_eq!(updates.status().phase, found("0.2.0"));
@@ -649,7 +697,7 @@ fn up_to_date_and_a_failed_check_keep_what_was_known() {
     let e = run(updates.check()).unwrap_err();
     assert_eq!(e.code_str(), "app.update_check");
     assert_eq!(updates.status().phase, found("0.2.0"));
-    run(updates.install("0.2.0")).unwrap();
+    run(updates.install("0.2.0", ready)).unwrap();
 }
 
 /// A stalled check or download gives up, and the next check and the
@@ -670,7 +718,7 @@ fn a_stalled_check_or_download_gives_up() {
         .unwrap()
         .push(Ok(Some(stalls.clone() as Arc<dyn Release>)));
     assert_eq!(run(updates.check()).unwrap().phase, found("0.2.0"));
-    let e = run(updates.install("0.2.0")).unwrap_err();
+    let e = run(updates.install("0.2.0", ready)).unwrap_err();
     assert_eq!(e.code_str(), "app.update_download");
     assert_eq!(updates.status().phase, found("0.2.0"));
     assert_eq!(stalls.installs.load(Ordering::SeqCst), 0);
@@ -687,26 +735,71 @@ fn a_failed_install_after_the_engine_closed_asks_for_a_restart() {
             ..Default::default()
         })
     };
-    let (updates, _) = offering(&fails());
-    let e = run(updates.install("0.2.0")).unwrap_err();
+    let (updates, fake) = offering(&fails());
+    let e = run(updates.install("0.2.0", ready)).unwrap_err();
     assert_eq!(e.code_str(), "app.update_install");
     assert_eq!(updates.status().phase, found("0.2.0"));
+    assert_eq!(fake.reveals.load(Ordering::SeqCst), 0);
 
     let (updates, fake) = offering(&fails());
     updates.engine_closed();
-    let e = run(updates.install("0.2.0")).unwrap_err();
+    let e = run(updates.install("0.2.0", ready)).unwrap_err();
     assert_eq!(e.code_str(), "app.update_install");
+    // The hook hid the window before the installer ran: it is shown again.
+    assert_eq!(fake.reveals.load(Ordering::SeqCst), 1);
     let restart = UpdatePhase::RestartRequired {
         version: "0.2.0".into(),
     };
     assert_eq!(updates.status().phase, restart);
     assert_eq!(run(updates.check()).unwrap().phase, restart);
     assert_eq!(
-        run(updates.install("0.2.0")).unwrap_err().code_str(),
+        run(updates.install("0.2.0", ready)).unwrap_err().code_str(),
         "app.update_state"
     );
     updates.restart().unwrap();
     assert_eq!(fake.restarts.load(Ordering::SeqCst), 1);
+}
+
+/// Where installing closes the engine, what runs is asked again once the
+/// download is done; when something does, the download is kept for the
+/// next Install.
+#[test]
+fn a_busy_engine_after_the_download_keeps_it_ready_to_install() {
+    let release = FakeRelease::new("0.2.0");
+    let (updates, fake) = session(vec![Ok(Some(release.clone() as Arc<dyn Release>))]);
+    let updates = updates.closing_engine();
+    run(updates.check()).unwrap();
+    let busy = || std::future::ready(Err(AppError::app(AppCode::UpdateBusy, "Payment")));
+    let e = run(updates.install("0.2.0", busy)).unwrap_err();
+    assert_eq!(e.code_str(), "app.update_busy");
+    let downloaded = UpdatePhase::Downloaded {
+        version: "0.2.0".into(),
+    };
+    assert_eq!(updates.status().phase, downloaded);
+    assert_eq!(release.installs.load(Ordering::SeqCst), 0);
+    assert_eq!(run(updates.check()).unwrap().phase, downloaded);
+    assert_eq!(fake.checks.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        run(updates.install("0.3.0", ready)).unwrap_err().code_str(),
+        "app.update_state"
+    );
+    run(updates.install("0.2.0", ready)).unwrap();
+    assert_eq!(release.downloads.load(Ordering::SeqCst), 1);
+    assert_eq!(release.installs.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn release_notes_open_the_page_of_the_release_on_offer() {
+    let (updates, _) = session(vec![]);
+    assert_eq!(
+        updates.notes_url().unwrap_err().code_str(),
+        "app.update_state"
+    );
+    let (updates, _) = offering(&FakeRelease::new("0.2.0"));
+    assert_eq!(
+        updates.notes_url().unwrap(),
+        "https://github.com/PastaPastaPasta/dashwallet-desktop/releases/tag/v0.2.0"
+    );
 }
 
 #[test]
@@ -731,20 +824,138 @@ fn the_app_without_the_updater_reports_it_over_ipc() {
     assert_eq!(launch["appVersion"], state.updates.current_version());
 }
 
-/// Install and Restart wait for a payment's broadcast to return.
-#[test]
-fn install_and_restart_wait_for_a_payment() {
+/// A demo app whose updates are `updates` (offering `release`), checked.
+fn demo_offering(updates: Updates) -> crate::ipc_tests::Demo {
+    crate::state::set_updates(updates);
     let demo = crate::ipc_tests::Demo::new();
     demo.open();
+    assert_eq!(
+        demo.ok("check_for_update", json!({}))["phase"]["kind"],
+        "found"
+    );
+    demo
+}
+
+fn busy_reason(e: &serde_json::Value) -> &serde_json::Value {
+    assert_eq!(e["code"], "app.update_busy", "{e}");
+    &e["data"]["reason"]
+}
+
+/// Where installing closes the engine (Windows), Install waits for a
+/// payment before it downloads anything; Restart always does.
+#[test]
+fn install_and_restart_wait_for_a_payment() {
+    let release = FakeRelease::new("0.2.0");
+    let (updates, fake) = offering_later(&release);
+    let demo = demo_offering(updates.closing_engine());
     let state = demo.handle().state::<crate::state::AppState>();
-    run(crate::api::updates::refuse_while_busy(&state)).unwrap();
+    let install = json!({ "version": "0.2.0" });
+
     let sending = state.broadcasting();
+    let e = demo.err("install_update", install.clone(), "app.update_busy");
+    assert_eq!(busy_reason(&e), "payment");
+    assert_eq!(release.downloads.load(Ordering::SeqCst), 0);
+    drop(sending);
+    let status = demo.ok("install_update", install);
+    assert_eq!(status["phase"]["kind"], "installed");
+
+    let sending = state.broadcasting();
+    let e = demo.err("restart_to_update", json!({}), "app.update_busy");
+    assert_eq!(busy_reason(&e), "payment");
+    assert_eq!(fake.restarts.load(Ordering::SeqCst), 0);
+    drop(sending);
+    demo.ok("restart_to_update", json!({}));
+    assert_eq!(fake.restarts.load(Ordering::SeqCst), 1);
+}
+
+/// A payment sent while the Windows installer downloads: the engine is not
+/// closed under it, and the download waits, ready to install.
+#[test]
+fn a_payment_started_during_the_download_keeps_the_engine_open() {
+    let release = FakeRelease::new("0.2.0");
+    let (updates, _) = offering_later(&release);
+    let demo = demo_offering(updates.closing_engine());
+    let state = demo.handle().state::<crate::state::AppState>();
+    let broadcasts = state.broadcasts();
+    let sent = Arc::clone(&broadcasts);
+    *release.during_download.lock().unwrap() = Some(Box::new(move || {
+        sent.fetch_add(1, Ordering::SeqCst);
+    }));
+    let install = json!({ "version": "0.2.0" });
+    let e = demo.err("install_update", install.clone(), "app.update_busy");
+    assert_eq!(busy_reason(&e), "payment");
+    assert_eq!(
+        demo.ok("update_status", json!({}))["phase"],
+        json!({ "kind": "downloaded", "version": "0.2.0" })
+    );
+    assert_eq!(release.installs.load(Ordering::SeqCst), 0);
+    broadcasts.fetch_sub(1, Ordering::SeqCst);
+    assert_eq!(
+        demo.ok("install_update", install)["phase"]["kind"],
+        "installed"
+    );
+    assert_eq!(release.downloads.load(Ordering::SeqCst), 1);
+}
+
+/// On macOS and Linux installing leaves the engine running: it does not
+/// wait for a payment or mixing, the restart does.
+#[test]
+fn where_install_keeps_the_engine_only_restart_waits() {
+    let release = FakeRelease::new("0.2.0");
+    let (updates, fake) = offering_later(&release);
+    let demo = demo_offering(updates);
+    let state = demo.handle().state::<crate::state::AppState>();
+    let sending = state.broadcasting();
+    let status = demo.ok("install_update", json!({ "version": "0.2.0" }));
+    assert_eq!(status["phase"]["kind"], "installed");
+    demo.err("restart_to_update", json!({}), "app.update_busy");
+    assert_eq!(fake.restarts.load(Ordering::SeqCst), 0);
+    drop(sending);
+}
+
+/// After a failed Windows install the engine is closed already: Restart
+/// does not wait for what ran before, which the hook already ended.
+#[test]
+fn a_restart_after_a_failed_windows_install_does_not_wait() {
+    let release = Arc::new(FakeRelease {
+        version: "0.2.0",
+        install: Some(AppCode::UpdateInstall),
+        ..Default::default()
+    });
+    let (updates, fake) = offering_later(&release);
+    let demo = demo_offering(updates.closing_engine());
+    let state = demo.handle().state::<crate::state::AppState>();
+    state.updates.engine_closed();
+    demo.err(
+        "install_update",
+        json!({ "version": "0.2.0" }),
+        "app.update_install",
+    );
+    assert_eq!(
+        demo.ok("update_status", json!({}))["phase"]["kind"],
+        "restartRequired"
+    );
+    assert_eq!(fake.reveals.load(Ordering::SeqCst), 1);
+    let _sending = state.broadcasting();
+    demo.ok("restart_to_update", json!({}));
+    assert_eq!(fake.restarts.load(Ordering::SeqCst), 1);
+}
+
+/// Install and Restart wait while the engine is still starting.
+#[test]
+fn install_and_restart_wait_for_the_engine_to_start() {
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    crate::state::set_engine_start_hook(move || {
+        let _ = wait.recv();
+    });
+    let demo = crate::ipc_tests::Demo::open_unready(|_, _| {});
+    let state = demo.handle().state::<crate::state::AppState>();
     let e = run(crate::api::updates::refuse_while_busy(&state)).unwrap_err();
-    assert_eq!(e.code_str(), "app.update_busy");
     assert_eq!(
         serde_json::to_value(&e).unwrap()["data"],
-        json!({ "kind": "updateBusy", "reason": "payment" })
+        json!({ "kind": "updateBusy", "reason": "startup" })
     );
-    drop(sending);
+    drop(go);
+    run(state.engine.wait()).expect("the engine starts");
     run(crate::api::updates::refuse_while_busy(&state)).unwrap();
 }

@@ -510,12 +510,17 @@ pub(crate) fn running(
     session: &NetworkSession,
     broadcasts: &AtomicUsize,
 ) -> Result<Option<UpdateBusyReason>, AppError> {
-    let busy = busy_of(
+    Ok(update_busy(
         &session.leases()?,
         session.mixing_busy(),
         broadcasts.load(Ordering::SeqCst) > 0,
-    );
-    Ok(busy.map(|b| {
+    ))
+}
+
+/// The one reason an update names: a payment first, then mixing, then a
+/// Platform flow.
+fn update_busy(leases: &[LeaseView], mixing: bool, broadcast: bool) -> Option<UpdateBusyReason> {
+    busy_of(leases, mixing, broadcast).map(|b| {
         if b.broadcast {
             UpdateBusyReason::Payment
         } else if b.mixing {
@@ -523,7 +528,7 @@ pub(crate) fn running(
         } else {
             UpdateBusyReason::Platform
         }
-    }))
+    })
 }
 
 fn busy_error(busy: Busy) -> AppError {
@@ -615,6 +620,22 @@ mod tests {
         let busy = busy_of(std::slice::from_ref(&ended), true, false).unwrap();
         assert!(!busy.stalled, "no flow, nothing to stall");
         assert!(busy_of(&[ended], false, false).is_none());
+    }
+
+    #[test]
+    fn an_update_names_a_payment_then_mixing_then_a_platform_flow() {
+        use dw_engine::platform::FlowKind;
+        let active = lease(FlowKind::TopUp, LeaseStateView::Active);
+        let waiting = lease(FlowKind::ContactRequest, LeaseStateView::NeedsGrant);
+        let ended = lease(FlowKind::TopUp, LeaseStateView::Ended);
+        let flows = [active.clone(), waiting.clone()];
+        assert_eq!(update_busy(&flows, true, true), Some(UpdateBusyReason::Payment));
+        assert_eq!(update_busy(&flows, true, false), Some(UpdateBusyReason::Mixing));
+        assert_eq!(update_busy(&[], true, false), Some(UpdateBusyReason::Mixing));
+        assert_eq!(update_busy(&[waiting], false, false), Some(UpdateBusyReason::Platform));
+        assert_eq!(update_busy(&[active], false, false), Some(UpdateBusyReason::Platform));
+        assert_eq!(update_busy(&[ended], false, false), None);
+        assert_eq!(update_busy(&[], false, false), None);
     }
 
     #[test]

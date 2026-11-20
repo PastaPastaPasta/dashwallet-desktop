@@ -2877,12 +2877,15 @@ export function checkForUpdate(): Promise<UpdateStatus> {
  * place; the app runs it after `restart_to_update`. On Windows the
  * installer replaces the running app: the engine is shut down as on
  * quit, the app closes and the installer opens the new one; if the
- * installer then fails, the phase is `restartRequired`.
- * `app.update_busy` while something runs that this would cut
- * ([`refuse_while_busy`]); `app.update_state` when `version` is not
- * the one on offer; `app.update_signature` when the signature does not
- * verify (nothing is installed); `app.update_download` or
- * `app.update_install` otherwise.
+ * installer then fails, the window is shown again and the phase is
+ * `restartRequired`. Where installing closes the engine (Windows),
+ * `app.update_busy` while something runs that it would cut
+ * ([`refuse_while_busy`]), at the click and again once the download is
+ * done: then the download is kept and the phase is `downloaded`.
+ * `app.update_state` when `version` is not the one on offer;
+ * `app.update_signature` when the signature does not verify (nothing
+ * is installed); `app.update_download` or `app.update_install`
+ * otherwise.
  */
 export function installUpdate(version: string): Promise<UpdateStatus> {
   return invoke<UpdateStatus>("install_update", { version });
@@ -2891,11 +2894,21 @@ export function installUpdate(version: string): Promise<UpdateStatus> {
 /**
  * Quits through the normal exit path (the engine flushes and closes)
  * and starts the installed update, or restarts after a failed Windows
- * install (`restartRequired`). `app.update_busy` as for
- * `install_update`; `app.update_state` before an update is installed.
+ * install (`restartRequired`, when the engine is already closed).
+ * `app.update_busy` otherwise while something runs that closing the
+ * engine would cut; `app.update_state` before an update is installed.
  */
 export function restartToUpdate(): Promise<null> {
   return invoke<null>("restart_to_update");
+}
+
+/**
+ * Opens the page of the release on offer (`…/releases/tag/vX.Y.Z` on
+ * this repository) in the system browser: its notes and downloads.
+ * `app.update_state` when no release is on offer.
+ */
+export function openUpdateNotes(): Promise<null> {
+  return invoke<null>("open_update_notes");
 }
 
 /**
@@ -3278,6 +3291,7 @@ export type CommandArgs = {
   check_for_update: {  };
   install_update: { version: string };
   restart_to_update: {  };
+  open_update_notes: {  };
   selftest_report: { report: JsonValue };
   selftest_checkpoint: { screen: string };
   selftest_unlock: {  };
@@ -3612,6 +3626,7 @@ export type CommandResults = {
   check_for_update: UpdateStatus;
   install_update: UpdateStatus;
   restart_to_update: null;
+  open_update_notes: null;
   selftest_report: null;
   selftest_checkpoint: null;
   selftest_unlock: LockStatus;
@@ -3948,6 +3963,7 @@ export const COMMANDS: Record<CommandName, string> = {
   check_for_update: "updates",
   install_update: "updates",
   restart_to_update: "updates",
+  open_update_notes: "updates",
   selftest_report: "selftest",
   selftest_checkpoint: "selftest",
   selftest_unlock: "selftest",

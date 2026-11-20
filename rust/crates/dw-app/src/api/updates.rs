@@ -53,23 +53,29 @@ commands! {
     /// place; the app runs it after `restart_to_update`. On Windows the
     /// installer replaces the running app: the engine is shut down as on
     /// quit, the app closes and the installer opens the new one; if the
-    /// installer then fails, the phase is `restartRequired`.
-    /// `app.update_busy` while something runs that this would cut
-    /// ([`refuse_while_busy`]); `app.update_state` when `version` is not
-    /// the one on offer; `app.update_signature` when the signature does not
-    /// verify (nothing is installed); `app.update_download` or
-    /// `app.update_install` otherwise.
+    /// installer then fails, the window is shown again and the phase is
+    /// `restartRequired`. Where installing closes the engine (Windows),
+    /// `app.update_busy` while something runs that it would cut
+    /// ([`refuse_while_busy`]), at the click and again once the download is
+    /// done: then the download is kept and the phase is `downloaded`.
+    /// `app.update_state` when `version` is not the one on offer;
+    /// `app.update_signature` when the signature does not verify (nothing
+    /// is installed); `app.update_download` or `app.update_install`
+    /// otherwise.
     #[facade()]
     fn install_update(state, version: String) -> UpdateStatus {
         state.updates.feed()?;
-        refuse_while_busy(&state).await?;
-        state.updates.install(&version).await
+        if state.updates.install_closes_engine() {
+            refuse_while_busy(&state).await?;
+        }
+        state.updates.install(&version, || refuse_while_busy(&state)).await
     }
 
     /// Quits through the normal exit path (the engine flushes and closes)
     /// and starts the installed update, or restarts after a failed Windows
-    /// install (`restartRequired`). `app.update_busy` as for
-    /// `install_update`; `app.update_state` before an update is installed.
+    /// install (`restartRequired`, when the engine is already closed).
+    /// `app.update_busy` otherwise while something runs that closing the
+    /// engine would cut; `app.update_state` before an update is installed.
     #[facade()]
     fn restart_to_update(state) -> () {
         state.updates.feed()?;
@@ -77,5 +83,14 @@ commands! {
             refuse_while_busy(&state).await?;
         }
         state.updates.restart()
+    }
+
+    /// Opens the page of the release on offer (`…/releases/tag/vX.Y.Z` on
+    /// this repository) in the system browser: its notes and downloads.
+    /// `app.update_state` when no release is on offer.
+    #[facade()]
+    fn open_update_notes(state) -> () {
+        state.updates.feed()?;
+        crate::api::app::open_official(state.updates.notes_url()?).await
     }
 }

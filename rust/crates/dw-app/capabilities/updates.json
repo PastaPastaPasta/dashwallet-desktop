@@ -10,6 +10,7 @@
     "allow-update-status",
     "allow-check-for-update",
     "allow-install-update",
-    "allow-restart-to-update"
+    "allow-restart-to-update",
+    "allow-open-update-notes"
   ]
 }

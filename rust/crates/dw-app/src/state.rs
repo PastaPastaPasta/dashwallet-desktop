@@ -42,6 +42,26 @@ pub(crate) fn take_engine_start_hook() -> Option<Box<dyn FnOnce() + Send>> {
     ENGINE_START_HOOK.with(|slot| slot.borrow_mut().take())
 }
 
+#[cfg(test)]
+thread_local! {
+    static UPDATES_SEAM: std::cell::RefCell<Option<crate::updates::Updates>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The next `AppState` on this thread uses `updates` instead of the app's.
+#[cfg(test)]
+pub(crate) fn set_updates(updates: crate::updates::Updates) {
+    UPDATES_SEAM.with(|slot| *slot.borrow_mut() = Some(updates));
+}
+
+fn updates_for<R: Runtime>(app: &AppHandle<R>) -> crate::updates::Updates {
+    #[cfg(test)]
+    if let Some(updates) = UPDATES_SEAM.with(|slot| slot.borrow_mut().take()) {
+        return updates;
+    }
+    crate::updates::Updates::for_app(app)
+}
+
 /// Builds the engine. Called again when a build failed and the user retries:
 /// the splash's Retry must not repeat a consumed closure.
 type EngineBuild = std::sync::Arc<dyn Fn() -> Result<Engine, AppError> + Send + Sync>;
@@ -606,7 +626,7 @@ impl AppState {
             memory,
             payment_policy: Arc::default(),
             shell,
-            updates: crate::updates::Updates::for_app(app),
+            updates: updates_for(app),
             _instance: instance,
             #[cfg(test)]
             payment_seam: StdMutex::default(),
