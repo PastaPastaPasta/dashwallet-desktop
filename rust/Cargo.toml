@@ -1,10 +1,11 @@
 # dashwallet-desktop Rust workspace.
 #
 # Members are a GLOB on purpose: workstreams add crates under crates/ and bin/
-# in parallel, and an explicit list would be a merge-conflict hot spot.
+# in parallel, and an explicit list would be a merge-conflict hot spot. `fuzz` is
+# dw-fuzz, the libFuzzer targets (docs/ci.md, "Fuzzing").
 [workspace]
 resolver = "2"
-members = ["crates/*", "bin/*"]
+members = ["crates/*", "bin/*", "fuzz"]
 
 [workspace.package]
 version = "0.2.0"

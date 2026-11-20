@@ -1162,6 +1162,10 @@ fn the_first_bring_up_restarts_after_removal_and_survives_bad_reads() {
 pub(super) const ABANDON_12: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
+/// A day: no grant a test issues expires before the test redeems it,
+/// however slow a loaded machine runs the test.
+const TEST_GRANT_TTL_SECS: u64 = 24 * 60 * 60;
+
 pub(super) fn engine(dir: &std::path::Path, sink: Arc<dyn EventSink>) -> Engine {
     Engine::new(
         EngineConfig {
@@ -1170,6 +1174,7 @@ pub(super) fn engine(dir: &std::path::Path, sink: Arc<dyn EventSink>) -> Engine 
             vault: dw_vault::VaultConfig {
                 kdf: dw_vault::KdfPolicy::Fixed(dw_vault::KdfParams::TEST),
                 os_store: Arc::new(dw_vault::MemoryOsStore::new()),
+                grant_ttl_secs: TEST_GRANT_TTL_SECS,
                 ..dw_vault::VaultConfig::default()
             },
         },
