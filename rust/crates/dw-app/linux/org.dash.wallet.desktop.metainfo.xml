@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.dash.wallet.desktop</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Dash Wallet</name>
+  <summary>The Dash wallet with DashPay</summary>
+  <developer id="org.dash">
+    <name>Dash Wallet Desktop contributors</name>
+  </developer>
+  <description>
+    <p>
+      A desktop Dash wallet: send and receive Dash, DashPay usernames, contacts and payments,
+      CoinJoin, and backup and restore. It syncs as an SPV client and keeps its keys on this computer.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.dash.wallet.desktop.desktop</launchable>
+  <url type="homepage">https://github.com/PastaPastaPasta/dashwallet-desktop</url>
+  <url type="bugtracker">https://github.com/PastaPastaPasta/dashwallet-desktop/issues</url>
+  <categories>
+    <category>Office</category>
+    <category>Finance</category>
+  </categories>
+  <provides>
+    <binary>dash-wallet</binary>
+  </provides>
+  <content_rating type="oars-1.1">
+    <content_attribute id="money-purchasing">intense</content_attribute>
+  </content_rating>
+  <releases>
+    <release version="0.1.0" date="2026-11-03"/>
+  </releases>
+</component>

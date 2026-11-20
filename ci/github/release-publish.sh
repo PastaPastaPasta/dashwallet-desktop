@@ -5,7 +5,7 @@
 #   ci/github/release-publish.sh prepare   check what this run publishes, stage and copy the files
 #   ci/github/release-publish.sh publish   create / update the releases
 #
-# Needs: DIST (the downloaded dist-* artifacts: four bundles, two SBOMs and their SHA256SUMS), VERSION
+# Needs: DIST (the downloaded dist-* artifacts: five bundles, two SBOMs and their SHA256SUMS), VERSION
 # (release-version.sh), GITHUB_EVENT_NAME, GITHUB_REF, GITHUB_SHA, GITHUB_REPOSITORY, GITHUB_RUN_NUMBER, GITHUB_RUN_ID,
 # GITHUB_SERVER_URL, GH_TOKEN, and a checkout whose `origin/main` is fetched with full history.
 # OUT defaults to $DIST/../publish. DRY_RUN=1 runs the reads (release and tag lookups) and prints each
@@ -123,7 +123,7 @@ git merge-base --is-ancestor "$sha" refs/remotes/origin/main || die "$sha is not
 short=${sha:0:7}
 files=("$DIST"/dash-wallet-"$VERSION"-*)
 [[ -e "${files[0]}" && -f "$DIST/SHA256SUMS" ]] || die "no bundles or no SHA256SUMS in $DIST"
-[[ ${#files[@]} -eq 6 ]] || die "expected 4 bundles and 2 SBOMs in $DIST, found ${#files[@]}"
+[[ ${#files[@]} -eq 7 ]] || die "expected 5 bundles and 2 SBOMs in $DIST, found ${#files[@]}"
 cont_prefix=DashWallet-continuous
 
 if [[ "$kind" == main ]]; then
@@ -162,7 +162,7 @@ publish)
     version=${tag#v}
     notes=(--notes "Release $tag. $verify_note")
     [[ ! -f "$here/../../docs/release/${version%%-*}-notes.md" ]] || notes=(--notes-file "$here/../../docs/release/${version%%-*}-notes.md")
-    if complete_release "$tag" 7; then
+    if complete_release "$tag" 8; then
       echo "release-publish: release $tag exists and is complete; leaving it as it is"
     else
       # The tag exists (it triggered this run). A version (vX.Y.Z) is a full release, and GitHub picks
@@ -288,7 +288,7 @@ publish)
   }
 
   # ---- the reads that decide what to write come first: a failed one stops the script before any write
-  if complete_release "$tag" 7; then imm=1; else imm=0; fi
+  if complete_release "$tag" 8; then imm=1; else imm=0; fi
   if probe gh api "repos/$repo/git/ref/tags/continuous" --jq .object.sha; then cur=$PROBE_OUT; else cur=; fi
   release_row continuous
   cont_id=
