@@ -120,6 +120,36 @@ pub(crate) fn outpoint(s: &str) -> Result<dashcore::OutPoint, String> {
     dashcore::OutPoint::from_str(s).map_err(|e| format!("bad outpoint {s:?}: {e}"))
 }
 
+/// The library's reason for a rejected or unknown broadcast.
+pub(crate) fn send_failure_reason(f: &SendFailure) -> Option<&str> {
+    match f {
+        SendFailure::BroadcastRejected { reason } | SendFailure::BroadcastUnknown { reason } => {
+            Some(reason)
+        }
+        _ => None,
+    }
+}
+
+/// Prints a failed `send`'s last line, `failed outcome=<not_sent|unknown>
+/// kind=<kind> txid=<txid|->[ reason=<rest of the line>]`, and returns the
+/// error's message. `not_sent`: nothing was prepared, or the prepared
+/// transaction could still be abandoned, so it never reached the network.
+fn failed(err: &EngineError, outcome: &str, txid: Option<&str>) -> String {
+    let (kind, reason) = match err {
+        EngineError::Send(f) => (crate::masternodes::send_code(f), send_failure_reason(f)),
+        other => (other.code().to_string(), None),
+    };
+    let kind = kind.trim_start_matches("send.");
+    let reason = reason.map_or(String::new(), |r| {
+        format!(" reason={}", r.replace('\n', " "))
+    });
+    println!(
+        "failed outcome={outcome} kind={kind} txid={}{reason}",
+        txid.unwrap_or("-")
+    );
+    err.to_string()
+}
+
 /// `address:duffs[:subtract]`.
 pub(crate) fn recipient(
     s: &str,
@@ -359,7 +389,9 @@ pub fn run(
             if let Some(addr) = change {
                 draft.set_change(ChangePolicy::Address(addr)).map_err(e)?;
             }
-            let estimate = engine.block_on(draft.estimate()).map_err(e)?;
+            let estimate = engine
+                .block_on(draft.estimate())
+                .map_err(|err| failed(&err, "not_sent", None))?;
             println!(
                 "estimate fee={} size={} inputs={} change={} sent={}",
                 estimate.fee,
@@ -391,7 +423,9 @@ pub fn run(
                     credential(session, passphrase),
                 )
                 .map_err(|e| e.to_string())?;
-            let prepared = engine.block_on(draft.prepare(grant.id)).map_err(e)?;
+            let prepared = engine
+                .block_on(draft.prepare(grant.id))
+                .map_err(|err| failed(&err, "not_sent", None))?;
             let s = prepared.summary();
             println!(
                 "prepared txid={} fee={} rate={} size={} sent={} external={} debit={}",
@@ -444,7 +478,7 @@ pub fn run(
                                         ..Default::default()
                                     },
                                 ))
-                                .map_err(e)?;
+                                .map_err(|err| failed(&err, "unknown", Some(&s.txid)))?;
                             let reserved = coins
                                 .iter()
                                 .filter(|c| inputs.contains(&c.outpoint) && c.reserved)
@@ -458,15 +492,24 @@ pub fn run(
                                 Err(EngineError::Send(SendFailure::PreparedTxSpent)) => {
                                     println!("abandon refused");
                                 }
-                                other => {
-                                    return Err(format!(
-                                        "abandon after an unknown outcome: {other:?}"
-                                    ));
+                                Err(err) => return Err(failed(&err, "unknown", Some(&s.txid))),
+                                Ok(()) => {
+                                    let err = EngineError::Send(SendFailure::BroadcastUnknown {
+                                        reason: "abandoned after an unknown outcome".into(),
+                                    });
+                                    return Err(failed(&err, "unknown", Some(&s.txid)));
                                 }
                             }
                             println!("rebroadcast {repeats}");
                         }
-                        Err(err) => return Err(err.to_string()),
+                        Err(err) => {
+                            let outcome = failed_broadcast_outcome(&err, || {
+                                engine
+                                    .block_on(draft.abandon(Arc::clone(&prepared)))
+                                    .is_ok()
+                            });
+                            return Err(failed(&err, outcome, Some(&s.txid)));
+                        }
                     }
                 }
             }
@@ -539,6 +582,33 @@ pub fn run(
     Ok(())
 }
 
+/// A failed broadcast's outcome word. `not_sent` only when the prepared
+/// transaction was abandoned. A panicked broadcast task may have sent the
+/// payment and the engine may not answer again, so it is never abandoned
+/// and stays `unknown`.
+fn failed_broadcast_outcome(err: &EngineError, abandon: impl FnOnce() -> bool) -> &'static str {
+    if !err.is_task_panic() && abandon() {
+        "not_sent"
+    } else {
+        "unknown"
+    }
+}
+
 fn hex_encode(bytes: Vec<u8>) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_broadcast_panic_stays_unknown_without_an_abandon() {
+        let panicked = EngineError::Internal(dw_engine::TASK_PANICKED.into());
+        let outcome = failed_broadcast_outcome(&panicked, || panic!("abandon after a panic"));
+        assert_eq!(outcome, "unknown");
+        let no_peers = EngineError::Send(SendFailure::NoPeers);
+        assert_eq!(failed_broadcast_outcome(&no_peers, || true), "not_sent");
+        assert_eq!(failed_broadcast_outcome(&no_peers, || false), "unknown");
+    }
 }

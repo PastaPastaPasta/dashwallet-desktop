@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 72
+Contract-Version: 73
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -71,7 +71,7 @@ type is `pub(crate)`.
 | `payments.rs` | DP3-01, DP3-02 | `payment_lock`, `resolve_payment_lock`, `contact_activity`, `frequent_contacts` |
 | `notifications.rs` | DP2-05 | `events`, `unread_count`, `mark_read` |
 | `profile.rs` | DP4-01, DP4-02 | `profile`, `profile_limits`, `prepare_avatar`, `avatar_upload_available`, `upload_avatar`, `update_profile`, `avatar`, `NetworkSession.load_contact_pictures`, `set_load_contact_pictures` |
-| `credits.rs` | DP1-06, DP6-02 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw`, `withdrawals` |
+| `credits.rs` | DP1-06, DP6-02, C6a-1 | `cost_table`, `top_up_quote`, `top_up`, `pending_top_ups`, `stuck_top_up_fundings`, `resume_top_up`, `resolve_top_up`, `withdraw_quote`, `withdraw`, `withdrawals`, `withdraw_to_platform_quote`, `withdraw_to_platform` |
 | `platform_addresses.rs` | release 0.1, lane E2; 0.2 X1b | `platform_addresses`, `platform_activity`, `sync_platform_addresses`, `move_to_core_quote`, `move_to_core`, `platform_receive_address`, `platform_send_quote`, `platform_send`, `platform_fund_quote`, `platform_fund`, `pending_platform_funds`, `resume_platform_fund` |
 | `invitations.rs` | DP5-01, DP5-02 | `NetworkSession.stash_link`, `stashed_links`, `take_stashed_link`, `forget_stashed_link`, `stash_invitation`, `invitation_status`, `pending_invitations`, `forget_invitation` |
 | `flows.rs` | E0-04 (design rev2 §16, §7) | `NetworkSession.begin_flow`, `end_flow`, `leases`, `grant_request`, `dispatch_status` |
@@ -523,8 +523,10 @@ bodies decided where the rows leave room:
 | `resume_top_up(txid, grant)` | async | Applies the tracked top-up lock `txid`, waiting up to 30 s for its proof first (a lock not yet sent is sent again; one a funding call of this process is still recording is `platform.will_be_sent`); the outcome as `top_up`'s. A lock the library holds applied (Platform's proved apply) reads `AlreadyApplied` with the balance read again; any other, a resolved or historical one too, is applied again (Platform takes a lock once). The grant is redeemed only for the apply, so `AlreadyApplied`, `ProofWaiting` and `platform.will_be_sent` keep it. The apply signs with the lock's one-time funding key, which only a grant with a funding budget unlocks: the grant needs `max_duffs` ≥ 1, none of which is spent. Tools ▸ Repair "Finish transfers" (`finish_asset_locks`) also applies every proved top-up lock, under its grant. **Implemented (DP1-06).** | `CreditsError` |
 | `resolve_top_up(txid)` | async | The user's resolution of the pending top-up lock `txid` that has its proof (they saw its credits arrive): a `consumption_unknown` one, or one a resume answered `ConsumptionUnknown` before its ChainLock let the library mark it final. Recorded in the dispatch journal, so it no longer pends nor blocks the identity's top-ups, across restarts, a removal and import of the wallet, and whatever status the library moves the lock to. `resume_top_up` and Finish still apply it, so a lock Platform had not taken is not lost. Any other txid (unknown, without a proof, applied or resolved) is `invalid_argument`; until the journal is read, or when its write fails, `platform.unavailable`. Needs no grant. **Implemented (DP1-06, Sol r1).** | `CreditsError` |
 | `withdraw_quote(identity, amount)` | async | What a withdrawal takes and pays out at the network's protocol version (§7 item 62): `credits` taken, `fee_credits` (the fee reserve: dpp's minimum fee for a withdrawal, or a bound on the fee Platform meters if higher; Platform charges what it meters, at most this), `expected_duffs` (Platform's own conversion of the withdrawal document: the credits in duffs, less the asset unlock's Core fee from protocol version 14), and the `grant` to ask for (`max_credits` = `credits + fee_credits`, no duffs). `All` is the balance less the reserve, in whole duffs, at most Platform's maximum. Refuses an identity that is not the wallet's (`identity.not_found`) or that it only watches (`invalid_argument`), an amount outside Platform's range, raised so the payout is no dust (`credits.withdrawal_out_of_range{min, max}`), an amount above the balance less the reserve, or `All` below the least withdrawal (`platform.insufficient_credits{needed, available}`), and a protocol version that takes no withdrawals (`invalid_argument`). **Implemented (DP6-02).** | `CreditsError` |
-| `withdraw(identity, to, amount, grant)` | async | Withdraws to `to`, a P2PKH or P2SH address of the network (anything else `invalid_argument`), at Core fee rate 1 with pooling `Never`. The money-move gate first (item 55, as `top_up`), then under the identity's write lock the quote's refusals against the balance read again, then the grant or `Withdraw` lease (`platform.grant_exceeded` below the quote's `max_credits`, `platform.grant_invalid` for another flow's lease), and a CRITICAL ECDSA TRANSFER key the vault holds (`identity.keys_missing{transfer}`), and, when an earlier withdrawal of the identity in this session is unconfirmed, its documents read back at least as recent as the nonce read (one there: `credits.withdrawal_landed{artifact}` naming it; a read from further back: `platform.unavailable`), all before the grant is redeemed. It signs dpp's own transition with that key, at the unconfirmed one's nonce while Platform would take it (D24), and returns `WithdrawOutcome{credits, expected_duffs, remaining_credits, withdrawal}`: the proved balance after, at least the amount below the one read under the lock, and the withdrawal document's id. Any other answer reads back the documents signed at its nonce with their amounts: this one's is the outcome with `remaining_credits` from the answer, if any; an earlier one's is `credits.withdrawal_landed{artifact}` (this one sent, its grant spent, never to execute); none leaves a refusal Platform answered with its consensus error as that refusal, and anything else (a wait with no cause, a transport error, a CheckTx refusal of a resend, a balance that did not drop) as `platform.broadcast_unknown{artifact}` with the document id, never retried. **Implemented (DP6-02).** | `CreditsError` |
+| `withdraw(identity, to, amount, grant)` | async | Withdraws to `to`, a P2PKH or P2SH address of the network (anything else `invalid_argument`), at Core fee rate 1 with pooling `Never`. The money-move gate first (item 55, as `top_up`), then under the identity's write lock the quote's refusals against the balance read again, then the grant or `Withdraw` lease (`platform.grant_exceeded` below the quote's `max_credits`, `platform.grant_invalid` for another flow's lease), and a CRITICAL ECDSA TRANSFER key the vault holds (`identity.keys_missing{transfer}`), and, when an earlier withdrawal of the identity in this session is unconfirmed, its documents read back at least as recent as the nonce read (one there: `credits.withdrawal_landed{artifact}` naming it; a read from further back: `platform.unavailable`; a transfer of `withdraw_to_platform` there at a nonce Platform no longer takes: `credits.withdrawal_landed{artifact}` naming its transition hash, item 93), all before the grant is redeemed. It signs dpp's own transition with that key, at the unconfirmed one's nonce while Platform would take it (D24), and returns `WithdrawOutcome{credits, expected_duffs, remaining_credits, withdrawal}`: the proved balance after, at least the amount below the one read under the lock, and the withdrawal document's id. Any other answer reads back the documents signed at its nonce with their amounts: this one's is the outcome with `remaining_credits` from the answer, if any; an earlier one's is `credits.withdrawal_landed{artifact}` (this one sent, its grant spent, never to execute); none leaves a refusal Platform answered with its consensus error as that refusal, and anything else (a wait with no cause, a transport error, a CheckTx refusal of a resend, a balance that did not drop) as `platform.broadcast_unknown{artifact}` with the document id, never retried. **Implemented (DP6-02).** | `CreditsError` |
 | `withdrawals(identity)` | async | The identity's withdrawal documents on Platform (`identityRecent`), the most recently updated first, at most 20: id, credits, `expected_duffs`, the address paid, `WithdrawalStatus` and the document's times (§5). Re-read on `Platform{Credits}`; a queued withdrawal moves on Platform's schedule, so the host also re-reads while one is not `Complete`. **Implemented (DP6-02).** | `CreditsError` |
+| `withdraw_to_platform_quote(identity, amount)` | async | What moving `amount` of the identity's credits to the wallet's own Platform address takes (§7 item 93; C-routes D-C6): `credits` (what the balance loses and the address gains), `fee_credits` (the reserve: the larger of dpp's minimum fee for the transition with one recipient and a bound on the fee Platform meters, the `identity_update` minimum and the withdrawal's identity operations plus one new address entry's stored bytes at the version's rates, processing doubled; Platform charges what it meters, at most this), `to` (the wallet's Platform receive address, as `platform_receive_address`) and the `grant` (`max_credits` = `credits + fee_credits`, no duffs). `All` is the balance less the reserve. Refuses an identity that is not the wallet's (`identity.not_found`) or that it only watches (`invalid_argument`), a protocol version below address funds (`platform.feature_off{feature: "platform_addresses"}`), an amount below the version's `min_output_amount` (`credits.withdrawal_out_of_range{min, max}`, `max` the balance less the reserve), an amount above that or `All` below the least (`platform.insufficient_credits{needed, available}`). **Implemented (C6a-1).** | `CreditsError` |
+| `withdraw_to_platform(identity, to, amount, grant)` | async | Moves `amount` to `to`, one of the wallet's own Platform addresses (the payment account's derived ones; anything else `invalid_argument`), with dpp's `IdentityCreditTransferToAddressesTransition` (one recipient, no fee increase). As `withdraw`: the money-move gate, then under the identity's write lock the quote's refusals against the balance read again, then the identity's nonce (below), the grant or `Withdraw` lease (`platform.grant_exceeded`, `platform.grant_invalid`) and a CRITICAL ECDSA TRANSFER key the vault holds (`identity.keys_missing{transfer}`), all before the grant is redeemed. **The nonce is `withdraw`'s** (one session record of both): of an unconfirmed withdrawal or transfer and the next write at most one executes. Before signing, the unconfirmed writes are decided: a withdrawal's document read back with its amount, or a transfer at a nonce Platform no longer takes, executed, so this call is `credits.withdrawal_landed{artifact}` naming it (a document id, or a transfer's transition hash) and that marker clears; while a transfer of the identity may still execute this call is `credits.move_pending{id}`, `id` that transfer's transition hash (a withdrawal still signs at its nonce). The write is in that record before it is broadcast. **The outcome is the identity's proved nonce**, read again after the broadcast at least as recent as the read under the lock: Platform no longer takes it and only this transfer was signed there, executed: `WithdrawToPlatformOutcome{credits, to, remaining_credits, transition}` (`remaining_credits` the proved balance the answer carried, shown only; `transition` Platform's hash of the transition, hex SHA-256). A withdrawal signed at the same nonce whose document reads back decides for itself: `credits.withdrawal_landed{artifact}` naming it. Otherwise (the nonce still taken, every read older than the one under the lock, or a failed read) a refusal Platform answered with its consensus error is that refusal and anything else `platform.broadcast_unknown{artifact}` naming the transition hash, never retried. Platform's CheckTx refusals (a fee or balance shortfall, a disabled key, a reserve short of Drive's estimate) reach the engine as no answer, so they are `platform.broadcast_unknown` too. **Either way the transfer stays in the record and holds the route:** every later `withdraw_to_platform` of the identity in the session is `credits.move_pending{id}` until one of these: a nonce read shows Platform no longer takes that nonce (decided as above), a `withdraw` signed at that nonce executes, or the app restarts (the record is not kept, BL-335). No answer and no balance decides. **Implemented (C6a-1).** | `CreditsError` |
 
 ### 2.9 Link stash and invitations (on `NetworkSession`)
 
@@ -958,7 +960,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 47df5fef2872a8cc1a6967eebeeadea5e7aee820441cea8d59fd61780b0b7bf1 version: 72 -->
+<!-- surface-sha256: 7672274dfea9122670bf0f89f4af70e188d3849acc43233bf319b9f9b6e0d639 version: 73 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1186,6 +1188,20 @@ pub struct WithdrawOutcome {
     pub remaining_credits: Option<u64>,
     pub withdrawal: String,
 }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawToPlatformQuote {
+    pub credits: u64,
+    pub fee_credits: u64,
+    pub to: String,
+    pub grant: GrantRequest,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawToPlatformOutcome {
+    pub credits: u64,
+    pub to: String,
+    pub remaining_credits: Option<u64>,
+    pub transition: String,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WithdrawalStatus {
@@ -1217,6 +1233,8 @@ impl DashPay {
     pub async fn resolve_top_up(&self, txid: String) -> Result<(), CreditsError>;
     pub async fn withdraw_quote(&self, identity: String, amount: WithdrawAmount) -> Result<WithdrawQuote, CreditsError>;
     pub async fn withdraw(&self, identity: String, to: String, amount: WithdrawAmount, grant: String) -> Result<WithdrawOutcome, CreditsError>;
+    pub async fn withdraw_to_platform_quote(&self, identity: String, amount: WithdrawAmount) -> Result<WithdrawToPlatformQuote, CreditsError>;
+    pub async fn withdraw_to_platform(&self, identity: String, to: String, amount: WithdrawAmount, grant: String) -> Result<WithdrawToPlatformOutcome, CreditsError>;
     pub async fn withdrawals(&self, identity: String) -> Result<Vec<Withdrawal>, CreditsError>;
 }
 // src/platform/dashpay.rs
@@ -2944,7 +2962,7 @@ The shapes are in §3. What they mean, where the name does not say:
   engine charges no more than it quoted; a quote that went stale (a fee change) is `platform.grant_exceeded`, and the
   host quotes again.
 - **`FlowKind`** names what a lease is for; `AcceptAndPay` carries both the `PlatformOp` grant and the payment's
-  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59), with `SharedMasternode` (item 65) and `Dissolution` (item 66), and `MasternodeWithdraw` an evonode's Platform credit withdrawal (item 86); `Proposal` pays a governance proposal's fee (item 60). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
+  `Spend` grant. `Voting`, `MasternodeRegistration` and `KeyChange` are the masternode flows (item 59), with `SharedMasternode` (item 65) and `Dissolution` (item 66), and `MasternodeWithdraw` an evonode's Platform credit withdrawal (item 86); `Withdraw` also pays a transfer of an identity's credits to the wallet's own Platform address (item 93); `Proposal` pays a governance proposal's fee (item 60). **`DispatchState`** and **`DispatchResolved`** are the journal's view of a handed-off artifact (§2.11,
   §6). **`LeaseView`**, `LeaseStateView` (`Active`, `AwaitingProof`, `Parked{reason}`, `NeedsGrant`,
   `Revoked{cause}`, `Ended`) and `BudgetView{purpose, ceiling, spent}` are E0-04 §4.6's view, owned here
   (E0-04 §16.1); `AwaitingProof`'s deadline is `key_expires_in_secs`. **`RevokeCause`**: `Lock`, `Close`,
@@ -3057,6 +3075,8 @@ The shapes are in §3. What they mean, where the name does not say:
   the credits taken, the fee reserve in credits and the duffs expected (§2.8). **`WithdrawOutcome`**: `withdrawal` is
   the withdrawal document's id, as `withdrawals` lists it. **`Withdrawal`**: one withdrawal document; `to` is `None`
   when its script is no address of the network, `expected_duffs` when Platform's conversion refuses it.
+  **`WithdrawToPlatformQuote`** and **`WithdrawToPlatformOutcome`**: the transfer to an own Platform address (§2.8,
+  item 93); `to` is bech32m, `transition` the hex SHA-256 of the transition.
   **`WithdrawalStatus`**: the document's `status` (`Queued`, `Pooled`, `Broadcasted`, `Complete`, `Expired`,
   `Failed`), `Unknown` for one this version does not know; `Failed` is terminal and Platform keeps the credits.
 - **`Counterparty`** is the record history and transaction records gain as `counterparty` (DP3-02, item 47); here
@@ -4460,6 +4480,24 @@ renames or reshapes them takes the next version bump:
     payment whose own parents are unconfirmed, so a lock of many can pass Dash Core's default limit of 25 unconfirmed
     ancestors; peers then refuse it until those confirm, and the step waits for its proof or Repair clears it. No value
     is at risk.
+
+93. **Credits to an own Platform address (C-routes D-C6, slice C6a-1, version 73).** `withdraw_to_platform_quote`
+    and `withdraw_to_platform` (§2.8), the records `WithdrawToPlatformQuote` and `WithdrawToPlatformOutcome`, under
+    the existing `Withdraw` lease and `PlatformOp` grant (no new flow). The transition is built at a nonce the engine
+    records, shared with withdrawals, and decided by the identity's proved nonce and, at a nonce a withdrawal shares,
+    by that withdrawal's document; never by a balance. Pinned drive has Drive's address-balance estimator only under
+    its `server` feature, so the metered bound prices one address entry at a stored-byte bound (1,024 bytes).
+    `PlatformActivityKind::FromIdentity` and its record (C6a-2) and the withdraw sheet's destination (C6b) follow.
+    A failed transfer holds the route for the session (§2.8, `withdraw_to_platform`): a refusal is CheckTx's, which
+    reaches the engine as no answer, or one node's unproved answer, and neither proves the transfer can no longer
+    execute; unlocking it sooner is C6a-2's design. C6b inherits it (BL-925): after a failed transfer it either shows
+    `credits.move_pending`, which a withdrawal or a restart releases, or waits for C6a-2. Known gap (BL-919, MG ruling
+    M7): `enable_dashpay_keys` writes an IdentityUpdate at the identity nonce the SDK chooses, outside this record. One
+    whose outcome is unknown can execute at the nonce a later transfer signs at; the transfer is then refused by Drive
+    but its nonce reads used, so it is reported executed (`credits.withdrawal_landed` or the outcome) though the credits
+    stayed. No money moves twice. Follow-up: build that update at a recorded nonce, or mark the record on an unknown
+    outcome so a used nonce there reads unresolved. Before C6b offers Max, T2 measures the fee Platform charges for one
+    recipient at a fresh address against the 48.6M-credit reserve.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 
