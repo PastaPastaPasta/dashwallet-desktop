@@ -973,6 +973,12 @@ impl NetworkSession {
         // replayed once the keys are attached, with the birth lowered to that
         // start if it is below.
         let attached = if registered && (state.issued.is_some() || lookahead.is_some()) {
+            // The wallet keeps the larger of its own lookahead and the import's.
+            let stored = match lookahead {
+                Some(_) => self.stored_lookahead(wallet_id).await?,
+                None => None,
+            };
+            let lookahead = lookahead.map(|gap| stored.map_or(gap, |s| s.max(gap)));
             let birth = birth_checkpoint(&manager, wallet_id).await;
             let from = birth_height.map_or(birth, |h| h.saturating_sub(1).min(birth));
             let (from, replaced) = self.note_narrow_below(&manager, wallet_id, from).await?;
@@ -1393,10 +1399,12 @@ impl NetworkSession {
             Err(_) => None,
         };
         // A cancelled one holding above an owed start leaves that start
-        // owed: the marker stays for the next open, not `Done`.
+        // owed: the marker stays for the next open, not `Done`. Its hold
+        // comes back no lower than the birth checkpoint.
+        let hold_floor = birth_checkpoint(manager, id).await;
         let mut owed_below_hold = false;
         let from = match (from, record) {
-            (Some(f), Some(r)) if r.cancelled && r.reached > f => {
+            (Some(f), Some(r)) if r.cancelled && r.reached.max(hold_floor) > f => {
                 owed_below_hold = true;
                 loaded_at
             }

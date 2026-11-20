@@ -605,7 +605,14 @@ impl crate::NetworkSession {
                         RescanFrom::Height(h) => Some(h.saturating_sub(1)),
                     };
                     let birth = crate::keys::birth_checkpoint(&manager, *id).await;
-                    this.note_narrow_from(*id, start, Some(birth)).await?;
+                    // A wallet without a marker is owed from the start or
+                    // its birth, the earlier: nothing else records it.
+                    if this.wide_scan(*id).await?.is_none() {
+                        let owed = start.map_or(birth, |s| s.min(birth));
+                        (this.mark_pending(*id, crate::keys::WideScan::From(owed))).await?;
+                    } else {
+                        this.note_narrow_from(*id, start, Some(birth)).await?;
+                    }
                 }
             }
             let from_height = match from {
