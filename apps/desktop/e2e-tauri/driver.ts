@@ -122,15 +122,20 @@ export class WebDriver {
 
 // ------------------------------------------------------------------ tauri-driver and dwcli
 
-/** Starts tauri-driver on `port` (and `port + 1` for WebKitWebDriver), logging to `out`, in its
- * own process group so `stopDriver` ends the driver, WebKitWebDriver and the app. */
-/** Starts tauri-driver and waits until it listens; `spawned` gets the child at once, so a signal
- * while it starts can still stop it. */
-export async function startDriver(port: number, out: string, spawned?: (driver: ChildProcess) => void): Promise<{ driver: ChildProcess; base: string }> {
+/** Starts tauri-driver on `port` (and `nativePort`, by default `port + 1`, for WebKitWebDriver),
+ * logging to `out`, in its own process group so `stopDriver` ends the driver, WebKitWebDriver and
+ * the app, and waits until it listens; `spawned` gets the child at once, so a signal while it
+ * starts can still stop it. */
+export async function startDriver(
+  port: number,
+  out: string,
+  spawned?: (driver: ChildProcess) => void,
+  nativePort = port + 1,
+): Promise<{ driver: ChildProcess; base: string }> {
   // A file, not a pipe: the app logs through the driver, and `spawnSync` (dwcli) blocks the event
   // loop that would drain a pipe, so a full one would stop the app.
   const log = openSync(join(out, "tauri-driver.log"), "w");
-  const driver = spawn(DRIVER, ["--port", String(port), "--native-port", String(port + 1)], { stdio: ["ignore", log, log], detached: true });
+  const driver = spawn(DRIVER, ["--port", String(port), "--native-port", String(nativePort)], { stdio: ["ignore", log, log], detached: true });
   closeSync(log);
   spawned?.(driver);
   const base = `http://127.0.0.1:${port}`;
