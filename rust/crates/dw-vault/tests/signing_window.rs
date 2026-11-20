@@ -709,3 +709,63 @@ fn a_stale_heartbeat_ends_the_window() {
     assert!(v.signing_window_open());
     v.authorize(spend(1), Some(&w), Credential::None).unwrap();
 }
+
+/// A passphrase change while a token redeemed from the window is still
+/// out ends that token with the window: it issues no signer afterwards.
+#[test]
+fn a_passphrase_change_ends_an_outstanding_window_token() {
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    let grant = v.authorize(spend(1), Some(&w), Credential::None).unwrap();
+    let token = v
+        .redeem_grant(&grant.id, GrantKind::Spend, Some(&w))
+        .unwrap();
+    v.change_passphrase(PASS, b"a different passphrase")
+        .unwrap();
+    assert_eq!(v.status().state, LockState::Unlocked);
+    assert!(!v.signing_window_open());
+    assert_eq!(
+        v.signer(&w, &token).map(drop),
+        Err(VaultError::GrantInvalid)
+    );
+}
+
+/// With "ask every payment", a set that mixes a payment with purposes that
+/// never need a credential asks as a whole, also after a new unlock; the
+/// passphrase issues all of it, and the other purposes alone still need
+/// nothing.
+#[test]
+fn a_mixed_set_asks_when_every_payment_asks() {
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    v.set_signing_window_allowed(&v.vault_id().unwrap(), false);
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    assert!(!v.signing_window_open());
+    let platform = GrantPurpose::PlatformOp {
+        max_duffs: 1,
+        max_credits: 1,
+    };
+    let set = [
+        platform,
+        GrantPurpose::IdentityScan,
+        GrantPurpose::SignMessage,
+    ];
+    assert_eq!(
+        v.authorize_set(&set, Some(&w), Credential::None).map(drop),
+        Err(VaultError::CredentialRequired)
+    );
+    assert_eq!(
+        v.authorize_set(&set, Some(&w), Credential::Passphrase(PASS))
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        v.authorize_set(&set[1..], Some(&w), Credential::None)
+            .unwrap()
+            .len(),
+        2
+    );
+}

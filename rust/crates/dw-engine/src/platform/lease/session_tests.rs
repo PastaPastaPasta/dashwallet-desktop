@@ -767,6 +767,51 @@ fn a_lease_from_window_grants_outlives_the_window() {
     );
 }
 
+/// A lease begun while other window grants are being issued: the window
+/// charges every grant as it is issued, so the lease's grants and those
+/// issued beside it add up to the sealed limit at most, in any order.
+#[test]
+fn a_lease_racing_window_grants_stays_within_the_limit() {
+    const LIMIT: u64 = 10_000_000;
+    const PART: u64 = 2_000_000;
+    let f = fixture(true);
+    f.engine
+        .block_on(f.session.vault_op(|v| {
+            let change = v.authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(PASS),
+            )?;
+            v.set_quick_unlock_spend_limit(&change.id, LIMIT).map(drop)
+        }))
+        .unwrap();
+    let grants = [
+        f.platform_op(0, PART * 1_000),
+        f.grant(GrantPurpose::Spend { max_duffs: PART }, Credential::None),
+    ];
+    let wallet = f.wallet;
+    let beside = std::thread::scope(|scope| {
+        let issuing = scope.spawn(|| {
+            (0..10)
+                .filter(|_| {
+                    f.session
+                        .vault()
+                        .authorize(
+                            GrantPurpose::Spend { max_duffs: PART },
+                            Some(&wallet.0),
+                            Credential::None,
+                        )
+                        .is_ok()
+                })
+                .count() as u64
+        });
+        f.lease(FlowKind::AcceptAndPay, &grants).unwrap();
+        issuing.join().unwrap()
+    });
+    assert_eq!(beside, (LIMIT - 2 * PART) / PART);
+    assert_eq!(f.session.vault().signing_window_remaining(), Some(0));
+}
+
 #[test]
 fn a_txdraft_under_a_lease_is_charged_fenced_and_refunded() {
     let f = fixture(false);
