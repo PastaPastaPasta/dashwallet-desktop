@@ -362,16 +362,29 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
 /// and not abandoned, each with its payment: key-wallet's spent-output
 /// claims (`restore_spent_outpoints`), which it rebuilds from no stored
 /// record (#88). A coin is claimed only when the app signed it for that
-/// payment and the payment's transaction spends it. A payment another
-/// transaction beats keeps its claims until it is abandoned or mined:
-/// conflicts stay key-wallet's.
+/// payment and the payment's transaction spends it. A payment that a
+/// transaction in a block or InstantSend-locked beats on any input claims
+/// nothing: its coins are the winner's or free.
 pub(crate) fn unmined_own_spends(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
 ) -> Vec<(OutPoint, Txid)> {
+    let settled = |e: &TxEntry| {
+        e.context.block_info().is_some()
+            || e.instant_locked
+            || matches!(e.context, TransactionContext::InstantSend(_))
+    };
+    let beaten = |t: &Txid, e: &TxEntry| {
+        let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
+        (txs.iter()).any(|(w, we)| {
+            w != t
+                && settled(we)
+                && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
+        })
+    };
     (sent.iter())
         .filter_map(|(t, coins)| Some((t, coins, txs.get(t)?)))
-        .filter(|(_, _, e)| e.context.block_info().is_none() && !e.is_abandoned())
+        .filter(|(t, _, e)| e.context.block_info().is_none() && !e.is_abandoned() && !beaten(t, e))
         .flat_map(|(t, coins, e)| {
             (e.tx.input.iter())
                 .map(|i| i.previous_output)
@@ -2474,7 +2487,8 @@ mod tests {
 
     /// #88: the claims restored at load are the inputs of each payment this
     /// app sent that is out of a block and not abandoned (a lock outranks
-    /// the abandon), never those of a pending spend it did not send.
+    /// the abandon), never those of a pending spend it did not send nor of
+    /// one a block beat.
     #[test]
     fn unmined_own_spends_claim_only_live_payments_this_app_sent() {
         let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
@@ -2510,6 +2524,11 @@ mod tests {
         relocked.instant_locked = true;
         let relocked = add(relocked, &[coin(5)]);
         add(spend(5, &[coin(6)], TransactionContext::Mempool), &[]);
+        let beaten = add(
+            spend(6, &[coin(10), coin(11)], TransactionContext::Mempool),
+            &[coin(10), coin(11)],
+        );
+        add(spend(7, &[coin(11)], in_block(11, 0)), &[]);
         let unstored = Txid::from_byte_array([9; 32]);
         sent.insert(unstored, [coin(9)].into());
 
@@ -2518,6 +2537,7 @@ mod tests {
         let mut want = vec![(coin(1), live), (coin(2), live), (coin(5), relocked)];
         want.sort();
         assert_eq!(claims, want);
+        assert!(claims.iter().all(|(_, t)| *t != beaten));
         let mut settled = settled_sends(&txs, &sent);
         settled.sort();
         let mut want = vec![mined, abandoned, unstored];

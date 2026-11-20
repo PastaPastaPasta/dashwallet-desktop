@@ -360,7 +360,7 @@ impl NetworkSession {
             // (`ReplayRecords::committed`).
             // Read first so they are restored as soon as the wallet is
             // registered, not after the history load (#88).
-            let claims = this.stored_spend_claims(id).await?;
+            let stored = this.stored_spends(id).await?;
             this.hub.admit(id);
             this.hub.update_wallet_state(id, |s| s.loading = true);
             live.store.set_unloaded(id.0, false);
@@ -378,7 +378,7 @@ impl NetworkSession {
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 pause.release.notified().await;
             }
-            this.apply_spend_claims(&live.manager, id, &claims).await;
+            this.apply_stored_spends(&live.manager, id, stored).await;
             this.admit_loaded(&live.manager, id).await;
             if live.manager.get_wallet(&id.0).await.is_none() {
                 live.store.set_unloaded(id.0, true);

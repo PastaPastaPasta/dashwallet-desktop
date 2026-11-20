@@ -1539,8 +1539,9 @@ impl TxDraft {
             None => None,
         };
         // The evidence a later process restores this payment's spend
-        // claims from (#88), stored before it can leave.
-        if matches!(*prepared.phase(), Phase::Pending) {
+        // claims from (#88), stored before it can leave; again for a send
+        // recovered with its outcome unknown, which may be its first.
+        if matches!(*prepared.phase(), Phase::Pending | Phase::Unknown) {
             self.mark_sent(&prepared, true).await?;
         }
         // A contact payment's first broadcast is under way until its

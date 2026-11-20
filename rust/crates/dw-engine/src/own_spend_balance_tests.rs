@@ -6,94 +6,20 @@
 //! SPV's event monitor delivers them.
 
 use std::collections::BTreeSet;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use dashcore::hashes::Hash;
-use dashcore::{Address, OutPoint, Transaction, TxIn, TxOut, Txid};
-use dw_vault::{Credential, GrantPurpose};
+use dashcore::{Address, OutPoint, Transaction, Txid};
 use platform_wallet::key_wallet_manager::WalletInterface;
 
-use super::{
-    BIRTH, balances, elsewhere, engine_wallet, instant_lock, mempool, mined, reopen,
-    wait_stored_locked,
+use super::own_spend_disk_tests::{
+    COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, change_of, coins, eventually, foreign,
+    fresh_address, funding, own_scripts, rival, send, spendable, store_raw, synced, utxo,
+    wait_stored, wallet_funded_unmined,
 };
-use crate::send::{CoinSource, Recipient};
+use super::{balances, engine_wallet, instant_lock, mempool, mined, reopen, wait_stored_locked};
+use crate::send::CoinSource;
 use crate::session::NetworkSession;
 use crate::{Engine, WalletBalances, WalletId};
-
-const COIN: u64 = 100_000_000;
-const COINS: usize = 12;
-const FUNDED_AT: u32 = BIRTH + 1;
-const TIP: u32 = BIRTH + 5;
-
-/// Someone else's regtest address.
-const FOREIGN: &str = "yQWsoTNJq59DqBg4Z2Qup3k3qchPaWz29n";
-
-/// Accepts every broadcast and keeps what it was handed: dash-spv's own
-/// injection is replayed by the test through [`mempool`].
-#[derive(Default)]
-struct Accept(Mutex<Vec<Transaction>>);
-
-impl crate::send::TestBroadcaster for Accept {
-    fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        Box::pin(async {})
-    }
-    fn broadcast(
-        &self,
-        tx: &Transaction,
-        _first: bool,
-    ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<Txid, platform_wallet::PlatformWalletError>>
-                + Send,
-        >,
-    > {
-        self.0.lock().unwrap().push(tx.clone());
-        let txid = tx.txid();
-        Box::pin(async move { Ok(txid) })
-    }
-}
-
-fn fresh_address(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) -> Address {
-    engine
-        .block_on(session.next_receive_address(id, None))
-        .unwrap()
-        .address
-        .parse::<Address<dashcore::address::NetworkUnchecked>>()
-        .unwrap()
-        .assume_checked()
-}
-
-/// One transaction from a coin the wallet does not own paying `value` to
-/// each of `to`.
-fn funding(seed: u8, to: &[Address], value: u64) -> Transaction {
-    Transaction {
-        version: 2,
-        lock_time: 0,
-        input: vec![TxIn {
-            previous_output: OutPoint::new(Txid::from_byte_array([seed; 32]), 0),
-            ..Default::default()
-        }],
-        output: (to.iter())
-            .map(|a| TxOut {
-                value,
-                script_pubkey: a.script_pubkey(),
-            })
-            .collect(),
-        special_transaction_payload: None,
-    }
-}
-
-/// A transaction that is not the wallet's, so a block can hold it.
-fn foreign() -> Transaction {
-    Transaction {
-        output: vec![TxOut {
-            value: COIN,
-            script_pubkey: elsewhere(),
-        }],
-        ..funding(6, &[], 0)
-    }
-}
 
 /// A wallet holding [`COINS`] confirmed coins of one DASH each, mined at
 /// [`FUNDED_AT`] and scanned to [`TIP`], and the transaction paying them.
@@ -137,86 +63,6 @@ fn echo(engine: &Engine, session: &NetworkSession, id: WalletId, tx: &Transactio
     });
 }
 
-/// Prepares (signs and reserves, never broadcasts) a payment of `amount`
-/// from `source` through a real draft.
-fn prepare(
-    engine: &Engine,
-    session: &Arc<NetworkSession>,
-    id: WalletId,
-    source: CoinSource,
-    amount: u64,
-    subtract_fee: bool,
-    broadcaster: &Arc<Accept>,
-) -> (
-    Arc<crate::send::TxDraft>,
-    Result<Arc<crate::send::PreparedTx>, crate::EngineError>,
-) {
-    let draft = session.new_tx_draft(id).unwrap();
-    *draft.broadcaster.lock().unwrap() = Some(Arc::clone(broadcaster) as _);
-    draft
-        .set_recipients(vec![Recipient {
-            address: FOREIGN.into(),
-            amount,
-            subtract_fee_from_amount: subtract_fee,
-            label: None,
-            message: None,
-        }])
-        .unwrap();
-    draft.set_source(source).unwrap();
-    let grant = session
-        .vault()
-        .authorize(
-            GrantPurpose::Spend {
-                max_duffs: amount + COIN,
-            },
-            Some(&id.0),
-            Credential::None,
-        )
-        .unwrap()
-        .id;
-    let prepared = engine.block_on(draft.prepare(grant));
-    (draft, prepared)
-}
-
-/// Prepares and broadcasts a payment of `amount` from `source` through a
-/// real draft; returns the signed transaction.
-fn send(
-    engine: &Engine,
-    session: &Arc<NetworkSession>,
-    id: WalletId,
-    source: CoinSource,
-    amount: u64,
-    subtract_fee: bool,
-) -> Transaction {
-    let broadcaster = Arc::new(Accept::default());
-    let (draft, prepared) = prepare(
-        engine,
-        session,
-        id,
-        source,
-        amount,
-        subtract_fee,
-        &broadcaster,
-    );
-    engine.block_on(draft.broadcast(prepared.unwrap())).unwrap();
-    let sent = broadcaster.0.lock().unwrap();
-    assert_eq!(sent.len(), 1);
-    sent[0].clone()
-}
-
-/// The wallet's unspent coins, per funds account, as key-wallet holds them.
-fn coins(engine: &Engine, session: &NetworkSession, id: WalletId) -> Vec<(OutPoint, u64)> {
-    let manager = session.manager().unwrap();
-    engine.block_on(async move {
-        let wm = manager.wallet_manager_arc();
-        let wm = wm.read().await;
-        let info = wm.get_wallet_info(&id.0).unwrap();
-        (info.core_wallet.accounts.all_funding_accounts().into_iter())
-            .flat_map(|a| a.utxos.iter().map(|(o, u)| (*o, u.txout.value)))
-            .collect()
-    })
-}
-
 /// What the wallet holds after `tx`, given what it held before: the coins
 /// `tx` did not spend and the outputs of `tx` paying the wallet.
 fn expected_after(
@@ -234,24 +80,6 @@ fn expected_after(
         .map(|o| o.value)
         .sum();
     (kept, change)
-}
-
-fn own_scripts(
-    engine: &Engine,
-    session: &NetworkSession,
-    id: WalletId,
-) -> BTreeSet<dashcore::ScriptBuf> {
-    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
-    let manager = session.manager().unwrap();
-    engine.block_on(async move {
-        let wm = manager.wallet_manager_arc();
-        let wm = wm.read().await;
-        let info = wm.get_wallet_info(&id.0).unwrap();
-        (info.core_wallet.accounts.all_funding_accounts().into_iter())
-            .flat_map(|a| a.managed_account_type().all_addresses())
-            .map(|a| a.script_pubkey())
-            .collect()
-    })
 }
 
 /// The invariant: no spent coin is held or counted, no outpoint is held
@@ -410,29 +238,6 @@ fn an_own_payment_stored_unmined_counts_each_coin_once_after_a_restart() {
     assert_eq!(echoed.total, own.total);
 }
 
-/// A wallet past its birth block holding [`COINS`] coins of one DASH each
-/// paid by a transaction InstantSend-locked but not mined yet; returns it.
-fn wallet_funded_unmined() -> (
-    tempfile::TempDir,
-    Engine,
-    Arc<NetworkSession>,
-    WalletId,
-    Transaction,
-) {
-    let (dir, engine, session, id) = engine_wallet();
-    mined(&engine, &session, id, FUNDED_AT, vec![foreign()]);
-    let to: Vec<Address> = (0..COINS)
-        .map(|_| fresh_address(&engine, &session, id))
-        .collect();
-    let paid = funding(7, &to, COIN);
-    mempool(&engine, &session, id, &paid);
-    instant_lock(&engine, &session, id, &paid);
-    let b = balances(&session, id);
-    assert!(!b.catching_up);
-    assert_eq!((b.confirmed, b.total), (12 * COIN, 12 * COIN));
-    (dir, engine, session, id, paid)
-}
-
 /// #88: the wallet pays from coins it was just paid, before the block
 /// paying them is scanned; `dwcli` exits after the send. In the next
 /// process the scan reaches that block while the payment is still unmined:
@@ -554,114 +359,8 @@ fn abandoning_a_stored_payment_after_a_restart_frees_its_coins() {
     );
 }
 
-/// Whether a payment from `coin` alone can be prepared (signed and
-/// reserved); the reservation is dropped again.
-fn spendable(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, coin: OutPoint) -> bool {
-    let (_draft, prepared) = prepare(
-        engine,
-        session,
-        id,
-        CoinSource::Outpoints(vec![coin]),
-        COIN / 2,
-        false,
-        &Arc::new(Accept::default()),
-    );
-    prepared.is_ok_and(|p| (p.summary().inputs.iter()).any(|i| i.outpoint == coin))
-}
-
-/// Waits up to 20 s for `done`.
-fn eventually(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    while std::time::Instant::now() < deadline {
-        if done() {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    panic!("never: {what}");
-}
-
-fn synced(engine: &Engine, session: &NetworkSession, id: WalletId) -> u32 {
-    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
-    let manager = session.manager().unwrap();
-    engine.block_on(async move {
-        let wm = manager.wallet_manager_arc();
-        let wm = wm.read().await;
-        wm.get_wallet_info(&id.0)
-            .unwrap()
-            .core_wallet
-            .synced_height()
-    })
-}
-
 fn in_history(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
     session.hub.history.get(&id, &txid).is_some()
-}
-
-/// The wallet holds exactly `want`, each once, and its balance is their sum.
-fn assert_holds(
-    engine: &Engine,
-    session: &NetworkSession,
-    id: WalletId,
-    want: &BTreeSet<OutPoint>,
-    state: &str,
-) -> WalletBalances {
-    let held = coins(engine, session, id);
-    let got: BTreeSet<OutPoint> = held.iter().map(|(o, _)| *o).collect();
-    assert_eq!(
-        got.len(),
-        held.len(),
-        "{state}: an outpoint held twice: {held:?}"
-    );
-    assert_eq!(&got, want, "{state}: {held:?}");
-    let b = balances(session, id);
-    assert_eq!(
-        b.total,
-        held.iter().map(|(_, v)| v).sum::<u64>(),
-        "{state}: {b:?}"
-    );
-    b
-}
-
-/// Another device of the wallet spends `paid`'s output `vout`, paying half
-/// to someone else and the rest less a fee back to the wallet.
-fn rival(
-    engine: &Engine,
-    session: &Arc<NetworkSession>,
-    id: WalletId,
-    paid: &Transaction,
-    vout: u32,
-) -> Transaction {
-    let coin = OutPoint::new(paid.txid(), vout);
-    let owner = Address::from_script(
-        &paid.output[vout as usize].script_pubkey,
-        dashcore::Network::Regtest,
-    )
-    .unwrap();
-    let change = fresh_address(engine, session, id);
-    let tx = super::spend_of(
-        coin,
-        vec![
-            (elsewhere(), COIN / 2),
-            (change.script_pubkey(), COIN / 2 - 1_000),
-        ],
-    );
-    super::signed_by_wallet(engine, session, id, &owner, tx)
-}
-
-/// Waits for the wallet store to hold the records of `txids`: the persister
-/// hears wallet events through its own adapter task.
-fn wait_stored(session: &NetworkSession, id: WalletId, txids: &[Txid]) {
-    use platform_wallet::changeset::PlatformWalletPersistence;
-    let persister = Arc::clone(&session.live().unwrap().persister);
-    eventually("the store holds the transactions", || {
-        persister.flush(id.0).unwrap();
-        (txids.iter()).all(|t| {
-            persister
-                .get_core_tx_record(id.0, t)
-                .is_ok_and(|r| r.is_some())
-        })
-    });
 }
 
 /// A wallet paid twelve coins (InstantSend-locked, unmined) that spends
@@ -885,60 +584,6 @@ fn a_coin_spent_unmined_stays_spent_two_restarts_later() {
         assert_holds(&engine, &session, id, &want, "a third restart").total,
         scanned.total
     );
-}
-
-/// The wallet's own output of `tx` (its change).
-fn change_of(tx: &Transaction, own: &BTreeSet<dashcore::ScriptBuf>) -> OutPoint {
-    let vout = (0..tx.output.len() as u32)
-        .find(|v| own.contains(&tx.output[*v as usize].script_pubkey))
-        .expect("with change");
-    OutPoint::new(tx.txid(), vout)
-}
-
-/// key-wallet's copy of the wallet's coin `outpoint`.
-fn utxo(
-    engine: &Engine,
-    session: &NetworkSession,
-    id: WalletId,
-    outpoint: OutPoint,
-) -> key_wallet::Utxo {
-    let manager = session.manager().unwrap();
-    engine.block_on(async move {
-        let wm = manager.wallet_manager_arc();
-        let wm = wm.read().await;
-        let info = wm.get_wallet_info(&id.0).unwrap();
-        (info.core_wallet.accounts.all_funding_accounts().into_iter())
-            .find_map(|a| a.utxos.get(&outpoint).cloned())
-            .expect("held")
-    })
-}
-
-/// Writes `changeset`'s core part to wallet.sqlite as the SQLite persister
-/// alone writes it (no engine wrapper).
-fn store_raw(
-    session: &NetworkSession,
-    id: WalletId,
-    core: platform_wallet::changeset::CoreChangeSet,
-) {
-    use platform_wallet::changeset::{PlatformWalletChangeSet, PlatformWalletPersistence};
-    let persister = Arc::clone(&session.live().unwrap().persister);
-    let changeset = PlatformWalletChangeSet {
-        core: Some(core),
-        ..Default::default()
-    };
-    persister.store(id.0, changeset).unwrap();
-    persister.flush(id.0).unwrap();
-}
-
-fn abandon(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: Txid) {
-    let s = Arc::clone(session);
-    let abandoned = engine
-        .block_on(session.on_runtime(async move {
-            let manager = s.manager()?;
-            s.abandon_inner(&manager, id, txid).await
-        }))
-        .unwrap();
-    assert!(abandoned.contains(&txid));
 }
 
 /// The store holds the coin X a pending payment this app sent spends as

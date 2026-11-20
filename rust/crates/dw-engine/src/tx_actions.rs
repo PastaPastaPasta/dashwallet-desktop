@@ -173,6 +173,28 @@ struct Facts {
     matures_in: Option<u32>,
 }
 
+/// Abandons `root`, then each of `descendants` key-wallet's own walk did
+/// not reach; nothing when it refuses `root`.
+fn abandon_with(
+    core: &mut key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    root: Txid,
+    descendants: &[Txid],
+) -> BTreeSet<Txid> {
+    let mut abandoned = core
+        .abandon_transaction_with_spends(root, &BTreeMap::new())
+        .abandoned;
+    if abandoned.is_empty() {
+        return abandoned;
+    }
+    for t in descendants {
+        if !abandoned.contains(t) {
+            let more = core.abandon_transaction_with_spends(*t, &BTreeMap::new());
+            abandoned.extend(more.abandoned);
+        }
+    }
+    abandoned
+}
+
 fn facts(entry: &TxEntry, view: &ChainView<'_>) -> Facts {
     let (credit, debit, from_me) = amounts(entry, view);
     let all_from_me = from_me > 0 && from_me == entry.tx.input.len();
@@ -338,32 +360,38 @@ impl NetworkSession {
         }
         // Planned on a copy under the lock that applies it, so the replay
         // record stored before it covers what is abandoned.
-        let spenders = self.unmined_spenders(wallet);
-        let (outcome, checkpoint) = {
+        let descendants = self.unmined_descendants(wallet, root);
+        let (abandoned, checkpoint, released) = {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let info = wm
                 .get_wallet_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
             let mut trial = info.core_wallet.clone();
-            let planned = trial
-                .abandon_transaction_with_spends(root, &spenders)
-                .abandoned;
+            let planned = abandon_with(&mut trial, root, &descendants);
+            // key-wallet holds no record of a payment restored at load, so
+            // it cannot see the InstantSend lock rehydrated for it.
+            let locks = info.core_wallet.instant_send_locks();
+            if planned.iter().any(|t| locks.contains(t)) {
+                return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
+            }
             let checkpoint = self.abandon_rewind(wallet, &planned, &info.core_wallet);
             if let Some(checkpoint) = checkpoint {
                 self.record_rewind_locked(wallet, info, checkpoint).await?;
             }
-            let outcome = info
-                .core_wallet
-                .abandon_transaction_with_spends(root, &spenders);
-            if !outcome.abandoned.is_empty() {
+            let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
+            if !abandoned.is_empty() {
                 info.core_wallet.update_balance();
             }
-            (outcome, checkpoint)
+            let released = self.released(
+                wallet,
+                &abandoned,
+                info.core_wallet.observed_spent_outpoints(),
+            );
+            (abandoned, checkpoint, released)
         };
         // key-wallet refuses (returns nothing) when it holds the root as
         // settled.
-        let abandoned = outcome.abandoned;
         if abandoned.is_empty() {
             return Err(EngineError::TxActionRefused(TxActionRefusal::Confirmed));
         }
@@ -371,14 +399,13 @@ impl NetworkSession {
             .iter()
             .filter_map(|t| self.hub.history.get(&wallet, t).map(|e| (*t, e.tx)))
             .collect();
-        let released = self.released(wallet, &abandoned);
 
         let live = self.live()?;
         let persister = Arc::clone(&live.persister);
         let sweep = SweepBatch {
             txids: abandoned.iter().copied().collect(),
-            // Every input is released below, so no spend claim is attributed
-            // to this txid; the field only names the batch.
+            // An input not released (a block spent it) stays stored spent,
+            // attributed to the root.
             superseded_by: root,
             winner_mined_height: None,
             released_outpoints: released.clone(),
@@ -436,14 +463,13 @@ impl NetworkSession {
         Ok(abandoned)
     }
 
-    /// The spender of each outpoint the history's transactions out of a
-    /// block spend, unless abandoned or InstantSend-locked: the descendants
-    /// key-wallet holds no record of (a payment restored as a claimant at
-    /// load, #88) that an abandon of their ancestor follows, as key-wallet
-    /// follows the unsettled ones it records.
-    fn unmined_spenders(&self, wallet: WalletId) -> BTreeMap<OutPoint, Txid> {
+    /// The history's transactions out of a block that descend from `root`,
+    /// unless abandoned or InstantSend-locked: the descendants key-wallet
+    /// holds no record of (a payment restored as a claimant at load, #88),
+    /// every child of an output followed.
+    fn unmined_descendants(&self, wallet: WalletId, root: Txid) -> Vec<Txid> {
         self.hub.history.read(&wallet, |txs| {
-            (txs.iter())
+            let live: Vec<(&Txid, &TxEntry)> = (txs.iter())
                 .filter(|(_, e)| {
                     e.context.block_info().is_none()
                         && !e.abandoned
@@ -453,18 +479,38 @@ impl NetworkSession {
                             key_wallet::transaction_checking::TransactionContext::InstantSend(_)
                         )
                 })
-                .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
-                .collect()
+                .collect();
+            let mut found = BTreeSet::from([root]);
+            let mut order = Vec::new();
+            let mut parents = vec![root];
+            while let Some(parent) = parents.pop() {
+                for (t, e) in &live {
+                    if !found.contains(*t)
+                        && e.tx.input.iter().any(|i| i.previous_output.txid == parent)
+                    {
+                        found.insert(**t);
+                        order.push(**t);
+                        parents.push(**t);
+                    }
+                }
+            }
+            order
         })
     }
 
     /// The coins abandoning `abandoned` releases: their inputs that none of
-    /// them created.
-    fn released(&self, wallet: WalletId, abandoned: &BTreeSet<Txid>) -> Vec<OutPoint> {
+    /// them created and no processed block spent (`observed`): key-wallet
+    /// keeps the claim on a coin a block spent.
+    fn released(
+        &self,
+        wallet: WalletId,
+        abandoned: &BTreeSet<Txid>,
+        observed: &BTreeMap<OutPoint, u32>,
+    ) -> Vec<OutPoint> {
         (abandoned.iter())
             .filter_map(|t| self.hub.history.get(&wallet, t))
             .flat_map(|e| e.tx.input.into_iter().map(|i| i.previous_output))
-            .filter(|o| !abandoned.contains(&o.txid))
+            .filter(|o| !abandoned.contains(&o.txid) && !observed.contains_key(o))
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()

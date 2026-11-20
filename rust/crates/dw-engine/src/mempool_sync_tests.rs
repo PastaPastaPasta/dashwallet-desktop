@@ -21,6 +21,8 @@ use crate::{DashNetwork, Engine, WalletBalances, WalletId};
 
 #[path = "own_spend_balance_tests.rs"]
 mod own_spend_balance_tests;
+#[path = "own_spend_disk_tests.rs"]
+mod own_spend_disk_tests;
 
 const PHRASE: &[u8] =
     b"abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
