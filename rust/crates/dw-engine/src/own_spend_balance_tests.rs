@@ -918,6 +918,7 @@ fn a_beaten_payment_keeps_its_other_coin_out_until_it_is_abandoned() {
 
 fn sent_marks(session: &NetworkSession, id: WalletId) -> BTreeSet<Txid> {
     crate::tx_actions::load_sent(&session.live().unwrap().appdb, id)
+        .0
         .into_keys()
         .collect()
 }
@@ -939,4 +940,206 @@ fn a_payment_mark_goes_at_the_load_after_it_is_mined() {
 
     let session = reopen(&engine, session);
     assert_eq!(sent_marks(&session, id), BTreeSet::from([pending.txid()]));
+}
+
+fn held(engine: &Engine, session: &NetworkSession, id: WalletId) -> BTreeSet<OutPoint> {
+    coins(engine, session, id)
+        .into_iter()
+        .map(|c| c.0)
+        .collect()
+}
+
+/// Whether wallet.sqlite holds `outpoint` as an unspent coin of `id`. The
+/// store keys a coin by its outpoint in bincode varint: the txid's length,
+/// the txid, then the vout (one byte below 251).
+fn stored_unspent(session: &NetworkSession, id: WalletId, outpoint: OutPoint) -> bool {
+    use dashcore::hashes::Hash;
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    use rusqlite::OptionalExtension;
+    session.live().unwrap().persister.flush(id.0).unwrap();
+    assert!(outpoint.vout < 251);
+    let key: Vec<u8> = (std::iter::once(32))
+        .chain(outpoint.txid.to_byte_array())
+        .chain([outpoint.vout as u8])
+        .collect();
+    let conn = rusqlite::Connection::open_with_flags(
+        session.data_dir().join(crate::session::WALLET_DB_FILE),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    conn.query_row(
+        "SELECT spent FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
+        rusqlite::params![&id.0[..], key],
+        |r| r.get::<_, bool>(0),
+    )
+    .optional()
+    .unwrap()
+        == Some(false)
+}
+
+/// A payment of A and B beaten on A by another device's spend mined after
+/// a restart, after the funding block; the next restart replays both
+/// blocks, which credit B, stored unspent. Returns B, the coins then held
+/// and the winner.
+fn beaten_payment_with_its_other_coin_back() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    OutPoint,
+    BTreeSet<OutPoint>,
+    Txid,
+) {
+    let (dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, 0);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    wait_stored(&session, id, &[winner.txid()]);
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    let held = held(&engine, &session, id);
+    assert!(held.contains(&b) && !held.contains(&a), "{held:?}");
+    eventually("B stored unspent", || stored_unspent(&session, id, b));
+    assert!(sent_marks(&session, id).contains(&payment.txid()));
+    (dir, engine, session, id, b, held, winner.txid())
+}
+
+/// The payment above, its winner's record unreadable at a wallet load
+/// (the history load's read, or the read of the stored spends before the
+/// wallet loads): the load claims nothing, so B stays held, counted and
+/// stored unspent; the next clean load sees the payment beaten.
+fn a_load_missing_the_winner_keeps_the_coin_back(stored_read: bool) {
+    let (_dir, engine, session, id, b, held, winner) = beaten_payment_with_its_other_coin_back();
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    {
+        let mut unreadable = session.hub.unreadable_record.lock().unwrap();
+        match stored_read {
+            false => unreadable.0 = Some(winner),
+            true => unreadable.1 = Some(winner),
+        }
+    }
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert_holds(&engine, &session, id, &held, "the winner unread");
+    assert!(stored_unspent(&session, id, b), "the winner unread");
+
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &held, "a clean load after it");
+    assert!(stored_unspent(&session, id, b), "a clean load after it");
+}
+
+#[test]
+fn a_history_load_missing_the_winner_keeps_the_coin_a_beaten_payment_spent() {
+    a_load_missing_the_winner_keeps_the_coin_back(false);
+}
+
+#[test]
+fn a_stored_spends_read_missing_the_winner_keeps_the_coin_a_beaten_payment_spent() {
+    a_load_missing_the_winner_keeps_the_coin_back(true);
+}
+
+/// A load that cannot read a stored record unrelated to the payment claims
+/// nothing (as before #88, the funding block credits the coins the payment
+/// spent again); the next clean load claims them back.
+#[test]
+fn a_load_with_an_unreadable_record_claims_nothing_until_a_clean_load() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let other = funding(8, &[fresh_address(&engine, &session, id)], COIN);
+    mempool(&engine, &session, id, &other);
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[other.txid(), payment.txid()]);
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    *session.hub.unreadable_record.lock().unwrap() = (Some(other.txid()), Some(other.txid()));
+    engine.block_on(session.load_wallet(id)).unwrap();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    let partial = held(&engine, &session, id);
+    assert!(
+        partial.contains(&a) && partial.contains(&b),
+        "no claim: {partial:?}"
+    );
+
+    let session = reopen(&engine, session);
+    let clean = held(&engine, &session, id);
+    assert!(
+        !clean.contains(&a) && !clean.contains(&b),
+        "claimed again: {clean:?}"
+    );
+    assert_holds(&engine, &session, id, &clean, "a clean load");
+}
+
+/// An abandoned payment relayed again by a peer: its record is stored
+/// again while its sent mark stands (the abandon sweeps the record, not the
+/// mark). A load whose abandoned marks cannot be read claims nothing: its
+/// coin stays held and stored unspent, and its sent mark stays.
+#[test]
+fn a_load_with_an_unreadable_abandoned_mark_claims_nothing() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    abandon(&engine, &session, id, payment.txid());
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    persister.flush(id.0).unwrap();
+    assert!(
+        (persister.get_core_tx_record(id.0, &payment.txid()).unwrap()).is_none(),
+        "the abandon swept the record"
+    );
+    drop(persister);
+    assert!(sent_marks(&session, id).contains(&payment.txid()));
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    eventually("A stored unspent", || stored_unspent(&session, id, a));
+    let (scope, key) = (id.to_string(), format!("abandoned:{}", payment.txid()));
+    let appdb = Arc::clone(&session.live().unwrap().appdb);
+    let (_, mark) = (appdb.settings_with_prefix(&scope, &key).unwrap().pop()).unwrap();
+    appdb.set_setting(&scope, &key, Some("00")).unwrap();
+    drop(appdb);
+
+    let session = reopen(&engine, session);
+    let partial = held(&engine, &session, id);
+    assert!(partial.contains(&a), "not dropped: {partial:?}");
+    assert_holds(&engine, &session, id, &partial, "the mark unread");
+    assert!(stored_unspent(&session, id, a), "not stored spent");
+    assert!(sent_marks(&session, id).contains(&payment.txid()));
+
+    (session.live().unwrap().appdb)
+        .set_setting(&scope, &key, Some(&mark))
+        .unwrap();
+    let session = reopen(&engine, session);
+    assert!(held(&engine, &session, id).contains(&a));
+    assert!(stored_unspent(&session, id, a));
+    assert!(!sent_marks(&session, id).contains(&payment.txid()));
 }

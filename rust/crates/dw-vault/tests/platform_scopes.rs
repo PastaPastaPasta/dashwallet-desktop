@@ -593,6 +593,7 @@ async fn the_scan_key_needs_an_identity_scan_grant_for_its_wallet() {
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
     v.store_wallet_secret(&wallet(2), &secret(2)).unwrap();
 
