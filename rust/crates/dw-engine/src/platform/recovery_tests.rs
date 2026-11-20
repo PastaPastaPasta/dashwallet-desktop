@@ -1895,7 +1895,7 @@ fn a_check_begun_during_a_rollback_leaves_nothing() {
         let rollback = scope.spawn(|| {
             engine.block_on(async {
                 let held = s.wallet_lifecycle.hold().await;
-                s.roll_back_restore(&held, &[(id, true)]).await
+                s.roll_back_restore(&held, &[(id, true, None)]).await
             })
         });
         wait_until("the rollback's forget", || checks.generation(&id) > before);
@@ -2160,7 +2160,7 @@ fn a_restore_rollback_admits_no_discovery_until_it_is_done() {
         let rollback = scope.spawn(|| {
             engine.block_on(async {
                 let held = s.wallet_lifecycle.hold().await;
-                s.roll_back_restore(&held, &[(id, true)]).await
+                s.roll_back_restore(&held, &[(id, true, None)]).await
             })
         });
         wait_until("the rollback's forget", || {

@@ -237,19 +237,9 @@ public final class WalletManagementViewModel {
                 try await self.importer.importDumpWallet(url, options: WalletImportOptions())
             }
         case .walletDatSQLite(let encrypted, _):
-            if encrypted {
-                flow = .needsFilePassphrase(url, kind)
-            } else {
-                await runImport(.importing) { () async throws(ServiceError) in
-                    try await self.importer.importWalletDat(url, passphrase: nil, options: WalletImportOptions())
-                }
-            }
-        case .walletDatBerkeleyDB:
-            // M6: the engine answers not_implemented; say what to do instead.
-            await runImport(.importing) { () async throws(ServiceError) in
-                try await self.importer.importWalletDat(url, passphrase: nil, options: WalletImportOptions())
-            }
-            if case .failed = flow { flow = .failed(L10n.Wallets.berkeleyDBUnavailable) }
+            await importWalletDatFile(url, kind, encrypted: encrypted)
+        case .walletDatBerkeleyDB(let encrypted):
+            await importWalletDatFile(url, kind, encrypted: encrypted == true)
         case .dwBackup:
             await restore(url, passphrase: nil)
         case .psbt:
@@ -259,17 +249,27 @@ public final class WalletManagementViewModel {
         }
     }
 
+    /// Asks for the wallet.dat passphrase when `encrypted`, otherwise imports it.
+    private func importWalletDatFile(_ url: URL, _ kind: WalletFileKind, encrypted: Bool) async {
+        if encrypted {
+            flow = .needsFilePassphrase(url, kind)
+        } else {
+            await runImport(.importing) { () async throws(ServiceError) in
+                try await self.importer.importWalletDat(url, passphrase: nil, options: WalletImportOptions())
+            }
+        }
+    }
+
     /// The passphrase of an encrypted wallet.dat or of a backup.
     public func provideFilePassphrase(_ passphrase: String) async {
         guard case .needsFilePassphrase(let url, let kind) = flow else { return }
         let secret = vault.makeSecret(utf8: passphrase)
-        // Only an encrypted wallet.dat goes to the importer; every other file
-        // that asked for a passphrase is a backup being restored.
-        if case .walletDatSQLite = kind {
+        switch kind {
+        case .walletDatSQLite, .walletDatBerkeleyDB:
             await runImport(.importing) { () async throws(ServiceError) in
                 try await self.importer.importWalletDat(url, passphrase: secret, options: WalletImportOptions())
             }
-        } else {
+        default:
             await restore(url, passphrase: secret)
         }
     }

@@ -401,7 +401,8 @@ commands! {
         Ok(state.session().await?.wallet_info(&id)?.into())
     }
 
-    /// Balance buckets; `null` until the scan reaches the birth height.
+    /// Balance buckets known so far; `catchingUp` is true before the scan reaches
+    /// the wallet's birth height. `null` means the wallet state has not been read.
     #[facade("NetworkSession::balances")]
     fn balance(state, wallet_id: String) -> Option<Balances> {
         let id = parse_wallet_id(&wallet_id)?;

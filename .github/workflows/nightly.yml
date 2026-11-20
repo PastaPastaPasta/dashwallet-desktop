@@ -86,7 +86,7 @@ jobs:
           uv pip install --python regtest/harness/.venv/bin/python -r regtest/harness/requirements.txt
           uv venv .func-venv --python 3.12
           # dash_hash 1.4.0 (X11 for the functional framework) from its commit archive, hash-checked.
-          curl -fsSL -o "$RUNNER_TEMP/dash_hash.tar.gz" \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 -o "$RUNNER_TEMP/dash_hash.tar.gz" \
             https://github.com/dashpay/dash_hash/archive/7af387315d9064ec3a751545fee0524d997c8867.tar.gz
           echo "7153d3341e3a6b1a2a1365dbdf9ff6315fa7c6c67b60506e91ffd93383a601d5  $RUNNER_TEMP/dash_hash.tar.gz" | sha256sum -c -
           uv pip install --python .func-venv/bin/python "$RUNNER_TEMP/dash_hash.tar.gz"

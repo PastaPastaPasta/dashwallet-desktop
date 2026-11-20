@@ -235,8 +235,13 @@ commands! {
         network: Option<String>,
         settings: Option<SessionSettings>,
     ) -> OpenedNetwork {
-        let engine = &state.engine;
+        // Before the wait and before a retry: "moon" is `invalid_argument`
+        // even while the engine is still starting, and it must not start
+        // another build after a failure.
         let requested = network.as_deref().map(parse_network).transpose()?;
+        state.retry_engine_if_failed();
+        let engines = state.engine.clone();
+        let engine = engines.wait().await?;
         let settings = settings.unwrap_or_default();
         let mut slot = state.session_slot().await;
         // Read under the slot: a switch moves the window network while it
@@ -300,6 +305,9 @@ commands! {
                 choice: NetworkChoiceView::read(&state),
             });
         }
+        state.retry_engine_if_failed();
+        let engines = state.engine.clone();
+        let engine = engines.wait().await?;
         let mut slot = state.session_slot().await;
         let left = state.window_network();
         let active = slot.clone();
@@ -310,7 +318,7 @@ commands! {
                     let old = s.network().clone();
                     drop(s);
                     let busy = busy_check(state.broadcasts());
-                    let closed = match state.engine.close_network_unless_busy(old, SWITCH_DRAIN, busy).await {
+                    let closed = match engine.close_network_unless_busy(old, SWITCH_DRAIN, busy).await {
                         Ok(closed) => Ok(closed),
                         Err(CloseRefused::Busy(e)) => return Err(e),
                         Err(CloseRefused::Draining) => {
@@ -378,11 +386,14 @@ commands! {
     /// none was open.
     #[facade("Engine::close_network")]
     fn close_network(state) -> bool {
-        let engine = &state.engine;
+        // No session yet, including while the engine is still starting:
+        // `false`, without waiting out the build.
         let mut slot = state.session_slot().await;
         let Some(network) = slot.as_ref().map(|s| s.network().clone()) else {
             return Ok(false);
         };
+        let engines = state.engine.clone();
+        let engine = engines.wait().await?;
         close_active(&state, &mut slot, engine.close_network(network).await)
     }
 
@@ -406,7 +417,8 @@ commands! {
     /// Every network with data under the data root, in network order.
     #[facade("Engine::existing_networks")]
     fn existing_networks(state) -> Vec<NetworkData> {
-        let networks = state.engine.existing_networks().await?;
+        let engines = state.engine.clone();
+        let networks = engines.wait().await?.existing_networks().await?;
         Ok(networks.into_iter().map(Into::into).collect())
     }
 }
@@ -421,8 +433,11 @@ async fn open_window_network(
 ) -> Result<Arc<NetworkSession>, AppError> {
     #[cfg(test)]
     let settings = state.test_endpoints.lock().unwrap().clone().unwrap_or(settings);
-    let s = state
-        .engine
+    state.retry_engine_if_failed();
+    let engines = state.engine.clone();
+    let s = engines
+        .wait()
+        .await?
         .open_network(network.clone(), settings.over(&state.launch))
         .await?;
     if state.launch.starts_spv_on(network) {

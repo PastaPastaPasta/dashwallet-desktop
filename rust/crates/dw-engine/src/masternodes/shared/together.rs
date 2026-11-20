@@ -563,6 +563,10 @@ impl NetworkSession {
                     created_at: now,
                     updated_at: now,
                     last_error: None,
+                    abandon_tx: None,
+                    abandon_log: None,
+                    legacy_bound: false,
+                    resend_marked: false,
                 };
                 self.appdb_op(move |db| db.insert_shared_session_durable(&w, &row, now))
                     .await?;

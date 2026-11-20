@@ -19,8 +19,10 @@ use dw_vault::{GrantKind, LockState, Vault, VaultError, WalletSecret, WalletSign
 use key_wallet::mnemonic::Language;
 use key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use key_wallet::wallet::managed_wallet_info::transaction_building::AccountTypePreference;
+use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use zeroize::Zeroizing;
 
+use crate::compat::ImportedState;
 use crate::gate::Lifecycle;
 use crate::platform::runtime::PlatformSignal;
 use crate::wallets::validate_name;
@@ -65,16 +67,34 @@ pub(crate) fn registration_refused(_: &std::path::Path) -> bool {
 /// restores scan 1000 keys ahead (QT-105), which also finds funds Core mixed
 /// on its BIP44 chains (DESIGN.md R2).
 pub const CORE_COMPAT_LOOKAHEAD: u32 = 1000;
+/// CoinJoin scan window on restore and rescan. The account's default gap
+/// derives indexes 0 through 99 only, so a key used at index 100 or beyond
+/// is invisible to a filter scan until an earlier address is marked used.
+/// This is the largest gap key-wallet will keep, applied to the CoinJoin
+/// account alone.
+pub(crate) const COINJOIN_SCAN_GAP: u32 = MAX_LOOKAHEAD;
 /// Largest lookahead key-wallet supports (`MAX_GAP_LIMIT`).
 pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// dw-appdb setting (wallet scope) holding a raised lookahead, applied again
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
 const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 
-/// app.sqlite setting of "require authentication for every payment", one
-/// per vault: this prefix and the vault id in hex. `"0"` is off; absent
-/// (the default) or anything else is on.
+/// app.sqlite setting of "ask for my passphrase for every payment", one
+/// per vault: this prefix and the vault id in hex.
+///
+/// `"strict"` asks every time. `"window"` is the five-minute window.
+/// A vault from before the window existed stored nothing when the choice
+/// was the old default (ask every time) and `"0"` when the user turned
+/// that off. Absence and any other value stay strict, so an upgrade does
+/// not start signing without a passphrase. A vault created by this build
+/// writes `"window"` itself. `"0"` was an explicit choice to stop asking,
+/// and it now means the window rather than an unlimited unlock.
 const PAYMENT_AUTH_KEY: &str = "auth.every_payment/";
+
+/// Whether the stored value asks for the passphrase on every payment.
+pub(crate) fn asks_every_payment(stored: Option<&str>) -> bool {
+    !matches!(stored, Some("window") | Some("0"))
+}
 
 fn payment_auth_key(vault_id: &[u8]) -> String {
     format!("{PAYMENT_AUTH_KEY}{}", hex::encode(vault_id))
@@ -86,7 +106,7 @@ fn payment_auth_key(vault_id: &[u8]) -> String {
 pub struct PaymentAuthentication {
     pub on: bool,
     /// The vault it was read for ([`Vault::vault_id`]); `None` without a
-    /// vault (the default, on). A host that issues a grant later checks the
+    /// vault, which reads as on. A host that issues a grant later checks the
     /// vault is still this one.
     pub vault_id: Option<Vec<u8>>,
 }
@@ -163,7 +183,7 @@ impl Checked {
     }
 }
 
-/// What the blocking part of an import stored.
+/// What the first, read-only part of an import found.
 struct Stored {
     wallet_id: WalletId,
     seed: Zeroizing<[u8; 64]>,
@@ -209,6 +229,46 @@ pub(crate) async fn apply_lookahead(
     let mut first_error = None;
     for (account, index) in accounts {
         if let Err(e) = wallet.core().set_gap_limit(account, index, gap).await {
+            first_error.get_or_insert(e);
+        }
+    }
+    first_error.map_or(Ok(()), |e| Err(e.into()))
+}
+
+/// Raises each CoinJoin account of open wallet `id` to [`COINJOIN_SCAN_GAP`]
+/// when a pool of it is narrower, so a restore or rescan derives index 100
+/// and beyond. BIP44 is untouched. A wallet no longer open is skipped.
+pub(crate) async fn ensure_coinjoin_scan_gap(
+    manager: &crate::session::Manager,
+    id: WalletId,
+) -> Result<(), EngineError> {
+    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+    let narrow: Vec<u32> = {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let Some(info) = wm.get_wallet_info(&id.0) else {
+            return Ok(());
+        };
+        (info.core_wallet.accounts.coinjoin_accounts.iter())
+            .filter(|(_, account)| {
+                (account.managed_account_type().address_pools().iter())
+                    .any(|pool| pool.gap_limit < COINJOIN_SCAN_GAP)
+            })
+            .map(|(index, _)| *index)
+            .collect()
+    };
+    if narrow.is_empty() {
+        return Ok(());
+    }
+    let Some(wallet) = manager.get_wallet(&id.0).await else {
+        return Ok(());
+    };
+    let mut first_error = None;
+    for index in narrow {
+        if let Err(e) = (wallet.core())
+            .set_gap_limit(AccountTypePreference::CoinJoin, index, COINJOIN_SCAN_GAP)
+            .await
+        {
             first_error.get_or_insert(e);
         }
     }
@@ -264,12 +324,14 @@ impl NetworkSession {
         out
     }
 
-    /// "Require authentication for every payment" (DESIGN-opus §1.8; default
-    /// on). While on, a host issues `Spend` and `PlatformOp` grants on an
-    /// encrypted vault only against a credential, never `Credential::None`
-    /// (dw-app enforces it at its IPC boundary). Stored in this network's
-    /// app.sqlite under the vault's id, so script in a webview cannot change
-    /// it and every new vault (after `destroy`, or a recovery) starts on.
+    /// "Ask for my passphrase for every payment". While on, a host issues a
+    /// payment grant on an encrypted vault only against a credential (dw-app
+    /// enforces it at its IPC boundary). While off, the vault's signing
+    /// window may issue one, up to the sealed spend limit for the whole
+    /// window. Stored per vault id. A vault that has no row yet is on:
+    /// that is how every vault from before the window stored the default.
+    /// [`Self::adopt_signing_window_default`] writes the window for a vault
+    /// this build creates.
     pub async fn payment_authentication(
         self: &Arc<Self>,
     ) -> Result<PaymentAuthentication, EngineError> {
@@ -285,7 +347,9 @@ impl NetworkSession {
             let key = payment_auth_key(&vault_id);
             let on = this
                 .appdb_op(move |db| {
-                    Ok(db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.as_deref() != Some("0"))
+                    Ok(asks_every_payment(
+                        db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.as_deref(),
+                    ))
                 })
                 .await?;
             Ok(PaymentAuthentication {
@@ -322,10 +386,52 @@ impl NetworkSession {
         self.on_runtime(async move {
             let _op = this.enter().await?;
             let key = payment_auth_key(&vault_id);
+            let value = if on { "strict" } else { "window" };
+            this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some(value)))
+                .await
+        })
+        .await
+    }
+
+    /// Writes the signing-window default for a vault this build just
+    /// created, when the vault has no row yet. An older vault is left
+    /// absent, which still asks every time.
+    pub async fn adopt_signing_window_default(self: &Arc<Self>) -> Result<(), EngineError> {
+        let Some(vault_id) = self.vault().vault_id() else {
+            return Ok(());
+        };
+        let key = payment_auth_key(&vault_id);
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
             this.appdb_op(move |db| {
-                db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, (!on).then_some("0"))
+                if db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.is_none() {
+                    db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some("window"))?;
+                }
+                Ok(())
             })
             .await
+        })
+        .await
+    }
+
+    /// Replaces this vault's payment-auth row. `None` deletes it, which is
+    /// how a vault from before the signing window stored "ask every time".
+    /// Tests use it to prove an upgrade still asks.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub async fn set_payment_auth_row_for_test(
+        self: &Arc<Self>,
+        value: Option<String>,
+    ) -> Result<(), EngineError> {
+        let Some(vault_id) = self.vault().vault_id() else {
+            return Ok(());
+        };
+        let key = payment_auth_key(&vault_id);
+        let this = Arc::clone(self);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, value.as_deref()))
+                .await
         })
         .await
     }
@@ -403,6 +509,7 @@ impl NetworkSession {
                 move || mnemonic::derive_secret(&secret, b"", false).map_err(mnemonic_error),
                 AutoBackup::Schedule,
                 Origin::CreatedHere,
+                ImportedState::default(),
             )
             .await?;
         // The import took and released the operation guard.
@@ -455,8 +562,30 @@ impl NetworkSession {
     where
         F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
     {
-        self.import_secret_inner(options, make_secret, AutoBackup::Schedule, Origin::Imported)
+        self.import_secret_with_state(options, make_secret, ImportedState::default())
             .await
+    }
+
+    /// [`Self::import_secret_with`] for a wallet that comes with `state`
+    /// from a Dash Core file: stored before the wallet is registered, and
+    /// its range applied before anyone hears of the wallet.
+    pub(crate) async fn import_secret_with_state<F>(
+        self: &Arc<Self>,
+        options: ImportOptions,
+        make_secret: F,
+        state: ImportedState,
+    ) -> Result<WalletId, EngineError>
+    where
+        F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
+    {
+        self.import_secret_inner(
+            options,
+            make_secret,
+            AutoBackup::Schedule,
+            Origin::Imported,
+            state,
+        )
+        .await
     }
 
     /// [`Self::import_secret_with`] with the automatic backup left to the
@@ -469,6 +598,7 @@ impl NetworkSession {
         make_secret: F,
         auto_backup: AutoBackup,
         origin: Origin,
+        state: ImportedState,
     ) -> Result<WalletId, EngineError>
     where
         F: FnOnce() -> Result<WalletSecret, EngineError> + Send + 'static,
@@ -481,7 +611,7 @@ impl NetworkSession {
             // lock.
             let secret = tokio::task::spawn_blocking(make_secret).await??;
             let held = this.wallet_lifecycle.hold().await;
-            this.import_secret_locked(&held, checked, secret, auto_backup, origin)
+            this.import_secret_locked(&held, checked, secret, auto_backup, origin, state)
                 .await
         })
         .await
@@ -497,6 +627,7 @@ impl NetworkSession {
         secret: WalletSecret,
         auto_backup: AutoBackup,
         origin: Origin,
+        state: ImportedState,
     ) -> Result<WalletId, EngineError> {
         let Checked {
             name,
@@ -506,63 +637,95 @@ impl NetworkSession {
         let manager = self.manager()?;
         let network = self.network.core_network();
         let vault = self.vault.clone();
-        // Vault file writes and fsync stay off the async workers.
-        let Stored {
-            wallet_id,
-            seed,
-            had_secret,
-            fingerprint,
-        } = tokio::task::spawn_blocking(move || -> Result<Stored, EngineError> {
+        // Vault reads stay off the async workers.
+        let (
+            Stored {
+                wallet_id,
+                seed,
+                had_secret,
+                fingerprint,
+            },
+            secret,
+        ) = tokio::task::spawn_blocking(move || -> Result<_, EngineError> {
             let id = mnemonic::wallet_id_for_seed(&secret.seed, network).map_err(mnemonic_error)?;
-            // The vault keeps a seed it holds: one stored before, perhaps
-            // with another derivation flag (the id derives from the seed),
-            // counts as one already there.
-            let had_secret = vault.has_wallet_secret(&id)
-                || match vault.store_wallet_secret(&id, &secret) {
-                    Err(VaultError::WalletSecretExists) => true,
-                    stored => {
-                        stored?;
-                        false
-                    }
-                };
             // Kept for PSBT derivation records (watch-only use, no key needed).
             let fingerprint =
                 key_wallet::bip32::ExtendedPrivKey::new_master(network, &secret.seed[..])
                     .map(|m| m.fingerprint().to_string())
                     .map_err(|e| EngineError::Internal(format!("master key: {e}")))?;
-            Ok(Stored {
+            let stored = Stored {
                 wallet_id: WalletId(id),
                 seed: Zeroizing::new(*secret.seed),
-                had_secret,
+                had_secret: vault.has_wallet_secret(&id),
                 fingerprint,
-            })
+            };
+            Ok((stored, secret))
         })
         .await??;
         // Rows of a removed wallet are skipped until it is readmitted
         // (DEC-210), before its first write.
         let readmit = wallet_id.to_string();
-        let readmitted = match self.appdb_op(move |db| db.readmit_wallet(&readmit)).await {
-            Ok(readmitted) => readmitted,
-            Err(e) => {
-                if !had_secret {
-                    self.forget_secret(held, wallet_id).await;
-                }
-                return Err(e);
-            }
-        };
+        let readmitted = self.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
         self.store_fingerprint(wallet_id, fingerprint).await;
 
         // A closed (unloaded) wallet is registered: open it instead.
         if self.live()?.store.is_unloaded(&wallet_id.0) {
-            if !had_secret {
-                self.forget_secret(held, wallet_id).await;
-            }
             return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
         }
-        if manager.get_wallet(&wallet_id.0).await.is_some() {
-            if had_secret {
-                return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
+        let registered = manager.get_wallet(&wallet_id.0).await.is_some();
+        if registered && had_secret {
+            return Err(EngineError::WalletAlreadyExists(wallet_id.to_string()));
+        }
+        // Keys for a watch-only wallet: it gets Core's range first. A range
+        // applied before a later step fails is not narrowed again: its
+        // addresses are the wallet's own.
+        if registered {
+            self.cover_imported_range(&manager, wallet_id, &state)
+                .await?;
+        }
+        // A Dash Core file's range, coin locks and salt are stored, all or
+        // none, before the wallet is registered or its seed is stored, so
+        // nothing can see or spend from it with keys before they are there.
+        // A wallet already there with its keys is left as it is.
+        let prior = match self.write_imported_state(wallet_id, &state).await {
+            Ok(prior) => prior,
+            Err(e) => {
+                if readmitted || !had_secret {
+                    self.record_removed_again(held, wallet_id).await;
+                }
+                return Err(e);
             }
+        };
+        // The vault keeps a seed it holds: one stored before, perhaps with
+        // another derivation flag (the id derives from the seed), counts as
+        // one already there. Vault file writes and fsync stay off the async
+        // workers.
+        let had_secret = had_secret || {
+            let vault = self.vault.clone();
+            let stored = tokio::task::spawn_blocking(move || {
+                match vault.store_wallet_secret(&wallet_id.0, &secret) {
+                    Err(VaultError::WalletSecretExists) => Ok(true),
+                    stored => stored.map(|()| false),
+                }
+            })
+            .await
+            .map_err(EngineError::from)
+            .and_then(|r| r.map_err(EngineError::from));
+            match stored {
+                Ok(existed) => existed,
+                Err(e) => {
+                    if registered {
+                        if let Some(prior) = prior {
+                            self.restore_imported_state(prior).await;
+                        }
+                    } else {
+                        self.record_removed_again(held, wallet_id).await;
+                    }
+                    return Err(e);
+                }
+            }
+        };
+        if registered {
             // Keys attached: watch-only becomes false; hosts reload.
             self.sink.emit(EngineEvent::WalletCreated {
                 network: self.network.clone(),
@@ -606,6 +769,9 @@ impl NetworkSession {
             Ok(wallet) if wallet.wallet_id() == wallet_id.0 => wallet,
             Ok(wallet) => {
                 self.unadmit(&manager, wallet_id, was_unloaded).await;
+                if readmitted || !had_secret {
+                    self.record_removed_again(held, wallet_id).await;
+                }
                 return Err(EngineError::Internal(format!(
                     "platform-wallet registered {} for the seed of {wallet_id}",
                     hex::encode(wallet.wallet_id())
@@ -619,7 +785,7 @@ impl NetworkSession {
                     if !had_secret {
                         self.forget_secret(held, wallet_id).await;
                     }
-                    if readmitted {
+                    if readmitted || !had_secret {
                         self.record_removed_again(held, wallet_id).await;
                     }
                 }
@@ -632,6 +798,30 @@ impl NetworkSession {
             }
             self.store_lookahead(wallet_id, gap).await;
         }
+        // Not announced without Core's range: taken out again, with the rows
+        // written for it.
+        if let Err(e) = self.cover_imported_range(&manager, wallet_id, &state).await {
+            let _discoveries = self.platform.recovery.end_discoveries(wallet_id).await;
+            self.platform.forget(&wallet_id);
+            if let Err(removal) = self.remove_registered(wallet_id).await {
+                tracing::warn!(%wallet_id, error = %removal, "could not take out a wallet whose range was not applied");
+            }
+            if let Ok(live) = self.live() {
+                live.tap.forget(&wallet_id);
+            }
+            if !had_secret {
+                self.forget_secret(held, wallet_id).await;
+            }
+            return Err(e);
+        }
+        let published_at = {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            (wm.get_wallet_info(&wallet_id.0))
+                .map_or(0, |info| info.core_wallet.birth_height().saturating_sub(1))
+        };
+        self.widen_published_wallet(&manager, wallet_id, published_at)
+            .await;
         self.refresh_wallet_state(&manager, wallet_id).await;
         // The wallet is registered; a failed name write leaves it with
         // the computed default name and is reported in the log only.
@@ -692,21 +882,65 @@ impl NetworkSession {
         }
     }
 
-    /// Applies wallet `id`'s stored lookahead, if any, then places the coins
-    /// the load left outside the account that derives them
-    /// ([`crate::restore`]), before SPV can replay them. Failures are
-    /// logged; the wallet keeps the default gap.
+    /// Applies wallet `id`'s stored legacy address range and lookahead, if
+    /// any, then places the coins the load left outside the account that
+    /// derives them ([`crate::restore`]), before SPV can replay them.
+    /// Failures are logged; the wallet keeps the default gap.
     pub(crate) async fn restore_loaded_wallet(
         &self,
         manager: &crate::session::Manager,
         id: WalletId,
     ) {
+        if let Some(issued) = self.stored_issued(id).await
+            && let Err(e) = self.cover_issued(manager, id, issued).await
+        {
+            tracing::warn!(wallet_id = %id, error = %e, "could not restore the legacy wallet's address range");
+        }
         let restored = match self.stored_lookahead(id).await {
             Some(gap) => self.raise_lookahead(manager, id, gap).await,
             None => self.restore_coins(manager, id).await.map(|_| ()),
         };
         if let Err(e) = restored {
             tracing::warn!(wallet_id = %id, error = %e, "could not restore the loaded wallet's lookahead or coins");
+        }
+        let loaded_at = self
+            .live()
+            .ok()
+            .and_then(|live| live.store.loaded_checkpoint(&id.0));
+        match loaded_at {
+            Some(checkpoint) => self.widen_published_wallet(manager, id, checkpoint).await,
+            None => {
+                if let Err(e) = ensure_coinjoin_scan_gap(manager, id).await {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap");
+                }
+            }
+        }
+    }
+
+    /// Widens open wallet `id`'s CoinJoin pools, then rewinds its filter
+    /// checkpoint to `published_at`, the one it had when platform-wallet
+    /// made it visible to SPV, if a batch committed above it since: that
+    /// batch matched the narrower pools. The rewind stores its replay
+    /// record first. Failures are logged.
+    pub(crate) async fn widen_published_wallet(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        published_at: u32,
+    ) {
+        if let Err(e) = ensure_coinjoin_scan_gap(manager, id).await {
+            tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap");
+        }
+        let synced = {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            wm.get_wallet_info(&id.0)
+                .map(|info| info.core_wallet.synced_height())
+        };
+        if synced.is_some_and(|synced| synced > published_at)
+            && let Err(e) = self.rewind_recorded(manager, id, published_at).await
+        {
+            tracing::warn!(wallet_id = %id, error = %e, "could not rescan what SPV matched before the CoinJoin gap was widened");
         }
     }
 
@@ -751,8 +985,10 @@ impl NetworkSession {
         }
     }
 
-    /// A removed wallet whose import failed after it was readmitted is
-    /// recorded as removed again, with what the import wrote of it, unless
+    /// A removed wallet whose import failed after it was readmitted, or a
+    /// new wallet whose first import failed, is recorded as removed (again),
+    /// with what the import wrote of it, so a later import of the seed
+    /// starts from no rows, unless
     /// the failed call registered it after all (DEC-210). The lifecycle
     /// lock keeps any other registration out meanwhile.
     pub(crate) async fn record_removed_again(&self, _held: &Lifecycle<'_>, wallet_id: WalletId) {
@@ -841,5 +1077,20 @@ impl NetworkSession {
             Ok(signer.sign_message(&path, &message).await?)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod payment_auth_tests {
+    use super::asks_every_payment;
+
+    #[test]
+    fn an_absent_or_unknown_row_asks_and_only_an_explicit_window_does_not() {
+        assert!(asks_every_payment(None));
+        assert!(asks_every_payment(Some("strict")));
+        assert!(asks_every_payment(Some("1")));
+        assert!(asks_every_payment(Some("garbage")));
+        assert!(!asks_every_payment(Some("window")));
+        assert!(!asks_every_payment(Some("0")));
     }
 }

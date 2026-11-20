@@ -5,7 +5,7 @@
 import { DashButton, DashLogo } from "../components/basics";
 
 export const PreReleaseText = {
-  title: "Dash Wallet 0.1 is an early release",
+  title: "Dash Wallet is an early release",
   body: "It has had no security review; use small amounts.",
   dismiss: "I understand",
 };
