@@ -1722,3 +1722,6 @@ fn a_cancel_during_an_admitted_settle_keeps_the_close_behind_it() {
     });
     assert!(matches!(closed, Ok(true)), "{closed:?}");
 }
+
+#[path = "shielded_disposition_tests.rs"]
+mod disposition_tests;
