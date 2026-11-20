@@ -45,6 +45,8 @@ struct TestWallet {
     locked: Mutex<HashSet<OutPoint>>,
     held: Mutex<Vec<OutPoint>>,
     next_script: Mutex<u8>,
+    /// At most this many output scripts per reservation.
+    script_limit: usize,
     released: Mutex<Vec<ScriptBuf>>,
     kept: Mutex<Vec<ScriptBuf>>,
 }
@@ -70,6 +72,7 @@ impl TestWallet {
             locked: Mutex::new(HashSet::new()),
             held: Mutex::new(Vec::new()),
             next_script: Mutex::new(0),
+            script_limit: usize::MAX,
             released: Mutex::new(Vec::new()),
             kept: Mutex::new(Vec::new()),
         }
@@ -117,7 +120,7 @@ impl MixingWallet for TestWallet {
 
     async fn reserve_scripts(&self, count: usize) -> Result<Vec<ScriptBuf>, WalletError> {
         let mut n = self.next_script.lock().unwrap();
-        Ok((0..count)
+        Ok((0..count.min(self.script_limit))
             .map(|_| {
                 *n += 1;
                 p2pkh(*n)
@@ -599,10 +602,11 @@ fn rebalance_params(mn: &Mn, entry: RebalanceEntry) -> SessionParams {
     p
 }
 
-/// A rebalance session's server side up to its entry, as a Core masternode
-/// talks to a peer at the rebalance protocol: the `dsa` carries the flag
-/// and the ready `dsq` is announced by `inv` and sent on `getdata`.
-async fn serve_rebalance_until_entry(mn: &Mn, conn: &mut MockConn, flag: u8) -> Entry {
+/// A rebalance session's server side up to its ready `dsq`, as a Core
+/// masternode talks to a peer at the rebalance protocol: the `dsa` carries
+/// the flag and the ready `dsq` is announced by `inv` and sent on
+/// `getdata`.
+async fn serve_rebalance_until_ready(mn: &Mn, conn: &mut MockConn, flag: u8) {
     let dsa = conn.recv_command("dsa").await.unwrap();
     let accept = Accept::decode(&dsa.payload, REBALANCE_VERSION).unwrap();
     assert_eq!(accept.denom, DENOM);
@@ -627,6 +631,11 @@ async fn serve_rebalance_until_entry(mn: &Mn, conn: &mut MockConn, flag: u8) -> 
         vec![ready.hash()]
     );
     conn.send("dsq", &ready.encode()).await.unwrap();
+}
+
+/// [`serve_rebalance_until_ready`], then the entry.
+async fn serve_rebalance_until_entry(mn: &Mn, conn: &mut MockConn, flag: u8) -> Entry {
+    serve_rebalance_until_ready(mn, conn, flag).await;
     let dsi = conn.recv_command("dsi").await.unwrap();
     Entry::decode(&dsi.payload).unwrap()
 }
@@ -667,6 +676,14 @@ async fn run_signed_rebalance(
     let server = async {
         let mut conn = mn.peer.accept().await.unwrap();
         let entry = serve_rebalance_until_entry(&mn, &mut conn, flag).await;
+        let locked = wallet.locked.lock().unwrap().clone();
+        assert!(
+            entry
+                .inputs
+                .iter()
+                .all(|i| locked.contains(&i.previous_output)),
+            "the entry's inputs are locked while it is out"
+        );
         let (input, output) = final_tx(&entry);
         let tx = bip69(input, output);
         conn.send(
@@ -948,4 +965,53 @@ async fn a_malformed_rebalance_entry_is_never_sent() {
         SessionOutcome::Failed(SessionFailure::BadRebalance("wrong input count"))
     );
     assert!(wallet.locked.lock().unwrap().is_empty());
+}
+
+/// A rebalance input spent since the session was planned: at the ready
+/// `dsq` the entry is not sent and the inputs come back.
+#[tokio::test]
+async fn a_rebalance_whose_input_was_spent_sends_no_entry() {
+    let mn = Mn::new().await;
+    let wallet = TestWallet::with_coins(1, LARGER);
+    let mut entry = wallet.entry(RebalanceKind::Demotion);
+    entry.inputs[0].outpoint = OutPoint::new(Txid::from_byte_array([0xdd; 32]), 0);
+    let (_stop_tx, stop) = watch::channel(false);
+    let p = rebalance_params(&mn, entry);
+    let server = async {
+        let mut conn = mn.peer.accept().await.unwrap();
+        serve_rebalance_until_ready(&mn, &mut conn, FLAG_DEMOTION).await;
+        assert!(conn.recv_command("dsi").await.is_err(), "no entry");
+    };
+    let ((), outcome) = tokio::join!(server, run_session(&wallet, p, |_| {}, stop));
+    assert_eq!(
+        outcome,
+        SessionOutcome::Failed(SessionFailure::BadRebalance(
+            "an input is no longer unspent"
+        ))
+    );
+    assert!(wallet.locked.lock().unwrap().is_empty());
+    assert_eq!(*wallet.signs.lock().unwrap(), 0);
+}
+
+/// A demotion promises ten outputs: with nine scripts it sends no entry
+/// and gives the nine back.
+#[tokio::test]
+async fn a_demotion_short_of_output_scripts_sends_no_entry() {
+    let mn = Mn::new().await;
+    let mut wallet = TestWallet::with_coins(1, LARGER);
+    wallet.script_limit = 9;
+    let (_stop_tx, stop) = watch::channel(false);
+    let p = rebalance_params(&mn, wallet.entry(RebalanceKind::Demotion));
+    let server = async {
+        let mut conn = mn.peer.accept().await.unwrap();
+        serve_rebalance_until_ready(&mn, &mut conn, FLAG_DEMOTION).await;
+        assert!(conn.recv_command("dsi").await.is_err(), "no entry");
+    };
+    let ((), outcome) = tokio::join!(server, run_session(&wallet, p, |_| {}, stop));
+    assert_eq!(
+        outcome,
+        SessionOutcome::Failed(SessionFailure::Wallet("too few output scripts".into()))
+    );
+    assert!(wallet.locked.lock().unwrap().is_empty());
+    assert_eq!(wallet.released.lock().unwrap().len(), 9);
 }

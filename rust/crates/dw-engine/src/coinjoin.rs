@@ -4641,4 +4641,50 @@ mod tests {
         unconfirmed.coins[5].coin.utxo.is_confirmed = false;
         assert!(unconfirmed.rebalance_plan(10, true).is_empty());
     }
+
+    /// Ten free, confirmed, fully mixed 0.01 coins on the CoinJoin account,
+    /// beside ten 0.01 coins each that are not fully mixed, locked,
+    /// unconfirmed, or a BIP44 denomination: only the ten are counted as
+    /// fully mixed spendable, and only they are ever a conversion's input.
+    #[test]
+    fn rebalance_inputs_are_only_free_final_fully_mixed_coinjoin_coins() {
+        let small = DENOMINATIONS[3];
+        let mut coins: Vec<MixViewCoin> =
+            (1..=10).map(|n| coin(n, small, true, 4, true, C)).collect();
+        coins.extend((11..=20).map(|n| coin(n, small, true, 1, false, C)));
+        coins.extend((21..=30).map(|n| {
+            let mut c = coin(n, small, true, 4, true, C);
+            c.coin.user_locked = true;
+            c
+        }));
+        coins.extend((31..=40).map(|n| {
+            let mut c = coin(n, small, true, 4, true, C);
+            c.coin.utxo.is_confirmed = false;
+            c
+        }));
+        coins.extend((41..=50).map(|n| {
+            let mut c = coin(n, small, false, 4, true, C);
+            c.coin.counted_denomination = true;
+            c
+        }));
+        let view = view_of(coins);
+        let good: HashSet<OutPoint> = view.coins[..10]
+            .iter()
+            .map(|c| c.coin.utxo.outpoint)
+            .collect();
+
+        let counts = view.rebalance_counts();
+        assert_eq!(counts.total[3], 30);
+        assert_eq!(counts.fully_mixed[3], 20);
+
+        let plan = view.rebalance_plan(10, true);
+        assert!(plan.iter().any(|(r, inputs)| r.denom == 8
+            && r.kind == rebalance::RebalanceKind::Promotion
+            && inputs.len() == 10));
+        for (r, inputs) in &plan {
+            for c in inputs {
+                assert!(good.contains(&c.outpoint), "{r:?} spends {:?}", c.outpoint);
+            }
+        }
+    }
 }

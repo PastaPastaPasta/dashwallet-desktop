@@ -939,6 +939,9 @@ mod tests {
         // Larger coins where the session denomination is the largest.
         assert_eq!(final_tx_composition(2, 2 * r, 0, false), None);
         assert_eq!(final_tx_composition(3, 3, 0, false), Some((3, 0)));
+        // A larger coin passed through to a larger output.
+        assert_eq!(final_tx_composition(1, 0, 1, true), None);
+        assert_eq!(final_tx_composition(3 + 1, 3, 1, true), None);
     }
 
     fn txid(n: u8) -> Txid {
@@ -1097,5 +1100,161 @@ mod tests {
             check_final_tx(&tx(inputs, short), 4, &ours_in, &ours_out, &HashSet::new()),
             Err("an output of ours is missing")
         );
+    }
+
+    /// Two 0.1 inputs and outputs of ours beside one foreign 1:1
+    /// participant: (our inputs, our outputs, inputs, outputs).
+    fn standard() -> (Vec<MixCoin>, Vec<TxOut>, Vec<OutPoint>, Vec<TxOut>) {
+        let ours_in = vec![coin(1, S), coin(2, S)];
+        let ours_out = vec![out(1, S), out(2, S)];
+        let mut inputs: Vec<OutPoint> = ours_in.iter().map(|c| c.outpoint).collect();
+        inputs.push(OutPoint::new(txid(0xf0), 0));
+        let mut outputs = ours_out.clone();
+        outputs.push(out(0xf0, S));
+        (ours_in, ours_out, inputs, outputs)
+    }
+
+    fn refusal(t: &Transaction, ours_in: &[MixCoin], ours_out: &[TxOut]) -> &'static str {
+        check_final_tx(t, 4, ours_in, ours_out, &HashSet::new()).unwrap_err()
+    }
+
+    /// Each structural refusal on an otherwise valid final transaction.
+    #[test]
+    fn each_structural_refusal_names_its_reason() {
+        let (ours_in, ours_out, inputs, outputs) = standard();
+        let ok = tx(inputs.clone(), outputs.clone());
+        assert!(check_final_tx(&ok, 4, &ours_in, &ours_out, &HashSet::new()).is_ok());
+
+        let mut unsorted = ok.clone();
+        unsorted.output.reverse();
+        assert_eq!(refusal(&unsorted, &ours_in, &ours_out), "not BIP69 sorted");
+
+        let mut more_in = inputs.clone();
+        more_in.push(OutPoint::new(txid(0xf1), 0));
+        let mut foreign_denom = outputs.clone();
+        foreign_denom.push(out(0xf1, DENOMINATIONS[3]));
+        assert_eq!(
+            refusal(&tx(more_in.clone(), foreign_denom), &ours_in, &ours_out),
+            "output at a foreign denomination"
+        );
+
+        let mut p2sh = outputs.clone();
+        let mut b = vec![0xa9, 0x14];
+        b.extend_from_slice(&[0xf1; 20]);
+        b.push(0x87);
+        p2sh.push(TxOut {
+            value: S,
+            script_pubkey: ScriptBuf::from_bytes(b),
+        });
+        assert_eq!(
+            refusal(&tx(more_in.clone(), p2sh), &ours_in, &ours_out),
+            "output is not P2PKH"
+        );
+
+        let mut reused = outputs.clone();
+        reused.push(out(0xf0, S));
+        assert_eq!(
+            refusal(&tx(more_in, reused), &ours_in, &ours_out),
+            "output script used twice"
+        );
+
+        let mut null_in = inputs.clone();
+        null_in.push(OutPoint::null());
+        let mut one_more = outputs.clone();
+        one_more.push(out(0xf1, S));
+        assert_eq!(
+            refusal(&tx(null_in, one_more), &ours_in, &ours_out),
+            "null input"
+        );
+
+        let without_ours = vec![
+            ours_in[0].outpoint,
+            OutPoint::new(txid(0xf0), 0),
+            OutPoint::new(txid(0xf1), 0),
+        ];
+        assert_eq!(
+            refusal(&tx(without_ours, outputs), &ours_in, &ours_out),
+            "an input of ours is missing"
+        );
+    }
+
+    /// More inputs than the outputs can pay for: one of them would fund the
+    /// rest as fee.
+    #[test]
+    fn a_standard_entry_beside_an_unbalanced_input_is_refused() {
+        let (ours_in, ours_out, mut inputs, outputs) = standard();
+        inputs.push(OutPoint::new(txid(0xf1), 0));
+        assert_eq!(
+            refusal(&tx(inputs, outputs), &ours_in, &ours_out),
+            "inputs and outputs do not balance"
+        );
+    }
+
+    /// The outputs balance only if our 0.1 inputs were worth more.
+    #[test]
+    fn our_session_inputs_read_as_larger_coins_are_refused() {
+        let (ours_in, ours_out, inputs, mut outputs) = standard();
+        // Three inputs for 21 0.1 outputs: one 0.1 input and two 1 DASH.
+        outputs.extend((0..18).map(|i| out(0x40 + i, S)));
+        assert_eq!(
+            refusal(&tx(inputs, outputs), &ours_in, &ours_out),
+            "inputs and outputs do not balance"
+        );
+    }
+
+    /// The outputs balance only if our 1 DASH input were a 0.1 coin: the
+    /// difference would go to fee.
+    #[test]
+    fn our_demotion_input_read_as_a_session_coin_is_refused() {
+        let ours_in = vec![coin(1, L)];
+        let ours_out: Vec<TxOut> = (0..10).map(|i| out(i, S)).collect();
+        let mut inputs = vec![ours_in[0].outpoint];
+        inputs.extend((0..11).map(|i| OutPoint::new(txid(0xe0 + i), 0)));
+        let mut outputs = ours_out.clone();
+        outputs.extend([out(0xf0, S), out(0xf1, S)]);
+        assert_eq!(
+            refusal(&tx(inputs, outputs), &ours_in, &ours_out),
+            "inputs and outputs do not balance"
+        );
+    }
+
+    #[test]
+    fn an_input_of_ours_at_a_foreign_denomination_is_refused() {
+        let (mut ours_in, ours_out, inputs, outputs) = standard();
+        ours_in[1].value = DENOMINATIONS[3];
+        assert_eq!(
+            refusal(&tx(inputs, outputs), &ours_in, &ours_out),
+            "an input of ours at a foreign denomination"
+        );
+    }
+
+    #[test]
+    fn a_rebalance_entry_has_its_kind_shape() {
+        let demote = |inputs: Vec<MixCoin>| RebalanceEntry {
+            kind: RebalanceKind::Demotion,
+            inputs,
+        };
+        let promote = |inputs: Vec<MixCoin>| RebalanceEntry {
+            kind: RebalanceKind::Promotion,
+            inputs,
+        };
+        assert_eq!(demote(vec![coin(1, L)]).output_amount(4), Ok(S));
+        assert_eq!(
+            demote(vec![coin(1, DENOMINATIONS[0])]).output_amount(1),
+            Err("no adjacent denomination")
+        );
+        assert_eq!(
+            demote(vec![coin(1, S)]).output_amount(4),
+            Err("an input at the wrong denomination")
+        );
+        let ten: Vec<MixCoin> = (1..=10).map(|n| coin(n, S)).collect();
+        assert_eq!(promote(ten.clone()).output_amount(4), Ok(L));
+        assert_eq!(
+            promote(ten[..9].to_vec()).output_amount(4),
+            Err("wrong input count")
+        );
+        let mut twice = ten;
+        twice[9] = twice[0].clone();
+        assert_eq!(promote(twice).output_amount(4), Err("an input twice"));
     }
 }
