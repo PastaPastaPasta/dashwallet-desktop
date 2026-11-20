@@ -1097,8 +1097,10 @@ impl NetworkSession {
 
     /// Stores, durably, that wallet `id` is to be replayed from the earliest
     /// start any obligation names: `from`, its outstanding replay record's
-    /// (the birth checkpoint's for one that cannot be read) and its marker's;
-    /// its birth checkpoint when none is known.
+    /// (whose resume lowers the birth to it; no lower than the birth
+    /// checkpoint for a cancelled one, and that checkpoint for one that
+    /// cannot be read) and its marker's; its birth checkpoint when none is
+    /// known.
     pub(crate) async fn require_replay_from(
         &self,
         manager: &crate::session::Manager,
@@ -1108,7 +1110,13 @@ impl NetworkSession {
         let birth = birth_checkpoint(manager, id).await;
         // A record that cannot be read may start anywhere: from the birth.
         let recorded = match self.live()?.replay.stored(id).await {
-            Ok(record) => record.map(|r| r.reached.max(birth)),
+            Ok(record) => record.map(|r| {
+                if r.cancelled {
+                    r.reached.max(birth)
+                } else {
+                    r.reached
+                }
+            }),
             Err(_) => Some(birth),
         };
         let floor = from.into_iter().chain(recorded).min().unwrap_or(birth);

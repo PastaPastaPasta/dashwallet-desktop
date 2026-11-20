@@ -422,14 +422,14 @@ impl NetworkSession {
                 })
                 .await?
                 .map_err(|e| EngineError::Storage(format!("the stored checkpoint: {e}")))?;
-                // An unfinished replay's start too (no lower than the
-                // birth's checkpoint, where a resume starts it): SPV may
-                // finish it with narrow pools. One that cannot be read may
-                // start anywhere: from the birth.
+                // An unfinished replay's start too: SPV may finish it with
+                // narrow pools. A resume lowers the birth to it; a cancelled
+                // one's hold comes back no lower than the birth's checkpoint.
+                // One that cannot be read may start anywhere: from the birth.
                 let floor = birth.map_or(0, |b| b.saturating_sub(1));
                 let checkpoint = match live.replay.stored(id).await {
                     Ok(record) => (synced.into_iter())
-                        .chain(record.map(|r| r.reached.max(floor)))
+                        .chain(record.map(|r| if r.cancelled { r.reached.max(floor) } else { r.reached }))
                         .min(),
                     Err(e) => {
                         tracing::warn!(wallet_id = %id, error = %e, "could not read the wallet's replay record; marking it from its birth");

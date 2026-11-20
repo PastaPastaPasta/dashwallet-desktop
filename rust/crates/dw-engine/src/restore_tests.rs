@@ -2585,9 +2585,80 @@ fn a_replay_resumed_from_below_the_birth_lowers_the_birth_to_its_start() {
 
     assert_eq!(synced_height(&engine, &session, id), 99);
     assert_eq!(birth_height(&engine, &session, id), 100);
+    assert_eq!(stored_birth(&session, id), Some(100));
     assert_eq!(replay_record(&engine, &session, id), Some((99, HEIGHT)));
+}
+
+/// The birth height wallet.sqlite holds for wallet `id`.
+fn stored_birth(session: &NetworkSession, id: WalletId) -> Option<u32> {
+    let db_path = session.data_dir().join(crate::session::WALLET_DB_FILE);
+    crate::store::stored_heights(&db_path, &id.0).unwrap().1
+}
+
+/// A replay from below the birth whose lower birth cannot be stored is not
+/// resumed: the checkpoint stays, the record is kept, spends are held, and
+/// a rescan from the birth lifts the hold.
+#[test]
+fn a_replay_below_the_birth_whose_lower_birth_cannot_be_stored_is_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = born_at_700(&engine, &session);
+    store_setting(&engine, &session, id, "replay", "2:1000:99:0:0");
+
+    let session = failing(&crate::tools::FAIL_BIRTH_STORE, id, || {
+        drop(session);
+        assert!(
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        );
+        let options = crate::SessionOptions {
+            no_platform: true,
+            ..offline()
+        };
+        (engine.block_on(engine.open_network(DashNetwork::Regtest, options))).unwrap()
+    });
+
+    assert_eq!(birth_height(&engine, &session, id), 700);
+    assert_eq!(stored_birth(&session, id), Some(700));
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT);
+    assert_eq!(replay_record(&engine, &session, id), Some((99, HEIGHT)));
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInterrupted)),
+        "{guard:?}"
+    );
+    start_offline_spv(&engine, &session);
+    (engine.block_on(session.rescan(crate::RescanFrom::WalletBirth))).unwrap();
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInProgress)),
+        "{guard:?}"
+    );
+}
+
+/// A session open whose widening fails under a replay from below the birth
+/// owes the wide scan from the replay's start, where the resume rescans
+/// from, not from the old birth: the next open replays it from there.
+#[test]
+fn a_failed_widening_under_a_replay_below_the_birth_owes_from_its_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = born_at_700(&engine, &session);
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
+    store_setting(&engine, &session, id, "replay", "2:1000:99:0:0");
+
+    let session = failing(&crate::keys::FAIL_WIDEN, id, || reopen(&engine, session));
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(99))
+    );
     let session = reopen(&engine, session);
-    assert_eq!(birth_height(&engine, &session, id), 100);
+    assert_eq!(synced_height(&engine, &session, id), 99);
+    assert_eq!(replay_record(&engine, &session, id), Some((99, HEIGHT)));
 }
 
 fn fail_replay_writes(session: &NetworkSession, fail: bool) {
