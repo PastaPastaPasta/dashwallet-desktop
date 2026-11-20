@@ -246,7 +246,7 @@ export function CreateProposalSheet({
         return;
       }
       void refresh();
-      if (mounted.current) onCreated(created);
+      onCreated(created);
     } catch (e) {
       credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
     } finally {

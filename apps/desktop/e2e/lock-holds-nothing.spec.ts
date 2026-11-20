@@ -292,6 +292,69 @@ test("an export the lock caught while it wrote the file says where it went after
   expect(errors).toEqual([]);
 });
 
+const SEED = "0f".repeat(32);
+/** What the shell was last told: whether a view that shows or takes a secret is open. */
+const secretShown = (page: Page) => world(page, (w) => w.shellSync?.secretShown ?? false);
+
+/** Settings ▸ Backups ▸ Import keys after the unlock, an HD seed typed in, the window protected. */
+async function typeKey(page: Page) {
+  await page.goto(fixtureUrl("locked", "light"));
+  await unlock(page);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+  await page.getByTestId("settings-tabs-backups").click();
+  await page.getByTestId("settings-import-keys").click();
+  await page.getByTestId("settings-keys-hdSeed").click();
+  await page.getByTestId("settings-keys-text").fill(SEED);
+  await expect.poll(() => secretShown(page)).toBe(true);
+}
+
+test("Import keys with a key typed and not sent goes with the lock, and the shell is told no secret is shown", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await typeKey(page);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await expect(page.getByTestId("lock-field")).toBeVisible();
+  await expect(page.getByTestId("settings-import-keys-sheet")).toHaveCount(0);
+  await expect.poll(() => secretShown(page)).toBe(false);
+  expect(await page.evaluate(() => [...document.querySelectorAll("textarea, input")].map((e) => (e as HTMLInputElement).value))).not.toContain(SEED);
+  await unlock(page);
+  await expect(page.getByTestId("settings-import-keys")).toBeVisible();
+  await expect(page.getByTestId("settings-import-keys-sheet")).toHaveCount(0);
+  expect(await secretShown(page)).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+for (const gate of ["pending", "refused"] as const) {
+  test(`Import keys caught working by the lock opens again behind the capture-protection gate (${gate}), and the shell is told again`, async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await typeKey(page);
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("import_key_material"));
+    await page.getByTestId("settings-keys-import").click();
+    await expect.poll(async () => (await calls(page)).includes("import_key_material")).toBe(true);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+    await expect(page.getByTestId("lock-field")).toBeVisible();
+    await expect(page.getByTestId("settings-import-keys-sheet")).toHaveCount(0);
+    await expect.poll(() => secretShown(page)).toBe(false);
+    await release.evaluate((r) => r());
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+    // The shell's answer is held, or refused, from the unlock on.
+    const shell = gate === "pending" ? await page.evaluateHandle(() => window.__dwFixture!.hold("shell_sync")) : null;
+    if (gate === "refused") await page.evaluate(() => window.__dwFixture!.fail("shell_sync", "none"));
+    await unlock(page);
+    await expect(page.getByTestId("settings-import-keys-sheet")).toBeVisible();
+    await expect(page.getByTestId(gate === "pending" ? "protection-pending" : "protection-failed")).toBeVisible();
+    await expect(page.getByTestId("settings-import-done-0")).toHaveCount(0);
+    await expect(page.getByTestId("settings-import-close")).toHaveCount(0);
+    if (shell) await shell.evaluate((r) => r());
+    else {
+      await page.evaluate(() => window.__dwFixture!.fail("shell_sync", null));
+      await page.getByTestId("protection-retry").click();
+    }
+    await expect(page.getByTestId("settings-import-done-0")).toBeVisible();
+    await expect.poll(() => secretShown(page)).toBe(true);
+    expect(errors).toEqual([]);
+  });
+}
+
 test("a payment's lookup that answers after the vault locked again is read again at the next unlock", async ({ page }) => {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl("locked", "light"));
@@ -360,12 +423,17 @@ test("a lock takes the proposal sheet down: nothing of its draft, its review, it
 });
 
 const since = async (page: Page, n: number) => (await calls(page)).slice(n);
+const leavePage = async (page: Page) => {
+  // The shell is inert under the sheet: the menu's Home leaves the page.
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
+  await expect(page.getByTestId("create-sheet")).toHaveCount(0);
+};
 
 // Nothing a departed sheet started may pay: an await between Pay and the fee's call that answers
-// once the sheet is gone (its page left by the menu, or the vault locked) ends there, and a grant it was given
-// is revoked.
+// once the sheet is gone (its page left by the menu, or the vault locked, and unlocked again before
+// the answer) ends there, and a grant it was given is revoked.
 for (const held of ["governance_preview_proposal", "authorize"] as const) {
-  for (const gone of ["closed", "locked"] as const) {
+  for (const gone of ["left", "locked", "locked and unlocked"] as const) {
     test(`Pay's ${held === "authorize" ? "grant" : "fee re-read"} answering after the sheet was ${gone} pays nothing${held === "authorize" ? ", and the grant is revoked" : ""}`, async ({ page }) => {
       const errors = trackPageErrors(page);
       await page.clock.setFixedTime(FIXTURE_NOW);
@@ -378,17 +446,13 @@ for (const held of ["governance_preview_proposal", "authorize"] as const) {
       const release = await page.evaluateHandle((c) => window.__dwFixture!.hold(c), held);
       await page.getByTestId("create-pay").click();
       await expect.poll(() => since(page, n)).toContain(held);
-      if (gone === "closed") {
-        // The shell is inert under the sheet: the menu's Home leaves the page.
-        await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "home" }));
-        await expect(page.getByTestId("create-sheet")).toHaveCount(0);
-      } else {
-        await lockWindow(page);
-      }
+      if (gone === "left") await leavePage(page);
+      else await lockWindow(page);
+      if (gone === "locked and unlocked") await unlock(page);
       await release.evaluate((r) => r());
       if (held === "authorize") {
         await expect.poll(() => since(page, n)).toContain("revoke_grant");
-        if (gone === "closed") expect(await world(page, (w) => w.grants.map((g) => g.used))).toEqual([true]);
+        if (gone === "left") expect(await world(page, (w) => w.grants.map((g) => g.used))).toEqual([true]);
       } else {
         await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
         expect(await since(page, n)).not.toContain("authorize");
@@ -398,6 +462,60 @@ for (const held of ["governance_preview_proposal", "authorize"] as const) {
       expect(errors).toEqual([]);
     });
   }
+}
+
+test("Pay's grant answering after the review's draft moved (its first superblock passed) pays nothing, and the grant is revoked", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.clock.setFixedTime(FIXTURE_NOW);
+  await page.goto(fixtureUrl("governance", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await fillProposal(page, "desktop-translations");
+  const n = (await calls(page)).length;
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("authorize"));
+  await page.getByTestId("create-pay").click();
+  await expect.poll(() => since(page, n)).toContain("authorize");
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.governance.superblocksPassed = 2;
+    f.emit({ kind: "governance", network: f.world.launch.network.dirName });
+  });
+  await expect(page.getByTestId("create-first-moved")).toBeVisible();
+  await release.evaluate((r) => r());
+  await expect.poll(() => since(page, n)).toContain("revoke_grant");
+  expect(await world(page, (w) => w.grants.map((g) => g.used))).toEqual([true]);
+  expect(await since(page, n)).not.toContain("governance_create_proposal");
+  expect(errors).toEqual([]);
+});
+
+// A fee call already handed to the engine is the page's to report, wherever the sheet went: its
+// toast shows once the window is open, and nothing while locked.
+for (const gone of ["left", "locked and unlocked", "locked"] as const) {
+  test(`a fee call that succeeds after the sheet was ${gone} ${gone === "locked" ? "shows nothing while locked, and Mine has it after the unlock" : "says the fee was paid"}`, async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("governance", "light"));
+    await page.getByTestId("toolbar").waitFor();
+    await fillProposal(page, "desktop-translations");
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("governance_create_proposal"));
+    await page.getByTestId("create-pay").click();
+    await expect.poll(async () => (await calls(page)).includes("governance_create_proposal")).toBe(true);
+    const toast = page.locator(".toast", { hasText: "desktop-translations: fee paid" });
+    if (gone === "left") await leavePage(page);
+    else await lockWindow(page);
+    if (gone === "locked and unlocked") await unlock(page);
+    await release.evaluate((r) => r());
+    if (gone === "locked") {
+      await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+      await expect(page.locator(".toast")).toHaveCount(0);
+      await unlock(page);
+      await page.getByTestId("governance-filter-mine").click();
+      await expect(page.getByTestId("mine-chip-desktop-translations")).toBeVisible();
+      await expect(page.locator(".toast")).toHaveCount(0);
+    } else {
+      await expect(toast).toBeVisible();
+    }
+    expect(errors).toEqual([]);
+  });
 }
 
 test("lost events while in use show the lock screen while the status read never answers, then the same page", async ({ page }) => {
