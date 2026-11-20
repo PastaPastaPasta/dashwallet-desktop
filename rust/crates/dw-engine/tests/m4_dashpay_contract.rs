@@ -240,6 +240,10 @@ const NOT_FACADE: &[&str] = &[
     "contacts_tests.rs",
     "contest_watch.rs",
     "contest_watch_tests.rs",
+    "core_max.rs",
+    "core_max_fund_tests.rs",
+    "core_max_lib_tests.rs",
+    "core_max_tests.rs",
     "credit_costs.rs",
     "identity_reads.rs",
     "identity_tests.rs",
@@ -1117,6 +1121,9 @@ fn error_codes_match_the_contract() {
                 txid: String::new(),
             },
             CreditsError::TooManyInputs { inputs: 0, max: 0 },
+            CreditsError::CoinsChanged,
+            CreditsError::MixingActive,
+            CreditsError::MoveRunning,
         ],
         CreditsError::code,
     );
@@ -1618,8 +1625,12 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.shielded_status().await.map(drop),
             dp.shielded_sync().await.map(drop),
             dp.shielded_receive_address().await.map(drop),
-            dp.shield_quote(1).await.map(drop),
-            dp.shield_from_core(1, s()).await.map(drop),
+            dp.shield_quote(FundAmount::Duffs { duffs: 1 })
+                .await
+                .map(drop),
+            dp.shield_from_core(FundAmount::Duffs { duffs: 1 }, s())
+                .await
+                .map(drop),
             dp.resume_shield(s(), s()).await.map(drop),
             dp.shield_mixed_quote().await.map(drop),
             dp.stuck_shield_fundings().await.map(drop),

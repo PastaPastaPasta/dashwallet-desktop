@@ -3359,17 +3359,17 @@ impl PwLib {
         }
     }
 
-    /// A shield lock that drains CoinJoin account 0 (every final coin of
+    /// A lock of `key`'s type that drains `account` (every final coin of
     /// it, the fee out of the lock), signed by `signer`, a drain signer of
     /// the call's permit; one below `minimum_lock_duffs` is dropped before
     /// it is tracked or sent.
     pub(crate) async fn fund_drain_with(
         &self,
+        account: key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingAccount,
+        key: super::lease::FundingKey,
         minimum_lock_duffs: u64,
         signer: &super::signers::CountingFundingSigner,
     ) -> Result<OutPoint, FundError> {
-        use super::shielded_pool::SHIELD_KEY;
-        use key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingAccount;
         use platform_wallet::wallet::asset_lock::AssetLockBuildAmount;
         self.replay_permit().await?;
         self.wallet
@@ -3378,9 +3378,9 @@ impl PwLib {
                 AssetLockBuildAmount::DrainAll {
                     minimum_lock_duffs: Some(minimum_lock_duffs),
                 },
-                AssetLockFundingAccount::CoinJoin { account_index: 0 },
-                SHIELD_KEY.funding_type,
-                SHIELD_KEY.identity_index,
+                account,
+                key.funding_type,
+                key.identity_index,
                 signer,
             )
             .await
