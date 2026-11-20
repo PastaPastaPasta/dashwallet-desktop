@@ -130,6 +130,18 @@ import type { NameChoice } from "./generated/NameChoice";
 import type { NameVoteCast } from "./generated/NameVoteCast";
 import type { VoteOutcomeName } from "./generated/VoteOutcomeName";
 import type { VotingMasternode } from "./generated/VotingMasternode";
+import type { AttachedKeyRoleName } from "./generated/AttachedKeyRoleName";
+import type { EvonodeCredits } from "./generated/EvonodeCredits";
+import type { KeyCheckName } from "./generated/KeyCheckName";
+import type { ListedMasternode } from "./generated/ListedMasternode";
+import type { MasternodeDetail } from "./generated/MasternodeDetail";
+import type { MasternodeKeyInfo } from "./generated/MasternodeKeyInfo";
+import type { MasternodeKeyRoleName } from "./generated/MasternodeKeyRoleName";
+import type { MasternodeListState } from "./generated/MasternodeListState";
+import type { MasternodeOverview } from "./generated/MasternodeOverview";
+import type { MasternodePayout } from "./generated/MasternodePayout";
+import type { RevealedMasternodeKey } from "./generated/RevealedMasternodeKey";
+import type { UntrackOutcome } from "./generated/UntrackOutcome";
 import type { RescanStart } from "./generated/RescanStart";
 import type { RescanStatus } from "./generated/RescanStatus";
 import type { VerifyMessageResult } from "./generated/VerifyMessageResult";
@@ -606,6 +618,24 @@ export interface Backend {
   governanceContestedNames(walletId: string): Promise<ContestedNames>;
   /** One name vote per masternode under one `governance` grant; one result each, in order. */
   governanceVoteName(walletId: string, label: string, choice: NameChoice, masternodes: string[], grant: string): Promise<NameVoteCast[]>;
+  // My masternodes (MG-10 S1 over mn-engine §2.1–§2.2 and the keychain, m3-engine §2.5).
+  mnListState(): Promise<MasternodeListState>;
+  mnList(walletId: string): Promise<MasternodeOverview>;
+  mnMasternode(walletId: string, proTxHash: string): Promise<MasternodeDetail>;
+  /** Newest first; with `since` (Unix seconds), only those at or after it. */
+  mnPayouts(walletId: string, proTxHash: string, since: number | null): Promise<MasternodePayout[]>;
+  /** By ProTx hash or `ip[:port]`; refuses anything else. */
+  mnFind(query: string): Promise<ListedMasternode[]>;
+  mnEvonodeCredits(proTxHash: string): Promise<EvonodeCredits>;
+  mnTrack(proTxHash: string, label: string | null): Promise<ListedMasternode>;
+  mnUntrack(proTxHash: string): Promise<UntrackOutcome>;
+  mnSetLabel(proTxHash: string, label: string | null): Promise<null>;
+  /** Needs an unlocked vault; the key is never echoed. */
+  mnAttachKey(proTxHash: string, role: AttachedKeyRoleName, key: string): Promise<KeyCheckName>;
+  mnDetachKey(proTxHash: string, role: AttachedKeyRoleName): Promise<boolean>;
+  mnKeys(walletId: string, role: MasternodeKeyRoleName, start: number, count: number): Promise<MasternodeKeyInfo[]>;
+  /** Consumes a `revealSecret` grant; the result is secret and never cached. */
+  mnRevealKey(walletId: string, role: MasternodeKeyRoleName, index: number, grant: string): Promise<RevealedMasternodeKey>;
   /** Subscribes to engine events; returns the unsubscribe function. */
   onEvent(listener: (event: AppEvent) => void): Promise<() => void>;
   /** Subscribes to the shell's events (menus, tray, deep links). */
