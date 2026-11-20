@@ -21,7 +21,7 @@ pub const GAP_DIVISOR: u32 = 5;
 
 /// The smallest gap that keeps a conversion from making the opposite one
 /// worthwhile (`MIN_GAP_THRESHOLD`).
-pub const MIN_GAP_THRESHOLD: u32 = (PROMOTION_RATIO as u32 + 1) / 2;
+pub const MIN_GAP_THRESHOLD: u32 = (PROMOTION_RATIO as u32).div_ceil(2);
 
 /// `FLAG_PROMOTION` of `dsa` (`CCoinJoinAccept`).
 pub const FLAG_PROMOTION: u8 = 1;
