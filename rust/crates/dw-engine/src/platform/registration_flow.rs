@@ -65,7 +65,7 @@ use super::invitations::{InvitationInvalidReason, InvitationStatus};
 use super::lease::mode_b::TrackedRow;
 use super::lease::{CallPermit, CallStep, CallStepStatus, DraftKey, FundingKey, Lease, LeaseTable};
 use super::names::NameOutcome;
-use super::registration::RegistrationWait;
+use super::registration::{RegistrationWait, ShieldedFacts};
 use super::registration_ledger::{
     IndexOwner, Ledger, NoIndex, Owner, Reconcile, Standing, StepClaim, Taker, index_after,
 };
@@ -407,6 +407,10 @@ pub(crate) trait RegistrationLib: Send + Sync {
         identity_index: u32,
         permit: &CallPermit,
     ) -> impl Future<Output = Result<String, ClaimError>> + Send;
+    /// What a Shielded-funded registration's readiness reads (C-funding
+    /// F16, F17): the account's facts once Platform runs and the pool is
+    /// active, the platform flag alone otherwise.
+    fn shielded_facts(&self) -> impl Future<Output = Result<ShieldedFacts, PlatformError>> + Send;
     /// DP2-02's contact request from `identity` to `inviter`, under the
     /// registration's `lease` (DP5-02 §4).
     fn request_inviter(
@@ -1152,6 +1156,9 @@ pub(crate) fn interpret(row: &RegistrationRow) -> Result<(Phase, Funding), &'sta
             feature: String::new(),
         }
         .code()),
+        // No flow step runs it yet (C4b-2): never funded, discarded or
+        // advanced here.
+        Funding::Shielded { .. } => Err(unsupported()),
         Funding::CoreBalance { .. } | Funding::ExistingIdentity | Funding::Invitation { .. } => {
             Ok((phase, funding))
         }
@@ -3528,6 +3535,22 @@ impl RegistrationLib for PwLib {
             }
             Err(e) => Err(ClaimError::Failed(e.into())),
         }
+    }
+
+    async fn shielded_facts(&self) -> Result<ShieldedFacts, PlatformError> {
+        let mut facts = ShieldedFacts {
+            platform_enabled: self.session.platform.enabled(),
+            ..ShieldedFacts::default()
+        };
+        if !facts.platform_enabled
+            || self.sdk.protocol_version_number() < super::shielded::SHIELDED_ACTIVATION_VERSION
+        {
+            return Ok(facts);
+        }
+        let pool = super::shielded_pool::PwShielded::open(&self.session, self.wallet_id).await?;
+        super::shielded_pool::registration_facts(&self.session, self.wallet_id, &pool, &mut facts)
+            .await?;
+        Ok(facts)
     }
 
     async fn request_inviter(
