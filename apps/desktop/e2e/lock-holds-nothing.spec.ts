@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import { FIXTURE_PASSPHRASE, type World } from "../src/fixture/scenarios";
+import { FIXTURE_NOW } from "../src/fixture/wallet";
 import { fixtureUrl, trackPageErrors } from "./helpers";
+import { PAYEE } from "./wallet";
 
 // A locked window holds nothing of the wallet: the lock screen stands in place of the pages, not
 // over them, so the page's text and markup carry no balance, wallet name, history row, contact or
@@ -9,7 +11,7 @@ import { fixtureUrl, trackPageErrors } from "./helpers";
 const BALANCE = "32.04698287";
 
 /** What the renderer may ask the engine while locked: the window, the lock and its report, the menus. */
-const LOCKED_CALLS = new Set(["launch_info", "ui_settings", "open_network", "lock_status", "last_lock_report", "shell_sync", "take_links"]);
+const LOCKED_CALLS = new Set(["launch_info", "ui_settings", "open_network", "lock_status", "last_lock_report", "leases", "dispatch_status", "shell_sync", "take_links"]);
 
 const world = <T>(page: Page, read: (w: World) => T) => page.evaluate(`(${read.toString()})(window.__dwFixture.world)`) as Promise<T>;
 const calls = (page: Page) => page.evaluate(() => [...window.__dwFixture!.calls]);
@@ -91,7 +93,243 @@ test("a lock while in use takes the pages down, and the unlock lands on the page
   await unlock(page);
   await expect(page.getByTestId("tx-list")).toBeVisible();
   await expect(page.getByTestId("sidebar-activity")).toHaveAttribute("aria-current", "page");
+  // Focus is not left on the page's body: it lands on the page's title, as a menu leaves it.
+  await expect(page.locator(".app-body > main h1")).toBeFocused();
   await expect(page.locator("[data-txid]").first()).toBeVisible();
   expect((await rowTexts(page)).filter(Boolean)).toEqual(rows);
   expect(errors).toEqual([]);
 });
+
+/** The engine locks on its own (auto-lock, the tray, another window): its event comes first, and
+ * the status read it prompts is held, so the window sees the event and an old status. */
+async function engineLocks(page: Page) {
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.world.lock = { ...f.world.lock, state: "locked" };
+    f.emit({ kind: "vaultLockState", network: f.world.launch.network.dirName, state: "locked" });
+  });
+}
+
+test("from the lock event on, before the status says locked, the window holds and asks nothing of the wallet", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("locked", "light"));
+  await page.getByTestId("lock-field").waitFor();
+  const words = await walletWords(page);
+  await unlock(page);
+  await page.getByTestId("sidebar-activity").click();
+  await page.getByTestId("tx-list").waitFor();
+  const rows = (await rowTexts(page)).filter(Boolean);
+
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("lock_status"));
+  const asked = (await calls(page)).length;
+  await engineLocks(page);
+  await expectHoldsNothing(page, words, rows);
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.emit({ kind: "balances", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, balances: null });
+  });
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+  expect((await calls(page)).slice(asked).filter((c) => !LOCKED_CALLS.has(c))).toEqual([]);
+  await expectHoldsNothing(page, words, rows);
+  await release.evaluate((r) => r());
+  await expectHoldsNothing(page, words, rows);
+
+  await unlock(page);
+  await expect(page.getByTestId("tx-list")).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("a payment that arrives between the lock event and the status read is looked up only after the unlock", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("locked", "light"));
+  await unlock(page);
+  await expect(page.getByTestId("hero")).toContainText(BALANCE);
+
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("lock_status"));
+  const asked = (await calls(page)).length;
+  await engineLocks(page);
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [f.world.wallets[0].rows[0].txid], count: 1, catchUp: false });
+  });
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+  const meanwhile = (await calls(page)).slice(asked);
+  expect(meanwhile).not.toContain("tx_notices");
+  expect(meanwhile.filter((c) => !LOCKED_CALLS.has(c))).toEqual([]);
+  await release.evaluate((r) => r());
+
+  await unlock(page);
+  await expect.poll(async () => (await calls(page)).slice(asked).filter((c) => c === "tx_notices")).toEqual(["tx_notices"]);
+  expect(errors).toEqual([]);
+});
+
+/** Pay ▸ To an address, filled by a payment link and confirmed with the passphrase, its broadcast
+ * held: returns its txid and the release. */
+async function payHeld(page: Page) {
+  await page.evaluate((address) => window.__dwFixture!.deliverLinks([{ kind: "pay", uri: { address, amount: 50_000_000, label: null, message: null }, username: null }]), PAYEE);
+  await expect(page.getByTestId("pay-address")).toHaveValue(PAYEE);
+  await expect(page.getByTestId("pay-amount")).toHaveValue("0.50000000");
+  await expect(page.getByTestId("pay-continue")).toBeEnabled();
+  await page.getByTestId("pay-continue").click();
+  await page.getByTestId("pay-confirm-passphrase").fill(FIXTURE_PASSPHRASE);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("draft_broadcast"));
+  await page.getByTestId("pay-confirm-send").click();
+  await expect.poll(async () => (await calls(page)).includes("draft_broadcast")).toBe(true);
+  const txid = await world(page, (w) => Object.values(w.send.prepared).at(-1)?.summary.txid ?? w.wallets[0].rows[0].txid);
+  return { txid, release };
+}
+
+/** The link's payment is not offered again as unsent: not under the result, not once it closes,
+ * not on Pay opened again. */
+async function expectNotResubmittable(page: Page) {
+  await expect(page.getByTestId("pay-address")).toHaveValue("");
+  await expect(page.getByTestId("pay-amount")).toHaveValue("");
+  await page.getByTestId("pay-result-close").click();
+  await expect(page.getByTestId("pay-result")).toHaveCount(0);
+  await expect(page.getByTestId("pay-address")).toHaveValue("");
+  await expect(page.getByTestId("pay-continue")).toBeDisabled();
+  await page.getByTestId("sidebar-home").click();
+  await page.getByTestId("sidebar-pay").click();
+  await page.getByTestId("pay-tabs-address").click();
+  await expect(page.getByTestId("pay-address")).toHaveValue("");
+  await expect(page.getByTestId("pay-amount")).toHaveValue("");
+}
+
+for (const answer of ["sent", "unknown"] as const)
+  test(`a lock during a payment's broadcast keeps its result (${answer}) for the unlock, and the form cannot pay it again`, async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.goto(fixtureUrl("locked", "light"));
+    await unlock(page);
+    if (answer === "unknown") await world(page, (w) => (w.send.broadcast = "unknown"));
+    const { txid, release } = await payHeld(page);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+    await expect(page.getByTestId("lock-field")).toBeVisible();
+    await expect(page.locator(".app-chrome")).toHaveCount(0);
+    await release.evaluate((r) => r());
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+
+    await unlock(page);
+    await expect(page.getByTestId("page-pay")).toBeVisible();
+    await expect(page.getByTestId(`pay-result-${answer}`)).toBeVisible();
+    await expect(page.getByTestId("pay-result-txid")).toContainText(txid);
+    if (answer === "unknown") {
+      await expect(page.getByTestId("pay-result-text")).toContainText("Check Activity before you pay again.");
+      await expect(page.getByTestId("pay-result-retry")).toHaveCount(0);
+    }
+    await expectNotResubmittable(page);
+    expect(errors).toEqual([]);
+  });
+
+test("an unlock before the broadcast answers shows the payment being sent, then its result", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("locked", "light"));
+  await unlock(page);
+  const { txid, release } = await payHeld(page);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await expect(page.getByTestId("lock-field")).toBeVisible();
+
+  await unlock(page);
+  await expect(page.getByTestId("pay-sending")).toBeVisible();
+  await expect(page.getByTestId("pay-sending")).toContainText("0.50000000");
+  await expect(page.getByTestId("pay-address")).toHaveValue("");
+  await release.evaluate((r) => r());
+  await expect(page.getByTestId("pay-result-sent")).toBeVisible();
+  await expect(page.getByTestId("pay-sending")).toHaveCount(0);
+  await expect(page.getByTestId("pay-result-txid")).toContainText(txid);
+  await expectNotResubmittable(page);
+  expect(errors).toEqual([]);
+});
+
+test("an export the lock caught while it wrote the file says where it went after the unlock", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("locked", "light"));
+  await unlock(page);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+  await page.getByTestId("settings-tabs-backups").click();
+  await page.getByTestId("settings-export").click();
+  await page.getByTestId("settings-export-descriptors").click();
+  await page.getByTestId("settings-export-passphrase-field").fill(FIXTURE_PASSPHRASE);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("export_for_core"));
+  await page.getByTestId("settings-export-passphrase-submit").click();
+  await expect.poll(async () => (await calls(page)).includes("export_for_core")).toBe(true);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await expect(page.getByTestId("lock-field")).toBeVisible();
+  await expect(page.getByTestId("settings-export-sheet")).toHaveCount(0);
+  await release.evaluate((r) => r());
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+  await expect(page.getByTestId("settings-export-sheet")).toHaveCount(0);
+
+  await unlock(page);
+  await expect(page.getByTestId("settings-export-done")).toBeVisible();
+  await expect(page.getByTestId("settings-export-path")).toContainText("-descriptors.json");
+  expect(errors).toEqual([]);
+});
+
+test("a payment's lookup that answers after the vault locked again is read again at the next unlock", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("locked", "light"));
+  await page.getByTestId("lock-field").waitFor();
+  const words = await walletWords(page);
+  await unlock(page);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await page.getByTestId("lock-field").waitFor();
+  const paidTo = await page.evaluate(() => window.__dwFixture!.receivePayment(123_456_789));
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("tx_notices"));
+  await unlock(page);
+  await expect.poll(async () => (await calls(page)).filter((c) => c === "tx_notices")).toEqual(["tx_notices"]);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await page.getByTestId("lock-field").waitFor();
+  await release.evaluate((r) => r());
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+  await expectHoldsNothing(page, words, ["1.23456789", paidTo]);
+
+  await unlock(page);
+  await expect(page.getByTestId("toolbar-bell-badge")).toHaveText("1");
+  await page.getByTestId("toolbar-bell").click();
+  await expect(page.getByTestId("bell-payment")).toHaveCount(1);
+  await expect(page.getByTestId("bell-payment")).toContainText("1.23");
+  expect(errors).toEqual([]);
+});
+
+/** Masternodes ▸ Governance ▸ Create a proposal, up to Pay pressed, its `create_proposal` held. */
+async function payProposalHeld(page: Page) {
+  await page.getByTestId("sidebar-masternodes").click();
+  await page.getByTestId("governance-create").click();
+  await page.getByTestId("create-name").fill("desktop-translations");
+  await page.getByTestId("create-url").fill("https://www.dashcentral.org/p/desktop-translations");
+  await page.getByTestId("create-continue").click();
+  await page.getByTestId("create-amount").fill("12.5");
+  await page.getByTestId("create-continue").click();
+  await page.getByTestId("create-passphrase").fill(FIXTURE_PASSPHRASE);
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("governance_create_proposal"));
+  await page.getByTestId("create-pay").click();
+  await expect.poll(async () => (await calls(page)).includes("governance_create_proposal")).toBe(true);
+  return release;
+}
+
+for (const answer of ["made", "failed"] as const)
+  test(`a proposal's fee paid as the vault locks is not offered again after the unlock (${answer})`, async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("governance", "light"));
+    await page.getByTestId("toolbar").waitFor();
+    if (answer === "failed") await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "none"));
+    const release = await payProposalHeld(page);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+    await expect(page.getByTestId("lock-field")).toBeVisible();
+    // Unlocked before the engine answers: the page says the fee may be on its way, and Create waits.
+    await unlock(page);
+    await expect(page.getByTestId("create-kept-paying")).toBeVisible();
+    await expect(page.getByTestId("governance-create")).toBeDisabled();
+    await release.evaluate((r) => r());
+    if (answer === "made") {
+      await expect(page.getByTestId("create-kept-paying")).toHaveCount(0);
+      await expect(page.getByTestId("mine-chip-desktop-translations")).toBeVisible();
+    } else {
+      await expect(page.getByTestId("create-kept-unsure")).toBeVisible();
+      await page.getByTestId("create-kept-show-mine").click();
+      await expect(page.getByTestId("create-kept-unsure")).toHaveCount(0);
+    }
+    await expect(page.getByTestId("governance-create")).toBeEnabled();
+    expect(errors).toEqual([]);
+  });
