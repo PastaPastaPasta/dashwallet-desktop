@@ -24,6 +24,9 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
   // A broadcast under way or done when the vault locks keeps its PSBT and its line for the unlock
   // (app/acrossLock.ts); the session's log already stops a second broadcast of it.
   const model = useAcrossLock(`tools-psbt:${walletId}`, () => new PsbtModel(b, grants, walletId, shown, SESSION_BROADCASTS), (m) => m.step === "signing" || m.step === "broadcasting" || m.step === "broadcast");
+  // A model kept across a lock was made with the page before it: a Sign from now on asks through
+  // this page's passphrase sheet, the one on screen (the old one was cancelled with its page).
+  model.grants = grants;
   useModel(model);
   // A broadcast by another tab changes what this one offers (D40).
   useModel(model.broadcasts);
