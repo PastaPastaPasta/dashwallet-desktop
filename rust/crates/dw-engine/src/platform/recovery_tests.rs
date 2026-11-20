@@ -702,6 +702,23 @@ fn start(engine: &Engine, s: &Arc<NetworkSession>) {
     wait_until("SPV", || s.spv_state().unwrap() == SpvState::Running);
 }
 
+/// Stops SPV. On a slow machine a Platform loop can still be in its pass at
+/// the stop's deadline: the stop then names it and stops SPV anyway
+/// (`bringup.rs` `stop_platform`). No test here is about that drain.
+fn stop(engine: &Engine, s: &Arc<NetworkSession>) {
+    let stopped = engine.block_on(s.stop_spv());
+    let a_loop_outlived_the_deadline = matches!(
+        &stopped,
+        Err(EngineError::Sdk(detail))
+            if detail.starts_with("SPV stopped, but this Platform work did not end: ")
+                && !detail.contains("a vault key read")
+    );
+    assert!(
+        stopped.is_ok() || a_loop_outlived_the_deadline,
+        "{stopped:?}"
+    );
+}
+
 /// `identities()` from the live read. A read while a sync pass holds the
 /// wallet manager comes from the older snapshot, which shows no names and
 /// says so with `names_updating` (DEC-138); this reads again until it is
@@ -1077,7 +1094,7 @@ fn a_discovery_while_spv_is_stopped_advances_at_the_next_bring_up() {
     wait_until("the bring-up", || {
         s.dashpay_startup(&id).unwrap().startup == StartupStatus::NoIdentity
     });
-    engine.block_on(s.stop_spv()).unwrap();
+    stop(&engine, &s);
 
     let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
     let found = engine
@@ -1128,7 +1145,7 @@ fn a_recovery_stopped_before_its_platform_pass_advances_at_the_next_start() {
     wait_until("the bring-up", || {
         s.dashpay_startup(&id).unwrap().startup == StartupStatus::NoIdentity
     });
-    engine.block_on(s.stop_spv()).unwrap();
+    stop(&engine, &s);
     let scan = grant(&engine, &s, id, GrantPurpose::IdentityScan);
     let found = engine
         .block_on(s.dashpay(id).discover_identities(scan))
@@ -1142,7 +1159,7 @@ fn a_recovery_stopped_before_its_platform_pass_advances_at_the_next_start() {
     *guard(&s.platform.pause_after_keys) = Some(Arc::clone(&pause));
     engine.block_on(s.start_spv()).unwrap();
     wait_until("the keys", || pause.reached.load(Ordering::SeqCst));
-    engine.block_on(s.stop_spv()).unwrap();
+    stop(&engine, &s);
     assert_eq!(platform.bring_ups.load(Ordering::SeqCst), 1, "no pass ran");
     // The boundary as the stopped attempt left it (the discovery's: the
     // attempt stopped before its advance). The name is dated after it and a
@@ -1846,7 +1863,7 @@ fn a_retry_held_across_a_stop_starts_no_check() {
         .recv_timeout(Duration::from_secs(20))
         .expect("the retry's first kick");
 
-    engine.block_on(s.stop_spv()).unwrap();
+    stop(&engine, &s);
     let asked = questions(&platform, first) + questions(&platform, second);
     // Aborted: gone at their next poll.
     wait_until("the stop's aborts", || {
@@ -1895,7 +1912,7 @@ fn a_check_begun_during_a_rollback_leaves_nothing() {
         let rollback = scope.spawn(|| {
             engine.block_on(async {
                 let held = s.wallet_lifecycle.hold().await;
-                s.roll_back_restore(&held, &[(id, true)]).await
+                s.roll_back_restore(&held, &[(id, true, None)]).await
             })
         });
         wait_until("the rollback's forget", || checks.generation(&id) > before);
@@ -2160,7 +2177,7 @@ fn a_restore_rollback_admits_no_discovery_until_it_is_done() {
         let rollback = scope.spawn(|| {
             engine.block_on(async {
                 let held = s.wallet_lifecycle.hold().await;
-                s.roll_back_restore(&held, &[(id, true)]).await
+                s.roll_back_restore(&held, &[(id, true, None)]).await
             })
         });
         wait_until("the rollback's forget", || {
@@ -2468,7 +2485,7 @@ fn bring_up_reruns_back_off_to_ten_minutes() {
     });
     // Stopped, nothing runs it; the next start does, and the schedule
     // starts over.
-    engine.block_on(s.stop_spv()).unwrap();
+    stop(&engine, &s);
     assert!(!s.platform.retry_startup_at(id, t0 + at + STARTUP_RETRY_MAX));
     start(&engine, &s);
     wait_until("the start's bring-up", || {
@@ -2494,7 +2511,7 @@ fn a_rerun_runs_the_discovery_a_proven_absence_skipped() {
     wait_until("the bring-up", || {
         startup(&s, id) == StartupStatus::NoIdentity
     });
-    engine.block_on(s.stop_spv()).unwrap();
+    stop(&engine, &s);
     start(&engine, &s);
     wait_until("the skipped bring-up", || {
         startup(&s, id) == StartupStatus::NotRun
@@ -3039,6 +3056,7 @@ fn opus_probe_b_pre_e0_10b_data_starts_unverified_and_is_refetched() {
              ALTER TABLE dp_registration DROP COLUMN name_error;
              ALTER TABLE dp_registration DROP COLUMN profile_error;
              DROP TABLE dp_contact_info;
+             DROP TABLE dp_contact_payout;
              ALTER TABLE dp_payment_lock DROP COLUMN inputs;
              DROP TABLE governance_registrations;
              DROP TABLE masternode_ops;

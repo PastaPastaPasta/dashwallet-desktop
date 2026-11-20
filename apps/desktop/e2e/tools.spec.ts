@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { CommandName } from "../src/api/generated/commands";
 import { seriousAxeViolations } from "./axe";
-import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { fixtureUrl, fontsReady, openToolsTab as tools, THEMES, trackPageErrors, type Theme } from "./helpers";
 import { PAYEE } from "./wallet";
 
 // U-05: Tools ▸ Information, Console, Peers, Repair, Address Book, Sign/Verify, PSBT and Coin
@@ -9,7 +9,6 @@ import { PAYEE } from "./wallet";
 // with these coins". Test names lead with the parity rows they cover.
 
 const TABS = ["information", "console", "peers", "repair", "addressBook", "signVerify", "psbt", "coinSelection"] as const;
-type ToolsTab = (typeof TABS)[number];
 
 /** A binary PSBT the funded wallet signs (src/fixture/tools.ts FIXTURE_PSBT.unsigned). */
 const UNSIGNED = Buffer.from("psbt\xffunsigned", "latin1").toString("base64");
@@ -22,21 +21,6 @@ async function open(page: Page, scenario = "funded", theme: Theme = "light") {
   await page.goto(fixtureUrl(scenario, theme));
   await page.getByTestId("toolbar").waitFor();
   return errors;
-}
-
-async function tools(page: Page, tab: ToolsTab) {
-  // The command focuses the page's heading on the next frame; under load that frame came after the
-  // tab showed and took the focus from a fill in progress, which then typed nowhere (U-05 D25). So
-  // the focus is let go first and the heading's is waited for.
-  await page.evaluate((t) => {
-    (document.activeElement as HTMLElement | null)?.blur();
-    window.__dwFixture!.shellCommand({ kind: "tools", tab: t });
-  }, tab);
-  await expect(page.getByTestId(`tools-tabs-${tab}`)).toHaveAttribute("aria-selected", "true");
-  await page.waitForFunction(() => {
-    const main = document.querySelector<HTMLElement>(".app-body > main");
-    return document.activeElement !== null && document.activeElement === (main?.querySelector("h1") ?? main);
-  });
 }
 
 const world = <T>(page: Page, fn: (w: NonNullable<Window["__dwFixture"]>["world"]) => T) =>

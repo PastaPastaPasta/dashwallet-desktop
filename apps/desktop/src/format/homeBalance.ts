@@ -5,6 +5,7 @@
 // keeps its row ("…" or "—"), so the hero is never lower than it looks without saying why.
 
 import type { Balances } from "../api/generated/Balances";
+import type { ListArrival } from "../components/emptyStates";
 
 export type Pool = "core" | "shielded" | "platform";
 
@@ -22,6 +23,125 @@ export interface HomeBalance {
 }
 
 export const known = (r: PoolReading): r is number => typeof r === "number";
+
+export const HERO_SYNC = {
+  syncing: "Still syncing, balance may change",
+  stopped: "Syncing has stopped, balance may be out of date",
+  notStarted: "Not synced yet, balance may change",
+  unreadable: "Could not check syncing, balance may change",
+  unknownSyncing: "Syncing Balance",
+  unknownNotSynced: "Not synced yet",
+} as const;
+
+/** How long, from this wallet's Home mounting, its first scan-height read may be out before the
+ * hero says the balance may change. */
+export const HERO_FIRST_READ_QUIET_MS = 2_000;
+/** How long, from a tip change seen on a wallet that was at the tip, its scan may trail by up to
+ * `HERO_NEW_BLOCK_BLOCKS` with the hero saying nothing. */
+export const HERO_NEW_BLOCK_HOLD_MS = 30_000;
+export const HERO_NEW_BLOCK_BLOCKS = 2;
+
+/** One reading of this wallet's sync, as the hero needs it. */
+export interface HeroReading {
+  walletId: string;
+  /** This wallet's catch-up, as its history reads it. */
+  arrival: ListArrival;
+  running: boolean;
+  /** The status bar's caught-up reading. */
+  networkCaughtUp: boolean;
+  /** The engine's raw tip; 0 is unknown. */
+  tip: number | null;
+  /** This wallet's filter checkpoint; `undefined` until read. */
+  scanHeight: number | null | undefined;
+  /** No scan-height read has answered yet. */
+  scanPending: boolean;
+  /** The last sync-status or scan-height read failed, whatever is still cached. */
+  readFailed: boolean;
+}
+
+/** What the hero remembers between readings of one wallet. */
+export interface HeroWatch {
+  walletId: string;
+  mountedAt: number;
+  /** The wallet was last seen scanned to this tip. */
+  settled: { tip: number; height: number } | null;
+  /** A new block after `settled`: the scan may trail it for a while. */
+  hold: { since: number; tip: number; height: number } | null;
+}
+
+export interface HeroSync {
+  arrival: ListArrival;
+  running: boolean;
+  readFailed: boolean;
+  /** Scanned to a known tip, by this wallet's own checkpoint. */
+  atTip: boolean;
+  /** The first read or a new block: say nothing yet. */
+  quiet: boolean;
+}
+
+const knownTip = (tip: number | null): number | null => (tip !== null && tip > 0 ? tip : null);
+
+const atTip = (r: HeroReading): boolean => {
+  const tip = knownTip(r.tip);
+  return r.arrival === "settled" && !r.readFailed && !r.scanPending && tip !== null && r.scanHeight === tip;
+};
+
+export const newHeroWatch = (walletId: string, now: number = Date.now()): HeroWatch => ({ walletId, mountedAt: now, settled: null, hold: null });
+
+/** The watch after `r`. A hold starts only on a forward tip change seen after the wallet was at the
+ * tip, and ends at once on anything that is not the scan catching up with that block. */
+export function watchHero(prev: HeroWatch, r: HeroReading, now: number = Date.now()): HeroWatch {
+  if (prev.walletId !== r.walletId) return watchHero(newHeroWatch(r.walletId, now), r, now);
+  const tip = knownTip(r.tip);
+  const height = r.scanHeight ?? null;
+  if (atTip(r)) return { ...prev, settled: { tip: tip!, height: height! }, hold: null };
+  const ended = { ...prev, settled: null, hold: null };
+  if (!r.running || r.readFailed || r.scanPending || tip === null || height === null || height > tip) return ended;
+  if (tip - height > HERO_NEW_BLOCK_BLOCKS) return ended;
+  const hold = prev.hold;
+  if (hold) {
+    if (tip < hold.tip || height < hold.height || now - hold.since >= HERO_NEW_BLOCK_HOLD_MS) return ended;
+    return { ...prev, hold: { ...hold, tip } };
+  }
+  if (prev.settled && tip > prev.settled.tip && height >= prev.settled.height) return { ...prev, hold: { since: now, tip, height } };
+  return ended;
+}
+
+/** Whether the hero says nothing yet: the first scan-height read for `HERO_FIRST_READ_QUIET_MS`
+ * while sync runs and the network reads caught up, or a held new block. */
+export function heroQuiet(w: HeroWatch, r: HeroReading, now: number = Date.now()): boolean {
+  if (r.readFailed || !r.running) return false;
+  if (r.scanPending) return r.networkCaughtUp && now - w.mountedAt < HERO_FIRST_READ_QUIET_MS;
+  const tip = knownTip(r.tip);
+  const height = r.scanHeight ?? null;
+  if (!w.hold || tip === null || height === null) return false;
+  const gap = tip - height;
+  return gap >= 1 && gap <= HERO_NEW_BLOCK_BLOCKS && now - w.hold.since < HERO_NEW_BLOCK_HOLD_MS;
+}
+
+/** When the quiet of `w` runs out (ms), for a timer to read again; `null` if nothing is waiting. */
+export function heroQuietEnds(w: HeroWatch, r: HeroReading): number | null {
+  if (r.scanPending) return w.mountedAt + HERO_FIRST_READ_QUIET_MS;
+  return w.hold ? w.hold.since + HERO_NEW_BLOCK_HOLD_MS : null;
+}
+
+export function heroSync(w: HeroWatch, r: HeroReading, now: number = Date.now()): HeroSync {
+  return { arrival: r.arrival, running: r.running, readFailed: r.readFailed, atTip: atTip(r), quiet: heroQuiet(w, r, now) };
+}
+
+/** The line above the hero amount, from this wallet's own catch-up: empty once the wallet is
+ * scanned to a known tip, or while it is quiet; otherwise the balance may still move either way.
+ * A failed read says so before anything else. */
+export function heroSyncLine(balances: Balances | null, s: HeroSync): string {
+  if (balances === null) {
+    if (!s.readFailed && (s.quiet || s.arrival === "settled")) return "";
+    return s.running ? HERO_SYNC.unknownSyncing : HERO_SYNC.unknownNotSynced;
+  }
+  if (s.readFailed || s.arrival === "unreadable") return HERO_SYNC.unreadable;
+  if (!balances.catchingUp && (s.quiet || (s.arrival === "settled" && s.atTip))) return "";
+  if (s.running) return HERO_SYNC.syncing;
+  return s.arrival === "starting" ? HERO_SYNC.notStarted : HERO_SYNC.stopped;
+}
 
 export function homeBalance(core: Balances, shielded: PoolReading, platform: PoolReading): HomeBalance {
   const pools = { core: core.confirmed + core.unconfirmed, shielded, platform };

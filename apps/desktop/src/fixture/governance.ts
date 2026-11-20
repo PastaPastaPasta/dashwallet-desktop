@@ -515,7 +515,7 @@ type Base = (theme: ThemeName | null) => World;
 function governanceBase(base: Base, theme: ThemeName | null, patch: Partial<GovernanceWorld> = {}): World {
   const w = base(theme);
   w.governance = { ...syncedGovernance(), ...patch };
-  w.settings.ui = { ...w.settings.ui, showMasternodes: true };
+  w.settings.ui = { ...w.settings.ui, showMasternodes: true, masternodesTab: "governance" };
   return w;
 }
 

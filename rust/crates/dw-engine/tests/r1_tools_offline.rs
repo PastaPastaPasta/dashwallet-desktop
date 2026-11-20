@@ -106,6 +106,111 @@ fn loaded_ids(s: &NetworkSession) -> Vec<WalletId> {
         .collect()
 }
 
+const ZOO_12: &str = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
+
+fn restart(engine: &Engine) -> Arc<NetworkSession> {
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    open(engine)
+}
+
+fn on_startup(s: &NetworkSession) -> Vec<(WalletId, bool)> {
+    (s.wallet_load_states().unwrap().into_iter())
+        .map(|w| (w.wallet_id, w.load_on_startup))
+        .collect()
+}
+
+/// #87: a wallet created, imported or added watch-only after a Close
+/// Wallet is on the load-on-startup list, and opens at the next start.
+#[test]
+fn a_wallet_added_after_a_close_opens_at_the_next_start() {
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path().join("data");
+    let engine = new_engine(&root, Arc::default(), Arc::new(MemoryOsStore::new()));
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let a = import(&engine, &s, ABANDON_12);
+    let b = import(&engine, &s, LEGAL_12);
+    engine.block_on(s.unload_wallet(b)).unwrap();
+    engine.block_on(s.set_load_on_startup(b, false)).unwrap();
+
+    let created = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+    let watched = engine
+        .block_on(s.import_watch_only(account_tpub(ZOO_12), WatchOnlyOptions::default()))
+        .unwrap();
+    let listed = |s: &NetworkSession, id: WalletId| on_startup(s).contains(&(id, true));
+    assert!(listed(&s, created) && listed(&s, watched));
+
+    let s = restart(&engine);
+    let mut open_now = loaded_ids(&s);
+    open_now.sort();
+    let mut expected = vec![a, created, watched];
+    expected.sort();
+    assert_eq!(open_now, expected);
+    assert!(on_startup(&s).contains(&(b, false)));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #87: taking the last wallet off the list stores "nothing to load", not
+/// "no list": it reads back as an empty list after a restart, and a wallet
+/// added then is the only one listed. A start whose list would open no
+/// wallet opens every one, so closed wallets stay reachable.
+#[test]
+fn an_emptied_list_is_kept_across_a_restart() {
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path().join("data");
+    let engine = new_engine(&root, Arc::default(), Arc::new(MemoryOsStore::new()));
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let a = import(&engine, &s, ABANDON_12);
+    let b = import(&engine, &s, LEGAL_12);
+    engine.block_on(s.unload_wallet(b)).unwrap();
+    engine.block_on(s.set_load_on_startup(b, false)).unwrap();
+    engine.block_on(s.set_load_on_startup(a, false)).unwrap();
+    assert_eq!(on_startup(&s), vec![(a, false), (b, false)]);
+
+    let s = restart(&engine);
+    assert_eq!(on_startup(&s), vec![(a, false), (b, false)]);
+    assert_eq!(
+        loaded_ids(&s),
+        vec![a, b],
+        "none listed: every wallet opens"
+    );
+
+    let c = import(&engine, &s, ZOO_12);
+    let s = restart(&engine);
+    assert_eq!(loaded_ids(&s), vec![c]);
+    assert_eq!(on_startup(&s), vec![(a, false), (b, false), (c, true)]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #87: an empty list an earlier build stored still means no list: every
+/// wallet opens and every one is listed.
+#[test]
+fn an_empty_list_from_an_earlier_build_loads_every_wallet() {
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path().join("data");
+    let engine = new_engine(&root, Arc::default(), Arc::new(MemoryOsStore::new()));
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let a = import(&engine, &s, ABANDON_12);
+    let b = import(&engine, &s, LEGAL_12);
+    engine.block_on(s.set_load_on_startup(b, false)).unwrap();
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    let db = dw_appdb::AppDb::open(&root.join("regtest").join(dw_appdb::APP_DB_FILE)).unwrap();
+    db.set_setting(dw_appdb::GLOBAL_SCOPE, "load_on_startup", Some(""))
+        .unwrap();
+    drop(db);
+
+    let s = open(&engine);
+    assert_eq!(loaded_ids(&s), vec![a, b]);
+    assert_eq!(on_startup(&s), vec![(a, true), (b, true)]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 #[test]
 fn test_qt_101_close_open_and_load_on_startup() {
     let dir = dw_testutil::private_tempdir();

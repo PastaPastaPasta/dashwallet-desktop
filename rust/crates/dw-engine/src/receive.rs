@@ -112,11 +112,14 @@ struct PoolView {
     balances: HashMap<Address, u64>,
 }
 
-/// The first receiving address no transaction paid yet.
+/// The first receiving address free to hand out: no transaction paid it
+/// and it is not held reserved.
 fn current_receiving(view: &PoolView) -> Result<&PoolAddress, EngineError> {
     view.addresses
         .iter()
-        .filter(|a| a.chain == AddressChain::Receiving && !matches!(a.state, AddressState::Used))
+        .filter(|a| {
+            a.chain == AddressChain::Receiving && matches!(a.state, AddressState::Available)
+        })
         .min_by_key(|a| a.index)
         .ok_or(EngineError::GapLimit)
 }

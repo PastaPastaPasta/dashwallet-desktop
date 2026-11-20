@@ -57,6 +57,7 @@ use crate::platform::payment_locks::Pair;
 use crate::{EngineError, NetworkSession, WalletId};
 
 pub use self::contact::ContactRecipient;
+pub(crate) use self::contact::check_payee;
 
 /// dash-qt `-maxtxfee` default: a fee above 0.1 DASH is absurd (QT-058).
 pub const MAX_TX_FEE: u64 = 10_000_000;
@@ -1885,12 +1886,13 @@ pub(crate) fn outcome_of_code(code: &str) -> HandoffOutcome {
 }
 
 /// dash-spv's never-sent rejections: client not started, no connected peer.
-fn reason_means_no_peers(reason: &str) -> bool {
+pub(crate) fn reason_means_no_peers(reason: &str) -> bool {
     let r = reason.to_ascii_lowercase();
     r.contains("not started")
         || r.contains("not connected")
         || r.contains("notconnected")
         || r.contains("no peer")
+        || r.contains("no connected peer")
 }
 
 fn finalize_failure(e: PlatformWalletError) -> EngineError {
@@ -2369,6 +2371,21 @@ mod tests {
         assert!(FeeMode::PerKb(999).rate().is_err());
         assert_eq!(FeeMode::PerKb(1000).rate().unwrap(), FeeRate::new(1000));
         assert!(FeeMode::PerKb(MAX_FEE_PER_KB + 1).rate().is_err());
+    }
+
+    #[test]
+    fn the_libraries_no_peers_rejection_is_reported_as_no_peers() {
+        let library = "SPV broadcast not sent: no connected peers";
+        assert!(reason_means_no_peers(library));
+        let sent = broadcast_result(
+            Err(PlatformWalletError::TransactionBroadcast(library.into())),
+            true,
+        );
+        assert!(matches!(sent, Err(EngineError::Send(SendFailure::NoPeers))));
+        for old in ["not started", "NotConnected", "not connected", "no peers"] {
+            assert!(reason_means_no_peers(old), "{old}");
+        }
+        assert!(!reason_means_no_peers("bad-txns-inputs-missingorspent"));
     }
 
     #[test]

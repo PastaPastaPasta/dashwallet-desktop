@@ -7,7 +7,7 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import type { CoinJoinSettings } from "../api/generated/CoinJoinSettings";
 import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
-import { keys, useBackend, useBalance } from "../api/queries";
+import { keys, settledBalance, useBackend, useBalance } from "../api/queries";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
 import { actionFailureText, coinjoinView, sameMarks, START_WINDOW_MS, type CoinJoinView, type MixerMarks, type SeenStart } from "./model";
@@ -56,7 +56,7 @@ export function useCoinJoinView(walletId: string, network: NetworkInfo): { view:
   const status = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId) });
   const amount = useCoinJoinAmount(network);
   const masked = useMaskedAmount(network);
-  const total = useBalance(walletId).data?.total;
+  const total = settledBalance(useBalance(walletId).data ?? null)?.total;
   const start = useSyncExternalStore(subscribe, () => starts.get(walletId));
   const [, tick] = useState(0);
   const view = coinjoinView({ status: status.data, readFailed: status.isError, readError: status.error, amount, masked, total, start, now: Date.now() });

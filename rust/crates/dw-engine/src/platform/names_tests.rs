@@ -853,10 +853,12 @@ impl Fixture {
     fn lease(&self, max_credits: u64) -> String {
         let grant = self.grant(max_credits);
         self.engine
-            .block_on(
-                self.session
-                    .begin_flow(self.wallet, FlowKind::NameRegistration, vec![grant]),
-            )
+            .block_on(self.session.begin_flow(
+                self.wallet,
+                FlowKind::NameRegistration,
+                vec![grant],
+                None,
+            ))
             .unwrap()
     }
 
