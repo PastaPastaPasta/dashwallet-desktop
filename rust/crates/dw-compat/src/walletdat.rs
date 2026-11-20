@@ -1783,6 +1783,8 @@ mod tests {
         Address::p2pkh(&pk, Network::Regtest).to_string()
     }
 
+    type Records = Vec<(Vec<u8>, Vec<u8>)>;
+
     struct Built {
         bytes: Vec<u8>,
         seed: Vec<u8>,
@@ -1858,7 +1860,7 @@ mod tests {
         );
     }
 
-    fn plain_hd_records() -> (Vec<(Vec<u8>, Vec<u8>)>, Vec<u8>, String) {
+    fn plain_hd_records() -> (Records, Vec<u8>, String) {
         let seed = core_seed(PHRASE.as_bytes(), MNEMONIC_PASS.as_bytes());
         let id = sha256d(&seed[..]);
         let address = receive_address(&seed[..]);
