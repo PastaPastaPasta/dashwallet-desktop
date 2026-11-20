@@ -10,7 +10,7 @@ import type { TxRow } from "../api/generated/TxRow";
 import { mark } from "../app/startup";
 import { navigate, openPayForm, ui, useUi } from "../app/ui";
 import { errorMessage } from "../api/backend";
-import { useBackend, useBalance, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
+import { useBackend, useBalance, useHeroSync, useHistory, usePoolBalances, useSyncStatus, useWalletCatchUp, type HistoryFilter } from "../api/queries";
 import { AmountText, DashButton, Icon, NetworkCapsule, VisuallyHidden } from "../components/basics";
 import { historyEmptyCopy, listDisplay, type ListArrival } from "../components/emptyStates";
 import { EmptyState, LoadingState, TxGroups, useRowContext } from "../components/history";
@@ -21,7 +21,7 @@ import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
-import { breakdownRows, coreSubtitle, heroDigits, homeBalance, known, POOL_ROWS, type PoolReading } from "../format/homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type HeroSync, type PoolReading } from "../format/homeBalance";
 import { isSyncing, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
@@ -60,7 +60,7 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
   );
 }
 
-function BalanceHero({ balances, shielded, platform, network, syncing }: { balances: Balances | null; shielded: PoolReading; platform: PoolReading; network: NetworkInfo; syncing: boolean }) {
+function BalanceHero({ balances, shielded, platform, network, hero }: { balances: Balances | null; shielded: PoolReading; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
   const fmt = (duffs: number) => (discreet ? shown.masked() : shown.compact(duffs));
@@ -76,8 +76,8 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
   return (
     <section className="hero" data-testid="hero" aria-label="Balance" data-breakdown={home && rows.length === 0 ? "none" : undefined}>
       {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}
-      <span className="hero-caption" aria-hidden={!syncing}>
-        {syncing ? "Syncing Balance" : " "}
+      <span className="hero-caption" role="status" data-testid="hero-sync-line">
+        {heroSyncLine(balances, hero)}
       </span>
       {home && digits ? (
         <button
@@ -237,6 +237,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   const pools = usePoolBalances(walletId);
   const sync = useSyncStatus();
   const { arrival, recheck } = useWalletCatchUp(walletId);
+  const hero = useHeroSync(walletId);
   const recent = useHistory(walletId, RECENT_FILTER, RECENT_COUNT);
   const discreet = useUi((s) => s.discreet);
   const rows = recent.data?.pages[0]?.rows ?? [];
@@ -263,7 +264,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   return (
     <main className="page page-overview" data-testid="page-home">
       <div className="hero-band" data-testid="hero-band">
-        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} syncing={syncing} />
+        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} hero={hero} />
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">
