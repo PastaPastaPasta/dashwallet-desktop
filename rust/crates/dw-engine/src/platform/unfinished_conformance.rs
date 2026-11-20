@@ -19,7 +19,10 @@ use dashcore::transaction::special_transaction::asset_lock::AssetLockPayload;
 use dashcore::{OutPoint, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dpp::identity::state_transition::asset_lock_proof::chain::ChainAssetLockProof;
 use dpp::prelude::AssetLockProof;
-use platform_wallet::{AssetLockFundingType, AssetLockStatus, TrackedAssetLock};
+use platform_wallet::changeset::{PersistenceCapabilities, PlatformWalletPersistence};
+use platform_wallet::{
+    AssetLockFundingType, AssetLockStatus, PlatformWalletError, TrackedAssetLock,
+};
 
 use super::errors::PlatformError;
 use super::lease::{FlowOutcome, Lease};
@@ -152,6 +155,20 @@ fn state(rig: &impl Rig, at: OutPoint) -> Option<UnfinishedState> {
     (rig.list().unwrap().into_iter())
         .find(|l| l.txid == at.txid.to_string() && l.vout == at.vout)
         .map(|l| l.state)
+}
+
+/// platform-wallet's error once Platform answered "already consumed" for
+/// the applied lock and `session`'s persister does not attest asset-lock
+/// reconciliation: `sync/tracking.rs:343-355` at the pin, after the
+/// outpoint match of `asset_lock/orchestration.rs:474-528`.
+pub(crate) fn unrecorded_consumed(session: &crate::NetworkSession) -> PlatformWalletError {
+    let capabilities = session.live().unwrap().store.persistence_capabilities();
+    let missing = capabilities.missing(PersistenceCapabilities::ASSET_LOCK_RECONCILIATION);
+    PlatformWalletError::Persistence(format!(
+        "asset-lock reconciliation requires persistence capabilities {:?} (missing mask 0x{:x})",
+        missing.names(),
+        missing.bits(),
+    ))
 }
 
 /// A funding type other than `kind`'s.

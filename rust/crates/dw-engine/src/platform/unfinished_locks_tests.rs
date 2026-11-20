@@ -272,6 +272,35 @@ fn only_already_consumed_of_the_same_outpoint_reads_already_consumed() {
     }
 }
 
+/// The library's refusal to record Platform's "already consumed" (a
+/// restored wallet's persister attests no `WALLET_RESTORE`) is that answer
+/// for the applied outpoint, for both kinds.
+#[test]
+fn the_librarys_unrecorded_consumed_report_reads_already_consumed() {
+    use super::shielded_pool::{Applied, applied_from};
+    let at = OutPoint::new(Txid::from_byte_array([1; 32]), 0);
+    let refusal = || {
+        PlatformWalletError::Persistence(
+            "asset-lock reconciliation requires persistence capabilities \
+             [\"wallet_restore\"] (missing mask 0x80)"
+                .into(),
+        )
+    };
+    assert_eq!(
+        reply_from(Err(refusal()), at, true).unwrap(),
+        ApplyReply::AlreadyConsumed
+    );
+    assert_eq!(
+        applied_from(Err(refusal()), at, true).unwrap(),
+        Applied::Taken
+    );
+    let other = PlatformWalletError::Persistence("database is locked".into());
+    assert_eq!(
+        applied_from(Err(other), at, true).unwrap(),
+        Applied::Unknown
+    );
+}
+
 /// A timeout, a broadcast failure or any other error is never "already
 /// consumed": after the signature it may have executed, before it it is
 /// the refusal.
@@ -284,6 +313,7 @@ fn no_other_error_or_timeout_reads_already_consumed() {
             PlatformWalletError::TransactionBroadcast("timed out".into()),
             PlatformWalletError::AssetLockNotTracked(at),
             PlatformWalletError::AssetLockProofWait("no proof".into()),
+            PlatformWalletError::Persistence("database is locked".into()),
         ]
     };
     for e in others() {

@@ -93,6 +93,11 @@ enum Answer {
     /// `AssetLockAlreadyConsumed` naming `of` (`None`: the applied
     /// outpoint).
     Consumed { of: Option<OutPoint> },
+    /// Platform's "already consumed" for the applied outpoint, which the
+    /// library cannot record at the session's real persister.
+    Unrecorded,
+    /// Another persistence failure.
+    PersistFailed,
     /// A broadcast failure.
     Failed,
     /// The apply panics.
@@ -362,6 +367,10 @@ impl FundLib for FakeFund {
             Answer::Done(gained) => Ok(gained),
             Answer::Consumed { of } => Err(PlatformWalletError::AssetLockAlreadyConsumed(
                 of.unwrap_or(outpoint),
+            )),
+            Answer::Unrecorded => Err(conformance::unrecorded_consumed(&self.session)),
+            Answer::PersistFailed => Err(PlatformWalletError::Persistence(
+                "database is locked".into(),
             )),
             Answer::Failed => Err(PlatformWalletError::TransactionBroadcast(
                 "broadcast failed".into(),
@@ -2500,4 +2509,97 @@ fn a_lease_revoked_between_the_funding_and_the_apply_leaves_the_lock_for_finish(
     );
     assert_eq!(lib.applied(), [outpoint], "applied once");
     assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "no new lock");
+}
+
+/// Closes the fixture's session and opens it again over the same
+/// `app.sqlite`, `wallet.sqlite` and journal (a restart).
+fn reopen(fx: &mut Fixture) {
+    (fx.engine)
+        .block_on(fx.engine.close_network(crate::DashNetwork::Regtest))
+        .unwrap();
+    let options = crate::SessionOptions {
+        dapi_addresses: vec!["http://127.0.0.1:1".into()],
+        quorum_url: Some("http://127.0.0.1:1".into()),
+        spv_peers: vec!["127.0.0.1:1".into()],
+        no_platform: true,
+        ..Default::default()
+    };
+    fx.s = (fx.engine)
+        .block_on(fx.engine.open_network(crate::DashNetwork::Regtest, options))
+        .unwrap();
+    assert!(fx.engine.block_on(fx.s.leases.refresh_funding(fx.wallet)));
+}
+
+/// F2 on type 4: a restored lock, `RecoveredFromChain` with its proof,
+/// that Platform answers "already consumed" for, the library unable to
+/// record the answer at the real persister: reported used, off the list
+/// and the card, settled nowhere, and so after a restart, with no second
+/// apply.
+#[test]
+fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
+    let mut fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    let row = lib.lock(9, 1_000_000, AssetLockStatus::RecoveredFromChain, true);
+    let at = row.out_point;
+    lib.track(row.clone());
+    lib.answer(Answer::Unrecorded);
+    let (finished, asked) = finish(&fx, &lib, at);
+    assert!(asked);
+    assert_eq!(finished.unwrap(), LockFinish::ReportedUsed);
+    assert_eq!(reported(&fx, &lib), HashSet::from([at]));
+    assert!(listed(&fx, &lib).unwrap().is_empty(), "off the card");
+    assert!(!settled(&fx).contains(&at.txid), "settled nowhere");
+
+    drop(lib);
+    reopen(&mut fx);
+    let lib = Arc::new(FakeFund::new(&fx));
+    lib.track(row);
+    assert!(listed(&fx, &lib).unwrap().is_empty(), "after a restart");
+    let (again, asked) = finish(&fx, &lib, at);
+    assert_eq!(again.unwrap(), LockFinish::ReportedUsed);
+    assert!(!asked, "no lease, so no passphrase");
+    assert!(lib.applied().is_empty());
+}
+
+/// F2's "Finish all" on type 4: both restored locks answered "already
+/// consumed", unrecorded by the library, count as already used.
+#[test]
+fn finish_transfers_counts_restored_fund_locks_platform_reports_used() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    for n in 1..=2 {
+        lib.track(lib.lock(n, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+        lib.answer(Answer::Unrecorded);
+    }
+    let report = finish_transfers(&fx, &lib);
+    assert_eq!((report.resumed, report.completed), (2, 0));
+    assert_eq!((report.still_pending, report.already_used), (0, 2));
+    assert!(listed(&fx, &lib).unwrap().is_empty());
+    assert_eq!(
+        reported(&fx, &lib),
+        HashSet::from([lib.outpoint(0), lib.outpoint(1)])
+    );
+}
+
+/// Another persistence failure after the signature is no answer: the
+/// restored lock reads Checking, an untried one stays Ready, and neither
+/// is reported used.
+#[test]
+fn a_persistence_failure_leaves_a_restored_fund_lock_unfinished() {
+    let fx = Fixture::new(0);
+    let lib = Arc::new(FakeFund::new(&fx));
+    for n in 1..=2 {
+        lib.track(lib.lock(n, 1_000_000, AssetLockStatus::RecoveredFromChain, true));
+    }
+    let (failed, untried) = (lib.outpoint(0), lib.outpoint(1));
+    lib.answer(Answer::PersistFailed);
+    assert_eq!(finish(&fx, &lib, failed).0.unwrap(), LockFinish::Checking);
+    assert_eq!(
+        state_of(&fx, &lib),
+        [
+            (failed, UnfinishedState::Checking),
+            (untried, UnfinishedState::Ready),
+        ]
+    );
+    assert!(reported(&fx, &lib).is_empty());
 }
