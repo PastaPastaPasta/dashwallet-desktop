@@ -269,7 +269,9 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     set_load_on_startup: ({ walletId, loadOnStartup }, { world }) => {
       if (!world.wallets.some((x) => x.summary.walletId === walletId)) throw fail("wallet_not_found", `wallet not found: ${walletId}`);
       const rest = world.settings.notAtStartup.filter((id) => id !== walletId);
-      world.settings.notAtStartup = loadOnStartup ? rest : [...rest, walletId];
+      const notAtStartup = loadOnStartup ? rest : [...rest, walletId];
+      if (world.wallets.every((x) => notAtStartup.includes(x.summary.walletId))) throw fail("last_startup_wallet", "at least one wallet opens at start");
+      world.settings.notAtStartup = notAtStartup;
       return null;
     },
     rename_wallet: ({ walletId, name }, { world }) => {
@@ -287,6 +289,12 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       world.lock = { ...world.lock, walletsWithSecrets: world.lock.walletsWithSecrets.filter((id) => id !== walletId) };
       world.settings.closed = world.settings.closed.filter((id) => id !== walletId);
       world.settings.notAtStartup = world.settings.notAtStartup.filter((id) => id !== walletId);
+      // As the engine: the only wallet on the startup list hands it to the first open one.
+      const left = world.wallets.map((x) => x.summary.walletId);
+      if (left.length > 0 && left.every((id) => world.settings.notAtStartup.includes(id))) {
+        const next = left.find((id) => !world.settings.closed.includes(id)) ?? left[0];
+        world.settings.notAtStartup = world.settings.notAtStartup.filter((id) => id !== next);
+      }
       ctx.emit({ kind: "walletRemoved", network: network(world), walletId });
       return null;
     },

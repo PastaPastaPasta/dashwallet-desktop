@@ -24,7 +24,7 @@ use platform_wallet::events::WalletEvent;
 use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShieldedOutcome};
 
 use crate::history::HistoryStore;
-use crate::pump::{EventPump, PumpTarget, TxidSet};
+use crate::pump::{EventPump, NewTxs, PumpTarget, TxidSet};
 use crate::sync::{SyncSnapshot, SyncTracker};
 use crate::tools::{RescanState, better_chainlock, count_masternodes};
 use crate::{DashNetwork, WalletBalances, WalletId};
@@ -86,12 +86,21 @@ pub enum EngineEvent {
     },
     /// Transactions of the wallet seen for the first time, batched over
     /// 100 ms as dash-qt batches its popups (QT-031…033). Never sent for
-    /// status changes. `catch_up`: SPV was not caught up when the batch was
-    /// sent (dash-qt shows no popups during initial sync).
+    /// status changes, so a transaction is named once: a payment seen in
+    /// the mempool and then mined is in the batch of its mempool sighting
+    /// only. `catch_up`: SPV was not caught up when the batch was sent
+    /// (dash-qt shows no popups during initial sync).
     NewTransactions {
         network: DashNetwork,
         wallet_id: WalletId,
         txids: Vec<Txid>,
+        /// Those of `txids` learned live, in their order: first seen in the
+        /// mempool or with an InstantSend lock (dash-spv relays both during
+        /// sync too), or in a block at most two blocks (`LIVE_DEPTH`) below the
+        /// network's best height when the block was processed. The others
+        /// were found by the scan in older blocks, or with no best height
+        /// known yet.
+        live: Vec<Txid>,
         catch_up: bool,
     },
     /// A wallet was loaded or unloaded (QT-101).
@@ -276,6 +285,26 @@ impl NoticeCode {
 /// Receives engine events. Called from engine threads; must not block.
 pub trait EventSink: Send + Sync + 'static {
     fn emit(&self, event: EngineEvent);
+}
+
+/// How far below the network's best height a block's transactions are
+/// still learned live (`EngineEvent::NewTransactions::live`): the block at
+/// the tip, and the two before it for a tip that moved while the block was
+/// processed.
+pub(crate) const LIVE_DEPTH: u32 = 2;
+
+/// Whether a transaction first seen in `context` is learned live, the
+/// network's best height being `network_tip`. A block above that height is
+/// not: the reading is behind, and may be a whole scan behind.
+pub(crate) fn learned_live(context: &TransactionContext, network_tip: Option<u32>) -> bool {
+    match context {
+        TransactionContext::Mempool | TransactionContext::InstantSend(_) => true,
+        TransactionContext::InBlock(block) | TransactionContext::InChainLockedBlock(block) => {
+            network_tip
+                .and_then(|tip| tip.checked_sub(block.height()))
+                .is_some_and(|depth| depth <= LIVE_DEPTH)
+        }
+    }
 }
 
 pub(crate) fn unix_now() -> u64 {
@@ -1315,7 +1344,8 @@ impl SessionHub {
                 // A contact's record shows nowhere; a ProRegTx among them is
                 // kept out of sight for its collateral, as at a load.
                 if self.history.with_wallet(id, |h| h.upsert(record, now)) {
-                    self.pump.mark_new_txs(id, &[record.txid]);
+                    let live = learned_live(&record.context, self.tracker().network_tip());
+                    self.pump.mark_new_txs(id, &[(record.txid, live)]);
                 }
                 if crate::history::is_wallets(record) {
                     self.pump.mark_history(id, Some(&[record.txid]));
@@ -1412,6 +1442,7 @@ impl SessionHub {
                 ..
             } => {
                 let mut new = Vec::new();
+                let tip = self.tracker().network_tip();
                 let changed: Vec<Txid> = self.history.with_wallet(id, |h| {
                     inserted
                         .iter()
@@ -1419,7 +1450,7 @@ impl SessionHub {
                         .chain(matured)
                         .filter_map(|r| {
                             if h.upsert(r, now) {
-                                new.push(r.txid);
+                                new.push((r.txid, learned_live(&r.context, tip)));
                             }
                             crate::history::is_wallets(r).then_some(r.txid)
                         })
@@ -1706,13 +1737,14 @@ impl PumpTarget for SessionPump {
         tokio::task::spawn_blocking(write);
     }
 
-    fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {
+    fn flush_new_txs(&self, batches: BTreeMap<WalletId, NewTxs>) {
         let catch_up = !self.hub.tracker().caught_up();
-        for (wallet_id, txids) in batches {
+        for (wallet_id, batch) in batches {
             self.hub.emit(EngineEvent::NewTransactions {
                 network: self.hub.network.clone(),
                 wallet_id,
-                txids,
+                live: batch.live_in_order(),
+                txids: batch.txids,
                 catch_up,
             });
         }
@@ -1796,13 +1828,20 @@ mod tests {
     }
 
     fn in_block(t: &Transaction, height: u32) -> TransactionRecord {
+        seen(
+            t,
+            TransactionContext::InBlock(BlockInfo::new(height, BlockHash::all_zeros(), 0)),
+        )
+    }
+
+    fn seen(t: &Transaction, context: TransactionContext) -> TransactionRecord {
         TransactionRecord::new(
             t.clone(),
             AccountType::Standard {
                 index: 0,
                 standard_account_type: StandardAccountType::BIP44Account,
             },
-            TransactionContext::InBlock(BlockInfo::new(height, BlockHash::all_zeros(), 0)),
+            context,
             TransactionType::Standard,
             TransactionDirection::Incoming,
             Vec::new(),
@@ -1940,7 +1979,13 @@ mod tests {
             block_marks,
             (
                 BTreeMap::from([(W, crate::pump::TxidSet::Some([own.txid()].into()))]),
-                BTreeMap::from([(W, vec![own.txid()])]),
+                BTreeMap::from([(
+                    W,
+                    NewTxs {
+                        txids: vec![own.txid()],
+                        live: BTreeSet::new(),
+                    }
+                )]),
             ),
             "the block event marks its own record alone"
         );
@@ -1950,6 +1995,134 @@ mod tests {
             "a contact's record marks nothing"
         );
         assert_eq!(hidden, [mined.txid(), seen.txid()].into());
+    }
+
+    fn detected(record: TransactionRecord) -> WalletEvent {
+        WalletEvent::TransactionDetected {
+            wallet_id: W.0,
+            record: Box::new(record),
+            balance: WalletCoreBalance::new(1_000, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        }
+    }
+
+    fn block_of(
+        height: u32,
+        inserted: Vec<TransactionRecord>,
+        updated: Vec<TransactionRecord>,
+    ) -> WalletEvent {
+        WalletEvent::BlockProcessed {
+            wallet_id: W.0,
+            height,
+            chain_lock: None,
+            inserted,
+            updated,
+            matured: Vec::new(),
+            balance: WalletCoreBalance::new(1_000, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        }
+    }
+
+    /// A hub whose headers are at `current` of the peers' `target`.
+    fn headers_at(current: u32, target: u32) -> SessionHub {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        hub.tracker().set_headers_syncing(current, target);
+        hub
+    }
+
+    fn new_txs(hub: &SessionHub) -> NewTxs {
+        hub.pump.take_new_txs().remove(&W).unwrap_or_default()
+    }
+
+    /// Issue #141: a payment relayed from the mempool, or with its
+    /// InstantSend lock, while SPV is still catching up is live.
+    #[test]
+    fn a_mempool_or_instantsend_payment_during_catch_up_is_live() {
+        let hub = headers_at(600, 1000);
+        let (mempool, locked) = (tx(1), tx(2));
+        let lock = dashcore::InstantLock {
+            txid: locked.txid(),
+            ..dashcore::InstantLock::default()
+        };
+        hub.apply_wallet_event(&detected(seen(&mempool, TransactionContext::Mempool)));
+        hub.apply_wallet_event(&detected(seen(
+            &locked,
+            TransactionContext::InstantSend(lock),
+        )));
+        let batch = new_txs(&hub);
+        assert!(!hub.tracker().caught_up());
+        assert_eq!(batch.txids, [mempool.txid(), locked.txid()]);
+        assert_eq!(batch.live_in_order(), batch.txids);
+    }
+
+    /// A block's transactions are live when the block is at most
+    /// `LIVE_DEPTH` below the peers' best height, whatever height the scan
+    /// is at; an older block's are the scan's findings, and so are those of
+    /// a block above that height, which the reading has not reached.
+    #[test]
+    fn a_blocks_transactions_are_live_only_near_the_network_tip() {
+        let hub = headers_at(600, 1000);
+        let [old, behind, near, tip, above] = [1, 2, 3, 4, 5].map(tx);
+        hub.apply_wallet_event(&block_of(600, vec![in_block(&old, 600)], vec![]));
+        hub.apply_wallet_event(&block_of(997, vec![in_block(&behind, 997)], vec![]));
+        hub.apply_wallet_event(&block_of(998, vec![in_block(&near, 998)], vec![]));
+        let locked_tip = seen(
+            &tip,
+            TransactionContext::InChainLockedBlock(BlockInfo::new(1000, BlockHash::all_zeros(), 0)),
+        );
+        hub.apply_wallet_event(&block_of(1000, vec![locked_tip], vec![]));
+        hub.apply_wallet_event(&block_of(1001, vec![in_block(&above, 1001)], vec![]));
+        let batch = new_txs(&hub);
+        assert_eq!(
+            batch.txids,
+            [&old, &behind, &near, &tip, &above].map(|t| t.txid())
+        );
+        assert_eq!(batch.live_in_order(), [near.txid(), tip.txid()]);
+    }
+
+    /// Before dash-spv reports a best height, no block's transaction is
+    /// live; a mempool one still is.
+    #[test]
+    fn without_a_best_height_only_off_chain_payments_are_live() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let (mined, relayed) = (tx(1), tx(2));
+        hub.apply_wallet_event(&block_of(5, vec![in_block(&mined, 5)], vec![]));
+        hub.apply_wallet_event(&detected(seen(&relayed, TransactionContext::Mempool)));
+        assert_eq!(new_txs(&hub).live_in_order(), [relayed.txid()]);
+    }
+
+    /// A payment seen in the mempool and then in its block is named once,
+    /// live, in the batch of its mempool sighting.
+    #[test]
+    fn a_payment_seen_then_mined_is_named_once() {
+        let hub = headers_at(600, 1000);
+        let t = tx(1);
+        hub.apply_wallet_event(&detected(seen(&t, TransactionContext::Mempool)));
+        assert_eq!(new_txs(&hub).live_in_order(), [t.txid()]);
+        hub.apply_wallet_event(&block_of(1000, vec![], vec![in_block(&t, 1000)]));
+        assert_eq!(new_txs(&hub), NewTxs::default());
+    }
+
+    /// A wallet restored from its phrase scans years of blocks: none of its
+    /// old payments is live, and a payment relayed meanwhile is, in the
+    /// same batch.
+    #[test]
+    fn a_restore_scanning_years_of_history_finds_no_live_payment() {
+        let hub = headers_at(2_400_000, 2_400_000);
+        let mut found = Vec::new();
+        for (n, height) in (1..=40u8).zip((1_000_000..).step_by(35_000)) {
+            let t = tx(n);
+            hub.apply_wallet_event(&block_of(height, vec![in_block(&t, height)], vec![]));
+            found.push(t.txid());
+        }
+        let relayed = tx(100);
+        hub.apply_wallet_event(&detected(seen(&relayed, TransactionContext::Mempool)));
+        found.push(relayed.txid());
+        let batch = new_txs(&hub);
+        assert_eq!(batch.txids, found);
+        assert_eq!(batch.live_in_order(), [relayed.txid()]);
     }
 
     /// The reconcile's balance replaces an event's doubled one, and is
