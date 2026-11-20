@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::SweepDestination;
 use super::sweep_tests::{
-    ReleaseOnDrop, hook, move_quote, pause_at, reached, spawn_move, spend_grant, within,
+    HANG_GUARD, ReleaseOnDrop, hook, move_quote, pause_at, reached, spawn_move, spend_grant, within,
 };
 use crate::coins::TestPause;
 use crate::platform::lease::session_tests::{Fixture, fixture};
@@ -17,7 +17,6 @@ use crate::platform::{FlowKind, LeaseStateView};
 use crate::{CloseRefused, DashNetwork, NetworkSession};
 
 const COIN: u64 = 100_000_000;
-const DRAIN: Duration = Duration::from_secs(20);
 
 /// What the app's check finds: flows holding a live lease, mixing, and
 /// `broadcasts` (the app's count of broadcasts not yet returned).
@@ -54,19 +53,28 @@ fn close(f: &Fixture, broadcasts: &Arc<AtomicUsize>) -> Result<bool, CloseRefuse
     let busy = busy(Arc::clone(broadcasts));
     f.engine.block_on(
         f.engine
-            .close_network_unless_busy(DashNetwork::Regtest, DRAIN, busy),
+            .close_network_unless_busy(DashNetwork::Regtest, HANG_GUARD, busy),
     )
 }
 
 /// Waits until the close is draining.
 fn draining(f: &Fixture, drains: usize) {
-    for _ in 0..2_000 {
-        if f.session.gate.drains() == drains {
-            return;
-        }
+    until(
+        || f.session.gate.drains() == drains,
+        "the close never drained",
+    );
+}
+
+/// Polls `done` until it holds; a run that passes [`HANG_GUARD`] hangs.
+fn until(done: impl Fn() -> bool, what: &str) {
+    let guard = std::time::Instant::now() + HANG_GUARD;
+    while !done() {
+        assert!(
+            std::time::Instant::now() < guard,
+            "hang guard: {what} in {HANG_GUARD:?}"
+        );
         std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("the close never drained");
 }
 
 /// The session is the open one, admits operations and kept its wallet.
@@ -201,7 +209,7 @@ fn a_broadcast_started_before_the_decision_refuses_the_close() {
         let (s, held) = (Arc::clone(&f.session), Arc::clone(&held));
         (f.session.rt).spawn(async move {
             let _op = s.enter().await.unwrap();
-            held.reached.store(true, Ordering::SeqCst);
+            held.mark_reached();
             held.release.notified().await;
         })
     };
@@ -249,7 +257,7 @@ fn an_idle_session_closes_and_refuses_what_waited() {
         let (s, held) = (Arc::clone(&f.session), Arc::clone(&held));
         (f.session.rt).spawn(async move {
             let _op = s.enter().await.unwrap();
-            held.reached.store(true, Ordering::SeqCst);
+            held.mark_reached();
             held.release.notified().await;
         })
     };
@@ -309,13 +317,10 @@ fn gate_pause(slot: &std::sync::Mutex<Option<Arc<TestPause>>>) -> Arc<TestPause>
 
 /// Waits until the close sealed the gate and ended its pause.
 fn sealed(f: &Fixture) {
-    for _ in 0..2_000 {
-        if f.session.gate.is_closed() && f.session.gate.pause_ended() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    panic!("the close never sealed");
+    until(
+        || f.session.gate.is_closed() && f.session.gate.pause_ended(),
+        "the close never sealed",
+    );
 }
 
 /// The held mixing start was refused, and mixing never started.
@@ -353,14 +358,22 @@ fn an_entrant_admitted_across_the_commit_is_refused() {
             Arc::clone(&checked),
         ]);
         let closing = scope.spawn(|| close(&f, &broadcasts));
-        reached(&checked);
+        until(
+            || checked.reached.load(Ordering::SeqCst) || closing.is_finished(),
+            "the close never reached its sessions",
+        );
+        assert!(
+            checked.reached.load(Ordering::SeqCst),
+            "the close ended before its sessions: {:?}",
+            closing.join().unwrap()
+        );
         assert_eq!(f.session.gate.drains(), 1, "both checks passed");
         // Admitted now. Reading the seal first, it would wait between its
         // loads; it reads the pause, which is still there, and backs off.
         let before = f.session.gate.backed_off();
         entering.release.notify_one();
         // Whichever it does first; the bound only ends a test that hangs.
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let deadline = std::time::Instant::now() + HANG_GUARD;
         let backed_off = loop {
             if f.session.gate.backed_off() > before {
                 break true;
@@ -370,7 +383,7 @@ fn an_entrant_admitted_across_the_commit_is_refused() {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "the entrant neither backed off nor reached its last load"
+                "hang guard: the entrant neither backed off nor reached its last load"
             );
             std::thread::sleep(Duration::from_millis(1));
         };

@@ -456,15 +456,48 @@ pub(crate) struct TestPause {
     pub(crate) release: tokio::sync::Notify,
     /// Set by [`Self::hold_then`] once the held work has run.
     pub(crate) done: std::sync::atomic::AtomicBool,
+    gate: std::sync::Mutex<()>,
+    signal: std::sync::Condvar,
 }
 
 #[cfg(test)]
 impl TestPause {
+    /// Marks the pause reached and wakes [`Self::wait_reached`].
+    pub(crate) fn mark_reached(&self) {
+        let _gate = self
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.reached
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.signal.notify_all();
+    }
+
+    /// Blocks until the pause is reached, or `bound` passed: false then.
+    /// Woken by [`Self::mark_reached`]; a pause marked by a plain store is
+    /// seen within 5 ms.
+    pub(crate) fn wait_reached(&self, bound: std::time::Duration) -> bool {
+        let guard = std::time::Instant::now() + bound;
+        let mut gate = self
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !self.reached.load(std::sync::atomic::Ordering::SeqCst) {
+            if std::time::Instant::now() >= guard {
+                return false;
+            }
+            let slice = std::time::Duration::from_millis(5);
+            gate = (self.signal.wait_timeout(gate, slice))
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
+        }
+        true
+    }
+
     /// Marks the pause reached and blocks until it is released. On a
     /// blocking-pool thread of the runtime.
     pub(crate) fn hold(&self) {
-        self.reached
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.mark_reached();
         tokio::runtime::Handle::current().block_on(self.release.notified());
     }
 
@@ -612,9 +645,7 @@ where
 pub(crate) async fn pause_at(slot: &std::sync::Mutex<Option<Arc<TestPause>>>) {
     let pause = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
     if let Some(pause) = pause {
-        pause
-            .reached
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        pause.mark_reached();
         pause.release.notified().await;
     }
 }
