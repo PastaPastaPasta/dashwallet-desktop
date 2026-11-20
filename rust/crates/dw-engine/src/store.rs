@@ -120,6 +120,37 @@ impl WalletStore {
     }
 }
 
+/// key-wallet records a transaction it sees again (a peer's relay after a
+/// restart) with no `input_details` when the coins it spends are no longer
+/// held, and the SQLite persister replaces the stored record with it: the
+/// next load would no longer know which of the wallet's coins the
+/// transaction spent, and restore no claim for them (#88). A record that
+/// names no own input keeps the input side the stored record of the same
+/// transaction names; its context and outputs are the new ones.
+fn keep_known_inputs(
+    changeset: &mut PlatformWalletChangeSet,
+    stored: impl Fn(&Txid) -> Option<TransactionRecord>,
+) {
+    let Some(core) = changeset.core.as_mut() else {
+        return;
+    };
+    for record in (core.records.iter_mut())
+        .filter(|r| r.input_details.is_empty() && !r.transaction.is_coin_base())
+    {
+        let Some(old) = stored(&record.txid) else {
+            continue;
+        };
+        if old.input_details.is_empty() || old.transaction.txid() != record.txid {
+            continue;
+        }
+        record.input_details = old.input_details;
+        record.net_amount = old.net_amount;
+        record.fee = old.fee;
+        record.direction = old.direction;
+        record.transaction_type = old.transaction_type;
+    }
+}
+
 /// platform-wallet hands the store every `Received` / `Change` output of a
 /// record as a new coin and names in `utxo_credit_verdicts` the ones
 /// key-wallet did not credit; the SQLite persister writes them unspent all
@@ -205,6 +236,12 @@ impl PlatformWalletPersistence for WalletStore {
             .unwrap_or_default();
         let mut changeset = changeset;
         withhold_uncredited(&mut changeset);
+        keep_known_inputs(&mut changeset, |txid| {
+            self.inner
+                .get_core_tx_record(wallet_id, txid)
+                .ok()
+                .flatten()
+        });
         if let Err(e) = self.inner.store(wallet_id, changeset) {
             if core && let Some(replay) = replay() {
                 replay.note_store_failed(WalletId(wallet_id));

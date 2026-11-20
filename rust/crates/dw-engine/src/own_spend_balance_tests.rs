@@ -1260,3 +1260,174 @@ fn a_beaten_payment_is_dropped_with_its_child() {
     assert!(!in_history(&session, id, child.txid()));
     assert_holds(&engine, &session, id, &want, "after a restart");
 }
+
+/// #88: a peer relays the payment after a restart, before its coins'
+/// funding block is scanned. key-wallet holds none of the coins it spent,
+/// so it records the relay with no inputs; the store keeps the inputs the
+/// stored record names, and the load after the next restart still claims
+/// them.
+#[test]
+fn a_payment_relayed_after_a_restart_keeps_its_claims_across_the_next() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let before = coins(&engine, &session, id);
+    let tx = send(&engine, &session, id, CoinSource::Any, COIN * 5 / 2, false);
+    mempool(&engine, &session, id, &tx);
+    let own = assert_counted_once(&engine, &session, id, &before, &tx, "own broadcast");
+
+    let session = reopen(&engine, session);
+    mempool(&engine, &session, id, &tx);
+    assert_counted_once(
+        &engine,
+        &session,
+        id,
+        &before,
+        &tx,
+        "relayed after a restart",
+    );
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    let b = assert_counted_once(
+        &engine,
+        &session,
+        id,
+        &before,
+        &tx,
+        "the funding block scanned a restart after the relay",
+    );
+    assert_eq!(b.total, own.total);
+}
+
+/// A ChainLock at `height`, as dash-spv hands it to the wallet manager.
+fn chainlock(engine: &Engine, session: &NetworkSession, id: WalletId, height: u32) {
+    use dashcore::bls_sig_utils::BLSSignature;
+    let lock = dashcore::ChainLock {
+        block_height: height,
+        block_hash: dashcore::BlockHash::all_zeros(),
+        signature: BLSSignature::from([0; 96]),
+    };
+    super::deliver(engine, session, id, move |wm| {
+        Box::pin(async move {
+            wm.apply_chain_lock(lock);
+        })
+    });
+}
+
+/// Runs the engine's release of beaten restored claimants now.
+fn release_beaten(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId) {
+    let s = Arc::clone(session);
+    engine
+        .block_on(session.on_runtime(async move {
+            let manager = s.manager()?;
+            s.release_beaten_claims(&manager, id).await
+        }))
+        .unwrap();
+}
+
+/// A restored payment of A and B that is InstantSend-locked yields to a
+/// rival spending B in a plain block only once that block is ChainLocked,
+/// as key-wallet's sweep has it for a recorded one: until then the payment
+/// stays and A stays claimed.
+#[test]
+fn a_locked_payment_yields_to_a_rival_only_once_its_block_is_chainlocked() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let rival = rival(&engine, &session, id, &paid, 1);
+    mined(&engine, &session, id, TIP + 1, vec![rival.clone()]);
+    release_beaten(&engine, &session, id);
+    assert!(
+        in_history(&session, id, payment.txid()),
+        "a plain block does not beat a locked payment"
+    );
+    let held: BTreeSet<OutPoint> = coins(&engine, &session, id)
+        .into_iter()
+        .map(|c| c.0)
+        .collect();
+    assert!(!held.contains(&a), "A stays claimed: {held:?}");
+
+    chainlock(&engine, &session, id, TIP + 1);
+    eventually("the payment dropped once the rival is ChainLocked", || {
+        !in_history(&session, id, payment.txid())
+    });
+    let session = reopen(&engine, session);
+    assert!(!in_history(&session, id, payment.txid()));
+    let want = after_the_rival(&paid, b, &rival);
+    assert_holds(&engine, &session, id, &want, "after a restart");
+    assert!(spendable(&engine, &session, id, a), "A is spendable");
+}
+
+/// A restored payment of A and B loses to a rival spending B that is
+/// InstantSend-locked out of a block, as key-wallet's sweep drops a
+/// recorded one: the payment goes and A counts again.
+#[test]
+fn a_coin_claimed_by_a_payment_an_instant_locked_spend_beats_counts_again() {
+    let (_dir, engine, session, id, (a, b), paid, payment) =
+        payment_claiming_two_coins_after_a_restart();
+    let rival = rival(&engine, &session, id, &paid, 1);
+    mempool(&engine, &session, id, &rival);
+    instant_lock(&engine, &session, id, &rival);
+    eventually("the payment dropped and the scan rewound", || {
+        !in_history(&session, id, payment.txid()) && synced(&engine, &session, id) < TIP
+    });
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let want = after_the_rival(&paid, b, &rival);
+    assert_holds(&engine, &session, id, &want, "replayed");
+    assert!(spendable(&engine, &session, id, a), "A is spendable");
+}
+
+/// Abandoning a restored payment abandons its restored child, which spent
+/// its change and one more coin D: neither change counts, and every coin
+/// either spent counts again.
+#[test]
+fn abandoning_a_restored_payment_abandons_its_restored_child() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let first = send(&engine, &session, id, CoinSource::Any, COIN * 5 / 2, false);
+    mempool(&engine, &session, id, &first);
+    let change = change_of(&first, &own_scripts(&engine, &session, id));
+    let spent: BTreeSet<OutPoint> = first.input.iter().map(|i| i.previous_output).collect();
+    let funding: BTreeSet<OutPoint> = (0..paid.output.len() as u32)
+        .map(|v| OutPoint::new(paid.txid(), v))
+        .collect();
+    let d = *funding.iter().find(|o| !spent.contains(o)).unwrap();
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change, d]),
+        COIN,
+        false,
+    );
+    mempool(&engine, &session, id, &child);
+    wait_stored(&session, id, &[first.txid(), child.txid()]);
+
+    let session = reopen(&engine, session);
+    let s = Arc::clone(&session);
+    let txid = first.txid();
+    let abandoned = engine
+        .block_on(session.on_runtime(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, id, txid).await
+        }))
+        .unwrap();
+    assert_eq!(abandoned, BTreeSet::from([first.txid(), child.txid()]));
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert_holds(&engine, &session, id, &funding, "funding scanned");
+    assert!(spendable(&engine, &session, id, d), "D is spendable");
+
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &funding, "after a restart");
+}

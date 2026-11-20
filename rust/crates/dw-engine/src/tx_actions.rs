@@ -257,6 +257,9 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            // Not while a wallet loads: its spend claims are read before
+            // they are restored.
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             let manager = this.manager()?;
             this.require_wallet(&wallet)?;
             if !manager.spv().is_started() {
@@ -291,6 +294,7 @@ impl NetworkSession {
         }
         // Planned on a copy under the lock that applies it, so the replay
         // record stored before it covers what is abandoned.
+        let spenders = self.unmined_spenders(wallet);
         let (outcome, checkpoint) = {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
@@ -299,7 +303,7 @@ impl NetworkSession {
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
             let mut trial = info.core_wallet.clone();
             let planned = trial
-                .abandon_transaction_with_spends(root, &BTreeMap::new())
+                .abandon_transaction_with_spends(root, &spenders)
                 .abandoned;
             let checkpoint = self.abandon_rewind(wallet, &planned, &info.core_wallet);
             if let Some(checkpoint) = checkpoint {
@@ -307,7 +311,7 @@ impl NetworkSession {
             }
             let outcome = info
                 .core_wallet
-                .abandon_transaction_with_spends(root, &BTreeMap::new());
+                .abandon_transaction_with_spends(root, &spenders);
             if !outcome.abandoned.is_empty() {
                 info.core_wallet.update_balance();
             }
@@ -429,12 +433,7 @@ impl NetworkSession {
         wallet: WalletId,
         beaten: crate::history::Beaten,
     ) -> Result<(), EngineError> {
-        let spenders: BTreeMap<OutPoint, Txid> = self.hub.history.read(&wallet, |txs| {
-            (txs.iter())
-                .filter(|(_, e)| e.context.block_info().is_none())
-                .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
-                .collect()
-        });
+        let spenders = self.unmined_spenders(wallet);
         let (dropped, freed, checkpoint, balance, accounts) = {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
@@ -486,18 +485,26 @@ impl NetworkSession {
         };
         let txids: Vec<Txid> = dropped.iter().copied().collect();
         tracing::info!(wallet_id = %wallet, winner = %beaten.winner, ?txids, ?freed,
-            "dropped unmined spends a mined transaction beats");
-        self.store_sweep(
-            wallet,
-            SweepBatch {
-                txids: txids.clone(),
-                superseded_by: beaten.winner,
-                winner_mined_height: beaten.winner_block.map(|b| b.height()),
-                released_outpoints: freed.clone(),
-            },
-            "beaten spend",
-        )
-        .await?;
+            "dropped unmined spends another transaction beats");
+        // key-wallet and the history no longer hold them: the claims, the
+        // event and the replay below follow whether or not the sweep is
+        // stored. Unstored, the next load restores the claims and drops
+        // them again.
+        if let Err(e) = self
+            .store_sweep(
+                wallet,
+                SweepBatch {
+                    txids: txids.clone(),
+                    superseded_by: beaten.winner,
+                    winner_mined_height: beaten.winner_block.map(|b| b.height()),
+                    released_outpoints: freed.clone(),
+                },
+                "beaten spend",
+            )
+            .await
+        {
+            tracing::warn!(wallet_id = %wallet, error = %e, "beaten spend sweep not stored");
+        }
         self.hub.apply_wallet_event(
             &platform_wallet::key_wallet_manager::WalletEvent::TransactionsSwept {
                 wallet_id: wallet.0,
@@ -519,6 +526,22 @@ impl NetworkSession {
         self.refresh_wallet_state(manager, wallet).await;
         self.hub.pump.mark_balances(wallet);
         Ok(())
+    }
+
+    /// The spender of each outpoint the history's live transactions out of
+    /// a block and not InstantSend-locked spend: the descendants key-wallet
+    /// holds no record of (a spend restored as a claimant at load) that an
+    /// abandon of their ancestor must follow, as its own walk follows the
+    /// unsettled ones it records.
+    fn unmined_spenders(&self, wallet: WalletId) -> BTreeMap<OutPoint, Txid> {
+        self.hub.history.read(&wallet, |txs| {
+            (txs.iter())
+                .filter(|(_, e)| {
+                    e.context.block_info().is_none() && !e.is_abandoned() && !e.is_locked()
+                })
+                .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
+                .collect()
+        })
     }
 
     /// The wallet's coins dropping `dropped` frees: the inputs key-wallet
@@ -707,6 +730,7 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             let manager = this.manager()?;
             if let Some(id) = &wallet {
                 this.require_wallet(id)?;

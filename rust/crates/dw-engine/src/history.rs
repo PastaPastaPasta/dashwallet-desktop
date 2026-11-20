@@ -291,10 +291,12 @@ impl TxEntry {
     /// while the transaction is in no block and not InstantSend-locked
     /// (`status_of`'s `Abandoned`; a lock outranks the abandon).
     pub(crate) fn is_abandoned(&self) -> bool {
-        self.abandoned
-            && self.context.block_info().is_none()
-            && !self.instant_locked
-            && !matches!(self.context, TransactionContext::InstantSend(_))
+        self.abandoned && self.context.block_info().is_none() && !self.is_locked()
+    }
+
+    /// InstantSend-locked: seen with its lock, or locked since.
+    pub(crate) fn is_locked(&self) -> bool {
+        self.instant_locked || matches!(self.context, TransactionContext::InstantSend(_))
     }
 }
 
@@ -339,11 +341,12 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
 }
 
 /// The wallet's own coins that its transactions out of a block spend, each
-/// with its spender, by the rule of [`spent_outpoints`]: what key-wallet
+/// with its spender, unless key-wallet's conflict sweep would have dropped
+/// the spender ([`swept_as_key_wallet_would`]): what key-wallet
 /// held for each such spend when it recorded it (`own_inputs`), as
 /// key-wallet's spent-output claims (`restore_spent_outpoints`).
 pub(crate) fn unmined_own_spends(txs: &HashMap<Txid, TxEntry>) -> Vec<(OutPoint, Txid)> {
-    let conflicted = conflicted(txs);
+    let conflicted = swept_as_key_wallet_would(txs);
     (txs.iter())
         .filter(|(t, e)| !mined(e) && !e.is_abandoned() && !conflicted.contains(*t))
         .flat_map(|(t, e)| {
@@ -354,8 +357,8 @@ pub(crate) fn unmined_own_spends(txs: &HashMap<Txid, TxEntry>) -> Vec<(OutPoint,
         .collect()
 }
 
-/// A transaction out of a block that `winner`, in a block, beats to an
-/// input ([`beaten_unrecorded`]).
+/// A transaction out of a block that `winner` beats to an input
+/// ([`beaten_unrecorded`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Beaten {
     pub txid: Txid,
@@ -363,21 +366,18 @@ pub(crate) struct Beaten {
     pub winner_block: Option<BlockInfo>,
 }
 
-/// The transactions out of a block that one in a block beats to an input
-/// and key-wallet holds no record of (`session_held`), so its own conflict
-/// sweep cannot drop them: an own spend restored as a claimant at load
-/// ([`unmined_own_spends`]), or one whose unmined descendants include one.
-/// Abandoned ones are left to the abandon.
+/// The transactions out of a block that another beats to an input as
+/// key-wallet's conflict sweep has it ([`beats`]) and that key-wallet holds
+/// no record of (`session_held`), so its own sweep cannot drop them: an own
+/// spend restored as a claimant at load ([`unmined_own_spends`]), or one
+/// whose unmined descendants include one. Abandoned ones are left to the
+/// abandon.
 pub(crate) fn beaten_unrecorded(h: &WalletHistory) -> Vec<Beaten> {
     let txs = &h.txs;
-    let unrecorded =
-        |(t, e): (&Txid, &TxEntry)| !mined(e) && !e.is_abandoned() && !h.session_held.contains(t);
-    if !txs.iter().any(unrecorded) {
+    if !h.holds_unrecorded() {
         return Vec::new();
     }
-    let in_block: HashMap<OutPoint, Txid> = (txs.iter().filter(|(_, e)| mined(e)))
-        .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
-        .collect();
+    let finals = final_spenders(txs);
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
     for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
         for i in &e.tx.input {
@@ -399,15 +399,13 @@ pub(crate) fn beaten_unrecorded(h: &WalletHistory) -> Vec<Beaten> {
         false
     };
     let mut beaten: Vec<Beaten> = (txs.iter())
-        .filter(|(t, e)| unrecorded((t, e)))
+        .filter(|(t, e)| h.unrecorded(t, e))
         .filter_map(|(t, e)| {
-            let winner = (e.tx.input.iter())
-                .filter_map(|i| in_block.get(&i.previous_output))
-                .find(|w| *w != t)?;
+            let winner = winner_of(txs, &finals, t, e)?;
             Some(Beaten {
                 txid: *t,
-                winner: *winner,
-                winner_block: txs[winner].context.block_info().copied(),
+                winner,
+                winner_block: txs[&winner].context.block_info().copied(),
             })
         })
         .filter(|b| claims(b.txid))
@@ -418,6 +416,69 @@ pub(crate) fn beaten_unrecorded(h: &WalletHistory) -> Vec<Beaten> {
 
 fn mined(e: &TxEntry) -> bool {
     e.context.block_info().is_some()
+}
+
+/// Whether `winner`, spending one of `loser`'s inputs, beats it as
+/// key-wallet's conflict sweep has it (DIP-10, kw
+/// `managed_core_funds_account.rs:791-823`): the winner is in a block or
+/// InstantSend-locked, the loser is out of a block, and a locked loser
+/// yields only to a ChainLocked winner.
+fn beats(winner: &TxEntry, loser: &TxEntry) -> bool {
+    (mined(winner) || winner.is_locked())
+        && !mined(loser)
+        && (!loser.is_locked()
+            || matches!(winner.context, TransactionContext::InChainLockedBlock(_)))
+}
+
+/// Each outpoint's spenders that can win a conflict ([`beats`]).
+fn final_spenders(txs: &HashMap<Txid, TxEntry>) -> HashMap<OutPoint, Vec<Txid>> {
+    let mut finals: HashMap<OutPoint, Vec<Txid>> = HashMap::new();
+    for (t, e) in txs.iter().filter(|(_, e)| mined(e) || e.is_locked()) {
+        for i in &e.tx.input {
+            finals.entry(i.previous_output).or_default().push(*t);
+        }
+    }
+    finals
+}
+
+/// The transaction that beats `t` to one of its inputs, if one does.
+fn winner_of(
+    txs: &HashMap<Txid, TxEntry>,
+    finals: &HashMap<OutPoint, Vec<Txid>>,
+    t: &Txid,
+    e: &TxEntry,
+) -> Option<Txid> {
+    (e.tx.input.iter())
+        .flat_map(|i| finals.get(&i.previous_output).into_iter().flatten())
+        .find(|w| *w != t && beats(&txs[*w], e))
+        .copied()
+}
+
+/// The transactions out of a block key-wallet's conflict sweep would drop
+/// were they recorded: those another beats to an input ([`beats`]), and
+/// their descendants out of a block that are not InstantSend-locked.
+fn swept_as_key_wallet_would(txs: &HashMap<Txid, TxEntry>) -> HashSet<Txid> {
+    let finals = final_spenders(txs);
+    let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
+    let mut todo = Vec::new();
+    for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
+        for i in &e.tx.input {
+            children.entry(i.previous_output.txid).or_default().push(*t);
+        }
+        if winner_of(txs, &finals, t, e).is_some() {
+            todo.push(*t);
+        }
+    }
+    let mut swept = HashSet::new();
+    while let Some(t) = todo.pop() {
+        if swept.insert(t) {
+            todo.extend(
+                (children.get(&t).into_iter().flatten())
+                    .filter(|c| txs.get(*c).is_some_and(|e| !e.is_locked())),
+            );
+        }
+    }
+    swept
 }
 
 /// The transactions out of a block that one in a block beats to an input,
@@ -565,6 +626,16 @@ impl WalletHistory {
             self.collateral_pending = true;
         }
         new
+    }
+
+    fn unrecorded(&self, t: &Txid, e: &TxEntry) -> bool {
+        !mined(e) && !e.is_abandoned() && !self.session_held.contains(t)
+    }
+
+    /// Whether a transaction out of a block that key-wallet holds no record
+    /// of is in the history ([`beaten_unrecorded`]).
+    pub fn holds_unrecorded(&self) -> bool {
+        self.txs.iter().any(|(t, e)| self.unrecorded(t, e))
     }
 
     pub fn set_instant_locked(&mut self, txid: &Txid) -> bool {
@@ -2558,5 +2629,51 @@ mod tests {
             claims, want,
             "the beaten spend {beaten} and its child {child} claim nothing"
         );
+    }
+
+    /// Who beats a restored claimant follows key-wallet's sweep (DIP-10):
+    /// an InstantSend-locked rival out of a block beats an unlocked spend,
+    /// and a locked spend yields to a block only once it is ChainLocked.
+    #[test]
+    fn unmined_own_spends_follow_key_wallets_lock_precedence() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let spend = |n: u8, c: OutPoint, own: bool, context, locked: bool| {
+            let mut e = entry(
+                tx(
+                    vec![input(c.txid, c.vout)],
+                    vec![out(n.into(), &hash_addr(9))],
+                ),
+                context,
+            );
+            e.instant_locked = locked;
+            if own {
+                e.own_inputs.insert(0, (1, hash_addr(1)));
+            }
+            e
+        };
+        let chain_locked = |h| {
+            TransactionContext::InChainLockedBlock(BlockInfo::new(h, BlockHash::all_zeros(), 0))
+        };
+        let mut txs = HashMap::new();
+        let mut add = |e: TxEntry| {
+            let txid = e.tx.txid();
+            txs.insert(txid, e);
+            txid
+        };
+        let mempool = TransactionContext::Mempool;
+        add(spend(1, coin(1), true, mempool.clone(), false));
+        add(spend(11, coin(1), false, mempool.clone(), true));
+        let locked_vs_block = add(spend(2, coin(2), true, mempool.clone(), true));
+        add(spend(12, coin(2), false, in_block(10, 0), false));
+        add(spend(3, coin(3), true, mempool.clone(), true));
+        add(spend(13, coin(3), false, chain_locked(10), false));
+        let unlocked_vs_unlocked = add(spend(4, coin(4), true, mempool.clone(), false));
+        add(spend(14, coin(4), false, mempool, false));
+
+        let mut claims = unmined_own_spends(&txs);
+        claims.sort();
+        let mut want = vec![(coin(2), locked_vs_block), (coin(4), unlocked_vs_unlocked)];
+        want.sort();
+        assert_eq!(claims, want);
     }
 }

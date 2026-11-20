@@ -413,26 +413,26 @@ impl NetworkSession {
         }
         let restore: Vec<(OutPoint, Option<Txid>)> =
             claims.iter().map(|(o, t)| (*o, Some(*t))).collect();
-        let removed = {
-            let wm = manager.wallet_manager_arc();
-            let mut wm = wm.write().await;
-            let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
-                return;
-            };
-            let core = &mut info.core_wallet;
-            let held = core.restore_spent_outpoints(&restore);
-            if held.is_empty() {
-                return;
-            }
-            let mut removed: Vec<key_wallet::Utxo> = Vec::new();
-            for account in core.accounts.all_funding_accounts_mut() {
-                removed.extend(held.iter().filter_map(|o| account.utxos.remove(o)));
-            }
-            core.update_balance();
-            self.hub
-                .publish_core_balance(wallet, &core.balance(), &core.account_balances());
-            removed
+        let Ok(live) = self.live() else {
+            return;
         };
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
+            return;
+        };
+        let core = &mut info.core_wallet;
+        let held = core.restore_spent_outpoints(&restore);
+        if held.is_empty() {
+            return;
+        }
+        let mut removed: Vec<key_wallet::Utxo> = Vec::new();
+        for account in core.accounts.all_funding_accounts_mut() {
+            removed.extend(held.iter().filter_map(|o| account.utxos.remove(o)));
+        }
+        core.update_balance();
+        self.hub
+            .publish_core_balance(wallet, &core.balance(), &core.account_balances());
         for utxo in &removed {
             let spenders: Vec<Txid> = (claims.iter())
                 .filter(|(o, _)| *o == utxo.outpoint)
@@ -441,9 +441,11 @@ impl NetworkSession {
             tracing::warn!(%wallet, outpoint = %utxo.outpoint, value = utxo.value(), ?spenders,
                 "dropped a coin an unmined own transaction spends");
         }
-        let Ok(live) = self.live() else {
+        if removed.is_empty() {
             return;
-        };
+        }
+        // Stored under the lock that dropped them, so no write of a later
+        // change to the same coins lands before this one.
         let persister = Arc::clone(&live.persister);
         let stored = tokio::task::spawn_blocking(move || {
             let changeset = platform_wallet::changeset::PlatformWalletChangeSet {
@@ -457,6 +459,7 @@ impl NetworkSession {
             persister.flush(wallet.0)
         })
         .await;
+        drop(wm);
         if !matches!(stored, Ok(Ok(()))) {
             tracing::warn!(%wallet, ?stored, "could not store the dropped coins as spent");
         }
@@ -471,7 +474,7 @@ impl NetworkSession {
     ) -> Result<Vec<(OutPoint, Txid)>, EngineError> {
         let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
-        let persister = Arc::clone(&live.persister);
+        let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
         let claims = tokio::task::spawn_blocking(move || {
             let persisted = match persisted_txids(&db_path) {
                 Ok(mut all) => all.remove(&wallet.0).unwrap_or_default(),
@@ -484,8 +487,14 @@ impl NetworkSession {
             for t in &persisted.records {
                 if let Ok(Some(r)) = persister.get_core_tx_record(wallet.0, t)
                     && r.txid == *t
+                    && r.transaction.txid() == *t
                 {
                     history.upsert(&r, None);
+                }
+            }
+            for (t, _) in crate::tx_actions::load_abandoned(&appdb, wallet) {
+                if let Some(e) = history.txs.get_mut(&t) {
+                    e.abandoned = true;
                 }
             }
             crate::history::unmined_own_spends(&history.txs)
