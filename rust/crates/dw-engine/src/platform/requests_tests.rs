@@ -93,7 +93,7 @@ pub(crate) fn vault_keys(
 ) -> BTreeMap<KeyID, IdentityPublicKey> {
     let grants = vec![platform_grant(s, wallet, 1)];
     let lease_id =
-        (engine.block_on(s.begin_flow(wallet, FlowKind::EnableDashPayKeys, grants))).unwrap();
+        (engine.block_on(s.begin_flow(wallet, FlowKind::EnableDashPayKeys, grants, None))).unwrap();
     let lease = s.lease_for(&wallet, &lease_id).unwrap().unwrap();
     let signer = lease.identity_signer(&[0]).unwrap();
     let real = (engine.block_on(signer.derive_public_keys(0, &registration_specs()))).unwrap();
@@ -581,7 +581,7 @@ impl Fixture {
 
     pub(crate) fn flow(&self, flow: FlowKind, grants: Vec<String>) -> String {
         self.engine
-            .block_on(self.s.begin_flow(self.wallet, flow, grants))
+            .block_on(self.s.begin_flow(self.wallet, flow, grants, None))
             .unwrap()
     }
 
@@ -1789,7 +1789,9 @@ mod accept_vectors {
                         .map(|r| id_of(&ids, r))
                         .collect();
                     let kind = flow_kind(arg["flow"].as_str().unwrap());
-                    let begun = f.engine.block_on(f.s.begin_flow(f.wallet, kind, grants));
+                    let begun = f
+                        .engine
+                        .block_on(f.s.begin_flow(f.wallet, kind, grants, None));
                     result(begun.map_err(ContactError::from), |lease| {
                         assert!(lease.starts_with("lease-") && lease.len() == 38);
                         id = Some(lease);

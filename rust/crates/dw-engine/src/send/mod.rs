@@ -57,6 +57,7 @@ use crate::platform::payment_locks::Pair;
 use crate::{EngineError, NetworkSession, WalletId};
 
 pub use self::contact::ContactRecipient;
+pub(crate) use self::contact::check_payee;
 
 /// dash-qt `-maxtxfee` default: a fee above 0.1 DASH is absurd (QT-058).
 pub const MAX_TX_FEE: u64 = 10_000_000;

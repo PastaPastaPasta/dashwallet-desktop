@@ -21,50 +21,14 @@ import type { FlowOutcomeName } from "./generated/FlowOutcomeName";
 import type { Lease } from "./generated/Lease";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockStatus } from "./generated/LockStatus";
+import { messageTable } from "../i18n";
+import { en } from "../i18n/en";
 
 /** E0-04 §16.10 C4 after a manual lock, by outcome. */
-export const OUTCOME_LINE: Record<FlowOutcomeName, string> = {
-  cancelled: "Cancelled",
-  maybeSent: "May have been sent",
-  willBeSent: "Will be sent",
-  sent: "Sent",
-};
+export const OUTCOME_LINE: Readonly<Record<FlowOutcomeName, string>> = messageTable("lock.outcome", Object.keys(en.lock.outcome satisfies Record<FlowOutcomeName, string>) as FlowOutcomeName[]);
 
-export const FLOW_NAME: Record<FlowKindName, string> = {
-  registration: "Username registration",
-  topUp: "Credit top-up",
-  withdraw: "Credit withdrawal",
-  nameRegistration: "Name registration",
-  profileEdit: "Profile update",
-  contactRequest: "Contact request",
-  accept: "Accepting a request",
-  acceptAndPay: "Accept and pay",
-  privateDetails: "Private contact details",
-  enableDashPayKeys: "Enabling DashPay keys",
-  contactPayment: "Contact payment",
-  // MG-00 D35's lease names (MG-05).
-  voting: "Voting",
-  masternodeRegistration: "Masternode registration",
-  keyChange: "Key change",
-  // MG-04b: a shared masternode's consent and funding signatures, and its dissolution.
-  sharedMasternode: "Shared masternode",
-  dissolution: "Dissolution",
-  // MG-06: the proposal fee.
-  proposal: "Proposal fee",
-  // MG-13: an evonode's Platform credit withdrawal (MG-00 D35's name).
-  masternodeWithdraw: "Credit withdrawal",
-  // 0.1 lane E2: "Move to Dash wallet" from the Platform addresses.
-  platformAddressMove: "Move to Dash wallet",
-  // 0.2 X1b: a payment to another Platform address.
-  platformAddressSend: "Payment from Platform",
-  // 0.2 X1b: Core → the wallet's own Platform address.
-  platformAddressFund: "Add from Dash wallet",
-  // 0.1 E1: Core → Shielded, and a shielded send or unshield.
-  shield: "Shielding",
-  shieldedSpend: "Shielded payment",
-  // 0.2 MIX-SHIELD: the CoinJoin account's drain to Shielded.
-  shieldDrain: "Moving mixed coins to Shielded",
-};
+/** Each flow's name, as the lock report and a refused network switch say it. */
+export const FLOW_NAME: Readonly<Record<FlowKindName, string>> = messageTable("lock.flow", Object.keys(en.lock.flow satisfies Record<FlowKindName, string>) as FlowKindName[]);
 
 const PENDING: ReadonlySet<FlowOutcomeName> = new Set(["maybeSent", "willBeSent"]);
 const isPending = (x: { outcome: FlowOutcomeName }) => PENDING.has(x.outcome);

@@ -127,6 +127,7 @@ import type { OpenedFile } from "./OpenedFile";
 import type { OpenedNetwork } from "./OpenedNetwork";
 import type { OutPoint } from "./OutPoint";
 import type { PaymentLockInfo } from "./PaymentLockInfo";
+import type { PaymentSourceName } from "./PaymentSourceName";
 import type { PeerSummary } from "./PeerSummary";
 import type { PendingPlatformFund } from "./PendingPlatformFund";
 import type { PendingTopUp } from "./PendingTopUp";
@@ -266,7 +267,8 @@ export function uiSettings(): Promise<UiSettings> {
 
 /**
  * Checks and saves the display settings (decimal digits 2-8, auto lock
- * 1 s to 24 hours; `invalid_argument` otherwise), and gives the main
+ * 1 s to 24 hours, a BCP 47 language tag; `invalid_argument`
+ * otherwise), and gives the main
  * window the chosen appearance unless `--theme` forced one (U-04 D3).
  */
 export function setUiSettings(settings: UiSettings): Promise<UiSettings> {
@@ -1936,10 +1938,12 @@ export function resolveStuckFunding(walletId: string, step: string, grant: strin
 /**
  * Redeems `grants` (vault grant ids) into one lease for `flow` and
  * returns its id, which the wallet's calls accept as their `grant` for
- * the purposes the lease carries. `endFlow` releases it.
+ * the purposes the lease carries. `endFlow` releases it. `source`: the
+ * payment's, for `acceptAndPay` (`null` is `core`) and
+ * `contactPayFromBalance`; `null` for every other flow.
  */
-export function beginFlow(walletId: string, flow: FlowKindName, grants: Array<string>): Promise<string> {
-  return invoke<string>("begin_flow", { walletId, flow, grants });
+export function beginFlow(walletId: string, flow: FlowKindName, grants: Array<string>, source: PaymentSourceName | null): Promise<string> {
+  return invoke<string>("begin_flow", { walletId, flow, grants, source });
 }
 
 /**
@@ -3106,7 +3110,7 @@ export type CommandArgs = {
   grant_request: { walletId: string; identity: string; action: GrantAction };
   dispatch_status: { walletId: string; artifact: string };
   resolve_stuck_funding: { walletId: string; step: string; grant: string };
-  begin_flow: { walletId: string; flow: FlowKindName; grants: Array<string> };
+  begin_flow: { walletId: string; flow: FlowKindName; grants: Array<string>; source: PaymentSourceName | null };
   end_flow: { lease: string };
   leases: {  };
   stash_invitation: { link: string };

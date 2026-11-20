@@ -3,15 +3,26 @@
 
 import type { DisplayUnit } from "../api/generated/DisplayUnit";
 import { UNIT_LABEL } from "../format/display";
+import { t } from "../i18n";
 
 export const OptionsText = {
   /** QT-075. */
-  dustThresholdInvalid: "The dust threshold must be between 1 and 1,000,000 duffs.",
-  settingsNotSaved: "The settings could not be saved.",
+  get dustThresholdInvalid() {
+    return t("settings.general.dustInvalid");
+  },
+  get settingsNotSaved() {
+    return t("settings.notSaved");
+  },
   /** QT-141, without "Client will be shut down" (D8). */
-  resetTitle: "Confirm options reset",
-  resetMessage: "This resets the appearance, units, auto lock and the other display settings to their defaults.",
-  resetDone: "The options were reset.",
+  get resetTitle() {
+    return t("settings.general.resetTitle");
+  },
+  get resetMessage() {
+    return t("settings.general.resetMessage");
+  },
+  get resetDone() {
+    return t("settings.general.resetDone");
+  },
   /** UX-SPEC §4.12: dash-qt options an SPV wallet has no use for. */
   spvFootnote: [
     "Size of database cache",
@@ -21,7 +32,9 @@ export const OptionsText = {
     "Allow incoming connections",
     "Show Masternodes tab",
   ],
-  unavailable: "Not available yet.",
+  get unavailable() {
+    return t("settings.general.unavailable");
+  },
 };
 
 export const UNIT_CHOICES: { unit: DisplayUnit; label: string }[] = (["dash", "milliDash", "microDash", "duffs"] as const).map((unit) => ({

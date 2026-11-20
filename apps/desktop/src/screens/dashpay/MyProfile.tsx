@@ -404,7 +404,7 @@ export function SettingsDashPayCard() {
   const joined = mainIdentityOf(shell.status) !== null;
   const name = shell.main?.mainName ?? null;
   return (
-    <SettingsCard title="DashPay" testId="settings-dashpay">
+    <SettingsCard title={PROFILE_COPY.settings.title} testId="settings-dashpay">
       <div className="settings-row">
         <span className="settings-row-title" data-testid="settings-dashpay-who">
           {joined ? (name ? `@${name}` : PROFILE_COPY.settings.joined) : PROFILE_COPY.settings.notJoined}

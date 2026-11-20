@@ -775,7 +775,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       // Handed out: the next payment to the contact takes a new address.
       if (pay) indexesOf(world, prep.walletId, pay).reserved = null;
       if (mode === "unknown") {
-        if (pay && !lock) setPaymentLock(ctx, prep.walletId, pay, { txid: prep.summary.txid, since: secs(FIXTURE_NOW) });
+        if (pay && !lock) setPaymentLock(ctx, prep.walletId, pay, { txid: prep.summary.txid, since: secs(FIXTURE_NOW), source: "core", reference: prep.summary.txid });
         throw fail("send.broadcast_unknown", "no answer from the network");
       }
       if (pay && lock) setPaymentLock(ctx, prep.walletId, pay, null);

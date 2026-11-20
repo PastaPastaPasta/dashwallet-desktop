@@ -13,6 +13,7 @@ import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import type { IdentitySummary } from "../api/generated/IdentitySummary";
 import type { PendingTopUp } from "../api/generated/PendingTopUp";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
+import { t } from "../i18n";
 import { REG_COPY } from "./registration";
 import { COPY, homeCard, namesState, type CardModel, type NamesState, type StatusInputs } from "./status";
 
@@ -87,7 +88,23 @@ export const PROFILE_COPY = {
     block: "Votes to block",
     abstain: "Abstained",
   },
-  settings: { joined: "Your DashPay identity", notJoined: "Not joined", profile: "My Profile", join: "Join DashPay" },
+  settings: {
+    get title() {
+      return t("settings.dashpay.title");
+    },
+    get joined() {
+      return t("settings.dashpay.joined");
+    },
+    get notJoined() {
+      return t("settings.dashpay.notJoined");
+    },
+    get profile() {
+      return t("settings.dashpay.profile");
+    },
+    get join() {
+      return t("settings.dashpay.join");
+    },
+  },
   outcomes: {
     title: "Username voting results",
     won: (label: string) => `@${label} — yours`,

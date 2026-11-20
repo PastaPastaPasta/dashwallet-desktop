@@ -54,7 +54,8 @@ commands! {
     }
 
     /// Checks and saves the display settings (decimal digits 2-8, auto lock
-    /// 1 s to 24 hours; `invalid_argument` otherwise), and gives the main
+    /// 1 s to 24 hours, a BCP 47 language tag; `invalid_argument`
+    /// otherwise), and gives the main
     /// window the chosen appearance unless `--theme` forced one (U-04 D3).
     #[facade()]
     fn set_ui_settings(state, settings: UiSettings) -> UiSettings {
