@@ -598,6 +598,34 @@ function quietOptionalHistory(w: World): World {
   return w;
 }
 
+/** A new wallet still catching up when a 25 DASH payment arrives, InstantSend-locked or only seen. */
+function catchingUpPayment(t: ThemeName | null, locked: boolean): World {
+  const w = base(t, "empty");
+  const paid = 25 * COIN;
+  const main = w.wallets[0];
+  const arrived = locked ? { confirmed: paid } : { unconfirmed: paid };
+  main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, ...arrived, total: paid, catchingUp: true } };
+  main.rows = [
+    {
+      txid: "5f0c2a6e9d4b4a3c8e7f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
+      recordIndex: 0,
+      txType: "recvWithAddress",
+      category: "received",
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: locked, chainLocked: false, maturesIn: null },
+      timestamp: secs(FIXTURE_NOW),
+      blockHeight: null,
+      amount: paid,
+      fee: null,
+      address: "yXbH3JxbVWgEzq6aZDyEbNQx5PtUfZvvXZ",
+      label: null,
+      countsTowardBalance: true,
+      involvesWatchOnly: false,
+    },
+  ];
+  w.sync = syncing();
+  return w;
+}
+
 const SCENARIOS = {
   /** The reference wallet: balance, a month of history, caught up, unlocked. */
   funded: (t) => base(t, "default", true),
@@ -1057,31 +1085,9 @@ const SCENARIOS = {
   // DP1-08: the Home card's other banner states (the status read failing is `fail=dashpay_status:none`).
   /** A new wallet still catching up when a 25 DASH payment arrives: the engine reports it at once,
    * InstantSend-locked and unconfirmed, in a balance flagged `catchingUp` (PRODUCT backlog 1). */
-  "catching-up-payment": (t) => {
-    const w = base(t, "empty");
-    const paid = 25 * COIN;
-    const main = w.wallets[0];
-    main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, confirmed: paid, total: paid, catchingUp: true } };
-    main.rows = [
-      {
-        txid: "5f0c2a6e9d4b4a3c8e7f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
-        recordIndex: 0,
-        txType: "recvWithAddress",
-        category: "received",
-        status: { kind: "unconfirmed", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
-        timestamp: secs(FIXTURE_NOW),
-        blockHeight: null,
-        amount: paid,
-        fee: null,
-        address: "yXbH3JxbVWgEzq6aZDyEbNQx5PtUfZvvXZ",
-        label: null,
-        countsTowardBalance: true,
-        involvesWatchOnly: false,
-      },
-    ];
-    w.sync = syncing();
-    return w;
-  },
+  "catching-up-payment": (t) => catchingUpPayment(t, true),
+  /** The same payment seen but not InstantSend-locked yet: unconfirmed, Pending. */
+  "catching-up-pending-payment": (t) => catchingUpPayment(t, false),
   /** No identity while the wallet syncs: Join DashPay disabled, "Available after sync finishes". */
   "dashpay-waiting-for-sync": (t) => {
     const w = withStatus(base(t), { kind: "noIdentity", reason: "waitingForSync" });

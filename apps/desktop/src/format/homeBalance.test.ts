@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Balances } from "../api/generated/Balances";
 import { compact, masked } from "./amount";
-import { breakdownRows, coreSubtitle, heroDigits, homeBalance, POOL_ROWS, type PoolReading } from "./homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, POOL_ROWS, type PoolReading } from "./homeBalance";
 
 const COIN = 100_000_000;
 const core: Balances = { confirmed: 3 * COIN, unconfirmed: COIN, immature: 0, locked: 0, total: 4 * COIN, coinjoin: 2 * COIN, catchingUp: false };
@@ -90,5 +90,21 @@ describe("the hero's digits", () => {
     }
     expect(heroDigits(compact(123_456_789_012, false, "duffs")).minor).toBe("");
     expect(heroDigits(masked())).toEqual({ major: masked(), minor: "" });
+  });
+});
+
+describe("the line above Home's balance", () => {
+  const catchingUp = { ...core, catchingUp: true };
+
+  it("says a balance shown during sync may be incomplete, and is empty once synced", () => {
+    expect(heroSyncLine(catchingUp, true)).toBe("Still syncing, balance may be incomplete");
+    expect(heroSyncLine(core, true)).toBe("Still syncing, balance may be incomplete");
+    expect(heroSyncLine(catchingUp, false)).toBe("Not synced yet, balance may be incomplete");
+    expect(heroSyncLine(core, false)).toBe("");
+  });
+
+  it("keeps the syncing caption over an unknown balance", () => {
+    expect(heroSyncLine(null, true)).toBe("Syncing Balance");
+    expect(heroSyncLine(null, false)).toBe("");
   });
 });

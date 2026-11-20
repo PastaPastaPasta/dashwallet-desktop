@@ -23,6 +23,13 @@ export interface HomeBalance {
 
 export const known = (r: PoolReading): r is number => typeof r === "number";
 
+/** The line above the hero amount: while the wallet syncs, the balance shown may still be short. */
+export function heroSyncLine(balances: Balances | null, syncing: boolean): string {
+  if (balances === null) return syncing ? "Syncing Balance" : "";
+  if (syncing) return "Still syncing, balance may be incomplete";
+  return balances.catchingUp ? "Not synced yet, balance may be incomplete" : "";
+}
+
 export function homeBalance(core: Balances, shielded: PoolReading, platform: PoolReading): HomeBalance {
   const pools = { core: core.confirmed + core.unconfirmed, shielded, platform };
   return { total: pools.core + (known(shielded) ? shielded : 0) + (known(platform) ? platform : 0), pools };

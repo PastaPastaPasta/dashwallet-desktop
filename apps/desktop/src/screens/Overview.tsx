@@ -21,7 +21,7 @@ import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
-import { breakdownRows, coreSubtitle, heroDigits, homeBalance, known, POOL_ROWS, type PoolReading } from "../format/homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type PoolReading } from "../format/homeBalance";
 import { isSyncing, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
@@ -76,8 +76,8 @@ function BalanceHero({ balances, shielded, platform, network, syncing }: { balan
   return (
     <section className="hero" data-testid="hero" aria-label="Balance" data-breakdown={home && rows.length === 0 ? "none" : undefined}>
       {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}
-      <span className="hero-caption" aria-hidden={!syncing}>
-        {syncing ? "Syncing Balance" : " "}
+      <span className="hero-caption" role="status" data-testid="hero-sync-line">
+        {heroSyncLine(balances, syncing)}
       </span>
       {home && digits ? (
         <button

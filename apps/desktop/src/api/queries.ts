@@ -146,12 +146,12 @@ export function useWallets() {
   return useQuery({ queryKey: keys.wallets, queryFn: () => b.listWallets() });
 }
 
-/** `null` while the wallet is catching up: no screen shows a partial balance yet. */
+/** `null` while the wallet is catching up, for a reading that must not count a partial balance. */
 export const settledBalance = (balances: Balances | null): Balances | null => (balances?.catchingUp ? null : balances);
 
 export function useBalance(walletId: string) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.balance(walletId), queryFn: async () => settledBalance(await b.balance(walletId)) });
+  return useQuery({ queryKey: keys.balance(walletId), queryFn: () => b.balance(walletId) });
 }
 
 /** The wallet's Platform addresses; `null` while dw-app has no such command (api/pending.ts). */
