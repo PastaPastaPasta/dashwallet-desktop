@@ -35,8 +35,9 @@ use super::{ArtifactId, DispatchScope, FlowOutcome, LeaseError, LeaseId, Origin}
 use crate::platform::flows::{BudgetPurpose, DispatchResolution, DispatchResolved, DispatchState};
 use crate::{EngineEvent, NoticeCode, WalletId};
 use dw_appdb::dispatch::{
-    CallRows, NewShieldedArtifact, Resolution, SelfSpendConflict, SelfSpendProvenance,
-    ShieldedArtifact, StoredFundingKey, StoredOutPoint, TopUpSettled, UnrecordedSpend,
+    ArtifactSettled, ArtifactStatus, CallRows, NewShieldedArtifact, Resolution, SelfSpendConflict,
+    SelfSpendProvenance, ShieldedArtifact, StoredFundingKey, StoredOutPoint, TopUpSettled,
+    UnrecordedSpend,
 };
 
 /// A shielded spend on record: `(activity, transition)`, the library's
@@ -206,6 +207,18 @@ pub(crate) trait JournalBackend: Send + Sync + 'static {
     /// Every shielded artifact of `wallet` (schema 11), archived ones
     /// included.
     fn shielded_artifacts(&self, _wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>, String> {
+        Err("this journal keeps no shielded artifacts".into())
+    }
+    /// Settles `wallet`'s artifacts of transition `st_hash` from the
+    /// library's disposition of it, durably.
+    fn settle_shielded_artifact(
+        &self,
+        _wallet: &[u8; 32],
+        _st_hash: &[u8; 32],
+        _status: ArtifactStatus,
+        _disposition: Option<(&str, Option<&str>)>,
+        _acked: bool,
+    ) -> Result<ArtifactSettled, String> {
         Err("this journal keeps no shielded artifacts".into())
     }
     /// The journal connection's `synchronous` pragma (2 = FULL).
@@ -429,6 +442,18 @@ impl JournalBackend for dw_appdb::dispatch::DispatchJournal {
 
     fn shielded_artifacts(&self, wallet: &[u8; 32]) -> Result<Vec<ShieldedArtifact>, String> {
         (self.all_shielded_artifacts(wallet)).map_err(|e| e.to_string())
+    }
+
+    fn settle_shielded_artifact(
+        &self,
+        wallet: &[u8; 32],
+        st_hash: &[u8; 32],
+        status: ArtifactStatus,
+        disposition: Option<(&str, Option<&str>)>,
+        acked: bool,
+    ) -> Result<ArtifactSettled, String> {
+        (self.settle_shielded_artifact(wallet, st_hash, status, disposition, acked))
+            .map_err(|e| e.to_string())
     }
 
     #[cfg(test)]

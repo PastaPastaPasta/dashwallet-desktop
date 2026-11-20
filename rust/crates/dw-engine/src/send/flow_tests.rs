@@ -1578,6 +1578,10 @@ fn only_a_funds_account_keeps_a_payment_in_the_wallet() {
                 "{name}: {:?}",
                 s.outputs
             );
+            // A dropped payment frees its coin in key-wallet from a task the
+            // drop spawns; abandoning waits for it, so the next account's
+            // payment finds every coin free.
+            f.engine.block_on(draft.abandon(p)).unwrap();
         } else {
             assert_eq!(
                 send_failure(r),

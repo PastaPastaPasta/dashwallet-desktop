@@ -11,7 +11,7 @@ use dashcore::blockdata::transaction::Transaction;
 use dashcore::consensus::encode::MAX_VEC_SIZE;
 use dashcore::consensus::{Decodable, Encodable, encode};
 use dashcore::io::{Cursor, Read};
-use dashcore::transaction::special_transaction::TransactionType;
+use dashcore::transaction::special_transaction::{TransactionPayload, TransactionType};
 use key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPubKey, Fingerprint};
 use std::collections::{BTreeMap, btree_map};
 
@@ -47,8 +47,17 @@ impl Map for PartiallySignedTransaction {
                 ret.extend(input);
                 ret.extend(encode::serialize(&self.unsigned_tx.output));
                 ret.extend(encode::serialize(&self.unsigned_tx.lock_time));
-                if let Some(payload) = &self.unsigned_tx.special_transaction_payload {
+                if let Some(payload) = &self.unsigned_tx.special_transaction_payload
+                    && !matches!(
+                        payload,
+                        TransactionPayload::ClassicalWithNonStandardVersionTypeBytesPayloadType(_)
+                    )
+                {
+                    let mut bytes = Vec::new();
                     payload
+                        .consensus_encode(&mut bytes)
+                        .expect("can't encode special tx payload");
+                    bytes
                         .consensus_encode(&mut ret)
                         .expect("can't encode special tx payload");
                 }
@@ -122,9 +131,22 @@ impl PartiallySignedTransaction {
                                 if tx.is_none() {
                                     let vlen: usize = pair.value.len();
                                     let mut decoder = Cursor::new(pair.value);
-                                    let version = Decodable::consensus_decode(&mut decoder)?;
-                                    let transaction_type: TransactionType =
+                                    let version: u16 = Decodable::consensus_decode(&mut decoder)?;
+                                    let type_bytes: u16 =
                                         Decodable::consensus_decode(&mut decoder)?;
+                                    // As Core and `Transaction`'s decoder: a payload only
+                                    // from version 3, and a type this crate does not
+                                    // know keeps its payload raw.
+                                    let transaction_type = if version as i16 >= 3 {
+                                        TransactionType::try_from(type_bytes)
+                                            .unwrap_or(TransactionType::Unknown(type_bytes))
+                                    } else if type_bytes == 0 {
+                                        TransactionType::Classic
+                                    } else {
+                                        TransactionType::ClassicalWithNonStandardVersionTypeBytes(
+                                            type_bytes,
+                                        )
+                                    };
                                     let input = Decodable::consensus_decode(&mut decoder)?;
                                     let output = Decodable::consensus_decode(&mut decoder)?;
                                     let lock_time = Decodable::consensus_decode(&mut decoder)?;

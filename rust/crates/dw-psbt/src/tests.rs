@@ -72,6 +72,39 @@ fn paths(psbt: &PartiallySignedTransaction) -> KeyPaths {
         .collect()
 }
 
+/// A PSBT of a special transaction is written with its payload's length
+/// prefix, a type this build does not know keeps its payload raw, and a
+/// version 2 transaction's type bytes carry no payload (as Core reads
+/// them). Each holds the transaction's own consensus bytes and reads back
+/// as written.
+#[test]
+fn special_transaction_psbts_read_back() {
+    use dashcore::consensus::encode;
+    use dashcore::transaction::special_transaction::TransactionPayload;
+    let base = parse(vector("psbt/unsigned.b64").as_bytes()).unwrap();
+    let cases = [
+        (3, TransactionPayload::RawPayloadType(10, vec![1, 2, 3])),
+        (3, TransactionPayload::RawPayloadType(13, vec![0x42])),
+        (
+            2,
+            TransactionPayload::ClassicalWithNonStandardVersionTypeBytesPayloadType(10),
+        ),
+    ];
+    for (version, payload) in cases {
+        let mut psbt = base.clone();
+        psbt.unsigned_tx.version = version;
+        psbt.unsigned_tx.special_transaction_payload = Some(payload);
+        let bytes = to_bytes(&psbt);
+        let tx = encode::serialize(&psbt.unsigned_tx);
+        assert!(
+            bytes.windows(tx.len()).any(|w| w == tx),
+            "version {version}: the PSBT does not hold the transaction's consensus bytes"
+        );
+        let again = parse(&bytes);
+        assert_eq!(again.as_ref().ok(), Some(&psbt), "{again:?}");
+    }
+}
+
 #[test]
 fn test_qt_078_parses_dashd_psbts_and_writes_them_back() {
     for name in ["psbt/unsigned.b64", "psbt/signed.b64"] {

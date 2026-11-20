@@ -427,8 +427,9 @@ impl NetworkSession {
             })
             .await??,
         );
-        // dash-qt loads only the wallets of its settings list; an empty or
-        // missing list loads every wallet.
+        // dash-qt loads only the wallets of its settings list; a missing
+        // list loads every wallet, and so does one that would load none of
+        // them: with no wallet open, closed ones cannot be reached.
         let startup_list = {
             let appdb = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::multiwallet::read_startup_list(&appdb))
@@ -442,10 +443,14 @@ impl NetworkSession {
                 })
                 .await?
                 .map_err(|e| EngineError::Storage(format!("wallet list: {e}")))?;
-                registered
-                    .into_iter()
-                    .filter(|id| !list.contains(&WalletId(*id)))
-                    .collect()
+                if registered.iter().any(|id| list.contains(&WalletId(*id))) {
+                    registered
+                        .into_iter()
+                        .filter(|id| !list.contains(&WalletId(*id)))
+                        .collect()
+                } else {
+                    Default::default()
+                }
             }
             None => Default::default(),
         };
@@ -710,6 +715,13 @@ impl NetworkSession {
                 }
             };
             let _ = live.tap.on_contact_profiles.set(Box::new(checked));
+            let weak = Arc::downgrade(&session);
+            let queued = move |wallet| {
+                if let Some(session) = weak.upgrade() {
+                    session.platform.contact_accounts_queued(wallet);
+                }
+            };
+            let _ = live.tap.on_contact_accounts_queued.set(Box::new(queued));
             let _ = live
                 .tap
                 .registrations
@@ -969,6 +981,10 @@ impl NetworkSession {
     /// databases: it returns once the last reference to the wallet database
     /// is gone, within [`PERSISTER_RELEASE`]. Must run on the engine runtime.
     pub(crate) async fn close(&self) {
+        // From here the dispatch hook accepts no spend and allows no re-send:
+        // a quit is not refused by a signing call in flight; it revokes the
+        // leases and drains the passes before its gate waits for that call.
+        self.platform.hook_fence.close();
         // A running bring-up ends first (DASHPAY §3.2). It holds no
         // operation guard, so it is cancelled before waiting for the guards,
         // and again after, for a start admitted meanwhile; then its blocking

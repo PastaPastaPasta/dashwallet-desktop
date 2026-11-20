@@ -659,7 +659,7 @@ fn the_facade_lease_handle_begins_ends_and_checks_its_grants() {
     let g = f.platform_op(0, 1_000);
     let id = f
         .engine
-        .block_on(s.begin_flow(f.wallet, FlowKind::ContactRequest, vec![g.clone()]))
+        .block_on(s.begin_flow(f.wallet, FlowKind::ContactRequest, vec![g.clone()], None))
         .unwrap();
     assert!(parse_lease(&id).is_some(), "{id}");
     let views = s.leases().unwrap();
@@ -669,7 +669,7 @@ fn the_facade_lease_handle_begins_ends_and_checks_its_grants() {
     // The grant was consumed.
     assert_eq!(
         f.engine
-            .block_on(s.begin_flow(f.wallet, FlowKind::ContactRequest, vec![g])),
+            .block_on(s.begin_flow(f.wallet, FlowKind::ContactRequest, vec![g], None)),
         Err(PlatformError::GrantInvalid)
     );
     // The session owns it (§4.1): a facade lookup, dropped, ends nothing.
