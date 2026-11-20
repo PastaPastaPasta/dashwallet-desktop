@@ -9,9 +9,11 @@ import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { keys, useAutomaticBackups, useBackend, useBackupDirectory, useBackupPolicy, useLockStatus, useWallets } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { keptAcrossLock, useAcrossLock } from "../../app/acrossLock";
+import { useSecretScreen } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { NewPassphraseForm, PassphrasePrompt } from "../../components/passphrase";
+import { ProtectionPending, ProtectionText } from "../../components/phrase";
 import { Sheet } from "../../components/sheet";
 import { detailDate } from "../../format/tx";
 import { failureText, useModel } from "../../onboarding/model";
@@ -346,9 +348,13 @@ function ImportKeysSheet({ onClose }: { onClose: () => void }) {
   const [text, setText] = useState("");
   const [name, setName] = useState("");
   const id = useId();
+  // A seed or a private key: the sheet stays empty until the window is kept out of screen captures (D15, D27).
+  const protection = useSecretScreen();
   return (
-    <Sheet title="Import keys" width="medium" testId="settings-import-keys-sheet" focusKey={String(!!model.done)} closable={!model.working} onClose={onClose}>
-      {model.done ? (
+    <Sheet title="Import keys" width="medium" testId="settings-import-keys-sheet" focusKey={`${!!model.done} ${protection}`} closable={!model.working} onClose={onClose}>
+      {protection !== "on" ? (
+        <ProtectionPending protection={protection} failedText={ProtectionText.failedKeys} />
+      ) : model.done ? (
         <DoneLines done={model.done} onClose={onClose} />
       ) : (
         <form

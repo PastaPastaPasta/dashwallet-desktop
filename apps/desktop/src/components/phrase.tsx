@@ -14,12 +14,21 @@ export const ProtectionText = {
   preparing: "Preparing…",
   failed:
     "Dash Wallet could not keep this window out of screenshots and screen sharing, so it will not show or take a recovery phrase.",
+  failedKeys: "Dash Wallet could not keep this window out of screenshots and screen sharing, so it will not take a seed or private key.",
 };
 
 /** What a view that shows or takes a recovery phrase shows until the window is kept out of
  * screen captures (U-02 D27): "Preparing…", or why it is not, with Try again; Cancel where the
  * view has one. Never the secret. */
-export function ProtectionPending({ protection, onCancel }: { protection: Protection; onCancel?: (() => void) | null }) {
+export function ProtectionPending({
+  protection,
+  onCancel,
+  failedText = ProtectionText.failed,
+}: {
+  protection: Protection;
+  onCancel?: (() => void) | null;
+  failedText?: string;
+}) {
   // Cancel either way: a protection that never answers must not trap Add Wallet.
   const cancel = onCancel && (
     <DashButton variant="plainBlue" data-testid="protection-cancel" onClick={onCancel}>
@@ -38,7 +47,7 @@ export function ProtectionPending({ protection, onCancel }: { protection: Protec
   }
   return (
     <div role="alert" data-testid="protection-failed">
-      <p className="form-problem">{ProtectionText.failed}</p>
+      <p className="form-problem">{failedText}</p>
       <div className="sheet-actions">
         {cancel}
         <DashButton variant="filledBlue" data-autofocus data-testid="protection-retry" onClick={retryProtection}>
