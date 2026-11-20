@@ -30,8 +30,12 @@ fn an_open_and_a_close_on_a_thread_already_holding_the_lock_pass_through() {
 #[test]
 fn a_panic_while_holding_the_lock_leaves_later_opens_working() {
     let panicked = std::thread::spawn(|| {
-        let _held = OpenClose::enter();
-        panic!("while holding the open/close lock");
+        let unwound = std::panic::catch_unwind(|| {
+            let _held = OpenClose::enter();
+            panic!("while holding the open/close lock");
+        });
+        assert!(!HOLDING.get(), "the panicking thread still claims the lock");
+        std::panic::resume_unwind(unwound.unwrap_err());
     })
     .join();
     assert!(panicked.is_err());

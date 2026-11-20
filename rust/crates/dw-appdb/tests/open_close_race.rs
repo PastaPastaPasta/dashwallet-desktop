@@ -1,6 +1,9 @@
 //! #105: one thread closing the last connection to a WAL database while
 //! another opens the same file must not deadlock. Alone in its own test
-//! binary: it replaces SQLite's `stat` for the whole process.
+//! binary: it replaces SQLite's `stat` for the whole process. Unix only: the
+//! bug and the `stat` it slows are the unix VFS's.
+
+#![cfg(unix)]
 
 use std::ffi::{c_char, c_int, c_void};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -32,8 +35,9 @@ unsafe extern "C" fn slow_stat(path: *const c_char, buf: *mut c_void) -> c_int {
 /// can take the file's own mutex and then wait for the global one.
 fn slow_down_sqlite_stat() {
     // SAFETY: the default VFS lives for the process; its system-call table
-    // is changed here before any thread uses SQLite, and `slow_stat` has the
-    // signature of the `stat` it replaces.
+    // is changed here before any thread uses SQLite. `slow_stat` takes the
+    // `struct stat *` of the `stat` it replaces as an untyped pointer and
+    // only passes it on, which is the same call on the unix ABIs.
     unsafe {
         let vfs = ffi::sqlite3_vfs_find(std::ptr::null());
         assert!(!vfs.is_null());
@@ -86,7 +90,13 @@ fn opens_and_closes_of_one_app_database_racing_on_many_threads_never_hang() {
     let deadline = Instant::now() + FINISH;
     for _ in 0..THREADS {
         let left = deadline.saturating_duration_since(Instant::now());
-        if finished.recv_timeout(left).is_err() {
+        let ended = finished.recv_timeout(left);
+        assert_ne!(
+            ended,
+            Err(mpsc::RecvTimeoutError::Disconnected),
+            "a thread panicked; its message is above"
+        );
+        if ended.is_err() {
             let in_flight: Vec<_> = steps
                 .iter()
                 .map(|s| STEPS[usize::from(s.load(Ordering::Relaxed))])
