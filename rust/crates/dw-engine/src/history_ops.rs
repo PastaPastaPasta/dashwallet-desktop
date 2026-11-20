@@ -134,6 +134,33 @@ struct Persisted {
 /// Txids of the stored transactions per wallet, read from `wallet.sqlite`
 /// over a read-only connection (SqlitePersister has no enumeration API;
 /// `get_core_tx_record` then reads each record).
+/// The stored records of `wallet` named by `txids` that `read` returns:
+/// each the listed key's record, of the transaction it names. False when
+/// one was missing, another's or unreadable (logged).
+fn read_records<'a, E: std::fmt::Display>(
+    wallet: WalletId,
+    txids: impl IntoIterator<Item = &'a Txid>,
+    mut read: impl FnMut(&Txid) -> Result<Option<TransactionRecord>, E>,
+) -> (Vec<TransactionRecord>, bool) {
+    let mut clean = true;
+    let records = (txids.into_iter())
+        .filter_map(|t| match read(t) {
+            Ok(Some(r)) if r.txid == *t && r.transaction.txid() == *t => Some(r),
+            Ok(found) => {
+                tracing::warn!(%wallet, txid = %t, found = ?found.map(|r| r.txid), "a listed transaction record is missing or another's");
+                clean = false;
+                None
+            }
+            Err(e) => {
+                tracing::warn!(%wallet, txid = %t, error = %e, "unreadable transaction record");
+                clean = false;
+                None
+            }
+        })
+        .collect();
+    (records, clean)
+}
+
 fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Persisted>, rusqlite::Error> {
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
@@ -197,6 +224,10 @@ struct LoadedHistory {
     records: Vec<TransactionRecord>,
     seen: Vec<(String, u64)>,
     abandoned: Vec<(Txid, dashcore::Transaction)>,
+    /// The payments this app sent (#88).
+    sent: crate::tx_actions::Sent,
+    /// Every stored record was listed and read.
+    clean: bool,
     /// Every stored transaction of the wallet, with a record or not, when
     /// every stored record was listed and read; else none.
     stored: HashSet<Txid>,
@@ -246,42 +277,30 @@ impl NetworkSession {
             wallet_ids
                 .into_iter()
                 .map(|wallet| {
-                    let mut clean = listed;
                     let persisted = txids.get(&wallet.0).cloned().unwrap_or_default();
-                    let records = (persisted.records.iter())
-                        .filter_map(|t| {
-                            let read = persister.get_core_tx_record(wallet.0, t);
-                            #[cfg(test)]
-                            let read = match fault.take() {
-                                Some(f) => f.apply(read),
-                                None => read,
-                            };
-                            match read {
-                                // The listed key's record, of the transaction it names.
-                                Ok(Some(r)) if r.txid == *t && r.transaction.txid() == *t => Some(r),
-                                Ok(found) => {
-                                    tracing::warn!(%wallet, txid = %t, found = ?found.map(|r| r.txid), "a listed transaction record is missing or another's");
-                                    clean = false;
-                                    None
-                                }
-                                Err(e) => {
-                                    tracing::warn!(%wallet, txid = %t, error = %e, "unreadable transaction record");
-                                    clean = false;
-                                    None
-                                }
-                            }
-                        })
-                        .collect();
+                    let (records, read) = read_records(wallet, &persisted.records, |t| {
+                        let read = persister.get_core_tx_record(wallet.0, t);
+                        #[cfg(test)]
+                        let read = match fault.take() {
+                            Some(f) => f.apply(read),
+                            None => read,
+                        };
+                        read
+                    });
+                    let clean = listed && read;
                     let seen = appdb.tx_seen_times(&wallet.to_string()).unwrap_or_else(|e| {
                         tracing::warn!(%wallet, error = %e, "could not read first-seen times");
                         Vec::new()
                     });
                     let abandoned = crate::tx_actions::load_abandoned(&appdb, wallet);
+                    let sent = crate::tx_actions::load_sent(&appdb, wallet);
                     LoadedHistory {
                         wallet,
                         records,
                         seen,
                         abandoned,
+                        sent,
+                        clean,
                         stored: if clean {
                             (persisted.records.into_iter())
                                 .chain(persisted.recordless)
@@ -306,14 +325,18 @@ impl NetworkSession {
         }
         let wm = live.manager.wallet_manager_arc();
         let wm = wm.read().await;
+        let mut sends = Vec::new();
         for LoadedHistory {
             wallet,
             records,
             seen,
             abandoned,
+            sent,
+            clean,
             stored,
         } in loaded
         {
+            sends.push((wallet, sent, clean));
             let info = wm.get_wallet_info(&wallet.0);
             let in_memory: Vec<TransactionRecord> = info
                 .map(|info| {
@@ -348,21 +371,7 @@ impl NetworkSession {
                     h.upsert(r, None);
                 }
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
-                // Abandoned transactions are gone from wallet.sqlite; the
-                // app database keeps them so the history still shows them.
-                for (txid, tx) in &abandoned {
-                    h.txs
-                        .entry(*txid)
-                        .or_insert_with(|| crate::history::TxEntry {
-                            tx: tx.clone(),
-                            context: key_wallet::transaction_checking::TransactionContext::Mempool,
-                            instant_locked: false,
-                            first_seen: None,
-                            own_inputs: Default::default(),
-                            abandoned: true,
-                        })
-                        .abandoned = true;
-                }
+                h.mark_abandoned(&abandoned);
                 for (txid, entry) in h.txs.iter_mut() {
                     if let Some(t) = seen.get(&txid.to_string()) {
                         entry.first_seen = Some(*t);
@@ -371,37 +380,58 @@ impl NetworkSession {
             });
         }
         drop(wm);
-        for wallet in ids {
-            self.restore_unmined_spends(&live.manager, wallet).await;
+        for (wallet, sent, clean) in sends {
+            self.restore_unmined_spends(&live.manager, wallet, &sent, clean)
+                .await;
         }
         Ok(())
     }
 
     /// key-wallet rebuilds no records at load, so it no longer knows which
-    /// of its coins the wallet's own transactions out of a block spent: a
-    /// scan reaching such a coin's funding block would credit it again
-    /// beside the change the store gave back (#88). Each one is restored
-    /// as a spent-output claim held by its spender, which a block, an
-    /// InstantSend lock or an abandon of the spender settles; a spender a
-    /// mined transaction already beats is dropped and its other coins
-    /// released.
-    async fn restore_unmined_spends(&self, manager: &Manager, wallet: WalletId) {
-        let claims = self.hub.history.with_wallet(wallet, |h| {
-            let mut claims = crate::history::unmined_own_spends(&h.txs);
+    /// of its coins the payments this app sent and that are still out of a
+    /// block spent: a scan reaching such a coin's funding block would
+    /// credit it again beside the change the store gave back (#88). Each
+    /// one is restored as a spent-output claim held by its payment, which a
+    /// block, an InstantSend lock or an abandon of the payment settles.
+    /// Spends key-wallet holds a record of this session are left to it.
+    /// After a load that read every stored record, the marks of payments
+    /// no longer out of a block go.
+    async fn restore_unmined_spends(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        sent: &crate::tx_actions::Sent,
+        clean: bool,
+    ) {
+        let (claims, settled) = self.hub.history.with_wallet(wallet, |h| {
+            let mut claims = crate::history::unmined_own_spends(&h.txs, sent);
             claims.retain(|(_, spender)| !h.session_held.contains(spender));
-            claims
+            let settled = match clean {
+                true => crate::history::settled_sends(&h.txs, sent),
+                false => Vec::new(),
+            };
+            (claims, settled)
         });
         self.apply_spend_claims(manager, wallet, &claims).await;
-        if let Err(e) = self.release_beaten_claims(manager, wallet).await {
-            tracing::warn!(%wallet, error = %e, "could not release the claims of beaten spends");
+        if !settled.is_empty() {
+            let forgotten = self
+                .appdb_op(move |db| {
+                    crate::tx_actions::forget_sent(db, wallet, &settled);
+                    Ok(())
+                })
+                .await;
+            if let Err(e) = forgotten {
+                tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments");
+            }
         }
     }
 
     /// Restores `claims` as key-wallet spent-output claims of `wallet`. A
-    /// claimed coin the wallet still holds (a store written before #88 was
-    /// fixed, or a block processed for a wallet opened later before its
-    /// claims were set) is spent by a live own transaction: it leaves the
-    /// funds accounts, is stored as spent and the balance is announced.
+    /// claimed coin the wallet still holds (a block processed for a wallet
+    /// opened later before its claims were set, or a store written while
+    /// the claim was not restored) is spent by a live payment this app
+    /// sent: it leaves the funds accounts, is stored as spent and the
+    /// balance is announced.
     pub(crate) async fn apply_spend_claims(
         &self,
         manager: &Manager,
@@ -483,21 +513,17 @@ impl NetworkSession {
                     return Vec::new();
                 }
             };
+            // Read and marked abandoned as the history load does.
+            let (records, _) = read_records(wallet, &persisted.records, |t| {
+                persister.get_core_tx_record(wallet.0, t)
+            });
             let mut history = crate::history::WalletHistory::default();
-            for t in &persisted.records {
-                if let Ok(Some(r)) = persister.get_core_tx_record(wallet.0, t)
-                    && r.txid == *t
-                    && r.transaction.txid() == *t
-                {
-                    history.upsert(&r, None);
-                }
+            for r in &records {
+                history.upsert(r, None);
             }
-            for (t, _) in crate::tx_actions::load_abandoned(&appdb, wallet) {
-                if let Some(e) = history.txs.get_mut(&t) {
-                    e.abandoned = true;
-                }
-            }
-            crate::history::unmined_own_spends(&history.txs)
+            history.mark_abandoned(&crate::tx_actions::load_abandoned(&appdb, wallet));
+            let sent = crate::tx_actions::load_sent(&appdb, wallet);
+            crate::history::unmined_own_spends(&history.txs, &sent)
         })
         .await?;
         Ok(claims)

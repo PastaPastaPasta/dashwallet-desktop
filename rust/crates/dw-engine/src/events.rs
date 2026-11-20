@@ -791,16 +791,6 @@ impl SessionHub {
         }
     }
 
-    /// A lock can make a winner of a transaction that beats a restored
-    /// claimant key-wallet holds no record of ([`crate::history::beaten_unrecorded`]),
-    /// which no block event follows: an InstantSend-locked rival, or the
-    /// ChainLock a locked claimant yields to.
-    fn reconcile_if_unrecorded(&self, id: WalletId) {
-        if self.history.with_wallet(id, |h| h.holds_unrecorded()) {
-            self.schedule_reconcile(id);
-        }
-    }
-
     /// Records header tip `tip`; whether it is below the last one.
     fn header_tip_dropped(&self, tip: u32) -> bool {
         let mut last = self.header_tip.lock().unwrap_or_else(|p| p.into_inner());
@@ -1280,7 +1270,6 @@ impl SessionHub {
                 // the mempool: none (BL-76).
                 if matches!(record.context, TransactionContext::InstantSend(_)) {
                     self.note_seen(id, [record.txid]);
-                    self.reconcile_if_unrecorded(id);
                 }
             }
             WalletEvent::TransactionInstantLocked {
@@ -1296,7 +1285,6 @@ impl SessionHub {
                     self.pump.mark_balances(id);
                 }
                 self.note_seen(id, [*txid]);
-                self.reconcile_if_unrecorded(id);
             }
             WalletEvent::TransactionsSwept {
                 txids,
@@ -1425,7 +1413,6 @@ impl SessionHub {
                 });
                 if !locked.is_empty() {
                     self.pump.mark_history(id, Some(&locked));
-                    self.reconcile_if_unrecorded(id);
                 }
                 self.note_seen(id, locked_transactions.values().flatten().copied());
             }

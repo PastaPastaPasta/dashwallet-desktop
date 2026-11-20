@@ -507,11 +507,6 @@ impl NetworkSession {
             rt.spawn(async move {
                 if let Some(session) = weak.upgrade() {
                     session.reconcile_duplicate_coins(id).await;
-                    if let Ok(manager) = session.manager()
-                        && let Err(e) = session.release_beaten_claims(&manager, id).await
-                    {
-                        tracing::warn!(wallet_id = %id, error = %e, "could not release the claims of beaten spends");
-                    }
                 }
             });
         }));

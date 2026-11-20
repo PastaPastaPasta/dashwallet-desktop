@@ -1537,6 +1537,11 @@ impl TxDraft {
             Some(_) => Some(prepared.attempts.lock().await),
             None => None,
         };
+        // The evidence a later process restores this payment's spend
+        // claims from (#88), stored before it can leave.
+        if matches!(*prepared.phase(), Phase::Pending) {
+            self.mark_sent(&prepared, true).await?;
+        }
         // A contact payment's first broadcast is under way until its
         // outcome settled the contact (`settle_contact`).
         let (first, _in_flight) = {
@@ -1574,7 +1579,13 @@ impl TxDraft {
             Phase::Sent => self.session.spends.release(&self.wallet_id, prepared.owner),
             // Never sent: release key-wallet's reservation (owner-guarded, a
             // no-op where platform-wallet already did) and the engine's.
-            Phase::Released => prepared.release(&self.session).await,
+            Phase::Released => {
+                prepared.release(&self.session).await;
+                if let Err(e) = self.mark_sent(&prepared, false).await {
+                    tracing::warn!(error = %e, txid = %prepared.summary.txid,
+                        "could not drop the sent mark of a payment never sent");
+                }
+            }
             Phase::Pending | Phase::Unknown | Phase::Broadcasting => {}
         }
         let dispatched = matches!(
@@ -2194,6 +2205,31 @@ impl Drop for PreparedTx {
                 wallet.core().abandon_transaction(&signed).await;
             }
         });
+    }
+}
+
+impl TxDraft {
+    /// Marks `prepared` as a payment this app sent, naming the wallet's
+    /// coins it signed (`sent`), or removes the mark
+    /// ([`crate::tx_actions::SENT_PREFIX`]).
+    async fn mark_sent(&self, prepared: &PreparedTx, sent: bool) -> Result<(), EngineError> {
+        let (scope, key) = (
+            self.wallet_id.to_string(),
+            format!(
+                "{}{}",
+                crate::tx_actions::SENT_PREFIX,
+                prepared.summary.txid
+            ),
+        );
+        let coins = sent.then(|| {
+            (prepared.summary.inputs.iter())
+                .map(|i| i.outpoint.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        });
+        self.session
+            .appdb_op(move |db| db.set_setting_durable(&scope, &key, coins.as_deref()))
+            .await
     }
 }
 

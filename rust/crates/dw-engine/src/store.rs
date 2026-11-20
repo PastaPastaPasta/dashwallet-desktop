@@ -120,45 +120,15 @@ impl WalletStore {
     }
 }
 
-/// key-wallet records a transaction it sees again (a peer's relay after a
-/// restart) with no `input_details` when the coins it spends are no longer
-/// held, and the SQLite persister replaces the stored record with it: the
-/// next load would no longer know which of the wallet's coins the
-/// transaction spent, and restore no claim for them (#88). A record that
-/// names no own input keeps the input side the stored record of the same
-/// transaction names; its context and outputs are the new ones.
-fn keep_known_inputs(
-    changeset: &mut PlatformWalletChangeSet,
-    stored: impl Fn(&Txid) -> Option<TransactionRecord>,
-) {
-    let Some(core) = changeset.core.as_mut() else {
-        return;
-    };
-    for record in (core.records.iter_mut())
-        .filter(|r| r.input_details.is_empty() && !r.transaction.is_coin_base())
-    {
-        let Some(old) = stored(&record.txid) else {
-            continue;
-        };
-        if old.input_details.is_empty() || old.transaction.txid() != record.txid {
-            continue;
-        }
-        record.input_details = old.input_details;
-        record.net_amount = old.net_amount;
-        record.fee = old.fee;
-        record.direction = old.direction;
-        record.transaction_type = old.transaction_type;
-    }
-}
-
 /// platform-wallet hands the store every `Received` / `Change` output of a
 /// record as a new coin and names in `utxo_credit_verdicts` the ones
 /// key-wallet did not credit; the SQLite persister writes them unspent all
 /// the same, so the next load gives back a coin the wallet does not hold
-/// (#88: one an unmined own spend claims, scanned in a later process). They
-/// are stored as spent instead: a later credit stores the coin unspent
-/// again, as a sweep or an abandon releasing it does.
-fn withhold_uncredited(changeset: &mut PlatformWalletChangeSet) {
+/// (#88: one a payment this app sent claims, scanned in a later process).
+/// They are left out of the batch's new coins: no row is written for them,
+/// and a row already stored stays as it was. A later credit of the coin
+/// stores it as any other.
+fn drop_uncredited(changeset: &mut PlatformWalletChangeSet) {
     let Some(core) = changeset.core.as_mut() else {
         return;
     };
@@ -166,11 +136,8 @@ fn withhold_uncredited(changeset: &mut PlatformWalletChangeSet) {
         return;
     }
     let verdicts = &core.utxo_credit_verdicts;
-    let (uncredited, credited) = std::mem::take(&mut core.new_utxos)
-        .into_iter()
-        .partition(|u| verdicts.contains_key(&u.outpoint));
-    core.new_utxos = credited;
-    core.spent_utxos.extend::<Vec<_>>(uncredited);
+    core.new_utxos
+        .retain(|u| !verdicts.contains_key(&u.outpoint));
 }
 
 impl PlatformWalletPersistence for WalletStore {
@@ -235,13 +202,7 @@ impl PlatformWalletPersistence for WalletStore {
             })
             .unwrap_or_default();
         let mut changeset = changeset;
-        withhold_uncredited(&mut changeset);
-        keep_known_inputs(&mut changeset, |txid| {
-            self.inner
-                .get_core_tx_record(wallet_id, txid)
-                .ok()
-                .flatten()
-        });
+        drop_uncredited(&mut changeset);
         if let Err(e) = self.inner.store(wallet_id, changeset) {
             if core && let Some(replay) = replay() {
                 replay.note_store_failed(WalletId(wallet_id));
@@ -366,7 +327,7 @@ mod tests {
     use platform_wallet::changeset::changeset::UtxoCreditVerdict;
     use platform_wallet::changeset::{CoreChangeSet, PlatformWalletChangeSet};
 
-    use super::withhold_uncredited;
+    use super::drop_uncredited;
 
     fn coin(vout: u32) -> key_wallet::Utxo {
         let script =
@@ -387,11 +348,10 @@ mod tests {
         utxos.iter().map(|u| u.outpoint).collect()
     }
 
-    /// Every output with a verdict moves from the new coins to the spent
-    /// ones, whatever the verdict; the others stay new; a spent coin the
-    /// batch already carried stays.
+    /// Every output with a verdict leaves the new coins, whatever the
+    /// verdict; the others stay; the spent coins are untouched.
     #[test]
-    fn outputs_the_wallet_did_not_credit_are_stored_spent() {
+    fn outputs_the_wallet_did_not_credit_are_not_stored() {
         let mut changeset = PlatformWalletChangeSet {
             core: Some(CoreChangeSet {
                 new_utxos: (0..4).map(coin).collect(),
@@ -410,14 +370,10 @@ mod tests {
             }),
             ..Default::default()
         };
-        withhold_uncredited(&mut changeset);
+        drop_uncredited(&mut changeset);
         let core = changeset.core.unwrap();
         assert_eq!(outpoints(&core.new_utxos), [coin(0).outpoint]);
-        assert_eq!(
-            outpoints(&core.spent_utxos),
-            [9, 1, 2, 3].map(|v| coin(v).outpoint)
-        );
-        assert_eq!(core.spent_utxos[1], coin(1), "the coin itself, unchanged");
+        assert_eq!(outpoints(&core.spent_utxos), [coin(9).outpoint]);
     }
 
     /// Without verdicts, or without a core part, nothing changes.
@@ -430,13 +386,13 @@ mod tests {
             }),
             ..Default::default()
         };
-        withhold_uncredited(&mut changeset);
+        drop_uncredited(&mut changeset);
         let core = changeset.core.unwrap();
         assert_eq!(outpoints(&core.new_utxos), [0, 1].map(|v| coin(v).outpoint));
         assert!(core.spent_utxos.is_empty());
 
         let mut empty = PlatformWalletChangeSet::default();
-        withhold_uncredited(&mut empty);
+        drop_uncredited(&mut empty);
         assert!(empty.core.is_none());
     }
 }
