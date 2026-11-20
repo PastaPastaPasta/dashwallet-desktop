@@ -173,8 +173,12 @@ impl NetworkSession {
             if coinjoin && this.mixing(wallet_id) {
                 return Err(CoinJoinFailure::MixingActive.into());
             }
-            let spendable =
-                (snapshot.coins.iter()).filter(|c| c.utxo.is_spendable(snapshot.height));
+            // A coin another step's lock spends stays out: the self-spend
+            // would conflict with that funding too.
+            let spendable = (snapshot.coins.iter()).filter(|c| {
+                c.utxo.is_spendable(snapshot.height)
+                    && (!c.lock_input || recorded.contains(&c.utxo.outpoint))
+            });
             let coins: Vec<_> = if coinjoin {
                 spendable
                     .filter(|c| c.coinjoin_account && recorded.contains(&c.utxo.outpoint))
@@ -189,7 +193,7 @@ impl NetworkSession {
             }
             let exempt: HashSet<OutPoint> = coins
                 .iter()
-                .filter(|c| c.lock_input)
+                .filter(|c| c.lock_input && recorded.contains(&c.utxo.outpoint))
                 .map(|c| c.utxo.outpoint)
                 .collect();
             let outpoints: HashSet<OutPoint> = coins.iter().map(|c| c.utxo.outpoint).collect();

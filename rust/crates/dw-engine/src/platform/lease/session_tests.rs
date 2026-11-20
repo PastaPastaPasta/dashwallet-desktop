@@ -2452,6 +2452,27 @@ fn repair_leaves_out_a_denomination_another_steps_lock_spends() {
     assert_eq!(inputs, std::collections::HashSet::from([a]));
 }
 
+/// An ordinary coin another step's tracked lock spends stays out of the
+/// repair, and is not exempt from that lock: the self-spend takes the step's
+/// own locked coin and the free ones.
+#[test]
+fn repair_leaves_out_an_ordinary_coin_another_steps_lock_spends() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    let a = f.credit(1, COIN);
+    let free = f.credit(2, COIN / 4);
+    let other = f.credit(3, COIN / 2);
+    f.stuck_signing(STEP, 51, &[a]);
+    f.track_lock(51, 0, &[a], platform_wallet::AssetLockStatus::Built);
+    f.track_lock(52, 5, &[other], platform_wallet::AssetLockStatus::Built);
+
+    let tx = f.repair(STEP);
+
+    let inputs: std::collections::HashSet<OutPoint> =
+        tx.input.iter().map(|i| i.previous_output).collect();
+    assert_eq!(inputs, std::collections::HashSet::from([a, free]));
+}
+
 /// E0-04 §6.5 (C9): a self-spend the journal fails to record is released
 /// unsent: never broadcast, its inputs free, no row.
 #[test]
