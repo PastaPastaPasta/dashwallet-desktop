@@ -33,7 +33,7 @@ fn merge(base: &mut serde_json::Value, patch: &serde_json::Value) {
 }
 
 /// The shipped config as a build with the signing key has it: the overlay
-/// merged, and `pubkey` in place of the placeholder.
+/// merged, and `pubkey` in place of the release key.
 fn keyed(pubkey: &str) -> serde_json::Value {
     let mut merged = shipped();
     merge(&mut merged, &overlay());
@@ -100,21 +100,29 @@ impl TestKey {
     }
 }
 
-/// The shipped config, whatever its public key (the placeholder until the
-/// release key exists, docs/release/updater.md): without the overlay that
-/// only a build with the signing key gets, no feed and no updater.
+/// The release public key, minisign key ID ED322B963B527B21.
+const RELEASE_KEY_ID: &str = "ED322B963B527B21";
+
+/// The shipped config carries the release public key but no feed: a build
+/// without the signing key (main, pull requests, rc, dev) has no updater,
+/// whatever the public key.
 #[test]
 fn the_shipped_build_has_no_updater() {
     let shipped = shipped();
     let pubkey = shipped["plugins"]["updater"]["pubkey"].as_str().unwrap();
-    assert!(!pubkey.trim().is_empty());
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(pubkey)
+        .unwrap();
+    let decoded = String::from_utf8(decoded).unwrap();
+    assert!(
+        decoded.starts_with(&format!(
+            "untrusted comment: minisign public key: {RELEASE_KEY_ID}\n"
+        )),
+        "{decoded}"
+    );
     assert_eq!(shipped["plugins"]["updater"]["endpoints"], json!([]));
     assert!(shipped["bundle"].get("createUpdaterArtifacts").is_none());
-    for pubkey in [
-        json!(pubkey),
-        json!(PUBKEY_PLACEHOLDER),
-        json!(TestKey::new().pubkey()),
-    ] {
+    for pubkey in [json!(pubkey), json!(TestKey::new().pubkey())] {
         let mut c = shipped.clone();
         c["plugins"]["updater"]["pubkey"] = pubkey;
         let config = conf(&c);
@@ -137,8 +145,12 @@ fn the_key_overlay_adds_the_stable_feed_and_the_artifacts() {
         json!([FEED_URL])
     );
     assert!(overlay["plugins"]["updater"].get("pubkey").is_none());
-    assert!(!build_has_updater(&conf(&keyed(PUBKEY_PLACEHOLDER))));
+    assert!(!build_has_updater(&conf(&keyed(""))));
     assert!(build_has_updater(&conf(&keyed(&TestKey::new().pubkey()))));
+    let release_key = shipped()["plugins"]["updater"]["pubkey"].clone();
+    assert!(build_has_updater(&conf(&keyed(
+        release_key.as_str().unwrap()
+    ))));
 }
 
 /// The flag the plugin itself reads from the shipped config with the

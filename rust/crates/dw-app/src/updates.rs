@@ -23,11 +23,6 @@ use crate::error::{AppCode, AppError};
 pub const FEED_URL: &str =
     "https://github.com/PastaPastaPasta/dashwallet-desktop/releases/latest/download/latest.json";
 
-/// `plugins.updater.pubkey` in `tauri.conf.json` until the release key
-/// exists (docs/release/updater.md): a build with it has no updater.
-pub const PUBKEY_PLACEHOLDER: &str =
-    "UPDATER-DISABLED: replace with the release public key (docs/release/updater.md)";
-
 /// How long a check may take, and a download may go without data.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_IDLE: Duration = Duration::from_secs(60);
@@ -96,8 +91,10 @@ pub fn movable_only(exe: &Path) -> bool {
     path.contains("/AppTranslocation/") || path.starts_with("/Volumes/")
 }
 
-/// The build has the updater: a real public key, the official feed as its
-/// only endpoint, and signatures that must name their version.
+/// The build has the updater: a public key, the official feed as its only
+/// endpoint, and signatures that must name their version. The shipped
+/// config has the release public key and no endpoint; only the key overlay
+/// that `tauri-build.sh` merges when the signing key is set adds the feed.
 pub fn build_has_updater(config: &tauri::Config) -> bool {
     let Some(updater) = config.plugins.0.get("updater") else {
         return false;
@@ -112,7 +109,6 @@ pub fn build_has_updater(config: &tauri::Config) -> bool {
         .map(Vec::as_slice)
         .unwrap_or_default();
     !pubkey.trim().is_empty()
-        && pubkey != PUBKEY_PLACEHOLDER
         && !endpoints.is_empty()
         && endpoints.iter().all(|e| e.as_str() == Some(FEED_URL))
         && updater.get("requireSignedVersion") == Some(&Value::Bool(true))
