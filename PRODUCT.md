@@ -62,7 +62,7 @@ Ranked by impact on "people want to use it, and it demos well". The dated plan f
 | # | Improvement | User story | State |
 |---|---|---|---|
 | 1 | **Instant incoming payments** | As someone being paid, I see the payment and my new balance within seconds, even while the wallet is still syncing, so I can hand over the coffee. | engine lane started 11-18 |
-| 5 | **Opens in two seconds** | As anyone launching the app, I see the window and my last-known balance at once, while the engine starts behind it. | the window in two seconds shipped (#33, 11-19); the last-known balance at once moved to 1.0.x on 11-20 (the project manager's decision) |
+| 5 | **Opens in two seconds** | As anyone launching the app, I see the window and my last-known balance at once, while the engine starts behind it. | the blank-launch fix merged (#33, 11-19); the two-second window is measured on each OS in the QA pass; the last-known balance at once moved to 1.0.x on 11-20 (the project manager's decision) |
 | 7 | **Unlock once, then flow** | As a user who just unlocked, I'm not asked for my passphrase again for every send for a few minutes (an option, plus OS biometrics later). | engine commands exist; the send flow still asks every time |
 | 11 | **Empty states that lead somewhere** | As a new user, each empty screen has its own illustration and one clear next action. | #25, in review |
 | 15 | **Send with a fiat toggle** | As a payer, I can type the amount in my currency and see the Dash amount, and power options (unsigned PSBT) sit under Advanced. | fiat toggle shipped; PSBT still under Tools |
