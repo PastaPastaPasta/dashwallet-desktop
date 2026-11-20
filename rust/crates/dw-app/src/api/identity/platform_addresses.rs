@@ -451,6 +451,8 @@ pub struct PlatformFundQuote {
     /// The wallet's Platform receive address the fund pays (bech32m).
     pub to: String,
     pub grant: GrantRequest,
+    /// A Max's (`all`): `totalDuffs` is the coins' sum, `duffs` the lock.
+    pub max: Option<super::shielded::CoreMax>,
 }
 
 impl From<engine::PlatformFundQuote> for PlatformFundQuote {
@@ -463,6 +465,7 @@ impl From<engine::PlatformFundQuote> for PlatformFundQuote {
             credits,
             to,
             grant,
+            max,
         } = q;
         PlatformFundQuote {
             duffs,
@@ -472,6 +475,7 @@ impl From<engine::PlatformFundQuote> for PlatformFundQuote {
             credits,
             to,
             grant: grant.into(),
+            max: max.map(Into::into),
         }
     }
 }

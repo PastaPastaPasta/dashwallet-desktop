@@ -7,6 +7,7 @@
 import type { AppError } from "../api/generated/AppError";
 import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
+import type { FundAmount } from "../api/generated/FundAmount";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import type { MoveToCoreOutcome } from "../api/generated/MoveToCoreOutcome";
 import type { MoveToCoreQuote } from "../api/generated/MoveToCoreQuote";
@@ -23,7 +24,7 @@ import type { PlatformSendOutcome } from "../api/generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import { isHeldOp } from "../platform/move";
 import { classifyAddress } from "./send";
-import { authorizeSet, checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import { authorizeSet, checkGrant, fundDuffs, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import { applyFund, CREDITS_PER_DUFF, FUND_FEE_CREDITS, FUND_MIN_DUFFS, fundCredits, newRecoveryWorld, RECOVERY_HANDLERS, type RecoveryWorld } from "./recovery";
 import { SHIELD_LOCK_INPUTS } from "./coinjoin";
 import { lockInputs, newShieldedWorld, SHIELDED_HANDLERS, type ShieldedWorld } from "./shielded";
@@ -414,7 +415,7 @@ function fundQuote(ctx: Ctx, walletId: string, duffs: number, call: string): Pla
   if (totalDuffs > available) throw fail("credits.funding_insufficient", "insufficient funds", { kind: "duffs", needed: totalDuffs, available });
   const inputs = lockInputs(w, totalDuffs);
   if (inputs > SHIELD_LOCK_INPUTS) throw fail("credits.too_many_inputs", "too many inputs", { kind: "number", value: inputs });
-  return { duffs, feeDuffs: FUND_LOCK_FEE_DUFFS, totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(duffs)), to: p.receive.address, grant: { maxDuffs: totalDuffs, maxCredits: "0" } };
+  return { duffs, feeDuffs: FUND_LOCK_FEE_DUFFS, totalDuffs, feeCredits: String(FUND_FEE_CREDITS), credits: String(fundCredits(duffs)), to: p.receive.address, grant: { maxDuffs: totalDuffs, maxCredits: "0" }, max: null };
 }
 
 export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown> = {
@@ -556,9 +557,10 @@ export const PENDING_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknown
     }
     return sendOutcome(p, row);
   },
-  platform_fund_quote: ({ walletId, duffs }: { walletId: string; duffs: number }, ctx: Ctx) => fundQuote(ctx, walletId, duffs, "platform_fund_quote"),
-  platform_fund: ({ walletId, duffs, grant }: { walletId: string; duffs: number; grant: string }, ctx: Ctx): PlatformFundOutcome => {
+  platform_fund_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => fundQuote(ctx, walletId, fundDuffs(amount), "platform_fund_quote"),
+  platform_fund: ({ walletId, amount, grant }: { walletId: string; amount: FundAmount; grant: string }, ctx: Ctx): PlatformFundOutcome => {
     const { world } = ctx;
+    const duffs = fundDuffs(amount);
     const q = fundQuote(ctx, walletId, duffs, "platform_fund");
     const p = platformOf(world, "platform_fund");
     const g = checkGrant(world, grant, walletId, ["platformOp"]);

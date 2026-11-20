@@ -212,14 +212,16 @@ impl WalletCoin {
         self.utxo.is_confirmed || self.utxo.is_instantlocked || self.utxo.is_trusted
     }
 
+    /// Spendable now without coin control: trusted, neither locked nor
+    /// reserved, a denomination included.
+    pub(crate) fn trusted_spendable(&self, height: u32) -> bool {
+        self.utxo.is_spendable(height) && self.trusted() && !self.user_locked && !self.reserved
+    }
+
     /// Eligible for automatic ordinary selection. A denomination is not:
     /// Pay, a move to Shielded and an asset-lock funding leave it alone.
     pub(crate) fn auto_selectable(&self, height: u32) -> bool {
-        self.utxo.is_spendable(height)
-            && self.trusted()
-            && !self.user_locked
-            && !self.reserved
-            && !self.counted_denomination
+        self.trusted_spendable(height) && !self.counted_denomination
     }
 
     /// Eligible when picked by hand (coin control may spend untrusted
