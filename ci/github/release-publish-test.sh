@@ -451,6 +451,10 @@ check "decide: another repository does not publish" '[[ $(decide push refs/heads
 check "decide: a pull request and a dispatch do not publish" '[[ $(decide pull_request refs/pull/9/merge "$c2" "$c1") == "false true" && $(decide workflow_dispatch refs/heads/main "$c2" "") == "false true" ]]'
 check "decide: the schedule builds main and does not publish" '[[ $(decide schedule refs/heads/main "$c2" "") == "false true" ]]'
 check "decide: a docs-only branch push does not build" '[[ $(decide push refs/heads/dw/x "$newer" "$c2") == "false false" ]]'
+signing() { decide "$@" > /dev/null; sed -n 's/^signing=//p' "$work/decide.out"; }
+check "decide: only a stable tag on main gets the updater key" '[[ $(signing push refs/tags/v0.1.0 "$c2" "") == true ]]'
+check "decide: an rc, a dry run, a tag off main, main and a dispatch get no key" \
+  '[[ "$(signing push refs/tags/v0.1.0-rc.1 "$c2" "") $(signing push refs/tags/v0.0.0-rel8 "$c2" "") $(signing push refs/tags/v0.1.0 "$side" "") $(signing push refs/heads/main "$c2" "") $(signing workflow_dispatch refs/tags/v0.1.0 "$c2" "")" == "false false false false false" ]]'
 check "decide: a docs-only pull request does not build" '[[ $(decide pull_request refs/pull/9/merge "$newer" "$c2") == "false false" ]]'
 check "decide: a code change builds" '[[ $(decide push refs/heads/dw/x "$code" "$c2") == "false true" ]]'
 check "decide: a docs-only push after a code push on the branch still builds (measured from main, not the last push)" '[[ $(decide push refs/heads/dw/x "$docsafter" "$code") == "false true" ]]'

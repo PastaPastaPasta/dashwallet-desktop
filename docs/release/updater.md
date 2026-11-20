@@ -5,25 +5,32 @@ these allow it:
 
 1. **The build.** Only a build made with the updater signing key has the feed. The public key in
    `rust/crates/dw-app/tauri.conf.json` (`plugins.updater.pubkey`) is a placeholder until the key exists. release.yml
-   gives the key only to a pushed `v*` tag's build jobs, from the `release` environment, and `ci/github/tauri-build.sh`
+   gives the key only to the build jobs of a pushed stable tag `vX.Y.Z` on main (the `decide` job's `signing`), from
+   the `release` environment: never an rc, a dry run, main, the schedule or a dispatch. `ci/github/tauri-build.sh`
    then merges `rust/crates/dw-app/tauri.updater.conf.json` (the feed URL and `bundle.createUpdaterArtifacts`).
    Without both, the build has no updater plugin at all, and Settings ▸ About says that this build does not update
    itself and links to the releases page.
 2. **The install.** A Flatpak is updated by Flatpak, and a .deb or .rpm by the system's package manager. A macOS app
    run from the disk image or from a translocated path cannot replace itself: Settings asks the user to move it to
-   Applications first. The AppImage, the Windows installer (NSIS) and the macOS app in a writable folder update
+   Applications first. Any app under `/Volumes/` counts as the disk image, so one installed on a writable external
+   drive is asked to move too; that is the conservative choice. The AppImage, the Windows installer (NSIS) and the macOS app in a writable folder update
    themselves.
 3. **The user.** Settings ▸ About ▸ Updates has "Check for updates automatically", off by default, and a "Check for
    updates" button. Nothing is fetched until the user turns the setting on (which checks once then) or presses the
    button.
 
-A found update is only shown, with its version and a link to its release notes. It is downloaded, its signature
-checked and installed when the user clicks **Download and install**, and the app restarts when the user clicks
-**Restart now**, through the normal quit path: the engine locks and flushes the wallets first. On Windows the
-installer must replace the running app, so the one button is **Install and restart**; the engine is shut down the
-same way before the installer starts. If the installer then fails to start, Dash Wallet says so and asks for a
-restart. Install and Restart wait while a payment is being sent, a wallet mixes, a Dash Platform step runs or Dash
-Wallet is still starting.
+A found update is only shown, with its version and **Release notes**, which opens that release's page
+(`…/releases/tag/vX.Y.Z` on this repository). It is downloaded, its signature checked and installed when the user
+clicks **Download and install**, and the app restarts when the user clicks **Restart now**, through the normal quit
+path: the engine locks and flushes the wallets first. Only the steps that close the engine wait while a payment is
+being sent, a wallet mixes, a Dash Platform step runs or Dash Wallet is still starting: Restart everywhere, and on
+Windows Install. On macOS and Linux the download and install run alongside mixing.
+
+On Windows the installer must replace the running app, so the one button is **Install and restart**; the engine is
+shut down the same way before the installer starts. The busy check runs at the click and again once the download is
+done, just before the engine closes. If something started meanwhile, the download is kept and the card says the
+update is ready to install, with why it waits. If the installer then fails to start, Dash Wallet shows its window
+again (Tauri hid it, and removed the tray icon, before the installer ran) and asks for a restart, over every screen.
 
 What is checked (`rust/crates/dw-app/src/updates.rs`):
 
@@ -34,8 +41,10 @@ What is checked (`rust/crates/dw-app/src/updates.rs`):
   can downgrade the app.
 - The feed is `https://github.com/PastaPastaPasta/dashwallet-desktop/releases/latest/download/latest.json`. GitHub's
   "latest" is the newest full release, never a pre-release. `ci/github/release-feed.sh` writes `latest.json` for
-  `vX.Y.Z` tags only, and `release-publish.sh` refuses one anywhere else. When the Latest release has no
-  `latest.json`, the app says that no update information is published, not that the server is unreachable.
+  `vX.Y.Z` tags only, and `release-publish.sh` refuses one anywhere else. When the feed answers 404 (the Latest release
+  has no `latest.json`), the app says that no update information is published. Any other failed answer (a 403, a 5xx,
+  a proxy's refusal) says that the update server could not be reached. The plugin reports both the same way, so the
+  app asks the feed URL once more for its status in that case only.
 - The check gives up after 30 s and a download after 60 s without data, so a stalled connection never blocks the
   next check.
 - The request carries no wallet data and no identifier: it is the static URL, the updater's user agent and an
@@ -61,8 +70,7 @@ What is checked (`rust/crates/dw-app/src/updates.rs`):
    jobs read the key only through this environment, so a repository secret is never used.
 
    - Settings ▸ Environments ▸ New environment `release`. Under "Deployment branches and tags" choose "Selected
-     branches and tags" and add the tag rule `v*`, so only a release tag's jobs can read the secrets, whatever a
-     branch's workflow file says.
+     branches and tags" and add the tag rule `v*`.
    - Add the secrets to that environment (the value is the file's content, not its path):
 
      ```sh
@@ -70,11 +78,33 @@ What is checked (`rust/crates/dw-app/src/updates.rs`):
      gh secret set TAURI_SIGNING_PRIVATE_KEY_PASSWORD --env release --repo PastaPastaPasta/dashwallet-desktop
      ```
 
-   A `workflow_dispatch` run never gets the key, even on a tag: it builds the plain app.
-4. The next release tag then builds with the feed. Its release gains two assets, `latest.json` and
+   - **Required:** limit who can start a run that reaches the key. The `v*` rule matches a tag's name, and `decide` is
+     code of the pushed commit, so anyone who may push a `v*` tag could push one on a commit whose workflow prints the
+     key. Choose one:
+     - **A tag ruleset** (no wait at release time). Settings ▸ Rules ▸ Rulesets ▸ New ruleset ▸ New tag ruleset: name
+       `release tags`, enforcement Active, target tags matching `v*`, rules "Restrict creations", "Restrict updates"
+       and "Restrict deletions", and add the Repository admin role to the bypass list. Or:
+
+       ```sh
+       gh api -X POST repos/PastaPastaPasta/dashwallet-desktop/rulesets --input - <<'JSON'
+       {"name": "release tags", "target": "tag", "enforcement": "active",
+        "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}],
+        "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+        "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}]}
+       JSON
+       ```
+
+     - **Required reviewers on `release`** (each stable tag's three build jobs wait for an approval). Settings ▸
+       Environments ▸ `release` ▸ "Required reviewers": add yourself and save. Then approve the jobs under the tag's
+       run ("Review deployments") when they ask.
+4. A `workflow_dispatch` run never gets the key, even on a tag: it builds the plain app. It is also the first run whose
+   build jobs use `environment: ''` (no environment), which GitHub does not document: run
+   `gh workflow run release.yml --ref <branch>` once before the first signed release and check that the three build
+   jobs start and finish. A main push or the schedule takes the same path.
+5. The next stable release tag then builds with the feed. Its release gains two assets, `latest.json` and
    `dash-wallet-X.Y.Z-macos-universal.app.tar.gz` (the macOS update), and both are listed in SHA256SUMS. The AppImage
    and the Windows installer are their own updates, so their signatures are only in `latest.json`.
-5. Once that release is out, set the repository variable `DW_UPDATER_REQUIRED` to `1`
+6. Once that release is out, set the repository variable `DW_UPDATER_REQUIRED` to `1`
    (`gh variable set DW_UPDATER_REQUIRED --body 1 --repo PastaPastaPasta/dashwallet-desktop`). From then on a stable tag
    whose build has no key fails, and `release-publish.sh` refuses a stable release without `latest.json`: published as
    Latest, it would leave every installed copy without updates. Until then a stable tag without the key only warns.
