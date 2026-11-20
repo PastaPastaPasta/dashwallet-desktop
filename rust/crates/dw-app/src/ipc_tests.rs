@@ -1323,6 +1323,26 @@ fn a_recovery_keeps_the_payment_setting() {
                 "vault.credential_required",
             );
         } else {
+            // A recovery without the old data key cannot read the sealed
+            // limit, so the new vault's limit is 0 until it is set again.
+            demo.err(
+                "authorize",
+                no_credential_spend(&wallet),
+                "vault.credential_required",
+            );
+            let grant = demo.ok(
+                "authorize",
+                json!({
+                    "purpose": { "kind": "changeCredential" },
+                    "walletId": null,
+                    "credential": { "kind": "passphrase", "passphrase": "second" },
+                }),
+            )["id"]
+                .clone();
+            demo.ok(
+                "set_quick_unlock_spend_limit",
+                json!({ "grantId": grant, "spendLimitDuffs": 10_000_000u64 }),
+            );
             demo.ok("authorize", no_credential_spend(&wallet));
         }
     }
