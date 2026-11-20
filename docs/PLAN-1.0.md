@@ -204,7 +204,10 @@ available), so skip them for an upgrade from 0.1.0:
 Decided 2026-11-20 with the release owner. The fixes for #88 (#134), for #68, #69 and #74 (#121), for #78
 (#160) and for #45, #46, #47 and #120 (#159) each leave cases open. A case is RC must-fix when it can hide a
 payment or coins, release a spent coin, or let a payment through without the credential the user chose; the
-rest are for 1.0.x. The cases are listed in #170, #172, #173 and #177.
+rest are for 1.0.x. One exemption, added on 11-20: a case is not RC must-fix when it only understates what
+the wallet holds, never offers a coin that cannot be spent, and corrects itself at the next block with
+nothing for the user to do. Such a case is for 1.0.x and gets a line in the release notes. The cases are
+listed in #170, #172, #173 and #177.
 
 **#170, the balance after a restart.** Ten cases are RC must-fix. Nine are in the table. The tenth, case
 15 (a failed write of the claim repair can leave a freed coin stored as spent), was added on 11-20 from a
@@ -254,7 +257,7 @@ built. Every fix is in this repository, with no pin bump.
 
 - The same dates apply as for #170: a promised case not merged by 11-28 18:00 UTC is decided in writing by
   the release owner; an attempted case not in review by 11-27 18:00 UTC goes into the notes.
-- Promised work is twelve cases: #170's five (7 to 11 days) and seven here (5 to 8.75 days, plus the first-start message, which is not sized). The release
+- Promised work in these two tables is twelve cases: #170's five (7 to 11 days) and seven here (5 to 8.75 days, plus the first-start message, which is not sized). #177 adds two more (2.5 days), below. The release
   owner checks it against what has merged on 11-25 18:00 UTC; if the promised cases are not on track
   then, the release candidate moves or scope is cut in writing that day, not on 11-28.
 - **The header-anchor case is the most harmful of the eight, and it is ordinary use, not a fault.** A
@@ -292,15 +295,26 @@ built. Every fix is in this repository, with no pin bump.
   11-23 the top of that range misses 11-28. The older-build cases do not depend on the header-anchor fix
   (different functions), and the 11-24 report says whether they need a lane of their own.
 
-**#177, after the fork pin, and #178.** #177 lists what #159 leaves. One of its items is RC must-fix
-today: an identity-funding or DashPay payment status written before the upgrade keeps a finality that was
-never verified (1.5 days). Its lane, and whether it is promised or attempted, are set when the check of
-#159 closes; until then it has no date. That check proposed on 11-20 that up to three more of #177's
-items (1, 4 and 6: 4 days) and one new one (the start-up repair does not follow a dropped transaction to
-what spends its outputs: about 1 day) are RC must-fix by the rule above; the release owner rules on them,
-and this page changes with the ruling. #178 is not a funds fault: a wallet that is merely open downloads
-about 0.5 GB an hour from Platform for shielded-note sync. It is an RC item in lane C, sized and
-scheduled by the release owner.
+**#177, after the fork pin, and #178.** #177 lists what #159 leaves. Three of its items are RC
+must-fix, ruled by the release owner on 11-20:
+
+| Item of #177 | For the release candidate | Days | State |
+|---|---|---|---|
+| 2: an identity-funding or DashPay payment status written before the upgrade keeps a finality that was never verified | promised | 1.5 | not started; follows #159 |
+| 6: transactions dropped as dead are remembered only until a restart, so a peer can have one credited again | promised | 1 | not started |
+| 8: the start-up repair does not follow a dropped transaction to what spends its outputs, or to another wallet it pays | attempted, after items 2 and 6 | 1 | not started |
+
+- The same dates apply as above: 11-28 18:00 UTC for the promised items, 11-27 18:00 UTC for the attempted
+  one, and the release owner's check on 11-25 18:00 UTC.
+- The fork lane takes them, in that order, the day #159 merges. If #159 is not in 0.3 they are still for
+  the release candidate, on its pins.
+- Item 1 (a payment to a newly used address of an already-synced wallet can stay unseen until it is
+  mined) falls under the exemption above: 1.0.x, with a notes line. Item 4 (a spend the wallet cannot
+  judge still debits the coin) is 1.0.x as long as no funds account can hold a coin a peer could claim
+  that way; the fork lane's reading so far is that none can, and one more answer is due.
+
+#178 is not a funds fault: a wallet that is merely open downloads about 0.5 GB an hour from Platform for
+shielded-note sync. It is an RC item in lane C, sized and scheduled by the release owner.
 
 ## What only pasta can unblock
 
@@ -325,11 +339,11 @@ No longer on this list: partner credentials and Explore database access (lane L 
   warnings, CoinJoin V24, then the later items of lane C.
 - **Review and CI throughput.** A full CI run takes about 90 minutes on macOS. With 12 lanes active the runners
   queue; engine-only and renderer-only pull requests should not wait on each other's jobs.
-- **The RC must-fix list grew on 11-20.** It holds 20 cases: 19 left by the four funds fixes (#170 ten,
-  #172 six, #173 two, #177 one) and #178 in lane C. Nine of #170's add up to about 16.5 to 25 working days
-  by its table (13.5 to 20.5 without case 6, which is expected in 1.0.x), and its case 15 is not sized;
-  #172's and #173's eight add up to 7 to 11.75; #177's one is 1.5, and its count may rise by up to four
-  (see above); #178 is not sized. The tables above say which cases are promised, which are attempted and
-  when each is decided.
+- **The RC must-fix list grew on 11-20.** It holds 22 cases: 21 left by the four funds fixes (#170 ten,
+  #172 six, #173 two, #177 three) and #178 in lane C. Nine of #170's add up to about 16.5 to 25 working
+  days by its table (13.5 to 20.5 without case 6, which is expected in 1.0.x), and its case 15 is not
+  sized; #172's and #173's eight add up to 7 to 11.75, with the first-start message not sized; #177's
+  three add up to 3.5; #178 is not sized. Fourteen cases are promised. The tables above say which cases
+  are promised, which are attempted and when each is decided.
 - **Security review on new code.** H-01 runs 11-27 → 11-29 over code written the same fortnight. Its
   findings land before the release candidate or the affected feature ships disabled.
