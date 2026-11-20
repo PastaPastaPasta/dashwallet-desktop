@@ -5,13 +5,15 @@ Each `<tag>/` is a data root written by the released Linux app of that tag, and 
 requires the same answers (it runs in `cargo test --workspace`, so in "Rust tests (Linux)" and the macOS job).
 
 - `<tag>/data/`: the data root, byte for byte as the release left it after quitting cleanly (SIGTERM, its engine
-  shutdown), less `instance.lock`. Nothing in it was written by any other build.
+  shutdown), less `instance.lock`. Nothing in it was written by any other build. The one file the writer itself
+  puts there is the first `settings.json` (the pre-release notice dismissed), before the release first starts;
+  the release rewrites it when the settings are saved.
 - `<tag>/expected.json`: the release asset and its SHA-256, the vault passphrase, the two wallets' BIP39 test
   vectors and ids, dashd's view (height, funding and payment txids), the release's answers to the read commands
   after a restart (`calls`), and the message signatures it made (`signatures`, one per wallet by an unused
   receive address, each verified by dashd). Paths under the data root read `$DATA_ROOT`. From v0.2.0 also:
-  `fundedSignatures`, one per distinct address holding a coin (change included), so the keys that hold the
-  funds are shown to sign; `dashd.deposits` and `dashd.payment.feeDuffs`, dashd's fee for the payment read
+  `fundedSignatures`, one per distinct address holding a coin (change included) in the two wallets that have
+  keys, so the keys that hold the funds are shown to sign (the watch-only wallet cannot sign); `dashd.deposits` and `dashd.payment.feeDuffs`, dashd's fee for the payment read
   from its mempool, which the recorded balances must equal to the duff; `watchOnly` and `lockedOutpoints`.
 
 Fixture data only: the wallets are the public BIP39 vectors `abandon … about` and `legal winner … yellow` with
@@ -35,9 +37,10 @@ table below for a tag already captured; for a new tag, take it from a copy you v
 `e2e-tauri/upgrade-fixture.ts` drives that binary through tauri-driver under a private X display and session bus
 (nothing appears on a screen) against a fresh dashd regtest node. Each of its two launches picks free loopback
 ports for tauri-driver and WebKitWebDriver, refuses to start if either already answers, and asks for a session
-only once every listener on both ports belongs to the driver it spawned. The drivers still listen on the host's
-loopback without authentication while the run lasts (#101 item 9): on a shared host, run it where no other
-account can reach them.
+only once every listener on both ports belongs to the driver it spawned. That check and the session request are
+separate steps, so it catches a foreign listener that is already there, not one that takes a port in between.
+The drivers also listen on the host's loopback without authentication while the run lasts (#101 items 8 and
+9): run it only where no other account can reach them.
 
 1. an encrypted vault; wallet "Fixture main" (`abandon … about`) and "Fixture second" (`legal winner … yellow`,
    BIP39 passphrase `TREZOR`), both from birth height 0;
@@ -51,7 +54,7 @@ account can reach them.
    900 s, subtract fee by default, masternodes shown;
 4. the app quits, opens again offline (`--no-sync`), is unlocked, and its answers are recorded and checked against
    dashd (each balance equals the deposits less the payment and dashd's fee for it; from v0.2.0 every funded address
-   signs a message dashd verifies); it quits again and the data root is copied here.
+   of the two wallets with keys signs a message dashd verifies); it quits again and the data root is copied here.
 
 A new release is covered by running the script for its tag and committing the directory; the test needs no change
 unless the release renamed a field of a read command's answer (`RENAMED` / `DROPPED` in the test, with the reason).

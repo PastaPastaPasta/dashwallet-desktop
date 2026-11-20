@@ -5,11 +5,11 @@
 //
 // Phase 1, syncing from dashd: an encrypted vault, two wallets from BIP39 test vectors, dashd pays
 // three addresses, the app pays dashd 1.25 tDASH, a transaction label, an address-book entry, a
-// receive request and every setting the release keeps are set to non-defaults; from 0.2.0 also a
+// receive request and the settings listed in the README are set to non-defaults; from 0.2.0 also a
 // locked outpoint and a watch-only wallet that dashd pays. The app is closed.
 // Phase 2, offline: the app opens the data root again, is unlocked, and its answers to the read
 // commands are recorded in expected.json, after they are checked against dashd, with a message
-// signed by every funded address (from 0.2.0) and verified by dashd. The app is closed
+// signed by every funded address of the wallets with keys (from 0.2.0), verified by dashd. It is closed
 // and the data root is copied to $DW_UPGRADE_OUT/data, by way of a staging directory beside it; an
 // existing $DW_UPGRADE_OUT is refused before anything starts.
 //

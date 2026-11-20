@@ -129,14 +129,15 @@ fn snapshot_problems(tag: &str, expected: &Value) -> Vec<String> {
         }
     }
     let watch_only = expected["watchOnly"].get("walletId");
-    for id in wallets.iter().copied().chain(watch_only) {
-        if !listed.is_some_and(|l| l.iter().any(|w| &w["walletId"] == id)) {
+    let every_wallet: Vec<&Value> = wallets.iter().copied().chain(watch_only).collect();
+    for id in &every_wallet {
+        if !listed.is_some_and(|l| l.iter().any(|w| &&w["walletId"] == id)) {
             problems.push(format!("wallet {id} is not in list_wallets"));
         }
     }
     if !BEFORE_FUNDED_SIGNATURES.contains(&tag) {
         problems.extend(funded_signature_problems(&wallets, calls, expected));
-        problems.extend(balance_problems(calls, &expected["dashd"]));
+        problems.extend(balance_problems(&every_wallet, calls, &expected["dashd"]));
     }
     problems
 }
@@ -149,19 +150,25 @@ fn first_answer<'a>(calls: &'a [Value], cmd: &str, wallet: &Value) -> Option<&'a
 }
 
 /// Each wallet's distinct `utxos` addresses, change included, against the
-/// addresses of its `fundedSignatures`.
+/// addresses of its `fundedSignatures`. A recorded coin without an address
+/// is a problem: it would otherwise drop out of what must be signed.
 fn funded_signature_problems(wallets: &[&Value], calls: &[Value], expected: &Value) -> Vec<String> {
     let Some(funded) = expected["fundedSignatures"].as_array() else {
         return vec!["no fundedSignatures".to_string()];
     };
     let mut problems = Vec::new();
     for id in wallets {
-        let mut want: Vec<&str> = first_answer(calls, "utxos", id)
+        let coins = first_answer(calls, "utxos", id)
             .and_then(Value::as_array)
-            .map_or(&[][..], Vec::as_slice)
+            .map_or(&[][..], Vec::as_slice);
+        let mut want: Vec<&str> = coins
             .iter()
             .filter_map(|u| u["address"].as_str())
+            .filter(|a| !a.is_empty())
             .collect();
+        if want.len() != coins.len() {
+            problems.push(format!("wallet {id}: a recorded coin has no address"));
+        }
         want.sort_unstable();
         want.dedup();
         let mut got: Vec<&str> = funded
@@ -179,9 +186,10 @@ fn funded_signature_problems(wallets: &[&Value], calls: &[Value], expected: &Val
     problems
 }
 
-/// Every wallet in `dashd.deposits` reports, as `balance.confirmed`, its
-/// deposits less what it paid and dashd's fee for that payment.
-fn balance_problems(calls: &[Value], dashd: &Value) -> Vec<String> {
+/// `dashd.deposits` names exactly the fixture's wallets, the paying wallet
+/// among them, and each reports, as `balance.confirmed`, its deposits less
+/// what it paid and dashd's fee for that payment.
+fn balance_problems(wallets: &[&Value], calls: &[Value], dashd: &Value) -> Vec<String> {
     let Some(deposits) = dashd["deposits"].as_object().filter(|d| !d.is_empty()) else {
         return vec!["no dashd.deposits".to_string()];
     };
@@ -190,6 +198,19 @@ fn balance_problems(calls: &[Value], dashd: &Value) -> Vec<String> {
         return vec!["no dashd.payment.duffs and feeDuffs".to_string()];
     };
     let mut problems = Vec::new();
+    let mut want: Vec<&str> = wallets.iter().filter_map(|w| w.as_str()).collect();
+    want.sort_unstable();
+    let mut got: Vec<&str> = deposits.keys().map(String::as_str).collect();
+    got.sort_unstable();
+    if want.len() != wallets.len() || want != got {
+        problems.push(format!(
+            "dashd.deposits names {got:?}, the fixture's wallets are {want:?}"
+        ));
+    }
+    let payer = &payment["walletId"];
+    if !payer.as_str().is_some_and(|p| deposits.contains_key(p)) {
+        problems.push(format!("the paying wallet {payer} has no deposit"));
+    }
     for (id, deposited) in deposits {
         let id = Value::String(id.clone());
         let spent = if payment["walletId"] == id {
@@ -756,6 +777,37 @@ fn a_snapshot_without_a_funded_signature_or_with_an_unaccounted_balance_is_refus
         .unwrap()
         .remove("feeDuffs");
     assert!(!snapshot_problems("v0.2.0", &no_fee).is_empty());
+    let payer = full["dashd"]["payment"]["walletId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut payer_undeposited = full.clone();
+    payer_undeposited["dashd"]["deposits"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&payer);
+    assert!(!snapshot_problems("v0.2.0", &payer_undeposited).is_empty());
+    let mut coin_unaddressed = full.clone();
+    let mut address = None;
+    for call in coin_unaddressed["calls"].as_array_mut().unwrap() {
+        if call["cmd"] == "utxos" && call["args"]["walletId"] == payer.as_str() {
+            address = call["result"][0].as_object_mut().unwrap().remove("address");
+            break;
+        }
+    }
+    let address = address.expect("the paying wallet's first coin has an address");
+    coin_unaddressed["fundedSignatures"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|s| s["address"] != address);
+    assert_eq!(
+        coin_unaddressed["fundedSignatures"]
+            .as_array()
+            .unwrap()
+            .len(),
+        full["fundedSignatures"].as_array().unwrap().len() - 1
+    );
+    assert!(!snapshot_problems("v0.2.0", &coin_unaddressed).is_empty());
 }
 
 #[cfg(unix)]
