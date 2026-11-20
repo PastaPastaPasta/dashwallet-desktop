@@ -8,7 +8,7 @@ import * as cmd from "../api/generated/commands";
 import type { AppEvent } from "../api/generated/commands";
 import { installFixture, type FixtureHandle } from "./index";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, SECOND_WALLET_ID as W2, type ScenarioName } from "./scenarios";
-import { CORE_WALLET_PASSPHRASE, DEFAULT_UI_SETTINGS, FIXTURE_BACKUP_DIR, FIXTURE_FILES } from "./settings";
+import { CORE_WALLET_PASSPHRASE, DEFAULT_UI_SETTINGS, FIXTURE_BACKUP_DIR, FIXTURE_FILES, isLanguageTag } from "./settings";
 
 const PASS = { kind: "passphrase", passphrase: FIXTURE_PASSPHRASE } as const;
 const OPTIONS = { name: null, birthHeight: null, coreCompat: false, lookahead: null };
@@ -36,7 +36,7 @@ describe("fixture settings engine", () => {
     const s = { ...DEFAULT_UI_SETTINGS, unit: "milliDash", decimalDigits: 8, autoLockSecs: 300, language: "pt-BR" } as const;
     expect(await cmd.setUiSettings(s)).toEqual(s);
     expect(await cmd.uiSettings()).toEqual(s);
-    for (const bad of [{ decimalDigits: 1 }, { decimalDigits: 9 }, { autoLockSecs: 0 }, { autoLockSecs: 86_401 }, { language: "" }, { language: "en_US" }, { language: `en-${"a".repeat(40)}` }])
+    for (const bad of [{ decimalDigits: 1 }, { decimalDigits: 9 }, { autoLockSecs: 0 }, { autoLockSecs: 86_401 }, { language: "" }, { language: "en_US" }, { language: `en-${"a".repeat(40)}` }, { language: "en-u" }, { language: "en-x" }, { language: "x-wallet" }])
       await expect(cmd.setUiSettings({ ...s, ...bad })).rejects.toMatchObject({ code: "invalid_argument" });
     expect(await cmd.uiSettings()).toEqual(s);
   });
@@ -222,5 +222,10 @@ describe("fixture vault credential", () => {
     await expect(cmd.destroyVault({ kind: "passphrase", passphrase: "wrong" })).rejects.toMatchObject({ code: "vault.wrong_passphrase" });
     expect(await cmd.destroyVault(PASS)).toMatchObject({ state: "noVault", encrypted: false, walletsWithSecrets: [] });
     expect((await cmd.destroyVault(PASS)).state).toBe("noVault");
+  });
+
+  it("accepts the same language tags as settings.rs", () => {
+    for (const tag of ["en", "pt-BR", "zh-Hans", "ar-XB", "es-419", "de-u-co-phonebk", "en-x-wallet", "en-Latn-US"]) expect(isLanguageTag(tag), tag).toBe(true);
+    for (const tag of ["", "e", "en_US", "en-u", "en-x", "en-u-x-ab", "x-wallet", "en-", `en-${"a".repeat(40)}`, "e".repeat(36)]) expect(isLanguageTag(tag), tag).toBe(false);
   });
 });

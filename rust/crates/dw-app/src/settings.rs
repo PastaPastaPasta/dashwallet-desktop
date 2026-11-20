@@ -79,15 +79,31 @@ impl Default for UiSettings {
 /// The longest language tag a file may hold.
 const MAX_LANGUAGE_LEN: usize = 35;
 
-/// A BCP 47 tag's shape: a 2–3 letter language, then subtags of 1–8 letters
-/// or digits.
+/// The language tags this app accepts: a deliberately narrower grammar than
+/// BCP 47. A 2–3 letter language, then subtags of 1–8 letters or digits; a
+/// single-character subtag (an extension or private-use singleton) must be
+/// followed by a longer subtag. Private-use-only tags (`x-wallet`) and
+/// grandfathered tags are refused.
 fn is_language_tag(tag: &str) -> bool {
+    if tag.len() > MAX_LANGUAGE_LEN {
+        return false;
+    }
     let mut parts = tag.split('-');
     let lang = parts.next().unwrap_or_default();
-    tag.len() <= MAX_LANGUAGE_LEN
-        && (2..=3).contains(&lang.len())
-        && lang.bytes().all(|b| b.is_ascii_alphabetic())
-        && parts.all(|p| (1..=8).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric()))
+    if !(2..=3).contains(&lang.len()) || !lang.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return false;
+    }
+    let mut open_singleton = false;
+    for p in parts {
+        if !(1..=8).contains(&p.len()) || !p.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return false;
+        }
+        if p.len() == 1 && open_singleton {
+            return false;
+        }
+        open_singleton = p.len() == 1;
+    }
+    !open_singleton
 }
 
 impl MasternodesTab {
@@ -163,13 +179,29 @@ pub fn read(root: &Path) -> UiSettings {
     let Ok(text) = std::fs::read_to_string(path(root)) else {
         return UiSettings::default();
     };
-    match serde_json::from_str::<UiSettings>(&text) {
+    match from_file(&text) {
         Ok(s) => s.sanitized(),
         Err(e) => {
             eprintln!("dw-app: {FILE} is unreadable, using the defaults: {e}");
             UiSettings::default()
         }
     }
+}
+
+/// The file's settings. A `language` of the wrong type reads as `null`
+/// (follow the system) rather than failing the whole file: the other
+/// settings, auto-lock among them, stay as saved. IPC writes deserialize
+/// `UiSettings` directly and stay strict.
+fn from_file(text: &str) -> serde_json::Result<UiSettings> {
+    let mut value: serde_json::Value = serde_json::from_str(text)?;
+    let language = value
+        .as_object_mut()
+        .and_then(|o| o.remove("language"))
+        .and_then(|v| serde_json::from_value::<Option<String>>(v).ok())
+        .flatten();
+    let mut settings: UiSettings = serde_json::from_value(value)?;
+    settings.language = language;
+    Ok(settings)
 }
 
 /// Checks and writes `settings` into `root`, replacing the file atomically.
@@ -259,7 +291,15 @@ mod tests {
         let dir = root();
         std::fs::write(path(dir.path()), r#"{"unit":"duffs"}"#).unwrap();
         assert_eq!(read(dir.path()).language, None);
-        for tag in ["en", "pt-BR", "zh-Hans", "ar-XB", "es-419"] {
+        for tag in [
+            "en",
+            "pt-BR",
+            "zh-Hans",
+            "ar-XB",
+            "es-419",
+            "de-u-co-phonebk",
+            "en-x-wallet",
+        ] {
             let s = UiSettings {
                 language: Some(tag.into()),
                 ..Default::default()
@@ -305,11 +345,56 @@ mod tests {
                 language: Some(format!("en-{}", "a".repeat(40))),
                 ..Default::default()
             },
+            UiSettings {
+                language: Some("en-u".into()),
+                ..Default::default()
+            },
+            UiSettings {
+                language: Some("en-x".into()),
+                ..Default::default()
+            },
+            UiSettings {
+                language: Some("en-u-x-ab".into()),
+                ..Default::default()
+            },
+            UiSettings {
+                language: Some("x-wallet".into()),
+                ..Default::default()
+            },
         ] {
             let e = write(dir.path(), &bad).unwrap_err();
             assert_eq!(e.code_str(), "invalid_argument");
         }
         assert!(!path(dir.path()).exists());
+    }
+
+    #[test]
+    fn a_wrong_typed_language_keeps_the_other_settings() {
+        let dir = root();
+        for language in ["7", "true", "[]", r#"{"tag":"en"}"#] {
+            let file = format!(
+                r#"{{"autoLockSecs":300,"autohideBalance":true,"unit":"duffs","language":{language}}}"#
+            );
+            std::fs::write(path(dir.path()), file).unwrap();
+            let s = read(dir.path());
+            assert_eq!(s.auto_lock_secs, Some(300));
+            assert!(s.autohide_balance);
+            assert_eq!(s.unit, DisplayUnit::Duffs);
+            assert_eq!(s.language, None);
+        }
+    }
+
+    #[test]
+    fn an_ipc_write_with_a_wrong_typed_language_is_refused() {
+        let ipc = r#"{"autoLockSecs":300,"autohideBalance":true,"unit":"duffs","language":7}"#;
+        assert!(serde_json::from_str::<UiSettings>(ipc).is_err());
+    }
+
+    #[test]
+    fn an_overlong_language_is_refused_before_it_is_scanned() {
+        assert!(!is_language_tag(&"e".repeat(MAX_LANGUAGE_LEN + 1)));
+        assert!(!is_language_tag(&format!("en-{}", "-".repeat(64))));
+        assert!(is_language_tag("en-Latn-US"));
     }
 
     #[test]
