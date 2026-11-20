@@ -1,4 +1,5 @@
-//! Credits: the cost table, top-up and withdraw, each with a quote.
+//! Credits: the cost table, top-up and withdraw, each with a quote, and
+//! the transfer to the wallet's own Platform address.
 
 use dw_engine::platform as engine;
 use serde::{Deserialize, Serialize};
@@ -355,6 +356,72 @@ impl From<engine::WithdrawOutcome> for WithdrawOutcome {
     }
 }
 
+/// What moving credits to the wallet's own Platform address takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WithdrawToPlatformQuote {
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_credits: u64,
+    /// The wallet's Platform receive address (bech32m).
+    pub to: String,
+    pub grant: GrantRequest,
+}
+
+impl From<engine::WithdrawToPlatformQuote> for WithdrawToPlatformQuote {
+    fn from(q: engine::WithdrawToPlatformQuote) -> Self {
+        let engine::WithdrawToPlatformQuote {
+            credits,
+            fee_credits,
+            to,
+            grant,
+        } = q;
+        WithdrawToPlatformQuote {
+            credits,
+            fee_credits,
+            to,
+            grant: grant.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WithdrawToPlatformOutcome {
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    /// The address paid (bech32m).
+    pub to: String,
+    /// The identity's balance after, from Platform's answer; `null` when it
+    /// gave none. Shown only.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub remaining_credits: Option<u64>,
+    /// Platform's hash of the transition (hex).
+    pub transition: String,
+}
+
+impl From<engine::WithdrawToPlatformOutcome> for WithdrawToPlatformOutcome {
+    fn from(o: engine::WithdrawToPlatformOutcome) -> Self {
+        let engine::WithdrawToPlatformOutcome {
+            credits,
+            to,
+            remaining_credits,
+            transition,
+        } = o;
+        WithdrawToPlatformOutcome {
+            credits,
+            to,
+            remaining_credits,
+            transition,
+        }
+    }
+}
+
 /// Where a withdrawal stands on Platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -489,6 +556,43 @@ mod tests {
                 "feeCredits": "3",
                 "expectedDuffs": 49,
                 "grant": {"maxDuffs": 0, "maxCredits": "9"},
+            })
+        );
+    }
+
+    #[test]
+    fn a_transfer_to_platform_carries_credits_as_strings() {
+        let q = WithdrawToPlatformQuote::from(engine::WithdrawToPlatformQuote {
+            credits: 5_000_000_000_000_000_000,
+            fee_credits: 3,
+            to: "tdash1k".into(),
+            grant: engine::GrantRequest {
+                max_duffs: 0,
+                max_credits: 9,
+            },
+        });
+        assert_eq!(
+            serde_json::to_value(q).unwrap(),
+            serde_json::json!({
+                "credits": "5000000000000000000",
+                "feeCredits": "3",
+                "to": "tdash1k",
+                "grant": {"maxDuffs": 0, "maxCredits": "9"},
+            })
+        );
+        let o = WithdrawToPlatformOutcome::from(engine::WithdrawToPlatformOutcome {
+            credits: 7,
+            to: "tdash1k".into(),
+            remaining_credits: None,
+            transition: "ab".into(),
+        });
+        assert_eq!(
+            serde_json::to_value(o).unwrap(),
+            serde_json::json!({
+                "credits": "7",
+                "to": "tdash1k",
+                "remainingCredits": null,
+                "transition": "ab",
             })
         );
     }

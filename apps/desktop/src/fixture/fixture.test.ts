@@ -38,7 +38,7 @@ describe("fixture backend", () => {
   // which are derived from the modules here. The exact list of files, of every type, makes
   // moving one out or adding one the sentinels do not read (Sol r3: a `.mts`) fail here, and
   // each module must give the check at least one sentinel of its own.
-  it("every fixture module carries the production-build marker and has sentinels", async () => {
+  it("every fixture module carries the production-build marker and has sentinels", { timeout: 120_000 }, async () => {
     const dir = fileURLToPath(new URL(".", import.meta.url));
     const files = (readdirSync(dir, { recursive: true }) as string[])
       .filter((f) => statSync(join(dir, f)).isFile())

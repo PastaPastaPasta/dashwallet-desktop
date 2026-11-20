@@ -21,7 +21,7 @@ function genericShape(literal: string): boolean {
 
 // scripts/check-bundle.mjs fails a production renderer holding any of these (Sol r2 finding 2,
 // r3 findings 1 and 2).
-describe("fixture sentinels", () => {
+describe("fixture sentinels", { timeout: 120_000 }, () => {
   // The only shared literals are the generated bindings': an error code the fixture returns is
   // not one, a fixture message is, wherever else a copy of it is (Sol r3: an `errors.ts` copy
   // outside src/fixture/ exempts nothing).

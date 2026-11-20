@@ -138,6 +138,9 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.withdraw_quote",
     "DashPay.withdraw",
     "DashPay.withdrawals",
+    // C-routes C6a-1: credits to an own Platform address.
+    "DashPay.withdraw_to_platform_quote",
+    "DashPay.withdraw_to_platform",
     // Release 0.1 (lane E2): the Platform addresses.
     "DashPay.platform_addresses",
     "DashPay.platform_activity",
@@ -222,7 +225,9 @@ const FACADE: &[&str] = &[
 /// protocol version (release 0.1), the shielded funds' library side
 /// with its tests (0.1 E1), the unfinished transfers' kinds and runner
 /// with their tests (0.2 recovery), the input-0 planner with its tests
-/// (1.0 C1a-1), and the parsers dw-fuzz drives (H-02, `fuzzing` feature).
+/// (1.0 C1a-1), the credit transfer to an own Platform address with its
+/// tests (1.0 C6a-1), and the parsers dw-fuzz drives (H-02, `fuzzing`
+/// feature).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -245,6 +250,8 @@ const NOT_FACADE: &[&str] = &[
     "core_max_lib_tests.rs",
     "core_max_tests.rs",
     "credit_costs.rs",
+    "credit_transfer.rs",
+    "credit_transfer_tests.rs",
     "fuzzing.rs",
     "identity_reads.rs",
     "identity_tests.rs",
@@ -1601,6 +1608,13 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
                 .await
                 .map(drop),
             dp.withdrawals(s()).await.map(drop),
+            // C6a-1's.
+            dp.withdraw_to_platform_quote(s(), WithdrawAmount::All)
+                .await
+                .map(drop),
+            dp.withdraw_to_platform(s(), s(), WithdrawAmount::All, s())
+                .await
+                .map(drop),
         ] {
             assert_eq!(refused.unwrap_err().code(), "wallet_not_found");
         }
