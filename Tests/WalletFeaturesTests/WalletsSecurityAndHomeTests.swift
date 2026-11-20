@@ -88,12 +88,22 @@ struct WalletManagementViewModelTests {
         #expect(model.flow == .imported(report))
     }
 
-    @Test func QT106_berkeleyDBSaysWhatToDoInstead() async {
+    @Test func QT106_berkeleyDBImportsAndAsksWhenEncrypted() async {
         let file = URL(fileURLWithPath: "/tmp/old.dat")
-        m2.importer.kinds.withLock { $0[file] = .walletDatBerkeleyDB(encrypted: nil) }
+        m2.importer.kinds.withLock { $0[file] = .walletDatBerkeleyDB(encrypted: false) }
+        m2.importer.report.withLock { $0 = report }
         let model = make()
         await model.importFile(file)
-        #expect(model.flow == .failed(L10n.Wallets.berkeleyDBUnavailable))
+        #expect(model.flow == .imported(report))
+
+        let locked = URL(fileURLWithPath: "/tmp/old-locked.dat")
+        let kind = WalletFileKind.walletDatBerkeleyDB(encrypted: true)
+        m2.importer.kinds.withLock { $0[locked] = kind }
+        m2.importer.walletDatPassphrase.withLock { $0 = "core-pass" }
+        await model.importFile(locked)
+        #expect(model.flow == .needsFilePassphrase(locked, kind))
+        await model.provideFilePassphrase("core-pass")
+        #expect(model.flow == .imported(report))
     }
 
     @Test func QT078_psbtFileIsHandedToThePSBTDialog() async {

@@ -133,8 +133,9 @@ pub enum LockFinish {
     /// Platform's proved execution: finished.
     Applied,
     /// Platform answered "already consumed" for this lock's exact output,
-    /// unproved (type 4): taken as finished elsewhere, the lock leaves the
-    /// lists and nothing is settled. Shielded locks read `Checking` instead.
+    /// unproved (type 4, and a restored type-5 lock): taken as finished
+    /// elsewhere, the lock leaves the lists and nothing is settled. This
+    /// device's own shield locks read `Checking` instead.
     ReportedUsed,
     /// The apply may have executed, unproved ("Checking").
     Checking,

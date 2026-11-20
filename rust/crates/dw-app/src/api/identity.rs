@@ -30,7 +30,7 @@ use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary
 use self::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
     PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote,
+    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
 };
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::registration::{
@@ -40,7 +40,9 @@ use self::shielded::{
     MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
     ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding,
 };
-use self::startup::{DashPayStatus, DashPaySyncStatus, QuorumSource, SyncPassReport};
+use self::startup::{
+    DashPayStatus, DashPaySyncStatus, ProtocolCompatibility, QuorumSource, SyncPassReport,
+};
 use self::unfinished::{LockFinish, LockKind, UnfinishedTransfers};
 use crate::api::send::BroadcastOutcome;
 use crate::dto::platform::{DispatchStateName, FlowKindName, Lease};
@@ -460,6 +462,18 @@ commands! {
         Ok(dashpay.move_to_core_quote(amount.into()).await?.into())
     }
 
+    /// What moving `amount` of the Platform addresses' credits into the
+    /// wallet's own shielded account takes.
+    #[facade("DashPay::platform_shield_quote")]
+    fn platform_shield_quote(
+        state,
+        wallet_id: String,
+        amount: WithdrawAmount,
+    ) -> PlatformShieldQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_shield_quote(amount.into()).await?.into())
+    }
+
     /// Moves `amount` of the Platform addresses' credits to `to` (the
     /// quote's: one of the wallet's Core receiving addresses) under `grant`.
     #[facade("DashPay::move_to_core")]
@@ -668,6 +682,13 @@ commands! {
     #[facade("DashPay::sync_status")]
     fn dashpay_sync_status(state, wallet_id: String) -> DashPaySyncStatus {
         Ok(state.dashpay(&wallet_id).await?.sync_status()?.into())
+    }
+
+    /// Platform protocol compatibility of the open network (the Home advisory
+    /// banner when `networkVersion > supportedVersion`).
+    #[facade("NetworkSession::protocol_compatibility")]
+    fn protocol_compatibility(state) -> ProtocolCompatibility {
+        Ok(state.session().await?.protocol_compatibility()?.into())
     }
 
     /// Where Platform proofs get their quorum keys now (Tools ▸ Information).

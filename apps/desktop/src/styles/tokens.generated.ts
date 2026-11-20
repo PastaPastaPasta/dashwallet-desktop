@@ -141,6 +141,10 @@ export const roles = {
   "networkCapsule": {
     "light": "#B6542C",
     "dark": "#B6542C"
+  },
+  "successText": {
+    "light": "#177857",
+    "dark": "#3DB58A"
   }
 } as const;
 export type Role = keyof typeof roles;

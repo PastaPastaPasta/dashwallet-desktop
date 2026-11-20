@@ -85,6 +85,7 @@ export class IpcBackend implements Backend {
   dispatchStatus = cmd.dispatchStatus;
   balance = (walletId: string) => cmd.balance(walletId);
   syncStatus = () => cmd.syncStatus();
+  walletScanHeight = (walletId: string) => cmd.walletScanHeight(walletId);
   historyPage = cmd.historyPage;
   exportHistoryCsv = cmd.exportHistoryCsv;
   txNotices = cmd.txNotices;
@@ -122,6 +123,8 @@ export class IpcBackend implements Backend {
   abandonTransaction = cmd.abandonTransaction;
   resendTransaction = cmd.resendTransaction;
   openTxInExplorer = cmd.openTxInExplorer;
+  openReleasesPage = () => cmd.openReleasesPage();
+  protocolCompatibility = () => cmd.protocolCompatibility();
   currentReceiveAddress = cmd.currentReceiveAddress;
   nextReceiveAddress = cmd.nextReceiveAddress;
   createReceiveRequest = cmd.createReceiveRequest;
@@ -151,6 +154,8 @@ export class IpcBackend implements Backend {
   coinSelectionSummary = (walletId: string, outpoints: OutPoint[], payAmounts: number[], fee: FeeMode) =>
     cmd.coinSelectionSummary(walletId, outpoints, payAmounts, fee, false);
   paymentAuthentication = () => cmd.paymentAuthentication();
+  quickUnlockPolicy = () => cmd.quickUnlockPolicy();
+  setQuickUnlockSpendLimit = cmd.setQuickUnlockSpendLimit;
   uiSettings = () => cmd.uiSettings();
   setUiSettings = cmd.setUiSettings;
   ratesStatus = () => cmd.ratesStatus();
@@ -323,6 +328,19 @@ export class IpcBackend implements Backend {
   governanceCreateProposal = cmd.governanceCreateProposal;
   governanceMyProposals = cmd.governanceMyProposals;
   governanceSubmitProposal = cmd.governanceSubmitProposal;
+  mnListState = cmd.mnListState;
+  mnList = cmd.mnList;
+  mnMasternode = cmd.mnMasternode;
+  mnPayouts = cmd.mnPayouts;
+  mnFind = cmd.mnFind;
+  mnEvonodeCredits = cmd.mnEvonodeCredits;
+  mnTrack = cmd.mnTrack;
+  mnUntrack = cmd.mnUntrack;
+  mnSetLabel = cmd.mnSetLabel;
+  mnAttachKey = cmd.mnAttachKey;
+  mnDetachKey = cmd.mnDetachKey;
+  mnKeys = cmd.mnKeys;
+  mnRevealKey = cmd.mnRevealKey;
   onEvent = (listener: (e: AppEvent) => void) => tracked(listen<AppEvent>(cmd.ENGINE_EVENT, (e) => listener(e.payload)));
   onShellEvent = (listener: (e: ShellEvent) => void) => tracked(listen<ShellEvent>(cmd.SHELL_EVENT, (e) => listener(e.payload)));
   now = () => this.clock();

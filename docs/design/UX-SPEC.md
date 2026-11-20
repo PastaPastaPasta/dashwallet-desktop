@@ -147,6 +147,7 @@ only as far as AA needs; non-text uses (icons, focus rings, switch tracks: 3:1) 
 | `RoleAA.warning` | #B6542C | #FA9169 | `warning` as text | on canvas 4.6:1 |
 | `RoleAA.networkCapsule` | #B6542C | #B6542C | the capsule's `warning` × 0.9 | white 4.9:1 |
 | `RoleAA.danger` | #C8202B | #FF6961 | `danger` as text (error states, danger chips) | on canvas 5.3:1, on `dangerTint` 4.9:1 (light); on canvas 6.5:1, on `dangerTint` 5.3:1 (dark) |
+| `RoleAA.successText` | #177857 | #3DB58A | `success` as text (form confirmations) and Receive's ✓ mark | on canvas 5.1:1, on `successTint` 4.7:1 (light) |
 | `DashOpacityAA.heroCard` | 0.08 | 0.08 | `DashOpacity.heroCard` (0.12) | — |
 | `DashOpacityAA.heroSecondaryText` | 0.9 | 0.9 | `heroSecondaryText` (0.7) and the lock prompt's `whiteAlpha80` | — |
 | `DashOpacityAA.networkCapsule` | 1 | 1 | `DashOpacity.networkCapsule` (0.9) | — |

@@ -165,6 +165,9 @@ pub struct CoinJoinBalances {
     pub denominated: u64,
     pub normalized_anonymized: u64,
     pub fully_mixed: u64,
+    /// Denominated, not fully mixed, and on the CoinJoin account: mixing
+    /// here can still finish them. A restored BIP44 denomination is not.
+    pub mixable_unfinished: u64,
     /// Every free confirmed coin of the CoinJoin account above the sweep
     /// minimum, mixed or not (collaterals, change, a consolidated output):
     /// what "Move mixed coins" can take, so what it is offered for.
@@ -302,6 +305,13 @@ pub struct SweepResult {
 const SETTINGS_KEY: &str = "coinjoin.settings";
 /// Per-wallet salt, display hex (`coinjoinsalt get`).
 const SALT_KEY: &str = "coinjoin.salt";
+
+/// The setting that stores `salt`, read from a Dash Core wallet
+/// (`cj_salt`) at import.
+pub(crate) fn salt_setting(salt: &[u8; 32]) -> (&'static str, String) {
+    (SALT_KEY, rounds::salt_to_display_hex(salt))
+}
+
 /// The restore lookahead a recovery scan raises the accounts to.
 pub const RECOVERY_LOOKAHEAD: u32 = 1_000;
 /// How long inputs of a successful session stay locked waiting for the
@@ -626,9 +636,20 @@ impl MixViewCoin {
         !self.coin.user_locked && !self.coin.reserved
     }
 
-    /// A denomination in the CoinJoin account.
+    /// A denomination Dash Core would count: the CoinJoin account, or a
+    /// BIP44 receive or change address, which is where dash-qt mixes.
     pub(crate) fn denominated(&self) -> bool {
-        self.coin.coinjoin_account && is_denominated(self.value())
+        self.coin.counted_denomination
+    }
+
+    /// A denomination this wallet's mixing session can spend. The session
+    /// signer covers the CoinJoin account only.
+    fn mixable(&self) -> bool {
+        self.denominated() && self.coin.coinjoin_account
+    }
+
+    fn completed(&self) -> bool {
+        self.denominated() && self.fully_mixed && self.trusted()
     }
 
     fn collateral(&self) -> bool {
@@ -674,7 +695,7 @@ impl MixView {
     /// Denominated coins per denomination (`CountInputsWithAmount`).
     fn denom_counts(&self) -> [u32; 5] {
         let mut counts = [0u32; 5];
-        for c in self.coins.iter().filter(|c| c.denominated()) {
+        for c in self.coins.iter().filter(|c| c.mixable() || c.completed()) {
             if let Some(i) = DENOMINATIONS.iter().position(|d| *d == c.value()) {
                 counts[i] += 1;
             }
@@ -686,19 +707,19 @@ impl MixView {
     fn unconfirmed_denominated(&self) -> u64 {
         self.coins
             .iter()
-            .filter(|c| c.denominated() && !c.final_enough())
+            .filter(|c| c.mixable() && !c.final_enough())
             .map(MixViewCoin::value)
             .sum()
     }
 
-    /// Mixing inputs of `amount`: denominated, not fully mixed, final,
-    /// free, shuffled (`ONLY_READY_TO_MIX`).
+    /// Mixing inputs of `amount`: denominated on the CoinJoin account, not
+    /// fully mixed, final, free, shuffled (`ONLY_READY_TO_MIX`).
     fn ready_to_mix(&self, amount: u64) -> Vec<MixCoin> {
         let mut coins: Vec<MixCoin> = self
             .coins
             .iter()
             .filter(|c| {
-                c.denominated()
+                c.mixable()
                     && c.value() == amount
                     && c.rounds >= 0
                     && !c.fully_mixed
@@ -752,7 +773,7 @@ impl MixView {
             if !c.coin.utxo.is_spendable(self.height) {
                 continue;
             }
-            if skip_denominated && c.denominated() {
+            if c.denominated() && (skip_denominated || !c.mixable()) {
                 continue;
             }
             if anonymizable
@@ -834,7 +855,12 @@ fn compute_balances(
     let normalized_anonymized = progress::normalized_anonymized(&capped, rounds_target);
     let fully_mixed = denoms
         .iter()
-        .filter(|c| c.fully_mixed && c.trusted())
+        .filter(|c| c.completed())
+        .map(|c| c.value())
+        .sum();
+    let mixable_unfinished = denoms
+        .iter()
+        .filter(|c| c.mixable() && !c.completed())
         .map(|c| c.value())
         .sum();
     let average = progress::average_rounds(&capped.iter().map(|(_, r)| *r).collect::<Vec<_>>());
@@ -856,6 +882,7 @@ fn compute_balances(
             denominated,
             normalized_anonymized,
             fully_mixed,
+            mixable_unfinished,
             coinjoin_account,
         },
         average,
@@ -1021,15 +1048,6 @@ impl NetworkSession {
         Ok(hex)
     }
 
-    /// Stores a salt read from a Dash Core wallet (`cj_salt`) at import.
-    pub(crate) async fn import_coinjoin_salt(
-        &self,
-        wallet_id: WalletId,
-        salt: [u8; 32],
-    ) -> Result<(), EngineError> {
-        self.store_salt(wallet_id, &salt).await
-    }
-
     async fn store_salt(&self, wallet_id: WalletId, salt: &[u8; 32]) -> Result<(), EngineError> {
         let hex = rounds::salt_to_display_hex(salt);
         let scope = wallet_id.to_string();
@@ -1096,10 +1114,14 @@ impl NetworkSession {
                             .iter()
                             .enumerate()
                             .map(|(i, input)| {
-                                (
-                                    input.previous_output,
-                                    e.own_inputs.get(&(i as u32)).map(|(v, _)| *v),
+                                let value = crate::history::resolve_own_input(
+                                    e.own_inputs.get(&(i as u32)),
+                                    Some(&input.previous_output),
+                                    &history,
+                                    &owned,
                                 )
+                                .map(|(v, _)| v);
+                                (input.previous_output, value)
                             })
                             .collect(),
                     },
@@ -1111,7 +1133,8 @@ impl NetworkSession {
             .coins
             .into_iter()
             .map(|coin| {
-                let denominated = coin.coinjoin_account && is_denominated(coin.utxo.value());
+                let path = paths.get(&coin.utxo.address).cloned();
+                let denominated = coin.counted_denomination;
                 let rounds = if denominated {
                     calc.rounds(&coin.utxo.outpoint)
                 } else if is_collateral_amount(coin.utxo.value()) {
@@ -1122,7 +1145,7 @@ impl NetworkSession {
                 let fully_mixed = denominated
                     && rounds::is_fully_mixed(rounds, settings.rounds, &coin.utxo.outpoint, &salt);
                 MixViewCoin {
-                    path: paths.get(&coin.utxo.address).cloned(),
+                    path,
                     coin,
                     rounds,
                     fully_mixed,
@@ -2048,7 +2071,7 @@ impl NetworkSession {
         }
         let b = view.balances;
         let target = i64::from(settings.target_amount_dash) * 100_000_000;
-        let mut needs = target - b.fully_mixed as i64;
+        let (needs, to_denominate) = mixing_amounts(b, target);
         if needs < 0 {
             // Nothing to do (rebalancing is not done by this client).
             self.set_mix_status(wallet_id, StatusCode::Idle);
@@ -2065,17 +2088,6 @@ impl NetworkSession {
             .map(|(_, coins)| coins.iter().map(|c| c.value()).sum::<u64>())
             .filter(|amount| *amount >= SMALLEST_DENOMINATION + COLLATERAL_AMOUNT)
             .sum();
-        let to_denominate = target - b.denominated as i64;
-        if b.denominated as i64 - b.fully_mixed as i64 > needs {
-            // Consume the final denomination (client.cpp:1062-1074).
-            let extra = DENOMINATIONS
-                .iter()
-                .rev()
-                .copied()
-                .find(|d| needs < *d as i64)
-                .unwrap_or(0);
-            needs += extra as i64;
-        }
         if anonymizable_non_denom >= value_min + COLLATERAL_AMOUNT
             && to_denominate > 0
             && self
@@ -3973,8 +3985,8 @@ impl NetworkSession {
         adapter.sign_inputs(tx, inputs).await
     }
 
-    /// Signs a CoinJoin-page payment (QT-051): `inputs` (fully mixed coins
-    /// of the CoinJoin account, in random order) to `outputs`, no change,
+    /// Signs a CoinJoin-page payment (QT-051): `inputs` (fully mixed
+    /// denominations, in random order) to `outputs`, no change,
     /// `SIGHASH_ALL`, with a signer the caller's `Spend` grant issued.
     pub(crate) async fn sign_coinjoin_payment(
         &self,
@@ -4010,8 +4022,27 @@ impl NetworkSession {
     }
 }
 
+fn mixing_amounts(b: CoinJoinBalances, target: i64) -> (i64, i64) {
+    let mut needs = target - b.fully_mixed as i64;
+    if needs < 0 {
+        return (needs, 0);
+    }
+    let stock = b.fully_mixed.saturating_add(b.mixable_unfinished);
+    let to_denominate = target - stock as i64;
+    if b.mixable_unfinished as i64 > needs {
+        let extra = DENOMINATIONS
+            .iter()
+            .rev()
+            .copied()
+            .find(|d| needs < *d as i64)
+            .unwrap_or(0);
+        needs += extra as i64;
+    }
+    (needs, to_denominate)
+}
+
 /// Candidates of the CoinJoin send page (QT-051): fully mixed, final, free
-/// coins of the CoinJoin account.
+/// denominations on the CoinJoin account or a BIP44 receive or change chain.
 pub(crate) fn fully_mixed_candidates(view: &MixView) -> Vec<Utxo> {
     view.fully_mixed_spendable()
         .map(|c| c.coin.utxo.clone())
@@ -4162,6 +4193,7 @@ mod tests {
                 utxo,
                 send_account: !coinjoin,
                 coinjoin_account: coinjoin,
+                counted_denomination: coinjoin && is_denominated(value),
                 is_change: false,
                 block_time: None,
                 chain_locked: false,
@@ -4213,6 +4245,50 @@ mod tests {
         assert_eq!(average, 2.0);
         // Every free coin of the CoinJoin account, the collateral too.
         assert_eq!(b.coinjoin_account, 3 * d + 40_000);
+    }
+
+    #[test]
+    fn a_bip44_denomination_is_not_mixing_stock() {
+        let d = DENOMINATIONS[2];
+        let mut restored_partial = coin(1, d, false, 2, false, A);
+        restored_partial.coin.counted_denomination = true;
+        restored_partial.coin.utxo.is_confirmed = false;
+        let mut restored_mixed = coin(2, d, false, 4, true, A);
+        restored_mixed.coin.counted_denomination = true;
+        let ours = coin(3, d, true, 1, false, B);
+        let mut ours_pending_final = coin(4, d, true, 4, true, C);
+        ours_pending_final.coin.utxo.is_confirmed = false;
+        let view = MixView {
+            height: 200,
+            coins: vec![
+                restored_partial,
+                restored_mixed,
+                ours.clone(),
+                ours_pending_final,
+            ],
+            balances: CoinJoinBalances::default(),
+            total: 0,
+            average_rounds: 0.0,
+        };
+        assert_eq!(view.denom_counts()[2], 3);
+        assert_eq!(view.unconfirmed_denominated(), d);
+        let (b, _) = compute_balances(&view.coins, dashcore::Network::Testnet, 4);
+        assert_eq!(b.denominated, 4 * d);
+        assert_eq!(b.fully_mixed, d);
+        assert_eq!(b.mixable_unfinished, 2 * d);
+        assert!(
+            view.ready_to_mix(d)
+                .iter()
+                .all(|c| c.outpoint == ours.coin.utxo.outpoint)
+        );
+
+        let mut bip44_only = coin(5, d, false, 0, false, A);
+        bip44_only.coin.counted_denomination = true;
+        let (b_stalled, _) = compute_balances(&[bip44_only], dashcore::Network::Testnet, 4);
+        let target = d as i64 - 1_000;
+        let (needs, to_denominate) = mixing_amounts(b_stalled, target);
+        assert_eq!(to_denominate, target);
+        assert_eq!(needs, target);
     }
 
     /// The move card's balance counts what the plan

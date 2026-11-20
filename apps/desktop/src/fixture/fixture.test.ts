@@ -62,6 +62,8 @@ describe("fixture backend", () => {
       "identities.ts",
       "index.ts",
       "links.ts",
+      "masternodes.test.ts",
+      "masternodes.ts",
       "names.test.ts",
       "names.ts",
       "notifications.test.ts",
@@ -99,7 +101,7 @@ describe("fixture backend", () => {
     ]);
     // Only `*.test.ts` is a test (vite.config.ts `test.include`): a `*.test.mts` is a module.
     const modules = files.filter((f) => /\.[cm]?[jt]sx?$/.test(f) && !f.endsWith(".test.ts"));
-    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "names.ts", "pending.ts", "rates.ts", "recovery.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shielded.ts", "tools.ts", "topup.ts", "transfer.ts", "vault.ts", "wallet.ts"]);
+    expect(modules).toEqual(["coinjoin.ts", "dashpay.ts", "errors.ts", "governance.ts", "handlers.ts", "identities.ts", "index.ts", "links.ts", "masternodes.ts", "names.ts", "pending.ts", "rates.ts", "recovery.ts", "registration.ts", "scan.ts", "scenarios.ts", "send.ts", "settings.ts", "shielded.ts", "tools.ts", "topup.ts", "transfer.ts", "vault.ts", "wallet.ts"]);
     const { bySource } = await fixtureSentinels(fileURLToPath(new URL("../..", import.meta.url)));
     for (const f of modules) {
       expect(readFileSync(join(dir, f), "utf8").startsWith("// dw-fixture-module"), f).toBe(true);
@@ -228,6 +230,19 @@ describe("fixture backend", () => {
     clearMocks();
     backend({ scenario: "funded" });
     await expect(cmd.openTxInExplorer("abc")).rejects.toMatchObject({ code: "invalid_argument" });
+  });
+
+  it("answers protocol compatibility states and counts open_releases_page", async () => {
+    const unknown = backend({ scenario: "protocol-unknown" });
+    expect(await unknown.b.protocolCompatibility()).toEqual({ networkVersion: null, supportedVersion: 15 });
+    clearMocks();
+    const equal = backend({ scenario: "protocol-equal" });
+    expect(await equal.b.protocolCompatibility()).toEqual({ networkVersion: 15, supportedVersion: 15 });
+    clearMocks();
+    const upgraded = backend({ scenario: "protocol-upgraded" });
+    expect(await upgraded.b.protocolCompatibility()).toEqual({ networkVersion: 16, supportedVersion: 15 });
+    expect(await upgraded.b.openReleasesPage()).toBeNull();
+    expect(upgraded.fixture.world.releasesOpened).toBe(1);
   });
 
   it("rejects a command it does not implement with a typed AppError", async () => {

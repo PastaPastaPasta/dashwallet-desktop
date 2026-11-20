@@ -53,10 +53,10 @@ defaults:
   run:
     shell: bash
 
-# A new push cancels its branch's running CI. Each distinct commit on main gets its own group, so a
-# queued main run is not superseded by a later commit's (two runs of the same commit still share one).
+# A new push cancels its branch's or pull request's running CI. Main runs one at a time and is never
+# cancelled; a newer main run replaces a pending one, so a burst of merges queues one run behind the running one.
 concurrency:
-  group: ci-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
@@ -70,8 +70,42 @@ env:
   DWD_SWIFT_LINUX_SUITES: DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests|SwiftCrossUIPatchTests
 
 jobs:
+  # A pull request that changes only documentation (docs/ outside docs/contracts and the generated
+  # E0-13 coverage table, or *.md elsewhere) and whose paths are valid on Windows skips the four required
+  # jobs, which then report success. Every other event, and any failure here, runs them. This job is a
+  # required check too: a run cancelled while it is pending skips the four jobs, and its own cancelled
+  # check then blocks the merge.
+  changes:
+    name: What this pull request changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        run: |
+          code=true
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
+            printf '%s\n' "$changed"
+            if [[ -n "$changed" ]] \
+              && ! grep -vE '^docs/|\.md$' <<<"$changed" >/dev/null \
+              && ! grep -E '^docs/contracts/|^docs/design/E0-13-facade-coverage\.md$' <<<"$changed" >/dev/null; then
+              code=false
+              ci/github/windows-paths.py
+            fi
+          fi
+          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+
   lint:
     name: Rust lint (fmt, clippy)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -90,9 +124,14 @@ jobs:
         run: ci/github/install-protoc.sh
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
         working-directory: .
+        # A download that has not finished in a minute has stalled on a mirror (it takes seconds);
+        # the next attempt uses the Azure mirror. The default deadline is 6 minutes.
+        env:
+          DW_APT_DOWNLOAD_DEADLINE: "60"
         run: ci/github/linux-host-deps.sh rust
+      # Only that toolchain: rust-cache's key hashes every installed one.
       - name: Rust toolchain (rust-toolchain.toml)
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
@@ -116,9 +155,11 @@ jobs:
 
   rust-linux:
     name: Rust tests (Linux)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
-    # Cold runs (no cache restored) take 65-95 min. This job alone saves the ci-Linux cache, only
-    # on main and only when it succeeds, so it must be able to finish cold.
+    # Cold runs (no cache restored) take about 45 min, warm ones under 20. This job alone saves
+    # the ci-Linux cache, only on main and only when it succeeds, so it must be able to finish cold.
     timeout-minutes: 150
     defaults:
       run:
@@ -128,59 +169,83 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Free disk space
-        working-directory: .
-        run: ci/github/linux-free-disk.sh
+      # No linux-free-disk.sh: the runner starts with about 90 GB free; a cold run uses about 20.
       - name: protoc
         working-directory: .
         run: ci/github/install-protoc.sh
       - name: Linux packages for the workspace (WebKitGTK for dw-app)
         working-directory: .
-        # Three bounded apt attempts (ci/github/linux-host-deps.sh); a mirror outage otherwise hangs here.
-        timeout-minutes: 25
+        # A download that has not finished in a minute has stalled on a mirror (it takes seconds);
+        # the next attempt uses the Azure mirror. The default deadline is 6 minutes.
+        env:
+          DW_APT_DOWNLOAD_DEADLINE: "60"
         run: ci/github/linux-host-deps.sh rust
+      # Only that toolchain: rust-cache's key hashes every installed one.
       - name: Rust toolchain (rust-toolchain.toml)
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
           shared-key: ci-${{ runner.os }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test --workspace --no-run --locked
-      - run: cargo test --workspace --locked --no-fail-fast
+      # dw-app's build writes files that cargo then finds newer than the build, so the next cargo
+      # command would compile dw-app again (about 60 s): tauri-codegen's assets in its OUT_DIR,
+      # named by their content hash, and tauri-build's permissions/autogenerated, which it watches
+      # once permissions/ exists. They are what this build generated: date them before it.
+      - name: cargo test --workspace --no-run --locked
+        run: |
+          cargo test --workspace --no-run --locked
+          find crates/dw-app/permissions target/debug/build/dw-app-*/out -exec touch -d @0 {} +
+      # `cargo test --workspace --locked --no-fail-fast` in two concurrent lanes (libraries' unit
+      # tests and doc tests; bins' unit tests and integration tests), each binary in one process.
+      - name: cargo test --workspace (two lanes)
+        run: ../ci/github/cargo-test-lanes.sh
       # Without the feature, dw-app's tests prove the self-test's options, commands and grant
-      # are absent; with it, that they work (E0-13 D17).
+      # are absent; with it, that they work (E0-13 D17). The workspace is selected, so only dw-app
+      # is compiled again.
       - name: dw-app with the selftest feature
         if: ${{ !cancelled() }}
-        run: cargo test -p dw-app --features selftest --locked --no-fail-fast
+        run: ../ci/github/cargo-test-package.sh dw-app --features dw-app/selftest
       # Without the feature (the workspace run above), dwcli has no `coinjoin-test-addresses`; with
       # it, the command parses and dw-engine's probe sees the test calls, so the nightly's release
       # leg of mix_shield_release_check isn't vacuous. With `invitation-create-test`, the table
-      # tests cover its `invite create` row. The Nightly runs dwcli's whole suite with each debug
-      # feature.
+      # tests cover its `invite create` row. The three runs share one feature set, so dw-engine and
+      # dwcli compile once: the table tests read only `invitation-create-test`, the coinjoin tests
+      # only `mix-shield-test` and the release check only `test-mix-shield`. The Nightly runs
+      # dwcli's whole suite with each debug feature on its own.
       - name: dwcli and dw-engine with the debug features
         if: ${{ !cancelled() }}
         run: |
-          cargo test -p dwcli --bin dwcli --features invitation-create-test --locked --no-fail-fast -- --exact \
+          debug=(-p dwcli -p dw-engine --locked --no-fail-fast
+            --features dwcli/invitation-create-test,dwcli/mix-shield-test,dw-engine/test-mix-shield)
+          cargo test "${debug[@]}" --bin dwcli -- --exact \
             dashpay::tests::the_table_covers_every_dashpay_command \
             dashpay::tests::every_command_passes_the_session_grammar \
             dashpay::tests::every_command_reports_its_stub_as_a_json_error | tee "$RUNNER_TEMP/dwcli-table.txt"
           grep -q '^test result: ok\. 3 passed' "$RUNNER_TEMP/dwcli-table.txt"
-          cargo test -p dwcli --features mix-shield-test --locked --no-fail-fast -- coinjoin::tests
-          cargo test -p dw-engine --features test-mix-shield --test mix_shield_release_check --locked
+          cargo test "${debug[@]}" --bin dwcli -- coinjoin::tests
+          cargo test "${debug[@]}" --test mix_shield_release_check
       # E0-13: the TypeScript bindings and the facade coverage table are generated from dw-app;
       # regenerate them and fail when the committed files differ (or a new file is missing).
+      # `--workspace --lib` reuses the test binary the workspace build made.
       - name: Regenerate the Tauri bindings and check them in
         # Also after a failed test step (stale bindings fail it): the diff shows what changed.
         if: ${{ !cancelled() }}
         run: |
-          DW_UPDATE_BINDINGS=1 cargo test -p dw-app --lib --locked -- codegen::tests::bindings_are_current coverage::tests::coverage_doc_is_current
+          DW_UPDATE_BINDINGS=1 cargo test --workspace --lib --locked -- --exact \
+            codegen::tests::bindings_are_current coverage::tests::coverage_doc_is_current | tee "$RUNNER_TEMP/bindings.txt"
+          [ "$(grep -c '^test .* \.\.\. ok$' "$RUNNER_TEMP/bindings.txt")" -eq 2 ]
           cd ..
           git add -N apps/desktop/src/api/generated docs/design/E0-13-facade-coverage.md
           git diff --exit-code -- apps/desktop/src/api/generated docs/design/E0-13-facade-coverage.md
+      - name: Disk use
+        if: ${{ !cancelled() }}
+        run: df -h / && du -sh target
 
   desktop-renderer:
     name: Tauri renderer (tokens, tsc, vitest)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -220,8 +285,10 @@ jobs:
 
   ui-playwright:
     name: UI tests (Playwright, axe)
+    needs: changes
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 75
     # The browsers and their libraries, pinned to @playwright/test in package.json (bump both).
     # No Rust and no engine: the renderer runs on the fixture backend.
     container:
@@ -254,10 +321,11 @@ jobs:
       - name: Visual baselines (non-blocking)
         if: ${{ !cancelled() }}
         continue-on-error: true
+        timeout-minutes: 15
         env:
           CI: "1"
           DW_VISUAL: "1"
-        run: pnpm exec playwright test --project=chromium e2e/visual.spec.ts --output test-results/visual --reporter=list
+        run: pnpm exec playwright test --project=chromium e2e/visual.spec.ts --output test-results/visual --reporter=list --global-timeout=780000
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -289,9 +357,10 @@ jobs:
       - name: Linux packages (WebKitGTK, its WebDriver, Xvfb)
         working-directory: .
         run: ci/github/linux-host-deps.sh tauri
+      # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
@@ -357,7 +426,14 @@ jobs:
         run: ci/github/linux-host-deps.sh tauri
       - name: protoc
         run: ci/github/install-protoc.sh
+      # On Linux only that toolchain, as in rust-linux, whose cache the Linux leg restores; the
+      # macOS and Windows caches are saved by jobs that keep the image's stable.
+      - name: Rust toolchain (rust-toolchain.toml), Linux
+        if: ${{ matrix.os == 'linux' }}
+        working-directory: rust
+        run: ../ci/github/rust-toolchain-only.sh
       - name: Rust toolchain (rust-toolchain.toml)
+        if: ${{ matrix.os != 'linux' }}
         working-directory: rust
         run: rustup toolchain install && rustc --version
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -427,9 +503,10 @@ jobs:
         run: ci/github/linux-swiftly.sh 6.3.3
       - name: protoc
         run: ci/github/install-protoc.sh
+      # Only that toolchain, as in rust-linux, whose cache this job restores.
       - name: Rust toolchain (rust-toolchain.toml)
         working-directory: rust
-        run: rustup toolchain install && rustc --version
+        run: ../ci/github/rust-toolchain-only.sh
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust -> target
@@ -649,7 +726,14 @@ jobs:
           $url = 'https://download.microsoft.com/download/4f5a8b87-f017-485d-8cf7-c16e82671dbe/WindowsAppRuntimeInstall-x64.exe'
           $sha256 = '7418DC8DC18CFEE1CDC1B087A326EA6FD66E2E3A5E1C76D49FA948737A83A45E'
           $installer = Join-Path $env:RUNNER_TEMP 'WindowsAppRuntimeInstall-x64.exe'
-          Invoke-WebRequest -Uri $url -OutFile $installer
+          for ($attempt = 1; ; $attempt++) {
+            try { Invoke-WebRequest -Uri $url -OutFile $installer; break }
+            catch {
+              if ($attempt -ge 5) { throw }
+              Write-Host "download attempt $attempt failed: $($_.Exception.Message)"
+              Start-Sleep -Seconds 5
+            }
+          }
           $hash = (Get-FileHash $installer -Algorithm SHA256).Hash
           if ($hash -ne $sha256) { throw "Windows App Runtime installer SHA-256 $hash, expected $sha256" }
           $signature = Get-AuthenticodeSignature $installer

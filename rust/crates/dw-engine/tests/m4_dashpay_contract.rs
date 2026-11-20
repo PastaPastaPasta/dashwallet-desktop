@@ -57,6 +57,8 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.dispatch_status",
     // E0-10b: the status card's quorum source.
     "DashPay.sync_status",
+    // 1.0 C2: Platform protocol compatibility.
+    "NetworkSession.protocol_compatibility",
     // DP2-01: the contacts read model.
     "DashPay.contacts",
     "DashPay.contact",
@@ -150,6 +152,8 @@ const IMPLEMENTED: &[&str] = &[
     "DashPay.platform_fund",
     "DashPay.pending_platform_funds",
     "DashPay.resume_platform_fund",
+    // 1.0 C1a-1: the quote of a move into Shielded.
+    "DashPay.platform_shield_quote",
     // 0.1 E1: shielded funds.
     "DashPay.shielded_status",
     "DashPay.shielded_sync",
@@ -213,8 +217,9 @@ const FACADE: &[&str] = &[
 /// tests (DP6-01), the withdrawal with its network seam and tests (DP6-02),
 /// the invitation checks with their tests (DP5-02), the network's
 /// protocol version (release 0.1), the shielded funds' library side
-/// with its tests (0.1 E1), and the unfinished transfers' kinds and runner
-/// with their tests (0.2 recovery).
+/// with its tests (0.1 E1), the unfinished transfers' kinds and runner
+/// with their tests (0.2 recovery), and the input-0 planner with its
+/// tests (1.0 C1a-1).
 const NOT_FACADE: &[&str] = &[
     "attribution.rs",
     "avatar.rs",
@@ -236,6 +241,8 @@ const NOT_FACADE: &[&str] = &[
     "identity_reads.rs",
     "identity_tests.rs",
     "identity_writes.rs",
+    "input0.rs",
+    "input0_tests.rs",
     "invitation_check.rs",
     "invitation_check_tests.rs",
     "journal.rs",
@@ -260,6 +267,7 @@ const NOT_FACADE: &[&str] = &[
     "platform_fund_tests.rs",
     "platform_moves.rs",
     "platform_moves_tests.rs",
+    "platform_shield_tests.rs",
     "protocol.rs",
     "provenance.rs",
     "recovery.rs",
@@ -1442,6 +1450,11 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
 
         assert_eq!(dp.status().unwrap_err().code(), "wallet_not_found");
         assert_eq!(dp.sync_status().unwrap_err().code(), "wallet_not_found");
+        assert_eq!(
+            session.protocol_compatibility().unwrap().network_version,
+            None
+        );
+        assert!(session.protocol_compatibility().unwrap().supported_version >= 13);
         c.stub(dp.sync_now().await);
         // DP6-01's calls are implemented: an unknown wallet is refused.
         for refused in [
@@ -1573,6 +1586,9 @@ fn every_unimplemented_call_returns_not_implemented_with_its_name() {
             dp.sync_platform_addresses().await.map(drop),
             dp.move_to_core_quote(WithdrawAmount::All).await.map(drop),
             dp.move_to_core(WithdrawAmount::All, s(), s())
+                .await
+                .map(drop),
+            dp.platform_shield_quote(WithdrawAmount::All)
                 .await
                 .map(drop),
         ] {

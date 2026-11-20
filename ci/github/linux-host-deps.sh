@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # GitHub Actions: apt packages on an ubuntu-24.04 runner.
 #
-#   ci/github/linux-host-deps.sh rust|tauri|swiftcrossui
+#   ci/github/linux-host-deps.sh rust|tauri|flatpak|swiftcrossui
 #
 #   rust          what `cargo build --workspace` needs beyond the runner image: the WebKitGTK
 #                 development packages of the Tauri crate rust/crates/dw-app (G-01; list from
-#                 apps/desktop/README.md), installed before it lands so that merge needs no CI change;
+#                 apps/desktop/README.md), installed before it lands so that merge needs no CI change,
+#                 and dbus-daemon for dw-app's portal tests on a private bus;
 #   tauri         those plus Xvfb, AT-SPI, xdotool, the WebKitGTK WebDriver, D-Bus and xdg-utils for
 #                 the gate harness and the link checks (apps/desktop/README.md);
+#   flatpak       flatpak-builder and the launch check's Xvfb, D-Bus and ImageMagick (release.yml);
 #   swiftcrossui  GTK 4, Xvfb and the AT-SPI stack (ci/linux/Dockerfile.swift-gtk).
 set -euo pipefail
 
@@ -15,22 +17,67 @@ webkit=(libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-d
   librsvg2-dev)
 gui=(xvfb xauth x11-utils x11-apps netpbm dbus-x11 at-spi2-core gir1.2-atspi-2.0 python3-pyatspi python3-gi)
 
-case "${1:?usage: $0 rust|tauri|swiftcrossui}" in
-  rust) packages=("${webkit[@]}") ;;
+case "${1:?usage: $0 rust|tauri|flatpak|swiftcrossui}" in
+  rust) packages=("${webkit[@]}" dbus) ;;
   # Ubuntu 24.04 calls the WebDriver package webkit2gtk-driver (26.04: webkitgtk-webdriver).
   # dbus and xdg-utils: second launches and links the OS opens (U-01, ci/github/deep-links.sh).
   tauri) packages=("${webkit[@]}" "${gui[@]}" xdotool imagemagick webkit2gtk-driver dbus xdg-utils) ;;
+  flatpak) packages=(flatpak flatpak-builder "${gui[@]}" imagemagick dbus) ;;
   swiftcrossui) packages=(libgtk-4-dev "${gui[@]}" gsettings-desktop-schemas adwaita-icon-theme fonts-dejavu-core) ;;
   *) echo "unknown package set $1" >&2; exit 2 ;;
 esac
 
 apt_opts=(-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-for attempt in 1 2 3; do
-  if sudo timeout 120 apt-get "${apt_opts[@]}" update &&
-    sudo DEBIAN_FRONTEND=noninteractive timeout 360 apt-get "${apt_opts[@]}" install -y -qq --no-install-recommends \
-      "${packages[@]}"; then
-    exit 0
+install=(apt-get "${apt_opts[@]}" install -y --no-install-recommends)
+# Only the network steps run under a deadline and are tried again. A deadline that fired while
+# dpkg was unpacking would leave a journal that apt refuses to continue from.
+# The runner image lists its regional mirror first (mirror+file:/etc/apt/apt-mirrors.txt), then
+# archive.ubuntu.com and security.ubuntu.com, and reads noble-security from security.ubuntu.com.
+# apt leaves a stalled mirror too slowly to finish under the deadline, and on 2026-11-19 all three
+# were down together. So a failed attempt puts the Azure mirror first, drops the mirrors listed
+# ahead of archive.ubuntu.com, and reads noble-security from the same mirror list. When the mirror
+# that failed is the Azure one (it is the regional mirror of some runners, and on 2026-11-20 it
+# served 70 MB too slowly for three attempts), it goes last, so archive.ubuntu.com serves the next
+# attempt. apt keeps what an attempt downloaded.
+# DW_APT_DOWNLOAD_DEADLINE (seconds, default 360) bounds each download attempt.
+mirrors=${DW_APT_MIRRORS:-/etc/apt/apt-mirrors.txt}
+sources=${DW_APT_SOURCES:-/etc/apt/sources.list.d/ubuntu.sources}
+fallback=http://azure.archive.ubuntu.com/ubuntu/
+use_fallback_mirror() {
+  local main='^https?://archive[.]ubuntu[.]com/' list skip=0 rest new text=
+  [ -f "$mirrors" ] || return 0
+  list=$(cat "$mirrors") || return 1
+  if [ "$(awk 'NF { print $1; exit }' <<< "$list")" = "$fallback" ]; then
+    rest=$(awk -v fallback="$fallback" 'NF && $1 != fallback { print $1 "\tpriority:" ++n }' <<< "$list") || return 1
+    [ -n "$rest" ] || return 0
+    new=$(printf '%s\n%s\tpriority:%s' "$rest" "$fallback" "$(($(wc -l <<< "$rest") + 1))")
+  else
+    if grep -Eq "$main" <<< "$list"; then skip=1; fi
+    rest=$(awk -v main="$main" -v skip="$skip" -v fallback="$fallback" '
+      $1 ~ main { skip = 0 }
+      skip || !NF || $1 == fallback { next }
+      { print $1 "\tpriority:" ++n + 1 }' <<< "$list") || return 1
+    new=$(printf '%s\tpriority:1\n%s\n' "$fallback" "$rest" | sed '/^$/d')
   fi
-  echo "apt attempt $attempt failed" >&2
+  if [ -f "$sources" ]; then
+    text=$(sed -E "s#https?://security[.]ubuntu[.]com/ubuntu/?#mirror+file:$mirrors#" "$sources") || return 1
+    [ -n "$text" ] || return 1
+  fi
+  printf '%s\n' "$new" | sudo tee "$mirrors" > /dev/null || return 1
+  if [ -n "$text" ]; then
+    printf '%s\n' "$text" | sudo tee "$sources" > /dev/null || return 1
+  fi
+  echo "apt mirrors now: $(tr '\n' ' ' < "$mirrors")" >&2
+}
+downloaded=
+for attempt in 1 2 3; do
+  if sudo timeout --verbose 120 apt-get "${apt_opts[@]}" update &&
+    sudo DEBIAN_FRONTEND=noninteractive timeout --verbose "${DW_APT_DOWNLOAD_DEADLINE:-360}" "${install[@]}" --download-only "${packages[@]}"; then
+    downloaded=1
+    break
+  fi
+  echo "apt download attempt $attempt failed" >&2
+  use_fallback_mirror || echo "could not switch apt mirrors" >&2
 done
-exit 1
+[ -n "$downloaded" ] || exit 1
+sudo DEBIAN_FRONTEND=noninteractive "${install[@]}" -qq --no-download "${packages[@]}"

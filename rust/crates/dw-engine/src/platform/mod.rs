@@ -34,6 +34,7 @@ mod flows;
 mod identity;
 mod identity_reads;
 mod identity_writes;
+mod input0;
 mod invitation_check;
 mod invitations;
 pub(crate) mod journal;
@@ -153,7 +154,7 @@ pub use platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,
     PlatformActivityKind, PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
     PlatformFundOutcome, PlatformFundQuote, PlatformFundState, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote, RecipientProblem,
+    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote, RecipientProblem,
 };
 pub use profile::{
     AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,
@@ -176,8 +177,8 @@ pub use signers::{
     VaultScanKey,
 };
 pub use startup::{
-    DashPayStatus, DashPaySyncStatus, NoIdentityReason, QuorumSource, StartupStatus, SyncLoop,
-    SyncLoopStatus, SyncPassReport,
+    DashPayStatus, DashPaySyncStatus, NoIdentityReason, ProtocolCompatibility, QuorumSource,
+    StartupStatus, SyncLoop, SyncLoopStatus, SyncPassReport,
 };
 pub use startup_status::{DashPayStartup, PlatformCadence, SpvState};
 pub use status::PlatformStatus;

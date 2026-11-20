@@ -401,6 +401,14 @@ impl NetworkSession {
                     })
                     .collect(),
                 purpose: username_purposes(&appdb.registration_rows(&w)?),
+                coinjoin_sends: appdb
+                    .settings_with_prefix(&w, crate::send::COINJOIN_SEND_PREFIX)?
+                    .into_iter()
+                    .filter_map(|(k, _)| {
+                        k.strip_prefix(crate::send::COINJOIN_SEND_PREFIX)
+                            .map(str::to_owned)
+                    })
+                    .collect(),
             })
         })
         .await?

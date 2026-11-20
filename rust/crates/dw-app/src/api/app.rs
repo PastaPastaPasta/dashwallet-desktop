@@ -4,10 +4,15 @@
 
 use crate::bridge::RecentNotice;
 use crate::dto::LaunchInfo;
+use crate::error::{AppCode, AppError};
 use crate::ipc::commands;
 use crate::settings::{self, UiSettings};
 
 pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
+
+/// The repository's GitHub releases page, built in Rust so the renderer has
+/// no opener or shell grant (`open_releases_page`).
+pub(crate) const RELEASES_URL: &str = "https://github.com/PastaPastaPasta/dashwallet-desktop/releases";
 
 commands! {
     /// How the app was launched: the self-test, the forced theme, and the
@@ -59,6 +64,19 @@ commands! {
             (state.apply_theme)(settings.theme);
         }
         Ok(settings)
+    }
+
+    /// Opens this repository's GitHub releases page in the system browser
+    /// (the protocol-compatibility advisory banner). Only [`RELEASES_URL`]
+    /// may be opened.
+    #[facade()]
+    fn open_releases_page(state) -> () {
+        let _ = state;
+        tauri::async_runtime::spawn_blocking(|| open::that_detached(RELEASES_URL))
+            .await
+            .map_err(|e| AppError::app(AppCode::BrowserOpen, e.to_string()))?
+            .map_err(|e| AppError::app(AppCode::BrowserOpen, e.to_string()))?;
+        Ok(())
     }
 
     /// Registered but granted by no capability: the U6 probe that the ACL

@@ -183,8 +183,13 @@ impl NetworkSession {
         let history = {
             use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
             let mut history = history;
-            let mined = (self.masternodes.protx_seam())
-                .map(|s| s.shared_mined.lock().unwrap().clone())
+            let (mined, locked) = (self.masternodes.protx_seam())
+                .map(|s| {
+                    (
+                        s.shared_mined.lock().unwrap().clone(),
+                        s.shared_locked.lock().unwrap().clone(),
+                    )
+                })
                 .unwrap_or_default();
             for (txid, tx, height) in mined {
                 let info = BlockInfo::new(height, dashcore::BlockHash::from_byte_array([0; 32]), 0);
@@ -192,7 +197,10 @@ impl NetworkSession {
                     txid,
                     crate::history::TxEntry {
                         tx,
-                        context: TransactionContext::InBlock(info),
+                        context: match locked.contains(&txid) {
+                            true => TransactionContext::InChainLockedBlock(info),
+                            false => TransactionContext::InBlock(info),
+                        },
                         instant_locked: false,
                         first_seen: None,
                         own_inputs: Default::default(),
@@ -488,6 +496,10 @@ impl NetworkSession {
             created_at: now,
             updated_at: now,
             last_error: None,
+            abandon_tx: None,
+            abandon_log: None,
+            legacy_bound: false,
+            resend_marked: false,
         };
         let w = wallet.to_string();
         self.appdb_op(move |db| db.insert_shared_session_durable(&w, &row, now))
