@@ -57,9 +57,11 @@ The drivers also listen on the host's loopback without authentication while the 
    of the two wallets with keys signs a message dashd verifies); it quits again and the data root is copied here.
 
 A new release is covered by running the script for its tag, committing the directory, and adding the tag with
-its number of recorded calls to `RECORDED_CALLS` in the test. The test refuses a snapshot whose call list is not
-that long: a recorded call that is deleted is a check that no longer runs. The test needs no other change unless
-the release renamed a field of a read command's answer (`RENAMED` / `DROPPED` in the test, with the reason).
+the SHA-256 of its `expected.json` (as `sha256sum` prints it) to `SNAPSHOT_SHA256` in the test. A committed
+snapshot never changes: the test refuses one whose digest is not the pinned one, because the replay asks only
+what is recorded, and a call or a value deleted from the snapshot is a check that no longer runs. The test needs
+no other change unless the release renamed a field of a read command's answer (`RENAMED` / `DROPPED` in the
+test, with the reason).
 
 | Tag | Asset | SHA-256 | Written | dashd |
 |---|---|---|---|---|

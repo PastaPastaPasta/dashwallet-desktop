@@ -25,6 +25,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dashcore::hashes::{Hash, sha256};
 use dw_engine::DashNetwork;
 use dw_vault::{MemoryOsStore, VaultConfig};
 use serde_json::{Value, json};
@@ -66,18 +67,31 @@ const KNOWN: &[(&str, &str, &str, &str)] = &[(
 /// Releases whose snapshot predates `fundedSignatures` and `dashd.deposits`.
 const BEFORE_FUNDED_SIGNATURES: &[&str] = &["v0.1.0"];
 
-/// How many calls each release's snapshot recorded. A recorded call that is
-/// deleted is a check that no longer runs, and the replay cannot notice: it
-/// asks only what is recorded.
-const RECORDED_CALLS: &[(&str, usize)] = &[("v0.1.0", 46), ("v0.2.0", 61)];
+/// SHA-256 of each release's committed `expected.json`, with LF line endings.
+/// A snapshot stands for what its release answered, so it never changes once
+/// committed. The replay asks only what is recorded and compares only the
+/// fields that are recorded, so nothing else notices a call or a value that
+/// is deleted from it.
+const SNAPSHOT_SHA256: &[(&str, &str)] = &[
+    (
+        "v0.1.0",
+        "b322696b5af380e2d2e4012f180b8dbb0b45892ba623219bbe32330e0ff17ef3",
+    ),
+    (
+        "v0.2.0",
+        "0c013e154937c2d28112d630173a9588a1e719d1150b983224b791fb2fa4a37d",
+    ),
+];
 
-/// Why the snapshot's call list is not the one its release recorded, if so.
-fn call_count_problem(tag: &str, expected: &Value) -> Option<String> {
-    let calls = expected["calls"].as_array().map_or(0, Vec::len);
-    match RECORDED_CALLS.iter().find(|(t, _)| *t == tag) {
-        Some((_, recorded)) if *recorded == calls => None,
-        Some((_, recorded)) => Some(format!("{calls} calls, the release recorded {recorded}")),
-        None => Some(format!("no call count is recorded for {tag}")),
+/// Why `text` is not the snapshot committed for `tag`, if so.
+fn snapshot_digest_problem(tag: &str, text: &str) -> Option<String> {
+    let digest = hex::encode(sha256::Hash::hash(text.replace('\r', "").as_bytes()).to_byte_array());
+    match SNAPSHOT_SHA256.iter().find(|(t, _)| *t == tag) {
+        Some((_, pinned)) if *pinned == digest => None,
+        Some(_) => Some(format!(
+            "expected.json's SHA-256 is {digest}, not the one pinned for {tag}"
+        )),
+        None => Some(format!("no SHA-256 is pinned for {tag}")),
     }
 }
 
@@ -368,7 +382,8 @@ fn every_release_data_root_opens_with_the_same_answers() {
     for (fixture, expected) in &fixtures {
         let tag = fixture.file_name().unwrap().to_string_lossy().into_owned();
         let mut problems = snapshot_problems(&tag, expected);
-        problems.extend(call_count_problem(&tag, expected));
+        let text = std::fs::read_to_string(fixture.join("expected.json")).unwrap();
+        problems.extend(snapshot_digest_problem(&tag, &text));
         assert!(
             problems.is_empty(),
             "{tag}: expected.json is incomplete: {}",
@@ -835,11 +850,27 @@ fn discovery_names_a_release_directory_without_a_readable_snapshot() {
     assert!(e.contains("v9.9.9"), "{e}");
 }
 
+fn snapshot_text(tag: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../testdata/upgrade")
+        .join(tag)
+        .join("expected.json");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
 #[test]
-fn a_snapshot_with_a_call_removed_is_refused() {
-    assert_eq!(call_count_problem("v0.1.0", &v0_1_0_snapshot()), None);
+fn a_snapshot_that_is_not_the_committed_one_is_refused() {
+    assert_eq!(
+        snapshot_digest_problem("v0.1.0", &snapshot_text("v0.1.0")),
+        None
+    );
+    let text = snapshot_text("v0.2.0");
+    assert_eq!(snapshot_digest_problem("v0.2.0", &text), None);
+    assert_eq!(
+        snapshot_digest_problem("v0.2.0", &text.replace('\n', "\r\n")),
+        None
+    );
     let full = v0_2_0_snapshot();
-    assert_eq!(call_count_problem("v0.2.0", &full), None);
     let payer = full["dashd"]["payment"]["walletId"]
         .as_str()
         .unwrap()
@@ -853,8 +884,12 @@ fn a_snapshot_with_a_call_removed_is_refused() {
         snapshot_problems("v0.2.0", &unaddressed),
         Vec::<String>::new()
     );
-    assert!(call_count_problem("v0.2.0", &unaddressed).is_some());
-    assert!(call_count_problem("v9.9.9", &full).is_some());
+    let edited = serde_json::to_string_pretty(&unaddressed).unwrap();
+    assert!(snapshot_digest_problem("v0.2.0", &edited).is_some());
+    let unconfirmed = "\"unconfirmed\": 0";
+    assert!(text.contains(unconfirmed));
+    assert!(snapshot_digest_problem("v0.2.0", &text.replacen(unconfirmed, "", 1)).is_some());
+    assert!(snapshot_digest_problem("v9.9.9", &text).is_some());
 }
 
 #[test]
