@@ -2428,11 +2428,16 @@ impl NetworkSession {
                         "another rescan is running".into(),
                     ));
                 }
-                let birth = this
-                    .hub
-                    .wallet_state(&wallet_id)
-                    .map(|s| s.birth_height)
-                    .unwrap_or(0);
+                // Loaded, its birth read and its replay stored under the
+                // lifecycle lock: nothing is stored for a wallet not open.
+                let _lifecycle = this.wallet_lifecycle.hold().await;
+                let birth = {
+                    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+                    let wm = manager.wallet_manager_arc();
+                    let wm = wm.read().await;
+                    (wm.get_wallet_info(&wallet_id.0)).map(|info| info.core_wallet.birth_height())
+                };
+                let birth = birth.ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
                 // The replay from the birth is owed, durably, before the
                 // larger lookahead is stored: a crash in between replays it
                 // at the next open.

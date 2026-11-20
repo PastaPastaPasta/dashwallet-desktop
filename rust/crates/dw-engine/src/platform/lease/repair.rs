@@ -37,10 +37,11 @@
 //!   No funding of this app selects one, and joining one to unmixed coins
 //!   would link them. A lock that also spent a denomination is conflicted
 //!   through its unmixed input.
-//! - When every one of them spent only denominations: exactly those
-//!   denominations, and no unmixed coin. The self-spend turns those mixed
-//!   coins into one ordinary coin and links them to each other; it is the
-//!   only transaction that conflicts with such a lock.
+//! - When every one of them spent only denominations: one denomination of
+//!   each lock, none for a lock another's already conflicts, and no unmixed
+//!   coin. One input conflicts with a lock, and the smallest denomination
+//!   pays the fee; the self-spend links the denominations it spends (one per
+//!   lock at most) and turns them into one ordinary coin.
 //! - A step with locks of both kinds is refused: this build repairs a step
 //!   with one transaction, and one spending both kinds would link the mixed
 //!   coins to the unmixed ones. So is a repair with only denominations
@@ -274,9 +275,10 @@ impl NetworkSession {
 
 /// The funding accounts' coins (`send`, spendable) a self-spend takes for
 /// the step's locks `rows` (module doc, "Which coins"): every coin but the
-/// counted denominations while a lock spends an unmixed coin, else only the
-/// denominations the locks spend. A lock none of whose inputs is left is
-/// refused, and so is a step whose locks would need both kinds.
+/// counted denominations while a lock spends an unmixed coin, else one
+/// denomination of each lock not already conflicted. A lock none of whose
+/// inputs is left is refused, and so is a step whose locks would need both
+/// kinds.
 fn funding_repair_coins<'a>(
     send: Vec<&'a crate::coins::WalletCoin>,
     rows: &[(dashcore::Txid, Vec<OutPoint>)],
@@ -291,8 +293,11 @@ fn funding_repair_coins<'a>(
         }
         if live.iter().any(|c| !c.counted_denomination) {
             unmixed_lock = true;
-        } else {
-            denominations.extend(live.iter().map(|c| c.utxo.outpoint));
+        } else if !live
+            .iter()
+            .any(|c| denominations.contains(&c.utxo.outpoint))
+        {
+            denominations.insert(live[0].utxo.outpoint);
         }
     }
     if denominations.is_empty() {

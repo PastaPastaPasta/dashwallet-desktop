@@ -751,13 +751,19 @@ impl NetworkSession {
             let pending = async {
                 let previous = this.wide_scan(id).await?;
                 this.mark_pending(id, crate::keys::WideScan::Birth).await?;
+                let mut previous_gap = None;
                 if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD {
+                    let key = id.to_string();
+                    let gap = this
+                        .appdb_op(move |db| db.setting(&key, crate::keys::LOOKAHEAD_SETTING))
+                        .await?;
+                    previous_gap = Some(gap);
                     this.write_lookahead(id, lookahead).await?;
                 }
-                Ok::<_, EngineError>(previous)
+                Ok::<_, EngineError>((previous, previous_gap))
             }
             .await;
-            let previous = match pending {
+            let (previous, previous_gap) = match pending {
                 Ok(previous) => previous,
                 Err(e) => {
                     if readmitted {
@@ -781,8 +787,18 @@ impl NetworkSession {
                 })
                 .await?;
                 if let Err(e) = stored {
-                    // Not registered: removed again, as a failed seed import.
+                    // Not registered: removed again, as a failed seed import,
+                    // with the lookahead as it was.
                     this.set_wide_scan(id, previous).await;
+                    if let Some(gap) = previous_gap {
+                        let key = id.to_string();
+                        let restored = this.appdb_op(move |db| {
+                            db.set_setting_durable(&key, crate::keys::LOOKAHEAD_SETTING, gap.as_deref())
+                        });
+                        if let Err(e) = restored.await {
+                            tracing::warn!(wallet_id = %id, error = %e, "could not put the lookahead back");
+                        }
+                    }
                     if readmitted {
                         this.record_removed_again(&held, id).await;
                     }
