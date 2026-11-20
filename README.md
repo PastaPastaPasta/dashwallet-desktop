@@ -40,7 +40,7 @@ small amounts only.
 |---|---|
 | **macOS** (Apple silicon and Intel) | [**DashWallet-continuous-macos-universal.dmg**](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-macos-universal.dmg) |
 | Windows (x64) | [DashWallet-continuous-windows-x64-setup.exe](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-windows-x64-setup.exe) |
-| Linux (x86_64) | [DashWallet-continuous-linux-x86_64.AppImage](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-linux-x86_64.AppImage), [DashWallet-continuous-linux-amd64.deb](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-linux-amd64.deb) |
+| Linux (x86_64) | [DashWallet-continuous-linux-x86_64.AppImage](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-linux-x86_64.AppImage), [DashWallet-continuous-linux-amd64.deb](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-linux-amd64.deb), [DashWallet-continuous-linux-x86_64.flatpak](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/DashWallet-continuous-linux-x86_64.flatpak) |
 | Checksums | [SHA256SUMS](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/download/continuous/SHA256SUMS) |
 
 The [`continuous` release](https://github.com/PastaPastaPasta/dashwallet-desktop/releases/tag/continuous) says which
@@ -54,7 +54,7 @@ commit it holds. Each merge also keeps its own build, `v<version>-dev.<run>+<com
 |---|---|
 | macOS | `dash-wallet-<version>-macos-universal.dmg` |
 | Windows | `dash-wallet-<version>-windows-x64-setup.exe` |
-| Linux | `dash-wallet-<version>-linux-x86_64.AppImage` or `dash-wallet-<version>-linux-amd64.deb` |
+| Linux | `dash-wallet-<version>-linux-x86_64.AppImage`, `dash-wallet-<version>-linux-amd64.deb` or `dash-wallet-<version>-linux-x86_64.flatpak` |
 
 The binaries are not notarized (macOS) or signed (Windows), so each OS warns on first launch.
 
@@ -68,6 +68,14 @@ The binaries are not notarized (macOS) or signed (Windows), so each OS warns on 
   (for example Ubuntu 24.04 or Debian 12) and FUSE 2, or run it with `--appimage-extract-and-run`.
 - **Linux .deb.** `sudo apt install ./*.deb` (Debian, Ubuntu). It registers the `dash:`, `pay:`,
   `dashwallet:` and `dashpay:` links.
+- **Linux Flatpak.** `flatpak install --user ./*.flatpak`, then `flatpak run org.dash.wallet.desktop` or
+  start Dash Wallet from the app menu. Any distribution with Flatpak; the GNOME runtime comes from Flathub
+  (`flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo`).
+  It registers the same links. The sandbox has network and display access only: wallet data lives in
+  `~/.var/app/org.dash.wallet.desktop/data/org.dash.wallet.desktop`, `--datadir` must point inside the
+  sandbox, files are opened and saved through the system file dialog, and there is no tray icon.
+  In the Flatpak a wallet needs a passphrase: the sandbox has no access to the system secret store.
+  Update it by installing a newer bundle.
 
 ## Verify a download
 
