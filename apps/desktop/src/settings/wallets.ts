@@ -1,7 +1,8 @@
 // Settings ▸ Wallets (UX-SPEC §4.17, QT-101, QT-114, IOS-110): the Swift
 // `WalletManagementViewModel`, ported. The list is every registered wallet from
 // `walletLoadStates` (D17); Open and Close also set the load-on-startup list, as dash-qt's File
-// menu does, and the last open wallet cannot be closed.
+// menu does, the last open wallet cannot be closed, and the last wallet on the startup list stays
+// on it (issue 113).
 
 import type { Backend } from "../api/backend";
 import { LockModel } from "../onboarding/lock";
@@ -13,6 +14,7 @@ export const WalletsText = {
   openAnotherToClose: "Open another wallet first to close this one.",
   openAnotherToRemove: "Open another wallet first to remove this one: closed wallets cannot be reached with no wallet open.",
   openAnotherToCloseOrRemove: "Open another wallet first to close or remove this one.",
+  oneOpensAtStart: "At least one wallet opens at start.",
   noLoadStates: "Closed wallets are not shown: this engine does not list them yet.",
   nameRule: "A wallet name is 1 to 64 characters.",
   /** IOS-110; the shielded line is E1 r2 R2-4 (removal purges unresolved shielded spends, m4 §2.13). */
@@ -105,6 +107,11 @@ export class WalletsModel extends Model {
     return row.loaded && !(this.openCount === 1 && this.rows.some((r) => !r.loaded));
   }
 
+  /** The last wallet on the load-on-startup list stays on it: with no wallet open at start, closed ones cannot be reached. */
+  canUntickStartup(row: WalletRow): boolean {
+    return !row.loadOnStartup || this.rows.some((r) => r.walletId !== row.walletId && r.loadOnStartup);
+  }
+
   open(walletId: string) {
     return this.#run(walletId, async () => {
       await this.api.loadWallet(walletId);
@@ -120,8 +127,11 @@ export class WalletsModel extends Model {
       this.changed();
       return false;
     }
+    // The last wallet on the startup list hands it to the wallet the app shows next.
+    const next = this.canUntickStartup(row) ? null : this.rows.find((r) => r.walletId !== walletId && r.loaded);
     return this.#run(walletId, async () => {
       await this.api.unloadWallet(walletId);
+      if (next) await this.api.setLoadOnStartup(next.walletId, true);
       await this.api.setLoadOnStartup(walletId, false);
     });
   }

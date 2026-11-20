@@ -19,6 +19,18 @@ use crate::{EngineError, EngineEvent, NetworkSession, WalletBalances, WalletId};
 pub(crate) static FAIL_DELETE_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Tests: the next wallet removal of a session on one of these data
+/// directories fails its app-database transaction, after its store is gone.
+#[cfg(test)]
+pub(crate) static FAIL_LISTING_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Tests: the next load-on-startup write on its own fails: the one after
+/// a failed removal transaction, or the one that lists a registered wallet.
+#[cfg(test)]
+pub(crate) static FAIL_LISTING_RETRY_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// Longest wallet name, in characters, after trimming.
 pub const MAX_WALLET_NAME: usize = 64;
 
@@ -225,6 +237,11 @@ impl NetworkSession {
     /// import of it in this session deletes the metadata first, or is
     /// refused (`Storage`) while it cannot, and so does the next lone open
     /// of the app database when the wallet was recorded as removed.
+    /// The load-on-startup list loses the wallet in the transaction that
+    /// deletes its app metadata; when nothing else would be on it, the first
+    /// open wallet (the one the app shows next) is put on it. If that
+    /// transaction fails, the list is stored on its own, and kept in memory
+    /// even if that fails too (logged).
     /// `WalletRemoved` is
     /// sent once the wallet's rows are gone. The removal holds the wallet's
     /// barrier throughout, so a lease begun meanwhile finds no wallet.
@@ -288,10 +305,20 @@ impl NetworkSession {
             this.coin_fences.forget(&id);
             this.platform.forget(&id);
             let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+            let was_listed = (this.startup_list.lock())
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .is_none_or(|list| list.contains(&id));
+            let startup = this.startup_list_after_removal(&live, id);
+            let stored = startup.clone();
             #[cfg(test)]
             let pause = crate::coins::held_appdb_job();
             #[cfg(test)]
             let fail_delete = crate::keys::take_test_failure(&FAIL_DELETE_IN, this.data_dir());
+            #[cfg(test)]
+            let fail_listing = crate::keys::take_test_failure(&FAIL_LISTING_IN, this.data_dir());
+            let wallet_gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let gone = Arc::clone(&wallet_gone);
             let deleted = tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
                 #[cfg(test)]
                 if let Some(pause) = pause {
@@ -302,11 +329,27 @@ impl NetworkSession {
                     return Err(EngineError::Storage("test: wallet delete failed".into()));
                 }
                 persister.delete_wallet(id.0)?;
-                appdb
-                    .delete_wallet(&id.to_string())
+                gone.store(true, std::sync::atomic::Ordering::SeqCst);
+                #[cfg(test)]
+                if fail_listing {
+                    return Err(EngineError::Storage("test: app rows delete failed".into()));
+                }
+                crate::multiwallet::delete_wallet_listing(&appdb, id, stored.as_ref())
                     .map_err(|e| EngineError::Storage(e.to_string()))
             })
             .await;
+            if let Some(mut list) = startup {
+                // A listed wallet still in the store stays listed, beside
+                // the next one: the next start loads it and the removal can
+                // be retried, and a later list write keeps it.
+                if was_listed && !wallet_gone.load(std::sync::atomic::Ordering::SeqCst) {
+                    list.insert(id);
+                }
+                if !matches!(deleted, Ok(Ok(()))) {
+                    this.store_startup_list(&live, &list).await;
+                }
+                *this.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list);
+            }
             // The wallet has left the manager: a journal write begun before
             // is not admitted from here on, even if a delete failed (review
             // DP2-05 r3 finding 1). An import of it deletes what a failed
