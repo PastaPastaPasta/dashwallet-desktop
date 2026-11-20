@@ -133,6 +133,7 @@ export const DEFAULT_PREFS: UiSettings = {
   showMasternodes: false,
   masternodesTab: "myMasternodes",
   preReleaseNoticeDismissed: false,
+  language: null,
 };
 
 let state: UiState = {

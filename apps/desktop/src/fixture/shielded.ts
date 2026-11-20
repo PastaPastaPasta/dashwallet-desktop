@@ -15,12 +15,13 @@ import type { ShieldedStatus } from "../api/generated/ShieldedStatus";
 import type { UnrecordedSpend } from "../api/generated/UnrecordedSpend";
 import type { UnresolvedSpend } from "../api/generated/UnresolvedSpend";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
+import type { FundAmount } from "../api/generated/FundAmount";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
 import type { MixedShieldQuote } from "../api/generated/MixedShieldQuote";
 import type { Utxo } from "../api/generated/Utxo";
 import { SHIELDED_CODES } from "../api/pending";
 import { coinJoinAccount, DRAIN_STEP, mixerBusy, SHIELD_LOCK_INPUTS } from "./coinjoin";
-import { checkGrant, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
+import { checkGrant, fundDuffs, HANDLERS, useGrant, wallet, type Ctx } from "./handlers";
 import type { FixtureWallet } from "./scenarios";
 import { FIXTURE_NOW } from "./wallet";
 
@@ -155,7 +156,7 @@ function shieldQuote(ctx: Ctx, walletId: string, duffs: number): ShieldQuote {
   if (total > available) raise(SHIELDED_CODES.fundingInsufficient, "insufficient funds", { kind: "duffs", needed: total, available });
   const inputs = lockInputs(w, total);
   if (inputs > SHIELD_LOCK_INPUTS) raise(SHIELDED_CODES.tooManyInputs, "too many inputs", { kind: "number", value: inputs });
-  return { duffs, feeDuffs: LOCK_FEE_DUFFS, totalDuffs: total, poolFeeCredits: String(POOL_FEE_CREDITS), credits: String(BigInt(duffs) * CREDITS_PER_DUFF - POOL_FEE_CREDITS), grant: { maxDuffs: total, maxCredits: "0" } };
+  return { duffs, feeDuffs: LOCK_FEE_DUFFS, totalDuffs: total, poolFeeCredits: String(POOL_FEE_CREDITS), credits: String(BigInt(duffs) * CREDITS_PER_DUFF - POOL_FEE_CREDITS), grant: { maxDuffs: total, maxCredits: "0" }, max: null };
 }
 
 /** A drain lock's fee bound (`asset_lock_fee_bound`), in duffs. */
@@ -297,8 +298,9 @@ export const SHIELDED_HANDLERS: Record<string, (args: never, ctx: Ctx) => unknow
     ready(s);
     return { address: s.address, account: 0 };
   },
-  shield_quote: ({ walletId, duffs }: { walletId: string; duffs: number }, ctx: Ctx) => shieldQuote(ctx, walletId, duffs),
-  shield_from_core: ({ walletId, duffs, grant }: { walletId: string; duffs: number; grant: string }, ctx: Ctx): ShieldOutcome => {
+  shield_quote: ({ walletId, amount }: { walletId: string; amount: FundAmount }, ctx: Ctx) => shieldQuote(ctx, walletId, fundDuffs(amount)),
+  shield_from_core: ({ walletId, amount, grant }: { walletId: string; amount: FundAmount; grant: string }, ctx: Ctx): ShieldOutcome => {
+    const duffs = fundDuffs(amount);
     const q = shieldQuote(ctx, walletId, duffs);
     const s = ctx.world.pending.shielded!;
     const g = checkGrant(ctx.world, grant, walletId, ["platformOp"]);

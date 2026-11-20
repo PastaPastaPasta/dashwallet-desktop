@@ -253,9 +253,11 @@ fn the_librarys_drain_minimum_refuses_only_after_signing() {
     let f = fund_with(&w, &coins, move |s, coins, total, permit| async move {
         let lib = pool::PwShielded::open(&s, wallet).await.unwrap();
         let credit_script = lib.shield_credit_script().await.unwrap();
-        let signer = drain::drain_signer(&permit, &coins, total, 0, credit_script).unwrap();
+        let signer = drain::drain_signer(&permit, &coins, total, 0, credit_script, false).unwrap();
         let (_, pw) = PwLib::open(&s, wallet).await.unwrap();
-        (pw.fund_drain_with(total, &signer).await, permit)
+        let account = key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundingAccount::CoinJoin { account_index: 0 };
+        let funded = pw.fund_drain_with(account, pool::SHIELD_KEY, total, &signer);
+        (funded.await, permit)
     });
     let Err(FundError::NotSent(e)) = &f.result else {
         panic!("{f:?}");

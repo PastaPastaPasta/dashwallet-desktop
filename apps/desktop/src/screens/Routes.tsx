@@ -8,26 +8,11 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { ui, useUi, type PayTab, type Route } from "../app/ui";
 import { LoadingState } from "../components/history";
+import { useT } from "../i18n";
 import { useDefaultPayTab } from "./pay/contactQueries";
 import { PayToAddress } from "./pay/PayToAddress";
 import { PayToContact } from "./pay/PayToContact";
 import { ShieldedSendLink } from "./ShieldedSheet";
-
-const TITLES: Record<Route, string> = {
-  home: "Home",
-  pay: "Pay",
-  receive: "Receive",
-  contacts: "Contacts",
-  activity: "Activity",
-  coinJoin: "CoinJoin",
-  explore: "Explore",
-  masternodes: "Masternodes",
-  notifications: "Notifications",
-  profile: "My Profile",
-  settings: "Settings",
-  tools: "Tools",
-  joinDashPay: "Join DashPay",
-};
 
 /** The placeholder text of each route that `Placeholder` renders. */
 const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "activity" | "coinJoin" | "tools" | "settings" | "notifications" | "joinDashPay" | "profile" | "masternodes">, string> = {
@@ -36,12 +21,13 @@ const NOT_YET: Record<Exclude<Route, "home" | "pay" | "receive" | "contacts" | "
 
 /** `wide`: the page's tables take the window's width, as Activity's table mode does. */
 export function Page({ route, wide = false, badge, children }: { route: Route; wide?: boolean; badge?: ReactNode; children?: ReactNode }) {
+  const t = useT();
   return (
     <main className={wide ? "page page-wide" : "page"} data-testid={`page-${route}`}>
       <div className="page-column">
         <header className="top-intro">
           <h1 className="top-intro-title">
-            {TITLES[route]}
+            {t(`routes.${route}`)}
             {badge && " "}
             {badge}
           </h1>
@@ -74,7 +60,15 @@ export interface Tab<T extends string> {
   title: string;
 }
 
-/** Tabs (WAI-ARIA tabs pattern): arrow keys move between them. */
+/** The tab a key moves to from tab `i` of `n`, or `null`: ArrowRight goes to the tab drawn on the
+ * right, which in a right-to-left tablist is the previous one. */
+export function tabTarget(key: string, i: number, n: number, rtl: boolean): number | null {
+  const step = rtl ? -1 : 1;
+  const to: Record<string, number> = { ArrowRight: i + step, ArrowLeft: i - step, Home: 0, End: n - 1 };
+  return key in to ? (to[key] + n) % n : null;
+}
+
+/** Tabs (WAI-ARIA tabs pattern): arrow keys move between them, in the tablist's direction. */
 export function Tabs<T extends string>({
   label,
   tabs,
@@ -91,12 +85,12 @@ export function Tabs<T extends string>({
   children: ReactNode;
 }) {
   const id = useId();
-  const onKeyDown = (e: React.KeyboardEvent) => {
+  const onKeyDown = (e: React.KeyboardEvent<HTMLElement>) => {
     const i = tabs.findIndex((t) => t.id === current);
-    const to: Record<string, number> = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: tabs.length - 1 };
-    if (!(e.key in to)) return;
+    const to = tabTarget(e.key, i, tabs.length, getComputedStyle(e.currentTarget).direction === "rtl");
+    if (to === null) return;
     e.preventDefault();
-    const next = tabs[(to[e.key] + tabs.length) % tabs.length].id;
+    const next = tabs[to].id;
     onSelect(next);
     document.getElementById(`${id}-${next}`)?.focus();
   };
