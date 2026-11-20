@@ -21,7 +21,7 @@ import { homeCard, type CardActionKind } from "../dashpay/status";
 import { useDisplay } from "../format/display";
 import { RatesConsentCard } from "../fiat/consent";
 import { FiatLine, ratesNote, useFiat, type Fiat } from "../fiat/rates";
-import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type PoolReading } from "../format/homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, known, POOL_ROWS, type HeroSync, type PoolReading } from "../format/homeBalance";
 import { isSyncing, syncPercent } from "../format/sync";
 import { CoinJoinCard } from "./coinjoin/CoinJoinCard";
 import { DashPayCard, defaultCardAction } from "./dashpay/DashPayCard";
@@ -60,7 +60,7 @@ function BreakdownCell({ title, subtitle, amount, unitName, testId, fiat }: { ti
   );
 }
 
-function BalanceHero({ balances, shielded, platform, network, arrival, running }: { balances: Balances | null; shielded: PoolReading; platform: PoolReading; network: NetworkInfo; arrival: ListArrival; running: boolean }) {
+function BalanceHero({ balances, shielded, platform, network, hero }: { balances: Balances | null; shielded: PoolReading; platform: PoolReading; network: NetworkInfo; hero: HeroSync }) {
   const discreet = useUi((s) => s.discreet);
   const shown = useDisplay(network);
   const fmt = (duffs: number) => (discreet ? shown.masked() : shown.compact(duffs));
@@ -77,7 +77,7 @@ function BalanceHero({ balances, shielded, platform, network, arrival, running }
     <section className="hero" data-testid="hero" aria-label="Balance" data-breakdown={home && rows.length === 0 ? "none" : undefined}>
       {network.kind === "mainnet" ? <span className="network-capsule-slot" /> : <NetworkCapsule network={network} testId="hero-capsule" />}
       <span className="hero-caption" role="status" data-testid="hero-sync-line">
-        {heroSyncLine(balances, arrival, running)}
+        {heroSyncLine(balances, hero)}
       </span>
       {home && digits ? (
         <button
@@ -236,7 +236,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   const balance = useBalance(walletId);
   const pools = usePoolBalances(walletId);
   const sync = useSyncStatus();
-  const { arrival, recheck } = useWalletCatchUp(walletId);
+  const { arrival, recheck, blocksBehind, scanPending } = useWalletCatchUp(walletId);
   const recent = useHistory(walletId, RECENT_FILTER, RECENT_COUNT);
   const discreet = useUi((s) => s.discreet);
   const rows = recent.data?.pages[0]?.rows ?? [];
@@ -263,7 +263,9 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
   return (
     <main className="page page-overview" data-testid="page-home">
       <div className="hero-band" data-testid="hero-band">
-        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} arrival={arrival} running={!!sync.raw?.running} />
+        <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network}
+          hero={{ arrival, running: !!sync.raw?.running, networkCaughtUp: !!sync.data?.caughtUp, blocksBehind, scanPending }}
+        />
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />
       </div>
       <div className="page-column">

@@ -397,7 +397,10 @@ export function useWalletCatchUp(walletId: string) {
     if (sync.isError) void sync.refetch();
     if (scan.isError) void scan.refetch();
   };
-  return { arrival, recheck };
+  const tip = sync.raw?.tipHeight ?? null;
+  const height = scan.data ?? null;
+  const blocksBehind = tip !== null && height !== null ? Math.max(0, tip - height) : null;
+  return { arrival, recheck, blocksBehind, scanPending: scan.isPending };
 }
 
 /** Pages of `limit` records; `fetchNextPage` follows the engine's keyset cursor. */

@@ -128,3 +128,61 @@ test("a payment delivered while Home is open updates the balance and the row in 
   expect(await page.evaluate(() => (window as unknown as { __samePage?: boolean }).__samePage)).toBe(true);
   await checked(page, errors);
 });
+
+test("a new block on a synced wallet does not touch the hero line while the scan catches up", async ({ page }) => {
+  const errors = await openHome(page, "funded", "light");
+  await expect(page.getByTestId("hero-amount")).toContainText("32.04", { timeout: 15_000 });
+  const line = page.getByTestId("hero-sync-line");
+  await expect(line).toHaveText("");
+  await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="hero-sync-line"]')!;
+    const seen: string[] = [];
+    (window as unknown as { __heroLines: string[] }).__heroLines = seen;
+    new MutationObserver(() => seen.push(el.textContent ?? "")).observe(el, { childList: true, characterData: true, subtree: true });
+  });
+  const seen = () => page.evaluate(() => (window as unknown as { __heroLines: string[] }).__heroLines);
+
+  const tip = await page.evaluate(() => {
+    const fx = window.__dwFixture!;
+    const old = fx.world.sync.tipHeight!;
+    const next = old + 1;
+    fx.world.wallets[0].scanHeight = old;
+    fx.world.sync = {
+      ...fx.world.sync,
+      tipHeight: next,
+      caughtUp: false,
+      activePhase: "filters",
+      phases: fx.world.sync.phases.map((p) => ({ ...p, targetHeight: next, currentHeight: p.phase === "headers" ? next : old, done: p.phase === "headers" })),
+    };
+    fx.emit({ kind: "sync", network: fx.world.launch.network.dirName, status: fx.world.sync });
+    return next;
+  });
+  await expect
+    .poll(() => page.evaluate(() => window.__dwFixture!.calls.filter((c) => c === "wallet_scan_height").length), { timeout: 15_000 })
+    .toBeGreaterThan(1);
+  await page.waitForTimeout(1500);
+  await expect(line).toHaveText("");
+
+  await page.evaluate((next) => {
+    const fx = window.__dwFixture!;
+    fx.world.wallets[0].scanHeight = next;
+    fx.world.sync = { ...fx.world.sync, caughtUp: true, activePhase: null, phases: fx.world.sync.phases.map((p) => ({ ...p, currentHeight: next, done: true })) };
+    fx.emit({ kind: "sync", network: fx.world.launch.network.dirName, status: fx.world.sync });
+  }, tip);
+  await page.waitForTimeout(1500);
+  await expect(line).toHaveText("");
+  expect((await seen()).filter((t) => t !== "")).toEqual([]);
+  await checked(page, errors);
+});
+
+test("a synced wallet's hero says nothing while its first scan-height read is out", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("funded", "light", "&hold=wallet_scan_height"));
+  await expect(page.getByTestId("hero-amount")).toContainText("32.04", { timeout: 15_000 });
+  await page.waitForTimeout(1000);
+  await expect(page.getByTestId("hero-sync-line")).toHaveText("");
+  await page.evaluate(() => window.__dwFixture!.release("wallet_scan_height"));
+  await expect(page.getByTestId("history-header")).toBeVisible();
+  await expect(page.getByTestId("hero-sync-line")).toHaveText("");
+  expect(errors).toEqual([]);
+});

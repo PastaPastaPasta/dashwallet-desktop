@@ -33,15 +33,37 @@ export const HERO_SYNC = {
   unknownNotSynced: "Not synced yet",
 } as const;
 
-/** The line above the hero amount, from this wallet's own catch-up (as its history reads it): empty
- * only once the wallet is scanned to the tip; while it is not, the balance may still move either way. */
-export function heroSyncLine(balances: Balances | null, arrival: ListArrival, running: boolean): string {
-  const behind = arrival !== "settled" || balances?.catchingUp === true;
+/** A wallet this close to the tip while sync runs and the network reads caught up is between a
+ * new block and its scan: the hero says nothing about it. */
+export const HERO_NEAR_TIP_BLOCKS = 2;
+
+export interface HeroSync {
+  /** This wallet's catch-up, as its history reads it. */
+  arrival: ListArrival;
+  running: boolean;
+  /** The status bar's caught-up reading, which holds through a new block (`settleSync`). */
+  networkCaughtUp: boolean;
+  /** The tip less this wallet's filter checkpoint; `null` while either is unknown. */
+  blocksBehind: number | null;
+  /** This wallet's first scan-height read is still out. */
+  scanPending: boolean;
+}
+
+/** The line above the hero amount, from this wallet's own catch-up: empty once the wallet is
+ * scanned to the tip, or within `HERO_NEAR_TIP_BLOCKS` of it during a new block; while it is not,
+ * the balance may still move either way. */
+export function heroSyncLine(balances: Balances | null, s: HeroSync): string {
+  const settledBalance = balances !== null && !balances.catchingUp;
+  if (settledBalance && s.running && s.networkCaughtUp) {
+    if (s.scanPending) return "";
+    if (s.blocksBehind !== null && s.blocksBehind <= HERO_NEAR_TIP_BLOCKS) return "";
+  }
+  const behind = s.arrival !== "settled" || balances?.catchingUp === true;
   if (!behind) return "";
-  if (balances === null) return running ? HERO_SYNC.unknownSyncing : HERO_SYNC.unknownNotSynced;
-  if (arrival === "unreadable") return HERO_SYNC.unreadable;
-  if (running) return HERO_SYNC.syncing;
-  return arrival === "starting" ? HERO_SYNC.notStarted : HERO_SYNC.stopped;
+  if (balances === null) return s.running ? HERO_SYNC.unknownSyncing : HERO_SYNC.unknownNotSynced;
+  if (s.arrival === "unreadable") return HERO_SYNC.unreadable;
+  if (s.running) return HERO_SYNC.syncing;
+  return s.arrival === "starting" ? HERO_SYNC.notStarted : HERO_SYNC.stopped;
 }
 
 export function homeBalance(core: Balances, shielded: PoolReading, platform: PoolReading): HomeBalance {

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Balances } from "../api/generated/Balances";
+import type { ListArrival } from "../components/emptyStates";
 import { compact, masked } from "./amount";
-import { breakdownRows, coreSubtitle, heroDigits, HERO_SYNC, heroSyncLine, homeBalance, POOL_ROWS, type PoolReading } from "./homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, HERO_SYNC, heroSyncLine, homeBalance, type HeroSync, POOL_ROWS, type PoolReading } from "./homeBalance";
 
 const COIN = 100_000_000;
 const core: Balances = { confirmed: 3 * COIN, unconfirmed: COIN, immature: 0, locked: 0, total: 4 * COIN, coinjoin: 2 * COIN, catchingUp: false };
@@ -94,41 +95,86 @@ describe("the hero's digits", () => {
 });
 
 describe("the line above Home's balance", () => {
+  const line = (b: Balances | null, arrival: ListArrival, running: boolean, more: Partial<HeroSync> = {}) =>
+    heroSyncLine(b, { arrival, running, networkCaughtUp: false, blocksBehind: null, scanPending: false, ...more });
   const zero = { ...core, confirmed: 0, unconfirmed: 0, total: 0, coinjoin: 0 };
   const catchingUp = { ...core, catchingUp: true };
 
   it("is empty only when this wallet is scanned to the tip", () => {
-    expect(heroSyncLine(core, "settled", true)).toBe("");
-    expect(heroSyncLine(zero, "settled", false)).toBe("");
-    expect(heroSyncLine(null, "settled", true)).toBe("");
+    expect(line(core, "settled", true)).toBe("");
+    expect(line(zero, "settled", false)).toBe("");
+    expect(line(null, "settled", true)).toBe("");
   });
 
   it("says the balance may change while this wallet syncs, the network at the tip or not", () => {
-    for (const b of [core, zero, catchingUp]) expect(heroSyncLine(b, "syncing", true)).toBe(HERO_SYNC.syncing);
+    for (const b of [core, zero, catchingUp]) expect(line(b, "syncing", true)).toBe(HERO_SYNC.syncing);
     expect(HERO_SYNC.syncing).toBe("Still syncing, balance may change");
-    expect(heroSyncLine(core, "starting", true)).toBe(HERO_SYNC.syncing);
+    expect(line(core, "starting", true)).toBe(HERO_SYNC.syncing);
   });
 
   it("says syncing stopped when the wallet is behind and sync is not running", () => {
     for (const b of [core, zero]) {
-      expect(heroSyncLine(b, "stopped", false)).toBe("Syncing has stopped, balance may be out of date");
-      expect(heroSyncLine(b, "syncing", false)).toBe(HERO_SYNC.stopped);
+      expect(line(b, "stopped", false)).toBe("Syncing has stopped, balance may be out of date");
+      expect(line(b, "syncing", false)).toBe(HERO_SYNC.stopped);
     }
   });
 
   it("never calls a birth-block balance final, even if the scan reads settled", () => {
-    expect(heroSyncLine(catchingUp, "settled", true)).toBe(HERO_SYNC.syncing);
-    expect(heroSyncLine(catchingUp, "settled", false)).toBe(HERO_SYNC.stopped);
+    expect(line(catchingUp, "settled", true)).toBe(HERO_SYNC.syncing);
+    expect(line(catchingUp, "settled", false)).toBe(HERO_SYNC.stopped);
   });
 
   it("names the starting and unreadable cases without claiming a sync", () => {
-    expect(heroSyncLine(core, "starting", false)).toBe("Not synced yet, balance may change");
-    expect(heroSyncLine(core, "unreadable", true)).toBe("Could not check syncing, balance may change");
+    expect(line(core, "starting", false)).toBe("Not synced yet, balance may change");
+    expect(line(core, "unreadable", true)).toBe("Could not check syncing, balance may change");
   });
 
   it("keeps an unknown balance's caption, and does not say Syncing when sync is not running", () => {
-    expect(heroSyncLine(null, "syncing", true)).toBe("Syncing Balance");
-    expect(heroSyncLine(null, "stopped", false)).toBe("Not synced yet");
-    expect(heroSyncLine(null, "starting", false)).toBe("Not synced yet");
+    expect(line(null, "syncing", true)).toBe("Syncing Balance");
+    expect(line(null, "stopped", false)).toBe("Not synced yet");
+    expect(line(null, "starting", false)).toBe("Not synced yet");
+  });
+
+  describe("during a new block", () => {
+    const atTip = { networkCaughtUp: true };
+
+    it("says nothing for a wallet within two blocks of the tip while sync runs", () => {
+      expect(line(core, "settled", true, { ...atTip, blocksBehind: 0 })).toBe("");
+      expect(line(core, "syncing", true, { ...atTip, blocksBehind: 1 })).toBe("");
+      expect(line(core, "syncing", true, { ...atTip, blocksBehind: 2 })).toBe("");
+      expect(line(zero, "syncing", true, { ...atTip, blocksBehind: 2 })).toBe("");
+    });
+
+    it("keeps the caveat three blocks behind, with sync stopped, or while the balance is catching up", () => {
+      expect(line(core, "syncing", true, { ...atTip, blocksBehind: 3 })).toBe("Still syncing, balance may change");
+      expect(line(core, "syncing", false, { ...atTip, blocksBehind: 1 })).toBe("Syncing has stopped, balance may be out of date");
+      expect(line(catchingUp, "syncing", true, { ...atTip, blocksBehind: 1 })).toBe(HERO_SYNC.syncing);
+    });
+
+    it("needs the network to read caught up: a wallet near a tip the headers are still raising is not near the tip", () => {
+      expect(line(core, "syncing", true, { networkCaughtUp: false, blocksBehind: 1 })).toBe(HERO_SYNC.syncing);
+    });
+
+    it("keeps today's result while the tip or the scan height is unknown", () => {
+      expect(line(core, "syncing", true, { ...atTip, blocksBehind: null })).toBe(HERO_SYNC.syncing);
+      expect(line(core, "unreadable", true, { ...atTip, blocksBehind: null })).toBe(HERO_SYNC.unreadable);
+      expect(line(core, "stopped", false, { ...atTip, blocksBehind: null })).toBe(HERO_SYNC.stopped);
+    });
+  });
+
+  describe("before the first scan-height read returns", () => {
+    it("says nothing over a settled balance while the network reads caught up", () => {
+      expect(line(core, "starting", true, { networkCaughtUp: true, scanPending: true })).toBe("");
+    });
+
+    it("keeps the caveat while the balance is catching up, the network is not caught up, or sync is not running", () => {
+      expect(line(catchingUp, "starting", true, { networkCaughtUp: true, scanPending: true })).toBe(HERO_SYNC.syncing);
+      expect(line(core, "syncing", true, { networkCaughtUp: false, scanPending: true })).toBe(HERO_SYNC.syncing);
+      expect(line(core, "starting", false, { networkCaughtUp: true, scanPending: true })).toBe(HERO_SYNC.notStarted);
+    });
+
+    it("says it could not check once the read has failed", () => {
+      expect(line(core, "unreadable", true, { networkCaughtUp: true, scanPending: false })).toBe(HERO_SYNC.unreadable);
+    });
   });
 });
