@@ -950,6 +950,7 @@ fn credits_params(e: &CreditsError) -> Value {
         CreditsError::SendOutOfRange { min } => json!({"min": min}),
         CreditsError::FundPending { txid } => json!({"txid": txid}),
         CreditsError::TooManyInputs { inputs, max } => json!({"inputs": inputs, "max": max}),
+        CreditsError::Shielded(s) => shielded_params(s),
         CreditsError::Platform(p) => platform_params(p),
     }
 }

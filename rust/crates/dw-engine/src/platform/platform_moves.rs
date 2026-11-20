@@ -115,14 +115,16 @@ use serde::{Deserialize, Serialize};
 use super::credits::WithdrawAmount;
 use super::errors::{CreditsError, PlatformError};
 use super::flows::{FlowKind, GrantRequest};
+use super::input0::{self, Input0Refused, Input0Rules};
 use super::money_gate::Refusal;
 use super::names::{NameAuthority, check_credit_cap};
 use super::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformActivityKind,
     PlatformActivityState, PlatformAddressBalance, PlatformAddressRow, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote, RecipientProblem,
+    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote, RecipientProblem,
 };
 use super::requests::{leased, write_permit};
+use super::shielded_pool;
 use super::signers::VaultPlatformAddressSigner;
 use super::trust::{self, Rule5};
 use super::withdrawal;
@@ -2321,6 +2323,73 @@ pub(crate) async fn send_quote(
         },
         operation,
         retry_of,
+    })
+}
+
+/// `DashPay::platform_shield_quote` past the pool's gates, at their
+/// `version`: one proved read with rule 5, the hold, the input-0 plan with
+/// the shield's reserve (C-routes C1-4, C1-6, C1-11).
+pub(crate) async fn shield_quote(
+    net: &impl MoveNet,
+    session: &NetworkSession,
+    wallet: &PlatformWallet,
+    wallet_id: WalletId,
+    (version, amount): (&PlatformVersion, WithdrawAmount),
+) -> Result<PlatformShieldQuote, CreditsError> {
+    let network = session.vault.network();
+    let pool = pool(wallet).await?;
+    let moves = Store::of(session, wallet_id)?.moves().await?;
+    let seen = read(session, net, covered(&pool, &moves), true).await?;
+    // A shield signs no other record's terms, so any hold refuses it.
+    if let Some(h) = (moves.iter()).find(|m| m.holds() && !m.reached(&seen)) {
+        return Err(CreditsError::MovePending { id: h.id.clone() });
+    }
+    let pool_fee = shielded_pool::platform_shield_fee(version)?;
+    let reserve =
+        platform_wallet::shield_fee_reserve_credits(version).map_err(PlatformError::from)?;
+    let funds = &version.dpp.state_transitions;
+    let min_input = funds.address_funds.min_input_amount;
+    let rules = Input0Rules {
+        reserve,
+        min_input,
+        max_inputs: funds.max_address_inputs as usize,
+        min_claim_0: min_input.saturating_sub(pool_fee).max(1),
+        min_total: 1,
+    };
+    let planned = input0::plan(&proved_balances(&pool, &seen, network), amount, &rules).map_err(
+        |r| match r {
+            Input0Refused::Short { needed, available } => {
+                PlatformError::InsufficientCredits { needed, available }.into()
+            }
+            Input0Refused::ClaimBelow { min } | Input0Refused::TotalBelow { min } => {
+                CreditsError::SendOutOfRange { min }
+            }
+        },
+    )?;
+    let input_0 = planned.input_0().0;
+    let inputs = (planned.inputs.iter())
+        .map(|(a, c)| PlatformAddressRow {
+            address: bech32m(a, network),
+            credits: if *a == input_0 {
+                c.saturating_add(pool_fee)
+            } else {
+                *c
+            },
+        })
+        .collect();
+    let debit = (planned.credits)
+        .saturating_add(pool_fee)
+        .saturating_add(reserve);
+    Ok(PlatformShieldQuote {
+        credits: planned.credits,
+        pool_fee_credits: pool_fee,
+        fee_reserve_credits: reserve,
+        debit_credits: debit,
+        inputs,
+        grant: GrantRequest {
+            max_duffs: 0,
+            max_credits: debit,
+        },
     })
 }
 
