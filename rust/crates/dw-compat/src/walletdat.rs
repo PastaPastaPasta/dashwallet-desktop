@@ -1222,7 +1222,11 @@ fn parse_record(
         }
         b"key" | b"ckey" => {
             let pubkey = k.bytes().ok_or_else(|| bad("key"))?.to_vec();
-            let secret = Zeroizing::new(v.bytes().ok_or_else(|| bad("key"))?.to_vec());
+            let secret = v.bytes().ok_or_else(|| bad("key"))?;
+            if kind == b"ckey" && (secret.len() != CRYPTED_KEY_LEN || !valid_pubkey(&pubkey)) {
+                return Err(corrupt("encrypted key record"));
+            }
+            let secret = Zeroizing::new(secret.to_vec());
             if !v.is_empty() {
                 let checksum = v.hash256().ok_or_else(|| bad("key"))?;
                 let hashed = if kind == b"ckey" {
@@ -1322,6 +1326,19 @@ fn parse_record(
 }
 
 const MAX_CHAIN_FIELD: usize = 4096;
+
+/// A `ckey`'s ciphertext: Dash Core's 32-byte private key (compressed or
+/// not) under AES-256-CBC with PKCS#7 padding (`EncryptSecret`).
+const CRYPTED_KEY_LEN: usize = 48;
+
+/// A compressed (`02`/`03`) or uncompressed (`04`) serialization of a point
+/// on the curve, as Dash Core writes a `CPubKey`.
+fn valid_pubkey(pubkey: &[u8]) -> bool {
+    matches!(
+        (pubkey.len(), pubkey.first()),
+        (33, Some(0x02 | 0x03)) | (65, Some(0x04))
+    ) && PublicKey::from_slice(pubkey).is_ok()
+}
 /// Most keys a legacy wallet may have derived on one HD chain, keypool
 /// included. Larger wallets are refused.
 pub const MAX_LEGACY_CHAIN_KEYS: u32 = 10_000;
@@ -2341,6 +2358,51 @@ mod tests {
                 matches!(err, WalletDatError::Corrupt(ref d) if d.contains("plaintext key")),
                 "{kind}: {err:?}"
             );
+        }
+    }
+
+    fn lone_ckey(pubkey: &[u8], ct: &[u8]) -> Result<SqliteWallet, WalletDatError> {
+        let mut value = Vec::new();
+        ser_bytes(&mut value, ct);
+        value.extend_from_slice(&sha256d(ct));
+        let key = db_key_pub("ckey", pubkey);
+        read_bdb_bytes(&build::pairs(&[(&key, &value)], false))
+    }
+
+    /// A `ckey` is kept only with a valid public key and Core's 48-byte
+    /// ciphertext, before any passphrase probe hashes or decrypts it.
+    #[test]
+    fn a_ckey_of_the_wrong_shape_is_corrupt() {
+        let secret = [0x45u8; 32];
+        let ct = [0x99u8; 48];
+        let sk = dashcore::secp256k1::SecretKey::from_secret_bytes(secret).unwrap();
+        let pk = dashcore::secp256k1::PublicKey::from_secret_key(&sk);
+        let (short, long) = (pk.serialize(), pk.serialize_uncompressed());
+        let mut bad_prefix = short;
+        bad_prefix[0] = 0x05;
+        let mut hybrid = long;
+        hybrid[0] = 0x06 | (long[64] & 1);
+        let bad_pubkeys: [&[u8]; 5] =
+            [&[0x02; 300], &long[..64], &bad_prefix, &hybrid, &[0x04; 65]];
+        for pubkey in bad_pubkeys {
+            let err = lone_ckey(pubkey, &ct).err().unwrap();
+            assert!(
+                matches!(err, WalletDatError::Corrupt(ref d) if d.contains("encrypted key record")),
+                "{} bytes: {err:?}",
+                pubkey.len()
+            );
+        }
+        for len in [0, 32, 47, 49, 64, 1024] {
+            let err = lone_ckey(&short, &vec![0x99; len]).err().unwrap();
+            assert!(
+                matches!(err, WalletDatError::Corrupt(ref d) if d.contains("encrypted key record")),
+                "{len} bytes: {err:?}"
+            );
+        }
+        for pubkey in [&short[..], &long[..]] {
+            let wallet = lone_ckey(pubkey, &ct).unwrap();
+            assert!(wallet.encrypted());
+            assert_eq!(wallet.crypted_keys.len(), 1);
         }
     }
 
