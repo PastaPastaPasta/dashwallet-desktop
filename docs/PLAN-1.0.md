@@ -215,8 +215,8 @@ listed in #170, #172, #173 and #177.
 (a failed write of the claim repair) left the list the same day: two more readings of the pinned store
 found no path to it, so it is for 1.0.x. Case 18 is not counted here: a ProTx whose sent mark cannot be
 written reads as sent although nothing went out, new with #134 and narrow; the release owner's masternode
-lane fixes it in its own pull request, for 0.3 if that is reviewed and green by 11-22 18:00 UTC. Sizes are working days with tests and
-review, from reading the code; nothing was built except case 14.
+lane fixes it in its own pull request, for 0.3 if that is reviewed and green by 11-22 18:00 UTC. Sizes are
+working days with tests and review, from reading the code; nothing was built except case 14.
 
 | Case of #170 | For the release candidate | Days | State |
 |---|---|---|---|
