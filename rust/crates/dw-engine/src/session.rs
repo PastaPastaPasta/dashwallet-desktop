@@ -1174,12 +1174,14 @@ impl NetworkSession {
             }
         }
         let persister = Arc::downgrade(&live.persister);
+        let appdb = Arc::downgrade(&live.appdb);
         drop(manager);
         drop(live.store);
         drop(live.persister);
         drop(live.appdb);
         drop(live.tap);
         drop(live.provenance);
+        drop(live.replay);
         // The close returns once the database is released, so the network
         // reopens in this process (CI 41289102488: `StorageInUse` on a
         // reopen right after a close). Bounded: a holder that never lets go
@@ -1195,6 +1197,12 @@ impl NetworkSession {
             tracing::warn!(
                 network = %self.network,
                 "the wallet database is still held after the close; reopening it in this process is refused until it is released"
+            );
+        }
+        if !holds_database && appdb.strong_count() > 0 {
+            tracing::warn!(
+                network = %self.network,
+                "the app database is still held after the close; its file cannot be replaced on Windows until it is released"
             );
         }
         // Per network, so the last to close (§8.5).
