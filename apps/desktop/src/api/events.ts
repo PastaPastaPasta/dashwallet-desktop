@@ -133,6 +133,18 @@ function unreachable(event: never): never {
 /** The `platform` domains whose events move history rows' counterparties (DP3-02 D5, D25). */
 const rereadsHistory = (domain: PlatformChangeName["domain"]) => domain === "contacts" || domain === "payments" || domain === "identities";
 
+/** The txids of a `newTransactions` batch to announce (toast, bell, Receive). A payment the engine
+ * learned live (the mempool, an InstantSend lock, a block near the network tip) is news whether or
+ * not SPV has caught up; one the catch-up scan found is not. The engine's `catchUp` is "SPV is not
+ * idle" at that moment, which a payment found in a new block can be too: so the whole batch is news
+ * when the engine's own latest reading says caught up, or a caught-up wallet is a few blocks short of
+ * it for a minute at most (`nearTip`, `announceable`). A txid is named in one batch only, its first
+ * sighting, so a payment seen in the mempool and then mined is announced once. */
+export function toAnnounce(event: Extract<AppEvent, { kind: "newTransactions" }>, nearTip: boolean): string[] {
+  if (!event.catchUp || nearTip) return event.txids;
+  return event.txids.filter((_, i) => event.live[i] === true);
+}
+
 export const RECONCILE_COALESCE_MS = 100;
 export const RECONCILE_MAX_WAIT_MS = 500;
 
@@ -159,14 +171,11 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
     // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
     // below. Not the query's, which only follows once its refetch is back.
     if (event.kind === "sync") feedSync(backend, event.status);
-    // A payment that arrives while the app is open is announced (toast, bell, Receive); a batch the
-    // sync found on catching up is not news. The engine's `catchUp` is "SPV is not idle" at that
-    // moment, which a payment found in a new block can be too: so it is news when the engine's own
-    // latest reading says caught up, or a caught-up wallet is a few blocks short of it for a minute
-    // at most (`announceable`). A wallet that has not been caught up yet is catching up. The smoothed
-    // display never decides this.
-    if (event.kind === "newTransactions" && (!event.catchUp || announceable(backend))) {
-      void announceReceived(backend, event.walletId, event.txids);
+    // A payment that arrives while the app is open is announced (toast, bell, Receive); what the
+    // sync found on catching up is not news (`toAnnounce`). The smoothed display never decides this.
+    if (event.kind === "newTransactions") {
+      const txids = toAnnounce(event, event.catchUp && announceable(backend));
+      if (txids.length > 0) void announceReceived(backend, event.walletId, txids);
     }
     if (event.kind === "historyChanged" || (event.kind === "platform" && rereadsHistory(event.change.domain))) {
       // Refetch only the first page of each list: every history_page call re-reads the whole
