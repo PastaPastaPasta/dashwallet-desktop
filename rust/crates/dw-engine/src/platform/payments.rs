@@ -8,12 +8,60 @@ use serde::{Deserialize, Serialize};
 use super::contacts::ContactSummary;
 use super::dashpay::DashPay;
 use super::errors::{ContactError, PlatformError};
+use super::flows::GrantRequest;
 
-/// A per-contact send lock after an ambiguous broadcast (`dp_payment_lock`).
+/// A per-contact send lock: a Core payment after an ambiguous broadcast
+/// (`dp_payment_lock`), or a `pending` payout from another balance
+/// (`dp_contact_payout`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaymentLock {
+    /// Equals `reference`; a Core txid only when `source` is `core`.
     pub txid: String,
     pub since: u64,
+    pub source: PaymentSource,
+    pub reference: String,
+}
+
+/// The balance a contact payment comes from (C-funding D-C5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentSource {
+    Core,
+    Shielded,
+    Platform,
+}
+
+/// `contact_pay_quote`'s answer: the typed amount leaves the balance (M3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactPayQuote {
+    pub source: PaymentSource,
+    /// What leaves the balance: the amount typed.
+    pub credits: u64,
+    /// What the contact receives on Core, about.
+    pub expected_duffs: u64,
+    /// The network fee estimate.
+    pub fee_credits: u64,
+    /// What to authorize: no duffs, `credits` credits.
+    pub grant: GrantRequest,
+}
+
+/// Where a payout stands (`dp_contact_payout.state`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PayoutState {
+    /// It may have been sent: the contact stays locked.
+    Pending,
+    Sent,
+    /// Proved never to execute.
+    NotSent,
+}
+
+/// `contact_pay`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContactPayOutcome {
+    /// The payout's reference: `PaymentLock.reference`, `ActivityItem.reference`.
+    pub reference: String,
+    pub state: PayoutState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,12 +94,17 @@ pub struct ActivityPage {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActivityItem {
+    /// Equals `reference`; a Core txid only when `source` is `core`.
     pub txid: String,
     pub direction: ActivityDirection,
     /// Duffs.
     pub amount: u64,
     pub height: Option<u32>,
     pub timestamp: Option<u64>,
+    pub source: PaymentSource,
+    pub reference: String,
+    /// The Core transaction, once the wallet has seen it.
+    pub core_txid: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +172,60 @@ impl DashPay {
                     .contact_activity_of(id, identity, contact, cursor, f)
                     .await)
             })
+            .await
+            .map_err(PlatformError::from)?
+    }
+
+    /// Quotes a payment of `credits` to `contact` from the Shielded or
+    /// Platform balance (C-funding P1, P13). `core` is the `TxDraft`'s:
+    /// `invalid_argument`.
+    pub async fn contact_pay_quote(
+        &self,
+        identity: String,
+        contact: String,
+        credits: u64,
+        source: PaymentSource,
+    ) -> Result<ContactPayQuote, ContactError> {
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        self.session
+            .on_runtime(async move {
+                Ok(session
+                    .contact_pay_quote_of(id, identity, contact, credits, source)
+                    .await)
+            })
+            .await
+            .map_err(PlatformError::from)?
+    }
+
+    /// Pays `credits` to `contact` from the Shielded or Platform balance
+    /// under `grant` (C-funding P2): the payee, the pair's lock and rule 5
+    /// before the source's gates. `note` stays in this wallet (M5).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the payment's terms (C-funding P1)"
+    )]
+    pub async fn contact_pay(
+        &self,
+        identity: String,
+        contact: String,
+        credits: u64,
+        source: PaymentSource,
+        note: Option<String>,
+        grant: String,
+        confirm_unrecorded: bool,
+    ) -> Result<ContactPayOutcome, ContactError> {
+        let (session, id) = (Arc::clone(&self.session), self.wallet_id());
+        let call = super::payment_locks::PayCall {
+            identity,
+            contact,
+            credits,
+            source,
+            note,
+            grant,
+            confirm_unrecorded,
+        };
+        self.session
+            .on_runtime(async move { Ok(session.contact_pay_of(id, call).await) })
             .await
             .map_err(PlatformError::from)?
     }

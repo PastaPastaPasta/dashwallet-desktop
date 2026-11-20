@@ -164,6 +164,7 @@ import type { ContactActivityPage } from "./generated/ContactActivityPage";
 import type { ContactRecipient } from "./generated/ContactRecipient";
 import type { ContactSummaryInfo } from "./generated/ContactSummaryInfo";
 import type { FlowKindName } from "./generated/FlowKindName";
+import type { PaymentSourceName } from "./generated/PaymentSourceName";
 import type { LockResolutionName } from "./generated/LockResolutionName";
 import type { ContactDetailInfo } from "./generated/ContactDetailInfo";
 import type { ContactRequestOutcome } from "./generated/ContactRequestOutcome";
@@ -223,8 +224,9 @@ export interface Backend {
   authorizePlatformSend(walletId: string, operation: string, credential: CredentialSpec): Promise<AuthGrant>;
   /** One credential check for several grants, all or none (E0-04: "Accept and pay"). */
   authorizeSet(purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): Promise<AuthGrant[]>;
-  /** Redeems grants into a flow's lease; returns the lease id a write or a prepare takes. */
-  beginFlow(walletId: string, flow: FlowKindName, grants: string[]): Promise<string>;
+  /** Redeems grants into a flow's lease; returns the lease id a write or a prepare takes. `source`:
+   * the payment's, for `acceptAndPay` (`null` is `core`) and `contactPayFromBalance`; else `null`. */
+  beginFlow(walletId: string, flow: FlowKindName, grants: string[], source: PaymentSourceName | null): Promise<string>;
   /** Ends a lease (idempotent). */
   endFlow(lease: string): Promise<null>;
   /** Drops a grant before it expires (unknown ids are ignored). */

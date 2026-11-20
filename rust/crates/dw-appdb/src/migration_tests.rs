@@ -28,10 +28,12 @@ const TX_FIAT: i64 = 2026110501;
 const REQUEST_USERNAME: i64 = 2026111001;
 const MG_WITHDRAWALS: i64 = 2026111002;
 const SHARED_ABANDON: i64 = 2026111901;
+const CONTACT_PAYOUT: i64 = 2026111902;
 
-const DP_TABLES: [&str; 10] = [
+const DP_TABLES: [&str; 11] = [
     "dp_avatar",
     "dp_contact_info",
+    "dp_contact_payout",
     "dp_contest_watch",
     "dp_events",
     "dp_main_identity",
@@ -89,7 +91,7 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(crate::APP_DB_FILE);
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_ABANDON);
+    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
     drop(db);
 
     let conn = AppConn::open(&path, OpenFlags::default()).unwrap();
@@ -114,7 +116,8 @@ fn fresh_database_gets_every_migration_and_the_dp_tables() {
             TX_FIAT,
             REQUEST_USERNAME,
             MG_WITHDRAWALS,
-            SHARED_ABANDON
+            SHARED_ABANDON,
+            CONTACT_PAYOUT
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -156,7 +159,7 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
     }
 
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_ABANDON);
+    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
     assert_eq!(db.wallet_names().unwrap(), vec![(W.into(), "Main".into())]);
     assert_eq!(
         db.label(W, crate::LabelKind::Tx, "t").unwrap().as_deref(),
@@ -190,7 +193,8 @@ fn upgrade_from_the_previous_schema_keeps_its_rows() {
             TX_FIAT,
             REQUEST_USERNAME,
             MG_WITHDRAWALS,
-            SHARED_ABANDON
+            SHARED_ABANDON,
+            CONTACT_PAYOUT
         ]
     );
     assert_eq!(tables(&conn), DP_TABLES);
@@ -208,7 +212,7 @@ fn reopening_and_rerunning_change_nothing() {
     }
     for _ in 0..3 {
         let db = AppDb::open(&path).unwrap();
-        assert_eq!(db.schema_version().unwrap(), SHARED_ABANDON);
+        assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
         db.conn()
             .execute(
                 "INSERT OR IGNORE INTO dp_main_identity (wallet_id, identity) VALUES (?1, 'id1')",
@@ -246,7 +250,8 @@ fn reopening_and_rerunning_change_nothing() {
             TX_FIAT,
             REQUEST_USERNAME,
             MG_WITHDRAWALS,
-            SHARED_ABANDON
+            SHARED_ABANDON,
+            CONTACT_PAYOUT
         ]
     );
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM dp_main_identity"), 1);
@@ -279,7 +284,7 @@ fn an_upgrade_stopped_partway_changes_nothing_and_the_next_open_finishes_it() {
         conn.execute_batch("DROP TRIGGER stop").unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_ABANDON);
+    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
     assert!(db.conn().prepare("SELECT 1 FROM tx_fiat").is_ok());
 }
 
@@ -311,7 +316,7 @@ fn upgrade_from_request_username_adds_the_withdrawal_tables() {
         );
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_ABANDON);
+    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
     assert_eq!(db.masternode_ops(W).unwrap().len(), 1);
     assert!(db.payout_barriers().unwrap().is_empty());
     assert!(!db.payout_barriers_backfilled().unwrap());
@@ -382,7 +387,7 @@ fn upgrade_backfills_shared_abandons_and_rewrites_inherited_refusals() {
         .unwrap()
         .as_secs();
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_ABANDON);
+    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
     let row = |n: usize| db.shared_session(W, &id(n)).unwrap().unwrap();
 
     let legacy = row(0);
@@ -543,6 +548,11 @@ fn shipped_migrations_are_unchanged() {
                 "mg_shared_abandon".to_string(),
                 CHECKSUM_SHARED_ABANDON
             ),
+            (
+                CONTACT_PAYOUT,
+                "dp_contact_payout".to_string(),
+                CHECKSUM_CONTACT_PAYOUT
+            ),
         ]
     );
 }
@@ -566,6 +576,7 @@ const CHECKSUM_TX_FIAT: u64 = 16250844939786173904;
 const CHECKSUM_REQUEST_USERNAME: u64 = 9240954005103932665;
 const CHECKSUM_MG_WITHDRAWALS: u64 = 8235275556707324401;
 const CHECKSUM_SHARED_ABANDON: u64 = 6131843723659947961;
+const CHECKSUM_CONTACT_PAYOUT: u64 = 16737723588251346381;
 
 #[test]
 fn journal_writes_are_idempotent_per_kind_contact_and_ref() {
@@ -759,6 +770,13 @@ fn removing_a_wallet_removes_its_dashpay_rows_only() {
             }
             // The same entity is flagged in both wallets.
             conn.execute(
+                "INSERT INTO dp_contact_payout (wallet_id, reference, identity, contact, source,
+                     address, credits, expected_duffs, state, since)
+                 VALUES (?1, 'move-1', ?2, 'carol', 'platform', 'y', 5, 0, 'pending', 1)",
+                [wallet, identity],
+            )
+            .unwrap();
+            conn.execute(
                 "INSERT INTO dp_trust_unverified (wallet_id, kind, key, since)
                  VALUES (?1, 'identity', 'x', 1)",
                 [wallet],
@@ -839,6 +857,13 @@ fn dashpay_rows_travel_in_the_wallet_export() {
             )
             .unwrap();
             conn.execute(
+                "INSERT INTO dp_contact_payout (wallet_id, reference, identity, contact, source,
+                     address, credits, expected_duffs, state, since)
+                 VALUES (?1, 'move-1', ?2, 'carol', 'platform', 'y', 5, 0, 'pending', 1)",
+                [wallet, identity],
+            )
+            .unwrap();
+            conn.execute(
                 "INSERT INTO dp_trust_unverified (wallet_id, kind, key, since)
                  VALUES (?1, 'identity', 'x', 1)",
                 [wallet],
@@ -870,6 +895,7 @@ fn dashpay_rows_travel_in_the_wallet_export() {
     assert_eq!(
         names,
         [
+            "dp_contact_payout",
             "dp_contest_watch",
             "dp_events",
             "dp_main_identity",
@@ -1021,7 +1047,7 @@ fn verification_records_without_a_digest_verify_nothing() {
         .unwrap();
     }
     let db = AppDb::open(&path).unwrap();
-    assert_eq!(db.schema_version().unwrap(), SHARED_ABANDON);
+    assert_eq!(db.schema_version().unwrap(), CONTACT_PAYOUT);
     assert!(db.verified_entities().unwrap().is_empty(), "the old row");
     assert_eq!(
         count(
@@ -1134,6 +1160,9 @@ fn insert_any_row(conn: &Connection, table: &str, wallet: &str) -> usize {
             ("currency", _) if table == "tx_fiat" => "'USD'",
             ("price", _) if table == "tx_fiat" => "'49.0967'",
             ("source", _) if table == "tx_fiat" => "'ctx'",
+            ("source", _) if table == "dp_contact_payout" => "'platform'",
+            ("state", _) if table == "dp_contact_payout" => "'pending'",
+            ("st_hash", _) => "NULL",
             ("source", _) => "'created'",
             ("role", _) => "'coordinator'",
             ("kind", _) if table == "labels" => "'tx'",
