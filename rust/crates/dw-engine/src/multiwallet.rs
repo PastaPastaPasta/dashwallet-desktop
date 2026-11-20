@@ -526,7 +526,7 @@ impl NetworkSession {
 
     /// Registers a watch-only wallet from a BIP44 account xpub (QT-114):
     /// no vault record, so sends fail with `send.watch_only`. Returns its
-    /// id.
+    /// id. Refused (`Storage`) while the dispatch journal is unavailable.
     pub async fn import_watch_only(
         self: &Arc<Self>,
         xpub: String,
@@ -548,6 +548,7 @@ impl NetworkSession {
             let _op = this.enter().await?;
             let held = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
+            this.require_journal()?;
             if live.store.is_unloaded(&id.0) || live.manager.get_wallet(&id.0).await.is_some() {
                 return Err(EngineError::WalletAlreadyExists(id.to_string()));
             }
