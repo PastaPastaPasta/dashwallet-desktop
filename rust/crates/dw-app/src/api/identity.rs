@@ -30,7 +30,7 @@ use self::keys::{FoundIdentity, IdentityDetail, IdentityRefresh, IdentitySummary
 use self::platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PlatformActivity, PlatformAddressBalance,
     PendingPlatformFund, PlatformFundOutcome, PlatformFundQuote, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote,
+    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote,
 };
 use self::names::{ContestStatus, NameAvailability, NameOutcome, UserHit, UsernameCheck};
 use self::registration::{
@@ -460,6 +460,18 @@ commands! {
     ) -> MoveToCoreQuote {
         let dashpay = state.dashpay(&wallet_id).await?;
         Ok(dashpay.move_to_core_quote(amount.into()).await?.into())
+    }
+
+    /// What moving `amount` of the Platform addresses' credits into the
+    /// wallet's own shielded account takes.
+    #[facade("DashPay::platform_shield_quote")]
+    fn platform_shield_quote(
+        state,
+        wallet_id: String,
+        amount: WithdrawAmount,
+    ) -> PlatformShieldQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.platform_shield_quote(amount.into()).await?.into())
     }
 
     /// Moves `amount` of the Platform addresses' credits to `to` (the

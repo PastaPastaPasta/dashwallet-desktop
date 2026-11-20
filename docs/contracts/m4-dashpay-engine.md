@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 67
+Contract-Version: 68
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -580,8 +580,8 @@ by the manager's shutdown at close. Each completed pass that changed a wallet's 
 `Platform{PlatformAddresses}` (§6). 0.1 had **no Platform receive address**: the wallet showed and emptied what it
 found there (RELEASE-PLAN §1). 0.2 (X1b slice 1, version 55) adds the receive address and a send to a Platform address,
 which ship together (§7 item 75), and (version 56) "Add from Dash wallet", a fund of the receive address from the
-Core balance (§7 item 79). Every call refuses an unknown wallet (`wallet_not_found`) and a closed session
-(`network_not_open`).
+Core balance (§7 item 79). 1.0 (C-routes C1a-1, version 68) adds the quote of a move into Shielded (§7 item 88).
+Every call refuses an unknown wallet (`wallet_not_found`) and a closed session (`network_not_open`).
 
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
@@ -599,6 +599,7 @@ Core balance (§7 item 79). Every call refuses an unknown wallet (`wallet_not_fo
 | `platform_fund(duffs, grant)` | async | "Add from Dash wallet", a shield's two steps (§2.13 `shield_from_core`) with another lock type and target. Until Core and the vault can fund it is refused as a top-up is (`platform.signer_unavailable` for a locked vault, `platform.unavailable` while SPV or the bring-up starts, else `platform.context_unavailable`). Under the wallet's fund lock: the quote's checks, the dispatch journal's next free step `paddr/<k>/funding` (a step `MaybeSent` is `platform.broadcast_unknown{artifact}`, `WillBeSent` `platform.will_be_sent`), the grant's funding cap (`platform.grant_exceeded`) and a `PlatformAddressFund` lease (another flow's is `platform.grant_invalid`). **The lock:** an asset lock of `duffs` (funding type `AssetLockAddressTopUp`, credit key `m/9'/coin'/5'/4'/0`, vault scope `PlatformFunding`, §7 item 79), its Core inputs signed by the lease's counted funding signer, at most 50. Whether a lock is out is decided by the step's own signed-lock record, never by the call's result: with none, the call's refusal is returned (`credits.coins_locked`, `credits.too_many_inputs`, …) or, when the broadcast cannot be ruled out, `platform.broadcast_unknown{artifact: step}`. A lock out is recorded in the activity (`FromCore`, below) and, without its InstantSend or ChainLock proof yet, answered `ProofWaiting`. **The apply:** platform-wallet's `fund_from_asset_lock` of that proved lock (`FromExistingAssetLock`, never a new lock) with no address input and the receive address as the one remainder output, which pays Platform's fee, signed with the lock's credit key only (the lease's uncounted funding signer, narrowed to the key the lock's credit output pays) under a call permit. It runs through the unfinished-transfer runner (§2.14) with the type-4 kind, the one apply path of `platform_fund`, `resume_platform_fund` and the recovery's finish, under the wallet's fund lock; only Platform's "already consumed" naming the applied outpoint is the unproved answer, any other failure after the signature reads as one of unknown consumption. Platform executes at most one apply of an outpoint (`verify_is_not_spent`; §7 item 79). `PlatformFundOutcome{txid, state}`: `Applied{credits}` (proved; the lock is settled in the journal and `credits` is the address's proved gain, at most the lock's credits, else the estimate), `ConsumptionUnknown` (a failure after the transition was signed: the lock stays pending, "Checking", until a proved apply; or Platform's unproved "already consumed" for the outpoint: the lock is taken as finished elsewhere and leaves the pending list, its activity ending as §7 item 79 says; neither blocks a new fund), `NotApplied{error}` (refused before the transition was signed; nothing reached Platform; the lock stays pending) or `ProofWaiting`. **Implemented (0.2).** | `CreditsError` |
 | `pending_platform_funds()` | async | `PendingPlatformFund{txid, duffs, proved, consumption_unknown, state}` for each open asset lock of type `AssetLockAddressTopUp` that a `paddr/` step of **this install** signed and no proved apply settled, by txid. `state` is the lock's §2.14 `UnfinishedState`: a `tooSmall` or `unsupported` one can't be finished in this version (no Finish), and neither it nor a `checking` one blocks a new fund; any other open one is `credits.fund_pending{txid}` for the next. A lock no such step signed (a restore on a new install, another app on the seed) is not listed and blocks nothing (a wallet removed and imported again keeps its steps, so its locks stay listed here): `unfinished_transfers` lists it and `finish_transfer(platformAddress, …)` and Finish transfers finish it (§2.14). **Implemented (0.2).** | `CreditsError` |
 | `resume_platform_fund(txid, grant)` | async | "Pending — finish" / "Check again": applies the pending fund lock `txid` (one `pending_platform_funds` lists; else `invalid_argument`) again, whatever its consumption, as `platform_fund` applies it: the same outpoint, never a new lock, to the address its activity record names (else the receive address), under a `PlatformAddressFund` lease of `grant`. A lock with no proof waits up to 30 s for one, else `ProofWaiting`. Only a proved apply settles it. Gated and serialized as `platform_fund`. **Implemented (0.2).** | `CreditsError` |
+| `platform_shield_quote(amount)` | async | What moving `amount` (`WithdrawAmount`) of the payment account's credits into the wallet's own shielded account 0 takes (C-routes D-C1, C1-4; the move itself is C1a-2). The pool's gates come first, as §2.13 orders them: one proved read of the protocol version, below 12 `shielded.not_active`, then the account's viewing keys bound, else `shielded.not_synced{account}` (address funds, 11, are implied). Then one proved read of the addresses with rule 5 as `move_to_core`'s (`platform.context_unavailable`), and the hold: any move or send that may still execute (`Pending`, or `Failed` by height, its nonces not yet taken) is `credits.move_pending{id}`, since a shield signs no other record's terms. The plan is the input-0 planner's: platform-wallet's `shield_to` takes the fee from input 0 (`DeductFromInput(0)`), the first input in `PlatformAddress` order, so input 0 is the first funded address whose balance is above the reserve (`shield_fee_reserve_credits` at the version, twice the flat shielded fee) and keeps the reserve unclaimed; funded addresses before it are left out, later ones below `min_input_amount` too, and at most `max_address_inputs` are taken. An amount is claimed from input 0 first, then in address order; a later input's last share below the input minimum claims the minimum (Drive leaves the excess on the address). `All` (Max) is the usable balance less the reserve. `PlatformShieldQuote{credits, pool_fee_credits, fee_reserve_credits, debit_credits, inputs, grant}`: `credits` the note's value; `pool_fee_credits` the flat fee (`compute_minimum_shielded_fee` of the two-action bundle) that `shield_to` adds to input 0's claim; `fee_reserve_credits` what input 0 keeps, from which Platform takes the fee it meters at execution, with no cap ("about"); `debit_credits = credits + pool_fee_credits + fee_reserve_credits`, the planned debit; `inputs` each address (bech32m) with its claim as the transition sends it, input 0 first with the pool fee; `grant` `{max_duffs: 0, max_credits: debit_credits}`. No claim exceeds its address's proved balance. More than the usable balance less the reserve, or nothing above the reserve, is `platform.insufficient_credits{needed: amount + reserve, available}` (`available` the usable addresses' balance, or, when none is usable, the largest funded address's, since input 0 is one address, so `needed > available` always); an amount of 0 is `credits.send_out_of_range{min: 1}`. Reads only: nothing is recorded, redeemed or signed. **Implemented (1.0 C1a-1).** | `CreditsError` |
 
 **0.1 rulings.** The move pays only the wallet's own Core address, so a move that lands after it was marked `Failed`
 moves the user's credits to the user's wallet; even so a move that may still execute holds its inputs' nonces, so
@@ -636,6 +637,9 @@ derives it through the FFI. The viewing keys are bound to the library at the ses
 shielded call that finds the account unbound, and persisted through the session's store (`shielded.sqlite` holds the
 network's note tree), so a restart rebinds without the seed; the spend authority is derived in the vault for one spend
 and dropped when it returns (§7 item 72).
+
+The move from the Platform addresses into this account is §2.12's (`platform_shield_quote`, 1.0 C1a-1): its money,
+hold and plan are the addresses', and it refuses with this section's gate codes through `CreditsError::Shielded`.
 
 **The gate.** Every call except `shielded_status` first reads the network's protocol version (the SDK's proved version,
 refreshed by one proved read while it is below the activation) and refuses below `SHIELDED_ACTIVATION_VERSION` (12, the
@@ -914,7 +918,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: dca82392a58e8217126ef66a22ea4b3d41acf7d938407ff00f7fff2e9a0ddb40 version: 67 -->
+<!-- surface-sha256: 6ea4bc6220290d7c5b5f650ce063338a4edc8605cdafdc165cd8d22cd6af2c84 version: 68 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1330,8 +1334,10 @@ pub enum CreditsError {
     QuoteChanged,
     FundPending { txid: String },
     TooManyInputs { inputs: u64, max: u64 },
+    Shielded(ShieldedError),
     Platform(PlatformError),
 }
+impl From<ShieldedError> for CreditsError;
 impl CreditsError {
     pub fn code(&self) -> &'static str;
     pub fn platform(&self) -> Option<&PlatformError>;
@@ -1916,6 +1922,15 @@ pub struct PlatformSendOutcome {
     pub estimated: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformShieldQuote {
+    pub credits: u64,
+    pub pool_fee_credits: u64,
+    pub fee_reserve_credits: u64,
+    pub debit_credits: u64,
+    pub inputs: Vec<PlatformAddressRow>,
+    pub grant: GrantRequest,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformFundQuote {
     pub duffs: u64,
     pub fee_duffs: u64,
@@ -1957,6 +1972,7 @@ impl DashPay {
     pub async fn platform_send_grant(&self, operation: String) -> Result<GrantRequest, CreditsError>;
     pub async fn platform_send_bind(&self, operation: String, grant: String) -> Result<Option<String>, CreditsError>;
     pub async fn platform_send(&self, operation: String, grant: String) -> Result<PlatformSendOutcome, CreditsError>;
+    pub async fn platform_shield_quote(&self, amount: WithdrawAmount) -> Result<PlatformShieldQuote, CreditsError>;
     pub async fn platform_fund_quote(&self, duffs: u64) -> Result<PlatformFundQuote, CreditsError>;
     pub async fn platform_fund(&self, duffs: u64, grant: String) -> Result<PlatformFundOutcome, CreditsError>;
     pub async fn pending_platform_funds(&self) -> Result<Vec<PendingPlatformFund>, CreditsError>;
@@ -2536,6 +2552,10 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   fields for that this version would not carry over (update the app).
 - Every other enum wraps `PlatformError` in its `Platform` variant; `code()` passes the inner code through and
   `platform()` returns it.
+- **`CreditsError` also wraps `ShieldedError`** (1.0 C1a-1): a move between the Platform addresses and Shielded
+  refuses with the pool's codes (`shielded.not_active`, `shielded.not_synced{account}`) unchanged. Converting a
+  `ShieldedError` into a `CreditsError` moves its `Platform` variant to `CreditsError::Platform`, so each code has one
+  representation. No new code.
 - **`RegistrationError` also wraps `NameError` and `InvitationError`**: a registration refuses its label with `name.*`
   (including `name.unavailable_for_invite`) and its invitation funding with `invitation.*`. Converting either into a
   `RegistrationError` moves its `Platform` variant to `RegistrationError::Platform`, so each code has one
@@ -2813,6 +2833,10 @@ The shapes are in §3. What they mean, where the name does not say:
   to ask for: `max_duffs` covers the lock and fee, `max_credits` the identity creation, the name and the profile.
   An invitation's quote has `lock_duffs` the invitation's funding, `fee_duffs`, `total_duffs`, `available_duffs`
   and `max_duffs` 0, and `max_credits` with the request to the inviter (item 63).
+- **`PlatformShieldQuote`** (1.0 C1a-1). `debit_credits = credits + pool_fee_credits + fee_reserve_credits`, and
+  `grant.max_credits = debit_credits`, `grant.max_duffs = 0`. `inputs[0]` is input 0, the address the fee comes from,
+  its claim with `pool_fee_credits`; its proved balance less that claim is at least `fee_reserve_credits -
+  pool_fee_credits`.
 - **`GrantRequest`** (in every quote, and from `grant_request`): the caps of the `PlatformOp` grant an action needs,
   computed with the engine's own fee bound (E0-04 §4.2), so a host never sizes `max_credits` from `cost_table()`. The
   engine charges no more than it quoted; a quote that went stale (a fee change) is `platform.grant_exceeded`, and the
@@ -4270,6 +4294,15 @@ renames or reshapes them takes the next version bump:
     the hook a spend is `platform.unavailable` and no pass runs. `platform.cancelled` ("cancelled
     before anything was sent") is not reused either: it is the outcome of a lock that won the permit or an approval
     that ended, and hosts group it with the ended-approval codes, while a refusal here is neither.
+88. **The quote of a move into Shielded and the input-0 planner (1.0 C1a-1, version 68).** `platform_shield_quote`
+    (§2.12) plans with the input-0 planner (C-routes C1-4, §0 "Fee on input 0"): every Platform route whose
+    transition takes its fee from input 0 (the shield; the top-up from Platform, C3a) keeps the route's reserve
+    unclaimed on the first input in `PlatformAddress` order, never the move planner's largest-first fee input, since a
+    largest-first plan under `DeductFromInput(0)` would leave input 0 nothing for the fee and Drive would refuse it
+    after the record holds. The planner also takes a minimum claim for input 0 and a minimum total (C3a's dpp bounds)
+    and refuses below either, typed. It mirrors platform-wallet's own shield planner (`plan_shield_inputs` and
+    `select_inputs` at the pin). `CreditsError` gains the transparent `Shielded(ShieldedError)`
+    arm, no new code (§4). The shield itself, its record and `MoveKind::ToShielded` are C1a-2.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 
