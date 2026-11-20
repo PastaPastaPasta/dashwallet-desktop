@@ -9,7 +9,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { RatesSettings } from "../api/generated/RatesSettings";
 import { keys, useBackend } from "../api/queries";
 import { DashButton } from "../components/basics";
-import { currencyName, localeCurrency } from "../format/fiat";
+import { currencyName, firstCurrency } from "../format/fiat";
 import { RATES_DISCLOSURE, useRates } from "./rates";
 
 /** The disclosure is still owed: Mainnet, prices on, and never seen. */
@@ -19,7 +19,7 @@ export function useRatesConsent(network: NetworkInfo) {
   const view = useRates().data;
   const settings = view?.settings;
   const needed = network.kind === "mainnet" && !!settings && settings.enabled && !settings.disclosed;
-  const currency = settings?.currency ?? localeCurrency(b.locale);
+  const currency = firstCurrency(settings?.currency, b.regionLocale);
   /** Saves the answer; a failed save leaves prices off (nothing was disclosed), so it is not shown. */
   const answer = async (on: boolean) => {
     if (!settings) return;
