@@ -16,14 +16,36 @@
 #   DW_DP_REF=<ref>            what to test (default origin/main)
 set -euo pipefail
 umask 077
+ulimit -c 0
 : "${DW_DP_STATE:?set DW_DP_STATE}" "${DW_DP_FUNDER:?set DW_DP_FUNDER}" "${DW_DP_FUNDER_BIRTH:?set DW_DP_FUNDER_BIRTH}"
 : "${DW_DP_HOLD_UPSTREAM:?set DW_DP_HOLD_UPSTREAM (the unknown-outcome relay needs it)}"
-export DW_DP_NET=${DW_DP_NET:-testnet} DW_DP_STATE DW_DP_FUNDER DW_DP_FUNDER_BIRTH DW_DP_HOLD_UPSTREAM
+if [[ ${DW_DP_NET:-testnet} != testnet ]]; then
+  echo "dashpay-nightly: DW_DP_NET=$DW_DP_NET; the nightly runs on testnet only" >&2
+  exit 1
+fi
+export DW_DP_NET=testnet DW_DP_STATE DW_DP_FUNDER DW_DP_FUNDER_BIRTH DW_DP_HOLD_UPSTREAM
 export DW_DP_STRICT=1
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-12}
 unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR
 
-mkdir -p "$DW_DP_STATE"
+# The state root is checked before anything is written in it: absolute, not a symlink, a
+# directory of this user's with no group or other access (created so when missing).
+if [[ $DW_DP_STATE != /* ]]; then
+  echo "dashpay-nightly: DW_DP_STATE must be an absolute path" >&2
+  exit 1
+fi
+if [[ ! -e $DW_DP_STATE && ! -L $DW_DP_STATE ]]; then
+  mkdir -p "$(dirname "$DW_DP_STATE")"
+  mkdir -m 700 "$DW_DP_STATE"
+fi
+if [[ -L $DW_DP_STATE || ! -d $DW_DP_STATE || ! -O $DW_DP_STATE ]] || (( 0$(stat -c %a "$DW_DP_STATE") & 077 )); then
+  echo "dashpay-nightly: DW_DP_STATE must be a directory (not a symlink) owned by $(id -un), mode 0700" >&2
+  exit 1
+fi
+if [[ -L $DW_DP_STATE/nightly.lock ]]; then
+  echo "dashpay-nightly: $DW_DP_STATE/nightly.lock is a symlink" >&2
+  exit 1
+fi
 exec 9>"$DW_DP_STATE/nightly.lock"
 if ! flock -n 9; then
   echo "dashpay-nightly: another run holds $DW_DP_STATE/nightly.lock" >&2

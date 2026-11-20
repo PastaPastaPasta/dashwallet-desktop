@@ -7,7 +7,8 @@ root:
 1. pay both ways: A pays B and B pays A through the contact channel; each recipient's contact
    activity shows the payment, received from the other, with its amount;
 2. no peers: A pays B with SPV running but no peer connected: reported as `send.no_peers` and
-   definitely not sent, so no payment lock is set, and the next payment with peers goes through
+   definitely not sent, so no payment lock is set (anything else stops the case before a second
+   payment), and the next payment with peers goes through
    (#85, fixed in #123: dash-spv's "no connected peers" used to read as a rejection);
 3. unknown outcome: A pays B through a relay that holds the transaction back, so no node gets it:
    the outcome is unknown; the contact is locked to that txid, the relay holds exactly that
@@ -34,6 +35,7 @@ from dwd_regtest.dashpay import (
     send_kind,
     synced_until,
     try_pay,
+    unsent_for_no_peers,
     wait_until,
 )
 
@@ -64,11 +66,15 @@ def test_pay_both_ways(pair, contacts):
 
 @pytest.fixture(scope="module")
 def no_peers(pair, contacts):
-    """A pays B with SPV running and no peer connected, then pays again with peers."""
+    """A pays B with SPV running and no peer connected, then, only when that left exactly the
+    definite no-peer failure and no lock, pays again with peers."""
     a, b = pair
     with a.session("dp3-no-peers", peers=["127.0.0.1:9"]) as sa:
         error = sa.err("pay-contact", b.identity, "--amount", "130000", timeout=600)
         lock = sa.ok("contact", "lock", b.identity)
+    if not unsent_for_no_peers(error, lock):
+        pytest.fail(f"the payment with no peer was not a definite send.no_peers with no lock (error {error}, "
+                    f"lock {lock}); not paying again")
     with a.session("dp3-after-no-peers") as sa:
         paid = pay_contact(sa, b.identity, 130_000)
     return {"error": error, "lock": lock, "paid": paid}

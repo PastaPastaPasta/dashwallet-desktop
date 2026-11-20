@@ -2058,6 +2058,17 @@ fn action_grant(
     Ok((json!(request), ctx.platform_op(dp, request)?))
 }
 
+/// A contact payment's broadcast error with its `outcome` and
+/// `prepared_txid`: `not_sent` only when `abandon` succeeds. After a panic
+/// the engine is not entered again (the session's health probe comes
+/// first): the outcome stays `unknown`.
+fn broadcast_failure(mut e: CliError, txid: &str, abandon: impl FnOnce() -> bool) -> CliError {
+    let not_sent = !e.is_panic() && abandon();
+    e.params["outcome"] = json!(if not_sent { "not_sent" } else { "unknown" });
+    e.params["prepared_txid"] = json!(txid);
+    e
+}
+
 /// `pay-contact`. The engine refuses a locked contact itself
 /// (`contact.payment_locked`), so this does not read `payment_lock` first.
 /// The grant caps the amount and the estimated fee (only the amount with
@@ -2090,13 +2101,11 @@ fn pay_contact(
         }
         return match ctx.block_on(draft.broadcast(Arc::clone(&prepared))) {
             Ok(outcome) => Ok(paid(Value::Null, &prepared, &outcome.txid)),
-            Err(e) => {
-                let not_sent = ctx.block_on(draft.abandon(Arc::clone(&prepared))).is_ok();
-                let mut e = CliError::from(e);
-                e.params["outcome"] = json!(if not_sent { "not_sent" } else { "unknown" });
-                e.params["prepared_txid"] = json!(prepared.summary().txid);
-                Err(e)
-            }
+            Err(e) => Err(broadcast_failure(
+                CliError::from(e),
+                &prepared.summary().txid,
+                || ctx.block_on(draft.abandon(Arc::clone(&prepared))).is_ok(),
+            )),
         };
     }
     // "Accept and pay" (DP3-01 D14): one credential for both grants, one
@@ -3219,6 +3228,27 @@ mod tests {
         assert_eq!(no_peers.params, json!({"kind": "no_peers"}));
         let spent = CliError::from(EngineError::Send(SendFailure::PreparedTxSpent));
         assert_eq!(spent.params, json!({"kind": "prepared_tx_spent"}));
+    }
+
+    #[test]
+    fn a_broadcast_panic_stays_unknown_without_entering_the_engine() {
+        let e = broadcast_failure(panic_error("an engine task", "the call"), "t1", || {
+            panic!("abandon after a panic")
+        });
+        assert!(e.is_panic());
+        assert_eq!(e.params["outcome"], "unknown");
+        assert_eq!(e.params["prepared_txid"], "t1");
+        let no_peers = || CliError::from(EngineError::Send(SendFailure::NoPeers));
+        let e = broadcast_failure(no_peers(), "t2", || true);
+        assert_eq!(
+            (
+                e.params["outcome"].as_str(),
+                e.params["prepared_txid"].as_str()
+            ),
+            (Some("not_sent"), Some("t2"))
+        );
+        let e = broadcast_failure(no_peers(), "t3", || false);
+        assert_eq!(e.params["outcome"], "unknown");
     }
 
     #[test]

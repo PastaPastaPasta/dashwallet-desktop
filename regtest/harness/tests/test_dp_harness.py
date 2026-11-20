@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import resource
 import socket
 import stat
 import subprocess
@@ -58,8 +59,7 @@ if "import" in args:
     print("error: could not import " + phrase, file=sys.stderr)
     sys.exit(3)
 if "create" in args:
-    print("wallet_id " + "ab" * 32)
-    print("mnemonic {created}")
+    print(os.environ.get("FAKE_CREATE", "wallet_id " + "ab" * 32 + "\nmnemonic {created}"))
     print("seed: {created}", file=sys.stderr)
     sys.exit(0)
 if "send" in args:
@@ -108,12 +108,41 @@ def dp_env(tmp_path: Path, dwcli: Path, **extra: str) -> dict[str, str]:
     return env
 
 
-def run_cases(tmp_path: Path, env: dict[str, str], select: str,
-              junit: str | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(
+class Run:
+    """An inner pytest run: its exit status, and its output only through checks and a masked
+    tail, so no local that pytest prints holds it."""
+
+    __slots__ = ("returncode", "_stdout", "_stderr")
+
+    def __init__(self, proc: subprocess.CompletedProcess):
+        self.returncode, self._stdout, self._stderr = proc.returncode, proc.stdout, proc.stderr
+
+    def __repr__(self) -> str:
+        return f"Run(returncode={self.returncode})"
+
+    def out(self, text: str) -> bool:
+        return text in self._stdout
+
+    def err(self, text: str) -> bool:
+        return text in self._stderr
+
+    def leaks(self) -> dict[str, list[str]]:
+        return {name: found for name, text in (("stdout", self._stdout), ("stderr", self._stderr))
+                if (found := leaks(text))}
+
+    def tail(self, secrets: tuple[str, ...] = ()) -> str:
+        r = Redactor()
+        for value in (FUNDER_PHRASE, CREATED_PHRASE, *secrets):
+            r.add(Secret(value))
+        return r.mask(self._stdout[-3000:] + self._stderr[-3000:])
+
+
+def run_cases(tmp_path: Path, env: dict[str, str], select: str, junit: str | None = None) -> Run:
+    return Run(subprocess.run(
         [sys.executable, "-m", "pytest", "-l", "--tb=long", "-p", "no:cacheprovider", "-o", "addopts=",
-         f"--junitxml={junit or tmp_path / 'junit.xml'}", "-k", select, "tests/dp_secret_cases.py"],
-        cwd=HARNESS, env=env, capture_output=True, text=True, timeout=300)
+         "-o", "junit_logging=all", f"--junitxml={junit or tmp_path / 'junit.xml'}", "-k", select,
+         "tests/dp_secret_cases.py"],
+        cwd=HARNESS, env=env, capture_output=True, text=True, timeout=300))
 
 
 def leaks(text: str) -> list[str]:
@@ -125,58 +154,144 @@ def leaks(text: str) -> list[str]:
     return found
 
 
+def artifact_verdicts(tmp_path: Path, run: Run) -> dict[str, list[str]]:
+    """Each artifact holding a secret (the fixed phrases, the run's vault passphrase), and what;
+    reads everything here, so no caller's local holds an artifact or the passphrase."""
+    passphrase = (tmp_path / "state" / "pass").read_text().strip()
+    verdicts = {name: found for name, found in run.leaks().items()}
+    files = [tmp_path / "junit.xml", *sorted(p for p in (tmp_path / "logs").rglob("*") if p.is_file())]
+    for path in files:
+        text = path.read_text()
+        found = leaks(text) + (["passphrase"] if passphrase in text else [])
+        if found:
+            verdicts[str(path)] = found
+    return verdicts
+
+
 def test_secrets_stay_out_of_every_artifact(tmp_path, fake_dwcli):
     env = dp_env(tmp_path, fake_dwcli)
-    proc = run_cases(tmp_path, env, "funder_import_fails or created_wallet_then_failure")
-    assert proc.returncode == 1, proc.stdout[-4000:] + proc.stderr[-4000:]
-    assert "dwcli import --birth-height 1 --name funder exited 3" in proc.stdout, proc.stdout[-4000:]
-    assert "a failure after a create" in proc.stdout
-    assert "1 failed, 2 deselected, 1 error" in proc.stdout
-    passphrase = (tmp_path / "state" / "pass").read_text().strip()
-    artifacts = {"pytest stdout": proc.stdout, "pytest stderr": proc.stderr,
-                 "junit": (tmp_path / "junit.xml").read_text()}
-    logs = sorted(p for p in (tmp_path / "logs").rglob("*") if p.is_file())
-    assert any(p.name.endswith(".log") for p in logs), logs
-    artifacts.update({str(p): p.read_text() for p in logs})
-    for name, text in artifacts.items():
-        assert not leaks(text), (name, leaks(text))
-        assert passphrase not in text, name
-    assert (tmp_path / "logs" / SCAN_OK).exists(), proc.stderr[-2000:]
-    assert "DashPay secret scan: no secret" in proc.stderr
+    run = run_cases(tmp_path, env, "funder_import_fails or created_wallet_then_failure")
+    assert run.returncode == 1, run.tail()
+    assert run.out("dwcli import --birth-height 1 --name funder exited 3"), run.tail()
+    assert run.out("a failure after a create")
+    assert run.out("1 failed, 2 deselected, 1 error"), run.tail()
+    assert "<system-out>" in (tmp_path / "junit.xml").read_text(), "junit_logging captured nothing"
+    assert any(p.name.endswith(".log") for p in (tmp_path / "logs").rglob("*"))
+    assert artifact_verdicts(tmp_path, run) == {}
+    assert (tmp_path / "logs" / SCAN_OK).exists(), run.tail()
+    assert run.err("DashPay secret scan: no secret")
+
+
+@pytest.mark.parametrize("create", [
+    f"wallet_id {'ab' * 32}\nmnemonic {' '.join(CREATED_PHRASE.split()[:7])}",
+    f"wallet_id {'ab' * 32}\nmnemonic {CREATED_PHRASE}\nmnemonic {CREATED_PHRASE}",
+    f"wallet_id {'ab' * 31}\nmnemonic {CREATED_PHRASE}",
+    f"mnemonic {CREATED_PHRASE}",
+    f"wallet_id {'ab' * 32}\nMnemonic: {CREATED_PHRASE}",
+    f"wallet_id {'ab' * 32}\nmnemonic {CREATED_PHRASE}\nbackup {CREATED_PHRASE.upper().replace(' ', '-')}",
+])
+def test_a_malformed_create_withholds_both_streams(tmp_path, fake_dwcli, monkeypatch, create):
+    monkeypatch.setenv("FAKE_CREATE", create)
+    root = funder_with(tmp_path, fake_dwcli, monkeypatch, "").root
+    with pytest.raises(AssertionError, match="both its streams were withheld"):
+        root.create("m")
+    assert not leaks((root.logs / "funder.log").read_text())
+
+
+def test_a_well_formed_create_keeps_only_its_public_fields(tmp_path, fake_dwcli, monkeypatch):
+    root = funder_with(tmp_path, fake_dwcli, monkeypatch, "").root
+    wallet = root.create("m")
+    assert wallet.id == "ab" * 32 and wallet.mnemonic.reveal() == CREATED_PHRASE
+    log = (root.logs / "funder.log").read_text()
+    assert f"wallet_id {'ab' * 32}\nmnemonic <redacted>\n" in log and not leaks(log)
+
+
+def test_session_answers_are_masked_after_decoding():
+    r = Redactor()
+    r.add(Secret(FUNDER_PHRASE))
+    escaped = "".join(f"\\u{ord(c):04x}" for c in FUNDER_PHRASE)
+    answer = dashpay.session_answer('{"id": 1, "error": {"message": "%s", "%s": 1}}\n' % (escaped, escaped), r)
+    assert answer["id"] == 1 and not leaks(repr(answer)), answer
+    assert dashpay.session_answer("not json " + FUNDER_PHRASE, r) is None
+    assert dashpay.session_answer('{"id": 1, "x": "' + escaped, r) is None
+
+
+def test_stderr_is_masked_across_lines():
+    r = Redactor()
+    r.add(Secret(FUNDER_PHRASE))
+    written: list[str] = []
+    masker = dashpay.LineMasker(r, written.append, window=8)
+    words = FUNDER_PHRASE.split()
+    for i in range(0, 12, 3):
+        masker.feed(f"log {i}: {' '.join(words[i:i + 3])}\n")
+    for i in range(20):
+        masker.feed(f"line {i}\n")
+    masker.flush()
+    assert not leaks("".join(written)), written
+    assert written[-1] == "line 19\n"
 
 
 def test_the_scan_fails_on_a_secret_or_an_unreadable_file(tmp_path, fake_dwcli):
     planted = tmp_path / "out" / "planted.log"
     planted.parent.mkdir()
     planted.write_text("seed\n" + "\n".join(f"{i}. {w}" for i, w in enumerate(FUNDER_PHRASE.split()[3:9], 1)))
-    proc = run_cases(tmp_path, dp_env(tmp_path, fake_dwcli, DW_DP_SCAN=str(planted)), "harness_only")
-    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-2000:]
-    assert f"DashPay secret scan FAILED: a secret in ['{planted}']" in proc.stderr
+    run = run_cases(tmp_path, dp_env(tmp_path, fake_dwcli, DW_DP_SCAN=str(planted)), "harness_only")
+    assert run.returncode == 1, run.tail()
+    assert run.err(f"DashPay secret scan FAILED: a secret in ['{planted}']")
     assert not (tmp_path / "logs" / SCAN_OK).exists()
-    assert not leaks(proc.stdout + proc.stderr)
+    assert run.leaks() == {}
 
     planted.write_text("nothing here\n")
     planted.chmod(0)
     missing = tmp_path / "out" / "missing.log"
-    proc = run_cases(tmp_path, dp_env(tmp_path, fake_dwcli, DW_DP_SCAN=f"{planted}:{missing}"), "harness_only")
-    assert proc.returncode == 1, proc.stdout[-2000:] + proc.stderr[-2000:]
-    assert "unreadable" in proc.stderr and f"{planted} (PermissionError)" in proc.stderr, proc.stderr
-    assert f"{missing} (missing)" in proc.stderr
+    run = run_cases(tmp_path, dp_env(tmp_path, fake_dwcli, DW_DP_SCAN=f"{planted}:{missing}"), "harness_only")
+    assert run.returncode == 1, run.tail()
+    assert run.err("unreadable") and run.err(f"{planted} (PermissionError)"), run.tail()
+    assert run.err(f"{missing} (missing)")
     assert not (tmp_path / "logs" / SCAN_OK).exists()
 
     planted.chmod(0o600)
-    proc = run_cases(tmp_path, dp_env(tmp_path, fake_dwcli, DW_DP_SCAN=str(planted)), "harness_only")
-    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    run = run_cases(tmp_path, dp_env(tmp_path, fake_dwcli, DW_DP_SCAN=str(planted)), "harness_only")
+    assert run.returncode == 0, run.tail()
     assert (tmp_path / "logs" / SCAN_OK).exists()
 
 
 def test_the_scan_runs_without_the_dp_fixture_and_reads_the_junit_pytest_writes(tmp_path, fake_dwcli):
     env = dp_env(tmp_path, fake_dwcli, HOME=str(tmp_path / "home"), DP_JUNIT_DIR="out")
     (tmp_path / "home" / "out").mkdir(parents=True)
-    proc = run_cases(tmp_path, env, "without_the_harness", junit="~/$DP_JUNIT_DIR/junit.xml")
-    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    run = run_cases(tmp_path, env, "without_the_harness", junit="~/$DP_JUNIT_DIR/junit.xml")
+    assert run.returncode == 0, run.tail()
     assert (tmp_path / "logs" / SCAN_OK).exists()
-    assert f"no secret in {tmp_path / 'logs'}, {tmp_path / 'home' / 'out' / 'junit.xml'}" in proc.stderr
+    assert run.err(f"no secret in {tmp_path / 'logs'}, {tmp_path / 'home' / 'out' / 'junit.xml'}")
+
+
+def test_an_undecodable_secret_file_fails_the_run_after_a_scan(tmp_path, fake_dwcli):
+    env = dp_env(tmp_path, fake_dwcli)
+    funder = Path(env["DW_DP_FUNDER"])
+    funder.write_bytes(b"\xff\xfe " + FUNDER_PHRASE.encode() + b"\n")
+    run = run_cases(tmp_path, env, "harness_only")
+    assert run.returncode == 1, run.tail()
+    assert run.out("its first line could not be read as UTF-8 text"), run.tail()
+    assert run.err(f"DashPay secret scan: no secret in {tmp_path / 'junit.xml'}"), run.tail()
+    assert artifact_verdicts(tmp_path, run) == {}
+    assert not run.out("UnicodeDecodeError") and not run.out("\\xff")
+
+
+def test_a_secret_file_is_read_by_its_first_line_on_the_checked_descriptor(tmp_path):
+    path = private(tmp_path / "phrase", "")
+    path.write_bytes(FUNDER_PHRASE.encode() + b"\n\xff\xfe trailing\n")
+    assert dashpay.read_secret(path, "a phrase").reveal() == FUNDER_PHRASE
+    path.write_bytes(b"\xffbad\n")
+    with pytest.raises(HarnessConfigError, match="not be read as UTF-8") as e:
+        dashpay.read_secret(path, "a phrase")
+    assert e.value.__context__ is None and e.value.__cause__ is None
+    link = tmp_path / "link"
+    link.symlink_to(path)
+    with pytest.raises(HarnessConfigError, match="a phrase .*link"):
+        dashpay.read_secret(link, "a phrase")
+    path.chmod(0o640)
+    with pytest.raises(HarnessConfigError, match="open to group or others"):
+        dashpay.read_secret(link, "a phrase", follow=True)
 
 
 def test_the_scan_never_follows_a_link_or_waits_on_a_fifo(tmp_path):
@@ -205,8 +320,12 @@ def test_redactor_masks_a_phrase_in_any_layout():
     r.add(Secret(FUNDER_PHRASE))
     numbered = "\n".join(f"{i}. {w}" for i, w in enumerate(FUNDER_PHRASE.split(), 1))
     for text in (FUNDER_PHRASE, numbered, str(FUNDER_PHRASE.split()), f"mnemonic {CREATED_PHRASE}",
-                 f"seed: {CREATED_PHRASE}"):
+                 f"seed: {CREATED_PHRASE}", FUNDER_PHRASE.upper(), FUNDER_PHRASE.replace(" ", " ;-; " * 20),
+                 FUNDER_PHRASE.replace(" ", "\\n")):
         assert not leaks(r.mask(text)), text
+    for text in (FUNDER_PHRASE.title(), FUNDER_PHRASE.replace(" ", "." * 40), FUNDER_PHRASE.replace(" ", "\\n"),
+                 "".join(f"\\u{ord(c):04x}" for c in FUNDER_PHRASE)):
+        assert Secret(FUNDER_PHRASE).found_in(text), text
     words = FUNDER_PHRASE.split()
     for fragment in (" ".join(words[3:7]), "\n".join(f"{i}. {w}" for i, w in enumerate(words[5:11], 6)),
                      f"{words[0]} x {' '.join(words[2:6])}"):
@@ -225,6 +344,10 @@ def test_redactor_masks_a_phrase_in_any_layout():
     ("testnet", "--peer=mainnet-seed.example:9999", "mainnet"),
     ("testnet", "--datadir /x", "not one of"),
     ("testnet", "--peer", "needs a value"),
+    ("testnet", "--peer=", "needs a value"),
+    ("testnet", "--peer=-x", "needs a value"),
+    ("testnet", "--peer -x", "needs a value"),
+    ("testnet", "--dapi=--network", "needs a value"),
     ("devnet", "--peer 127.0.0.1:20001", "needs DW_DP_NET_ARGS with the devnet's --dapi"),
 ])
 def test_network_configuration_is_refused(monkeypatch, net, args, error):
@@ -277,9 +400,16 @@ def test_state_directory_rules(state_env, monkeypatch):
     with pytest.raises(HarnessConfigError, match="open to group or others"):
         Harness.from_env()
 
+    real = private(tmp / "real-state")
+    (tmp / "state-link").symlink_to(real)
+    monkeypatch.setenv("DW_DP_STATE", str(tmp / "state-link"))
+    with pytest.raises(HarnessConfigError, match="DW_DP_STATE .* is a symlink"):
+        Harness.from_env()
+
     state = tmp / "state"
     monkeypatch.setenv("DW_DP_STATE", str(state))
     harness = Harness.from_env()
+    assert resource.getrlimit(resource.RLIMIT_CORE) == (0, 0)
     assert stat.S_IMODE(state.stat().st_mode) == 0o700
     assert stat.S_IMODE((state / "pass").stat().st_mode) == 0o600
     assert (harness.run_dir / RUN_MARKER).read_text().strip() == harness.run_id
@@ -372,32 +502,55 @@ def funder_with(tmp_path: Path, fake: Path, monkeypatch, stdout: str, rc: int = 
     return Funder(root, "w")
 
 
-PREPARED = "estimate fee=1\nprepared txid=aa11 fee=1\n"
+TX = "aa" * 32
+OTHER_TX = "bb" * 32
+PREPARED = f"estimate fee=1\nprepared txid={TX} fee=1\n"
 
 
-@pytest.mark.parametrize("stdout,expected", [
-    ("failed outcome=not_sent kind=amount_exceeds_balance txid=-\n", None),
-    (PREPARED + "failed outcome=not_sent kind=no_peers txid=aa11\n", None),
-    (PREPARED + "unknown aa11 reason=x\nrebroadcast 1\nfailed outcome=unknown kind=broadcast_unknown txid=aa11 "
-     "reason=not sent this time: transaction broadcast rejected: SPV broadcast not sent: no connected peers\n", "aa11"),
+@pytest.mark.parametrize("stdout,rc,expected", [
+    ("failed outcome=not_sent kind=amount_exceeds_balance txid=-\n", 1, None),
+    (PREPARED + f"failed outcome=not_sent kind=no_peers txid={TX}\n", 1, None),
+    (PREPARED + f"unknown {TX} reason=x\nrebroadcast 1\nfailed outcome=unknown kind=broadcast_unknown txid={TX} "
+     "reason=not sent this time: transaction broadcast rejected: SPV broadcast not sent: no connected peers\n", 1, TX),
+    (PREPARED + f"unknown {TX} reason=x\nfailed outcome=unknown kind=storage txid={TX}\n", 1, TX),
+    (PREPARED + f"output yX 1 change=0 mine=0\nbroadcast {TX}\n", 0, TX),
 ])
-def test_funder_retries_only_what_was_definitely_not_sent(tmp_path, fake_dwcli, monkeypatch, stdout, expected):
-    funder = funder_with(tmp_path, fake_dwcli, monkeypatch, stdout)
+def test_funder_retries_only_what_was_definitely_not_sent(tmp_path, fake_dwcli, monkeypatch, stdout, rc, expected):
+    funder = funder_with(tmp_path, fake_dwcli, monkeypatch, stdout, rc)
     assert funder._try_send(["--to", "x:1"], 1) == expected
 
 
-@pytest.mark.parametrize("stdout,message", [
-    (PREPARED + "failed outcome=not_sent kind=broadcast_rejected txid=aa11 "
-     "reason=SPV broadcast not sent: no connected peers\n", "prepared aa11"),
-    (PREPARED + "failed outcome=not_sent kind=broadcast_rejected txid=aa11 reason=bad-txns-inputs-missingorspent\n",
-     "prepared aa11"),
-    (PREPARED, "prepared aa11"),
-    ("estimate fee=1\n", "funder send failed: None"),
+@pytest.mark.parametrize("stdout,rc", [
+    (PREPARED + f"failed outcome=not_sent kind=broadcast_rejected txid={TX} "
+     "reason=SPV broadcast not sent: no connected peers\n", 1),
+    (PREPARED + f"failed outcome=not_sent kind=broadcast_rejected txid={TX} "
+     "reason=bad-txns-inputs-missingorspent\n", 1),
+    (PREPARED, 1),
+    ("estimate fee=1\n", 1),
+    (PREPARED + f"failed outcome=not_sent kind=no_peers txid={TX[:20]}\n", 1),
+    (PREPARED + f"failed outcome=not_sent kind=no_peers txid={OTHER_TX}\n", 1),
+    (PREPARED + f"failed outcome=not_sent kind=no_peers txid={TX}\nheld reserved=1 unlisted=0\n", 1),
+    (PREPARED + f"failed outcome=not_sent kind=no_peers txid={TX}\nfailed outcome=unknown kind=x txid={TX}\n", 1),
+    (PREPARED + "failed outcome=unknown kind=broadcast_unknown txid=-\n", 1),
+    (PREPARED + f"broadcast {OTHER_TX}\n", 0),
+    (PREPARED + f"broadcast {TX}\n", 1),
+    (PREPARED + f"failed outcome=not_sent kind=no_peers txid={TX}\n", 0),
 ])
-def test_funder_never_resends_an_unclassified_failure(tmp_path, fake_dwcli, monkeypatch, stdout, message):
-    funder = funder_with(tmp_path, fake_dwcli, monkeypatch, stdout)
-    with pytest.raises(AssertionError, match=message):
+def test_funder_never_resends_an_unclassified_failure(tmp_path, fake_dwcli, monkeypatch, stdout, rc):
+    funder = funder_with(tmp_path, fake_dwcli, monkeypatch, stdout, rc)
+    with pytest.raises(AssertionError, match="not sending again"):
         funder._try_send(["--to", "x:1"], 1)
+
+
+def test_funder_waits_for_its_own_transaction_s_outputs(tmp_path, fake_dwcli, monkeypatch):
+    funder = funder_with(tmp_path, fake_dwcli, monkeypatch, "")
+    utxos = (f"utxo {OTHER_TX}:0 900000000 conf=5 locked=0 reserved=0 change=0 address=yA\n"
+             f"utxo {TX}:3 50000000 conf=0 locked=0 reserved=0 change=0 address=yA\n")
+    monkeypatch.setattr(funder.root, "tip", lambda timeout=1800: 7)
+    monkeypatch.setattr(funder.root, "run", lambda *args, **kw: dashpay.Output(0, utxos, ""))
+    assert funder._mined(TX) is None
+    utxos = utxos.replace("conf=0", "conf=1")
+    assert funder._mined(TX) == 7
 
 
 def test_funder_reads_the_tip_again_for_each_attempt(tmp_path, fake_dwcli, monkeypatch, no_sleep):
@@ -487,6 +640,17 @@ def test_send_kind_reads_only_send_errors():
         assert dashpay.send_kind(error) is None, error
     with pytest.raises(AssertionError, match="disagree"):
         dashpay.send_kind({"code": "send.no_peers", "params": {"kind": "broadcast_unknown"}})
+
+
+def test_only_a_definite_no_peer_failure_with_no_lock_allows_the_next_payment():
+    assert dashpay.unsent_for_no_peers(send_error("no_peers", "not_sent")["error"], None)
+    for error, lock in ((send_error("no_peers", "not_sent")["error"], {"txid": "t1"}),
+                        (send_error("no_peers", "unknown")["error"], None),
+                        (send_error("no_peers")["error"], None),
+                        (send_error("broadcast_unknown", "unknown", "x")["error"], None),
+                        (send_error("broadcast_rejected", "not_sent", "no connected peers")["error"], None),
+                        ({"code": "rescan_in_progress", "params": {}}, None)):
+        assert not dashpay.unsent_for_no_peers(error, lock), (error, lock)
 
 
 def test_try_pay_retries_only_a_definitely_unsent_no_peer_failure(no_sleep):

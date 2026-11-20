@@ -174,15 +174,24 @@ harness: one fresh wallet on its own fresh data root per member (its own device)
 from a phrase file outside the repository.
 
 **Secrets.** Phrases and passphrases never go on a command line or into a file the harness
-writes: `dwcli import` reads the phrase from a pipe, a new wallet's phrase is registered before
-any of `dwcli create`'s output is logged, and every dwcli output (stdout, stderr, the session
-transcripts) is masked before it is written or raised. Their `repr` is a mask, so a traceback
-with locals (`-l --tb=long`) shows none. After pytest has written its junit file and summary, a
+writes: `dwcli import` reads the phrase from a pipe; of `dwcli create`'s stdout only the
+validated public fields are kept (one `wallet_id`, one well-formed `mnemonic` line, whose phrase
+is registered before stderr is masked), and when its output is malformed or only partly matches,
+both streams are withheld; a session's answers are decoded and then masked before the harness
+sees them, and its stderr is masked across lines (a phrase split over several lines is masked
+before any of it is written); every other dwcli output is masked before it is written or raised.
+Secret files are read by a bounded first line, checked on the descriptor they are read from; one
+that is not UTF-8 is an error that quotes none of it. Their `repr` is a mask, so a traceback
+with locals (`-l --tb=long`) shows none. The harness sets its core-dump limit to zero (dwcli
+inherits it), so a crash dumps no secret. After pytest has written its junit file and summary, a
 scan reads the logs directory, the junit file and the files `DW_DP_SCAN` names for any secret of
-the run (the whole value, or four phrase words in a row, which the masking also hides); a hit, or a
-file it cannot read (a symlink or anything but a regular file counts as unreadable), fails the
-run, and only a clean scan writes `secret-scan.ok` into the logs directory. With `DW_DP_NET` set
-the scan runs whichever tests ran, even when none of them used the harness.
+the run (the whole value, or four phrase words in a row, in any case, whatever non-letters or
+JSON escapes separate them, also after decoding JSON escapes; the masking hides the same); a hit,
+or a file it cannot read (a symlink or anything but a regular file counts as unreadable), fails
+the run, and only a clean scan writes `secret-scan.ok` into the logs directory. The paths it
+prints are masked too. With `DW_DP_NET` set the scan runs whichever tests ran, even when none of
+them used the harness, and even when the harness could not be set up (it then scans the junit
+file and `DW_DP_SCAN`'s files for the secrets it had read, and the run fails).
 `tests/test_dp_harness.py` checks all of this, and the configuration rules below, without a
 network.
 
@@ -190,7 +199,7 @@ network.
 |---|---|---|
 | `test_dp1_identity.py` | DP1-07 | availability, offline name rules, a registration from the Core balance to `done`, its funding transaction's debit and the wallet's balance change equal, above the lock and within the grant; the identity, its name and keys, the name taken and resolved, the main name after a sync pass and a restart, a restore that finds the identity |
 | `test_dp2_contacts.py` | DP2-06 | the request and accept round trip between two members (A's channel turning ready while its session stays open), the contact in a new process, ignore and unignore (hidden as `ignored` through a pass and a restart; back as a request on the next sweep), hide and show, a restore whose contact (ready) is listed while SPV can reach no peer, before any block is scanned, then the first scan attributing a payment to it; the one-way contact is skipped until a pin bump (E0-14) brings platform #4740: the pinned platform-wallet builds receiving accounts only for established contacts, not for sent-only requests |
-| `test_dp3_payments.py` | DP3-05 | contact payments both ways, a payment with no peer (reported as `send.no_peers`, definitely not sent: no lock), an unknown outcome through a relay that holds the transaction (the contact locked to its txid, the held bytes hashing to it, a second payment refused, `resolve-lock` settling it `Sent` once the relay passed them on), 25 cancelled confirms past the 20-address gap, each naming the same address, then a payment to it that the recipient sees |
+| `test_dp3_payments.py` | DP3-05 | contact payments both ways, a payment with no peer (reported as `send.no_peers`, definitely not sent: no lock; the next payment is made only after exactly that), an unknown outcome through a relay that holds the transaction (the contact locked to its txid, the held bytes hashing to it, a second payment refused, `resolve-lock` settling it `Sent` once the relay passed them on), 25 cancelled confirms past the 20-address gap, each naming the same address, then a payment to it that the recipient sees |
 
 | Variable | Meaning |
 |---|---|
@@ -203,6 +212,11 @@ network.
 | `DW_DP_STRICT` | `1`: the unknown-outcome case fails instead of skipping when the relay is not configured |
 | `DWCLI` | the dwcli binary |
 | `DW_DP_HOLD_UPSTREAM` | `ip:port` of a testnet peer serving BIP157 filters, for the unknown-outcome relay (DP3); that case is skipped when unset (fails with `DW_DP_STRICT=1`) |
+
+The harness assumes `DW_DP_STATE` is private to it: mode 0700, owned by the user that runs the
+suites, on one filesystem, and with no other process of that user working in it while a run
+does. It refuses a state root that is a symlink, open to group or others, or owned by someone
+else; it does not defend against a process of the same user changing the tree under a run.
 
 Each run's member data roots live in `DW_DP_STATE/runs/<run>`, which holds a `.dw-dp-run` marker
 naming the run. A run deletes the marked run directories older than three days; it refuses a
@@ -219,7 +233,10 @@ The funder keeps a dozen mined coins of 0.5 tDASH and splits its balance again w
 four are left: a restarted dwcli no longer knows its own change's InstantSend lock, so change is
 spendable only once mined. It asks again only when `dwcli send`'s last line reports
 `outcome=not_sent` for want of a mined coin or a peer; a send whose outcome is unknown keeps its
-txid and is waited for, never paid again; each attempt syncs to the current tip first. A payment
+txid and is waited for, never paid again; each attempt syncs to the current tip first. Its
+result is the one complete terminal record on the last line (`broadcast <txid>` or
+`failed …`), whose txid must be the prepared one; anything else stops the run without sending
+again. The split waits for that transaction's own outputs to be mined. A payment
 to a member counts once the member's wallet credits that txid with the amount. A contact payment's failure is read from dwcli's JSON:
 an error whose code is `send.<kind>` (one per `SendFailure` variant) and whose `params.kind`
 names the same kind; `pay-contact` asks again only for `no_peers` with `params.outcome` `not_sent`
@@ -231,8 +248,9 @@ runs low. A run costs about 0.1 tDASH per registered member.
 **Nightly (T3).** `scripts/dashpay-nightly.sh` builds dwcli at `origin/main` in its own checkout
 under `DW_DP_STATE` (with `umask 077`, under a `flock` on `DW_DP_STATE/nightly.lock`, with
 `CARGO_TARGET_DIR` unset and the binary path taken from that build) and runs every
-`tests/test_dp*.py` on testnet with `DW_DP_STRICT=1`; it needs `DW_DP_HOLD_UPSTREAM`, and fails
-when no suite matches. pytest's output goes to `pytest.log` only; the script's log and the
+`tests/test_dp*.py` on testnet with `DW_DP_STRICT=1`; it needs `DW_DP_HOLD_UPSTREAM`, fails
+when no suite matches, refuses any `DW_DP_NET` but `testnet`, checks the state root (absolute,
+not a symlink, the user's own, 0700) before it writes anything there, and dumps no core. pytest's output goes to `pytest.log` only; the script's log and the
 journal get its summary lines once the secret scan has passed. Everything stays in
 `DW_DP_STATE/nightly/<date>`. On agentbox it runs from the systemd user timer in `ci/agentbox/`
 (install steps in the service file). It is log-only: it gates nothing and notifies no one. A failed

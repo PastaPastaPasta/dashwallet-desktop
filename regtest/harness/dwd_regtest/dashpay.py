@@ -29,6 +29,7 @@ import json
 import os
 import queue
 import re
+import resource
 import secrets
 import shlex
 import shutil
@@ -80,6 +81,17 @@ def wait_until(check: Callable[[], Any], timeout: float, what: str, interval: fl
         time.sleep(interval)
 
 
+SEPARATOR = r"(?:[^a-z]|\\[a-z])+"
+JSON_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})|\\([\\/\"bfnrt])")
+
+
+def _unescaped(text: str) -> str:
+    """`text` with JSON string escapes decoded, twice (an escaped escape)."""
+    for _ in range(2):
+        text = JSON_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)) if m.group(1) else " ", text)
+    return text
+
+
 class Secret:
     """A phrase or passphrase. Its `repr` and `str` are a mask, so a traceback's locals, an
     f-string or a dataclass `repr` never show it; `reveal()` is the value."""
@@ -100,25 +112,25 @@ class Secret:
     def reveal(self) -> str:
         return self._value
 
-    def _pattern(self, words: int | None = None) -> re.Pattern[str]:
+    def _pattern(self) -> re.Pattern[str]:
+        """The value in any case; for a phrase, also any four of its words in a row, whatever
+        run of non-letters or JSON escapes separates them."""
         parts = self._value.split()
-        if words is None or len(parts) < 2:
-            return re.compile(r"[^a-z]{1,8}".join(map(re.escape, parts)) if len(parts) > 1 else re.escape(self._value))
-        return re.compile("|".join(r"[^a-z]{1,8}".join(map(re.escape, parts[i:i + words]))
-                                   for i in range(len(parts) - words + 1)))
+        if len(parts) < 4:
+            return re.compile(SEPARATOR.join(map(re.escape, parts)) or re.escape(self._value), re.I)
+        windows = [SEPARATOR.join(map(re.escape, parts[i:i + 4])) for i in range(len(parts) - 3)]
+        return re.compile("|".join([SEPARATOR.join(map(re.escape, parts)), *windows]), re.I)
 
     def masked_in(self, text: str) -> str:
-        """`text` with the value masked, and (for a phrase) any four of its words in a row, as
-        `found_in` looks for them."""
-        text = self._pattern().sub(MASK, text.replace(self._value, MASK))
-        return self._pattern(4).sub(MASK, text) if len(self._value.split()) >= 4 else text
+        return self._pattern().sub(MASK, text.replace(self._value, MASK))
 
     def found_in(self, text: str) -> bool:
-        """The whole value, or (for a phrase) any four of its words in a row, whatever separates
-        them."""
+        """The whole value, or (for a phrase) any four of its words in a row, in any case and
+        whatever separates them, in `text` or in `text` with its JSON escapes decoded."""
         if self._value in text:
             return True
-        return len(self._value.split()) >= 4 and self._pattern(4).search(text) is not None
+        pattern = self._pattern()
+        return pattern.search(text) is not None or pattern.search(_unescaped(text)) is not None
 
 
 class Redactor:
@@ -231,19 +243,35 @@ def private_dir(path: Path, what: str) -> Path:
     return path
 
 
-def private_file(path: Path, what: str, follow: bool = False) -> Path:
-    """An existing regular file owned by this user with no group or other access. `follow`:
-    `path` may be a symlink (the secret store's), checked at its target."""
-    st = os.stat(path) if follow else os.lstat(path)
-    if not follow and stat.S_ISLNK(st.st_mode):
-        raise HarnessConfigError(f"{what} {path} is a symlink")
-    _check_private(path, what, st, stat.S_IFREG)
-    return path
+SECRET_LINE_MAX = 4096
 
 
-def read_secret(path: Path) -> Secret:
-    """The first line of `path`."""
-    return Secret(path.read_text().partition("\n")[0])
+def _first_line(fd: int) -> Secret | None:
+    """The first line (at most SECRET_LINE_MAX bytes) of `fd`, or `None` when it is not UTF-8;
+    the bytes stay in this frame, which raises nothing that carries them."""
+    try:
+        data = os.read(fd, SECRET_LINE_MAX + 1)
+        return Secret(data.partition(b"\n")[0].decode("utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def read_secret(path: Path, what: str, follow: bool = False) -> Secret:
+    """The first line of `path`, an existing regular file owned by this user with no group or
+    other access, checked on the descriptor it is read from. `follow`: `path` may be a symlink
+    (the secret store's), checked at its target."""
+    try:
+        fd = os.open(path, os.O_RDONLY | (0 if follow else os.O_NOFOLLOW))
+    except OSError as e:
+        raise HarnessConfigError(f"{what} {path}: {type(e).__name__} ({e.strerror})") from None
+    try:
+        _check_private(path, what, os.fstat(fd), stat.S_IFREG)
+        secret = _first_line(fd)
+    finally:
+        os.close(fd)
+    if secret is None:
+        raise HarnessConfigError(f"{what} {path}: its first line could not be read as UTF-8 text")
+    return secret
 
 
 def clean_runs(runs: Path, now: float | None = None) -> list[str]:
@@ -287,10 +315,10 @@ def net_args(text: str) -> list[str]:
         if option not in NET_OPTIONS:
             raise HarnessConfigError(f"DW_DP_NET_ARGS: {tokens[i]!r} is not one of {', '.join(NET_OPTIONS)}")
         if not eq:
-            if i + 1 >= len(tokens) or tokens[i + 1].startswith("-"):
-                raise HarnessConfigError(f"DW_DP_NET_ARGS: {option} needs a value")
             i += 1
-            value = tokens[i]
+            value = tokens[i] if i < len(tokens) else ""
+        if not value or value.startswith("-"):
+            raise HarnessConfigError(f"DW_DP_NET_ARGS: {option} needs a value (not empty, not starting with '-')")
         out += [option, value]
         i += 1
     return out
@@ -360,8 +388,16 @@ class _Buffer:
     def extend(self, chunk: bytes) -> None:
         self._data.extend(chunk)
 
-    def secrets(self, pattern: str) -> list[Secret]:
-        return [Secret(m.group(1)) for m in re.finditer(pattern, self._data.decode("utf-8", "replace"), re.M)]
+    def parse(self, fields: Callable[[str], tuple[list[Secret], str] | None]) -> tuple[list[Secret], str] | None:
+        """`fields` of the output (its secrets and the public text to keep), or `None` when it is
+        not UTF-8 or `fields` refuses it or fails; nothing raised here carries the output."""
+        try:
+            return fields(self._data.decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return None
+
+    def __len__(self) -> int:
+        return len(self._data)
 
     def masked(self, redactor: Redactor) -> str:
         return redactor.mask(self._data.decode("utf-8", "replace"))
@@ -396,16 +432,17 @@ class Output:
     stderr: str
     timed_out: bool = False
     secrets: list[Secret] = field(default_factory=list)
+    withheld: bool = False
 
     def __repr__(self) -> str:
         return f"Output(returncode={self.returncode}, stdout={len(self.stdout)} chars, stderr={len(self.stderr)} chars)"
 
 
 def execute(argv: list[str], redactor: Redactor, stdin: Secret | None = None, timeout: float = 900,
-            secret_line: str | None = None) -> Output:
-    """Runs `argv` with `stdin` on a pipe. Every secret its stdout prints on a `secret_line`
-    match is registered with `redactor` before any of the output is masked; with a
-    `secret_line` that matches nothing, the stdout is withheld."""
+            fields: Callable[[str], tuple[list[Secret], str] | None] | None = None) -> Output:
+    """Runs `argv` with `stdin` on a pipe. With `fields` (an output that prints a secret), only
+    the public text `fields` keeps of stdout is kept, its secrets are registered with `redactor`
+    before stderr is masked, and when `fields` refuses the output both streams are withheld."""
     stdin_fd = _secret_pipe(stdin) if stdin is not None else subprocess.DEVNULL
     try:
         proc = subprocess.Popen(argv, stdin=stdin_fd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -427,13 +464,40 @@ def execute(argv: list[str], redactor: Redactor, stdin: Secret | None = None, ti
     for reader in readers:
         reader.join(30)
     found: list[Secret] = []
-    if secret_line is not None:
-        found = [redactor.add(s) for s in out.secrets(secret_line) if s]
-    stdout = out.masked(redactor) if secret_line is None or found else "<stdout withheld: no secret line>\n"
-    stderr = err.masked(redactor)
+    parsed = out.parse(fields) if fields is not None else None
+    if fields is None:
+        stdout, stderr = out.masked(redactor), err.masked(redactor)
+    elif parsed is None:
+        stdout = f"<stdout withheld: {len(out)} bytes, not the expected fields>\n"
+        stderr = f"<stderr withheld: {len(err)} bytes>\n"
+    else:
+        found = [redactor.add(secret) for secret in parsed[0]]
+        stdout, stderr = parsed[1], err.masked(redactor)
     out.clear()
     err.clear()
-    return Output(proc.returncode, stdout, stderr, timed_out, found)
+    return Output(proc.returncode, stdout, stderr, timed_out, found, fields is not None and parsed is None)
+
+
+WALLET_ID_LINE = re.compile(r"wallet_id ([0-9a-f]{64})")
+MNEMONIC_FIELD = re.compile(r"mnemonic ((?:[a-z]{3,8} ){11,23}[a-z]{3,8})")
+
+
+def created_fields(text: str) -> tuple[list[Secret], str] | None:
+    """`dwcli create`'s stdout as its public fields: exactly one `wallet_id` (64 hex digits)
+    and exactly one `mnemonic` line of 12, 15, 18, 21 or 24 lowercase words, and no other line
+    naming either, shaped like a phrase or holding part of this one; the phrase is returned as a
+    secret and kept out of the text."""
+    lines = text.splitlines()
+    ids = [m.group(1) for line in lines if (m := WALLET_ID_LINE.fullmatch(line))]
+    tagged = [line for line in lines if "mnemonic" in line.lower() or "wallet_id" in line.lower()]
+    phrases = [m.group(1) for line in lines if (m := MNEMONIC_FIELD.fullmatch(line))]
+    if len(ids) != 1 or len(phrases) != 1 or len(tagged) != 2 or len(phrases[0].split()) % 3:
+        return None
+    phrase = Secret(phrases[0])
+    others = "\n".join(line for line in lines if not MNEMONIC_FIELD.fullmatch(line))
+    if PHRASE_SHAPE.search(others) or phrase.found_in(others):
+        return None
+    return [phrase], f"wallet_id {ids[0]}\nmnemonic {MASK}\n"
 
 
 @dataclass
@@ -457,10 +521,10 @@ class Root:
         return out
 
     def run(self, *args: str, stdin: Secret | None = None, timeout: float = 900, check: bool = True,
-            peers: list[str] | None = None, secret_line: str | None = None) -> Output:
+            peers: list[str] | None = None,
+            fields: Callable[[str], tuple[list[Secret], str] | None] | None = None) -> Output:
         started = time.strftime("%H:%M:%S")
-        out = execute([*self.base(peers), *args], self.redactor, stdin=stdin, timeout=timeout,
-                      secret_line=secret_line)
+        out = execute([*self.base(peers), *args], self.redactor, stdin=stdin, timeout=timeout, fields=fields)
         with open(self.logs / f"{self.path.name}.log", "a") as log:
             log.write(f"--- {started} $ dwcli {' '.join(args)} -> {out.returncode}"
                       f"{' (timed out)' if out.timed_out else ''}\n")
@@ -469,9 +533,9 @@ class Root:
         if out.timed_out:
             raise AssertionError(f"dwcli {' '.join(args)} timed out after {timeout:.0f} s\n"
                                  f"stderr (tail):\n{out.stderr[-4000:]}")
-        if secret_line is not None and not out.secrets:
-            raise AssertionError(f"dwcli {' '.join(args)} printed no line matching {secret_line!r}; "
-                                 "its output was withheld")
+        if out.withheld:
+            raise AssertionError(f"dwcli {' '.join(args)} exited {out.returncode} without the expected output; "
+                                 "both its streams were withheld")
         if check and out.returncode != 0:
             raise AssertionError(
                 f"dwcli {' '.join(args)} exited {out.returncode}\n"
@@ -495,13 +559,8 @@ class Root:
             (self.path / "vault-created").touch()
 
     def create(self, name: str) -> Wallet:
-        out = self.run("create", secret_line=r"^mnemonic (\S.*?)\s*$")
-        if len(out.secrets) != 1:
-            raise AssertionError(f"dwcli create printed {len(out.secrets)} mnemonic lines")
-        wallet_id = re.search(r"^wallet_id (\S+)", out.stdout, re.M)
-        if wallet_id is None:
-            raise AssertionError(f"dwcli create printed no wallet_id\n{out.stdout[-2000:]}")
-        return Wallet(wallet_id.group(1), name, out.secrets[0])
+        out = self.run("create", fields=created_fields)
+        return Wallet(out.stdout.split()[1], name, out.secrets[0])
 
     def restore(self, mnemonic: Secret, birth: int, name: str) -> Wallet:
         self.redactor.add(mnemonic)
@@ -539,9 +598,50 @@ class Root:
         return Session(self, wallet, peers, name)
 
 
+def redacted_json(value: Any, redactor: Redactor) -> Any:
+    """`value` (decoded JSON) with every string in it, keys too, masked."""
+    if isinstance(value, str):
+        return redactor.mask(value, shape=False)
+    if isinstance(value, list):
+        return [redacted_json(v, redactor) for v in value]
+    if isinstance(value, dict):
+        return {redactor.mask(k, shape=False): redacted_json(v, redactor) for k, v in value.items()}
+    return value
+
+
+def session_answer(line: str, redactor: Redactor) -> dict | None:
+    """A session's stdout line as its answer, decoded and then masked; `None` for anything that
+    is not a JSON object. Nothing raised here carries the line."""
+    try:
+        answer = json.loads(line) if line.lstrip().startswith("{") else None
+    except ValueError:
+        answer = None
+    return redacted_json(answer, redactor) if isinstance(answer, dict) else None
+
+
+class LineMasker:
+    """Masks a stream of lines as one text: the last `window` lines stay unwritten until more
+    arrive (or `flush`), so a phrase split across lines is masked before any part is written."""
+
+    def __init__(self, redactor: Redactor, write: Callable[[str], Any], window: int = 32):
+        self.redactor, self.write, self.window = redactor, write, window
+        self.pending: list[str] = []
+
+    def feed(self, line: str) -> None:
+        self.pending = self.redactor.mask("".join([*self.pending, line])).splitlines(keepends=True)
+        while len(self.pending) > self.window:
+            self.write(self.pending.pop(0))
+
+    def flush(self) -> None:
+        for line in self.redactor.mask("".join(self.pending)).splitlines(keepends=True):
+            self.write(line)
+        self.pending = []
+
+
 class Session:
     """`dwcli dashpay session --spv`: one engine with SPV running, as the app keeps it; one JSON
-    request per line, answered in order. Its stderr is masked line by line on its way to the log."""
+    request per line, answered in order. Its answers are decoded, then masked, before the harness
+    sees them; its stderr is masked across lines on its way to the log."""
 
     def __init__(self, root: Root, wallet: str | None, peers: list[str] | None, name: str):
         self.root = root
@@ -553,7 +653,7 @@ class Session:
             args += ["--wallet", wallet]
         self.proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      text=True, bufsize=1)
-        self.lines: queue.Queue[str | None] = queue.Queue()
+        self.lines: queue.Queue[dict | None] = queue.Queue()
         self.readers = [threading.Thread(target=self._read, daemon=True),
                         threading.Thread(target=self._stderr, daemon=True)]
         for reader in self.readers:
@@ -562,12 +662,16 @@ class Session:
 
     def _read(self) -> None:
         for line in self.proc.stdout:
-            self.lines.put(self.root.redactor.mask(line, shape=False))
+            answer = session_answer(line, self.root.redactor)
+            if answer is not None:
+                self.lines.put(answer)
         self.lines.put(None)
 
     def _stderr(self) -> None:
+        masker = LineMasker(self.root.redactor, self.log.write)
         for line in self.proc.stderr:
-            self.log.write(self.root.redactor.mask(line))
+            masker.feed(line)
+        masker.flush()
         self.log.flush()
 
     def call(self, *args: str, wallet: str | None = None, input: str | None = None, timeout: float = 900) -> dict:
@@ -584,16 +688,13 @@ class Session:
         deadline = time.monotonic() + timeout
         while True:
             try:
-                line = self.lines.get(timeout=max(1.0, deadline - time.monotonic()))
+                answer = self.lines.get(timeout=max(1.0, deadline - time.monotonic()))
             except queue.Empty:
                 raise AssertionError(f"dwcli session: no answer to {argv} within {timeout:.0f} s") from None
-            if line is None:
+            if answer is None:
                 raise AssertionError(f"dwcli session ended ({self.proc.wait()}) before answering {argv}")
-            if not line.startswith("{"):
-                continue
-            answer = json.loads(line)
             if answer.get("id") == self.next_id:
-                self.transcript.write(self.root.redactor.mask(line))
+                self.transcript.write(json.dumps(answer) + "\n")
                 self.transcript.flush()
                 return answer
 
@@ -639,20 +740,24 @@ class Harness:
     run_dir: Path = Path(".")
     strict: bool = False
     roots: dict[str, Root] = field(default_factory=dict)
+    funder_phrase: Secret | None = field(default=None, repr=False)
     run_id: str = field(default_factory=lambda: time.strftime("%m%d%H%M") + secrets.token_hex(2))
 
     @classmethod
-    def from_env(cls) -> Harness | None:
+    def from_env(cls, redactor: Redactor | None = None) -> Harness | None:
+        """The run DW_DP_* describes, or `None` when DW_DP_NET is unset. The process (and every
+        dwcli it starts) dumps no core. Every secret read is registered with `redactor` at
+        once, so a caller can scan with it even when this fails."""
         net = Net.from_env()
         if net is None:
             return None
         os.umask(0o077)
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
         raw = os.environ.get("DW_DP_STATE", "")
         if not raw:
             raise HarnessConfigError("set DW_DP_STATE to an absolute directory outside the checkout")
-        state = Path(raw).expanduser()
-        state = private_dir(Path(os.path.realpath(state)) if state.is_absolute() else state, "DW_DP_STATE")
-        redactor = Redactor()
+        state = private_dir(Path(raw).expanduser(), "DW_DP_STATE")
+        redactor = Redactor() if redactor is None else redactor
         passfile = state / "pass"
         if not os.path.lexists(passfile):
             fd = os.open(passfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -660,13 +765,15 @@ class Harness:
                 os.write(fd, (secrets.token_urlsafe(24) + "\n").encode())
             finally:
                 os.close(fd)
-        redactor.add(read_secret(private_file(passfile, "the vault passphrase file")))
+        redactor.add(read_secret(passfile, "the vault passphrase file"))
         funder = os.environ.get("DW_DP_FUNDER")
+        phrase = None
         if funder:
             path = Path(funder).expanduser()
             _outside_repo(path, "DW_DP_FUNDER")
-            redactor.add(read_secret(private_file(path, "DW_DP_FUNDER", follow=True)))
-        harness = cls(net, state, Path("."), redactor, strict=os.environ.get("DW_DP_STRICT") == "1")
+            phrase = redactor.add(read_secret(path, "DW_DP_FUNDER", follow=True))
+        harness = cls(net, state, Path("."), redactor, strict=os.environ.get("DW_DP_STRICT") == "1",
+                      funder_phrase=phrase)
         runs = private_dir(state / "runs", "the runs directory")
         clean_runs(runs)
         harness.run_dir = runs / harness.run_id
@@ -697,11 +804,10 @@ class Harness:
         return f"{prefix}{digits}"
 
     def funder(self) -> Funder:
-        phrase_file = os.environ.get("DW_DP_FUNDER")
+        phrase = self.funder_phrase
         birth = os.environ.get("DW_DP_FUNDER_BIRTH")
-        if not phrase_file or not birth:
+        if phrase is None or not birth:
             raise HarnessConfigError("set DW_DP_FUNDER (a phrase file outside the repository) and DW_DP_FUNDER_BIRTH")
-        phrase = self.redactor.add(read_secret(Path(phrase_file).expanduser()))
         root = self.root("funder")
         try:
             wallet = root.find("funder")
@@ -718,27 +824,53 @@ class Harness:
         """The end-of-run secret scan of the logs directory and `extra` (the junit file, the
         nightly's pytest output): prints its verdict, writes `secret-scan.ok` in the logs
         directory only when every file was read and none holds a secret."""
-        paths = [self.logs, *extra]
         ok_file = self.logs / SCAN_OK
-        if ok_file.exists():
+        if os.path.lexists(ok_file):
             ok_file.unlink()
-        leaked, unreadable = self.redactor.scan(paths)
-        if leaked or unreadable:
-            print(f"DashPay secret scan FAILED: a secret in {leaked or 'no file'}; unreadable: {unreadable or 'none'}",
-                  file=sys.__stderr__, flush=True)
+        verdict = scan_verdict(self.redactor, [self.logs, *extra])
+        if verdict is None:
             return False
-        ok_file.write_text(f"{len(self.redactor)} secrets, none in {', '.join(map(str, paths))}\n")
-        print(f"DashPay secret scan: no secret in {', '.join(map(str, paths))}", file=sys.__stderr__, flush=True)
+        ok_file.write_text(f"{len(self.redactor)} secrets, {verdict}\n")
         return True
 
 
-def parse_send_failure(stdout: str) -> dict[str, str] | None:
-    """`dwcli send`'s last line on a failure: `failed outcome=… kind=… txid=…[ reason=…]`."""
-    m = re.search(r"^failed outcome=(\S+) kind=(\S+) txid=(\S+)(?: reason=(.*))?$", stdout, re.M)
-    if m is None:
+def scan_verdict(redactor: Redactor, paths: list[Path]) -> str | None:
+    """Scans `paths` for `redactor`'s secrets and prints the verdict, with every path masked;
+    the clean verdict, or `None` when a file holds a secret or could not be read."""
+    leaked, unreadable = redactor.scan(paths)
+    if leaked or unreadable:
+        print(redactor.mask(f"DashPay secret scan FAILED: a secret in {leaked or 'no file'}; "
+                            f"unreadable: {unreadable or 'none'}"), file=sys.__stderr__, flush=True)
         return None
-    return {"outcome": m.group(1), "kind": m.group(2), "txid": "" if m.group(3) == "-" else m.group(3),
-            "reason": m.group(4) or ""}
+    verdict = redactor.mask(f"none in {', '.join(map(str, paths))}")
+    print(f"DashPay secret scan: {verdict.replace('none in', 'no secret in', 1)}", file=sys.__stderr__, flush=True)
+    return verdict
+
+
+TXID = r"[0-9a-f]{64}"
+SEND_PREPARED = re.compile(rf"prepared txid=({TXID}) .*")
+SEND_SENT = re.compile(rf"broadcast ({TXID})")
+SEND_FAILED = re.compile(rf"failed outcome=(not_sent|unknown) kind=([a-z_.]+) txid=({TXID}|-)(?: reason=(.*))?")
+
+
+def send_result(stdout: str) -> dict[str, str] | None:
+    """`dwcli send`'s one complete terminal record, its last line: `broadcast <txid>` (outcome
+    `sent`) or `failed outcome=… kind=… txid=…[ reason=…]`, whose txid must be the one prepared
+    line's (`-` when none was prepared). `None` when there is no such record, more than one, or
+    the txids disagree."""
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    terminal = [line for line in lines if line.startswith(("broadcast", "failed"))]
+    prepared = [m.group(1) for line in lines if (m := SEND_PREPARED.fullmatch(line))]
+    if len(terminal) != 1 or lines[-1] != terminal[0] or len(prepared) > 1:
+        return None
+    if m := SEND_SENT.fullmatch(terminal[0]):
+        result = {"outcome": "sent", "kind": "", "txid": m.group(1), "reason": ""}
+    elif m := SEND_FAILED.fullmatch(terminal[0]):
+        result = {"outcome": m.group(1), "kind": m.group(2), "txid": "" if m.group(3) == "-" else m.group(3),
+                  "reason": m.group(4) or ""}
+    else:
+        return None
+    return result if result["txid"] == (prepared[0] if prepared else "") else None
 
 
 def funder_may_retry(failure: dict[str, str]) -> bool:
@@ -777,7 +909,7 @@ class Funder:
         for _ in range(self.coins):
             to += ["--to", f"{self.root.address(self.wallet)}:{each}"]
         txid = wait_until(lambda: self._try_send(to, self.root.tip()), 1800, "a mined coin to split", interval=30)
-        return wait_until(lambda: self._mined(duffs), 1800, f"the split coins of {txid} to be mined", interval=30)
+        return wait_until(lambda: self._mined(txid), 1800, f"the split coins of {txid} to be mined", interval=30)
 
     def _try_send(self, to: list[str], height: int) -> str | None:
         """The txid, or `None` when dwcli reports that nothing was sent and asking again may
@@ -785,27 +917,32 @@ class Funder:
         it, never pays again."""
         out = self.root.run("send", self.wallet, *to, "--sync-height", str(height), "--rebroadcast-unknown", "3",
                             check=False)
-        if out.returncode == 0:
-            return re.search(r"^broadcast (\S+)$", out.stdout, re.M).group(1)
-        failure = parse_send_failure(out.stdout)
-        if failure is not None and funder_may_retry(failure):
+        result = send_result(out.stdout)
+        if result is not None and result["outcome"] == "sent" and out.returncode == 0:
+            return result["txid"]
+        if result is not None and out.returncode != 0 and funder_may_retry(result):
             return None
-        prepared = re.search(r"^prepared txid=(\S+)", out.stdout, re.M)
-        txid = (failure or {}).get("txid") or (prepared.group(1) if prepared else "")
-        if failure is not None and failure["outcome"] == "unknown" and txid:
-            print(f"funder send {txid}: outcome unknown ({failure['kind']}: {failure['reason']}); "
+        if result is not None and out.returncode != 0 and result["outcome"] == "unknown" and result["txid"]:
+            print(f"funder send {result['txid']}: outcome unknown ({result['kind']}: {result['reason']}); "
                   "waiting for it, not paying again")
-            return txid
-        raise AssertionError(f"funder send failed{f' (prepared {txid})' if txid else ''}: {failure}\n"
+            return result["txid"]
+        prepared = re.findall(rf"^prepared txid=({TXID})", out.stdout, re.M)
+        raise AssertionError(f"funder send exited {out.returncode}{f' (prepared {prepared})' if prepared else ''}: "
+                             f"{result or 'no single complete terminal record'}; not sending again\n"
                              f"{out.stderr[-2000:]}")
 
-    def _mined(self, duffs: int) -> int | None:
+    def _mined(self, txid: str) -> int | None:
+        """The tip once an output of `txid` is in a scanned block."""
         tip = self.root.tip()
-        return tip if sum(1 for c in self.mined_coins() if c >= duffs) >= 4 else None
+        for line in self.root.run("utxos", self.wallet).stdout.splitlines():
+            m = re.match(rf"utxo {txid}:\d+ \d+ conf=(\d+) ", line)
+            if m and int(m.group(1)) > 0:
+                return tip
+        return None
 
     def pay(self, to: Root, wallet: str, duffs: int, coins: int = 1) -> tuple[str, int, int]:
         """Pays `duffs` to `wallet` as `coins` equal outputs and waits until `to` has scanned a
-        block and credits this payment's txid with them; returns the txid, the height `to`
+        block and credits this payment's txid with them (no other coin counts); returns the txid, the height `to`
         scanned and its total then."""
         tip = self.ensure_coins(duffs)
         outputs = []
@@ -823,7 +960,7 @@ class Funder:
         while True:
             height += 1
             balances = to.sync_wallet(wallet, height, timeout=1200)
-            if int(balances.get("total", "0")) >= duffs and credited(to, wallet, txid) >= duffs:
+            if credited(to, wallet, txid) >= duffs:
                 return txid, height, int(balances["total"])
             if height > sent_at[0] + 6:
                 raise AssertionError(f"{wallet} saw no funding {txid} by height {height}: {balances}")
@@ -956,6 +1093,13 @@ def definitely_unsent_no_peers(error: dict) -> bool:
     if error.get("code") == "rescan_in_progress":
         return True
     return send_kind(error) == "no_peers" and (error.get("params") or {}).get("outcome") == "not_sent"
+
+
+def unsent_for_no_peers(error: dict, lock: dict | None) -> bool:
+    """Exactly what a payment with no peer connected must leave: `send.no_peers`, definitely
+    not sent (`outcome: not_sent`), and no lock on the contact."""
+    return (error.get("code") == "send.no_peers" and send_kind(error) == "no_peers"
+            and (error.get("params") or {}).get("outcome") == "not_sent" and lock is None)
 
 
 def try_pay(session: Session, contact: str, duffs: int, *extra: str, timeout: float = 900) -> dict:

@@ -478,7 +478,7 @@ pub fn run(
                                         ..Default::default()
                                     },
                                 ))
-                                .map_err(e)?;
+                                .map_err(|err| failed(&err, "unknown", Some(&s.txid)))?;
                             let reserved = coins
                                 .iter()
                                 .filter(|c| inputs.contains(&c.outpoint) && c.reserved)
@@ -492,10 +492,12 @@ pub fn run(
                                 Err(EngineError::Send(SendFailure::PreparedTxSpent)) => {
                                     println!("abandon refused");
                                 }
-                                other => {
-                                    return Err(format!(
-                                        "abandon after an unknown outcome: {other:?}"
-                                    ));
+                                Err(err) => return Err(failed(&err, "unknown", Some(&s.txid))),
+                                Ok(()) => {
+                                    let err = EngineError::Send(SendFailure::BroadcastUnknown {
+                                        reason: "abandoned after an unknown outcome".into(),
+                                    });
+                                    return Err(failed(&err, "unknown", Some(&s.txid)));
                                 }
                             }
                             println!("rebroadcast {repeats}");

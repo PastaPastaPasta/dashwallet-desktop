@@ -15,6 +15,10 @@
 # yourself, e.g. `OnFailure=<a unit that sends a message>` under [Unit], or monitoring that
 # checks `systemctl --user is-failed dw-dashpay-nightly`.
 #
+# The unit runs on testnet only: the script refuses any other DW_DP_NET (one set in the
+# environment file included). LimitCORE=0 (and the harness's own core limit) keeps a crash from
+# dumping a process that holds the run's secrets.
+#
 # The unit uses the system's default temporary directory; to use another, set TMPDIR in the
 # environment file to an existing directory this user can write.
 [Unit]
@@ -24,6 +28,8 @@ Description=dashwallet-desktop DashPay suites on testnet, nightly (DASHPAY §6 T
 Type=oneshot
 EnvironmentFile=%h/.config/dashwallet-desktop/dashpay-nightly.env
 UMask=0077
+LimitCORE=0
+Environment=DW_DP_NET=testnet
 ExecStart=/bin/bash -c 'exec "$DW_DP_STATE/dashpay-nightly.sh"'
 Nice=10
 TimeoutStartSec=4h
