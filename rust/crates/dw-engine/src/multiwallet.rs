@@ -552,8 +552,10 @@ impl NetworkSession {
     /// Puts a wallet registered here on the load-on-startup list (`listed`),
     /// when there is one, so it loads at the next start whatever was closed
     /// before it; or takes off one a restore's rollback removed. A failed
-    /// write is logged only: the wallet's registration stands, and the list
-    /// in memory changes all the same.
+    /// write is logged only and the wallet's registration stands. The list
+    /// in memory then changes only when it named no wallet: the stored one
+    /// names none either, so the next start opens every wallet, this one
+    /// included. Otherwise it stays as stored.
     pub(crate) async fn list_on_startup(&self, _held: &Lifecycle<'_>, id: WalletId, listed: bool) {
         let Some(mut list) = self
             .startup_list
@@ -563,6 +565,7 @@ impl NetworkSession {
         else {
             return;
         };
+        let named_none = list.is_empty();
         let changed = if listed {
             list.insert(id)
         } else {
@@ -586,10 +589,12 @@ impl NetworkSession {
                 write_startup_list(db, &stored)
             })
             .await;
-        if let Err(e) = written {
+        if let Err(e) = &written {
             tracing::warn!(wallet_id = %id, error = %e, "could not update the load-on-startup list");
         }
-        *self.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list);
+        if written.is_ok() || named_none {
+            *self.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list);
+        }
     }
 
     /// The BIP44 account xpub (IOS-111). Public data, no grant. A

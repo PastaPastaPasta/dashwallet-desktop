@@ -16,6 +16,7 @@ const ABANDON_12: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const LEGAL_12: &str =
     "legal winner thank year wave sausage worth useful legal winner thank yellow";
+const ZOO_12: &str = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
 
 struct NullSink;
 impl EventSink for NullSink {
@@ -68,6 +69,12 @@ fn import(engine: &Engine, s: &Arc<NetworkSession>, phrase: &str) -> WalletId {
 fn on_startup(s: &NetworkSession) -> Vec<(WalletId, bool)> {
     (s.wallet_load_states().unwrap().into_iter())
         .map(|w| (w.wallet_id, w.load_on_startup))
+        .collect()
+}
+
+fn listed(s: &NetworkSession) -> Vec<WalletId> {
+    (on_startup(s).into_iter())
+        .filter_map(|(w, on)| on.then_some(w))
         .collect()
 }
 
@@ -200,5 +207,32 @@ fn a_wallet_added_after_the_last_removal_is_ticked_when_the_write_fails() {
     let b = import(&engine, &s, LEGAL_12);
     assert_eq!(on_startup(&s), vec![(b, true)]);
     assert_eq!(stored_list(&s).as_deref(), Some("none"));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A wallet added beside a listed one while the list cannot be stored
+/// shows unticked, as the next start will leave it closed.
+#[test]
+fn a_wallet_added_beside_a_listed_one_is_unticked_when_the_write_fails() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine(&dir.path().join("data"));
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let a = import(&engine, &s, ABANDON_12);
+    let b = import(&engine, &s, LEGAL_12);
+    (engine.block_on(s.set_load_on_startup(b, false))).unwrap();
+    (crate::wallets::FAIL_LISTING_RETRY_IN.lock().unwrap()).push(s.data_dir().to_path_buf());
+    import(&engine, &s, ZOO_12);
+    assert_eq!(listed(&s), vec![a]);
+    assert_eq!(stored_list(&s), Some(a.to_string()));
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    let s = open(&engine);
+    assert_eq!(listed(&s), vec![a]);
+    let loaded: Vec<WalletId> = (s.wallet_load_states().unwrap().into_iter())
+        .filter_map(|w| w.loaded.then_some(w.wallet_id))
+        .collect();
+    assert_eq!(loaded, vec![a]);
     engine.block_on(engine.shutdown()).unwrap();
 }

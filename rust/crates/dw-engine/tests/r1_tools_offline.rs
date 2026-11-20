@@ -336,6 +336,11 @@ fn a_list_naming_no_wallet_opens_every_one_and_is_repaired() {
         let s = open(&engine);
         assert_eq!(loaded_ids(&s), vec![a, b], "{stale}");
         assert_eq!(on_startup(&s), vec![(a, true), (b, true)], "{stale}");
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        assert_eq!(stored_list(&root), Some(every.join(",")), "{stale}");
+        let s = open(&engine);
         engine.block_on(s.set_load_on_startup(a, false)).unwrap();
         engine.block_on(s.set_load_on_startup(a, true)).unwrap();
     }
