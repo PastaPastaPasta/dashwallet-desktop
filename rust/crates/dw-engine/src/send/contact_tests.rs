@@ -2557,3 +2557,6 @@ fn t2_testnet_the_money_gate_verifies_a_contact() {
         .block_on(engine.close_network(DashNetwork::Testnet))
         .ok();
 }
+
+#[path = "contact_pay_tests.rs"]
+mod pay;
