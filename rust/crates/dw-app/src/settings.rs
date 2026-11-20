@@ -4,9 +4,11 @@
 //! file atomically (a temporary file renamed over it). Nothing secret is
 //! kept here.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use ts_rs::TS;
 
 use crate::api::units::DisplayUnit;
@@ -82,8 +84,9 @@ const MAX_LANGUAGE_LEN: usize = 35;
 /// The language tags this app accepts: a deliberately narrower grammar than
 /// BCP 47. A 2–3 letter language, then subtags of 1–8 letters or digits; a
 /// single-character subtag (an extension or private-use singleton) must be
-/// followed by a longer subtag. Private-use-only tags (`x-wallet`) and
-/// grandfathered tags are refused.
+/// followed by a longer subtag. Private-use-only tags (`x-wallet`) and the
+/// irregular grandfathered tags (`i-klingon`) are refused; this is a check
+/// of shape, not of the registry.
 fn is_language_tag(tag: &str) -> bool {
     if tag.len() > MAX_LANGUAGE_LEN {
         return false;
@@ -190,16 +193,18 @@ pub fn read(root: &Path) -> UiSettings {
 
 /// The file's settings. A `language` of the wrong type reads as `null`
 /// (follow the system) rather than failing the whole file: the other
-/// settings, auto-lock among them, stay as saved. IPC writes deserialize
-/// `UiSettings` directly and stay strict.
+/// settings, auto-lock among them, stay as saved. The fields are split as
+/// raw text, so a `language` of any shape or depth is set aside unparsed.
+/// IPC writes deserialize `UiSettings` directly and stay strict.
 fn from_file(text: &str) -> serde_json::Result<UiSettings> {
-    let mut value: serde_json::Value = serde_json::from_str(text)?;
-    let language = value
-        .as_object_mut()
-        .and_then(|o| o.remove("language"))
-        .and_then(|v| serde_json::from_value::<Option<String>>(v).ok())
+    let Ok(mut fields) = serde_json::from_str::<BTreeMap<String, &RawValue>>(text) else {
+        return serde_json::from_str(text);
+    };
+    let language = fields
+        .remove("language")
+        .and_then(|raw| serde_json::from_str::<Option<String>>(raw.get()).ok())
         .flatten();
-    let mut settings: UiSettings = serde_json::from_value(value)?;
+    let mut settings: UiSettings = serde_json::from_str(&serde_json::to_string(&fields)?)?;
     settings.language = language;
     Ok(settings)
 }
@@ -371,7 +376,8 @@ mod tests {
     #[test]
     fn a_wrong_typed_language_keeps_the_other_settings() {
         let dir = root();
-        for language in ["7", "true", "[]", r#"{"tag":"en"}"#] {
+        let nested = format!("{}{}", "[".repeat(300), "]".repeat(300));
+        for language in ["7", "true", "[]", r#"{"tag":"en"}"#, nested.as_str()] {
             let file = format!(
                 r#"{{"autoLockSecs":300,"autohideBalance":true,"unit":"duffs","language":{language}}}"#
             );

@@ -26,7 +26,8 @@ language. The choice is saved with the other display settings (`UiSettings.langu
 than BCP 47: a 2–3 letter language, then subtags of 1–8 letters or digits, each single-character
 subtag (an extension or private-use singleton) followed by a longer subtag, at most 35 bytes. So
 `de-u-co-phonebk` and `en-x-wallet` are accepted, `en-u`, `en-x` and private-use-only tags
-(`x-wallet`) are not. A `language` of the wrong type in a hand-edited file reads as `null` and leaves
+(`x-wallet`) are not. The grammar is a check of shape, not of the registry. A `language` of the wrong
+type in a hand-edited file, of any shape or depth, reads as `null` and leaves
 the other settings as saved; an IPC write with one is refused. System default takes the system's first
 language that has a **complete** catalog, by tag and then by language alone (`pt-PT` takes `pt`), and
 English otherwise. Reset options goes back to System default.
@@ -66,8 +67,9 @@ const t = useT();
 - A text module that is read outside a component (`NetworkText`, `LockText`) reads `t` in a getter or a
   function, so it is read in the language of the render that reads it. A table becomes
   `messageTable(prefix, keys)`.
-- In a right-to-left language each placeholder value is a bidi isolate, so a username or address keeps
-  its own direction. Text that is only data (a wallet name, `@username`) goes in `<bdi>`.
+- In a right-to-left language each placeholder value that is text or a number is a bidi isolate, so a
+  username or address keeps its own direction. An element given to `t.rich` is placed as it is. Text
+  that is only data (a wallet name, `@username`) goes in `<bdi>`.
 
 `Catalog<typeof en>` types every other language: a key English does not have fails `tsc`, and a missing
 key shows English. A test checks that each translation uses only English's placeholders and tags.
@@ -111,7 +113,8 @@ catalog messages are now formatted for the locale, so a peer count of 1234 reads
 ### What the checks catch
 
 - `converted.test.ts` reads each converted `.tsx` file and fails on JSX text, on a string literal in a
-  text attribute or copy prop, on a template literal, and on the literal branches of `?:` and `??`/`||`.
+  text attribute or copy prop, on a template literal, on both literal branches of `?:`, and on a
+  literal right-hand side of `??` or `||`.
   It does not see text built elsewhere and passed in: a helper's return value (`title={helper()}`), an
   imported constant, concatenation, a string handed to `showToast`, or an error-code mapping.
 - `e2e/i18n.spec.ts` walks the visible text nodes under the toolbar, sidebar, status bar and the page
