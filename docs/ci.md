@@ -276,7 +276,7 @@ PSBT seed replays the fix.
 
 `cargo test --workspace` replays every seed of the eight targets that build without the `engine` feature, and
 every input saved under `rust/fuzz/regressions/<target>/` (a minimised finding kept after its fix), through the
-same harness on stable, in REPLAY_TIME; `cargo test -p dw-fuzz --features engine` adds `avatar` and `invitation`.
+same harness on stable, in about 3 seconds of a debug build on a desktop-class x86-64 workstation (about 2 s of CPU time); `cargo test -p dw-fuzz --features engine` adds `avatar` and `invitation`.
 
 No target covers yet: image-to-route dispatch, the InstantLock decoding of an invitation at claim time, peer
 frames and governance messages, Platform profile and contact documents, native backup headers and bodies, vault
