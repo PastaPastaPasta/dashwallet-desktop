@@ -31,6 +31,8 @@ fail() {
 }
 [[ ${DW_DP_NET:-testnet} == testnet ]] || fail "DW_DP_NET=$DW_DP_NET; the nightly runs on testnet only"
 [[ $DW_DP_NOTIFY == /* && -x $DW_DP_NOTIFY ]] || fail "DW_DP_NOTIFY must be an absolute path to an executable"
+[[ $DW_DP_FUNDER == /* ]] || fail "DW_DP_FUNDER must be an absolute path"
+funder=$(realpath -e "$DW_DP_FUNDER") || fail "DW_DP_FUNDER names no file"
 # The fetch, the build and the dependency install run code of the fetched revision. They run
 # without the funder's variables and through dashpay-unfunded.sh, where the state root holds only
 # the checkout and the funder's phrase file reads empty. The suites then run that revision with
@@ -69,13 +71,13 @@ flock -n 9 || fail "another run holds $state/nightly.lock"
 repo=$state/repo
 mkdir -p "$state/nightly" "$repo"
 unfunded() {
-  "$(dirname "$self")/dashpay-unfunded.sh" "$state" "$repo" "$DW_DP_FUNDER" "$@"
+  "$(dirname "$self")/dashpay-unfunded.sh" "$state" "$repo" "$funder" "$@"
 }
 out=$state/nightly/$(date -u +%Y%m%d-%H%M%S)
 mkdir "$out"
 exec > >(tee -a "$out/nightly.log") 2>&1
 
-if ! unfunded "$repo" bash -c '[[ ! -s $1 && ! -e $2 ]]' _ "$(realpath -e "$DW_DP_FUNDER")" "$state/nightly"; then
+if ! unfunded "$repo" bash -c '[[ ! -s $1 && ! -e $2 ]]' _ "$funder" "$state/nightly"; then
   echo "dashpay-nightly: the build's sandbox did not start, or it can read the funder's file or the state root"
   exit 1
 fi

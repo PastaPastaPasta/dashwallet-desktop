@@ -258,7 +258,8 @@ fetch, the build and the dependency install run code of the fetched revision, so
 the funder's variables are exported to anything and through `scripts/dashpay-unfunded.sh`: in a
 bubblewrap mount namespace where the state root holds only the checkout and the funder's phrase
 file reads empty. The launcher checks that at every run and fails without it; there is no
-fallback. The sandbox hides files. It does not confine a build that asks this user's service
+fallback. It refuses a funder file named by a relative path or with a second hard link,
+which the sandbox could not hide. The sandbox hides files. It does not confine a build that asks this user's service
 manager or a container daemon to run something outside it, and the suites then run the fetched
 revision with the funder: the funder must be a dedicated testnet wallet with a small capped
 balance, never one holding anything else.

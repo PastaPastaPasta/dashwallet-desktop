@@ -8,11 +8,14 @@
 #   dashpay-unfunded.sh <state> <repo> <funder> <dir> <command> [argument...]
 #
 # <state> and <repo> are canonical paths, <repo> a directory inside <state>; <funder> is the
-# phrase file; <dir> is where the command starts.
+# phrase file, an absolute path, with no other hard link (one elsewhere would stay readable);
+# <dir> is where the command starts.
 set -euo pipefail
 [[ $# -ge 5 ]] || { echo "usage: dashpay-unfunded.sh <state> <repo> <funder> <dir> <command> [argument...]" >&2; exit 2; }
+[[ $3 == /* ]] || { echo "dashpay-unfunded: the funder's file must be an absolute path" >&2; exit 1; }
 state=$1 repo=$2 funder=$(realpath -e "$3") dir=$4
 shift 4
+[[ $(stat -c %h "$funder") == 1 ]] || { echo "dashpay-unfunded: the funder's file has another hard link, which the sandbox cannot hide" >&2; exit 1; }
 command -v bwrap > /dev/null || { echo "dashpay-unfunded: bubblewrap (bwrap) is not installed" >&2; exit 1; }
 [[ -d $repo && $repo == "$state"/* ]] || { echo "dashpay-unfunded: $repo is not a directory inside $state" >&2; exit 1; }
 exec bwrap --die-with-parent --dev-bind / / --tmpfs "$state" --bind "$repo" "$repo" \
