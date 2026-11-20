@@ -4118,6 +4118,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "registration.funding_cancelled",
   "registration.not_synced",
   "registration.funding_unknown_recent",
+  "registration.shielded_not_ready",
+  "registration.quote_changed",
   "name.invalid",
   "name.taken",
   "name.contest_open",

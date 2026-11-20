@@ -50,7 +50,7 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
     ),
     (
         "NetworkSession::adopt_signing_window_default",
-        "internal: `create_vault` and `recover_with_mnemonic` store the signing window for the new vault they made",
+        "internal: `create_vault` stores the signing window for the encrypted vault it made",
     ),
     (
         "NetworkSession::set_payment_auth_row_for_test",
@@ -60,6 +60,27 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "Vault::end_signing_window",
         "internal: a sleep in this process ends the window; lock drops it with the key",
     ),
+    (
+        "Vault::require_signing_window_heartbeat",
+        "internal: the app requires the sleep watcher's beats for every vault it opens",
+    ),
+    (
+        "Vault::signing_window_heartbeat",
+        "internal: the process sleep watcher beats on every tick it saw no sleep in",
+    ),
+    (
+        "Vault::set_signing_window_allowed",
+        "internal: the engine tells the vault the stored \"ask every payment\" choice",
+    ),
+    (
+        "NetworkSession::fail_next_payment_auth_write_for_test",
+        "test-only (`test-support`): proves vault creation does not fail on the setting's write",
+    ),
+    (
+        "Vault::signing_window_allowed",
+        "internal: tests read the choice the engine gave the vault",
+    ),
+
     (
         "Vault::stash_link",
         "internal: the engine's `NetworkSession::stash_link` calls it after classifying the link itself (DP5-01 D3)",
@@ -852,22 +873,20 @@ commands! {
         let status = session
             .vault_op(move |v| v.create(passphrase.as_ref().map(|p| &p[..])))
             .await?;
-        session.adopt_signing_window_default().await?;
+        if let Err(e) = session.adopt_signing_window_default().await {
+            tracing::warn!(error = %e, "the new vault's payment setting was not stored; every payment asks");
+        }
         Ok(status.into())
     }
 
     /// dash-qt "Encrypt Wallet" (QT-111): adds the passphrase slot to an
     /// unencrypted vault. Needs a `changeCredential` grant. Revokes every
     /// lease and leaves the vault locked.
-    #[facade("NetworkSession::revoking_vault_op", "Vault::encrypt")]
+    #[facade("NetworkSession::encrypt_vault", "Vault::encrypt")]
     fn encrypt_vault(state, new_passphrase: String, grant_id: String) -> LockStatus {
         let new_passphrase = Zeroizing::new(new_passphrase.into_bytes());
         let session = state.session().await?;
-        let status = session
-            .revoking_vault_op(RevokeCause::Lock, move |v| {
-                v.encrypt(&new_passphrase, &grant_id)
-            })
-            .await?;
+        let status = session.encrypt_vault(new_passphrase, grant_id).await?;
         Ok(status.into())
     }
 
@@ -1105,7 +1124,7 @@ commands! {
     /// holding only that wallet's secrets. Other wallets become watch-only
     /// and are listed in the result. Revokes every lease; the new vault is
     /// unlocked.
-    #[facade("NetworkSession::revoking_vault_op", "Vault::recover_with_mnemonic")]
+    #[facade("NetworkSession::recover_vault", "Vault::recover_with_mnemonic")]
     fn recover_with_mnemonic(
         state,
         wallet_id: String,
@@ -1120,11 +1139,8 @@ commands! {
         let session = state.session().await?;
         session.wallet_info(&id)?;
         let lost = session
-            .revoking_vault_op(RevokeCause::Lock, move |v| {
-                v.recover_with_mnemonic(&id.0, &mnemonic, &bip39_passphrase, &new_passphrase)
-            })
+            .recover_vault(id.0, mnemonic, bip39_passphrase, new_passphrase)
             .await?;
-        session.adopt_signing_window_default().await?;
         Ok(VaultRecovery {
             status: session.vault().status().into(),
             wallets_without_secrets: lost.iter().map(hex::encode).collect(),

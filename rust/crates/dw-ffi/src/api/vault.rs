@@ -512,28 +512,33 @@ impl Vault {
 
     /// Creates the vault. `passphrase` `Some` = encrypted (slot P, Argon2id);
     /// `None` = unencrypted (slot O in the OS secret store). Leaves the vault
-    /// unlocked. Errors: `AlreadyExists`, `PassphraseRejected`, `OsStoreUnavailable`.
+    /// unlocked. An encrypted vault starts on the signing window, as one the
+    /// desktop app creates (`NetworkSession::adopt_signing_window_default`;
+    /// best-effort: a failed write leaves it asking every payment). Errors:
+    /// `AlreadyExists`, `PassphraseRejected`, `OsStoreUnavailable`.
     pub async fn create(&self, passphrase: Option<Vec<u8>>) -> Result<VaultStatus, VaultError> {
         let passphrase = passphrase.map(Zeroizing::new);
         self.op(move |v| v.create(passphrase.as_ref().map(|p| &p[..])))
-            .await
-            .map(Into::into)
+            .await?;
+        let _ = self.session.adopt_signing_window_default().await;
+        Ok(self.session.vault().status().into())
     }
 
     /// dash-qt "Encrypt Wallet" (QT-111): adds slot P, deletes slot O. Needs
-    /// a `ChangeCredential` grant. Leaves the vault locked. Errors:
-    /// `AlreadyEncrypted`, `GrantInvalid`.
+    /// a `ChangeCredential` grant. Leaves the vault locked and asking every
+    /// payment (`NetworkSession::encrypt_vault`, as the desktop app).
+    /// Errors: `AlreadyEncrypted`, `GrantInvalid`.
     pub async fn encrypt(
         &self,
         new_passphrase: Vec<u8>,
         grant_id: String,
     ) -> Result<VaultStatus, VaultError> {
         let new_passphrase = Zeroizing::new(new_passphrase);
-        self.revoking_op(RevokeCause::Lock, move |v| {
-            v.encrypt(&new_passphrase, &grant_id)
-        })
-        .await
-        .map(Into::into)
+        Ok(self
+            .session
+            .encrypt_vault(new_passphrase, grant_id)
+            .await?
+            .into())
     }
 
     /// Unwraps the data key. Errors: `WrongPassphrase`, `Throttled`, `NotEncrypted`.

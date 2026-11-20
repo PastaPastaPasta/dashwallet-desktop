@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use crate::{
     AddressPurpose, ChangePolicy, CoinSource, CoinsError, DashNetwork, Engine, EngineConfig,
-    EngineEvent, EngineObserver, FeeMode, ImportOptions, LabelsError, OutPoint, Recipient,
-    SendError, SessionOptions, UtxoFilter,
+    EngineEvent, EngineObserver, FeeMode, GrantPurpose, ImportOptions, LabelsError, OutPoint,
+    Recipient, SendError, SessionOptions, UtxoFilter, VaultCredential,
 };
 
 const ABANDON_12: &str =
@@ -210,4 +210,52 @@ fn send_coins_and_labels_map_engine_results() {
     rt.block_on(engine.shutdown()).unwrap();
     let r = session.new_tx_draft("00".repeat(32));
     assert!(matches!(r, Err(SendError::NetworkNotOpen { .. })), "{r:?}");
+}
+
+/// An encrypted vault created through FFI starts on the signing window, as
+/// one the desktop app creates: unlocked, a payment within the limit needs
+/// no credential.
+#[test]
+fn an_ffi_vault_starts_on_the_signing_window() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = Engine::new(
+        EngineConfig {
+            data_root: dir.path().to_string_lossy().into_owned(),
+            worker_threads: Some(2),
+        },
+        Arc::new(Null),
+    )
+    .unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let session = rt
+        .block_on(engine.open_network(
+            DashNetwork::Regtest,
+            SessionOptions {
+                dapi_addresses: vec!["http://127.0.0.1:1".into()],
+                quorum_url: Some("http://127.0.0.1:1".into()),
+                spv_peers: vec!["127.0.0.1:1".into()],
+            },
+        ))
+        .unwrap();
+    let vault = session.vault();
+    rt.block_on(vault.create(Some(b"ffi window test".to_vec())))
+        .unwrap();
+    let id = rt
+        .block_on(session.import_wallet(
+            ABANDON_12.into(),
+            Vec::new(),
+            ImportOptions {
+                birth_height: Some(0),
+                ..ImportOptions::default()
+            },
+        ))
+        .unwrap();
+    rt.block_on(vault.authorize(
+        GrantPurpose::Spend { max_duffs: 1 },
+        Some(id),
+        VaultCredential::Unencrypted,
+    ))
+    .expect("a payment within the window's limit");
 }

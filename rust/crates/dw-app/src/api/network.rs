@@ -259,7 +259,9 @@ commands! {
                 let s = if network == window {
                     open_window_network(&state, &network, settings).await?
                 } else {
-                    engine.open_network(network.clone(), settings.over(&state.launch)).await?
+                    let s = engine.open_network(network.clone(), settings.over(&state.launch)).await?;
+                    crate::shell::sleep::require_beats(&s);
+                    s
                 };
                 *slot = Some(Arc::clone(&s));
                 s
@@ -440,6 +442,7 @@ async fn open_window_network(
         .await?
         .open_network(network.clone(), settings.over(&state.launch))
         .await?;
+    crate::shell::sleep::require_beats(&s);
     if state.launch.starts_spv_on(network) {
         #[cfg(test)]
         state.spv_started.lock().unwrap().push(network.clone());
