@@ -31,12 +31,7 @@
 #   push of a tag vX.Y.Z[-rc.N]  that tag's release: full for vX.Y.Z, a prerelease for -rc.N;
 #   anything else         builds and uploads CI artifacts only: the schedule and workflow_dispatch.
 #                         Pull requests (forks included) build nothing. None reaches the publish job.
-# Update feed (PK-03, docs/release/updater.md): only when the TAURI_SIGNING_PRIVATE_KEY secret exists, and
-# only on release tags, the build jobs merge rust/crates/dw-app/tauri.updater.conf.json (ci/github/tauri-build.sh),
-# so the app has the feed and Tauri signs its updater artifacts, which go up as `updater-<os>`. The checksums
-# job turns them into latest.json for a stable vX.Y.Z only (ci/github/release-feed.sh), and the publish job
-# adds latest.json and the macOS app archive to that tag's release. Without the secret every build is the
-# plain one: no updater in the app, no updater artifacts, no feed. A pre-release never becomes the feed.
+# Update feed (PK-03): docs/release/updater.md. Its latest.json and macOS archive are listed in SHA256SUMS too.
 # Every published file (bundles and SBOMs) and both SHA256SUMS are attested with actions/attest-build-provenance
 # (`gh attestation verify <file> --repo PastaPastaPasta/dashwallet-desktop`, docs/release/verifying.md).
 # No GPG until 1.0.
@@ -126,8 +121,8 @@ jobs:
     needs: decide
     if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 120
-    outputs:
-      updater: ${{ steps.build.outputs.updater }}
+    # The updater signing key lives in this environment, which only v* tags may use (docs/release/updater.md).
+    environment: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && 'release' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -160,13 +155,13 @@ jobs:
       # signingIdentity "-" in tauri.conf.json: ad-hoc signed, no notarization. With the updater key the
       # .app is bundled too: its archive is the macOS update.
       - name: pnpm tauri build (universal-apple-darwin, dmg)
-        id: build
         working-directory: apps/desktop
         env:
           DW_BUILD_VERSION: ${{ env.VERSION }}
-          # The updater signing key reaches release tags only (PK-03, docs/release/updater.md).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          # A pushed v* tag only: never main, a schedule or a dispatch (docs/release/updater.md).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
         run: ../../ci/github/tauri-build.sh --target universal-apple-darwin --bundles "dmg${TAURI_SIGNING_PRIVATE_KEY:+,app}"
       - name: Stage the dmg
         run: |
@@ -219,8 +214,8 @@ jobs:
     needs: decide
     if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 120
-    outputs:
-      updater: ${{ steps.build.outputs.updater }}
+    # The updater signing key lives in this environment, which only v* tags may use (docs/release/updater.md).
+    environment: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && 'release' || '' }}
     env:
       # rs-x11-hash includes <unistd.h>, which MSVC lacks (ci/windows/unistd-shim/unistd.h).
       CFLAGS_x86_64_pc_windows_msvc: -I${{ github.workspace }}/ci/windows/unistd-shim
@@ -255,13 +250,13 @@ jobs:
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
       - name: pnpm tauri build (nsis)
-        id: build
         working-directory: apps/desktop
         env:
           DW_BUILD_VERSION: ${{ env.VERSION }}
-          # The updater signing key reaches release tags only (PK-03, docs/release/updater.md).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          # A pushed v* tag only: never main, a schedule or a dispatch (docs/release/updater.md).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
         run: ../../ci/github/tauri-build.sh --bundles nsis
       - name: Stage the installer
         run: |
@@ -319,8 +314,8 @@ jobs:
     needs: decide
     if: ${{ needs.decide.outputs.build == 'true' && github.event_name != 'pull_request' }}
     timeout-minutes: 90
-    outputs:
-      updater: ${{ steps.build.outputs.updater }}
+    # The updater signing key lives in this environment, which only v* tags may use (docs/release/updater.md).
+    environment: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && 'release' || '' }}
     env:
       # The runner has no FUSE: the AppImage tools (linuxdeploy) run extracted.
       APPIMAGE_EXTRACT_AND_RUN: "1"
@@ -356,13 +351,13 @@ jobs:
         working-directory: apps/desktop
         run: pnpm install --frozen-lockfile
       - name: pnpm tauri build (appimage, deb)
-        id: build
         working-directory: apps/desktop
         env:
           DW_BUILD_VERSION: ${{ env.VERSION }}
-          # The updater signing key reaches release tags only (PK-03, docs/release/updater.md).
-          TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          # A pushed v* tag only: never main, a schedule or a dispatch (docs/release/updater.md).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
         run: ../../ci/github/tauri-build.sh --bundles appimage,deb
       # The engine reads DW_BUILD_VERSION at compile time to decide the test-build warning; a lost
       # stamp would make every release warn. A dev or rc VERSION is unique to the run, so this
@@ -504,6 +499,15 @@ jobs:
           pattern: dist-*
           path: ${{ runner.temp }}/release
           merge-multiple: true
+      # Only a build with the updater key uploads updater-<os>; a pattern that matches nothing downloads nothing.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: updater-*
+          path: ${{ runner.temp }}/updater
+          merge-multiple: true
+      - name: Update feed (latest.json, stable tags only)
+        id: feed
+        run: ci/github/release-feed.sh feed "$RUNNER_TEMP/updater" "$RUNNER_TEMP/feed" "$VERSION" "$GITHUB_REPOSITORY"
       - name: SHA256SUMS (file names only)
         working-directory: ${{ runner.temp }}/release
         run: |
@@ -512,25 +516,16 @@ jobs:
           # The list is taken before the redirect creates SHA256SUMS.
           files=$(LC_ALL=C ls)
           sha256sum $files > SHA256SUMS
-          cat SHA256SUMS
           sha256sum -c SHA256SUMS
+          if [[ -d "$RUNNER_TEMP/feed" ]]; then
+            (cd "$RUNNER_TEMP/feed" && sha256sum $(LC_ALL=C ls)) >> SHA256SUMS
+          fi
+          cat SHA256SUMS
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-v${{ env.VERSION }}
           path: ${{ runner.temp }}/release/
           if-no-files-found: error
-      # The update feed: only builds with the updater key made updater artifacts, and only a stable
-      # version gets latest.json (release-feed.sh).
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        if: ${{ needs.macos.outputs.updater == '1' || needs.windows.outputs.updater == '1' || needs.linux.outputs.updater == '1' }}
-        with:
-          pattern: updater-*
-          path: ${{ runner.temp }}/updater
-          merge-multiple: true
-      - name: Update feed (latest.json)
-        id: feed
-        if: ${{ needs.macos.outputs.updater == '1' || needs.windows.outputs.updater == '1' || needs.linux.outputs.updater == '1' }}
-        run: ci/github/release-feed.sh feed "$RUNNER_TEMP/updater" "$RUNNER_TEMP/feed" "$VERSION" "$GITHUB_REPOSITORY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ steps.feed.outputs.feed == '1' }}
         with:
@@ -576,6 +571,7 @@ jobs:
         env:
           DIST: ${{ runner.temp }}/release
           FEED: ${{ runner.temp }}/feed
+          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
         run: |
           rc=0
           ci/github/release-publish.sh prepare || rc=$?
@@ -590,5 +586,6 @@ jobs:
         env:
           DIST: ${{ runner.temp }}/release
           FEED: ${{ runner.temp }}/feed
+          DW_UPDATER_REQUIRED: ${{ vars.DW_UPDATER_REQUIRED }}
           GH_TOKEN: ${{ github.token }}
         run: ci/github/release-publish.sh publish

@@ -10,6 +10,7 @@
 # GITHUB_SERVER_URL, GH_TOKEN, and a checkout whose `origin/main` is fetched with full history.
 # FEED (optional) is the update feed the checksums job made (release-feed.sh): latest.json and the macOS
 # app archive. Only a stable release tag vX.Y.Z publishes one; a feed on any other trigger is refused.
+# With DW_UPDATER_REQUIRED=1 (a repository variable, docs/release/updater.md) a stable tag without one is.
 # OUT defaults to $DIST/../publish. DRY_RUN=1 runs the reads (release and tag lookups) and prints each
 # write instead of doing it, so the logic can be run by hand against the real repository.
 #
@@ -146,6 +147,9 @@ if ((${#feed[@]})); then
   jq -e --arg v "$VERSION" --arg p "https://github.com/$repo/releases/download/$tag/" \
     '.version == $v and (.platforms | length) == 4 and ([.platforms[].url | startswith($p)] | all)' "$FEED/latest.json" > /dev/null ||
     die "$FEED/latest.json is not the feed of $tag"
+fi
+if [[ "${DW_UPDATER_REQUIRED:-}" == 1 && "$kind" == tag && "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && ((${#feed[@]} == 0)); then
+  die "$tag has no update feed and DW_UPDATER_REQUIRED=1: as Latest it would leave every installed copy without updates"
 fi
 run_url=${GITHUB_SERVER_URL:-https://github.com}/$repo/actions/runs/${GITHUB_RUN_ID:-0}
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # GitHub Actions (release.yml): the update feed (PK-03, docs/release/updater.md). Runs only in a build
-# made with the updater signing key (TAURI_SIGNING_PRIVATE_KEY), which only release tags get.
+# made with the updater signing key (TAURI_SIGNING_PRIVATE_KEY), which only a pushed release tag gets, from
+# the `release` environment.
 #
 #   ci/github/release-feed.sh stage OUT_DIR VERSION OS   after a build job's `release-stage.sh`
 #   ci/github/release-feed.sh feed IN_DIR OUT_DIR VERSION REPO   in the checksums job
@@ -21,38 +22,25 @@ set -euo pipefail
 mode=${1:?usage: $0 stage OUT_DIR VERSION OS | feed IN_DIR OUT_DIR VERSION REPO}
 die() { echo "::error::release-feed: $*" >&2; exit 1; }
 
-target=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../rust/target" 2>/dev/null && pwd || true)
-# The one file a glob under rust/target matches.
-one() {
-  local matches=() line
-  while IFS= read -r line; do matches+=("$line"); done < <(compgen -G "$target/$1" || true)
-  [[ ${#matches[@]} -eq 1 ]] || die "expected one file for $1, found ${#matches[@]}: ${matches[*]:-none}"
-  echo "${matches[0]}"
-}
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 case "$mode" in
 stage)
   out=${2:?} version=${3:?} os=${4:?}
-  dist=${DIST_DIR:-$RUNNER_TEMP/dist}
-  mkdir -p "$out"
   case "$os" in
-  linux | windows)
-    if [[ $os == linux ]]; then
-      suffix=linux-x86_64.AppImage glob='release/bundle/appimage/*.AppImage'
-    else
-      suffix=windows-x64-setup.exe glob='release/bundle/nsis/*-setup.exe'
-    fi
-    built=$(one "$glob")
-    staged=$dist/dash-wallet-$version-$suffix
-    cmp -s "$built" "$staged" || die "$staged is not the bundle Tauri signed ($built)"
-    cp "$(one "$glob.sig")" "$out/dash-wallet-$version-$suffix.sig"
-    ;;
-  macos)
-    cp "$(one 'universal-apple-darwin/release/bundle/macos/*.app.tar.gz')" "$out/dash-wallet-$version-macos-universal.app.tar.gz"
-    cp "$(one 'universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig')" "$out/dash-wallet-$version-macos-universal.app.tar.gz.sig"
-    ;;
+  linux) suffix=linux-x86_64.AppImage glob='release/bundle/appimage/*.AppImage' ;;
+  windows) suffix=windows-x64-setup.exe glob='release/bundle/nsis/*-setup.exe' ;;
+  macos) suffix=macos-universal.app.tar.gz glob='universal-apple-darwin/release/bundle/macos/*.app.tar.gz' ;;
   *) die "unknown OS $os" ;;
   esac
+  if [[ $os == macos ]]; then
+    "$here/release-stage.sh" "$out" "$version" "$suffix" "$glob" > /dev/null
+  else
+    staged=${DIST_DIR:-$RUNNER_TEMP/dist}/dash-wallet-$version-$suffix
+    signed=$("$here/release-stage.sh" "$(mktemp -d)" "$version" "$suffix" "$glob")
+    cmp -s "$signed" "$staged" || die "$staged is not the bundle Tauri signed"
+  fi
+  "$here/release-stage.sh" "$out" "$version" "$suffix.sig" "$glob.sig" > /dev/null
   ls -l "$out"
   ;;
 

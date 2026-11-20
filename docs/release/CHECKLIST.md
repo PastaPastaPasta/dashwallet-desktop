@@ -133,11 +133,13 @@ The Release run on the tag (`.github/workflows/release.yml`):
    - `dash-wallet-X.Y.Z-sbom-rust.cdx.json`, `dash-wallet-X.Y.Z-sbom-npm.cdx.json` (CycloneDX JSON);
    - `SHA256SUMS`.
 3. A tag does not touch `continuous` or the per-build releases of `main`.
-4. **When available (the updater key, [`updater.md`](updater.md)):** with the `TAURI_SIGNING_PRIVATE_KEY` secret set,
-   the tag's builds carry the update feed and Tauri signs their updater artifacts. For a final `vX.Y.Z` only,
-   `checksums` writes `latest.json` (`ci/github/release-feed.sh`) and the release gains two more assets, both attested:
-   `latest.json` and `dash-wallet-X.Y.Z-macos-universal.app.tar.gz`. A candidate never gets a feed. Without the
-   secret, nothing changes: the app says it does not update itself.
+4. **When available (the updater key, [`updater.md`](updater.md)):** with the `TAURI_SIGNING_PRIVATE_KEY` secret set
+   in the `release` environment, the tag's builds carry the update feed and Tauri signs their updater artifacts. For a
+   final `vX.Y.Z` only, `checksums` writes `latest.json` (`ci/github/release-feed.sh`) and the release gains two more
+   assets, both attested and listed in `SHA256SUMS`: `latest.json` and `dash-wallet-X.Y.Z-macos-universal.app.tar.gz`.
+   A candidate never gets a feed. Without the secret the build jobs warn on a final tag and nothing else changes: the
+   app says it does not update itself. Once `DW_UPDATER_REQUIRED=1` is set, a final tag without the key fails its
+   builds, and `release-publish.sh` refuses a final release without `latest.json`.
 
 Signing that the workflow does not do yet:
 
@@ -148,8 +150,11 @@ Signing that the workflow does not do yet:
 - [ ] Until both exist, the notes' Known limitations and Install sections say the builds are not notarized and not
       signed, and what the first launch shows.
 - [ ] **When available (the updater key):** turning updates on is once: make the key, put its public key in
-      `tauri.conf.json`, add the two secrets ([`updater.md`](updater.md), "Turning it on"). The first signed release
-      cannot reach copies installed before it; its notes say to install it by hand.
+      `tauri.conf.json`, create the `release` environment (deployment rule: tags `v*`) and add the two secrets there,
+      never as repository secrets ([`updater.md`](updater.md), "Turning it on"). The first signed release cannot reach
+      copies installed before it; its notes say to install it by hand.
+- [ ] **After the first signed release:** set the repository variable `DW_UPDATER_REQUIRED=1`, so a final release can
+      no longer go out without `latest.json`. As Latest, such a release breaks the feed for every installed copy.
 - [ ] **When available (the real release key, required for 1.0):** sign `SHA256SUMS` once the release is published
       and add the signature to it (`gh release upload vX.Y.Z <signature file>`). This is the RELEASE-PLAN fallback
       when the certificates don't exist: unsigned binaries, signed checksums. The notes' Verify section then says
@@ -199,6 +204,8 @@ bytes. So:
 - [ ] With the updater key, the bad release is also what the feed offers while it is Latest. Marking it as a
       prerelease (above) takes it out of the feed at once: the feed is the Latest release's `latest.json`. Copies that
       already installed it stay on it (no downgrade is ever offered), so the fix ships as a newer version.
+      If the release made Latest again has no `latest.json` (it predates the key), Settings says that no update
+      information is published until the fix is out: ship the fix soon, or make Latest a release that has one.
 - [ ] Delete the release (`gh release delete vX.Y.Z --repo PastaPastaPasta/dashwallet-desktop --yes`) only when
       its files must not be downloaded at all (for example, they lose funds). Keep the tag: the version is used and
       is never re-cut with other bytes.

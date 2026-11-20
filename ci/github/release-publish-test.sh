@@ -360,18 +360,18 @@ FAKE_RELEASES="$tag" FAKE_API_ERROR=assets publish_only
 check "leftovers and an unreadable asset list: fails before any write" '[[ $status -ne 0 && $(writes) -eq 0 ]]'
 
 # --- the update feed (PK-03): release-feed.sh writes it, and only a stable release tag publishes it
-feed_in() { # the staged updater files of version $1 (any of the four names listed after it)
+feed_of() { # stage the updater files of version $1 (any of the four names after it), run `feed`; sets $fs
   local v=$1; shift
   rm -rf "$work/fin" "$work/fout"; mkdir -p "$work/fin"
   for f in "$@"; do printf 'c2lnbmF0dXJlIG9mICVz\n' > "$work/fin/dash-wallet-$v-$f"; done
+  fs=0; "$here/release-feed.sh" feed "$work/fin" "$work/fout" "$v" o/r > /dev/null 2>&1 || fs=$?
 }
 ALL_UPDATER=(linux-x86_64.AppImage.sig windows-x64-setup.exe.sig macos-universal.app.tar.gz macos-universal.app.tar.gz.sig)
-feed_in 0.1.0 "${ALL_UPDATER[@]}"
-fs=0; "$here/release-feed.sh" feed "$work/fin" "$work/fout" 0.1.0 o/r > /dev/null 2>&1 || fs=$?
+feed_of 0.1.0 "${ALL_UPDATER[@]}"
 check "feed: latest.json with the AppImage, NSIS and macOS app entries, on the tag's download URLs" \
   '[[ $fs -eq 0 ]] && jq -e ".version == \"0.1.0\" and (.platforms | keys) == [\"darwin-aarch64-app\",\"darwin-x86_64-app\",\"linux-x86_64-appimage\",\"windows-x86_64-nsis\"] and .platforms[\"linux-x86_64-appimage\"].url == \"https://github.com/o/r/releases/download/v0.1.0/dash-wallet-0.1.0-linux-x86_64.AppImage\" and .platforms[\"windows-x86_64-nsis\"].signature == \"c2lnbmF0dXJlIG9mICVz\"" "$work/fout/latest.json" > /dev/null && [[ $(ls "$work/fout" | wc -l) -eq 2 ]]'
 tag_bundles 0.1.0; fs_reset
-FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
+FEED=$work/fout DIST=$work/tagdist DW_UPDATER_REQUIRED=1 run push refs/tags/v0.1.0 "$c2" 0.1.0
 check "tag v0.1.0 with the feed: latest.json and the macOS archive are attested and published with the release" \
   '[[ $status -eq 0 && -f "$OUT/attest/latest.json" && -f "$OUT/attest/dash-wallet-0.1.0-macos-universal.app.tar.gz" ]] && log_has "release create v0.1.0 " && log_has "/latest.json" && ! log_has "--prerelease"'
 FEED=$work/fout DIST=$work/tagdist FAKE_RELEASES=v0.1.0 FAKE_ASSET_COUNT=10 run push refs/tags/v0.1.0 "$c2" 0.1.0
@@ -379,26 +379,53 @@ check "tag v0.1.0 with the feed, rerun: the complete release (10 assets) is left
 fs_reset
 FEED=$work/empty-feed DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0
 check "tag v0.1.0 without a feed (no updater key): the release as before" '[[ $status -eq 0 && ! -f "$OUT/attest/latest.json" ]] && ! log_has "latest.json"'
-feed_in 0.1.0-rc.1 "${ALL_UPDATER[@]}"
-fs=0; "$here/release-feed.sh" feed "$work/fin" "$work/fout" 0.1.0-rc.1 o/r > /dev/null 2>&1 || fs=$?
+fs_reset
+FEED=$work/empty-feed DIST=$work/tagdist DW_UPDATER_REQUIRED=1 run push refs/tags/v0.1.0 "$c2" 0.1.0; refused "DW_UPDATER_REQUIRED=1: a stable tag without a feed is refused"
+tag_bundles 0.1.0-rc.1; fs_reset
+FEED=$work/empty-feed DIST=$work/tagdist DW_UPDATER_REQUIRED=1 run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1
+check "DW_UPDATER_REQUIRED=1: a release candidate still needs none" '[[ $status -eq 0 ]] && log_has "release create v0.1.0-rc.1 "'
+feed_of 0.1.0-rc.1 "${ALL_UPDATER[@]}"
 check "feed: a release candidate gets none" '[[ $fs -eq 0 && ! -e "$work/fout" ]]'
-feed_in 0.1.0
-fs=0; "$here/release-feed.sh" feed "$work/fin" "$work/fout" 0.1.0 o/r > /dev/null 2>&1 || fs=$?
+feed_of 0.1.0
 check "feed: a build without the key gets none" '[[ $fs -eq 0 && ! -e "$work/fout" ]]'
-feed_in 0.1.0 linux-x86_64.AppImage.sig windows-x64-setup.exe.sig
-fs=0; "$here/release-feed.sh" feed "$work/fin" "$work/fout" 0.1.0 o/r > /dev/null 2>&1 || fs=$?
+feed_of 0.1.0 linux-x86_64.AppImage.sig windows-x64-setup.exe.sig
 check "feed: an OS without its updater files fails" '[[ $fs -ne 0 ]]'
 # a feed that reaches the publish job anyway is refused anywhere but a stable tag
-feed_in 0.1.0-rc.1 "${ALL_UPDATER[@]}"; mkdir -p "$work/fout"; cp "$work/fin/dash-wallet-0.1.0-rc.1-macos-universal.app.tar.gz" "$work/fout/"
+feed_of 0.1.0-rc.1 "${ALL_UPDATER[@]}"; mkdir -p "$work/fout"; cp "$work/fin/dash-wallet-0.1.0-rc.1-macos-universal.app.tar.gz" "$work/fout/"
 jq -n '{version: "0.1.0-rc.1", platforms: {a: {url: "https://github.com/o/r/releases/download/v0.1.0-rc.1/x"}, b: {url: "https://github.com/o/r/releases/download/v0.1.0-rc.1/x"}, c: {url: "https://github.com/o/r/releases/download/v0.1.0-rc.1/x"}, d: {url: "https://github.com/o/r/releases/download/v0.1.0-rc.1/x"}}}' > "$work/fout/latest.json"
 tag_bundles 0.1.0-rc.1; fs_reset
 FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0-rc.1 "$c2" 0.1.0-rc.1; refused "a release candidate never publishes a feed"
 fs_reset; unset FAKE_CONT_RELEASE
 FEED=$work/fout run push refs/heads/main "$c2" "$ver";                              refused "main never publishes a feed"
-feed_in 0.0.9 "${ALL_UPDATER[@]}"; "$here/release-feed.sh" feed "$work/fin" "$work/fout" 0.0.9 o/r > /dev/null 2>&1
+feed_of 0.0.9 "${ALL_UPDATER[@]}"
 mv "$work/fout/dash-wallet-0.0.9-macos-universal.app.tar.gz" "$work/fout/dash-wallet-0.1.0-macos-universal.app.tar.gz"
 tag_bundles 0.1.0; fs_reset
 FEED=$work/fout DIST=$work/tagdist run push refs/tags/v0.1.0 "$c2" 0.1.0;         refused "another version's feed is refused"
+
+# --- tauri-build.sh: the key decides the updater; a stable tag without it warns, or fails when required
+tb() { # tb EVENT REF KEY REQUIRED: runs tauri-build.sh with a fake pnpm; sets $tbs, $TB (its output)
+  local env_file=$work/tb-env
+  : > "$env_file"
+  tbs=0
+  TB=$(cd "$work" && PATH="$work/tb-bin:$PATH" GITHUB_EVENT_NAME=$1 GITHUB_REF=$2 TAURI_SIGNING_PRIVATE_KEY=$3 \
+    DW_UPDATER_REQUIRED=$4 GITHUB_ENV=$env_file "$here/tauri-build.sh" --bundles appimage 2>&1) || tbs=$?
+}
+mkdir -p "$work/tb-bin"
+printf '#!/usr/bin/env bash\necho "pnpm $*"\n' > "$work/tb-bin/pnpm"; chmod +x "$work/tb-bin/pnpm"
+tb push refs/tags/v0.1.0 key ""
+check "tauri-build: with the key, the feed overlay and UPDATER=1" \
+  '[[ $tbs -eq 0 && "$TB" == *"pnpm tauri build --bundles appimage --config ../../rust/crates/dw-app/tauri.updater.conf.json"* ]] && grep -qx UPDATER=1 "$work/tb-env"'
+tb push refs/heads/main "" ""
+check "tauri-build: main without the key is the plain build, no warning" \
+  '[[ $tbs -eq 0 && "$TB" == *"pnpm tauri build --bundles appimage"* && "$TB" != *config* && "$TB" != *warning* && ! -s "$work/tb-env" ]]'
+tb push refs/tags/v0.1.0 "" ""
+check "tauri-build: a stable tag without the key warns and builds" '[[ $tbs -eq 0 && "$TB" == *"::warning::"* && "$TB" == *"pnpm tauri build"* ]]'
+tb push refs/tags/v0.1.0 "" 1
+check "tauri-build: a stable tag without the key fails once DW_UPDATER_REQUIRED=1" '[[ $tbs -ne 0 && "$TB" == *"::error::"* && "$TB" != *"pnpm tauri build"* ]]'
+tb push refs/tags/v0.1.0-rc.1 "" 1
+check "tauri-build: a release candidate or a dry run without the key builds quietly" '[[ $tbs -eq 0 && "$TB" != *"::"* ]]'
+tb workflow_dispatch refs/tags/v0.1.0 "" 1
+check "tauri-build: a dispatch on a tag (never given the key) builds quietly" '[[ $tbs -eq 0 && "$TB" != *"::"* ]]'
 export GITHUB_SHA=$c2
 
 # --- classify and decide
