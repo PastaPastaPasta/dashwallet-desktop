@@ -10,7 +10,11 @@ owner updates the State column as items land and reports against it daily.
 
 ## Where we are
 
-- Released: `v0.1.0` (2026-11-03) only. `main` is about 560 commits past it; 0.2 was never cut.
+- Released: `v0.1.0` (2026-11-03) and `v0.2.0` (published 2026-11-20 00:27 UTC, a day after its date). 0.2 is
+  `main` as it was at the release pull request (#72, 11-19) plus four changes made on the `release/0.2` branch
+  (#92, #100, #104 and the notes, #107), all merged back into `main`. What merged to `main` after #72 ships in 0.3.
+- State on 2026-11-20: 18 issues are open on the "1.0 RC must-fix" milestone; fixes for ten of them are in
+  progress or in review (#68, #69, #74, #81, #84, #85, #87, #88, #105, #108).
 - Remaining, checked against the code on 2026-11-18: about 200 agent-days without the partner integrations
   (about 225 with them). In 14 days that needs 14–16 lanes running the whole time, so review and CI
   turnaround, not writing code, sets the pace.
@@ -22,7 +26,7 @@ owner updates the State column as items land and reports against it daily.
 
 | Version | Date | Contents |
 |---|---|---|
-| 0.2 | Thu 11-19 | what is on `main` when it is green (it waits on #40); instant incoming payments and the fast launch move to 0.3 |
+| 0.2 | Thu 11-19; published Fri 11-20 | `main` at #72 plus the `release/0.2` fixes; instant incoming payments and the fast launch move to 0.3 |
 | 0.3 | Mon 11-23 | instant incoming payments, the fast launch, masternode screens (MG-10), Platform ↔ Shielded, CoinJoin fixes, legacy `wallet.dat`, empty states, unlock once |
 | 0.4 | Thu 11-26 | the rest of the core: shared masternodes (MG-10b), the lane C items that have merged by then, CoinJoin V24, PSBT under Advanced, the screens whose copy is in the message catalog by then (English) |
 | 0.5 | — | not released: its contents (commerce, BIP70) are cut to 1.0.x |
@@ -37,22 +41,22 @@ thread; "MG" is the masternode and governance thread, which is also the release 
 
 | Lane | Owner | Items, in order | Days | State |
 |---|---|---|---|---|
-| A Payments | PO | **P1** instant incoming payments: engine, then Home and Activity while syncing | 11-18 → 11-21 | engine in review (#42, two blockers being fixed); the screen follows |
-| B Launch | PO | **P5** window in two seconds: shell, then last-known balance at once | 11-18 → 11-21 | shell in review (#33, fixes in progress) |
-| C Shielded and Platform | MG | finish item 0 (BL-617) → Platform ↔ Shielded → Max drains → top-up from Shielded or Platform → funding-source picker with shielded-funded identity → pay a contact from any balance → withdrawal to own Platform address → protocol advisory banner → vault scopes and viewing-key cache | 11-18 → 11-27 | item 0 part A3b merged (#26) |
-| D Masternode screens | MG | MG-10 app bindings → My masternodes → registration wizard → ProUpRegTx → MG-10b shared masternodes → shown by default when the wallet holds keys → voting-key import → contested-vote polish | 11-19 → 11-25 | engine done |
-| E Masternode checks | MG | MG-08 `dwcli` owner commands and regtest suites → MG-12 signing-path review and BL-582..585 | 11-19 → 11-26 | not started |
-| F CoinJoin | PO | BL-614 → BL-615 → V24 promotion and demotion → mixed-send warnings. Cut: sleep prevention, start on login | 11-19 → 11-25 | BL-614 (#38) and BL-615 (#39) in review, fixes in progress |
-| G Core compatibility | PO | legacy Berkeley DB `wallet.dat`. Cut: MP-07 sweep and BIP38, MP-06 phrase repair, MP-05 BIP70, spend unconfirmed change, per-transaction notifications | 11-19 → 11-23 | `wallet.dat` in review (#34, fixes in progress) |
+| A Payments | PO | **P1** instant incoming payments: engine, then Home and Activity while syncing | 11-18 → 11-21 | engine merged (#42, 11-19); the screen is not started |
+| B Launch | PO | **P5** window in two seconds: shell, then last-known balance at once | 11-18 → 11-21 | the blank-launch fix merged (#33, 11-19); last-known balance at once is not started |
+| C Shielded and Platform | MG | finish item 0 (BL-617) → Platform ↔ Shielded → Max drains → top-up from Shielded or Platform → funding-source picker with shielded-funded identity → pay a contact from any balance → withdrawal to own Platform address → protocol advisory banner → vault scopes and viewing-key cache | 11-18 → 11-27 | item 0 part A3b (#26), Max on Send from Shielded (#63) and the Platform → Shielded quote (#110, 11-20) merged; #49 in review |
+| D Masternode screens | MG | MG-10 app bindings → My masternodes → registration wizard → ProUpRegTx → MG-10b shared masternodes → shown by default when the wallet holds keys → voting-key import → contested-vote polish | 11-19 → 11-25 | engine done; the first app bindings merged (#51); the api wrappers and fixture world in review (#55) |
+| E Masternode checks | MG | MG-08 `dwcli` owner commands and regtest suites → MG-12 signing-path review and BL-582..585 | 11-19 → 11-26 | the owner gov commands and nightly regtest suites merged (#35); MG-12 not started |
+| F CoinJoin | PO | BL-614 → BL-615 → V24 promotion and demotion → mixed-send warnings. Cut: sleep prevention, start on login | 11-19 → 11-25 | BL-614 (#38) and BL-615 (#39) merged (11-19); their follow-up fixes (#68, #69, #74) in review; V24 not started |
+| G Core compatibility | PO | legacy Berkeley DB `wallet.dat`. Cut: MP-07 sweep and BIP38, MP-06 phrase repair, MP-05 BIP70, spend unconfirmed change, per-transaction notifications | 11-19 → 11-23 | `wallet.dat` merged (#34, 11-20); four fixes from its last review (#81, items 11 to 14) in progress, due before the 0.3 tag |
 | H Marketplace | PO | Cut: X4 (browse, buy, extra names, instant-name offer), identity-verify link | — | cut to 1.0.x |
 | I Invitations | PO | Cut: the storage patch, X3 create, share and history, shielded-funded and small invites, the Home claim card, scanning an invitation's QR code. Claiming an invitation from a link or pasted text shipped in 0.1 and stays | — | cut to 1.0.x |
 | J DashConnect | PO | Cut: App Connect v1 and v2 | — | cut to 1.0.x |
-| K Everyday polish | PO | #25 empty states → P7 unlock once → P15 PSBT under Advanced. Cut: MP-04 tax categories, lock-screen receive and scan, log export, the support path and the backup reminder, transaction metadata sync and restore on Platform | 11-18 → 11-24 | #25 and unlock once (#37) in review, fixes in progress; P15 lane running |
-| P Localization | PO | MP-14, translated in this repository by agents (no Transifex): the message catalog, locale choice, plurals and the right-to-left check, with one screen converted as the pattern (11-19 → 11-21) → every screen's copy moved into the catalog, one small pull request per screen area, each after that area's open pull requests have merged (11-21 → 11-26) → copy freeze 11-27 → the translations, each checked by a second pass (11-27 → 11-29) | 11-19 → 11-29 | starting |
+| K Everyday polish | PO | #25 empty states → P7 unlock once → P15 PSBT under Advanced. Cut: MP-04 tax categories, lock-screen receive and scan, log export, the support path and the backup reminder, transaction metadata sync and restore on Platform | 11-18 → 11-24 | all three merged on 11-19 (#25, #37, #57); what is left of unlock once is #78 |
+| P Localization | PO | MP-14, translated in this repository by agents (no Transifex): the message catalog, locale choice, plurals and the right-to-left check, with one screen converted as the pattern (11-19 → 11-21) → every screen's copy moved into the catalog, one small pull request per screen area, each after that area's open pull requests have merged (11-21 → 11-26) → copy freeze 11-27 → the translations, each checked by a second pass (11-27 → 11-29) | 11-19 → 11-29 | the foundation is written on a branch (`feat/i18n-foundation`), not yet in review; behind its 11-21 date |
 | L Commerce | PO | Cut: MP-09 Explore, MP-13 CrowdNode withdraw, MP-10, MP-11, MP-12 | — | cut to 1.0.x |
-| M Hardening | PO | H-02 fuzzing → H-03 kill -9 matrix → H-06 performance → H-09 trust gate on by default → **H-01 security review (11-27 → 11-29)**. Cut: H-10 node pinning, Tor/SOCKS5, MP-03, MP-15 | 11-19 → 11-29 | H-02 lane running |
-| N Release and packaging | MG | cut 0.2 → `parity.md` redone for the Tauri app → PK-03 auto-update → W-02 Windows services → Flatpak → SBOM and checklist → retire Swift (U-08) → each release cut. Cut: Windows Hello in W-02 (passphrase only on Windows), and what is left of the tray companion on Windows and Linux | 11-19 → 12-02 | not started |
-| O Test suites and QA | PO | DP2-06 (never-cut), DP1-07, DP3-05 suites → visual baselines refresh, issue #29 → iOS/Android restore test → H-04 real-node flows → H-08 full QA pass on three OSes → H-05 accessibility → H-07 mainnet canary, all done by 11-30 for the release candidate; 12-01 is for its fixes | 11-19 → 11-30 | suites lane running |
+| M Hardening | PO | H-02 fuzzing → H-03 kill -9 matrix → H-06 performance → H-09 trust gate on by default → **H-01 security review (11-27 → 11-29)**. Cut: H-10 node pinning, Tor/SOCKS5, MP-03, MP-15 | 11-19 → 11-29 | H-02 is written on a branch (`t3/fuzz-untrusted-parsers-h02`), not yet in review; the rest not started |
+| N Release and packaging | MG | cut 0.2 → `parity.md` redone for the Tauri app → PK-03 auto-update → W-02 Windows services → Flatpak → SBOM and checklist → retire Swift (U-08) → each release cut. Cut: Windows Hello in W-02 (passphrase only on Windows), and what is left of the tray companion on Windows and Linux | 11-19 → 12-02 | 0.2.0 published 11-20; `parity.md` redone (#32); SBOM and checklist merged (#54); Flatpak in review (#56) |
+| O Test suites and QA | PO | DP2-06 (never-cut), DP1-07, DP3-05 suites → visual baselines refresh, issue #29 → iOS/Android restore test → H-04 real-node flows → H-08 full QA pass on three OSes → H-05 accessibility → H-07 mainnet canary, all done by 11-30 for the release candidate; 12-01 is for its fixes | 11-19 → 11-30 | the three suites are written on branches, not yet in review; the upgrade-path check from v0.1.0 merged (#102, 11-20), its gaps are #101; visual baselines refresh not started |
 
 ## Cuts applied 2026-11-19
 
