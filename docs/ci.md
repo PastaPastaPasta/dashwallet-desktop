@@ -248,8 +248,8 @@ A scheduled run ends with the job "Report the nightly's result" (not in the tabl
 those four jobs failed or was cancelled, it opens the issue "Nightly failure: GitHub Actions", labelled
 `nightly-failure`, or adds a comment to the open one; if all four passed, it closes it
 (`ci/github/nightly-issue.sh`). A run started by hand reports nothing, and neither does a rerun of a night
-that is no longer the latest scheduled run. If it cannot read which scheduled run is the latest, it fails
-and leaves the issue as it is. The job can fail on its own (the checkout, or the issue API), which also
+that is no longer the latest scheduled run. If a rerun cannot read which scheduled run is the latest, it
+fails and leaves the issue as it is. The job can fail on its own (the checkout, or the issue API), which also
 turns the run red: then the four jobs' results say whether the night passed.
 
 ### Fuzzing (H-02)

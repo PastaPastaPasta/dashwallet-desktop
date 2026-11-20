@@ -1,4 +1,6 @@
-# Install (every step is required; do not enable the timer before step 5 has delivered its message):
+# Install (every step is required; do not enable the timer before step 5 has delivered its message).
+# With the issue notifier, do not start at all until its login is kept where the suites cannot
+# read it: they run the fetched revision as this user and could change or close the alert.
 #  1. Install the launcher, its build sandbox and the notifier outside DW_DP_STATE and outside
 #     any checkout: `install -d -m 700 ~/.local/libexec/dashwallet-desktop` and
 #     `install -m 700 regtest/scripts/dashpay-nightly.sh regtest/scripts/dashpay-unfunded.sh
