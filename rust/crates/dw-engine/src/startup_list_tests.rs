@@ -139,14 +139,17 @@ fn a_list_that_cannot_be_stored_is_repaired_in_memory() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// A removal whose store deletion fails leaves the stored list naming the
-/// wallet: it is still in the store, so the next start loads it and the
-/// removal can be tried again. The session shows the next wallet ticked.
+/// A removal whose store deletion fails keeps the wallet on the list: it
+/// is still in the store, so the next start loads it and the removal can
+/// be tried again. The next wallet is listed beside it, in memory and on
+/// disk, and shows ticked.
 #[test]
-fn a_failed_store_deletion_keeps_the_stored_list() {
+fn a_failed_store_deletion_keeps_the_wallet_listed() {
     let (_dir, engine, s, a, b) = remove_the_only_listed(&[&crate::wallets::FAIL_DELETE_IN]);
     assert!(on_startup(&s).contains(&(b, true)));
-    assert_eq!(stored_list(&s), Some(a.to_string()));
+    let stored = stored_list(&s).unwrap();
+    assert!(stored.contains(&a.to_string()), "{stored}");
+    assert!(stored.contains(&b.to_string()), "{stored}");
     engine.block_on(engine.shutdown()).unwrap();
 }
 

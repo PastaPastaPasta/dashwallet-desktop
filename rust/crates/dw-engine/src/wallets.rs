@@ -334,12 +334,14 @@ impl NetworkSession {
                     .map_err(|e| EngineError::Storage(e.to_string()))
             })
             .await;
-            if let Some(list) = startup {
-                // A wallet still in the store stays on the stored list, so
-                // the next start loads it and the removal can be retried.
-                if wallet_gone.load(std::sync::atomic::Ordering::SeqCst)
-                    && !matches!(deleted, Ok(Ok(())))
-                {
+            if let Some(mut list) = startup {
+                // A wallet still in the store stays listed, beside the next
+                // one: the next start loads it and the removal can be
+                // retried, and a later list write keeps it.
+                if !wallet_gone.load(std::sync::atomic::Ordering::SeqCst) {
+                    list.insert(id);
+                }
+                if !matches!(deleted, Ok(Ok(()))) {
                     this.store_startup_list(&live, &list).await;
                 }
                 *this.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list);
