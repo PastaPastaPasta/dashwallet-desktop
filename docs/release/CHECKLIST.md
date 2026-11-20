@@ -133,10 +133,11 @@ The Release run on the tag (`.github/workflows/release.yml`):
    - `dash-wallet-X.Y.Z-sbom-rust.cdx.json`, `dash-wallet-X.Y.Z-sbom-npm.cdx.json` (CycloneDX JSON);
    - `SHA256SUMS`.
 3. A tag does not touch `continuous` or the per-build releases of `main`.
-4. **When available (the updater key, [`updater.md`](updater.md)):** with the `TAURI_SIGNING_PRIVATE_KEY` secret set
-   in the `release` environment, a final `vX.Y.Z` tag on main builds with the update feed and Tauri signs its updater
-   artifacts; a candidate or a dry run never gets the key. For a final `vX.Y.Z` only, `checksums` writes `latest.json` (`ci/github/release-feed.sh`) and the release gains two more
-   assets, both attested and listed in `SHA256SUMS`: `latest.json` and `dash-wallet-X.Y.Z-macos-universal.app.tar.gz`.
+4. **The updater key ([`updater.md`](updater.md)):** with the `TAURI_SIGNING_PRIVATE_KEY` secret set in the
+   `release` environment, a final `vX.Y.Z` tag on main builds with the update feed and Tauri signs its updater
+   artifacts; a candidate or a dry run never gets the key. For a final `vX.Y.Z` only, `checksums` writes `latest.json`
+   (`ci/github/release-feed.sh`) and the release gains two more assets, both attested and listed in `SHA256SUMS`:
+   `latest.json` and `dash-wallet-X.Y.Z-macos-universal.app.tar.gz`.
    A candidate never gets a feed. Without the secret the build jobs warn on a final tag and nothing else changes: the
    app says it does not update itself. Once `DW_UPDATER_REQUIRED=1` is set, a final tag without the key fails its
    builds, and `release-publish.sh` refuses a final release without `latest.json`.
@@ -149,11 +150,11 @@ Signing that the workflow does not do yet:
 - [ ] **When available (B2):** Windows code signing of the installer (W-03).
 - [ ] Until both exist, the notes' Known limitations and Install sections say the builds are not notarized and not
       signed, and what the first launch shows.
-- [ ] **When available (the updater key):** turning updates on is once: make the key, put its public key in
-      `tauri.conf.json`, create the `release` environment (deployment rule: tags `v*`) and add the two secrets there,
-      never as repository secrets, then add a `v*` tag ruleset or required reviewers on `release`, and run one
-      `workflow_dispatch` to check the no-environment build jobs ([`updater.md`](updater.md), "Turning it on"). The first signed release cannot reach
-      copies installed before it; its notes say to install it by hand.
+- [ ] **The updater key (made 2026-11-20, key ID `ED322B963B527B21`):** its public key is in `tauri.conf.json` and the
+      secrets are in the `release` environment (tag rule `v*`) only. Still open: a `v*` tag ruleset or required
+      reviewers on `release` (pasta's choice), and one `workflow_dispatch` to check the no-environment build jobs
+      ([`updater.md`](updater.md), "Still open"). There is no offline backup: losing the secret means re-keying. The
+      first signed release cannot reach copies installed before it; its notes say to install it by hand.
 - [ ] **After the first signed release:** set the repository variable `DW_UPDATER_REQUIRED=1`, so a final release can
       no longer go out without `latest.json`. As Latest, such a release breaks the feed for every installed copy.
 - [ ] **When available (the real release key, required for 1.0):** sign `SHA256SUMS` once the release is published
