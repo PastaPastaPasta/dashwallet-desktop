@@ -2,25 +2,52 @@
 
 use dw_engine::platform::{
     ActivityDirection, ActivityFilter, ActivityItem, ActivityPage, LockResolution, PaymentLock,
+    PaymentSource,
 };
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::mirror_enum;
 
-/// A per-contact send lock after an ambiguous broadcast.
+/// The balance a contact payment comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum PaymentSourceName {
+    Core,
+    Shielded,
+    Platform,
+}
+
+mirror_enum!(PaymentSource => PaymentSourceName { Core, Shielded, Platform });
+mirror_enum!(PaymentSourceName => PaymentSource { Core, Shielded, Platform });
+
+/// A per-contact send lock: a Core payment after an ambiguous broadcast, or
+/// a payout from another balance that may have been sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentLockInfo {
+    /// Equals `reference`; a Core txid only when `source` is `core`.
     pub txid: String,
     /// UNIX time the lock was set.
     pub since: u64,
+    pub source: PaymentSourceName,
+    pub reference: String,
 }
 
 impl From<PaymentLock> for PaymentLockInfo {
     fn from(l: PaymentLock) -> Self {
-        let PaymentLock { txid, since } = l;
-        PaymentLockInfo { txid, since }
+        let PaymentLock {
+            txid,
+            since,
+            source,
+            reference,
+        } = l;
+        PaymentLockInfo {
+            txid,
+            since,
+            source: source.into(),
+            reference,
+        }
     }
 }
 
@@ -59,12 +86,17 @@ mirror_enum!(ActivityDirection => ActivityDirectionName { Sent, Received });
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ContactActivityItem {
+    /// Equals `reference`; a Core txid only when `source` is `core`.
     pub txid: String,
     pub direction: ActivityDirectionName,
     /// Duffs.
     pub amount: u64,
     pub height: Option<u32>,
     pub timestamp: Option<u64>,
+    pub source: PaymentSourceName,
+    pub reference: String,
+    /// The Core transaction, once the wallet has seen it.
+    pub core_txid: Option<String>,
 }
 
 impl From<ActivityItem> for ContactActivityItem {
@@ -75,6 +107,9 @@ impl From<ActivityItem> for ContactActivityItem {
             amount,
             height,
             timestamp,
+            source,
+            reference,
+            core_txid,
         } = i;
         ContactActivityItem {
             txid,
@@ -82,6 +117,9 @@ impl From<ActivityItem> for ContactActivityItem {
             amount,
             height,
             timestamp,
+            source: source.into(),
+            reference,
+            core_txid,
         }
     }
 }
