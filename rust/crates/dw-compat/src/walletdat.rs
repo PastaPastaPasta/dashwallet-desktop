@@ -271,6 +271,8 @@ struct Gather {
     purposes: BTreeMap<String, String>,
     hd_pubs: BTreeSet<Vec<u8>>,
     key_pubs: Vec<Vec<u8>>,
+    /// A `key` or `wkey` record was read.
+    plain_key: bool,
 }
 
 /// The records of a wallet.dat an import uses, not yet decrypted.
@@ -993,6 +995,7 @@ fn finish(w: &mut SqliteWallet, gather: Gather) -> Result<(), WalletDatError> {
         mut purposes,
         hd_pubs,
         key_pubs,
+        plain_key,
     } = gather;
     for (address, label) in names {
         note_network(w, &address)?;
@@ -1006,11 +1009,10 @@ fn finish(w: &mut SqliteWallet, gather: Gather) -> Result<(), WalletDatError> {
     let encrypted = !w.master_keys.is_empty()
         || !w.crypted_keys.is_empty()
         || w.legacy.as_ref().is_some_and(|c| c.crypted);
-    if encrypted {
-        let crypted: BTreeSet<_> = w.crypted_keys.iter().map(|k| k.pubkey.as_slice()).collect();
-        if key_pubs.iter().any(|p| !crypted.contains(p.as_slice())) {
-            return Err(corrupt("encrypted wallet has a plaintext key"));
-        }
+    // Dash Core refuses any plaintext key in an encrypted wallet, one
+    // beside a `ckey` of the same public key included.
+    if encrypted && plain_key {
+        return Err(corrupt("encrypted wallet has a plaintext key"));
     }
     if let Some(chain) = &w.legacy {
         check_chain_range(chain, &w.hd_children)?;
@@ -1240,6 +1242,8 @@ fn parse_record(
                 w.crypted_keys.push(CryptedKey { pubkey, secret });
             } else if !plain_key_matches(&pubkey, &secret) {
                 return Err(corrupt("private key does not match its public key"));
+            } else {
+                g.plain_key = true;
             }
         }
         b"wkey" => {
@@ -1253,6 +1257,7 @@ fn parse_record(
                 return Err(corrupt("private key does not match its public key"));
             }
             g.key_pubs.push(pubkey);
+            g.plain_key = true;
         }
         b"keymeta" => {
             let _pubkey = k.bytes().ok_or_else(|| bad("keymeta"))?;
@@ -2302,6 +2307,41 @@ mod tests {
             matches!(err, WalletDatError::Corrupt(ref d) if d.contains("plaintext key")),
             "{err:?}"
         );
+    }
+
+    /// A plaintext `key` or `wkey` whose public key also has a `ckey` is
+    /// refused: Dash Core loads no plaintext key into an encrypted wallet.
+    #[test]
+    fn a_plaintext_key_beside_its_own_ckey_is_corrupt() {
+        let secret = [0x44u8; 32];
+        let pubkey = compressed(&secret);
+        let mut key = Vec::new();
+        ser_bytes(&mut key, &der_of(&secret));
+        let mut wkey = Vec::new();
+        wkey.extend_from_slice(&1i32.to_le_bytes());
+        ser_bytes(&mut wkey, &der_of(&secret));
+        wkey.extend_from_slice(&0i64.to_le_bytes());
+        wkey.extend_from_slice(&0i64.to_le_bytes());
+        ser_bytes(&mut wkey, b"");
+        let ct = [0x99u8; 48];
+        let mut ckey = Vec::new();
+        ser_bytes(&mut ckey, &ct);
+        ckey.extend_from_slice(&sha256d(&ct));
+        for (kind, value) in [("key", key), ("wkey", wkey)] {
+            let pairs = [
+                (db_key_pub(kind, &pubkey), value),
+                (db_key_pub("ckey", &pubkey), ckey.clone()),
+            ];
+            let refs: Vec<(&[u8], &[u8])> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                .collect();
+            let err = read_bdb_bytes(&build::pairs(&refs, false)).err().unwrap();
+            assert!(
+                matches!(err, WalletDatError::Corrupt(ref d) if d.contains("plaintext key")),
+                "{kind}: {err:?}"
+            );
+        }
     }
 
     /// A plaintext key beside a master key or an encrypted HD chain, with
