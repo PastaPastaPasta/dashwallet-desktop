@@ -9,17 +9,19 @@ import { keys, useBackend, useUsernameInRequests, useWallets } from "../../api/q
 import { changingUsernameInRequests } from "../../api/username";
 import { useUi } from "../../app/ui";
 import { useContactPictures, useSetContactPictures } from "../../dashpay/profileQueries";
+import { useT } from "../../i18n";
 import { failureText } from "../../onboarding/model";
 import { Hint, Problem, SettingsCard } from "./parts";
 
 /** The card of the wallet the window shows, picked as the shell picks it (App.tsx). */
 export function PrivacyCard() {
+  const t = useT();
   const walletId = useUi((s) => s.walletId);
   const wallets = useWallets();
   const wallet = wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0];
   if (!wallet) return null;
   return (
-    <SettingsCard title="Privacy" testId="settings-privacy">
+    <SettingsCard title={t("settings.privacy.title")} testId="settings-privacy">
       <UsernameInRequests key={wallet.walletId} wallet={wallet} />
       <ContactPictures />
     </SettingsCard>
@@ -28,6 +30,7 @@ export function PrivacyCard() {
 
 /** D14: off, no other user's picture is read or fetched, and every list shows initials. */
 function ContactPictures() {
+  const t = useT();
   const setting = useContactPictures();
   const write = useSetContactPictures();
   const [turning, setTurning] = useState<boolean | null>(null);
@@ -56,18 +59,16 @@ function ContactPictures() {
           aria-describedby={hint}
           onChange={(e) => void turn(e.target.checked)}
         />
-        Load contact pictures
+        {t("settings.privacy.contactPictures")}
       </label>
-      <Hint id={hint}>
-        Show the profile pictures of your contacts and other DashPay users. Dash Wallet fetches them from the addresses in their profiles. Turned off, it
-        fetches none and shows initials instead.
-      </Hint>
+      <Hint id={hint}>{t("settings.privacy.contactPicturesHint")}</Hint>
       <Problem text={problem} testId="settings-pictures-problem" />
     </>
   );
 }
 
 function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
+  const t = useT();
   const backend = useBackend();
   const client = useQueryClient();
   const setting = useUsernameInRequests(wallet.walletId);
@@ -114,12 +115,9 @@ function UsernameInRequests({ wallet }: { wallet: WalletSummary }) {
           aria-describedby={hint}
           onChange={(e) => void turn(e.target.checked)}
         />
-        Include my username in payment requests
+        {t("settings.privacy.usernameInRequests")}
       </label>
-      <Hint id={hint}>
-        The Receive QR code and the payment requests of “{wallet.name}” show its DashPay username, once it has one, so whoever sees them knows the Dash
-        address is yours. Off by default. You can also include it for a single request in Receive. Each request keeps its choice, so turning this off does not remove your username from requests already created.
-      </Hint>
+      <Hint id={hint}>{t("settings.privacy.usernameInRequestsHint", { wallet: wallet.name })}</Hint>
       <Problem text={problem} testId="settings-username-problem" />
     </>
   );

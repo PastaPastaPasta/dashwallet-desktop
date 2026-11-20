@@ -9,11 +9,11 @@ import type { LockOutcome } from "../api/generated/LockOutcome";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { FLOW_NAME, OUTCOME_LINE, reportsAnything, summarizeLockReport } from "../api/lockReport";
 import { useBackend, useLastLockReport, useLockDrain, useLockReconcile } from "../api/queries";
-import { SIGNED_BEFORE_LOCK } from "../api/send";
 import { DashButton, DashLogo, NetworkCapsule } from "../components/basics";
 import { PassphrasePrompt } from "../components/passphrase";
 import { Sheet } from "../components/sheet";
-import { LockModel, LockText } from "../onboarding/lock";
+import { useT, type Translate } from "../i18n";
+import { LockModel } from "../onboarding/lock";
 import { useModel } from "../onboarding/model";
 
 /** Re-renders with `model` and clears its wait when it runs out. */
@@ -35,18 +35,23 @@ function useLockModel(backend: Backend): LockModel {
   return model;
 }
 
-const more = (n: number, noun: string) => n > 0 && `${n} more ${noun}${n === 1 ? "" : "s"}`;
+/** "2 more actions, 1 more step" in the language in use. */
+function omittedText(t: Translate, counts: [number, "lock.report.moreActions" | "lock.report.moreSteps" | "lock.report.moreWallets"][]): string {
+  const items = counts.filter(([n]) => n > 0).map(([count, key]) => t(key, { count }));
+  return t("lock.report.notListed", { items: items.join(t("common.listSeparator")) });
+}
 
 /** What the last lock did to running flows (E0-13 D3, E0-04 §16.10 C4). Hidden while a newer
  * lock drains: until its `done`, the last report is the previous lock's. */
 function LockReportNotice() {
+  const t = useT();
   const drain = useLockDrain().data;
   const report = useLastLockReport().data;
   if (drain)
     return (
       <section className="lock-report" data-testid="lock-drain">
         <p className="lock-report-title" role="status">
-          Stopping {drain.inFlight === 1 ? "1 running action" : `${drain.inFlight} running actions`}…
+          {t("lock.report.stopping", { count: drain.inFlight })}
         </p>
       </section>
     );
@@ -56,6 +61,7 @@ function LockReportNotice() {
 /** Unresolved while anything listed may still be sent, or anything left out cannot be shown not
  * to be; `leases`, `dispatchStatus` and `lockStatus` settle only what the report lets them. */
 function LockReportBody({ report }: { report: LockOutcome }) {
+  const t = useT();
   const summary = summarizeLockReport(report);
   const reconciled = useLockReconcile(report, summary.unresolved);
   const resolved = !summary.unresolved || reconciled.data?.settled === true;
@@ -63,10 +69,10 @@ function LockReportBody({ report }: { report: LockOutcome }) {
   const check = resolved
     ? null
     : summary.beyondReach
-      ? "The app cannot check all of these actions, so some may still be sent."
+      ? t("lock.report.beyondReach")
       : reconciled.isError
-        ? "Could not check whether any of these actions may still be sent."
-        : "Checking whether any of these actions may still be sent…";
+        ? t("lock.report.checkFailed")
+        : t("lock.report.checking");
   return (
     <section
       className="lock-report"
@@ -76,23 +82,27 @@ function LockReportBody({ report }: { report: LockOutcome }) {
       aria-labelledby="lock-report-title"
     >
       <p id="lock-report-title" className="lock-report-title" role="status">
-        {resolved ? "Every action the lock stopped has ended." : SIGNED_BEFORE_LOCK}
+        {resolved ? t("lock.report.allEnded") : t("lock.report.signedBeforeLock")}
       </p>
       {check && (
         <p className="lock-report-note" data-testid="lock-report-check">
           {check}
         </p>
       )}
-      <ul className="lock-report-flows" aria-label="At the time of the lock">
+      <ul className="lock-report-flows" aria-label={t("lock.report.atLockTime")}>
         {report.flows.map((f) => (
           <li key={f.lease} data-testid="lock-report-flow" data-outcome={f.outcome}>
-            {FLOW_NAME[f.flow]}: {OUTCOME_LINE[f.outcome]}
+            {t("lock.report.flowLine", { flow: FLOW_NAME[f.flow], outcome: OUTCOME_LINE[f.outcome] })}
           </li>
         ))}
       </ul>
       {!summary.complete && (
         <p className="lock-report-note" data-testid="lock-report-omitted">
-          {[more(flows, "action"), more(artifacts, "step"), more(wallets, "wallet")].filter(Boolean).join(", ")} not listed here.
+          {omittedText(t, [
+            [flows, "lock.report.moreActions"],
+            [artifacts, "lock.report.moreSteps"],
+            [wallets, "lock.report.moreWallets"],
+          ])}
         </p>
       )}
     </section>
@@ -102,6 +112,7 @@ function LockReportBody({ report }: { report: LockOutcome }) {
 /** `covered`: Forgot passphrase is open over it, so it takes no focus and is hidden from
  * assistive tech. */
 export function LockScreen({ network, covered = false, onForgot }: { network: NetworkInfo; covered?: boolean; onForgot: () => void }) {
+  const t = useT();
   const model = useLockModel(useBackend());
   const [passphrase, setPassphrase] = useState("");
   const [mixingOnly, setMixingOnly] = useState(false);
@@ -130,17 +141,17 @@ export function LockScreen({ network, covered = false, onForgot }: { network: Ne
         <DashLogo className="lock-logo" />
         <NetworkCapsule network={network} />
         <h1 id="lock-title" className="lock-title">
-          {LockText.title}
+          {t("lock.title")}
         </h1>
-        <p className="lock-prompt">{LockText.prompt}</p>
+        <p className="lock-prompt">{t("lock.prompt")}</p>
         <form className="lock-form" onSubmit={submit} data-testid="lock-form">
           <input
             ref={field}
             className="lock-field"
             data-testid="lock-field"
             type="password"
-            aria-label="Passphrase"
-            placeholder="Passphrase"
+            aria-label={t("lock.passphrase")}
+            placeholder={t("lock.passphrase")}
             autoComplete="current-password"
             autoFocus
             value={passphrase}
@@ -151,7 +162,7 @@ export function LockScreen({ network, covered = false, onForgot }: { network: Ne
           />
           <label className="check-row lock-check">
             <input type="checkbox" data-testid="lock-mixing-only" checked={mixingOnly} disabled={blocked} onChange={(e) => setMixingOnly(e.target.checked)} />
-            For mixing only
+            {t("lock.mixingOnly")}
           </label>
           <p id="lock-error" className="lock-error" role="alert" data-testid="lock-error">
             {model.message}
@@ -164,12 +175,12 @@ export function LockScreen({ network, covered = false, onForgot }: { network: Ne
             disabled={model.working || passphrase.length === 0 || blocked}
             data-testid="lock-submit"
           >
-            {model.working ? "Unlocking…" : "Unlock"}
+            {model.working ? t("lock.unlocking") : t("lock.unlock")}
           </DashButton>
         </form>
         {model.canRecover && (
           <DashButton variant="plainWhite" data-testid="lock-forgot" onClick={onForgot}>
-            Forgot passphrase?
+            {t("lock.forgot")}
           </DashButton>
         )}
         <LockReportNotice />
@@ -180,16 +191,17 @@ export function LockScreen({ network, covered = false, onForgot }: { network: Ne
 
 /** The full unlock from mixing only (UX-SPEC §4.4 `UnlockSheet`, U-02 D12). */
 export function UnlockSheet({ onClose }: { onClose: () => void }) {
+  const t = useT();
   const model = useLockModel(useBackend());
   return (
-    <Sheet title={LockText.title} width="small" testId="unlock-sheet" onClose={onClose}>
-      <p className="sheet-text">{LockText.prompt}</p>
+    <Sheet title={t("lock.title")} width="small" testId="unlock-sheet" onClose={onClose}>
+      <p className="sheet-text">{t("lock.prompt")}</p>
       <PassphrasePrompt
         testId="unlock-sheet"
         error={model.message}
         busy={model.working}
         disabled={model.blocked}
-        submitLabel="Unlock"
+        submitLabel={t("lock.unlock")}
         onSubmit={async (p) => {
           if (await model.unlock(p, false)) onClose();
         }}
