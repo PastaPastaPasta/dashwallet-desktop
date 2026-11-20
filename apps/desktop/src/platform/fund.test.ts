@@ -5,10 +5,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PendingPlatformFund } from "../api/generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "../api/generated/PlatformFundOutcome";
+import type { FundAmount } from "../api/generated/FundAmount";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { endedBeforeApply, finishAfter, fundCanChange, fundErrorText, fundFor, fundRowView, PlatformFundFlow, resetPlatformFunds } from "./fund";
 import { onMoveSettled } from "./move";
+
+const duffsOf = (a: FundAmount) => (a.kind === "duffs" ? a.duffs : 0);
 
 const APPLIED: PlatformFundOutcome = { txid: "lock1", state: { kind: "applied", credits: "49944000000" } };
 const GRANT = { maxDuffs: 50_001_000, maxCredits: "0" };
@@ -23,9 +26,9 @@ function setup(lock = { encrypted: false }) {
   const api = {
     ...vault.api,
     platformFund: vi.fn(
-      (_w: string, d: number, grant: string) =>
+      (_w: string, a: FundAmount, grant: string) =>
         new Promise<PlatformFundOutcome>((resolve) => {
-          calls.push(`fund ${d} ${grant}`);
+          calls.push(`fund ${duffsOf(a)} ${grant}`);
           answer = resolve;
         }),
     ),
