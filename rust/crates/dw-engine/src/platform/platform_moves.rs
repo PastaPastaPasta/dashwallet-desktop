@@ -2801,6 +2801,15 @@ pub(crate) async fn receive_address(
 ) -> Result<PlatformReceiveAddress, PlatformError> {
     // It ships with the send: below address funds, nothing could spend it.
     sends_active(net.sends_version().await)?;
+    next_receive_address(wallet, network).await
+}
+
+/// The payment account's lowest unused address, as [`receive_address`]
+/// names it, with no version check.
+pub(crate) async fn next_receive_address(
+    wallet: &PlatformWallet,
+    network: Network,
+) -> Result<PlatformReceiveAddress, PlatformError> {
     let key = key_wallet::account::account_collection::PlatformPaymentAccountKey {
         account: ACCOUNT,
         key_class: 0,
