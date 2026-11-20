@@ -7,46 +7,25 @@ import type { Backend } from "../api/backend";
 import { hasCode } from "../api/backend";
 import type { UiSettings } from "../api/generated/UiSettings";
 import type { UpdateAvailability } from "../api/generated/UpdateAvailability";
+import type { UpdatePhase } from "../api/generated/UpdatePhase";
 import type { UpdateStatus } from "../api/generated/UpdateStatus";
 import { ui } from "../app/ui";
 import { showToast } from "../components/toast";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 
-export type UpdatesApi = Pick<Backend, "updateStatus" | "checkForUpdate" | "installUpdate" | "restartToUpdate" | "openUpdateNotes">;
+export type UpdatesApi = Pick<Backend, "updateStatus" | "checkForUpdate" | "installUpdate" | "restartToUpdate" | "openReleasesPage">;
 
 /** The first automatic check waits this long after launch, then one runs a day. */
 export const AUTO_CHECK_DELAY_MS = 60_000;
 export const AUTO_CHECK_EVERY_MS = 24 * 60 * 60 * 1000;
 
-/** What the Updates card shows. */
-export type UpdatesView =
-  | { kind: "loading" }
-  | { kind: "unavailable"; reason: Exclude<UpdateAvailability, "available"> }
-  | { kind: "idle" }
-  | { kind: "checking" }
-  | { kind: "upToDate" }
-  | { kind: "found"; version: string }
-  | { kind: "installing"; version: string; percent: number | null }
-  | { kind: "installed"; version: string };
+/** What the Updates card shows: the phase, once this copy can update itself. */
+export type UpdatesView = { kind: "loading" } | { kind: "unavailable"; reason: Exclude<UpdateAvailability, "available"> } | UpdatePhase;
 
 export function updatesView(status: UpdateStatus | null): UpdatesView {
   if (!status) return { kind: "loading" };
-  if (status.availability !== "available") return { kind: "unavailable", reason: status.availability };
-  const p = status.phase;
-  switch (p.kind) {
-    case "idle":
-    case "checking":
-    case "upToDate":
-      return { kind: p.kind };
-    case "found":
-    case "installed":
-      return { kind: p.kind, version: p.version };
-    case "downloading":
-      return { kind: "installing", version: p.version, percent: p.total ? Math.min(100, Math.floor((p.received * 100) / p.total)) : null };
-    case "installing":
-      return { kind: "installing", version: p.version, percent: 100 };
-  }
+  return status.availability === "available" ? status.phase : { kind: "unavailable", reason: status.availability };
 }
 
 /** Why this copy does not update itself. */
@@ -55,7 +34,9 @@ export function unavailableText(reason: Exclude<UpdateAvailability, "available">
 }
 
 export function updateFailureText(e: unknown): string {
+  if (hasCode(e, "app.update_busy")) return t(`settings.updates.busy.${e.data?.kind === "updateBusy" ? e.data.reason : "payment"}`);
   if (hasCode(e, "app.update_check")) return t("settings.updates.failed.check");
+  if (hasCode(e, "app.update_not_published")) return t("settings.updates.failed.notPublished");
   if (hasCode(e, "app.update_download")) return t("settings.updates.failed.download");
   if (hasCode(e, "app.update_signature")) return t("settings.updates.failed.signature");
   if (hasCode(e, "app.update_install")) return t("settings.updates.failed.install");
@@ -85,13 +66,23 @@ export class UpdatesModel extends Model {
     return updatesView(this.status);
   }
 
-  async load() {
+  /** Runs `f`, showing its failure as the card's problem. */
+  private async attempt(f: () => Promise<unknown>): Promise<boolean> {
+    this.problem = null;
+    this.changed();
     try {
-      this.status = await this.api.updateStatus();
+      await f();
+      return true;
     } catch (e) {
       this.problem = updateFailureText(e);
+      return false;
+    } finally {
+      this.changed();
     }
-    this.changed();
+  }
+
+  async load() {
+    await this.attempt(async () => (this.status = await this.api.updateStatus()));
   }
 
   /** Reads the feed once; the found version when this check found one that was not on offer. */
@@ -99,29 +90,19 @@ export class UpdatesModel extends Model {
     if (this.busy) return null;
     const before = this.view;
     this.busy = true;
-    this.problem = null;
+    await this.attempt(async () => (this.status = await this.api.checkForUpdate()));
+    this.busy = false;
     this.changed();
-    try {
-      this.status = await this.api.checkForUpdate();
-      const after = this.view;
-      return after.kind === "found" && (before.kind !== "found" || before.version !== after.version) ? after.version : null;
-    } catch (e) {
-      this.problem = updateFailureText(e);
-      return null;
-    } finally {
-      this.busy = false;
-      this.changed();
-    }
+    const after = this.view;
+    return after.kind === "found" && (before.kind !== "found" || before.version !== after.version) ? after.version : null;
   }
 
   /** Downloads, verifies and installs the version on offer, showing the download's progress. */
   async install() {
     const view = this.view;
-    if (this.busy || view.kind !== "found") return;
+    if (this.busy || view.kind !== "found" || !this.status) return;
     this.busy = true;
-    this.problem = null;
-    this.status = { ...this.status!, phase: { kind: "downloading", version: view.version, received: 0, total: null } };
-    this.changed();
+    this.status = { ...this.status, phase: { kind: "downloading", version: view.version, received: 0, total: null } };
     const poll = setInterval(() => {
       void this.api.updateStatus().then(
         (s) => {
@@ -133,43 +114,28 @@ export class UpdatesModel extends Model {
         () => undefined,
       );
     }, this.pollMs);
-    try {
-      this.status = await this.api.installUpdate(view.version);
-    } catch (e) {
-      this.problem = updateFailureText(e);
-      this.status = await this.api.updateStatus().catch(() => this.status);
-    } finally {
-      clearInterval(poll);
-      this.busy = false;
-      this.changed();
-    }
+    const done = await this.attempt(async () => (this.status = await this.api.installUpdate(view.version)));
+    clearInterval(poll);
+    if (!done) this.status = await this.api.updateStatus().catch(() => this.status);
+    if (this.view.kind === "restartRequired") this.problem = null;
+    this.busy = false;
+    this.changed();
   }
 
   async restart() {
-    if (this.busy || this.view.kind !== "installed") return;
-    this.problem = null;
-    this.changed();
-    try {
-      await this.api.restartToUpdate();
-    } catch (e) {
-      this.problem = updateFailureText(e);
-      this.changed();
-    }
+    const kind = this.view.kind;
+    if (this.busy || (kind !== "installed" && kind !== "restartRequired")) return;
+    await this.attempt(() => this.api.restartToUpdate());
   }
 
-  async openNotes() {
-    try {
-      await this.api.openUpdateNotes();
-    } catch (e) {
-      this.problem = updateFailureText(e);
-      this.changed();
-    }
+  async openReleases() {
+    await this.attempt(() => this.api.openReleasesPage());
   }
 }
 
 const models = new WeakMap<UpdatesApi, UpdatesModel>();
 
-/** One model per backend: the Settings card and the automatic check share it. */
+/** One model per backend: the Settings card, the automatic check and the restart notice share it. */
 export function updatesModel(api: UpdatesApi): UpdatesModel {
   let model = models.get(api);
   if (!model) {

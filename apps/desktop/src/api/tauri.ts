@@ -166,7 +166,6 @@ export class IpcBackend implements Backend {
   checkForUpdate = () => cmd.checkForUpdate();
   installUpdate = cmd.installUpdate;
   restartToUpdate = () => cmd.restartToUpdate();
-  openUpdateNotes = () => cmd.openUpdateNotes();
   ratesStatus = () => cmd.ratesStatus();
   ratesCurrencies = () => cmd.ratesCurrencies();
   setRatesSettings = cmd.setRatesSettings;

@@ -1,46 +1,31 @@
-// Settings ▸ About ▸ Updates (PK-03): what this copy can do about updates, the automatic check
-// (off by default) and a found update's install and restart, each on a click (settings/updates.ts).
-
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId } from "react";
 import { useBackend } from "../../api/queries";
-import { DashButton } from "../../components/basics";
+import { DashButton, DashLogo } from "../../components/basics";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
-import { installClosesApp, unavailableText, updateFailureText, updatesModel, type UpdatesView } from "../../settings/updates";
+import { installClosesApp, unavailableText, updatesModel, type UpdatesModel, type UpdatesView } from "../../settings/updates";
 import { useSavePrefs } from "./General";
 import { Hint, Problem, SettingsCard } from "./parts";
 
 export function UpdatesCard() {
   const t = useT();
-  const backend = useBackend();
-  const model = useModel(updatesModel(backend));
+  const model = useModel(updatesModel(useBackend()));
   const { prefs, save, problem: notSaved } = useSavePrefs();
-  const [opening, setOpening] = useState<string | null>(null);
   const hint = useId();
   useEffect(() => void model.load(), [model]);
   const view = model.view;
-  const version = model.status?.currentVersion;
 
-  const openReleases = () => {
-    setOpening(null);
-    void backend.openReleasesPage().catch((e: unknown) => setOpening(updateFailureText(e)));
-  };
   const turn = async (on: boolean) => {
     if ((await save({ checkUpdatesAutomatically: on })) && on) await model.check();
   };
 
   return (
     <SettingsCard title={t("settings.updates.title")} testId="settings-updates">
-      {version && (
-        <p className="settings-row-title" data-testid="settings-updates-version">
-          {t("settings.updates.current", { version })}
-        </p>
-      )}
       {view.kind === "unavailable" ? (
         <div className="settings-row" data-testid={`settings-updates-unavailable-${view.reason}`}>
           <Hint>{unavailableText(view.reason)}</Hint>
           {view.reason !== "flatpak" && (
-            <DashButton variant="plainBlue" size="small" data-testid="settings-updates-releases" onClick={openReleases}>
+            <DashButton variant="plainBlue" size="small" data-testid="settings-updates-releases" onClick={() => void model.openReleases()}>
               {t("settings.updates.releasesPage")}
             </DashButton>
           )}
@@ -58,8 +43,8 @@ export function UpdatesCard() {
             {t("settings.updates.auto")}
           </label>
           <Hint id={hint}>{t("settings.updates.autoHint")}</Hint>
-          <UpdateState view={view} busy={model.busy} onInstall={() => void model.install()} onRestart={() => void model.restart()} onNotes={() => void model.openNotes()} />
-          {view.kind !== "installing" && view.kind !== "installed" && (
+          <UpdateState view={view} model={model} />
+          {(view.kind === "idle" || view.kind === "checking" || view.kind === "upToDate" || view.kind === "found") && (
             <div className="settings-row">
               <DashButton variant="tintedBlue" size="small" data-testid="settings-updates-check" disabled={model.busy} onClick={() => void model.check()}>
                 {t("settings.updates.check")}
@@ -68,18 +53,25 @@ export function UpdatesCard() {
           )}
         </>
       ) : null}
-      <Problem text={model.problem ?? notSaved ?? opening} testId="settings-updates-problem" />
+      <Problem text={model.problem ?? notSaved} testId="settings-updates-problem" />
     </SettingsCard>
   );
 }
 
-function UpdateState({ view, busy, onInstall, onRestart, onNotes }: { view: UpdatesView; busy: boolean; onInstall: () => void; onRestart: () => void; onNotes: () => void }) {
+function UpdateState({ view, model }: { view: UpdatesView; model: UpdatesModel }) {
   const t = useT();
   const closes = installClosesApp();
   const line = (text: string) => (
     <p className="field-hint" role="status" data-testid={`settings-updates-${view.kind}`}>
       {text}
     </p>
+  );
+  const restart = (
+    <div className="settings-row">
+      <DashButton variant="filledBlue" size="small" data-testid="settings-updates-restart" onClick={() => void model.restart()}>
+        {t("settings.updates.restart")}
+      </DashButton>
+    </div>
   );
   switch (view.kind) {
     case "checking":
@@ -92,36 +84,72 @@ function UpdateState({ view, busy, onInstall, onRestart, onNotes }: { view: Upda
           {line(t("settings.updates.found", { version: view.version }))}
           {closes && <Hint>{t("settings.updates.installClosesApp")}</Hint>}
           <div className="settings-row">
-            <DashButton variant="plainBlue" size="small" data-testid="settings-updates-notes" onClick={onNotes}>
+            <DashButton variant="plainBlue" size="small" data-testid="settings-updates-notes" onClick={() => void model.openReleases()}>
               {t("settings.updates.notes")}
             </DashButton>
-            <DashButton variant="filledBlue" size="small" data-testid="settings-updates-install" disabled={busy} onClick={onInstall}>
+            <DashButton variant="filledBlue" size="small" data-testid="settings-updates-install" disabled={model.busy} onClick={() => void model.install()}>
               {closes ? t("settings.updates.installAndRestart") : t("settings.updates.install")}
             </DashButton>
           </div>
         </>
       );
-    case "installing":
+    case "downloading": {
+      const { version, received, total } = view;
       return line(
-        view.percent === 100
-          ? t("settings.updates.installing", { version: view.version })
-          : view.percent === null
-            ? t("settings.updates.downloading", { version: view.version })
-            : t("settings.updates.downloadingPercent", { version: view.version, percent: view.percent }),
+        total ? t("settings.updates.downloadingPercent", { version, percent: Math.min(100, Math.floor((received * 100) / total)) }) : t("settings.updates.downloading", { version }),
       );
+    }
+    case "installing":
+      return line(t("settings.updates.installing", { version: view.version }));
     case "installed":
       return (
         <>
           {line(t("settings.updates.installed", { version: view.version }))}
           <Hint>{t("settings.updates.restartHint")}</Hint>
-          <div className="settings-row">
-            <DashButton variant="filledBlue" size="small" data-testid="settings-updates-restart" onClick={onRestart}>
-              {t("settings.updates.restart")}
-            </DashButton>
-          </div>
+          {restart}
+        </>
+      );
+    case "restartRequired":
+      return (
+        <>
+          {line(t("settings.updates.restartRequired"))}
+          {restart}
         </>
       );
     default:
       return null;
   }
+}
+
+/** Over the whole app once a failed Windows install has closed the engine: the wallet screens
+ * cannot work until Dash Wallet restarts, so they say only that. */
+export function UpdateRestartNotice() {
+  const t = useT();
+  const model = useModel(updatesModel(useBackend()));
+  if (model.view.kind !== "restartRequired") return null;
+  return (
+    <div className="onboarding pre-release" role="alertdialog" aria-modal="true" aria-labelledby="update-restart-title" aria-describedby="update-restart-body" data-testid="update-restart-notice">
+      <div className="onboarding-panel">
+        <header className="onboarding-header">
+          <span className="onboarding-header-side" />
+          <span className="onboarding-brand">
+            <DashLogo className="onboarding-logo" />
+          </span>
+          <span className="onboarding-header-side" />
+        </header>
+        <main className="onboarding-body">
+          <h1 className="onboarding-title" id="update-restart-title">
+            {t("settings.updates.restartRequiredTitle")}
+          </h1>
+          <p className="onboarding-text" id="update-restart-body">
+            {t("settings.updates.restartRequired")}
+          </p>
+          <DashButton variant="filledBlue" size="large" fill autoFocus data-testid="update-restart-now" onClick={() => void model.restart()}>
+            {t("settings.updates.restart")}
+          </DashButton>
+          <Problem text={model.problem} testId="update-restart-problem" />
+        </main>
+      </div>
+    </div>
+  );
 }

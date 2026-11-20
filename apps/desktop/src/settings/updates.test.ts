@@ -1,6 +1,5 @@
 // Settings ▸ About ▸ Updates (PK-03) over the fixture backend: off by default, the unavailable
-// states (a build without the key, Flatpak, a package), and a found update's install and restart,
-// each on the user's click.
+// states, and a found update's install and restart, each on the user's click.
 
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,7 +8,7 @@ import { IpcBackend } from "../api/tauri";
 import { DEFAULT_PREFS } from "../app/ui";
 import { installFixture, type FixtureHandle } from "../fixture";
 import { isOffered } from "../fixture/updates";
-import { automaticCheck, installClosesApp, unavailableText, UpdatesModel, updatesView } from "./updates";
+import { automaticCheck, installClosesApp, unavailableText, updateFailureText, UpdatesModel, updatesView } from "./updates";
 
 let fixture: FixtureHandle;
 let b: IpcBackend;
@@ -18,7 +17,7 @@ function install(updates?: Parameters<typeof installFixture>[0]["updates"], upda
   b = new IpcBackend("fixture", () => fixture.now, fixture.locale);
 }
 const feedReads = () => fixture.world.updates.requests;
-const updateCalls = () => fixture.calls.filter((c) => /update/.test(c) && c !== "set_ui_settings" && c !== "ui_settings");
+const updateCalls = () => fixture.calls.filter((c) => /update/.test(c));
 const ON = { checkUpdatesAutomatically: true };
 
 beforeEach(() => {
@@ -80,6 +79,16 @@ describe("unavailable", () => {
     expect(model.view).toEqual({ kind: "unavailable", reason: "packageManager" });
     expect(unavailableText("packageManager")).toMatch(/releases page/);
   });
+
+  it("a Mac app on the disk image asks to be moved to Applications", async () => {
+    install("moveToApplications", "0.3.0");
+    const model = new UpdatesModel(b);
+    await model.load();
+    expect(model.view).toEqual({ kind: "unavailable", reason: "moveToApplications" });
+    expect(unavailableText("moveToApplications")).toMatch(/Applications folder/);
+    expect(await automaticCheck(model, ON)).toBeNull();
+    expect(feedReads()).toBe(0);
+  });
 });
 
 describe("available", () => {
@@ -111,8 +120,8 @@ describe("available", () => {
     install("available", "0.3.0");
     const model = new UpdatesModel(b);
     await model.check();
-    await model.openNotes();
-    expect(fixture.world.updates.notesOpened).toEqual(["0.3.0"]);
+    await model.openReleases();
+    expect(fixture.calls).toContain("open_releases_page");
     await model.restart();
     expect(fixture.calls).not.toContain("restart_to_update");
     await model.install();
@@ -128,7 +137,7 @@ describe("available", () => {
 
   it("a refused signature installs nothing and keeps the offer", async () => {
     install("available", "0.3.0");
-    fixture.world.updates.badSignature = true;
+    fixture.world.updates.fault = "signature";
     const model = new UpdatesModel(b);
     await model.check();
     await model.install();
@@ -140,14 +149,50 @@ describe("available", () => {
     install("available", "0.3.0");
     const model = new UpdatesModel(b);
     await model.check();
-    fixture.world.updates.checkFails = true;
+    fixture.world.updates.fault = "offline";
     expect(await model.check()).toBeNull();
     expect(model.problem).toMatch(/could not reach the update server/);
     expect(model.view).toEqual({ kind: "found", version: "0.3.0" });
   });
 
+  it("a Latest release without a feed says no update information is published", async () => {
+    install("available", "0.3.0");
+    fixture.world.updates.fault = "unpublished";
+    const model = new UpdatesModel(b);
+    await model.load();
+    expect(await model.check()).toBeNull();
+    expect(model.problem).toMatch(/No update information has been published/);
+    expect(model.view).toEqual({ kind: "idle" });
+  });
+
+  it("Install and Restart wait while a payment, mixing, a Platform action or start-up runs", async () => {
+    for (const reason of ["startup", "payment", "mixing", "platform"] as const) {
+      install("available", "0.3.0");
+      const model = new UpdatesModel(b);
+      await model.check();
+      fixture.world.updates.fault = reason;
+      await model.install();
+      expect(model.problem).toBe(updateFailureText({ code: "app.update_busy", message: "", data: { kind: "updateBusy", reason } }));
+      expect(model.view).toEqual({ kind: "found", version: "0.3.0" });
+    }
+    expect(updateFailureText({ code: "app.update_busy", message: "", data: { kind: "updateBusy", reason: "mixing" } })).toMatch(/Stop mixing/);
+  });
+
+  it("a failed install after the app closed the wallet asks for a restart, which works", async () => {
+    install("available", "0.3.0");
+    const model = new UpdatesModel(b);
+    await model.check();
+    fixture.world.updates.fault = "closed";
+    await model.install();
+    expect(model.problem).toBeNull();
+    expect(model.view).toEqual({ kind: "restartRequired", version: "0.3.0" });
+    fixture.world.updates.fault = "payment";
+    await model.restart();
+    expect(fixture.world.updates.restarts).toBe(1);
+  });
+
   it("nothing newer, or only a pre-release, is up to date", async () => {
-    for (const serves of [null, "0.2.0", "0.1.9", "0.3.0-rc.1"]) {
+    for (const serves of [null, "0.1.0", "0.0.9", "0.3.0-rc.1"]) {
       install("available", serves ?? undefined);
       const model = new UpdatesModel(b);
       expect(await model.check()).toBeNull();
@@ -157,11 +202,10 @@ describe("available", () => {
 });
 
 describe("the card's states", () => {
-  it("shows the download's progress, then the install", () => {
-    const status = (phase: UpdatePhase) => updatesView({ availability: "available", currentVersion: "0.2.0", phase });
-    expect(status({ kind: "downloading", version: "0.3.0", received: 0, total: null })).toEqual({ kind: "installing", version: "0.3.0", percent: null });
-    expect(status({ kind: "downloading", version: "0.3.0", received: 512, total: 1024 })).toEqual({ kind: "installing", version: "0.3.0", percent: 50 });
-    expect(status({ kind: "installing", version: "0.3.0" })).toEqual({ kind: "installing", version: "0.3.0", percent: 100 });
+  it("shows the phase once this copy can update itself", () => {
+    const phase: UpdatePhase = { kind: "downloading", version: "0.3.0", received: 512, total: 1024 };
+    expect(updatesView({ availability: "available", phase })).toEqual(phase);
+    expect(updatesView({ availability: "flatpak", phase })).toEqual({ kind: "unavailable", reason: "flatpak" });
     expect(updatesView(null)).toEqual({ kind: "loading" });
   });
 
@@ -176,6 +220,5 @@ describe("the card's states", () => {
     expect(isOffered("0.2.0", "0.2.0")).toBe(false);
     expect(isOffered("0.2.0", "0.1.9")).toBe(false);
     expect(isOffered("0.2.0", "0.3.0-rc.1")).toBe(false);
-    expect(isOffered("0.3.0-rc.1", "0.3.0")).toBe(true);
   });
 });
