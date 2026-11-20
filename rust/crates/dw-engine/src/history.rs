@@ -14,7 +14,7 @@
 //! transactions, and `Other` for mixed debit transactions.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -357,41 +357,145 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
         .collect()
 }
 
-/// The wallet's coins that the payments this app sent
-/// ([`crate::tx_actions::load_sent`]) spend while they are out of a block
-/// and not abandoned, each with its payment: key-wallet's spent-output
-/// claims (`restore_spent_outpoints`), which it rebuilds from no stored
-/// record (#88). A coin is claimed only when the app signed it for that
-/// payment and the payment's transaction spends it. A payment that a
-/// transaction in a block or InstantSend-locked beats on any input claims
-/// nothing: its coins are the winner's or free.
+/// In a block or InstantSend-locked.
+fn settled(e: &TxEntry) -> bool {
+    e.context.block_info().is_some()
+        || e.instant_locked
+        || matches!(e.context, TransactionContext::InstantSend(_))
+}
+
+/// Another transaction in a block or InstantSend-locked spends one of
+/// `t`'s inputs.
+fn beaten(txs: &HashMap<Txid, TxEntry>, t: &Txid, e: &TxEntry) -> bool {
+    let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
+    (txs.iter()).any(|(w, we)| {
+        w != t && settled(we) && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
+    })
+}
+
+/// The payments this app sent ([`crate::tx_actions::load_sent`]) that are
+/// out of a block and not abandoned, each with the coins its mark names. A
+/// payment that a transaction in a block or InstantSend-locked beats on any
+/// input is not among them: its coins are the winner's or free.
+fn live_sends<'a>(
+    txs: &'a HashMap<Txid, TxEntry>,
+    sent: &'a crate::tx_actions::Sent,
+) -> impl Iterator<Item = (Txid, &'a BTreeSet<OutPoint>, &'a TxEntry)> + 'a {
+    (sent.iter())
+        .filter_map(|(t, coins)| Some((*t, coins, txs.get(t)?)))
+        .filter(|(t, _, e)| {
+            e.context.block_info().is_none() && !e.is_abandoned() && !beaten(txs, t, e)
+        })
+}
+
+/// The transactions out of a block that can no longer confirm: another one
+/// in a block or InstantSend-locked spends one of their inputs, a block
+/// spent one (`block_spent`), or they spend an output of one that cannot.
+/// Their change is not trusted (#86).
+pub(crate) fn lost_unmined(
+    txs: &HashMap<Txid, TxEntry>,
+    block_spent: impl Fn(&OutPoint) -> bool,
+) -> HashSet<Txid> {
+    let unmined = || (txs.iter()).filter(|(_, e)| e.context.block_info().is_none());
+    let mut lost: HashSet<Txid> = unmined()
+        .filter(|(t, e)| {
+            beaten(txs, t, e) || (e.tx.input.iter()).any(|i| block_spent(&i.previous_output))
+        })
+        .map(|(t, _)| *t)
+        .collect();
+    loop {
+        let children: Vec<Txid> = unmined()
+            .filter(|(t, e)| {
+                !lost.contains(*t)
+                    && (e.tx.input.iter()).any(|i| lost.contains(&i.previous_output.txid))
+            })
+            .map(|(t, _)| *t)
+            .collect();
+        if children.is_empty() {
+            return lost;
+        }
+        lost.extend(children);
+    }
+}
+
+/// The wallet's coins that the payments this app sent spend while they are
+/// out of a block and not abandoned ([`live_sends`]), each with its
+/// payment: key-wallet's spent-output claims (`restore_spent_outpoints`),
+/// which it rebuilds from no stored record (#88). A coin is claimed only
+/// when the app signed it for that payment and the payment's transaction
+/// spends it.
 pub(crate) fn unmined_own_spends(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
 ) -> Vec<(OutPoint, Txid)> {
-    let settled = |e: &TxEntry| {
-        e.context.block_info().is_some()
-            || e.instant_locked
-            || matches!(e.context, TransactionContext::InstantSend(_))
-    };
-    let beaten = |t: &Txid, e: &TxEntry| {
-        let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
-        (txs.iter()).any(|(w, we)| {
-            w != t
-                && settled(we)
-                && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
-        })
-    };
-    (sent.iter())
-        .filter_map(|(t, coins)| Some((t, coins, txs.get(t)?)))
-        .filter(|(t, _, e)| e.context.block_info().is_none() && !e.is_abandoned() && !beaten(t, e))
+    live_sends(txs, sent)
         .flat_map(|(t, coins, e)| {
             (e.tx.input.iter())
                 .map(|i| i.previous_output)
                 .filter(|o| coins.contains(o))
-                .map(move |o| (o, *t))
+                .map(move |o| (o, t))
         })
         .collect()
+}
+
+/// The change outputs of the payments of [`live_sends`] that key-wallet
+/// trusts when it records them (`Utxo::is_trusted`, Dash Core's
+/// `CWalletTx::IsTrusted`), which the store does not keep (#86): the app
+/// signed every input, and each spends an output paying the wallet
+/// (`owned`) of a transaction in a block, InstantSend-locked, or itself
+/// such a payment's change.
+pub(crate) fn trusted_change(
+    txs: &HashMap<Txid, TxEntry>,
+    sent: &crate::tx_actions::Sent,
+    owned: impl Fn(&ScriptBuf) -> Option<AddressChain>,
+) -> HashSet<OutPoint> {
+    let live: HashMap<Txid, &BTreeSet<OutPoint>> = live_sends(txs, sent)
+        .map(|(t, coins, _)| (t, coins))
+        .collect();
+    let mut memo = HashMap::new();
+    let mut change = HashSet::new();
+    for t in live.keys() {
+        if trusted_send(*t, txs, &live, &owned, &mut memo) {
+            change.extend(
+                (txs[t].tx.output.iter().zip(0u32..))
+                    .filter(|(o, _)| owned(&o.script_pubkey) == Some(AddressChain::Change))
+                    .map(|(_, v)| OutPoint::new(*t, v)),
+            );
+        }
+    }
+    change
+}
+
+fn trusted_send(
+    t: Txid,
+    txs: &HashMap<Txid, TxEntry>,
+    live: &HashMap<Txid, &BTreeSet<OutPoint>>,
+    owned: &impl Fn(&ScriptBuf) -> Option<AddressChain>,
+    memo: &mut HashMap<Txid, bool>,
+) -> bool {
+    if let Some(known) = memo.get(&t) {
+        return *known;
+    }
+    memo.insert(t, false);
+    let (Some(e), Some(coins)) = (txs.get(&t), live.get(&t)) else {
+        return false;
+    };
+    let trusted = !e.tx.input.is_empty()
+        && e.tx.input.iter().all(|i| {
+            let o = i.previous_output;
+            let Some(funding) = txs.get(&o.txid) else {
+                return false;
+            };
+            let chain =
+                (funding.tx.output.get(o.vout as usize)).and_then(|out| owned(&out.script_pubkey));
+            coins.contains(&o)
+                && chain.is_some()
+                && (settled(funding)
+                    || (chain == Some(AddressChain::Change)
+                        && trusted_send(o.txid, txs, live, owned, memo)))
+        });
+    memo.insert(t, trusted);
+    trusted
 }
 
 /// The payments this app sent that the history holds no longer out of a
@@ -2543,5 +2647,88 @@ mod tests {
         let mut want = vec![mined, abandoned, unstored];
         want.sort();
         assert_eq!(settled, want);
+    }
+
+    /// #86: after a restart the change of a live payment this app sent is
+    /// trusted as key-wallet trusted it: every input signed by the app and
+    /// paying the wallet, from a transaction in a block, InstantSend-locked,
+    /// or itself trusted change. Not otherwise.
+    #[test]
+    fn trusted_change_is_the_change_of_live_sends_of_final_coins() {
+        let (receive, change) = (hash_addr(1), hash_addr(5));
+        let owned = |s: &ScriptBuf| {
+            (*s == receive.script_pubkey())
+                .then_some(AddressChain::Receiving)
+                .or((*s == change.script_pubkey()).then_some(AddressChain::Change))
+        };
+        let mut txs = HashMap::new();
+        let mut sent = crate::tx_actions::Sent::new();
+        let mut add = |e: TxEntry, signed: &[OutPoint]| {
+            let txid = e.tx.txid();
+            txs.insert(txid, e);
+            if !signed.is_empty() {
+                sent.insert(txid, signed.iter().copied().collect());
+            }
+            txid
+        };
+        let funding = |seed: u8, n: usize, context| {
+            entry(
+                tx(
+                    vec![input(Txid::from_byte_array([seed; 32]), 0)],
+                    vec![out(100, &receive); n],
+                ),
+                context,
+            )
+        };
+        let mined = add(funding(1, 6, in_block(10, 0)), &[]);
+        let mut locked = funding(2, 2, TransactionContext::Mempool);
+        locked.instant_locked = true;
+        let locked = add(locked, &[]);
+        let pending = add(funding(3, 1, TransactionContext::Mempool), &[]);
+        let coin = |t: Txid, v: u32| OutPoint::new(t, v);
+        let pay = |coins: &[OutPoint], context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(40, &hash_addr(9)), out(50, &change)],
+                ),
+                context,
+            )
+        };
+        let mempool = TransactionContext::Mempool;
+        let first_coins = [coin(mined, 0), coin(locked, 0)];
+        let first = add(pay(&first_coins, mempool.clone()), &first_coins);
+        let second = add(pay(&[coin(first, 1)], mempool.clone()), &[coin(first, 1)]);
+        let unowned = add(pay(&[coin(first, 0)], mempool.clone()), &[coin(first, 0)]);
+        let of_pending = add(
+            pay(&[coin(pending, 0)], mempool.clone()),
+            &[coin(pending, 0)],
+        );
+        let partly_signed = add(
+            pay(&[coin(mined, 1), coin(mined, 2)], mempool.clone()),
+            &[coin(mined, 1)],
+        );
+        let mut abandoned = pay(&[coin(mined, 3)], mempool.clone());
+        abandoned.abandoned = true;
+        let abandoned = add(abandoned, &[coin(mined, 3)]);
+        let of_abandoned = add(
+            pay(&[coin(abandoned, 1)], mempool.clone()),
+            &[coin(abandoned, 1)],
+        );
+        let unmarked = add(pay(&[coin(mined, 4)], mempool.clone()), &[]);
+        let unknown = coin(Txid::from_byte_array([8; 32]), 0);
+        let of_unknown = add(pay(&[unknown], mempool.clone()), &[unknown]);
+        let beaten = add(pay(&[coin(locked, 1)], mempool.clone()), &[coin(locked, 1)]);
+        let winner = tx(vec![input(locked, 1)], vec![out(90, &hash_addr(9))]);
+        add(entry(winner, in_block(11, 0)), &[]);
+        let in_a_block = add(pay(&[coin(mined, 5)], in_block(11, 1)), &[coin(mined, 5)]);
+
+        let trusted = trusted_change(&txs, &sent, owned);
+        assert_eq!(
+            trusted,
+            HashSet::from([coin(first, 1), coin(second, 1)]),
+            "none of {unowned}, {of_pending}, {partly_signed}, {abandoned}, {of_abandoned}, \
+             {unmarked}, {of_unknown}, {beaten}, {in_a_block}"
+        );
     }
 }

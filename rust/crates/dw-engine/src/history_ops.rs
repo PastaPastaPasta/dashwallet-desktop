@@ -433,6 +433,7 @@ impl NetworkSession {
             (claims, crate::history::settled_sends(&h.txs, sent))
         });
         self.apply_spend_claims(manager, wallet, &claims).await;
+        self.restore_trusted_change(manager, wallet, sent).await;
         if !settled.is_empty() {
             let forgotten = self
                 .appdb_op(move |db| {
@@ -443,6 +444,43 @@ impl NetworkSession {
             if let Err(e) = forgotten {
                 tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments");
             }
+        }
+    }
+
+    /// Marks trusted the change of the payments this app sent that
+    /// key-wallet trusted when it recorded them
+    /// ([`crate::history::trusted_change`]): the store keeps no trust, and
+    /// automatic selection takes an unconfirmed coin only when it is
+    /// trusted (#86).
+    async fn restore_trusted_change(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        sent: &crate::tx_actions::Sent,
+    ) {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
+            return;
+        };
+        let owned = owned_scripts(info);
+        let change = self.hub.history.read(&wallet, |txs| {
+            crate::history::trusted_change(txs, sent, |s| owned.get(s).map(|o| o.chain))
+        });
+        let core = &mut info.core_wallet;
+        let mut trusted = false;
+        for account in core.accounts.all_funding_accounts_mut() {
+            for utxo in account.utxos.values_mut() {
+                if !utxo.is_trusted && change.contains(&utxo.outpoint) {
+                    utxo.is_trusted = true;
+                    trusted = true;
+                }
+            }
+        }
+        if trusted {
+            core.update_balance();
+            self.hub
+                .publish_core_balance(wallet, &core.balance(), &core.account_balances());
         }
     }
 

@@ -682,3 +682,136 @@ fn a_locked_payment_a_mined_spend_beat_frees_its_other_coin_after_a_restart() {
     mined(&engine, &session, id, TIP, vec![paid]);
     assert!(held(&engine, &session, id).contains(&a), "A is credited");
 }
+
+/// A wallet holding one confirmed coin of one DASH, mined at [`FUNDED_AT`]
+/// and scanned to [`TIP`]; returns the transaction paying it.
+fn single_coin_wallet() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+) {
+    let (dir, engine, session, id) = engine_wallet();
+    let to = fresh_address(&engine, &session, id);
+    let paid = funding(7, std::slice::from_ref(&to), COIN);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let b = balances(&session, id);
+    assert_eq!((b.confirmed, b.total), (COIN, COIN), "{b:?}");
+    (dir, engine, session, id, paid)
+}
+
+/// Pays a quarter DASH from `source`, hands the payment to the wallet as
+/// dash-spv does after a broadcast and waits for the store to hold it;
+/// returns it with the coins it spent and its change.
+fn pay_stored(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    source: CoinSource,
+) -> (Transaction, Vec<OutPoint>, OutPoint) {
+    let tx = send(engine, session, id, source, COIN / 4, false);
+    mempool(engine, session, id, &tx);
+    wait_stored(session, id, &[tx.txid()]);
+    let spent = tx.input.iter().map(|i| i.previous_output).collect();
+    let change = change_of(&tx, &own_scripts(engine, session, id));
+    (tx, spent, change)
+}
+
+fn buckets(b: &WalletBalances) -> (u64, u64, u64) {
+    (b.confirmed, b.unconfirmed, b.total)
+}
+
+/// #86: a wallet holding one coin pays; after a restart, a second payment
+/// made before any block spends the first one's change, and after another
+/// restart a third spends the second one's. The change counts as it did
+/// before each restart.
+#[test]
+fn change_of_an_unmined_own_payment_is_spendable_after_a_restart() {
+    let (_dir, engine, session, id, paid) = single_coin_wallet();
+    let (_, spent, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+    assert_eq!(spent, vec![OutPoint::new(paid.txid(), 0)]);
+    assert!(utxo(&engine, &session, id, change).is_trusted);
+    let before = buckets(&balances(&session, id));
+
+    let session = reopen(&engine, session);
+    let after = assert_holds(&engine, &session, id, &BTreeSet::from([change]), "restart");
+    let (_, spent, second_change) = pay_stored(&engine, &session, id, CoinSource::Any);
+    assert_eq!(spent, vec![change], "the second payment spends the change");
+    assert_eq!(buckets(&after), before, "as before the restart");
+    let before = buckets(&balances(&session, id));
+
+    let session = reopen(&engine, session);
+    let after = assert_holds(
+        &engine,
+        &session,
+        id,
+        &BTreeSet::from([second_change]),
+        "second restart",
+    );
+    let (_, spent, _) = pay_stored(&engine, &session, id, CoinSource::Any);
+    assert_eq!(spent, vec![second_change]);
+    assert_eq!(buckets(&after), before, "as before the second restart");
+}
+
+/// A payment restored at load whose coin another device then spends in a
+/// block, paying only someone else: the payment can never confirm, so
+/// automatic selection does not take its change.
+#[test]
+fn change_of_a_restored_payment_a_block_beat_is_not_selected() {
+    let (_dir, engine, session, id, paid) = single_coin_wallet();
+    let coin = OutPoint::new(paid.txid(), 0);
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+
+    let session = reopen(&engine, session);
+    assert!(utxo(&engine, &session, id, change).is_trusted);
+    let owner =
+        Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let winner = super::spend_of(coin, vec![(elsewhere(), COIN - 1_000)]);
+    let winner = super::signed_by_wallet(&engine, &session, id, &owner, winner);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    let (_draft, prepared) = prepare(
+        &engine,
+        &session,
+        id,
+        CoinSource::Any,
+        COIN / 8,
+        false,
+        &Arc::new(Accept::default()),
+    );
+    assert!(prepared.is_err(), "the lost change is not selected");
+}
+
+/// The change of a payment of a coin neither in a block nor InstantSend
+/// locked is not trusted in the session that sent it, and stays so after a
+/// restart: it counts as unconfirmed, and automatic selection does not
+/// take it.
+#[test]
+fn change_of_a_payment_of_an_unconfirmed_coin_stays_untrusted_after_a_restart() {
+    let (_dir, engine, session, id) = engine_wallet();
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let to = fresh_address(&engine, &session, id);
+    let paid = funding(7, std::slice::from_ref(&to), COIN);
+    mempool(&engine, &session, id, &paid);
+    let coin = OutPoint::new(paid.txid(), 0);
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Outpoints(vec![coin]));
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
+    let before = buckets(&balances(&session, id));
+    assert_eq!(before.0, 0, "nothing is confirmed: {before:?}");
+
+    let session = reopen(&engine, session);
+    let after = assert_holds(&engine, &session, id, &BTreeSet::from([change]), "restart");
+    assert_eq!(buckets(&after), before, "as before the restart");
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
+    let (_draft, prepared) = prepare(
+        &engine,
+        &session,
+        id,
+        CoinSource::Any,
+        COIN / 4,
+        false,
+        &Arc::new(Accept::default()),
+    );
+    assert!(prepared.is_err(), "automatic selection takes no coin");
+}

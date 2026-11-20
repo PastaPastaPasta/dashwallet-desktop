@@ -1003,14 +1003,17 @@ impl NetworkSession {
             wallet_id.0,
             "the fence of another wallet"
         );
-        let (mut snapshot, lock_inputs, unseen) = {
+        let (mut snapshot, lock_inputs, unseen, block_spent) = {
             let state = wallet.state().await;
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
+            let block_spent: HashSet<OutPoint> =
+                (state.core_wallet.observed_spent_outpoints().keys().copied()).collect();
             (
                 snapshot,
                 pending_lock_inputs(state.tracked_asset_locks.values()),
                 unseen,
+                block_spent,
             )
         };
         // Coins before the history: a ProRegTx that lands between the two
@@ -1075,8 +1078,14 @@ impl NetworkSession {
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
         let spent = (self.hub.history).read(&wallet_id, crate::history::spent_outpoints);
+        // key-wallet sweeps a payment it holds a record of when it loses, but
+        // not one restored at load, whose change can be trusted (#86).
+        let lost = (self.hub.history).read(&wallet_id, |txs| {
+            crate::history::lost_unmined(txs, |o| block_spent.contains(o))
+        });
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
+            coin.utxo.is_trusted &= !lost.contains(&o.txid);
             let lock = locked.get(&lock_key(&o));
             coin.user_locked = lock.is_some();
             coin.dust_locked = lock == Some(&LockReason::Dust);
