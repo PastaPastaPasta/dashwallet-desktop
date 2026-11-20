@@ -305,6 +305,10 @@ impl NetworkSession {
             this.coin_fences.forget(&id);
             this.platform.forget(&id);
             let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+            let was_listed = (this.startup_list.lock())
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .is_none_or(|list| list.contains(&id));
             let startup = this.startup_list_after_removal(&live, id);
             let stored = startup.clone();
             #[cfg(test)]
@@ -335,10 +339,10 @@ impl NetworkSession {
             })
             .await;
             if let Some(mut list) = startup {
-                // A wallet still in the store stays listed, beside the next
-                // one: the next start loads it and the removal can be
-                // retried, and a later list write keeps it.
-                if !wallet_gone.load(std::sync::atomic::Ordering::SeqCst) {
+                // A listed wallet still in the store stays listed, beside
+                // the next one: the next start loads it and the removal can
+                // be retried, and a later list write keeps it.
+                if was_listed && !wallet_gone.load(std::sync::atomic::Ordering::SeqCst) {
                     list.insert(id);
                 }
                 if !matches!(deleted, Ok(Ok(()))) {

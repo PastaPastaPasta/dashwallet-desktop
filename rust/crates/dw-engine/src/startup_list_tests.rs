@@ -89,14 +89,30 @@ fn remove_the_only_listed(
     WalletId,
     WalletId,
 ) {
+    remove_the_first_of_two(true, hooks)
+}
+
+/// Two wallets, one on the list (the first if `first_listed`); the first
+/// is removed with `hooks` set to fail.
+fn remove_the_first_of_two(
+    first_listed: bool,
+    hooks: &[&std::sync::Mutex<Vec<std::path::PathBuf>>],
+) -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    WalletId,
+) {
     let dir = dw_testutil::private_tempdir();
     let engine = engine(&dir.path().join("data"));
     let s = open(&engine);
     engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
     let a = import(&engine, &s, ABANDON_12);
     let b = import(&engine, &s, LEGAL_12);
-    engine.block_on(s.set_load_on_startup(b, false)).unwrap();
-    assert_eq!(stored_list(&s), Some(a.to_string()));
+    let (listed, unlisted) = if first_listed { (a, b) } else { (b, a) };
+    (engine.block_on(s.set_load_on_startup(unlisted, false))).unwrap();
+    assert_eq!(stored_list(&s), Some(listed.to_string()));
     for hook in hooks {
         hook.lock().unwrap().push(s.data_dir().to_path_buf());
     }
@@ -150,6 +166,17 @@ fn a_failed_store_deletion_keeps_the_wallet_listed() {
     let stored = stored_list(&s).unwrap();
     assert!(stored.contains(&a.to_string()), "{stored}");
     assert!(stored.contains(&b.to_string()), "{stored}");
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// A wallet that was off the list stays off it when its store deletion
+/// fails: the next start opens only the wallet the user ticked.
+#[test]
+fn a_failed_store_deletion_leaves_an_unlisted_wallet_unlisted() {
+    let (_dir, engine, s, _a, b) =
+        remove_the_first_of_two(false, &[&crate::wallets::FAIL_DELETE_IN]);
+    assert!(on_startup(&s).contains(&(b, true)));
+    assert_eq!(stored_list(&s), Some(b.to_string()));
     engine.block_on(engine.shutdown()).unwrap();
 }
 
