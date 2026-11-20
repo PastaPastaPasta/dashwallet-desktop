@@ -16,3 +16,5 @@ Round 5 (`r5/`): every image linked in the description was shot again with the s
 - `r5/r4/`: the round 4 script's states
 
 Round 6 (`r6/`): the new state for two payments of one proposal draft, a proposal in Mine either could have made, shot at PR head 346d06b6, Chromium 1280x820. Every image linked before was compared again at main 6e61b32b and head 346d06b6 (two runs each); none changed beyond the "Sending…" spinner's angle and anti-aliased pixels at the selected sidebar item's corner, so none was shot again.
+
+Round 8 (`r8/`): the proposal ledger left the PR, so the round 3 script's two proposal states were shot again at PR head 4510fffd, Chromium 1280x820: the fee being paid at the lock, and the call failing while locked, each after the unlock. The same script at main 31554040 gave "before" images pixel-identical to `r3/before/`, so those were not added again.
