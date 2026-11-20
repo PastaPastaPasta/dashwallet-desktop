@@ -104,6 +104,12 @@ impl RegistrationLib for Hooked {
         self.fake.request_inviter(identity, inviter, lease).await
     }
 
+    async fn shielded_facts(
+        &self,
+    ) -> Result<crate::platform::registration::ShieldedFacts, PlatformError> {
+        self.fake.shielded_facts().await
+    }
+
     async fn funding_permit(
         &self,
         lease: &Lease,

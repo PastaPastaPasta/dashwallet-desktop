@@ -1478,6 +1478,37 @@ impl AppDb {
         })
     }
 
+    /// Adds the absent keys of `scope` (a key already there keeps its
+    /// value), durably in one transaction as [`Self::set_settings_durable`]:
+    /// each `(key, value, guarded)` takes `guarded` when `guard` was set in
+    /// `scope` as the transaction began.
+    pub fn add_settings_durable(
+        &self,
+        scope: &str,
+        guard: &str,
+        writes: &[(&str, &str, &str)],
+    ) -> Result<()> {
+        self.durably(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let guarded = (tx.query_row(
+                "SELECT 1 FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                params![scope, guard],
+                |_| Ok(()),
+            ))
+            .optional()?
+            .is_some();
+            for (key, value, alt) in writes {
+                tx.execute(
+                    "INSERT INTO settings_kv (scope, key, value) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (scope, key) DO NOTHING",
+                    params![scope, key, if guarded { alt } else { value }],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     fn put_setting(conn: &Connection, scope: &str, key: &str, value: Option<&str>) -> Result<()> {
         match value {
             Some(v) => conn.execute(
