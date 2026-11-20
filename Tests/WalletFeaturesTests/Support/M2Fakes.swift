@@ -240,24 +240,25 @@ final class FakeFileImporter: WalletFileImporting, @unchecked Sendable {
         return try configuredReport("importDumpWallet")
     }
 
-    /// BDB is not_implemented "import_wallet_dat.bdb" until M6 (engine rule).
     func importWalletDat(_ file: URL, passphrase: (any SecretBuffer)?, options: WalletImportOptions)
         async throws(ServiceError) -> WalletImportReport
     {
         calls.withLock { $0.append("walletDat") }
         try errors.check("importWalletDat")
+        let encrypted: Bool
         switch kinds.current[file] {
-        case .walletDatBerkeleyDB?:
-            throw ServiceError(code: .notImplemented, detail: "import_wallet_dat.bdb")
-        case .walletDatSQLite(let encrypted, _)?:
-            if encrypted {
-                guard let passphrase else { throw ServiceError(code: .compatPassphraseRequired) }
-                guard passphrase.testString == walletDatPassphrase.current else {
-                    throw ServiceError(code: .compatWrongPassphrase)
-                }
-            }
+        case .walletDatBerkeleyDB(let flag)?:
+            encrypted = flag == true
+        case .walletDatSQLite(let flag, _)?:
+            encrypted = flag
         default:
-            throw ServiceError(code: .compatUnsupportedFormat)
+            return try configuredReport("importWalletDat")
+        }
+        if encrypted {
+            guard let passphrase else { throw ServiceError(code: .compatPassphraseRequired) }
+            guard passphrase.testString == walletDatPassphrase.current else {
+                throw ServiceError(code: .compatWrongPassphrase)
+            }
         }
         return try configuredReport("importWalletDat")
     }

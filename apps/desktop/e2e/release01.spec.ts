@@ -1,5 +1,6 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
+import { contrast } from "./contrast";
 import { authorize, fixtureUrl, fontsReady, moveFromPlatform, openTransfer, platformMoveWhy, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 // The 0.1 release's renderer pieces on the fixture backend: the first-run notice, the network
@@ -16,36 +17,6 @@ async function shot(page: Page, name: string) {
     await fontsReady(page);
     await page.screenshot({ path: `${dir}/${name}.png` });
   }
-}
-
-/** The contrast ratio of an element's text against the first opaque background behind it. */
-async function contrast(el: Locator): Promise<number> {
-  return el.evaluate((node) => {
-    const parse = (c: string): [number, number, number, number] => {
-      const m = c.match(/-?[\d.]+/g)!.map(Number);
-      if (c.startsWith("color(")) return [m[0] * 255, m[1] * 255, m[2] * 255, m[3] ?? 1];
-      return [m[0], m[1], m[2], m[3] ?? 1];
-    };
-    const over = (top: number[], bottom: number[]) => {
-      const a = top[3];
-      return [0, 1, 2].map((i) => top[i] * a + bottom[i] * (1 - a)).concat(1);
-    };
-    const layers: number[][] = [];
-    for (let n: Element | null = node; n; n = n.parentElement) {
-      const bg = parse(getComputedStyle(n).backgroundColor);
-      if (bg[3] > 0) layers.push(bg);
-      if (bg[3] === 1) break;
-    }
-    let base: number[] = [255, 255, 255, 1];
-    for (const l of layers.reverse()) base = over(l, base);
-    const fg = over(parse(getComputedStyle(node).color), base);
-    const lum = (c: number[]) => {
-      const [r, g, b] = c.slice(0, 3).map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
-      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    };
-    const [hi, lo] = [lum(fg), lum(base)].sort((a, b) => b - a);
-    return (hi + 0.05) / (lo + 0.05);
-  });
 }
 
 async function open(page: Page, scenario: string, theme: Theme = "light") {
@@ -253,7 +224,7 @@ test.describe("first-run notice", () => {
       const errors = await open(page, "pre-release-notice", theme);
       const notice = page.getByTestId("pre-release-notice");
       await expect(notice).toBeVisible();
-      await expect(notice).toContainText("Dash Wallet 0.1 is an early release");
+      await expect(notice).toContainText("Dash Wallet is an early release");
       await expect(notice).toContainText("It has had no security review; use small amounts.");
       await expect(page.getByTestId("pre-release-dismiss")).toBeFocused();
       expect(await seriousAxeViolations(page)).toEqual([]);

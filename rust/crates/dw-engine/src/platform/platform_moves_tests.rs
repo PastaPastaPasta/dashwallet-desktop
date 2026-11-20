@@ -2775,3 +2775,6 @@ fn only_a_rise_beyond_an_applied_fund_is_incoming() {
     );
     assert_eq!(arriving["a"], 0, "spent");
 }
+
+#[path = "platform_shield_tests.rs"]
+mod shield;
