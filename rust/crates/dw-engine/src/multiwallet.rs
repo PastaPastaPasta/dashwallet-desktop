@@ -297,11 +297,23 @@ impl NetworkSession {
                 .await;
             // Its next load publishes narrow CoinJoin pools again; what SPV
             // matches above this checkpoint before they are widened is
-            // replayed, across a crash too. Put back if it stays loaded.
-            let marked = this.wide_scan(id).await.ok();
-            if let Some(synced) = synced {
-                this.note_narrow_from(id, Some(synced), None).await;
+            // replayed, across a crash too. Put back if it stays loaded; it
+            // stays loaded if that cannot be stored.
+            let noted = async {
+                let marked = this.wide_scan(id).await?;
+                if let Some(synced) = synced {
+                    this.note_narrow_from(id, Some(synced), None).await?;
+                }
+                Ok::<_, EngineError>(marked)
             }
+            .await;
+            let marked = match noted {
+                Ok(marked) => marked,
+                Err(e) => {
+                    this.spawn_ensure_background();
+                    return Err(e);
+                }
+            };
             // Marked first, so a concurrent load cannot bring it back.
             live.store.set_unloaded(id.0, true);
             // Its discoveries end first, as for a removal: none may apply
@@ -317,9 +329,7 @@ impl NetworkSession {
                 .await
             {
                 live.store.set_unloaded(id.0, false);
-                if let Some(marked) = marked {
-                    this.set_wide_scan(id, marked).await;
-                }
+                this.set_wide_scan(id, marked).await;
                 // The revocation dropped its background lease, without
                 // which every shielded pass of the network is held back.
                 this.spawn_ensure_background();
@@ -365,16 +375,21 @@ impl NetworkSession {
             this.hub.update_wallet_state(id, |s| s.loading = true);
             // A wallet the session opened unloaded (not on the startup list)
             // has had no unload to note its checkpoint.
-            let (synced, birth) = {
+            // Not published unless that is stored.
+            let noted = async {
                 let db_path = this.data_dir().join(crate::session::WALLET_DB_FILE);
-                tokio::task::spawn_blocking(move || crate::store::stored_heights(&db_path, &id.0))
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .unwrap_or_default()
-            };
-            this.note_narrow_from(id, synced, birth.map(|b| b.saturating_sub(1)))
-                .await;
+                let (synced, birth) = tokio::task::spawn_blocking(move || {
+                    crate::store::stored_heights(&db_path, &id.0)
+                })
+                .await?
+                .map_err(|e| EngineError::Storage(format!("the stored checkpoint: {e}")))?;
+                (this.note_narrow_from(id, synced, birth.map(|b| b.saturating_sub(1)))).await
+            }
+            .await;
+            if let Err(e) = noted {
+                this.hub.unload_wallet(&id);
+                return Err(e);
+            }
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
                 live.store.set_unloaded(id.0, true);
@@ -544,10 +559,23 @@ impl NetworkSession {
             // DEC-210: before the first write, as an import of a seed.
             let readmit = id.to_string();
             let readmitted = this.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
-            // Before SPV can match a batch with the pools it publishes; put
-            // back if nothing is registered.
+            // Before SPV can match a batch with the pools it publishes: the
+            // lookahead it is to scan with and the marker, put back if
+            // nothing is registered.
             let previous = this.wide_scan(id).await.ok();
-            this.set_wide_scan(id, Some(crate::keys::WideScan::Birth)).await;
+            let pending = async {
+                if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD {
+                    this.write_lookahead(id, lookahead).await?;
+                }
+                this.mark_pending(id, crate::keys::WideScan::Birth).await
+            }
+            .await;
+            if let Err(e) = pending {
+                if readmitted {
+                    this.record_removed_again(&held, id).await;
+                }
+                return Err(e);
+            }
             let was_unloaded = this.hub.admit(id);
             let registered = async {
                 let store = Arc::clone(&live.store);
@@ -590,13 +618,11 @@ impl NetworkSession {
             #[cfg(test)]
             this.hub.run_on_published(id);
             let mut raised = true;
-            if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD {
-                if let Err(e) = crate::keys::apply_lookahead(&wallet, lookahead).await {
-                    raised = false;
-                    tracing::warn!(wallet_id = %id, error = %e, "could not set the watch-only lookahead");
-                }
-                // Raised again at every load, as a seed import's.
-                this.store_lookahead(id, lookahead).await;
+            if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD
+                && let Err(e) = crate::keys::apply_lookahead(&wallet, lookahead).await
+            {
+                raised = false;
+                tracing::warn!(wallet_id = %id, error = %e, "could not set the watch-only lookahead");
             }
             // A batch SPV committed since the load published it matched the
             // default gap.

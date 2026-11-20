@@ -77,7 +77,7 @@ pub(crate) const COINJOIN_SCAN_GAP: u32 = MAX_LOOKAHEAD;
 pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// dw-appdb setting (wallet scope) holding a raised lookahead, applied again
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
-const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
+pub(crate) const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
 /// dw-appdb setting (local wallet scope) saying whether the wallet's history
 /// is known to have been scanned with [`COINJOIN_SCAN_GAP`] and its raised
 /// lookahead ([`WideScan`]). Absent on a wallet an older build scanned.
@@ -116,6 +116,22 @@ impl WideScan {
 /// widen.
 #[cfg(test)]
 pub(crate) static FAIL_WIDEN: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
+
+/// Tests: wallets whose [`WIDE_SCAN_SETTING`] cannot be read or durably
+/// written.
+#[cfg(test)]
+pub(crate) static FAIL_WIDE_SCAN_IO: std::sync::Mutex<Vec<[u8; 32]>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Tests: wallets whose stored range and lookahead cannot be read.
+#[cfg(test)]
+pub(crate) static FAIL_RESTORE_READ: std::sync::Mutex<Vec<[u8; 32]>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) fn fails_for(list: &std::sync::Mutex<Vec<[u8; 32]>>, id: WalletId) -> bool {
+    list.lock().unwrap().contains(&id.0)
+}
 
 /// app.sqlite setting of "ask for my passphrase for every payment", one
 /// per vault: this prefix and the vault id in hex.
@@ -733,21 +749,36 @@ impl NetworkSession {
         // wallet's own birth, was matched without that range: marked before
         // anything stores the range, replayed once the keys are attached,
         // with the birth lowered to that start if it is below.
+        // The import's lookahead is raised and stored as well, before the
+        // mark, so a load after a crash scans with it.
         let attached = if registered {
             self.cover_imported_range(&manager, wallet_id, &state)
                 .await?;
-            match state.issued {
-                Some(_) => {
-                    let from = birth_height.unwrap_or(0).saturating_sub(1);
-                    Some(self.note_narrow_below(&manager, wallet_id, from).await)
+            if state.issued.is_some() || lookahead.is_some() {
+                let mut raised = true;
+                if let Some(gap) = lookahead {
+                    let wallet = (manager.get_wallet(&wallet_id.0).await)
+                        .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
+                    if let Err(e) = apply_lookahead(&wallet, gap).await {
+                        raised = false;
+                        tracing::warn!(%wallet_id, error = %e, "could not raise the attached keys' lookahead");
+                    }
+                    self.write_lookahead(wallet_id, gap).await?;
                 }
-                None => None,
+                let from = match birth_height {
+                    Some(h) => h.saturating_sub(1),
+                    None => birth_checkpoint(&manager, wallet_id).await,
+                };
+                let (from, replaced) = self.note_narrow_below(&manager, wallet_id, from).await?;
+                Some((from, replaced, raised))
+            } else {
+                None
             }
         } else {
             None
         };
         let unmark_attached = || async move {
-            if let Some((_, Some(previous))) = attached {
+            if let Some((_, Some(previous), _)) = attached {
                 self.set_wide_scan(wallet_id, previous).await;
             }
         };
@@ -796,8 +827,8 @@ impl NetworkSession {
             }
         };
         if registered {
-            if let Some((from, _)) = attached {
-                if self.widen_published_wallet(&manager, wallet_id, from).await {
+            if let Some((from, _, raised)) = attached {
+                if self.widen_published_wallet(&manager, wallet_id, from).await && raised {
                     self.set_wide_scan(wallet_id, Some(WideScan::Done)).await;
                 }
                 self.refresh_wallet_state(&manager, wallet_id).await;
@@ -817,10 +848,26 @@ impl NetworkSession {
         }
 
         let default_name = self.next_default_name();
-        // Before SPV can match a batch with the pools it publishes; put back
-        // if nothing is registered.
+        // Before SPV can match a batch with the pools it publishes: the
+        // lookahead it is to scan with and the marker, put back if nothing is
+        // registered.
         let previous = self.wide_scan(wallet_id).await.ok();
-        self.set_wide_scan(wallet_id, Some(WideScan::Birth)).await;
+        let pending = async {
+            if let Some(gap) = lookahead {
+                self.write_lookahead(wallet_id, gap).await?;
+            }
+            self.mark_pending(wallet_id, WideScan::Birth).await
+        }
+        .await;
+        if let Err(e) = pending {
+            if !had_secret {
+                self.forget_secret(held, wallet_id).await;
+            }
+            if readmitted || !had_secret {
+                self.record_removed_again(held, wallet_id).await;
+            }
+            return Err(e);
+        }
         let unmark = || async move {
             if let Some(previous) = previous {
                 self.set_wide_scan(wallet_id, previous).await;
@@ -880,12 +927,11 @@ impl NetworkSession {
             }
         };
         let mut raised = true;
-        if let Some(gap) = lookahead {
-            if let Err(e) = apply_lookahead(&wallet, gap).await {
-                raised = false;
-                tracing::warn!(%wallet_id, error = %e, "could not raise the restore lookahead");
-            }
-            self.store_lookahead(wallet_id, gap).await;
+        if let Some(gap) = lookahead
+            && let Err(e) = apply_lookahead(&wallet, gap).await
+        {
+            raised = false;
+            tracing::warn!(%wallet_id, error = %e, "could not raise the restore lookahead");
         }
         // Not announced without Core's range: taken out again, with the rows
         // written for it.
@@ -939,29 +985,35 @@ impl NetworkSession {
     }
 
     pub(crate) async fn store_lookahead(&self, wallet_id: WalletId, gap: u32) {
-        let Ok(live) = self.live() else { return };
-        let key = wallet_id.to_string();
-        let stored = tokio::task::spawn_blocking(move || {
-            live.appdb
-                .set_setting(&key, LOOKAHEAD_SETTING, Some(&gap.to_string()))
-        })
-        .await;
-        if !matches!(stored, Ok(Ok(()))) {
+        if self.write_lookahead(wallet_id, gap).await.is_err() {
             tracing::warn!(%wallet_id, "could not store the lookahead; it lasts until restart");
         }
     }
 
-    /// Wallet `id`'s stored lookahead, if a valid one is stored.
-    pub(crate) async fn stored_lookahead(&self, id: WalletId) -> Option<u32> {
-        let appdb = std::sync::Arc::clone(&self.live().ok()?.appdb);
+    /// Stores wallet `id`'s lookahead `gap`, durable when it returns `Ok`:
+    /// before a wallet is published, so a load after a crash scans with it.
+    pub(crate) async fn write_lookahead(&self, id: WalletId, gap: u32) -> Result<(), EngineError> {
         let key = id.to_string();
-        tokio::task::spawn_blocking(move || appdb.setting(&key, LOOKAHEAD_SETTING))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .flatten()
+        self.appdb_op(move |db| {
+            db.set_setting_durable(&key, LOOKAHEAD_SETTING, Some(&gap.to_string()))
+        })
+        .await
+    }
+
+    /// Wallet `id`'s stored lookahead, if a valid one is stored; `Err` when
+    /// it cannot be read.
+    pub(crate) async fn stored_lookahead(&self, id: WalletId) -> Result<Option<u32>, EngineError> {
+        #[cfg(test)]
+        if fails_for(&FAIL_RESTORE_READ, id) {
+            return Err(EngineError::Storage("test: lookahead not read".into()));
+        }
+        let key = id.to_string();
+        let value = self
+            .appdb_op(move |db| db.setting(&key, LOOKAHEAD_SETTING))
+            .await?;
+        Ok(value
             .and_then(|v| v.parse::<u32>().ok())
-            .filter(|g| (1..=MAX_LOOKAHEAD).contains(g))
+            .filter(|g| (1..=MAX_LOOKAHEAD).contains(g)))
     }
 
     /// [`Self::restore_loaded_wallet`] for every wallet (session open).
@@ -977,26 +1029,30 @@ impl NetworkSession {
     /// widens its CoinJoin pools and replays what may have been matched with
     /// narrow ones ([`WIDE_SCAN_SETTING`]): above the loaded checkpoint, or
     /// the marker's, or the birth checkpoint of a wallet an older build
-    /// scanned. Failures are logged and leave the marker for the next load.
+    /// scanned. Failures, an unreadable range or lookahead among them, are
+    /// logged and leave a pending marker for the next load, one from the
+    /// loaded checkpoint for a wallet marked done.
     pub(crate) async fn restore_loaded_wallet(
         &self,
         manager: &crate::session::Manager,
         id: WalletId,
     ) {
         let covered = match self.stored_issued(id).await {
-            Some(issued) => self.cover_issued(manager, id, issued).await,
-            None => Ok(()),
+            Ok(Some(issued)) => self.cover_issued(manager, id, issued).await,
+            Ok(None) => Ok(()),
+            Err(e) => Err(e),
         };
         if let Err(e) = &covered {
             tracing::warn!(wallet_id = %id, error = %e, "could not restore the legacy wallet's address range");
         }
         let lookahead = self.stored_lookahead(id).await;
-        let raised = match lookahead {
-            Some(gap) => match manager.get_wallet(&id.0).await {
-                Some(wallet) => apply_lookahead(&wallet, gap).await,
+        let raised = match &lookahead {
+            Ok(Some(gap)) => match manager.get_wallet(&id.0).await {
+                Some(wallet) => apply_lookahead(&wallet, *gap).await,
                 None => Err(EngineError::WalletNotFound(id.to_string())),
             },
-            None => Ok(()),
+            Ok(None) => Ok(()),
+            Err(e) => Err(EngineError::Storage(format!("the stored lookahead: {e}"))),
         };
         if let Err(e) = &raised {
             tracing::warn!(wallet_id = %id, error = %e, "could not raise the loaded wallet's lookahead");
@@ -1015,7 +1071,11 @@ impl NetworkSession {
             Ok(Some(WideScan::Done)) | Err(_) => loaded_at,
             Ok(Some(WideScan::From(h))) => Some(loaded_at.map_or(h, |c| c.min(h))),
             Ok(Some(WideScan::Birth)) => Some(birth_checkpoint(manager, id).await),
-            Ok(None) if self.scanned_narrow(manager, id, lookahead).await => {
+            Ok(None)
+                if self
+                    .scanned_narrow(manager, id, !matches!(lookahead, Ok(None)))
+                    .await =>
+            {
                 Some(birth_checkpoint(manager, id).await)
             }
             Ok(None) => loaded_at,
@@ -1027,7 +1087,14 @@ impl NetworkSession {
                 .inspect_err(|e| tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap"))
                 .is_ok(),
         };
-        if widened && raised.is_ok() && matches!(marker, Ok(m) if m != Some(WideScan::Done)) {
+        if !(widened && raised.is_ok()) {
+            // The session scans on with what pools it has: a wallet marked
+            // done gets its checkpoint back as the next load's start.
+            let birth = birth_checkpoint(manager, id).await;
+            if let Err(e) = self.note_narrow_from(id, from, Some(birth)).await {
+                tracing::warn!(wallet_id = %id, error = %e, "could not mark the wallet for a replay at the next load");
+            }
+        } else if matches!(marker, Ok(m) if m != Some(WideScan::Done)) {
             self.set_wide_scan(id, Some(WideScan::Done)).await;
         }
     }
@@ -1040,7 +1107,7 @@ impl NetworkSession {
         &self,
         manager: &crate::session::Manager,
         id: WalletId,
-        lookahead: Option<u32>,
+        lookahead: bool,
     ) -> bool {
         let coinjoin = {
             let wm = manager.wallet_manager_arc();
@@ -1048,7 +1115,7 @@ impl NetworkSession {
             (wm.get_wallet_info(&id.0))
                 .is_some_and(|info| !info.core_wallet.accounts.coinjoin_accounts.is_empty())
         };
-        if !coinjoin && lookahead.is_none() {
+        if !coinjoin && !lookahead {
             return false;
         }
         let scope = dw_appdb::local_scope(&id.to_string());
@@ -1060,6 +1127,10 @@ impl NetworkSession {
 
     /// Wallet `id`'s [`WIDE_SCAN_SETTING`].
     pub(crate) async fn wide_scan(&self, id: WalletId) -> Result<Option<WideScan>, EngineError> {
+        #[cfg(test)]
+        if fails_for(&FAIL_WIDE_SCAN_IO, id) {
+            return Err(EngineError::Storage("test: marker not read".into()));
+        }
         let scope = dw_appdb::local_scope(&id.to_string());
         let read = self
             .appdb_op(move |db| db.setting(&scope, WIDE_SCAN_SETTING))
@@ -1073,24 +1144,25 @@ impl NetworkSession {
     /// Notes that wallet `id`'s blocks above `from` may be matched with
     /// narrow pools, unless its marker already names a start at or below it,
     /// even one below the wallet's birth. Returns where a replay starts and
-    /// the marker replaced, if any.
+    /// the marker replaced, if any. `Err` when the marker cannot be read or
+    /// stored.
     async fn note_narrow_below(
         &self,
         manager: &crate::session::Manager,
         id: WalletId,
         from: u32,
-    ) -> (u32, Option<Option<WideScan>>) {
-        let marked = self.wide_scan(id).await.ok();
+    ) -> Result<(u32, Option<Option<WideScan>>), EngineError> {
+        let marked = self.wide_scan(id).await?;
         let lower = match marked {
-            Some(Some(WideScan::From(h))) => Some(h),
-            Some(Some(WideScan::Birth)) => Some(birth_checkpoint(manager, id).await),
+            Some(WideScan::From(h)) => Some(h),
+            Some(WideScan::Birth) => Some(birth_checkpoint(manager, id).await),
             _ => None,
         };
         match lower {
-            Some(h) if h <= from => (h, None),
+            Some(h) if h <= from => Ok((h, None)),
             _ => {
-                self.set_wide_scan(id, Some(WideScan::From(from))).await;
-                (from, marked)
+                self.mark_pending(id, WideScan::From(from)).await?;
+                Ok((from, Some(marked)))
             }
         }
     }
@@ -1098,25 +1170,50 @@ impl NetworkSession {
     /// Notes that wallet `id`'s blocks above `checkpoint` (its birth's when
     /// `None`) may be matched with narrow pools, unless its marker already
     /// names a lower start. `birth` is the wallet's birth checkpoint, when
-    /// known: a marker at or below it is kept for `None`.
+    /// known: a marker at or below it is kept for `None`. `Err` when the
+    /// marker cannot be read (a lower one may stand) or durably stored: the
+    /// caller does not publish the wallet then.
     pub(crate) async fn note_narrow_from(
         &self,
         id: WalletId,
         checkpoint: Option<u32>,
         birth: Option<u32>,
-    ) {
-        let lower = match (self.wide_scan(id).await, checkpoint) {
-            (Ok(Some(WideScan::Done)), Some(h)) => WideScan::From(h),
-            (Ok(Some(WideScan::From(old))), Some(h)) if h < old => WideScan::From(h),
-            (Ok(Some(WideScan::From(old))), None) if birth.is_some_and(|b| old <= b) => return,
-            (Ok(Some(WideScan::Done | WideScan::From(_))) | Err(_), None) => WideScan::Birth,
-            (Err(_), Some(h)) => WideScan::From(h),
-            _ => return,
+    ) -> Result<(), EngineError> {
+        let lower = match (self.wide_scan(id).await?, checkpoint) {
+            (Some(WideScan::Done), Some(h)) => WideScan::From(h),
+            (Some(WideScan::From(old)), Some(h)) if h < old => WideScan::From(h),
+            (Some(WideScan::From(old)), None) if birth.is_some_and(|b| old <= b) => return Ok(()),
+            (Some(WideScan::Done | WideScan::From(_)), None) => WideScan::Birth,
+            _ => return Ok(()),
         };
-        self.set_wide_scan(id, Some(lower)).await;
+        self.mark_pending(id, lower).await
     }
 
-    /// Stores wallet `id`'s [`WIDE_SCAN_SETTING`]; a failure is logged.
+    /// Stores a pending [`WIDE_SCAN_SETTING`] of wallet `id`, durable when
+    /// it returns `Ok`: wallet.sqlite may store a later checkpoint as soon as
+    /// the wallet is published.
+    pub(crate) async fn mark_pending(
+        &self,
+        id: WalletId,
+        marker: WideScan,
+    ) -> Result<(), EngineError> {
+        #[cfg(test)]
+        if fails_for(&FAIL_WIDE_SCAN_IO, id) {
+            return Err(EngineError::Storage("test: marker not stored".into()));
+        }
+        let scope = dw_appdb::local_scope(&id.to_string());
+        let value = marker.encode();
+        let stored = self
+            .appdb_op(move |db| db.set_setting_durable(&scope, WIDE_SCAN_SETTING, Some(&value)))
+            .await;
+        if let Err(e) = &stored {
+            tracing::warn!(wallet_id = %id, error = %e, "could not store that the wallet needs a replay with wide CoinJoin pools");
+        }
+        stored
+    }
+
+    /// Stores wallet `id`'s [`WIDE_SCAN_SETTING`] once it is done, or puts a
+    /// replaced one back; a failure is logged and leaves a pending one.
     pub(crate) async fn set_wide_scan(&self, id: WalletId, marker: Option<WideScan>) {
         let scope = dw_appdb::local_scope(&id.to_string());
         let value = marker.map(WideScan::encode);

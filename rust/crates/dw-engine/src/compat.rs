@@ -1037,15 +1037,21 @@ impl NetworkSession {
         self.cover_issued(manager, id, issued).await
     }
 
-    /// Wallet `id`'s stored legacy counters, if valid ones are stored.
-    pub(crate) async fn stored_issued(&self, id: WalletId) -> Option<(u32, u32)> {
-        let appdb = Arc::clone(&self.live().ok()?.appdb);
+    /// Wallet `id`'s stored legacy counters, if valid ones are stored; `Err`
+    /// when they cannot be read.
+    pub(crate) async fn stored_issued(
+        &self,
+        id: WalletId,
+    ) -> Result<Option<(u32, u32)>, EngineError> {
+        #[cfg(test)]
+        if crate::keys::fails_for(&crate::keys::FAIL_RESTORE_READ, id) {
+            return Err(EngineError::Storage("test: range not read".into()));
+        }
         let key = id.to_string();
-        let value = tokio::task::spawn_blocking(move || appdb.setting(&key, ISSUED_SETTING))
-            .await
-            .ok()?
-            .ok()??;
-        parse_issued(&value)
+        let value = self
+            .appdb_op(move |db| db.setting(&key, ISSUED_SETTING))
+            .await?;
+        Ok(value.as_deref().and_then(parse_issued))
     }
 }
 
