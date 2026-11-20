@@ -29,16 +29,21 @@ fn an_open_and_a_close_on_a_thread_already_holding_the_lock_pass_through() {
 
 #[test]
 fn a_panic_while_holding_the_lock_leaves_later_opens_working() {
-    let panicked = std::thread::spawn(|| {
+    let (panicked, still_holding) = std::thread::spawn(|| {
         let unwound = std::panic::catch_unwind(|| {
             let _held = OpenClose::enter();
             panic!("while holding the open/close lock");
         });
-        assert!(!HOLDING.get(), "the panicking thread still claims the lock");
-        std::panic::resume_unwind(unwound.unwrap_err());
+        (unwound.is_err(), HOLDING.get())
     })
-    .join();
-    assert!(panicked.is_err());
+    .join()
+    .unwrap();
+    assert!(panicked);
+    assert!(
+        !still_holding,
+        "the thread that panicked still claims the lock"
+    );
+    assert!(OPEN_CLOSE.is_poisoned());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(APP_DB_FILE);
     within(FINISH, move || {
