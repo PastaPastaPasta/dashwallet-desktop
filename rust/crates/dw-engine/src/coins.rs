@@ -515,6 +515,21 @@ tokio::task_local! {
     /// Tests: holds the first [`NetworkSession::appdb_op`] job of the task
     /// in scope before it runs.
     pub(crate) static HOLD_APPDB_JOB: Arc<TestPause>;
+    /// Tests: the gate's holds for the operations of the task in scope.
+    pub(crate) static GATE_HOLDS: Arc<GateHolds>;
+}
+
+/// Tests: where [`crate::gate::OpGate::enter`] holds an operation of the
+/// task in the scope of [`GATE_HOLDS`], and what it saw there.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct GateHolds {
+    /// Before it is admitted: its read lock taken, the gate not closed.
+    pub(crate) entering: std::sync::Mutex<Option<Arc<TestPause>>>,
+    /// Admitted, between its last two loads.
+    pub(crate) between_loads: std::sync::Mutex<Option<Arc<TestPause>>>,
+    /// How often it was admitted, saw the pause and backed off.
+    pub(crate) backed_off: std::sync::atomic::AtomicUsize,
 }
 
 /// Tests: the pause of the first app.sqlite job of a task in the scope of
