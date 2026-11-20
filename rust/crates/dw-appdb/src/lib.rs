@@ -21,7 +21,10 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
+use crate::conn::AppConn;
+
 mod avatar;
+mod conn;
 mod dashpay_journal;
 pub mod dispatch;
 #[cfg(all(debug_assertions, any(test, feature = "durability-sim")))]
@@ -490,7 +493,7 @@ impl LockRow {
 }
 
 pub struct AppDb {
-    conn: Mutex<Connection>,
+    conn: Mutex<AppConn>,
     /// A shared lock on the database's lock file for as long as this
     /// instance lives, a job still holding it after its session closed
     /// included: while it is held, no open forgets the removed wallets
@@ -548,7 +551,7 @@ impl AppDb {
         }
         // No URI and no symlink. The database file itself is never opened
         // here: closing a descriptor of it would drop SQLite's POSIX locks.
-        let conn = Connection::open_with_flags(
+        let conn = AppConn::open(
             path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_CREATE
@@ -596,10 +599,10 @@ impl AppDb {
 
     /// A private in-memory database (tests, fixture tooling).
     pub fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(AppConn::open_in_memory()?)
     }
 
-    fn init(mut conn: Connection) -> Result<Self> {
+    fn init(mut conn: AppConn) -> Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -607,7 +610,7 @@ impl AppDb {
             .set_abort_divergent(true)
             .set_abort_missing(true)
             .set_grouped(true)
-            .run(&mut conn)?;
+            .run(&mut *conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
             _alive: None,
@@ -615,7 +618,7 @@ impl AppDb {
         })
     }
 
-    fn conn(&self) -> MutexGuard<'_, Connection> {
+    fn conn(&self) -> MutexGuard<'_, AppConn> {
         // A panic while holding the guard cannot leave SQLite half-written
         // (each statement or transaction is atomic), so a poisoned lock is
         // still a usable connection.
@@ -1117,16 +1120,19 @@ impl AppDb {
 
     /// Sets `settings` in wallet scope `wallet_id` and a manual lock on each
     /// of `locks`, all in one transaction, and returns what they replaced
-    /// for [`Self::restore_settings_and_locks`].
+    /// for [`Self::restore_settings_and_locks`]. Where a key already has a
+    /// value, `merge(key, stored, new)` is what is stored, read and written
+    /// in the same transaction.
     pub fn write_settings_and_locks(
         &self,
         wallet_id: &str,
         settings: &[(&str, String)],
+        merge: &dyn Fn(&str, &str, &str) -> String,
         locks: &[(String, u32)],
         now: u64,
     ) -> Result<PriorRows> {
         let mut conn = self.conn();
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut prior = PriorRows {
             wallet_id: wallet_id.to_owned(),
             settings: Vec::with_capacity(settings.len()),
@@ -1140,7 +1146,11 @@ impl AppDb {
                     |r| r.get::<_, String>(0),
                 )
                 .optional()?;
-            Self::put_setting(&tx, wallet_id, key, Some(value))?;
+            let value = match &old {
+                Some(stored) => merge(key, stored, value),
+                None => value.clone(),
+            };
+            Self::put_setting(&tx, wallet_id, key, Some(&value))?;
             prior.settings.push(((*key).to_owned(), old));
         }
         for (txid, vout) in locks {
@@ -1157,6 +1167,28 @@ impl AppDb {
         }
         tx.commit()?;
         Ok(prior)
+    }
+
+    /// What `keys` hold in wallet scope `wallet_id` now, for
+    /// [`Self::restore_settings_and_locks`] to put back after later writes.
+    pub fn prior_settings(&self, wallet_id: &str, keys: &[String]) -> Result<PriorRows> {
+        let conn = self.conn();
+        let mut settings = Vec::with_capacity(keys.len());
+        for key in keys {
+            let old = conn
+                .query_row(
+                    "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                    params![wallet_id, key],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?;
+            settings.push((key.clone(), old));
+        }
+        Ok(PriorRows {
+            wallet_id: wallet_id.to_owned(),
+            settings,
+            locks: Vec::new(),
+        })
     }
 
     /// Puts back, in one transaction, what
@@ -2269,8 +2301,9 @@ mod tests {
         ];
         let settings = [("a", "new".to_owned()), ("b", "x".to_owned())];
         let prior = db
-            .write_settings_and_locks(W, &settings, &locks, 9)
+            .write_settings_and_locks(W, &settings, &|_, _, new| new.to_owned(), &locks, 9)
             .unwrap();
+        assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("new"));
         assert_eq!(db.setting(W, "b").unwrap().as_deref(), Some("x"));
         assert_eq!(
             db.locks(W)
@@ -2282,6 +2315,40 @@ mod tests {
         );
         db.restore_settings_and_locks(&prior).unwrap();
         assert_eq!((db.setting(W, "a").unwrap(), db.locks(W).unwrap()), before);
+        assert_eq!(db.setting(W, "b").unwrap(), None);
+    }
+
+    /// A stored value is merged with the written one; putting back restores
+    /// the stored value, not the merged one.
+    #[test]
+    fn written_settings_merge_with_stored_ones_and_are_put_back() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(W, "a", Some("old")).unwrap();
+        let merge = |key: &str, stored: &str, new: &str| format!("{key}:{stored}+{new}");
+        let settings = [("a", "new".to_owned()), ("b", "x".to_owned())];
+        let prior = db
+            .write_settings_and_locks(W, &settings, &merge, &[], 9)
+            .unwrap();
+        assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("a:old+new"));
+        assert_eq!(db.setting(W, "b").unwrap().as_deref(), Some("x"));
+        db.restore_settings_and_locks(&prior).unwrap();
+        assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("old"));
+        assert_eq!(db.setting(W, "b").unwrap(), None);
+    }
+
+    /// Settings read before later writes are put back: a changed value and
+    /// a key that did not exist.
+    #[test]
+    fn prior_settings_are_put_back() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(W, "a", Some("old")).unwrap();
+        let prior = db
+            .prior_settings(W, &["a".to_owned(), "b".to_owned()])
+            .unwrap();
+        db.set_setting(W, "a", Some("new")).unwrap();
+        db.set_setting(W, "b", Some("x")).unwrap();
+        db.restore_settings_and_locks(&prior).unwrap();
+        assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("old"));
         assert_eq!(db.setting(W, "b").unwrap(), None);
     }
 
@@ -2348,7 +2415,7 @@ mod tests {
         let in_file_alone = |key: &str| {
             let copy = dir.path().join("copy.sqlite");
             std::fs::copy(&path, &copy).unwrap();
-            let conn = Connection::open(&copy).unwrap();
+            let conn = AppConn::open(&copy, OpenFlags::default()).unwrap();
             let found: Option<String> = conn
                 .query_row("SELECT value FROM settings_kv WHERE key = ?1", [key], |r| {
                     r.get(0)
@@ -2364,7 +2431,7 @@ mod tests {
         db.checkpoint_full().unwrap();
         assert!(in_file_alone("wal_only"));
 
-        let reader = Connection::open(&path).unwrap();
+        let reader = AppConn::open(&path, OpenFlags::default()).unwrap();
         reader
             .execute_batch("BEGIN; SELECT * FROM settings_kv;")
             .unwrap();

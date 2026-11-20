@@ -496,6 +496,237 @@ mod tests {
         assert_eq!(v["collateralCoins"], serde_json::json!([]));
     }
 
+    /// The generated declaration of `name`: `export type <name> = <body>;`,
+    /// doc comments dropped.
+    fn ts_body(name: &str) -> String {
+        let path = crate::codegen::generated_dir().join(format!("{name}.ts"));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let mut plain = String::new();
+        let mut rest = text.as_str();
+        while let Some(i) = rest.find("/**") {
+            plain.push_str(&rest[..i]);
+            rest = &rest[i + rest[i..].find("*/").unwrap() + 2..];
+        }
+        plain.push_str(rest);
+        let head = format!("export type {name} = ");
+        let start = plain
+            .find(&head)
+            .unwrap_or_else(|| panic!("{name}: no declaration"))
+            + head.len();
+        plain[start..]
+            .trim()
+            .trim_end_matches(';')
+            .trim()
+            .to_owned()
+    }
+
+    /// `s` split on `sep` outside brackets.
+    fn split_top(s: &str, sep: char) -> Vec<String> {
+        let (mut depth, mut part, mut parts) = (0i32, String::new(), Vec::new());
+        for c in s.chars() {
+            match c {
+                '{' | '<' | '[' | '(' => depth += 1,
+                '}' | '>' | ']' | ')' => depth -= 1,
+                _ => {}
+            }
+            if c == sep && depth == 0 {
+                parts.push(std::mem::take(&mut part));
+            } else {
+                part.push(c);
+            }
+        }
+        parts.push(part);
+        parts
+            .into_iter()
+            .map(|p| p.trim().to_owned())
+            .filter(|p| !p.is_empty())
+            .collect()
+    }
+
+    /// An object type's fields, `{ a: T, "b": U, }` → `[(a, T), (b, U)]`.
+    fn ts_fields(object: &str) -> Vec<(String, String)> {
+        let inner = object
+            .trim()
+            .strip_prefix('{')
+            .and_then(|o| o.strip_suffix('}'))
+            .unwrap();
+        split_top(inner, ',')
+            .into_iter()
+            .map(|f| {
+                let (name, ty) = f.split_once(':').unwrap();
+                (
+                    name.trim().trim_matches('"').to_owned(),
+                    ty.trim().to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    /// Holds `v` to the TypeScript type `ty`: every field the type names and
+    /// no other, each of its JSON type, nested records checked the same way.
+    /// A fully built record has no `null`, so a nullable field is held to its
+    /// non-null type.
+    fn assert_ts(path: &str, v: &serde_json::Value, ty: &str) {
+        let ty = ty.trim().strip_suffix("| null").unwrap_or(ty).trim();
+        assert!(!v.is_null(), "{path}: null where {ty} was built");
+        if let Some(item) = ty.strip_prefix("Array<").and_then(|t| t.strip_suffix('>')) {
+            let items = v
+                .as_array()
+                .unwrap_or_else(|| panic!("{path}: not an array"));
+            assert!(!items.is_empty(), "{path}: built empty");
+            for (i, x) in items.iter().enumerate() {
+                assert_ts(&format!("{path}[{i}]"), x, item);
+            }
+            return;
+        }
+        match ty {
+            "string" => assert!(v.is_string(), "{path}: {v} is not a string"),
+            "number" => assert!(v.is_number(), "{path}: {v} is not a number"),
+            "boolean" => assert!(v.is_boolean(), "{path}: {v} is not a boolean"),
+            literal if literal.starts_with('"') => {
+                assert_eq!(v.as_str(), Some(literal.trim_matches('"')), "{path}")
+            }
+            object if object.starts_with('{') => {
+                let fields = ts_fields(object);
+                let map = v
+                    .as_object()
+                    .unwrap_or_else(|| panic!("{path}: not an object"));
+                let mut want: Vec<_> = fields.iter().map(|(n, _)| n.as_str()).collect();
+                let mut got: Vec<_> = map.keys().map(String::as_str).collect();
+                want.sort_unstable();
+                got.sort_unstable();
+                assert_eq!(got, want, "{path}: fields");
+                for (name, t) in &fields {
+                    assert_ts(&format!("{path}.{name}"), &map[name], t);
+                }
+            }
+            name => {
+                let body = ts_body(name);
+                let variants = split_top(&body, '|');
+                if variants.len() == 1 {
+                    return assert_ts(path, v, &body);
+                }
+                let tag = v.get("kind").and_then(|k| k.as_str());
+                let matched = variants.iter().find(|variant| match tag {
+                    Some(kind) => {
+                        variant.starts_with('{')
+                            && variant.contains(&format!("\"kind\": \"{kind}\""))
+                    }
+                    None => variant.trim_matches('"') == v.as_str().unwrap_or_default(),
+                });
+                let variant =
+                    matched.unwrap_or_else(|| panic!("{path}: {v} is no variant of {name}"));
+                assert_ts(path, v, variant);
+            }
+        }
+    }
+
+    fn full_row() -> engine::MasternodeRow {
+        engine::MasternodeRow {
+            pro_tx_hash: "4e".repeat(32),
+            kind: Some(engine::MasternodeType::Evonode),
+            type_index: 1,
+            label: Some("Home node".into()),
+            status: engine::MasternodeStatus::PoseBanned,
+            banned_seen_at: Some(1_790_000_000),
+            service: Some("203.0.113.7:19999".into()),
+            mine: true,
+            tracked: true,
+            shared_unsupported: false,
+            shares: Some(engine::HeldShares { held: 1, of: 3 }),
+            roles: engine::MasternodeRoles {
+                collateral: true,
+                owner: true,
+                voting: true,
+                payout: true,
+                operator: true,
+                attached: Some(vec![engine::AttachedKey {
+                    role: engine::AttachedKeyRole::Payout,
+                    key_id: Some("ab".repeat(20)),
+                    check: engine::KeyCheck::Unchecked,
+                }]),
+            },
+            collateral: engine::CollateralState::Known {
+                outpoint: format!("{}-1", "a4".repeat(32)),
+            },
+            collateral_released: true,
+            payout_address: Some("yPayoutFixtureAddressXXXXXXXXXXXXX".into()),
+            payouts_30d: 577_080_000,
+            payouts_incomplete: true,
+            last_payout: Some(engine::MasternodePayout {
+                txid: "71".repeat(32),
+                record_index: 0,
+                amount: 144_270_000,
+                address: "yPayoutFixtureAddressXXXXXXXXXXXXX".into(),
+                height: Some(1_214_000),
+                timestamp: Some(1_790_000_000),
+                matured: true,
+                unattributed: true,
+            }),
+        }
+    }
+
+    fn full_facts() -> engine::ListFacts {
+        engine::ListFacts {
+            kind: engine::MasternodeType::Evonode,
+            valid: true,
+            service: Some("203.0.113.7:19999".into()),
+            operator_public_key: "8a".repeat(48),
+            voting_address: "yVotingFixtureAddressXXXXXXXXXXXXX".into(),
+            platform_node_id: Some("e7".repeat(20)),
+            platform_http_port: Some(1443),
+        }
+    }
+
+    #[test]
+    fn full_records_match_their_generated_types() {
+        let row = MasternodeRow::from(full_row());
+        assert_ts("row", &serde_json::to_value(&row).unwrap(), "MasternodeRow");
+
+        let detail = MasternodeDetail::from(engine::MasternodeDetail {
+            row: full_row(),
+            registrar: engine::RegistrarCapability::Available {
+                signer: engine::RegistrarSigner::Keychain,
+            },
+            list: Some(full_facts()),
+            registration: Some(engine::RegistrationFacts {
+                registered_height: Some(1_034_880),
+                collateral: engine::CollateralState::Unresolved,
+                owner_address: Some("yOwnerFixtureAddressXXXXXXXXXXXXXX".into()),
+                voting_address: Some("yVotingFixtureAddressXXXXXXXXXXXXX".into()),
+                payout_address: Some("yPayoutFixtureAddressXXXXXXXXXXXXX".into()),
+                payout_script: Some(format!("76a914{}88ac", "5c".repeat(20))),
+                operator_reward: Some(500),
+                revoked: true,
+                revocation_reason: Some(1),
+                transactions: 2,
+            }),
+            payout_checked_height: Some(1_214_880),
+            tracked_at: Some(1_790_000_000),
+        });
+        let json = serde_json::to_value(&detail).unwrap();
+        assert_ts("detail", &json, "MasternodeDetail");
+        assert_eq!(
+            json["registrar"],
+            serde_json::json!({ "kind": "available", "signer": "keychain" })
+        );
+        assert_eq!(
+            json["registration"]["collateral"],
+            serde_json::json!({ "kind": "unresolved" })
+        );
+
+        let listed = ListedMasternode::from(engine::ListedMasternode {
+            pro_tx_hash: "f2".repeat(32),
+            facts: full_facts(),
+            tracked: true,
+        });
+        assert_ts(
+            "listed",
+            &serde_json::to_value(&listed).unwrap(),
+            "ListedMasternode",
+        );
+    }
+
     #[test]
     fn a_revealed_key_is_text_and_never_printed() {
         let secret = "11".repeat(32);
