@@ -1166,6 +1166,28 @@ impl AppDb {
         Ok(prior)
     }
 
+    /// What `keys` hold in wallet scope `wallet_id` now, for
+    /// [`Self::restore_settings_and_locks`] to put back after later writes.
+    pub fn prior_settings(&self, wallet_id: &str, keys: &[String]) -> Result<PriorRows> {
+        let conn = self.conn();
+        let mut settings = Vec::with_capacity(keys.len());
+        for key in keys {
+            let old = conn
+                .query_row(
+                    "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                    params![wallet_id, key],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?;
+            settings.push((key.clone(), old));
+        }
+        Ok(PriorRows {
+            wallet_id: wallet_id.to_owned(),
+            settings,
+            locks: Vec::new(),
+        })
+    }
+
     /// Puts back, in one transaction, what
     /// [`Self::write_settings_and_locks`] replaced.
     pub fn restore_settings_and_locks(&self, prior: &PriorRows) -> Result<()> {
@@ -2306,6 +2328,22 @@ mod tests {
             .unwrap();
         assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("a:old+new"));
         assert_eq!(db.setting(W, "b").unwrap().as_deref(), Some("x"));
+        db.restore_settings_and_locks(&prior).unwrap();
+        assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("old"));
+        assert_eq!(db.setting(W, "b").unwrap(), None);
+    }
+
+    /// Settings read before later writes are put back: a changed value and
+    /// a key that did not exist.
+    #[test]
+    fn prior_settings_are_put_back() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(W, "a", Some("old")).unwrap();
+        let prior = db
+            .prior_settings(W, &["a".to_owned(), "b".to_owned()])
+            .unwrap();
+        db.set_setting(W, "a", Some("new")).unwrap();
+        db.set_setting(W, "b", Some("x")).unwrap();
         db.restore_settings_and_locks(&prior).unwrap();
         assert_eq!(db.setting(W, "a").unwrap().as_deref(), Some("old"));
         assert_eq!(db.setting(W, "b").unwrap(), None);

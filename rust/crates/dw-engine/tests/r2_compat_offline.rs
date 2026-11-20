@@ -1391,6 +1391,58 @@ fn a_failed_restore_rolls_back_the_wallets_it_registered() {
     assert_eq!(s2.wallet_info(&b).unwrap().name, "B");
 }
 
+/// A restore that fails after it stored the seed of a wallet already there
+/// (watch-only) puts back that wallet's settings: after a reopen it has its
+/// earlier range and no CoinJoin salt from the bundle.
+#[test]
+fn a_failed_restore_puts_back_the_settings_of_a_wallet_already_there() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(&dir.path().join("src"));
+    let s = open(&e, None);
+    let a = import(&e, &s, PHRASE_A, "A");
+    let rows = serde_json::json!({"name": "A", "birth_height": 0, "created_at": null,
+    "app_rows": [{"table": "settings_kv", "columns": ["scope", "key", "value"], "rows": [
+        [{"t": a.to_string()}, {"t": "bip44.legacy_issued"}, {"t": "1001,2600"}],
+        [{"t": a.to_string()}, {"t": "coinjoin.salt"}, {"t": CORE_SALT}],
+    ]}]});
+    let again =
+        serde_json::json!({"name": "A", "birth_height": 0, "created_at": null, "app_rows": []});
+    let multi = dir.path().join("multi.dwbackup");
+    craft_backup(&s, &multi, &[(a, rows), (a, again)]);
+
+    let e2 = engine(&dir.path().join("dst"));
+    let s2 = open(&e2, None);
+    assert_eq!(import(&e2, &s2, PHRASE_A, "A"), a);
+    app_db(&s2)
+        .execute(
+            "INSERT INTO settings_kv (scope, key, value) VALUES (?1, 'bip44.legacy_issued', '3,2')",
+            [a.to_string()],
+        )
+        .unwrap();
+    assert_eq!(stored_setting(&s2, a, "coinjoin.salt"), None);
+    assert!(s2.vault().delete_wallet_secret(&a.0).unwrap());
+
+    let r = e2.block_on(s2.restore_backup(multi, Some(Zeroizing::new(b"bk".to_vec()))));
+    assert!(
+        matches!(r, Err(EngineError::Backup(BackupFailure::AlreadyExists(id))) if id == a),
+        "{r:?}"
+    );
+    assert!(!s2.vault().has_wallet_secret(&a.0));
+    let as_before = |s: &Arc<NetworkSession>| {
+        assert_eq!(
+            stored_setting(s, a, "bip44.legacy_issued").as_deref(),
+            Some("3,2")
+        );
+        assert_eq!(stored_setting(s, a, "coinjoin.salt"), None);
+    };
+    as_before(&s2);
+    drop(s2);
+    e2.block_on(e2.close_network(DashNetwork::Regtest)).unwrap();
+    let s2 = session(&e2, DashNetwork::Regtest);
+    as_before(&s2);
+    assert!(!reaches_index_1000(&e2, &s2, a));
+}
+
 /// Fix-review L1: a restore schedules the automatic backups only after
 /// every bundle succeeded, so a failed (rolled back) restore leaves no
 /// automatic backup behind, and a good one backs up every restored wallet.
