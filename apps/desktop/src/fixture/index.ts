@@ -21,6 +21,7 @@ import { restarted } from "./registration";
 import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type ScenarioName, type World } from "./scenarios";
 import { receivePayment } from "./send";
 import { FIXTURE_NOW } from "./wallet";
+import { isLanguage } from "../i18n";
 
 /** Present in every fixture build and in no production build (scripts/check-bundle.mjs). */
 export const FIXTURE_SENTINEL = "dw-fixture-backend:U-07";
@@ -37,6 +38,9 @@ export interface FixtureOptions {
   /** Commands whose first call is held from the page's start (`hold=<command>`): a read that is still
    * out when the screen shows. `release(command)` lets it answer. A relaunch holds them again. */
   holds?: CommandName[];
+  /** The saved language (`lang=<tag>`, MP-14): a shipped one or a pseudo-locale (`en-XA` long,
+   * `ar-XB` right to left). */
+  language?: string;
 }
 
 export interface FixtureHandle {
@@ -99,6 +103,7 @@ function relaunchedWorld(): World | null {
 
 export function installFixture(opts: FixtureOptions): FixtureHandle {
   const world = relaunchedWorld() ?? switchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
+  if (opts.language) world.settings.ui = { ...world.settings.ui, language: opts.language };
   if (opts.network) {
     world.launch.network = { kind: opts.network, dirName: opts.network, unitName: opts.network === "mainnet" ? "DASH" : "tDASH" };
     world.pending.networkChoice = { chosen: opts.network === "testnet" ? "mainnet" : "testnet", saved: true };
@@ -174,7 +179,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   };
 }
 
-/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
+/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
  * `error-<class>` scenario is `funded` with `list_wallets` failing with that class. Unknown
  * names throw, so a typo in a test URL fails loudly instead of showing the default. */
 export function fixtureOptionsFromUrl(search: string): FixtureOptions {
@@ -204,6 +209,8 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
     if (!Object.hasOwn(COMMANDS, c)) throw new Error(`bad hold=${c}: not a command`);
     holds.push(c as CommandName);
   }
+  const language = p.get("lang") ?? undefined;
+  if (language !== undefined && !isLanguage(language)) throw new Error(`unknown language ${language}`);
   const delay = Number(p.get("delay") ?? 0);
-  return { scenario, theme, network, failures, holds, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
+  return { scenario, theme, network, failures, holds, language, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
 }

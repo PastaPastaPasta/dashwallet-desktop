@@ -5,9 +5,10 @@
 // was stopped.
 
 import { closeDraft } from "./generated/commands";
+import { en } from "../i18n/en";
 
 /** DEC-67's copy for a signature already released (E0-04 §16.10). */
-export const SIGNED_BEFORE_LOCK = "Lock stops new signatures; a transaction already signed may still be sent";
+export const SIGNED_BEFORE_LOCK = en.lock.report.signedBeforeLock;
 
 /** Closes a draft; `warning` is the copy to show when a broadcast of it is still running. */
 export async function closeSendDraft(draft: number, broadcastInFlight: boolean): Promise<{ closed: boolean; warning: string | null }> {
