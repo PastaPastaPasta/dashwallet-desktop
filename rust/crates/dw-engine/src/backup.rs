@@ -230,6 +230,30 @@ fn bundled_issued(tables: &[TableRows], id: WalletId) -> Result<Option<(u32, u32
     Ok(None)
 }
 
+/// A wallet a restore registered: its id, whether it is new, and the
+/// settings of one that was there before, to put back on a rollback.
+type Restored = (WalletId, bool, Option<dw_appdb::PriorRows>);
+
+/// The keys of wallet `id`'s settings rows in a bundle.
+fn bundled_setting_keys(tables: &[TableRows], id: WalletId) -> Vec<String> {
+    let scope = id.to_string();
+    let mut keys = Vec::new();
+    for t in tables.iter().filter(|t| t.table == "settings_kv") {
+        let col = |name: &str| t.columns.iter().position(|c| c == name);
+        let (Some(s), Some(k)) = (col("scope"), col("key")) else {
+            continue;
+        };
+        for row in &t.rows {
+            if let (Some(SqlValue::Text(sc)), Some(SqlValue::Text(key))) = (row.get(s), row.get(k))
+                && *sc == scope
+            {
+                keys.push(key.clone());
+            }
+        }
+    }
+    keys
+}
+
 fn from_json(v: &serde_json::Value) -> Result<SqlValue, EngineError> {
     let bad = || BackupFailure::Corrupt("app row value".into());
     if v.is_null() {
@@ -605,10 +629,11 @@ impl NetworkSession {
         // lock (DEC-210 (3b)), taken in that order.
         let _op = self.enter().await?;
         let held = self.wallet_lifecycle.hold().await;
-        // What this call registered, for the rollback (review L3): the id
-        // and whether the wallet was new (not keys attached to a watch-only
-        // wallet that was there before).
-        let mut done: Vec<(WalletId, bool)> = Vec::new();
+        // What this call registered, for the rollback (review L3): the id,
+        // whether the wallet was new (not keys attached to a watch-only
+        // wallet that was there before) and, for one that was there, its
+        // settings as they were before the restore wrote any.
+        let mut done: Vec<Restored> = Vec::new();
         // No bring-up is admitted for these wallets, from any entry point,
         // until the restore has committed (review r2 M4). Marked before any
         // seed is stored.
@@ -631,14 +656,14 @@ impl NetworkSession {
         // Only now, with every bundle restored and its app rows inserted:
         // a failed restore must leave no automatic backup of a wallet it
         // rolled back, and no bring-up holding its keys.
-        for &(id, _) in &done {
+        for &(id, _, _) in &done {
             self.platform
                 .signal_at(committed, PlatformSignal::WalletAdded(id));
             // E0-04 §8.6 (review L-4): as `load_wallet`.
             self.leases.wallet_opened(id);
             self.schedule_automatic_backup(id);
         }
-        Ok(done.into_iter().map(|(id, _)| id).collect())
+        Ok(done.into_iter().map(|(id, _, _)| id).collect())
     }
 
     /// Restores one opened bundle; pushes the wallet to `done` once it is
@@ -650,7 +675,7 @@ impl NetworkSession {
         id: WalletId,
         secret: dw_vault::WalletSecret,
         payload: Payload,
-        done: &mut Vec<(WalletId, bool)>,
+        done: &mut Vec<Restored>,
     ) -> Result<(), EngineError> {
         let derived = dw_vault::mnemonic::wallet_id_for_seed(&secret.seed, network)
             .map_err(|e| BackupFailure::Corrupt(e.to_string()))?;
@@ -680,6 +705,19 @@ impl NetworkSession {
             ..Default::default()
         };
         let existed = self.manager()?.get_wallet(&id.0).await.is_some();
+        // A wallet already there gets back, if the restore fails later, the
+        // settings it writes: its range and the bundle's rows (its salt).
+        let prior = if existed {
+            let mut keys = bundled_setting_keys(&tables, id);
+            if !keys.iter().any(|k| k == crate::compat::ISSUED_SETTING) {
+                keys.push(crate::compat::ISSUED_SETTING.to_owned());
+            }
+            let appdb = self.live()?.appdb;
+            let wid = id.to_string();
+            Some(tokio::task::spawn_blocking(move || appdb.prior_settings(&wid, &keys)).await??)
+        } else {
+            None
+        };
         let options = ImportOptions {
             birth_height: Some(payload.birth_height.unwrap_or(0)),
             core_compat: false,
@@ -697,7 +735,7 @@ impl NetworkSession {
             )
             .await
         {
-            Ok(_) => done.push((id, !existed)),
+            Ok(_) => done.push((id, !existed, prior)),
             Err(EngineError::WalletAlreadyExists(_)) => {
                 return Err(BackupFailure::AlreadyExists(id).into());
             }
@@ -769,14 +807,15 @@ impl NetworkSession {
 
     /// Undoes what a failed restore registered, newest first: a new wallet
     /// is unloaded and its rows and vault records deleted; keys attached
-    /// to a watch-only wallet are deleted again. Best effort: a failing
-    /// step is logged and the rest still runs.
+    /// to a watch-only wallet are deleted again and its settings put back.
+    /// Best effort: a failing step is logged and the rest still runs.
     pub(crate) async fn roll_back_restore(
         self: &Arc<Self>,
         held: &Lifecycle<'_>,
-        done: &[(WalletId, bool)],
+        done: &[Restored],
     ) {
-        for &(id, created) in done.iter().rev() {
+        for (id, created, prior) in done.iter().rev() {
+            let (id, created) = (*id, *created);
             // Still marked as being restored, so no bring-up was admitted for
             // it; a status read since is stale. Its discoveries end, and none
             // starts until the rollback of it is done: the wallet out of the
@@ -802,6 +841,9 @@ impl NetworkSession {
                 live.tap.forget(&id);
             }
             self.forget_secret(held, id).await;
+            if let Some(prior) = prior {
+                self.restore_imported_state(prior.clone()).await;
+            }
             self.sink.emit(if created {
                 EngineEvent::WalletRemoved {
                     network: self.network.clone(),

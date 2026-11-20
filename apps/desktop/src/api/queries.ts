@@ -98,6 +98,8 @@ export const keys = {
   coinjoinSettings: ["coinjoin", "settings"] as const,
   /** Every governance read (the `governance_*` commands, BL-232): a `governance` event makes them all stale. */
   governanceAll: ["governance"] as const,
+  /** Every engine-local masternode read (the `mn_*` commands, MG-10 §3.1): a `masternodes` event makes them all stale. */
+  masternodesAll: ["masternodes"] as const,
   /** Prices (MP-01): `ratesStatus` and `ratesCurrencies`; a `rates` event makes them stale. */
   ratesAll: ["rates"] as const,
   ratesStatus: ["rates", "status"] as const,
