@@ -120,6 +120,26 @@ impl WalletStore {
     }
 }
 
+/// platform-wallet hands the store every `Received` / `Change` output of a
+/// record as a new coin and names in `utxo_credit_verdicts` the ones
+/// key-wallet did not credit; the SQLite persister writes them unspent all
+/// the same, so the next load gives back a coin the wallet does not hold
+/// (#88: one a payment this app sent claims, scanned in a later process).
+/// They are left out of the batch's new coins: no row is written for them,
+/// and a row already stored stays as it was. A later credit of the coin
+/// stores it as any other.
+fn drop_uncredited(changeset: &mut PlatformWalletChangeSet) {
+    let Some(core) = changeset.core.as_mut() else {
+        return;
+    };
+    if core.utxo_credit_verdicts.is_empty() {
+        return;
+    }
+    let verdicts = &core.utxo_credit_verdicts;
+    core.new_utxos
+        .retain(|u| !verdicts.contains_key(&u.outpoint));
+}
+
 impl PlatformWalletPersistence for WalletStore {
     fn store_commits_inline(&self) -> bool {
         self.inner.store_commits_inline()
@@ -181,6 +201,8 @@ impl PlatformWalletPersistence for WalletStore {
                     .collect()
             })
             .unwrap_or_default();
+        let mut changeset = changeset;
+        drop_uncredited(&mut changeset);
         if let Err(e) = self.inner.store(wallet_id, changeset) {
             if core && let Some(replay) = replay() {
                 replay.note_store_failed(WalletId(wallet_id));
@@ -296,4 +318,81 @@ pub(crate) fn registered_wallet_ids(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use dashcore::hashes::Hash;
+    use dashcore::{OutPoint, TxOut, Txid};
+    use platform_wallet::changeset::changeset::UtxoCreditVerdict;
+    use platform_wallet::changeset::{CoreChangeSet, PlatformWalletChangeSet};
+
+    use super::drop_uncredited;
+
+    fn coin(vout: u32) -> key_wallet::Utxo {
+        let script =
+            dashcore::ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array([7; 20]));
+        key_wallet::Utxo::new(
+            OutPoint::new(Txid::from_byte_array([1; 32]), vout),
+            TxOut {
+                value: 1_000 + u64::from(vout),
+                script_pubkey: script.clone(),
+            },
+            dashcore::Address::from_script(&script, dashcore::Network::Regtest).unwrap(),
+            10,
+            false,
+        )
+    }
+
+    fn outpoints(utxos: &[key_wallet::Utxo]) -> Vec<OutPoint> {
+        utxos.iter().map(|u| u.outpoint).collect()
+    }
+
+    /// Every output with a verdict leaves the new coins, whatever the
+    /// verdict; the others stay; the spent coins are untouched.
+    #[test]
+    fn outputs_the_wallet_did_not_credit_are_not_stored() {
+        let mut changeset = PlatformWalletChangeSet {
+            core: Some(CoreChangeSet {
+                new_utxos: (0..4).map(coin).collect(),
+                spent_utxos: vec![coin(9)],
+                utxo_credit_verdicts: [
+                    (coin(1).outpoint, UtxoCreditVerdict::Uncredited),
+                    (
+                        coin(2).outpoint,
+                        UtxoCreditVerdict::ObservedSpent { height: 9 },
+                    ),
+                    (coin(3).outpoint, UtxoCreditVerdict::Doomed),
+                    (coin(5).outpoint, UtxoCreditVerdict::Uncredited),
+                ]
+                .into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        drop_uncredited(&mut changeset);
+        let core = changeset.core.unwrap();
+        assert_eq!(outpoints(&core.new_utxos), [coin(0).outpoint]);
+        assert_eq!(outpoints(&core.spent_utxos), [coin(9).outpoint]);
+    }
+
+    /// Without verdicts, or without a core part, nothing changes.
+    #[test]
+    fn a_batch_without_verdicts_is_stored_as_given() {
+        let mut changeset = PlatformWalletChangeSet {
+            core: Some(CoreChangeSet {
+                new_utxos: (0..2).map(coin).collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        drop_uncredited(&mut changeset);
+        let core = changeset.core.unwrap();
+        assert_eq!(outpoints(&core.new_utxos), [0, 1].map(|v| coin(v).outpoint));
+        assert!(core.spent_utxos.is_empty());
+
+        let mut empty = PlatformWalletChangeSet::default();
+        drop_uncredited(&mut empty);
+        assert!(empty.core.is_none());
+    }
 }

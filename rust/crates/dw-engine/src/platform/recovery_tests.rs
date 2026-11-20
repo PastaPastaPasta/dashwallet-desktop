@@ -38,6 +38,7 @@ use super::recovery::{
 };
 use super::reverify::{Held, Recorded, ShownProfile, confirmed, held_unverified, record_step};
 use super::runtime::{TestPause, guard};
+use super::runtime_tests::names_only_stuck_loops;
 use super::{DashPay, IdentitySummary, NamesCheck, SpvState, StartupStatus};
 use crate::session::Manager;
 use crate::{
@@ -651,6 +652,7 @@ fn session_with(
     engine
         .block_on(s.vault_op(move |v| v.create(passphrase)))
         .unwrap();
+    engine.block_on(s.adopt_signing_window_default()).unwrap();
     *guard(&s.platform.recovery.mock) = Some(platform);
     (engine, s)
 }
@@ -703,20 +705,15 @@ fn start(engine: &Engine, s: &Arc<NetworkSession>) {
 }
 
 /// Stops SPV. On a slow machine a Platform loop can still be in its pass at
-/// the stop's deadline: the stop then names it and stops SPV anyway
-/// (`bringup.rs` `stop_platform`). No test here is about that drain.
+/// the stop's deadline: the stop then names only such loops and stops SPV
+/// anyway (`bringup.rs` `stop_platform`). No test here is about that drain.
 fn stop(engine: &Engine, s: &Arc<NetworkSession>) {
     let stopped = engine.block_on(s.stop_spv());
-    let a_loop_outlived_the_deadline = matches!(
-        &stopped,
-        Err(EngineError::Sdk(detail))
-            if detail.starts_with("SPV stopped, but this Platform work did not end: ")
-                && !detail.contains("a vault key read")
-    );
     assert!(
-        stopped.is_ok() || a_loop_outlived_the_deadline,
+        stopped.is_ok() || names_only_stuck_loops(&stopped),
         "{stopped:?}"
     );
+    assert_eq!(s.spv_state().unwrap(), SpvState::Stopped);
 }
 
 /// `identities()` from the live read. A read while a sync pass holds the

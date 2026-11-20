@@ -22,7 +22,7 @@ use dw_engine::platform::{BearerSecret, FlowKind};
 
 use self::credits::{
     CostTable, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, WithdrawAmount,
-    WithdrawOutcome, WithdrawQuote, Withdrawal,
+    WithdrawOutcome, WithdrawQuote, WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal,
 };
 use self::flows::{GrantAction, GrantRequest};
 use self::invitations::InvitationStatus;
@@ -37,7 +37,7 @@ use self::registration::{
     FaucetLockKey, FinishReport, RegistrationQuote, RegistrationRequest, RegistrationStatus,
 };
 use self::shielded::{
-    MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
+    FundAmount, MixedShieldQuote, ShieldOutcome, ShieldQuote, ShieldedActivity, ShieldedAddress, ShieldedSpendOutcome,
     ShieldedSpendQuote, ShieldedStatus, StuckShieldFunding,
 };
 use self::startup::{
@@ -420,6 +420,39 @@ commands! {
         Ok(dashpay.withdraw(identity, to, amount.into(), grant).await?.into())
     }
 
+    /// What moving credits to the wallet's own Platform address takes.
+    #[facade("DashPay::withdraw_to_platform_quote")]
+    fn credits_withdraw_to_platform_quote(
+        state,
+        wallet_id: String,
+        identity: String,
+        amount: WithdrawAmount,
+    ) -> WithdrawToPlatformQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay
+            .withdraw_to_platform_quote(identity, amount.into())
+            .await?
+            .into())
+    }
+
+    /// Moves credits to `to`, one of the wallet's own Platform addresses,
+    /// under `grant`.
+    #[facade("DashPay::withdraw_to_platform")]
+    fn credits_withdraw_to_platform(
+        state,
+        wallet_id: String,
+        identity: String,
+        to: String,
+        amount: WithdrawAmount,
+        grant: String,
+    ) -> WithdrawToPlatformOutcome {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        let out = dashpay
+            .withdraw_to_platform(identity, to, amount.into(), grant)
+            .await?;
+        Ok(out.into())
+    }
+
     /// The identity's recent withdrawals on Platform, the most recently
     /// updated first (at most 20).
     #[facade("DashPay::withdrawals")]
@@ -524,20 +557,25 @@ commands! {
         Ok(dashpay.platform_send(operation, grant).await?.into())
     }
 
-    /// What adding `duffs` of the Core balance to the wallet's Platform
+    /// What adding `amount` of the Core balance to the wallet's Platform
     /// address costs and adds.
     #[facade("DashPay::platform_fund_quote")]
-    fn platform_fund_quote(state, wallet_id: String, duffs: u64) -> PlatformFundQuote {
+    fn platform_fund_quote(state, wallet_id: String, amount: FundAmount) -> PlatformFundQuote {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.platform_fund_quote(duffs).await?.into())
+        Ok(dashpay.platform_fund_quote(amount.into()).await?.into())
     }
 
-    /// "Add from Dash wallet": adds `duffs` of the Core balance to the
+    /// "Add from Dash wallet": adds `amount` of the Core balance to the
     /// wallet's Platform address under `grant`.
     #[facade("DashPay::platform_fund")]
-    fn platform_fund(state, wallet_id: String, duffs: u64, grant: String) -> PlatformFundOutcome {
+    fn platform_fund(
+        state,
+        wallet_id: String,
+        amount: FundAmount,
+        grant: String,
+    ) -> PlatformFundOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.platform_fund(duffs, grant).await?.into())
+        Ok(dashpay.platform_fund(amount.into(), grant).await?.into())
     }
 
     /// This install's "Add from Dash wallet" locks not applied yet.
@@ -740,18 +778,25 @@ commands! {
         Ok(dashpay.shielded_receive_address().await?.into())
     }
 
-    /// What moving `duffs` of the Core balance into the pool costs and buys.
+    /// What moving `amount` of the Core balance into the pool costs and
+    /// buys.
     #[facade("DashPay::shield_quote")]
-    fn shield_quote(state, wallet_id: String, duffs: u64) -> ShieldQuote {
-        Ok(state.dashpay(&wallet_id).await?.shield_quote(duffs).await?.into())
+    fn shield_quote(state, wallet_id: String, amount: FundAmount) -> ShieldQuote {
+        let dashpay = state.dashpay(&wallet_id).await?;
+        Ok(dashpay.shield_quote(amount.into()).await?.into())
     }
 
-    /// Core → Shielded: moves `duffs` of the Core balance into the pool
+    /// Core → Shielded: moves `amount` of the Core balance into the pool
     /// under `grant`.
     #[facade("DashPay::shield_from_core")]
-    fn shield_from_core(state, wallet_id: String, duffs: u64, grant: String) -> ShieldOutcome {
+    fn shield_from_core(
+        state,
+        wallet_id: String,
+        amount: FundAmount,
+        grant: String,
+    ) -> ShieldOutcome {
         let dashpay = state.dashpay(&wallet_id).await?;
-        Ok(dashpay.shield_from_core(duffs, grant).await?.into())
+        Ok(dashpay.shield_from_core(amount.into(), grant).await?.into())
     }
 
     /// What "Move mixed coins" to Shielded would move: the CoinJoin

@@ -88,6 +88,9 @@ fn unbound_launch_with(
     engine
         .block_on(session.vault_op(|v| v.create(Some(PASS))))
         .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
+        .unwrap();
     let wallet = engine
         .block_on(session.import_wallet(
             Zeroizing::new(PHRASE.as_bytes().to_vec()),
@@ -599,6 +602,9 @@ fn a_coordinator_setup_during_the_close_check_is_refused() {
     engine
         .block_on(session.vault_op(|v| v.create(Some(PASS))))
         .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
+        .unwrap();
     let wallet = engine
         .block_on(session.import_wallet(
             Zeroizing::new(PHRASE.as_bytes().to_vec()),
@@ -1093,7 +1099,9 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
         };
         assert_eq!((code(sent), code(unshielded)), want);
     }
-    let shield = engine.block_on(dp.shield_quote(100_000)).unwrap_err();
+    let shield = engine
+        .block_on(dp.shield_quote(crate::platform::FundAmount::Duffs { duffs: 100_000 }))
+        .unwrap_err();
     assert_ne!(shield.code(), "shielded.unrecorded_spend", "{shield:?}");
 }
 

@@ -5,9 +5,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
+import type { FundAmount } from "../api/generated/FundAmount";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { fakeVault } from "../tools/testApi";
 import { onShieldedSettled, resetShielded, SHIELDED_COPY, shieldedCanChange, shieldedErrorText, shieldedFor, ShieldedFlow } from "./flow";
+
+const duffsOf = (a: FundAmount) => (a.kind === "duffs" ? a.duffs : 0);
 
 const TO = "tdash1zq0k8y";
 const SPEND: ShieldedSpendOutcome = { credits: "10000000000", balance: "114980000000", to: TO, state: "done", unresolved: null };
@@ -22,7 +25,7 @@ function setup(lock = { encrypted: false }) {
   let answer: ((o: ShieldedSpendOutcome) => void) | null = null;
   const api = {
     ...vault.api,
-    shieldFromCore: vi.fn(async (_w: string, d: number, grant: string) => (calls.push(`add ${d} ${grant}`), APPLIED)),
+    shieldFromCore: vi.fn(async (_w: string, a: FundAmount, grant: string) => (calls.push(`add ${duffsOf(a)} ${grant}`), APPLIED)),
     resumeShield: vi.fn(async (_w: string, txid: string, grant: string) => (calls.push(`resume ${txid} ${grant}`), APPLIED)),
     shieldedSend: vi.fn(
       (_w: string, to: string, c: string, memo: string | null, grant: string) =>

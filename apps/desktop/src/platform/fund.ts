@@ -271,7 +271,7 @@ export class PlatformFundFlow extends Model {
         ran = true;
         this.step = "running";
         this.changed();
-        return request.kind === "add" ? this.api.platformFund(this.walletId, request.duffs, g.id) : this.api.resumePlatformFund(this.walletId, request.txid, g.id);
+        return request.kind === "add" ? this.api.platformFund(this.walletId, { kind: "duffs", duffs: request.duffs }, g.id) : this.api.resumePlatformFund(this.walletId, request.txid, g.id);
       });
       if (got) {
         this.outcome = got.value;

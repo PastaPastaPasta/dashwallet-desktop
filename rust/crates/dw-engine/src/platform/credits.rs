@@ -1,8 +1,10 @@
-//! Credits: the cost table, top-up and withdraw, each with a quote, and
-//! the recent withdrawals (DP1-06, DP6-02).
+//! Credits: the cost table, top-up and withdraw, each with a quote, the
+//! recent withdrawals (DP1-06, DP6-02), and the transfer to the wallet's
+//! own Platform address (C-routes D-C6).
 
 use serde::{Deserialize, Serialize};
 
+use super::credit_transfer;
 use super::dashpay::DashPay;
 use super::errors::CreditsError;
 use super::flows::{DispatchState, GrantRequest};
@@ -149,6 +151,27 @@ pub enum WithdrawAmount {
     },
 }
 
+/// How much of the Core balance a shield or a fund moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FundAmount {
+    /// A lock of `duffs`, its fee on top.
+    Duffs { duffs: u64 },
+    /// Every final coin of BIP44 account 0, the fee out of the lock.
+    All,
+}
+
+/// What a Core Max quote adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreMax {
+    /// The coins the lock spends.
+    pub inputs: u32,
+    /// Spendable coins of the wallet's other accounts, which stay.
+    pub left_duffs: u64,
+    /// Coins of the account not final yet, which stay.
+    pub arriving_duffs: u64,
+}
+
 /// What a withdrawal of `amount` takes and pays out, at the network's
 /// protocol version (`withdrawal.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +199,37 @@ pub struct WithdrawOutcome {
     pub remaining_credits: Option<u64>,
     /// The withdrawal's document (base58), as `withdrawals` lists it.
     pub withdrawal: String,
+}
+
+/// What moving `amount` of an identity's credits to the wallet's own
+/// Platform address takes, at the network's protocol version
+/// (`credit_transfer.rs`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawToPlatformQuote {
+    /// What the identity's balance loses to the transfer itself, and what
+    /// the address gains.
+    pub credits: u64,
+    /// The fee reserve the balance must hold besides: dpp's minimum fee
+    /// for the transfer, or a bound on the fee Platform meters if higher.
+    /// Platform charges what it meters, at most this.
+    pub fee_credits: u64,
+    /// The wallet's Platform receive address (bech32m), as
+    /// `platform_receive_address` names it.
+    pub to: String,
+    /// `max_credits` = `credits + fee_credits`.
+    pub grant: GrantRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WithdrawToPlatformOutcome {
+    pub credits: u64,
+    /// The address paid (bech32m).
+    pub to: String,
+    /// The identity's balance after, proved, from the broadcast's answer;
+    /// `None` when it did not answer one. Shown only: the nonce decided.
+    pub remaining_credits: Option<u64>,
+    /// Platform's hash of the transition (hex SHA-256).
+    pub transition: String,
 }
 
 /// Where a withdrawal stands on Platform (its document's `status`).
@@ -332,6 +386,41 @@ impl DashPay {
                 &grant,
             )
             .await
+        })
+        .await
+    }
+
+    /// What moving `amount` of `identity`'s credits to the wallet's own
+    /// Platform address takes, with the refusals of
+    /// [`Self::withdraw_to_platform`] short of the nonce and the grant.
+    pub async fn withdraw_to_platform_quote(
+        &self,
+        identity: String,
+        amount: WithdrawAmount,
+    ) -> Result<WithdrawToPlatformQuote, CreditsError> {
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = SdkWithdrawals(manager.sdk_arc());
+            let network = session.vault.network();
+            credit_transfer::quote(&net, &wallet, network, &identity, amount).await
+        })
+        .await
+    }
+
+    /// Moves `amount` of `identity`'s credits to `to`, one of the wallet's
+    /// own Platform addresses (`credit_transfer.rs`).
+    pub async fn withdraw_to_platform(
+        &self,
+        identity: String,
+        to: String,
+        amount: WithdrawAmount,
+        grant: String,
+    ) -> Result<WithdrawToPlatformOutcome, CreditsError> {
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            let net = SdkWithdrawals(manager.sdk_arc());
+            let what = (to.as_str(), amount);
+            let who = (wallet_id, identity.as_str());
+            credit_transfer::transfer(&net, &session, &wallet, who, what, &grant).await
         })
         .await
     }

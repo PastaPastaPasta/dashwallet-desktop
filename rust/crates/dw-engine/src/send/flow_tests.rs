@@ -67,6 +67,9 @@ fn fixture(encrypted: bool) -> Fixture {
     engine
         .block_on(session.vault_op(move |v| v.create(pass)))
         .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
+        .unwrap();
     let wallet = engine
         .block_on(session.import_wallet(
             Zeroizing::new(PHRASE.as_bytes().to_vec()),

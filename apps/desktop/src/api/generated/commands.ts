@@ -69,6 +69,7 @@ import type { FilePurpose } from "./FilePurpose";
 import type { FinishReport } from "./FinishReport";
 import type { FlowKindName } from "./FlowKindName";
 import type { FoundIdentity } from "./FoundIdentity";
+import type { FundAmount } from "./FundAmount";
 import type { GovernanceClock } from "./GovernanceClock";
 import type { GovernanceInfo } from "./GovernanceInfo";
 import type { GovernanceSyncState } from "./GovernanceSyncState";
@@ -216,6 +217,8 @@ import type { WatchOnlyOptions } from "./WatchOnlyOptions";
 import type { WithdrawAmount } from "./WithdrawAmount";
 import type { WithdrawOutcome } from "./WithdrawOutcome";
 import type { WithdrawQuote } from "./WithdrawQuote";
+import type { WithdrawToPlatformOutcome } from "./WithdrawToPlatformOutcome";
+import type { WithdrawToPlatformQuote } from "./WithdrawToPlatformQuote";
 import type { Withdrawal } from "./Withdrawal";
 
 export type { AppError, AppEvent, ErrorCode, ShellEvent };
@@ -1799,6 +1802,21 @@ export function creditsWithdraw(walletId: string, identity: string, to: string, 
 }
 
 /**
+ * What moving credits to the wallet's own Platform address takes.
+ */
+export function creditsWithdrawToPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawToPlatformQuote> {
+  return invoke<WithdrawToPlatformQuote>("credits_withdraw_to_platform_quote", { walletId, identity, amount });
+}
+
+/**
+ * Moves credits to `to`, one of the wallet's own Platform addresses,
+ * under `grant`.
+ */
+export function creditsWithdrawToPlatform(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawToPlatformOutcome> {
+  return invoke<WithdrawToPlatformOutcome>("credits_withdraw_to_platform", { walletId, identity, to, amount, grant });
+}
+
+/**
  * The identity's recent withdrawals on Platform, the most recently
  * updated first (at most 20).
  */
@@ -1874,19 +1892,19 @@ export function platformSend(walletId: string, operation: string, grant: string)
 }
 
 /**
- * What adding `duffs` of the Core balance to the wallet's Platform
+ * What adding `amount` of the Core balance to the wallet's Platform
  * address costs and adds.
  */
-export function platformFundQuote(walletId: string, duffs: number): Promise<PlatformFundQuote> {
-  return invoke<PlatformFundQuote>("platform_fund_quote", { walletId, duffs });
+export function platformFundQuote(walletId: string, amount: FundAmount): Promise<PlatformFundQuote> {
+  return invoke<PlatformFundQuote>("platform_fund_quote", { walletId, amount });
 }
 
 /**
- * "Add from Dash wallet": adds `duffs` of the Core balance to the
+ * "Add from Dash wallet": adds `amount` of the Core balance to the
  * wallet's Platform address under `grant`.
  */
-export function platformFund(walletId: string, duffs: number, grant: string): Promise<PlatformFundOutcome> {
-  return invoke<PlatformFundOutcome>("platform_fund", { walletId, duffs, grant });
+export function platformFund(walletId: string, amount: FundAmount, grant: string): Promise<PlatformFundOutcome> {
+  return invoke<PlatformFundOutcome>("platform_fund", { walletId, amount, grant });
 }
 
 /**
@@ -2065,18 +2083,19 @@ export function shieldedReceiveAddress(walletId: string): Promise<ShieldedAddres
 }
 
 /**
- * What moving `duffs` of the Core balance into the pool costs and buys.
+ * What moving `amount` of the Core balance into the pool costs and
+ * buys.
  */
-export function shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote> {
-  return invoke<ShieldQuote>("shield_quote", { walletId, duffs });
+export function shieldQuote(walletId: string, amount: FundAmount): Promise<ShieldQuote> {
+  return invoke<ShieldQuote>("shield_quote", { walletId, amount });
 }
 
 /**
- * Core → Shielded: moves `duffs` of the Core balance into the pool
+ * Core → Shielded: moves `amount` of the Core balance into the pool
  * under `grant`.
  */
-export function shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome> {
-  return invoke<ShieldOutcome>("shield_from_core", { walletId, duffs, grant });
+export function shieldFromCore(walletId: string, amount: FundAmount, grant: string): Promise<ShieldOutcome> {
+  return invoke<ShieldOutcome>("shield_from_core", { walletId, amount, grant });
 }
 
 /**
@@ -3093,6 +3112,8 @@ export type CommandArgs = {
   credits_resolve_top_up: { walletId: string; txid: string };
   credits_withdraw_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
+  credits_withdraw_to_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
+  credits_withdraw_to_platform: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
   platform_addresses: { walletId: string };
   platform_activity: { walletId: string };
@@ -3103,8 +3124,8 @@ export type CommandArgs = {
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
   platform_send: { walletId: string; operation: string; grant: string };
-  platform_fund_quote: { walletId: string; duffs: number };
-  platform_fund: { walletId: string; duffs: number; grant: string };
+  platform_fund_quote: { walletId: string; amount: FundAmount };
+  platform_fund: { walletId: string; amount: FundAmount; grant: string };
   pending_platform_funds: { walletId: string };
   resume_platform_fund: { walletId: string; txid: string; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
@@ -3127,8 +3148,8 @@ export type CommandArgs = {
   shielded_status: { walletId: string };
   shielded_sync: { walletId: string };
   shielded_receive_address: { walletId: string };
-  shield_quote: { walletId: string; duffs: number };
-  shield_from_core: { walletId: string; duffs: number; grant: string };
+  shield_quote: { walletId: string; amount: FundAmount };
+  shield_from_core: { walletId: string; amount: FundAmount; grant: string };
   shield_mixed_quote: { walletId: string };
   stuck_shield_fundings: { walletId: string };
   shield_mixed_coins: { walletId: string; grant: string };
@@ -3423,6 +3444,8 @@ export type CommandResults = {
   credits_resolve_top_up: null;
   credits_withdraw_quote: WithdrawQuote;
   credits_withdraw: WithdrawOutcome;
+  credits_withdraw_to_platform_quote: WithdrawToPlatformQuote;
+  credits_withdraw_to_platform: WithdrawToPlatformOutcome;
   credits_withdrawals: Array<Withdrawal>;
   platform_addresses: PlatformAddressBalance;
   platform_activity: Array<PlatformActivity>;
@@ -3755,6 +3778,8 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_resolve_top_up: "identity",
   credits_withdraw_quote: "identity",
   credits_withdraw: "identity",
+  credits_withdraw_to_platform_quote: "identity",
+  credits_withdraw_to_platform: "identity",
   credits_withdrawals: "identity",
   platform_addresses: "identity",
   platform_activity: "identity",
@@ -3952,6 +3977,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "outpoint_not_found",
   "stuck_funding",
   "shielded_spend_unresolved",
+  "last_startup_wallet",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",
@@ -4128,6 +4154,9 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.quote_changed",
   "credits.fund_pending",
   "credits.too_many_inputs",
+  "credits.coins_changed",
+  "credits.mixing_active",
+  "credits.move_running",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",
