@@ -288,6 +288,11 @@ pub struct NetworkSession {
     pub(crate) withdrawal_nonces: crate::platform::withdrawal::WithdrawalNonces,
 }
 
+/// Tests: an operation [`NetworkSession::on_runtime`] spawns, boxed so the
+/// tests' task-locals can wrap it.
+#[cfg(test)]
+type TestRun<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, EngineError>> + Send>>;
+
 impl NetworkSession {
     /// Opens the session. Must run on the engine runtime: the manager spawns
     /// its persistence adapter task with `tokio::spawn`.
@@ -898,14 +903,19 @@ impl NetworkSession {
         F: Future<Output = Result<T, EngineError>> + Send + 'static,
         T: Send + 'static,
     {
-        // Tests: a held app.sqlite job stays held in the spawned task.
+        // Tests: a held app.sqlite job and the gate's holds stay with the
+        // spawned task.
         #[cfg(test)]
-        if let Ok(pause) = crate::coins::HOLD_APPDB_JOB.try_with(Arc::clone) {
-            return self
-                .rt
-                .spawn(crate::coins::HOLD_APPDB_JOB.scope(pause, fut))
-                .await?;
-        }
+        let fut = {
+            let mut fut: TestRun<T> = Box::pin(fut);
+            if let Ok(pause) = crate::coins::HOLD_APPDB_JOB.try_with(Arc::clone) {
+                fut = Box::pin(crate::coins::HOLD_APPDB_JOB.scope(pause, fut));
+            }
+            if let Ok(holds) = crate::coins::GATE_HOLDS.try_with(Arc::clone) {
+                fut = Box::pin(crate::coins::GATE_HOLDS.scope(holds, fut));
+            }
+            fut
+        };
         self.rt.spawn(fut).await?
     }
 

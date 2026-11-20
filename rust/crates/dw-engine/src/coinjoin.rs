@@ -3644,7 +3644,7 @@ pub(crate) mod sweep_test_hooks {
 #[cfg(test)]
 pub(crate) async fn test_pause(pause: Option<Arc<crate::coins::TestPause>>) {
     if let Some(p) = pause {
-        p.reached.store(true, std::sync::atomic::Ordering::SeqCst);
+        p.mark_reached();
         p.release.notified().await;
     }
 }
