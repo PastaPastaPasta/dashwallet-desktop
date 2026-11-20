@@ -184,8 +184,9 @@ test("Mine: Submit only where MG-06 D24 allows it, a failed resend said on the r
   await page.getByTestId("mine-submit-desktop-wallet-i18n").click();
   await expect(page.getByTestId("mine-chip-desktop-wallet-i18n")).toHaveText("Fee not sent");
   await expect(page.getByTestId("mine-error-desktop-wallet-i18n")).toBeVisible();
-  // The badge counts the proposals a failure left needing the user (D5).
-  await expect(page.getByTestId("sidebar-masternodes-badge")).toHaveText("3");
+  // The badge counts the proposals a failure left needing the user (D5), and the fixture's banned
+  // Office node (MG-10 §3.6).
+  await expect(page.getByTestId("sidebar-masternodes-badge")).toHaveText("4");
   expect(await seriousAxeViolations(page)).toEqual([]);
 });
 
