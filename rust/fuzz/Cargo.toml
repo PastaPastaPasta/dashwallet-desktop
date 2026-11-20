@@ -89,6 +89,14 @@ bench = false
 required-features = ["libfuzzer"]
 
 [[bin]]
+name = "walletdat_bdb"
+path = "fuzz_targets/walletdat_bdb.rs"
+test = false
+doc = false
+bench = false
+required-features = ["libfuzzer"]
+
+[[bin]]
 name = "avatar"
 path = "fuzz_targets/avatar.rs"
 test = false

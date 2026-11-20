@@ -177,6 +177,36 @@ fn walletdats() -> Vec<Vec<u8>> {
     out
 }
 
+/// The Berkeley DB wallet.dat vectors, each with its wallet passphrase
+/// (empty for a plain wallet).
+fn walletdat_bdbs() -> Vec<Vec<u8>> {
+    let dir = testdata("compat/walletdat");
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|e| e.unwrap().path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("bdb_"))
+        })
+        .collect();
+    paths.sort();
+    let mut out = Vec::new();
+    for path in paths {
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let passphrase: &[u8] = match name {
+            "bdb_hd_encrypted.dat" => b"bdb-pass",
+            "bdb_core24_hd_encrypted.dat" => b"core-wallet-pass",
+            _ => b"",
+        };
+        let mut seed = Vec::new();
+        field(&mut seed, passphrase);
+        seed.extend_from_slice(&read(&path));
+        out.push(seed);
+    }
+    out
+}
+
 /// An [`crate::avatar`] input: flags, crop rectangle, zoom text, image.
 pub fn avatar_input(fingerprint: bool, rect: [u32; 4], zoom: &str, image: &[u8]) -> Vec<u8> {
     let mut out = vec![u8::from(fingerprint)];
@@ -242,6 +272,7 @@ pub fn seeds(name: &str) -> Vec<Vec<u8>> {
         "dumpwallet" => dumps(),
         "listdescriptors" => listdescriptors(),
         "walletdat" => walletdats(),
+        "walletdat_bdb" => walletdat_bdbs(),
         "avatar" => avatars(),
         "invitation" => link_corpus(),
         _ => panic!("no fuzz target {name:?}"),

@@ -258,6 +258,7 @@ calling the entry points the app calls with it:
 | `dumpwallet` | a `dumpwallet` file | `dw_compat::dump::parse`, `write`, the label escaping, the mnemonic check |
 | `listdescriptors` | `listdescriptors true` output, a descriptor | `dw_compat::descriptor::parse_listdescriptors`, `PkhDescriptor::parse` (checks that a written descriptor reads back) |
 | `walletdat` | an SQLite wallet.dat's records (SQLite itself is fuzzed upstream) | `dw_compat::walletdat::SqliteWallet::from_records`, `hd_root` with and without the passphrase the input carries |
+| `walletdat_bdb` | a legacy Berkeley DB wallet.dat file, with a passphrase | `dw_compat::walletdat::read_bdb_bytes` (`dw_compat::bdb`'s page and overflow reader, then the record parser), `hd_root` with and without the passphrase |
 | `avatar` | avatar bytes from a profile's URL with its zoom crop; a picked picture with its crop | dw-engine's avatar decoder (`ingest`, `ingest_file`, through the `fuzzing` feature's `platform::fuzzing`) |
 | `invitation` | an invitation link | the claim's parser (DP5-01's normalization, then platform-wallet's `parse_invitation_uri`) |
 
@@ -270,8 +271,8 @@ Run it locally with cargo-fuzz 0.13.2 and the pinned nightly (`rustup toolchain 
 `cargo install cargo-fuzz --version 0.13.2 --locked`):
 
 ```sh
-scripts/fuzz.sh /work/scratch/fuzz 1200            # every target, 20 minutes each
-scripts/fuzz.sh /work/scratch/fuzz 600 psbt link   # some targets
+scripts/fuzz.sh ~/dw-fuzz 1200         # every target, 20 minutes each
+scripts/fuzz.sh ~/dw-fuzz 600 psbt link # some targets
 ```
 
 The build is release with debug assertions, overflow checks and AddressSanitizer. A target that finds a crash,

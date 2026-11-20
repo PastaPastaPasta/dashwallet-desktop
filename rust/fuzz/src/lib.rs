@@ -23,7 +23,7 @@ const NETWORKS: [Network; 4] = [
 ];
 
 /// The fuzz targets, by name (a `fuzz_targets/` file and a seed directory).
-pub const TARGETS: [&str; 9] = [
+pub const TARGETS: [&str; 10] = [
     "link",
     "send_input",
     "qr_image",
@@ -31,6 +31,7 @@ pub const TARGETS: [&str; 9] = [
     "dumpwallet",
     "listdescriptors",
     "walletdat",
+    "walletdat_bdb",
     "avatar",
     "invitation",
 ];
@@ -49,6 +50,7 @@ pub fn run(name: &str, data: &[u8]) -> bool {
         "dumpwallet" => dumpwallet(data),
         "listdescriptors" => listdescriptors(data),
         "walletdat" => walletdat(data),
+        "walletdat_bdb" => walletdat_bdb(data),
         #[cfg(feature = "engine")]
         "avatar" => avatar(data),
         #[cfg(feature = "engine")]
@@ -218,8 +220,9 @@ pub fn listdescriptors(data: &[u8]) {
 
 /// Most key derivation rounds this harness spends on a passphrase. Core
 /// writes 25 000 or more; the parser allows up to `MAX_ROUNDS` (10 M, about
-/// a second), which libFuzzer would only report as slow.
-const FUZZ_ROUNDS: u32 = 50_000;
+/// a second) across a file's `mkey` records, which libFuzzer would only
+/// report as slow.
+const FUZZ_ROUNDS: u64 = 50_000;
 
 /// A Core-serialized `compactSize`-prefixed field.
 fn field<'a>(data: &mut &'a [u8]) -> Option<&'a [u8]> {
@@ -252,14 +255,33 @@ pub fn walletdat(data: &[u8]) {
     while let (Some(key), Some(value)) = (field(&mut rest), field(&mut rest)) {
         records.push((key, value));
     }
-    let Ok(wallet) = walletdat::SqliteWallet::from_records(records) else {
+    if let Ok(wallet) = walletdat::SqliteWallet::from_records(records) {
+        inspect_wallet(&wallet, passphrase);
+    }
+}
+
+/// A legacy Berkeley DB wallet.dat to inspect or import, as the import
+/// reads a picked file: its pages, the `main` subdatabase's records, then
+/// the wallet. The input is a `compactSize`-prefixed passphrase, then the
+/// file.
+pub fn walletdat_bdb(data: &[u8]) {
+    let mut file = data;
+    let Some(passphrase) = field(&mut file) else {
         return;
     };
+    if let Ok(wallet) = walletdat::read_bdb_bytes(file) {
+        inspect_wallet(&wallet, passphrase);
+    }
+}
+
+/// What the import dialog and the import read from a parsed wallet.dat.
+fn inspect_wallet(wallet: &walletdat::SqliteWallet, passphrase: &[u8]) {
     let _ = (wallet.encrypted(), wallet.is_descriptor_wallet());
     let _ = (wallet.has_mnemonic(), wallet.external_descriptor());
     let _ = (wallet.next_index(), wallet.birth_time());
+    let _ = wallet.hd_accounts();
     let _ = wallet.hd_root(None);
-    if wallet.derivation_rounds() <= FUZZ_ROUNDS {
+    if wallet.encrypted() && wallet.derivation_rounds() <= FUZZ_ROUNDS {
         let _ = wallet.hd_root(Some(passphrase));
     }
 }
