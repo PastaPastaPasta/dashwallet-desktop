@@ -12,7 +12,7 @@ use key_wallet::bip32::DerivationPath;
 
 use dw_vault::{
     Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, LockState,
-    SIGNING_WINDOW_SECS, UnlockScope, VaultError, WalletSigner,
+    SIGNING_WINDOW_SECS, SignerScope, UnlockScope, VaultError, WalletSigner,
 };
 
 fn spend(max_duffs: u64) -> GrantPurpose {
@@ -316,23 +316,117 @@ fn a_lease_cannot_compose_window_grants_past_the_sealed_limit() {
         )
         .unwrap();
     v.set_quick_unlock_spend_limit(&change.id, LOWER).unwrap();
-    assert!(v.signing_window_open());
-    assert!(
-        v.window_lease_allowed(std::slice::from_ref(&first.id))
-            .is_ok()
-    );
-    assert!(
-        v.window_lease_allowed(std::slice::from_ref(&platform.id))
-            .is_ok()
-    );
-    assert_eq!(
-        v.window_lease_allowed(&[platform.id.clone(), first.id.clone()]),
-        Err(VaultError::CredentialRequired)
-    );
+    assert!(!v.signing_window_open());
+    for ids in [
+        vec![first.id.clone()],
+        vec![platform.id.clone()],
+        vec![platform.id, first.id],
+    ] {
+        assert_eq!(
+            v.window_lease_allowed(&ids),
+            Err(VaultError::GrantInvalid),
+            "{ids:?}"
+        );
+    }
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    let platform = v
+        .authorize(
+            GrantPurpose::PlatformOp {
+                max_duffs: 0,
+                max_credits: PART * 1000,
+            },
+            Some(&w),
+            Credential::None,
+        )
+        .unwrap();
     let typed = v
         .authorize(spend(PART), Some(&w), Credential::Passphrase(PASS))
         .unwrap();
     assert!(v.window_lease_allowed(&[platform.id, typed.id]).is_ok());
+}
+
+fn set_limit(v: &dw_vault::Vault, limit: u64) {
+    let change = v
+        .authorize(
+            GrantPurpose::ChangeCredential,
+            None,
+            Credential::Passphrase(PASS),
+        )
+        .unwrap();
+    v.set_quick_unlock_spend_limit(&change.id, limit).unwrap();
+}
+
+/// Lowering the spending limit ends the signing window: a grant issued
+/// under the old limit, redeemed or not, issues no signer on any payment
+/// path and goes into no lease, and the next payment asks.
+#[test]
+fn a_lower_limit_ends_the_window_and_its_grants() {
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    let [send, platform, withdraw] = payments();
+    let token = |purpose: GrantPurpose| {
+        let grant = v.authorize(purpose, Some(&w), Credential::None).unwrap();
+        v.redeem_grant(&grant.id, purpose.kind(), Some(&w)).unwrap()
+    };
+    let (send_token, platform_token, withdraw_token) =
+        (token(send), token(platform), token(withdraw));
+    let unredeemed = v.authorize(send, Some(&w), Credential::None).unwrap();
+    set_limit(&v, 10_000_000);
+    assert_eq!(
+        v.signer(&w, &send_token).map(drop),
+        Err(VaultError::GrantInvalid)
+    );
+    assert_eq!(
+        v.platform_signer(
+            &w,
+            &platform_token,
+            SignerScope::PlatformFunding { max_duffs: 1 }
+        )
+        .map(drop),
+        Err(VaultError::GrantInvalid)
+    );
+    assert_eq!(
+        v.masternode_withdrawal_signer(&w, &withdraw_token)
+            .map(drop),
+        Err(VaultError::GrantInvalid)
+    );
+    assert_eq!(
+        v.window_lease_allowed(std::slice::from_ref(&unredeemed.id)),
+        Err(VaultError::GrantInvalid)
+    );
+    assert_eq!(
+        v.redeem_grant(&unredeemed.id, GrantKind::Spend, Some(&w))
+            .map(drop),
+        Err(VaultError::GrantInvalid)
+    );
+    every_payment_asks(&v);
+    v.authorize(spend(1), Some(&w), Credential::Passphrase(PASS))
+        .unwrap();
+}
+
+/// Raising the limit, or setting the one in force, ends nothing.
+#[test]
+fn a_higher_or_equal_limit_leaves_the_window_open() {
+    const HIGHER: u64 = 100_000_000;
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    let grant = v.authorize(spend(1), Some(&w), Credential::None).unwrap();
+    let token = v
+        .redeem_grant(&grant.id, GrantKind::Spend, Some(&w))
+        .unwrap();
+    let kept = v.authorize(spend(1), Some(&w), Credential::None).unwrap();
+    for limit in [DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, HIGHER, HIGHER] {
+        set_limit(&v, limit);
+        assert!(v.signing_window_open(), "{limit}");
+    }
+    assert_eq!(v.signing_window_remaining(), Some(HIGHER - 2));
+    v.signer(&w, &token).unwrap();
+    assert!(
+        v.window_lease_allowed(std::slice::from_ref(&kept.id))
+            .is_ok()
+    );
 }
 
 /// A window grant issued just before the deadline, still inside its TTL
