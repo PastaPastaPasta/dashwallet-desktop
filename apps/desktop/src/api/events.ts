@@ -20,7 +20,7 @@ import { announceReceived, forgetReceived, LOOKUP_TIMEOUT_MS, sealReceived } fro
 import { onMoveSettled } from "../platform/move";
 import { onRecoverySettled } from "../recovery/model";
 import { onShieldedSettled } from "../shielded/flow";
-import { closeWalletGate, confirmLockState, followLockStatus, lockStateChanged, subscribeWalletGate, walletGateClosed } from "./lockGate";
+import { closeWalletGate, confirmAgain, confirmLockState, followLockStatus, lockStateChanged, subscribeWalletGate, walletGateClosed } from "./lockGate";
 import { keys, scanHeightsStale } from "./queries";
 import { announceable, feedSync } from "./syncDisplay";
 
@@ -194,8 +194,10 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
       lockStateChanged();
       if (event.state === "locked") closeWalletGate(client);
     }
-    // Lost events may have held a lock: wallet commands wait for a fresh status first.
+    // Lost events may have held a lock: the gate closes until a status read says otherwise, and any
+    // other event reads a status still unconfirmed again at once.
     if (event.kind === "eventsOverflowed") void confirmLockState(client, () => backend.lockStatus());
+    else confirmAgain();
     if (event.kind === "walletRemoved") {
       heldNews.drop(event.walletId);
       forgetReceived(event.walletId);

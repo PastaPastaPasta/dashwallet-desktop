@@ -1,9 +1,12 @@
 import { QueryClient } from "@tanstack/react-query";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Backend } from "./backend";
 import type { LockStatus } from "./generated/LockStatus";
 import {
   closeWalletGate,
+  CONFIRM_RETRY_MAX_MS,
+  CONFIRM_RETRY_MS,
+  confirmAgain,
   confirmLockState,
   followLockStatus,
   forgetWalletContent,
@@ -12,6 +15,7 @@ import {
   keptWhileLocked,
   lockGeneration,
   lockStateChanged,
+  lockUnconfirmed,
   refusedWhileLocked,
   resetWalletGate,
   seedLockStatus,
@@ -152,26 +156,118 @@ describe("the lock gate", () => {
     expect(status.state).toBe("locked");
   });
 
-  it("holds wallet commands after lost events until a fresh status, and refuses them when it says locked", async () => {
-    const client = new QueryClient();
+  /** A wallet command through the guard, and what reached the engine. */
+  const guarded = () => {
     const asked: string[] = [];
     const backend = guardWhileLocked({ balance: async () => (asked.push("balance"), 1) } as unknown as Backend);
-    let answer!: (s: LockStatus) => void;
-    const confirmed = confirmLockState(client, () => new Promise<LockStatus>((r) => (answer = r)));
-    const read = backend.balance("w").catch((e: unknown) => e);
-    await Promise.resolve();
-    expect(asked).toEqual([]);
-    answer({ ...STATUS, state: "locked" });
-    await confirmed;
-    expect(refusedWhileLocked(await read)).toBe(true);
-    expect(asked).toEqual([]);
+    return { asked, balance: () => backend.balance("w").catch((e: unknown) => e) };
+  };
+  /** A status read answered or refused by the test, one call at a time. */
+  const reads = () => {
+    const calls: { answer: (s: LockStatus) => void; fail: (e: unknown) => void }[] = [];
+    const read = () => new Promise<LockStatus>((answer, fail) => calls.push({ answer, fail }));
+    return { calls, read };
+  };
+
+  it("lost events while open close the gate and forget the wallet at once, and refuse commands until a read says unlocked", async () => {
+    const client = new QueryClient();
+    client.setQueryData(keys.lockStatus, STATUS);
+    client.setQueryData(keys.balance("w"), "x");
+    const stop = followLockStatus(client);
+    const { asked, balance } = guarded();
+    const { calls, read } = reads();
+    const confirmed = confirmLockState(client, read);
     expect(walletGateClosed()).toBe(true);
-    resetWalletGate();
-    const again = confirmLockState(client, async () => STATUS);
-    const later = backend.balance("w");
-    await again;
-    expect(await later).toBe(1);
+    expect(client.getQueryData(keys.balance("w"))).toBeUndefined();
+    expect(client.getQueryData<LockStatus>(keys.lockStatus)?.state).toBe("locked");
+    expect(refusedWhileLocked(await balance())).toBe(true);
+    expect(asked).toEqual([]);
+    expect(calls).toHaveLength(1);
+    calls[0].answer(STATUS);
+    await confirmed;
+    expect(walletGateClosed()).toBe(false);
+    expect(lockUnconfirmed()).toBe(false);
+    expect(await balance()).toBe(1);
     expect(asked).toEqual(["balance"]);
+    stop();
+  });
+
+  it("lost events while open, with the read failing, stay closed and read again after a wait, opening only on a read that succeeds", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new QueryClient();
+      client.setQueryData(keys.lockStatus, STATUS);
+      const { asked, balance } = guarded();
+      const { calls, read } = reads();
+      const confirmed = confirmLockState(client, read);
+      calls[0].fail(new Error("no answer"));
+      await confirmed;
+      expect(walletGateClosed()).toBe(true);
+      expect(lockUnconfirmed()).toBe(true);
+      expect(refusedWhileLocked(await balance())).toBe(true);
+      // The refused command read again at once; that read fails too.
+      expect(calls).toHaveLength(2);
+      calls[1].fail(new Error("no answer"));
+      await vi.advanceTimersByTimeAsync(CONFIRM_RETRY_MS * 2 - 1);
+      expect(calls).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls).toHaveLength(3);
+      calls[2].answer(STATUS);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(walletGateClosed()).toBe(false);
+      expect(await balance()).toBe(1);
+      expect(asked).toEqual(["balance"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits no longer than the cap between failed reads", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new QueryClient();
+      const { calls, read } = reads();
+      void confirmLockState(client, read);
+      for (let i = 0; i < 8; i++) {
+        calls[i].fail(new Error("no answer"));
+        await vi.advanceTimersByTimeAsync(CONFIRM_RETRY_MAX_MS);
+        expect(calls).toHaveLength(i + 2);
+      }
+      expect(walletGateClosed()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lost events while closed, the read failing and then succeeding unlocked, open the gate", async () => {
+    resetWalletGate(true);
+    const client = new QueryClient();
+    const { calls, read } = reads();
+    const confirmed = confirmLockState(client, read);
+    calls[0].fail(new Error("no answer"));
+    await confirmed;
+    expect(walletGateClosed()).toBe(true);
+    confirmAgain(); // the next event
+    expect(calls).toHaveLength(2);
+    calls[1].answer(STATUS);
+    await vi.waitFor(() => expect(walletGateClosed()).toBe(false));
+    expect(client.getQueryData(keys.lockStatus)).toEqual(STATUS);
+  });
+
+  it("a lock event during the confirming read reads again, and the gate stays closed", async () => {
+    const client = new QueryClient();
+    client.setQueryData(keys.lockStatus, STATUS);
+    const { calls, read } = reads();
+    const confirmed = confirmLockState(client, read);
+    lockStateChanged();
+    closeWalletGate(client);
+    calls[0].answer(STATUS);
+    await vi.waitFor(() => expect(calls).toHaveLength(2));
+    calls[1].answer({ ...STATUS, state: "locked" });
+    await confirmed;
+    expect(walletGateClosed()).toBe(true);
+    expect(lockUnconfirmed()).toBe(false);
+    expect(client.getQueryData<LockStatus>(keys.lockStatus)?.state).toBe("locked");
   });
 
   it("lets Forgot passphrase read the wallets' names alone while locked, and nothing else read them", async () => {

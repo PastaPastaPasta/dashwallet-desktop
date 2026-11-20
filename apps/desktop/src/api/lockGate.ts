@@ -8,6 +8,9 @@
 // Every report of the lock state counts against one generation, bumped by each change the engine
 // announces (its events, a lock answered) and by a lost event queue: a status read, the network's
 // opening status or a lock's answer from before a newer change is never applied.
+//
+// A lost event queue may have held a lock, so it closes the gate as a lock does, and only a status
+// read that succeeds opens it again; a failed read is tried again, never taken as unlocked.
 
 import { useSyncExternalStore } from "react";
 import type { QueryClient, QueryKey } from "@tanstack/react-query";
@@ -91,26 +94,47 @@ export function closeWalletGate(client: QueryClient, since?: number) {
 }
 
 function openWalletGate() {
+  endConfirm();
   if (!closed) return;
   closed = false;
   holdWalletToasts(false);
   notify();
 }
 
-let confirming: Promise<void> | null = null;
+/** The first wait before a failed confirming read is tried again, and the longest. */
+export const CONFIRM_RETRY_MS = 1_000;
+export const CONFIRM_RETRY_MAX_MS = 30_000;
 
-/** Events were lost, a lock among them perhaps: wallet commands wait (`guardWhileLocked`) for a
- * fresh status, which closes the gate if it says locked. */
-export function confirmLockState(client: QueryClient, read: () => Promise<LockStatus>): Promise<void> {
-  lockStateChanged();
-  const done: Promise<void> = freshLockStatus(read)
+/** A lost event queue's status still to be read: how, and for which cache. */
+let unconfirmed: { client: QueryClient; read: () => Promise<LockStatus>; failures: number } | null = null;
+let confirming: Promise<void> | null = null;
+let retry: ReturnType<typeof setTimeout> | undefined;
+
+function endConfirm() {
+  unconfirmed = null;
+  clearTimeout(retry);
+  retry = undefined;
+}
+
+function confirm(): Promise<void> {
+  clearTimeout(retry);
+  retry = undefined;
+  const pending = unconfirmed;
+  if (confirming || !pending) return confirming ?? Promise.resolve();
+  const done: Promise<void> = freshLockStatus(pending.read)
     .then(
       (status) => {
-        client.setQueryData(keys.lockStatus, status);
-        if (status.state === "locked") closeWalletGate(client);
+        if (unconfirmed !== pending) return;
+        endConfirm();
+        pending.client.setQueryData(keys.lockStatus, status);
+        if (status.state === "locked") closeWalletGate(pending.client);
         else openWalletGate();
       },
-      () => undefined,
+      () => {
+        if (unconfirmed !== pending) return;
+        pending.failures++;
+        retry = setTimeout(() => void confirm(), Math.min(CONFIRM_RETRY_MAX_MS, CONFIRM_RETRY_MS * 2 ** (pending.failures - 1)));
+      },
     )
     .finally(() => {
       if (confirming === done) confirming = null;
@@ -118,6 +142,25 @@ export function confirmLockState(client: QueryClient, read: () => Promise<LockSt
   confirming = done;
   return done;
 }
+
+/** Events were lost, a lock among them perhaps: the gate closes as for a lock, and opens only once
+ * a status read succeeds and says the vault is not locked. A failed read is tried again, after a
+ * wait that doubles up to `CONFIRM_RETRY_MAX_MS`, or at once on the next event or refused command. */
+export function confirmLockState(client: QueryClient, read: () => Promise<LockStatus>): Promise<void> {
+  closeWalletGate(client);
+  // A read under way began before this loss: `freshLockStatus` reads again for it.
+  if (unconfirmed) Object.assign(unconfirmed, { client, read });
+  else unconfirmed = { client, read, failures: 0 };
+  return confirm();
+}
+
+/** Something happened (an event, a refused command): a status still unconfirmed is read now. */
+export function confirmAgain() {
+  if (unconfirmed && !confirming) void confirm();
+}
+
+/** Whether a lost event queue's status is still to be read. */
+export const lockUnconfirmed = (): boolean => unconfirmed !== null;
 
 /** Keeps the gate on the cached lock status: it opens only once a status read says the vault is
  * not locked. Returns the unsubscribe. */
@@ -170,7 +213,7 @@ export const refusedWhileLocked = (e: unknown): boolean => e === LOCKED;
 const UNGUARDED = Symbol("unguarded");
 
 /** `backend`, refusing every command outside `LOCKED_COMMANDS` while the gate is closed, without
- * asking the engine, and holding them while a lost event queue's status is read again. */
+ * asking the engine. A refused command reads a status still unconfirmed again. */
 export function guardWhileLocked<B extends Backend>(backend: B): B {
   return new Proxy(backend, {
     get(target, prop, receiver) {
@@ -178,10 +221,9 @@ export function guardWhileLocked<B extends Backend>(backend: B): B {
       const value = Reflect.get(target, prop, receiver);
       if (typeof value !== "function" || typeof prop !== "string" || NOT_COMMANDS.has(prop) || LOCKED_COMMANDS.has(prop)) return value;
       return (...args: unknown[]) => {
-        if (closed) return Promise.reject(LOCKED);
-        const wait = confirming;
-        if (!wait) return value.apply(target, args);
-        return wait.then(() => (closed ? Promise.reject(LOCKED) : value.apply(target, args)));
+        if (!closed) return value.apply(target, args);
+        confirmAgain();
+        return Promise.reject(LOCKED);
       };
     },
   });
@@ -196,6 +238,7 @@ export async function walletNamesForRecovery(backend: Backend): Promise<{ wallet
 /** Tests: the gate as at start, or open (`closedNow` false). */
 export function resetWalletGate(closedNow = false) {
   closed = closedNow;
+  endConfirm();
   confirming = null;
   holdWalletToasts(closedNow);
   notify();
