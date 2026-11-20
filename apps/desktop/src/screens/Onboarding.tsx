@@ -392,8 +392,10 @@ function RestoreOptions({ model }: { model: OnboardingModel }) {
         />
         Dash Core compatible (a recovery phrase from Dash Core)
       </label>
-      <fieldset className="scan-start">
-        <legend>Scan the blockchain from</legend>
+      <div className="scan-start" role="group" aria-labelledby={`${id}-scan-title`}>
+        <span id={`${id}-scan-title`} className="scan-start-title">
+          Scan the blockchain from
+        </span>
         <label className="check-row">
           <input type="radio" name={`${id}-scan`} data-testid="restore-scan-genesis" checked={scan === "genesis"} onChange={() => model.setScanStart("genesis")} />
           The beginning (slowest, finds every transaction)
@@ -437,7 +439,7 @@ function RestoreOptions({ model }: { model: OnboardingModel }) {
             {birthHeight ? `The scan starts at block ${birthHeight.toLocaleString("en-US")}.` : "The scan starts at the first block."}
           </p>
         )}
-      </fieldset>
+      </div>
       <DashButton
         variant="filledBlue"
         size="large"

@@ -56,6 +56,7 @@
     "textTertiary": { "light": "#68737D", "dark": "DashColor.tertiaryText" },
     "warning": { "light": "#B6542C", "dark": "DashColor.orange" },
     "networkCapsule": { "light": "#B6542C", "dark": "#B6542C" },
-    "danger": { "light": "#C8202B", "dark": "#FF6961" }
+    "danger": { "light": "#C8202B", "dark": "#FF6961" },
+    "successText": { "light": "#177857", "dark": "DashColor.successText" }
   }
 }

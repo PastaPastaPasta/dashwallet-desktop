@@ -1,0 +1,10 @@
+{
+  "theme": "dark",
+  "unit": "milliDash",
+  "decimalDigits": 4,
+  "autohideBalance": true,
+  "autoLockSecs": 900,
+  "subtractFeeByDefault": true,
+  "showMasternodes": true,
+  "preReleaseNoticeDismissed": true
+}

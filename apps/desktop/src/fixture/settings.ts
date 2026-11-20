@@ -46,6 +46,7 @@ export const FIXTURE_FILES = {
   dumpwallet: "/home/user/Documents/dash-core-dumpwallet.txt",
   walletDat: "/home/user/Documents/core-sqlite-wallet.dat",
   walletDatBdb: "/home/user/Documents/core-berkeley-wallet.dat",
+  walletDatBdbLocked: "/home/user/Documents/core-berkeley-locked.dat",
   psbt: "/home/user/Documents/unsigned-payment.psbt",
   unknown: "/home/user/Documents/shopping-list.txt",
   mainnetDump: "/home/user/Documents/mainnet-dumpwallet.txt",
@@ -115,6 +116,10 @@ export function newSettingsWorld(): SettingsWorld {
         report: { labelsImported: 1, keysNotImported: 0, scriptsNotImported: 1 },
       },
       [FIXTURE_FILES.walletDatBdb]: { info: { kind: "walletDatBdb", encrypted: false } },
+      [FIXTURE_FILES.walletDatBdbLocked]: {
+        info: { kind: "walletDatBdb", encrypted: true },
+        passphrase: CORE_WALLET_PASSPHRASE,
+      },
       [FIXTURE_FILES.psbt]: { info: { kind: "psbt" } },
       [FIXTURE_FILES.unknown]: { info: { kind: "unknown" } },
     },
@@ -361,9 +366,9 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
     },
     import_wallet_dat: ({ path, walletPassphrase, options }, ctx) => {
       const f = file(ctx.world, path, "compat.file_unreadable");
-      if (f.info.kind === "walletDatBdb") throw fail("not_implemented", "Berkeley DB wallets cannot be read");
-      if (f.info.kind !== "walletDatSqlite") throw fail("compat.unsupported_format", "not a wallet.dat");
-      if (f.info.encrypted) {
+      if (f.info.kind !== "walletDatSqlite" && f.info.kind !== "walletDatBdb") throw fail("compat.unsupported_format", "not a wallet.dat");
+      const encrypted = f.info.kind === "walletDatSqlite" ? f.info.encrypted : f.info.encrypted === true;
+      if (encrypted) {
         if (walletPassphrase === null) throw fail("compat.passphrase_required", "the wallet.dat is encrypted");
         if (walletPassphrase !== f.passphrase) throw fail("compat.wrong_passphrase", "wrong wallet.dat passphrase");
       }
