@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
-import { fixtureUrl, THEMES, trackPageErrors } from "./helpers";
+import { contrast } from "./contrast";
+import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors } from "./helpers";
 
 // Receive's Dash / Platform / Shielded tabs switch the address only: the request column keeps its
 // place and size on every tab, and on Platform and Shielded it says requests are for Dash addresses.
@@ -48,6 +49,29 @@ for (const theme of THEMES) {
       expect(Math.abs(now.left.y - first.left.y), `${tab} address column top`).toBeLessThanOrEqual(1);
       same(now.tabs, first.tabs, `${tab} tabs`);
     }
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const theme of THEMES) {
+  test(`#67 a payment that arrived says so with a tick and text that meet AA contrast (${theme})`, async ({ page }, info) => {
+    const errors = await open(page, theme);
+    const address = page.getByTestId("receive-address");
+    const paidTo = (await address.textContent())!;
+    // The next address read waits until released: RECEIVED_HOLD_MS starts only once it answers, so the
+    // Received line stays through the measurement, the axe scan and the screenshot.
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("current_receive_address"));
+    await page.evaluate(`window.__dwFixture.receivePayment(150000000, undefined, ${JSON.stringify(paidTo)})`);
+    const received = page.getByTestId("receive-received");
+    await expect(received).toHaveText("✓ Received 1.50 tDASH");
+    // The tick is aria-hidden, so axe skips it; as a graphic it needs 3:1 against the tint it sits on.
+    expect(await contrast(received.locator("span"))).toBeGreaterThanOrEqual(3);
+    expect(await seriousAxeViolations(page)).toEqual([]);
+    await fontsReady(page);
+    await page.screenshot({ path: artifactPath(info, `${theme}-receive-received.png`) });
+    await expect(received).toBeVisible();
+    await expect(address).toHaveText(paidTo);
+    await release.evaluate((r) => r());
     expect(errors).toEqual([]);
   });
 }

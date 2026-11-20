@@ -1757,6 +1757,87 @@ fn a_watch_only_import_rescans_a_batch_committed_before_its_lookahead_was_raised
     );
 }
 
+/// A watch-only wallet born at `HEIGHT` synced past a payment to receive
+/// index 500, outside its pool. A Dash Core file of its seed attaches the
+/// keys with Core's range, which reaches that index, and rewinds to the start
+/// of Core's import (genesis), below the wallet's birth: the payment counts.
+#[test]
+fn a_wallet_dat_attached_to_a_synced_watch_only_wallet_recovers_a_payment_past_its_pool() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = engine
+        .block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(HEIGHT),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    let to = engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let wallet = wm.get_wallet(&id.0).unwrap();
+        let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        let mut pool = (info.accounts.funds_account(&bip44()).unwrap())
+            .managed_account_type()
+            .address_pools()[0]
+            .clone();
+        assert!(pool.highest_generated.unwrap_or(0) < 500);
+        let have = pool.highest_generated.unwrap_or(0);
+        pool.generate_addresses(500 - have, &wallet.key_source_for_account(bip44()), true)
+            .unwrap();
+        pool.address_at_index(500).unwrap()
+    });
+    let txs = [pays(31, &to)];
+    let filter = block_filter(31, &txs[0]);
+    commit_batch(&engine, &session, id, HEIGHT + 100);
+    assert!(!matches_filter(
+        &filter,
+        &scan_scripts(&engine, &session, id)
+    ));
+
+    let attached = engine
+        .block_on(
+            session.import_wallet_dat(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../testdata/compat/walletdat/bdb_wide_range.dat"),
+                None,
+                crate::ImportOptions::default(),
+            ),
+        )
+        .unwrap();
+
+    assert_eq!(attached.wallet_id, id);
+    assert!(session.vault().has_wallet_secret(&id.0));
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((0, HEIGHT + 100))
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+    assert!(matches_filter(
+        &filter,
+        &scan_scripts(&engine, &session, id)
+    ));
+    replay(&engine, &session, id, &txs);
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[(OutPoint::new(txs[0].txid(), 0), to)],
+        bip44(),
+        VALUE,
+    );
+}
+
 /// A load whose widening fails keeps the wallet's marker, so the next load
 /// widens and replays again instead of leaving coins hidden.
 #[test]
@@ -1946,19 +2027,18 @@ fn a_rescan_that_cannot_widen_a_wallet_marks_it_for_the_next_load() {
     );
 }
 
-/// A seed import whose registration fails puts the wallet's marker back as
-/// it was before the import wrote its own.
+/// An import of a seed the vault already holds, whose registration fails,
+/// puts the wallet's marker back as it was before the import wrote its own.
 #[test]
 fn an_import_whose_registration_fails_puts_the_marker_back() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, session) = open_engine(dir.path().join("data"));
     create_vault(&engine, &session);
-    let id: WalletId = {
-        let seed = dw_vault::mnemonic::derive_secret(PHRASE, b"", false).unwrap();
-        WalletId(
-            dw_vault::mnemonic::wallet_id_for_seed(&seed.seed, dashcore::Network::Regtest).unwrap(),
-        )
-    };
+    let secret = dw_vault::mnemonic::derive_secret(PHRASE, b"", false).unwrap();
+    let id = WalletId(
+        dw_vault::mnemonic::wallet_id_for_seed(&secret.seed, dashcore::Network::Regtest).unwrap(),
+    );
+    session.vault().store_wallet_secret(&id.0, &secret).unwrap();
     set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
     (crate::keys::FAIL_REGISTRATION_IN.lock().unwrap()).push(session.data_dir().to_path_buf());
 

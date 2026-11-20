@@ -34,6 +34,7 @@ mod flows;
 mod identity;
 mod identity_reads;
 mod identity_writes;
+mod input0;
 mod invitation_check;
 mod invitations;
 pub(crate) mod journal;
@@ -154,7 +155,7 @@ pub use platform_addresses::{
     MoveToCoreOutcome, MoveToCoreQuote, PendingPlatformFund, PlatformActivity,
     PlatformActivityKind, PlatformActivityState, PlatformAddressBalance, PlatformAddressRow,
     PlatformFundOutcome, PlatformFundQuote, PlatformFundState, PlatformReceiveAddress,
-    PlatformSendOutcome, PlatformSendQuote, RecipientProblem,
+    PlatformSendOutcome, PlatformSendQuote, PlatformShieldQuote, RecipientProblem,
 };
 pub use profile::{
     AvatarCandidate, AvatarChange, AvatarImage, AvatarSize, AvatarSource, CropRect, Profile,
