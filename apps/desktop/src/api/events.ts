@@ -17,7 +17,6 @@ import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
 import { HeldNews } from "../payments/heldNews";
 import { announceReceived, forgetReceived, LOOKUP_TIMEOUT_MS, sealReceived } from "../payments/received";
-import { forgetKeptCreate } from "../screens/masternodes/keptCreate";
 import { onMoveSettled } from "../platform/move";
 import { onRecoverySettled } from "../recovery/model";
 import { onShieldedSettled } from "../shielded/flow";
@@ -213,13 +212,13 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
     if (event.kind === "walletRemoved") {
       heldNews.drop(event.walletId);
       forgetReceived(event.walletId);
-      forgetKeptCreate(event.walletId);
+      // Its Mine rows, votes and proposal previews go with it, not when the cache would let them.
+      client.removeQueries({ queryKey: keys.governanceAll, predicate: (q) => q.queryKey.includes(event.walletId) });
     }
     if (event.kind === "sessionOpened" || event.kind === "sessionClosed" || (event.kind === "vaultLockState" && event.state === "noVault")) {
       heldNews.clear();
       forgetReceived();
     }
-    if (event.kind === "vaultLockState" && event.state === "noVault") forgetKeptCreate();
     // A notice's detail can name a wallet or an asset lock: not while locked.
     if (event.kind === "notice") console.warn("engine notice", event.code, ...(walletGateClosed() ? [] : [event.detail]));
     // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides

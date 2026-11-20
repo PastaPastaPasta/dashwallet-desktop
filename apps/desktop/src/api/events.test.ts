@@ -16,7 +16,6 @@ import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { mnKeys } from "../masternodes/queries";
 import { lockGeneration, lockUnconfirmed, resetWalletGate, seedLockStatus, walletGateClosed } from "./lockGate";
-import { beginCreate, keepsAnything, resetKeptCreate } from "../screens/masternodes/keptCreate";
 import { keys } from "./queries";
 import { IpcBackend } from "./tauri";
 
@@ -383,7 +382,7 @@ describe("event bridge", () => {
     resetReceived();
   });
 
-  it("forgets a removed wallet's proposal attempts, every wallet's when the vault goes, and ends a confirmation with the bridge", async () => {
+  it("ends a confirmation with the bridge", async () => {
     const client = new QueryClient();
     seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
     let emit: (e: AppEvent) => void = () => undefined;
@@ -393,12 +392,6 @@ describe("event bridge", () => {
       lockStatus: () => (statusReads++, new Promise(() => undefined)),
     } as unknown as Backend;
     const stop = await bridged(fake, client, "testnet");
-    const print = { name: "p", url: "https://example.org", paymentAddress: "y", paymentAmount: 1, paymentCount: 1, startEpoch: 0, endEpoch: 100 };
-    for (const w of ["w1", "w2", "w3"]) expect((await beginCreate(w, print, async () => [])).kind).toBe("go");
-    emit({ kind: "walletRemoved", network: "testnet", walletId: "w1" } as AppEvent);
-    expect([keepsAnything("w1"), keepsAnything("w2"), keepsAnything("w3")]).toEqual([false, true, true]);
-    emit({ kind: "vaultLockState", network: "testnet", state: "noVault" } as AppEvent);
-    expect([keepsAnything("w2"), keepsAnything("w3")]).toEqual([false, false]);
     vi.useFakeTimers();
     try {
       emit({ kind: "eventsOverflowed", network: "testnet" } as AppEvent);
@@ -409,11 +402,10 @@ describe("event bridge", () => {
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
-      resetKeptCreate();
     }
   });
 
-  it("drops the payments held for a removed wallet, and all of them on a network switch", async () => {
+  it("drops the payments held for a removed wallet and its governance reads, and all the payments on a network switch", async () => {
     resetReceived();
     const client = new QueryClient();
     seedLockStatus(client, LOCK, lockGeneration());
@@ -427,7 +419,11 @@ describe("event bridge", () => {
     const paid = (walletId: string, txid: string) => emit({ kind: "newTransactions", network: "testnet", walletId, txids: [txid], catchUp: false } as AppEvent);
     paid("w", "a");
     paid("v", "b");
+    client.setQueryData([...keys.governanceAll, "mine", "v"], [{ name: "p" }]);
+    client.setQueryData([...keys.governanceAll, "mine", "w"], [{ name: "q" }]);
     emit({ kind: "walletRemoved", network: "testnet", walletId: "v" } as AppEvent);
+    expect(client.getQueryData([...keys.governanceAll, "mine", "v"])).toBeUndefined();
+    expect(client.getQueryData([...keys.governanceAll, "mine", "w"])).toEqual([{ name: "q" }]);
     seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
     await new Promise((r) => setTimeout(r, 0));
     expect(asked).toEqual([["w", ["a"]]]);

@@ -310,6 +310,24 @@ describe("the lock gate", () => {
     stop();
   });
 
+  it("5: a lock state change between a status read's acceptance and the query's write opens nothing, and a read begun since does", async () => {
+    resetWalletGate(true);
+    const client = new QueryClient();
+    const stop = followLockStatus(client);
+    let reads = 0;
+    const read = async () => (reads++, STATUS);
+    // freshLockStatus accepts the reply in its generation; the engine's event lands before the query writes it.
+    await client.fetchQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(read).then((s) => (lockStateChanged(), s)) });
+    expect(reads).toBe(1);
+    expect(client.getQueryData<LockStatus>(keys.lockStatus)?.state).toBe("unlocked");
+    expect(walletGateClosed()).toBe(true);
+    expect(client.getQueryState(keys.lockStatus)?.isInvalidated).toBe(true);
+    await client.fetchQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(read) });
+    expect(reads).toBe(2);
+    expect(walletGateClosed()).toBe(false);
+    stop();
+  });
+
   it(
     "9: a newer loss during a read is answered by a read begun after it, never two at once",
     withTimers(async () => {

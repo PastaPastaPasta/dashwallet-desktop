@@ -377,40 +377,19 @@ test("create: a call that fails after the fee went out never offers Pay again; M
   expect(await createCalls(page)).toBe(1);
 });
 
-test("create: Pay pays nothing while Mine can't be read", async ({ page }) => {
-  await open(page, "governance");
-  await toReview(page);
-  await page.evaluate(() => window.__dwFixture!.fail("governance_my_proposals", "none"));
-  await page.getByTestId("create-passphrase").fill("demo");
-  await page.getByTestId("create-pay").click();
-  await expect(page.getByTestId("create-error")).toContainText("Couldn't read Mine, so nothing was paid");
-  expect(await createCalls(page)).toBe(0);
-  await page.evaluate(() => window.__dwFixture!.fail("governance_my_proposals", null));
-  await page.getByTestId("create-passphrase").fill("demo");
-  await page.getByTestId("create-pay").click();
-  await expect(page.getByTestId("create-sheet")).toBeHidden();
-  expect(await createCalls(page)).toBe(1);
-});
-
 test("create: a failed call whose proposal Mine can't read keeps Pay off until Mine answers (D34)", async ({ page }) => {
   await open(page, "governance");
-  await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "none"));
+  await page.evaluate(() => (window.__dwFixture!.world.governance.createFailsAfterPaying = true));
   await toReview(page);
-  await page.getByTestId("create-passphrase").fill("demo");
-  // Mine answers the read before Pay, and not the one after the call fails.
-  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("governance_create_proposal"));
-  await page.getByTestId("create-pay").click();
-  await expect.poll(() => createCalls(page)).toBe(1);
   await page.evaluate(() => window.__dwFixture!.fail("governance_my_proposals", "none"));
-  await release.evaluate((r) => r());
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
   await expect(page.getByTestId("create-unknown")).toBeVisible();
   await expect(page.getByTestId("create-pay")).toBeDisabled();
   await page.evaluate(() => window.__dwFixture!.fail("governance_my_proposals", null));
   await page.getByTestId("create-check-again").click();
-  // Mine has no such proposal: Pay comes back, saying the fee may have gone out.
-  await expect(page.getByTestId("create-prior-fee")).toBeVisible();
-  await expect(page.getByTestId("create-unknown")).toHaveCount(0);
-  await expect(page.getByTestId("create-already-made")).toHaveCount(0);
+  await expect(page.getByTestId("create-already-made")).toBeVisible();
+  await expect(page.getByTestId("create-pay")).toBeDisabled();
 });
 
 test("create: a failed payment keeps the review open and says why", async ({ page }) => {
@@ -426,10 +405,9 @@ test("create: a failed payment keeps the review open and says why", async ({ pag
   await page.getByTestId("create-pay").click();
   await expect(page.getByTestId("create-error")).not.toBeEmpty();
   await expect(page.getByTestId("create-step-3")).toBeVisible();
-  // Mine has no such proposal, so Pay comes back (D34), saying a fee may have gone out.
+  // Mine has no such proposal: nothing was paid, so Pay comes back (D34).
   await expect(page.getByTestId("create-pay")).toBeEnabled();
   await expect(page.getByTestId("create-already-made")).toHaveCount(0);
-  await expect(page.getByTestId("create-prior-fee")).toContainText("An earlier payment for desktop-translations may have paid its fee");
 });
 
 test("Governance numbers and the status bar's voting item", async ({ page }) => {
