@@ -571,7 +571,7 @@ impl crate::NetworkSession {
                     let start = match from {
                         RescanFrom::WalletBirth => None,
                         RescanFrom::Genesis => Some(0),
-                        RescanFrom::Height(h) => Some(h),
+                        RescanFrom::Height(h) => Some(h.saturating_sub(1)),
                     };
                     let birth = crate::keys::birth_checkpoint(&manager, *id).await;
                     this.note_narrow_from(*id, start, Some(birth)).await;

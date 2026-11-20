@@ -2038,8 +2038,9 @@ fn a_wallet_opened_unloaded_and_quit_mid_load_is_replayed_at_the_next_load() {
     );
 }
 
-/// A rescan that cannot widen a wallet's pools leaves it a marker from the
-/// rescan's start, so the next load widens and replays from there.
+/// A rescan from block 500 that cannot widen a wallet's pools leaves it a
+/// marker at checkpoint 499, the one the rescan rewinds to, so the next
+/// load widens and replays block 500 too.
 #[test]
 fn a_rescan_that_cannot_widen_a_wallet_marks_it_for_the_next_load() {
     let dir = tempfile::tempdir().unwrap();
@@ -2049,10 +2050,11 @@ fn a_rescan_that_cannot_widen_a_wallet_marks_it_for_the_next_load() {
         .block_on(session.create_wallet(12))
         .unwrap()
         .wallet_id;
+    store_checkpoint(&engine, &session, w, HEIGHT);
     start_offline_spv(&engine, &session);
     crate::keys::FAIL_WIDEN.lock().unwrap().push(w.0);
 
-    let rescanned = engine.block_on(session.rescan(crate::RescanFrom::Height(0)));
+    let rescanned = engine.block_on(session.rescan(crate::RescanFrom::Height(500)));
 
     crate::keys::FAIL_WIDEN
         .lock()
@@ -2061,7 +2063,7 @@ fn a_rescan_that_cannot_widen_a_wallet_marks_it_for_the_next_load() {
     rescanned.unwrap();
     assert_eq!(
         wide_scan(&engine, &session, w),
-        Some(crate::keys::WideScan::From(0))
+        Some(crate::keys::WideScan::From(499))
     );
 }
 
