@@ -1,0 +1,12 @@
+# OnFailure= of dw-dashpay-nightly.service: runs the site's notifier (DW_DP_NOTIFY, from the same
+# environment file) with the nightly unit's result and exit status and its artifact directory,
+# never test output. Install steps and the required test start: dw-dashpay-nightly.service.
+[Unit]
+Description=Notify that the dashwallet-desktop DashPay nightly failed
+
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/dashwallet-desktop/dashpay-nightly.env
+UMask=0077
+LimitCORE=0
+ExecStart=%h/.local/libexec/dashwallet-desktop/dashpay-nightly-notify.sh dw-dashpay-nightly.service
