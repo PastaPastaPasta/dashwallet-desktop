@@ -19,6 +19,18 @@ use crate::{EngineError, EngineEvent, NetworkSession, WalletBalances, WalletId};
 pub(crate) static FAIL_DELETE_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Tests: the next wallet removal of a session on one of these data
+/// directories fails its app-database transaction, after its store is gone.
+#[cfg(test)]
+pub(crate) static FAIL_LISTING_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Tests: the load-on-startup write after a failed removal transaction
+/// fails too.
+#[cfg(test)]
+pub(crate) static FAIL_LISTING_RETRY_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// Longest wallet name, in characters, after trimming.
 pub const MAX_WALLET_NAME: usize = 64;
 
@@ -227,7 +239,9 @@ impl NetworkSession {
     /// of the app database when the wallet was recorded as removed.
     /// The load-on-startup list loses the wallet in the transaction that
     /// deletes its app metadata; when nothing else would be on it, the first
-    /// open wallet (the one the app shows next) is put on it.
+    /// open wallet (the one the app shows next) is put on it. If that
+    /// transaction fails, the list is stored on its own, and kept in memory
+    /// even if that fails too (logged).
     /// `WalletRemoved` is
     /// sent once the wallet's rows are gone. The removal holds the wallet's
     /// barrier throughout, so a lease begun meanwhile finds no wallet.
@@ -297,6 +311,8 @@ impl NetworkSession {
             let pause = crate::coins::held_appdb_job();
             #[cfg(test)]
             let fail_delete = crate::keys::take_test_failure(&FAIL_DELETE_IN, this.data_dir());
+            #[cfg(test)]
+            let fail_listing = crate::keys::take_test_failure(&FAIL_LISTING_IN, this.data_dir());
             let deleted = tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
                 #[cfg(test)]
                 if let Some(pause) = pause {
@@ -307,11 +323,18 @@ impl NetworkSession {
                     return Err(EngineError::Storage("test: wallet delete failed".into()));
                 }
                 persister.delete_wallet(id.0)?;
+                #[cfg(test)]
+                if fail_listing {
+                    return Err(EngineError::Storage("test: app rows delete failed".into()));
+                }
                 crate::multiwallet::delete_wallet_listing(&appdb, id, stored.as_ref())
                     .map_err(|e| EngineError::Storage(e.to_string()))
             })
             .await;
-            if let (Some(list), Ok(Ok(()))) = (startup, &deleted) {
+            if let Some(list) = startup {
+                if !matches!(deleted, Ok(Ok(()))) {
+                    this.store_startup_list(&live, &list).await;
+                }
                 *this.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list);
             }
             // The wallet has left the manager: a journal write begun before

@@ -253,6 +253,35 @@ fn removing_the_only_listed_wallet_lists_the_next_open_one() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// #113: removing the last wallet while no list was ever stored stores
+/// "nothing to load": the next wallet added is the only one listed.
+#[test]
+fn removing_the_last_wallet_with_no_list_stores_nothing_to_load() {
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path().join("data");
+    let engine = new_engine(&root, Arc::default(), Arc::new(MemoryOsStore::new()));
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let a = import(&engine, &s, ABANDON_12);
+    let b = import(&engine, &s, LEGAL_12);
+    remove(&engine, &s, a);
+    assert_eq!(on_startup(&s), vec![(b, true)]);
+    remove(&engine, &s, b);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    assert_eq!(stored_list(&root).as_deref(), Some("none"));
+
+    let s = open(&engine);
+    let c = import(&engine, &s, ZOO_12);
+    assert_eq!(on_startup(&s), vec![(c, true)]);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    assert_eq!(stored_list(&root), Some(c.to_string()));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// #113: removing a listed wallet while another stays listed lists no
 /// other wallet.
 #[test]
@@ -291,7 +320,11 @@ fn a_list_naming_no_wallet_opens_every_one_and_is_repaired() {
     let b = import(&engine, &s, LEGAL_12);
     let mut every = [a.to_string(), b.to_string()];
     every.sort();
-    for stale in [WalletId([9; 32]).to_string(), "none".to_string()] {
+    for stale in [
+        WalletId([9; 32]).to_string(),
+        "none".to_string(),
+        String::new(),
+    ] {
         engine
             .block_on(engine.close_network(DashNetwork::Regtest))
             .unwrap();
@@ -315,8 +348,8 @@ fn a_list_naming_no_wallet_opens_every_one_and_is_repaired() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// #87: an empty list an earlier build stored still means no list: every
-/// wallet opens and every one is listed.
+/// #87, #113: an empty list an earlier build stored opens every wallet, and
+/// is stored again with every wallet on it.
 #[test]
 fn an_empty_list_from_an_earlier_build_loads_every_wallet() {
     let dir = dw_testutil::private_tempdir();
@@ -338,6 +371,12 @@ fn an_empty_list_from_an_earlier_build_loads_every_wallet() {
     let s = open(&engine);
     assert_eq!(loaded_ids(&s), vec![a, b]);
     assert_eq!(on_startup(&s), vec![(a, true), (b, true)]);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    let mut every = [a.to_string(), b.to_string()];
+    every.sort();
+    assert_eq!(stored_list(&root), Some(every.join(",")));
     engine.block_on(engine.shutdown()).unwrap();
 }
 

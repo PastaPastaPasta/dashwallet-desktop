@@ -39,8 +39,9 @@ use crate::{DashNetwork, EngineError, EngineEvent, NetworkSession, WalletId};
 
 /// Global setting: dash-qt's load-on-startup list, comma-separated ids.
 const STARTUP_LIST_KEY: &str = "load_on_startup";
-/// The stored list that loads no wallet. An empty or absent value is no
-/// list (every wallet loads), as earlier builds stored an emptied list.
+/// The stored list that loads no wallet. An absent value is no list (every
+/// wallet loads); an empty one, as earlier builds stored an emptied list,
+/// loads no wallet, so a start with wallets repairs it.
 const NOTHING_ON_STARTUP: &str = "none";
 /// Wallet-scope setting: the account xpub a watch-only wallet came from.
 const WATCH_ONLY_XPUB_KEY: &str = "watch_only_xpub";
@@ -83,21 +84,23 @@ pub struct NetworkDataInfo {
     pub has_os_store_key: bool,
 }
 
-/// The stored load-on-startup list; `None` when absent or empty, an empty
-/// list when [`NOTHING_ON_STARTUP`].
+/// The stored load-on-startup list; `None` when absent (no list yet). An
+/// empty value (an earlier build's emptied list) or [`NOTHING_ON_STARTUP`]
+/// is an empty list, which a start with wallets repairs.
 pub(crate) fn read_startup_list(db: &AppDb) -> Result<Option<BTreeSet<WalletId>>, EngineError> {
-    let value = db.setting(GLOBAL_SCOPE, STARTUP_LIST_KEY)?;
-    if value.as_deref() == Some(NOTHING_ON_STARTUP) {
+    let Some(value) = db.setting(GLOBAL_SCOPE, STARTUP_LIST_KEY)? else {
+        return Ok(None);
+    };
+    if value == NOTHING_ON_STARTUP {
         return Ok(Some(BTreeSet::new()));
     }
-    let list: BTreeSet<WalletId> = value
-        .as_deref()
-        .unwrap_or("")
-        .split(',')
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse().ok())
-        .collect();
-    Ok((!list.is_empty()).then_some(list))
+    Ok(Some(
+        value
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| s.parse().ok())
+            .collect(),
+    ))
 }
 
 fn startup_list_value(list: &BTreeSet<WalletId>) -> String {
@@ -483,20 +486,21 @@ impl NetworkSession {
         .await
     }
 
-    /// The load-on-startup list once `removed` is gone, when there is one:
-    /// without it and wallets that no longer exist, and with the first open
-    /// wallet in `wallet_infos` order (the one the app shows next) when
-    /// nothing else would be on it.
+    /// The load-on-startup list once `removed` is gone: without it and
+    /// wallets that no longer exist, and with the first open wallet in
+    /// `wallet_infos` order (the one the app shows next) when nothing else
+    /// would be on it. With no list yet, `None` while a wallet remains, and
+    /// "nothing to load" once none does.
     pub(crate) fn startup_list_after_removal(
         &self,
         live: &crate::session::Live,
         removed: WalletId,
     ) -> Option<BTreeSet<WalletId>> {
-        let mut list = self
+        let cached = self
             .startup_list
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clone()?;
+            .clone();
         let mut open: Vec<WalletId> = (live.manager.list_wallet_ids_blocking().into_iter())
             .map(WalletId)
             .filter(|w| *w != removed)
@@ -505,6 +509,9 @@ impl NetworkSession {
         open.sort_by_key(|w| (order(w).is_none(), order(w), *w));
         let mut closed: Vec<WalletId> = live.store.unloaded().into_iter().map(WalletId).collect();
         closed.sort();
+        let Some(mut list) = cached else {
+            return (open.is_empty() && closed.is_empty()).then(BTreeSet::new);
+        };
         list.retain(|w| *w != removed && (open.contains(w) || closed.contains(w)));
         if list.is_empty()
             && let Some(next) = open.first().or(closed.first())
@@ -512,6 +519,34 @@ impl NetworkSession {
             list.insert(*next);
         }
         Some(list)
+    }
+
+    /// Stores `list` as the load-on-startup list on its own; a failure is
+    /// logged only.
+    pub(crate) async fn store_startup_list(
+        &self,
+        live: &crate::session::Live,
+        list: &BTreeSet<WalletId>,
+    ) {
+        let (appdb, stored) = (Arc::clone(&live.appdb), list.clone());
+        #[cfg(test)]
+        let fail =
+            crate::keys::take_test_failure(&crate::wallets::FAIL_LISTING_RETRY_IN, self.data_dir());
+        let written = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if fail {
+                return Err(AppDbError::Corrupt(
+                    "test: load-on-startup write failed".into(),
+                ));
+            }
+            write_startup_list(&appdb, &stored)
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|w| w.map_err(|e| e.to_string()));
+        if let Err(e) = written {
+            tracing::warn!(error = %e, "could not store the load-on-startup list");
+        }
     }
 
     /// Puts a wallet registered here on the load-on-startup list (`listed`),
