@@ -13,6 +13,7 @@
 //! wake and before the next tick is refused too. The vault also compares
 //! its own clocks at the next grant.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use tauri::{AppHandle, Manager, Runtime};
@@ -23,13 +24,35 @@ const TICK: Duration = Duration::from_secs(1);
 /// Larger than a normal scheduling delay, smaller than a nap.
 const GAP: Duration = Duration::from_secs(2);
 
+/// The desktop app runs this watcher: every vault it opens then needs
+/// the watcher's beats before its window admits a payment
+/// ([`require_beats`]).
+static WATCHED: AtomicBool = AtomicBool::new(false);
+
 /// Starts the backstop, and on Linux the logind listener. A bus that is
-/// not there does not stop the process.
+/// not there does not stop the process. From here every vault the app
+/// opens needs the watcher's beats, so if the watcher cannot start the
+/// signing window admits nothing and every payment asks.
 pub fn install<R: Runtime>(app: &AppHandle<R>) {
+    WATCHED.store(true, Ordering::SeqCst);
     let app = app.clone();
-    let _ = std::thread::Builder::new()
+    if let Err(e) = std::thread::Builder::new()
         .name("signing-window-sleep".into())
-        .spawn(move || watch(app));
+        .spawn(move || watch(app))
+    {
+        eprintln!(
+            "dw-app: the sleep watcher did not start ({e}); every payment asks for the passphrase"
+        );
+    }
+}
+
+/// Makes `session`'s vault need the watcher's beats when this process runs
+/// the watcher. Called for every session the app opens, before commands
+/// can reach it.
+pub(crate) fn require_beats(session: &dw_engine::NetworkSession) {
+    if WATCHED.load(Ordering::SeqCst) {
+        session.vault().require_signing_window_heartbeat();
+    }
 }
 
 fn watch<R: Runtime>(app: AppHandle<R>) {
