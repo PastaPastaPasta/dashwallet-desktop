@@ -69,6 +69,7 @@ import type { FilePurpose } from "./FilePurpose";
 import type { FinishReport } from "./FinishReport";
 import type { FlowKindName } from "./FlowKindName";
 import type { FoundIdentity } from "./FoundIdentity";
+import type { FundAmount } from "./FundAmount";
 import type { GovernanceClock } from "./GovernanceClock";
 import type { GovernanceInfo } from "./GovernanceInfo";
 import type { GovernanceSyncState } from "./GovernanceSyncState";
@@ -267,7 +268,8 @@ export function uiSettings(): Promise<UiSettings> {
 
 /**
  * Checks and saves the display settings (decimal digits 2-8, auto lock
- * 1 s to 24 hours; `invalid_argument` otherwise), and gives the main
+ * 1 s to 24 hours, a BCP 47 language tag; `invalid_argument`
+ * otherwise), and gives the main
  * window the chosen appearance unless `--theme` forced one (U-04 D3).
  */
 export function setUiSettings(settings: UiSettings): Promise<UiSettings> {
@@ -1873,19 +1875,19 @@ export function platformSend(walletId: string, operation: string, grant: string)
 }
 
 /**
- * What adding `duffs` of the Core balance to the wallet's Platform
+ * What adding `amount` of the Core balance to the wallet's Platform
  * address costs and adds.
  */
-export function platformFundQuote(walletId: string, duffs: number): Promise<PlatformFundQuote> {
-  return invoke<PlatformFundQuote>("platform_fund_quote", { walletId, duffs });
+export function platformFundQuote(walletId: string, amount: FundAmount): Promise<PlatformFundQuote> {
+  return invoke<PlatformFundQuote>("platform_fund_quote", { walletId, amount });
 }
 
 /**
- * "Add from Dash wallet": adds `duffs` of the Core balance to the
+ * "Add from Dash wallet": adds `amount` of the Core balance to the
  * wallet's Platform address under `grant`.
  */
-export function platformFund(walletId: string, duffs: number, grant: string): Promise<PlatformFundOutcome> {
-  return invoke<PlatformFundOutcome>("platform_fund", { walletId, duffs, grant });
+export function platformFund(walletId: string, amount: FundAmount, grant: string): Promise<PlatformFundOutcome> {
+  return invoke<PlatformFundOutcome>("platform_fund", { walletId, amount, grant });
 }
 
 /**
@@ -2064,18 +2066,19 @@ export function shieldedReceiveAddress(walletId: string): Promise<ShieldedAddres
 }
 
 /**
- * What moving `duffs` of the Core balance into the pool costs and buys.
+ * What moving `amount` of the Core balance into the pool costs and
+ * buys.
  */
-export function shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote> {
-  return invoke<ShieldQuote>("shield_quote", { walletId, duffs });
+export function shieldQuote(walletId: string, amount: FundAmount): Promise<ShieldQuote> {
+  return invoke<ShieldQuote>("shield_quote", { walletId, amount });
 }
 
 /**
- * Core → Shielded: moves `duffs` of the Core balance into the pool
+ * Core → Shielded: moves `amount` of the Core balance into the pool
  * under `grant`.
  */
-export function shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome> {
-  return invoke<ShieldOutcome>("shield_from_core", { walletId, duffs, grant });
+export function shieldFromCore(walletId: string, amount: FundAmount, grant: string): Promise<ShieldOutcome> {
+  return invoke<ShieldOutcome>("shield_from_core", { walletId, amount, grant });
 }
 
 /**
@@ -3102,8 +3105,8 @@ export type CommandArgs = {
   platform_receive_address: { walletId: string };
   platform_send_quote: { walletId: string; to: string; amount: WithdrawAmount; retryOf: string | null };
   platform_send: { walletId: string; operation: string; grant: string };
-  platform_fund_quote: { walletId: string; duffs: number };
-  platform_fund: { walletId: string; duffs: number; grant: string };
+  platform_fund_quote: { walletId: string; amount: FundAmount };
+  platform_fund: { walletId: string; amount: FundAmount; grant: string };
   pending_platform_funds: { walletId: string };
   resume_platform_fund: { walletId: string; txid: string; grant: string };
   grant_request: { walletId: string; identity: string; action: GrantAction };
@@ -3126,8 +3129,8 @@ export type CommandArgs = {
   shielded_status: { walletId: string };
   shielded_sync: { walletId: string };
   shielded_receive_address: { walletId: string };
-  shield_quote: { walletId: string; duffs: number };
-  shield_from_core: { walletId: string; duffs: number; grant: string };
+  shield_quote: { walletId: string; amount: FundAmount };
+  shield_from_core: { walletId: string; amount: FundAmount; grant: string };
   shield_mixed_quote: { walletId: string };
   stuck_shield_fundings: { walletId: string };
   shield_mixed_coins: { walletId: string; grant: string };
@@ -4127,6 +4130,9 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "credits.quote_changed",
   "credits.fund_pending",
   "credits.too_many_inputs",
+  "credits.coins_changed",
+  "credits.mixing_active",
+  "credits.move_running",
   "shielded.not_active",
   "shielded.not_synced",
   "shielded.invalid_address",

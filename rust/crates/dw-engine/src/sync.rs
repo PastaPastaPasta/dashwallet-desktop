@@ -315,6 +315,15 @@ impl SyncTracker {
         self.readings.headers.map(|h| h.current).filter(|h| *h > 0)
     }
 
+    /// The network's best height as dash-spv knows it: the peers' best
+    /// header, or the stored tip when that is higher.
+    pub(crate) fn network_tip(&self) -> Option<u32> {
+        self.readings
+            .headers
+            .map(|h| h.current.max(h.target))
+            .filter(|h| *h > 0)
+    }
+
     pub(crate) fn chainlock_height(&self) -> Option<u32> {
         self.readings.chainlock_height
     }
@@ -342,6 +351,19 @@ impl SyncTracker {
             target: height,
         });
         self.readings.overall = SyncState::Synced;
+        self.running = true;
+    }
+
+    /// Headers at `current` of the peers' `target`, still syncing, as a
+    /// progress report during catch-up would say (tests only).
+    #[cfg(test)]
+    pub(crate) fn set_headers_syncing(&mut self, current: u32, target: u32) {
+        self.readings.headers = Some(PhaseReading {
+            state: SyncState::Syncing,
+            current,
+            target,
+        });
+        self.readings.overall = SyncState::Syncing;
         self.running = true;
     }
 

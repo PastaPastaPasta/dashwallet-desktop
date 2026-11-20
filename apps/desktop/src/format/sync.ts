@@ -1,4 +1,5 @@
 import type { SyncStatus } from "../api/generated/SyncStatus";
+import { t } from "../i18n";
 
 /** Overall sync progress, 0–100, as the mean of the phases that report a target. `null`
  * before any phase reports one. Raw: the engine does not damp, and neither does this. */
@@ -67,7 +68,7 @@ export const isSyncing = (s: SyncStatus) => s.running && !s.caughtUp;
 /** The status bar's state text (dash-qt strings). The percentage is not part of it: a live
  * region that changed with every percent would make screen readers repeat it. */
 export function syncState(s: SyncStatus | undefined): string {
-  if (!s) return "Connecting…";
-  if (!s.running) return "Not syncing";
-  return s.caughtUp ? "Up to date" : "Synchronizing with network…";
+  if (!s) return t("shell.status.connecting");
+  if (!s.running) return t("shell.status.notSyncing");
+  return s.caughtUp ? t("shell.status.upToDate") : t("shell.status.synchronizing");
 }

@@ -946,7 +946,11 @@ fn credits_params(e: &CreditsError) -> Value {
             json!({"needed": needed, "available": available})
         }
         CreditsError::BelowMinimum { min } => json!({"min": min}),
-        CreditsError::CoinsLocked | CreditsError::QuoteChanged => json!({}),
+        CreditsError::CoinsLocked
+        | CreditsError::QuoteChanged
+        | CreditsError::CoinsChanged
+        | CreditsError::MixingActive
+        | CreditsError::MoveRunning => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
         CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
@@ -1740,12 +1744,13 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
         ShieldedCmd::Sync => out(ctx.block_on(dp.shielded_sync())?),
         ShieldedCmd::Address => out(ctx.block_on(dp.shielded_receive_address())?),
         ShieldedCmd::Shield { duffs, quote_only } => {
-            let quote = ctx.block_on(dp.shield_quote(duffs))?;
+            let amount = dw_engine::platform::FundAmount::Duffs { duffs };
+            let quote = ctx.block_on(dp.shield_quote(amount))?;
             if quote_only {
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.shield_from_core(duffs, grant))?;
+            let outcome = ctx.block_on(dp.shield_from_core(amount, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         ShieldedCmd::ShieldResume { txid } => {
