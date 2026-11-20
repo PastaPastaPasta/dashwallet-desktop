@@ -7,32 +7,32 @@ import type { LockStatus } from "../api/generated/LockStatus";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { navigate, ui, useUi, type Route } from "../app/ui";
+import { useBackend } from "../api/queries";
+import { navigate, switchWallet, ui, useUi, type Route } from "../app/ui";
 import { namesState, type NamesState } from "../dashpay/status";
+import { useT, type Translate } from "../i18n";
 import { ExperimentalBadge } from "./basics";
 import { isSyncing, syncPercent, syncState } from "../format/sync";
 import { Avatar } from "../screens/contacts/Avatar";
 
 interface SidebarItem {
   route: Route;
-  title: string;
   /** 18 pt outline glyph in currentColor; macOS uses SF Symbols here (UX-SPEC §2.7). */
   icon: ReactNode;
 }
 
-const HOME: SidebarItem = { route: "home", title: "Home", icon: <path d="M3 9.5 10 3.5l7 6V17a1 1 0 0 1-1 1h-4v-5H8v5H4a1 1 0 0 1-1-1V9.5Z" /> };
-const PAY: SidebarItem = { route: "pay", title: "Pay", icon: <path d="M5 15 15 5M8 5h7v7" /> };
-const RECEIVE: SidebarItem = { route: "receive", title: "Receive", icon: <path d="M15 5 5 15m7 0H5V8" /> };
+const HOME: SidebarItem = { route: "home", icon: <path d="M3 9.5 10 3.5l7 6V17a1 1 0 0 1-1 1h-4v-5H8v5H4a1 1 0 0 1-1-1V9.5Z" /> };
+const PAY: SidebarItem = { route: "pay", icon: <path d="M5 15 15 5M8 5h7v7" /> };
+const RECEIVE: SidebarItem = { route: "receive", icon: <path d="M15 5 5 15m7 0H5V8" /> };
 const CONTACTS_ICON = (
   <>
     <circle cx="10" cy="7" r="3" />
     <path d="M4 17c.6-3 3-4.5 6-4.5s5.4 1.5 6 4.5" />
   </>
 );
-const ACTIVITY: SidebarItem = { route: "activity", title: "Activity", icon: <path d="M3 5h2m3 0h9M3 10h2m3 0h9M3 15h2m3 0h9" /> };
+const ACTIVITY: SidebarItem = { route: "activity", icon: <path d="M3 5h2m3 0h9M3 10h2m3 0h9M3 15h2m3 0h9" /> };
 const COINJOIN: SidebarItem = {
   route: "coinJoin",
-  title: "CoinJoin",
   icon: (
     <>
       <circle cx="7.5" cy="10" r="4.5" />
@@ -44,7 +44,6 @@ const COINJOIN: SidebarItem = {
 /** Masternodes, last, when the wallet has something to do with them (MG-00 D1, MG-09 D3). */
 const MASTERNODES: SidebarItem = {
   route: "masternodes",
-  title: "Masternodes",
   icon: (
     <>
       <rect x="3" y="3.5" width="14" height="5" rx="1" />
@@ -57,7 +56,6 @@ const MASTERNODES: SidebarItem = {
 /** Settings, last and apart: pinned to the foot of the sidebar (DEC-1058 #7). */
 const SETTINGS: SidebarItem = {
   route: "settings",
-  title: "Settings",
   icon: (
     <>
       <circle cx="10" cy="10" r="2.5" />
@@ -70,7 +68,7 @@ const SETTINGS: SidebarItem = {
 /** Sections behind a feature that is off: Explore until its task. CoinJoin
  * shows, as in dash-qt, whose `-enablecoinjoin` is on by default (D-row "sidebar"). */
 const EXPLORE_ENABLED = false;
-const EXPLORE: SidebarItem = { route: "explore", title: "Explore", icon: <path d="M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14Zm3 4-2 4-4 2 2-4 4-2Z" /> };
+const EXPLORE: SidebarItem = { route: "explore", icon: <path d="M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14Zm3 4-2 4-4 2 2-4 4-2Z" /> };
 
 /** The sidebar's Contacts entry is Join DashPay until the wallet has an identity; a contested
  * username still has its identity, so it has Contacts (D11). */
@@ -83,10 +81,9 @@ export function sidebarJoins(status: DashPayStatus | undefined): boolean {
 const badgeText = (n: number) => (n > 99 ? "99+" : String(n));
 
 export function Sidebar({ joined, requests, masternodes }: { joined: boolean; requests: number; masternodes: { shown: boolean; badge: number } }) {
+  const t = useT();
   const route = useUi((s) => s.route);
-  const contacts: SidebarItem = joined
-    ? { route: "contacts", title: "Contacts", icon: CONTACTS_ICON }
-    : { route: "joinDashPay", title: "Join DashPay", icon: CONTACTS_ICON };
+  const contacts: SidebarItem = joined ? { route: "contacts", icon: CONTACTS_ICON } : { route: "joinDashPay", icon: CONTACTS_ICON };
   const items = [HOME, PAY, RECEIVE, contacts, ACTIVITY, COINJOIN, ...(EXPLORE_ENABLED ? [EXPLORE] : []), ...(masternodes.shown ? [MASTERNODES] : [])];
   const badges: Partial<Record<Route, number>> = { contacts: requests, masternodes: masternodes.badge };
   const item = (item: SidebarItem) => {
@@ -106,12 +103,12 @@ export function Sidebar({ joined, requests, masternodes }: { joined: boolean; re
             {item.icon}
           </svg>
           <span className="sidebar-title">
-            {item.title}
+            {t(`routes.${item.route}`)}
             {item.route === "coinJoin" && " "}
             {item.route === "coinJoin" && <ExperimentalBadge testId="sidebar-coinJoin-experimental" />}
           </span>
           {badge !== null && (
-            <span className="sidebar-badge" data-testid={`sidebar-${item.route}-badge`} aria-label={`${badge} waiting`}>
+            <span className="sidebar-badge" data-testid={`sidebar-${item.route}-badge`} aria-label={t("shell.sidebar.waiting", { count: badge })}>
               {badgeText(badge)}
             </span>
           )}
@@ -120,7 +117,7 @@ export function Sidebar({ joined, requests, masternodes }: { joined: boolean; re
     );
   };
   return (
-    <nav className="sidebar" aria-label="Main" data-testid="sidebar">
+    <nav className="sidebar" aria-label={t("shell.sidebar.label")} data-testid="sidebar">
       <ul role="list" className="sidebar-list">
         {items.map(item)}
       </ul>
@@ -188,34 +185,35 @@ export function chipState(
   }
 }
 
-function chipLabel(name: string | null, names: NamesState): string {
+function chipLabel(t: Translate, name: string | null, names: NamesState): string {
   if (name) return `@${name}`;
   switch (names) {
     case "unknown":
-      return "Username not loaded";
+      return t("shell.toolbar.usernameNotLoaded");
     case "none":
-      return "No username";
+      return t("shell.toolbar.noUsername");
     default:
-      return "Updating…";
+      return t("shell.toolbar.updating");
   }
 }
 
-function chipText(chip: Exclude<ChipState, { kind: "identity" } | null>): string {
+function chipText(t: Translate, chip: Exclude<ChipState, { kind: "identity" } | null>): string {
   switch (chip.kind) {
     case "contest":
-      return `@${chip.label} · Pending`;
+      return t("shell.toolbar.contestPending", { name: chip.label });
     case "registering":
-      return chip.label ? `@${chip.label} · Registering` : "Registering…";
+      return chip.label ? t("shell.toolbar.registeringName", { name: chip.label }) : t("shell.toolbar.registering");
   }
 }
 
 function IdentityChip({ chip }: { chip: ChipState }) {
+  const t = useT();
   if (chip === null) return null;
   if (chip.kind !== "identity") {
     return (
       // A contested name's identity has My Profile (DP1-10 D21); a registration shows its progress.
       <button type="button" className="identity-chip" data-testid="toolbar-chip" onClick={() => navigate(chip.kind === "contest" ? "profile" : "joinDashPay")}>
-        {chipText(chip)}
+        {chipText(t, chip)}
       </button>
     );
   }
@@ -225,24 +223,25 @@ function IdentityChip({ chip }: { chip: ChipState }) {
       type="button"
       className="identity-chip"
       data-testid="toolbar-chip"
-      aria-label={name ? `My profile, @${name}` : "My profile"}
+      aria-label={name ? t("shell.toolbar.myProfileNamed", { name }) : t("shell.toolbar.myProfile")}
       onClick={() => navigate("profile")}
     >
       <Avatar letters={(name ?? "?").slice(0, 1).toUpperCase()} size="chip" identity={chip.identity} own />
-      <span>{chipLabel(name, chip.names)}</span>
+      <bdi>{chipLabel(t, name, chip.names)}</bdi>
     </button>
   );
 }
 
 function WalletPicker({ wallets, current }: { wallets: WalletSummary[]; current: WalletSummary | undefined }) {
-  if (wallets.length < 2) return <span className="toolbar-wallet">{current?.name}</span>;
+  const t = useT();
+  if (wallets.length < 2) return <bdi className="toolbar-wallet">{current?.name}</bdi>;
   return (
     <select
       className="toolbar-wallet wallet-picker"
       data-testid="toolbar-wallet-picker"
-      aria-label="Wallet"
+      aria-label={t("shell.toolbar.wallet")}
       value={current?.walletId}
-      onChange={(e) => ui.set({ walletId: e.target.value, detail: null })}
+      onChange={(e) => switchWallet(e.target.value)}
     >
       {wallets.map((w) => (
         <option key={w.walletId} value={w.walletId}>
@@ -276,8 +275,10 @@ export function Toolbar({
   /** Whose bell `bellPanel` is (wallet and identity): another owner closes it (DP2-09 D27). */
   bellOwner?: string;
 }) {
+  const t = useT();
   const discreet = useUi((s) => s.discreet);
-  const bellLabel = unread ? `Notifications, ${unread} unread` : "Notifications";
+  const bellLabel = unread ? t("shell.toolbar.notificationsUnread", { count: unread }) : t("shell.toolbar.notifications");
+  const discreetLabel = discreet ? t("shell.toolbar.showBalance") : t("shell.toolbar.hideBalance");
   // The owner whose bell is open: a switch of wallet (or main identity) while it is open, with the
   // keyboard, closes it rather than opening, and marking read, the next owner's (D27).
   const [openFor, setOpenFor] = useState<string | null>(null);
@@ -323,8 +324,8 @@ export function Toolbar({
           className="toolbar-button"
           data-testid="toolbar-discreet"
           aria-pressed={discreet}
-          aria-label={discreet ? "Show balance" : "Hide balance"}
-          title={discreet ? "Show balance" : "Hide balance"}
+          aria-label={discreetLabel}
+          title={discreetLabel}
           onClick={() => ui.set({ discreet: !discreet })}
         >
           <EyeIcon hidden={discreet} />
@@ -333,8 +334,8 @@ export function Toolbar({
           type="button"
           className="toolbar-button"
           data-testid="toolbar-lock"
-          aria-label="Lock wallet"
-          title="Lock wallet"
+          aria-label={t("shell.toolbar.lockWallet")}
+          title={t("shell.toolbar.lockWallet")}
           disabled={!canLock}
           onClick={onLock}
         >
@@ -344,15 +345,6 @@ export function Toolbar({
     </header>
   );
 }
-
-const LOCK_TEXT: Record<LockStatus["state"], string> = {
-  noVault: "No keys",
-  noKeys: "Watch-only",
-  unencrypted: "Not encrypted",
-  locked: "Locked",
-  unlockedMixingOnly: "Unlocked for mixing only",
-  unlocked: "Unlocked",
-};
 
 export function StatusBar({
   sync,
@@ -371,31 +363,34 @@ export function StatusBar({
   /** Masternodes' voting item (MG-09 D7), before the sync state as in MG-00's frame. */
   governance?: ReactNode;
 }) {
+  const t = useT();
+  const { locale } = useBackend();
   const percent = sync && isSyncing(sync) ? syncPercent(sync) : null;
+  const lockText = lock && t(`shell.status.lock.${lock.state}`);
   return (
     <footer className="status-bar" data-testid="status-bar">
       <span className="status-left">
         <span role="status">{syncState(sync)}</span>
         {percent !== null && (
           <>
-            <span aria-hidden="true">{percent.toFixed(1)}%</span>
-            <progress className="status-progress" max={100} value={percent} aria-label="Sync progress" />
+            <span aria-hidden="true">{new Intl.NumberFormat(locale, { style: "percent", minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(percent / 100)}</span>
+            <progress className="status-progress" max={100} value={percent} aria-label={t("shell.status.syncProgress")} />
           </>
         )}
       </span>
       <span className="status-right">
         <span>{unitName}</span>
-        {hd && <span>HD</span>}
+        {hd && <span>{t("shell.status.hd")}</span>}
         {lock?.state === "unlockedMixingOnly" ? (
-          <button type="button" className="status-button" data-testid="status-unlock" title="Unlock fully" onClick={onUnlock}>
-            {LOCK_TEXT[lock.state]}
+          <button type="button" className="status-button" data-testid="status-unlock" title={t("shell.status.unlockFully")} onClick={onUnlock}>
+            {lockText}
           </button>
         ) : (
-          lock && <span>{LOCK_TEXT[lock.state]}</span>
+          lock && <span>{lockText}</span>
         )}
-        {sync && <span>{sync.connectedPeers === 1 ? "1 peer" : `${sync.connectedPeers} peers`}</span>}
+        {sync && <span>{t("shell.status.peers", { count: sync.connectedPeers })}</span>}
         {governance}
-        {sync && <span>{!sync.running ? "Offline" : sync.caughtUp ? "Synced" : "Syncing"}</span>}
+        {sync && <span>{!sync.running ? t("shell.status.offline") : sync.caughtUp ? t("shell.status.synced") : t("shell.status.syncing")}</span>}
       </span>
     </footer>
   );

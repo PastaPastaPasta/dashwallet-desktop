@@ -129,6 +129,12 @@ export function currencyName(code: string, locale?: string): string {
   }
 }
 
+/** The currency prices start in: the saved one, else the system region's (`Backend.regionLocale`),
+ * never the UI language's. */
+export function firstCurrency(saved: string | null | undefined, regionLocale: string | undefined): string {
+  return saved ?? localeCurrency(regionLocale);
+}
+
 /** The currency a locale's region uses (a proposal for the first choice), or USD. */
 export function localeCurrency(locale: string | undefined): string {
   let region: string | undefined;

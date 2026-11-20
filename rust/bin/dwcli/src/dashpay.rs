@@ -47,7 +47,8 @@ use dw_engine::platform::{
     ShieldedError, WithdrawAmount, check_username,
 };
 use dw_engine::{
-    ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, SendFailure, TASK_PANICKED,
+    ContactRecipient, Engine, EngineError, NetworkSession, PreparedSummary, PreparedTx,
+    SendFailure, TASK_PANICKED,
 };
 use dw_vault::{GrantPurpose, VaultError};
 use serde::Serialize;
@@ -110,6 +111,10 @@ pub enum DashPayCommand {
         note: Option<String>,
         #[arg(long)]
         accept: bool,
+        /// Prepare the payment, then abandon it unsent: the confirm
+        /// sheet's Cancel.
+        #[arg(long, conflicts_with = "accept")]
+        cancel: bool,
     },
     /// The DashPay profile.
     Profile {
@@ -941,7 +946,11 @@ fn credits_params(e: &CreditsError) -> Value {
             json!({"needed": needed, "available": available})
         }
         CreditsError::BelowMinimum { min } => json!({"min": min}),
-        CreditsError::CoinsLocked | CreditsError::QuoteChanged => json!({}),
+        CreditsError::CoinsLocked
+        | CreditsError::QuoteChanged
+        | CreditsError::CoinsChanged
+        | CreditsError::MixingActive
+        | CreditsError::MoveRunning => json!({}),
         CreditsError::TopUpPending { txid } => json!({"txid": txid}),
         CreditsError::WithdrawalOutOfRange { min, max } => json!({"min": min, "max": max}),
         CreditsError::WithdrawalLanded { artifact } => json!({"artifact": artifact}),
@@ -1018,12 +1027,35 @@ impl From<VaultError> for CliError {
     }
 }
 
+/// [`crate::masternodes::send_code`], kept for the process: one string per
+/// `SendFailure` variant.
+fn send_code_of(f: &SendFailure) -> &'static str {
+    static CODES: std::sync::Mutex<std::collections::BTreeSet<&'static str>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let code = crate::masternodes::send_code(f);
+    let mut codes = CODES.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(known) = codes.get(code.as_str()) {
+        return known;
+    }
+    let code: &'static str = Box::leak(code.into_boxed_str());
+    codes.insert(code);
+    code
+}
+
 impl From<EngineError> for CliError {
     fn from(e: EngineError) -> Self {
         match e {
             EngineError::Vault(v) => v.into(),
             EngineError::Contact(c) => c.into(),
             e if e.is_task_panic() => panic_error("an engine task", "the call"),
+            EngineError::Send(f) => {
+                let code = send_code_of(&f);
+                let mut params = json!({"kind": code.trim_start_matches("send.")});
+                if let Some(reason) = crate::pay::send_failure_reason(&f) {
+                    params["reason"] = json!(reason);
+                }
+                Self::new(code, EngineError::Send(f), params)
+            }
             e => Self::new(e.code(), &e, json!({})),
         }
     }
@@ -1348,21 +1380,43 @@ fn injected_fault(point: &str) -> bool {
 /// that cannot start ends it, without a panic.
 #[cfg(debug_assertions)]
 fn wedge_engine(session: &Arc<NetworkSession>) {
-    loop {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let session = Arc::clone(session);
-        let spawned = std::thread::Builder::new().spawn(move || {
-            crate::teardown::wait(session.run_on_engine(async move {
-                let _ = tx.send(());
+    while park_engine_task(session)
+        .is_some_and(|task| task.started.recv_timeout(Duration::from_secs(1)).is_ok())
+    {}
+}
+
+/// An engine task that parks its worker for good: `queued` once the
+/// runtime has it, `started` once a worker runs it.
+#[cfg(debug_assertions)]
+struct Parked {
+    #[cfg_attr(not(test), allow(dead_code))]
+    queued: std::sync::mpsc::Receiver<()>,
+    started: std::sync::mpsc::Receiver<()>,
+}
+
+/// Hands the engine runtime one [`Parked`] task, from a thread that is
+/// left behind. `None` when that thread cannot start.
+#[cfg(debug_assertions)]
+fn park_engine_task(session: &Arc<NetworkSession>) -> Option<Parked> {
+    let (queued_tx, queued) = std::sync::mpsc::channel();
+    let (started_tx, started) = std::sync::mpsc::channel();
+    let session = Arc::clone(session);
+    std::thread::Builder::new()
+        .spawn(move || {
+            let mut task = std::pin::pin!(session.run_on_engine(async move {
+                let _ = started_tx.send(());
                 loop {
                     std::thread::park();
                 }
+            }));
+            crate::teardown::wait(std::future::poll_fn(|cx| {
+                let polled = std::future::Future::poll(task.as_mut(), cx);
+                let _ = queued_tx.send(());
+                polled
             }))
-        });
-        if spawned.is_err() || rx.recv_timeout(Duration::from_secs(1)).is_err() {
-            return;
-        }
-    }
+        })
+        .ok()?;
+    Some(Parked { queued, started })
 }
 
 /// The injected `dashpay status` faults (see [`injected_fault`]).
@@ -1618,6 +1672,7 @@ fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Valu
             subtract_fee,
             note,
             accept,
+            cancel,
             ..
         } => {
             let dp = ctx.dashpay()?;
@@ -1628,7 +1683,7 @@ fn dispatch(ctx: &Ctx, cmd: DashPayCommand, stdin: &mut dyn Read) -> Result<Valu
                 subtract_fee,
                 note,
             };
-            pay_contact(ctx, &dp, recipient, accept)
+            pay_contact(ctx, &dp, recipient, accept, cancel)
         }
         DashPayCommand::Profile { cmd, .. } => profile_cmd(ctx, cmd),
         DashPayCommand::Invite { cmd, .. } => invite_cmd(ctx, cmd, stdin),
@@ -1689,12 +1744,13 @@ fn shielded_cmd(ctx: &Ctx, cmd: ShieldedCmd) -> Result<Value, CliError> {
         ShieldedCmd::Sync => out(ctx.block_on(dp.shielded_sync())?),
         ShieldedCmd::Address => out(ctx.block_on(dp.shielded_receive_address())?),
         ShieldedCmd::Shield { duffs, quote_only } => {
-            let quote = ctx.block_on(dp.shield_quote(duffs))?;
+            let amount = dw_engine::platform::FundAmount::Duffs { duffs };
+            let quote = ctx.block_on(dp.shield_quote(amount))?;
             if quote_only {
                 return Ok(json!({"quote": quote}));
             }
             let grant = ctx.platform_op(&dp, quote.grant)?;
-            let outcome = ctx.block_on(dp.shield_from_core(duffs, grant))?;
+            let outcome = ctx.block_on(dp.shield_from_core(amount, grant))?;
             Ok(json!({"quote": quote, "outcome": outcome}))
         }
         ShieldedCmd::ShieldResume { txid } => {
@@ -2007,6 +2063,17 @@ fn action_grant(
     Ok((json!(request), ctx.platform_op(dp, request)?))
 }
 
+/// A contact payment's broadcast error with its `outcome` and
+/// `prepared_txid`: `not_sent` only when `abandon` succeeds. After a panic
+/// the engine is not entered again (the session's health probe comes
+/// first): the outcome stays `unknown`.
+fn broadcast_failure(mut e: CliError, txid: &str, abandon: impl FnOnce() -> bool) -> CliError {
+    let not_sent = !e.is_panic() && abandon();
+    e.params["outcome"] = json!(if not_sent { "not_sent" } else { "unknown" });
+    e.params["prepared_txid"] = json!(txid);
+    e
+}
+
 /// `pay-contact`. The engine refuses a locked contact itself
 /// (`contact.payment_locked`), so this does not read `payment_lock` first.
 /// The grant caps the amount and the estimated fee (only the amount with
@@ -2016,6 +2083,7 @@ fn pay_contact(
     dp: &DashPay,
     recipient: ContactRecipient,
     accept: bool,
+    cancel: bool,
 ) -> Result<Value, CliError> {
     let (identity, contact) = (recipient.identity.clone(), recipient.contact.clone());
     let (amount, subtract_fee) = (recipient.amount, recipient.subtract_fee);
@@ -2032,8 +2100,18 @@ fn pay_contact(
     if !accept {
         let grant = ctx.grant(dp, spend)?;
         let prepared = ctx.block_on(draft.prepare(grant))?;
-        let outcome = ctx.block_on(draft.broadcast(Arc::clone(&prepared)))?;
-        return Ok(paid(Value::Null, &prepared, &outcome.txid));
+        if cancel {
+            ctx.block_on(draft.abandon(Arc::clone(&prepared)))?;
+            return Ok(cancelled(prepared.summary()));
+        }
+        return match ctx.block_on(draft.broadcast(Arc::clone(&prepared))) {
+            Ok(outcome) => Ok(paid(Value::Null, &prepared, &outcome.txid)),
+            Err(e) => Err(broadcast_failure(
+                CliError::from(e),
+                &prepared.summary().txid,
+                || ctx.block_on(draft.abandon(Arc::clone(&prepared))).is_ok(),
+            )),
+        };
     }
     // "Accept and pay" (DP3-01 D14): one credential for both grants, one
     // lease; the payment's `prepare` refuses until the accept established
@@ -2049,11 +2127,11 @@ fn pay_contact(
         credential(ctx.session, ctx.passphrase),
     )?;
     let grants = grants.into_iter().map(|g| g.id).collect();
-    let lease = ctx.block_on(ctx.session.begin_flow(
-        dp.wallet_id(),
-        FlowKind::AcceptAndPay,
-        grants,
-    ))?;
+    let lease =
+        ctx.block_on(
+            ctx.session
+                .begin_flow(dp.wallet_id(), FlowKind::AcceptAndPay, grants, None),
+        )?;
     let result = ctx
         .block_on(dp.accept_request(identity, contact, lease.clone()))
         .map_err(CliError::from)
@@ -2122,17 +2200,34 @@ fn after_accept(grant: Value, payment: Result<Value, PaymentFailed>) -> Value {
 /// the payment.
 fn paid(grant: Value, prepared: &PreparedTx, txid: &str) -> Value {
     let s = prepared.summary();
-    let address = (s.outputs.iter())
-        .find(|o| !o.is_change)
-        .and_then(|o| o.address.clone());
     json!({
         "grant": grant,
+        "paid": true,
         "txid": txid,
-        "address": address,
+        "address": recipient_address(s),
         "sent": s.total_sent,
         "fee": s.fee,
         "debit": s.total_debit,
     })
+}
+
+/// `pay-contact --cancel`'s result: the payment prepared and abandoned
+/// unsent, with what it would have cost; nothing left the wallet.
+fn cancelled(s: &PreparedSummary) -> Value {
+    json!({
+        "grant": Value::Null,
+        "paid": false,
+        "cancelled": true,
+        "prepared_txid": s.txid,
+        "address": recipient_address(s),
+        "estimated": {"sent": s.total_sent, "fee": s.fee, "debit": s.total_debit},
+    })
+}
+
+fn recipient_address(s: &PreparedSummary) -> Option<String> {
+    (s.outputs.iter())
+        .find(|o| !o.is_change)
+        .and_then(|o| o.address.clone())
 }
 
 /// A write's result: the grant it asked for and the call's outcome.
@@ -2439,7 +2534,9 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
     use dw_engine::platform::{DashPayStatus, Eligibility, UsernameRule};
-    use dw_engine::{DashNetwork, EngineConfig, EngineEvent, EventSink, SessionOptions};
+    use dw_engine::{
+        DashNetwork, EngineConfig, EngineEvent, EventSink, PreparedOutput, SessionOptions,
+    };
     use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 
     use super::*;
@@ -2455,6 +2552,33 @@ mod tests {
         assert_eq!(shielded_params(&e), json!({"reason": "journal"}));
     }
 
+    #[test]
+    fn each_send_failure_has_its_own_code() {
+        let code = |f: SendFailure| CliError::from(EngineError::Send(f)).code;
+        assert_eq!(code(SendFailure::NoPeers), "send.no_peers");
+        assert_eq!(
+            code(SendFailure::BroadcastRejected {
+                reason: "bad-txns".into()
+            }),
+            "send.broadcast_rejected"
+        );
+        assert_eq!(
+            code(SendFailure::BroadcastUnknown {
+                reason: "no verdict".into()
+            }),
+            "send.broadcast_unknown"
+        );
+        assert_eq!(code(SendFailure::Cancelled), "send.cancelled");
+        assert_eq!(code(SendFailure::TxTooLarge), "send.tx_too_large");
+        assert_eq!(
+            code(SendFailure::GrantExceeded {
+                max_duffs: 1,
+                outflow: 2
+            }),
+            "send.grant_exceeded"
+        );
+    }
+
     /// D15 (Sol r1): an accept that went through and a payment that did
     /// not is a partial success, never a plain error.
     #[test]
@@ -2466,7 +2590,7 @@ mod tests {
         assert_eq!(r["accepted"], json!(true));
         assert_eq!(r["paid"], json!(false));
         assert_eq!(r["grant"], grant);
-        assert_eq!(r["payment_error"]["code"], json!("send"));
+        assert_eq!(r["payment_error"]["code"], json!("send.cancelled"));
         assert_eq!(r["payment_error"]["message"], json!(message));
         assert!(r["next"].as_str().unwrap().contains("without --accept"));
 
@@ -2474,6 +2598,7 @@ mod tests {
             reason: "no verdict".into(),
         });
         let r = after_accept(grant.clone(), Err(PaymentFailed::Broadcast(unknown)));
+        assert_eq!(r["payment_error"]["code"], json!("send.broadcast_unknown"));
         assert_eq!(r["paid"], json!(false));
         assert!(r["next"].as_str().unwrap().contains("resolve-lock"));
 
@@ -3059,6 +3184,90 @@ mod tests {
     }
 
     #[test]
+    fn a_cancelled_payment_reports_nothing_paid() {
+        let output = |address: &str, is_change| PreparedOutput {
+            address: Some(address.into()),
+            amount: 7,
+            is_change,
+            is_mine: is_change,
+            label: None,
+        };
+        let s = PreparedSummary {
+            txid: "t1".into(),
+            fee: 3,
+            fee_rate_per_kb: 1000,
+            size_bytes: 200,
+            inputs: vec![],
+            outputs: vec![output("change", true), output("contact", false)],
+            total_sent: 7,
+            external_sent: 7,
+            total_debit: 10,
+        };
+        let r = cancelled(&s);
+        assert_eq!(
+            r,
+            json!({
+                "grant": null,
+                "paid": false,
+                "cancelled": true,
+                "prepared_txid": "t1",
+                "address": "contact",
+                "estimated": {"sent": 7, "fee": 3, "debit": 10},
+            })
+        );
+        for key in ["txid", "sent", "debit"] {
+            assert!(r.get(key).is_none(), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_send_failure_names_its_kind_and_reason() {
+        let rejected = CliError::from(EngineError::Send(SendFailure::BroadcastRejected {
+            reason: "bad-txns-inputs-missingorspent".into(),
+        }));
+        assert_eq!(
+            rejected.params,
+            json!({"kind": "broadcast_rejected", "reason": "bad-txns-inputs-missingorspent"})
+        );
+        let no_peers = CliError::from(EngineError::Send(SendFailure::NoPeers));
+        assert_eq!(no_peers.params, json!({"kind": "no_peers"}));
+        let spent = CliError::from(EngineError::Send(SendFailure::PreparedTxSpent));
+        assert_eq!(spent.params, json!({"kind": "prepared_tx_spent"}));
+    }
+
+    #[test]
+    fn a_broadcast_panic_stays_unknown_without_entering_the_engine() {
+        let e = broadcast_failure(panic_error("an engine task", "the call"), "t1", || {
+            panic!("abandon after a panic")
+        });
+        assert!(e.is_panic());
+        assert_eq!(e.params["outcome"], "unknown");
+        assert_eq!(e.params["prepared_txid"], "t1");
+        let no_peers = || CliError::from(EngineError::Send(SendFailure::NoPeers));
+        let e = broadcast_failure(no_peers(), "t2", || true);
+        assert_eq!(
+            (
+                e.params["outcome"].as_str(),
+                e.params["prepared_txid"].as_str()
+            ),
+            (Some("not_sent"), Some("t2"))
+        );
+        let e = broadcast_failure(no_peers(), "t3", || false);
+        assert_eq!(e.params["outcome"], "unknown");
+    }
+
+    #[test]
+    fn pay_contact_cancel_is_a_flag_apart_from_accept() {
+        let line = format!("pay-contact {ID1} --amount 5 --cancel");
+        let Ok(DashPayCommand::PayContact { cancel, accept, .. }) = parse(&line) else {
+            panic!("{line:?}");
+        };
+        assert!(cancel && !accept);
+        let both = format!("pay-contact {ID1} --amount 5 --cancel --accept");
+        assert!(parse(&both).is_err(), "{both:?}");
+    }
+
+    #[test]
     fn global_options_parse_on_either_side_of_the_subcommand() {
         let w = "00".repeat(32);
         for args in [
@@ -3288,18 +3497,30 @@ mod tests {
 
     /// A sink that, once armed, wedges the engine and panics on the next
     /// event `when` picks, in the engine task that emits it (Sol r4's and
-    /// r5's sketch).
+    /// r5's sketch). The engine has two workers. One task parks whichever
+    /// is free, however long it takes to come free; a second is queued for
+    /// the other, which is the emitting one until its task has unwound.
     struct WedgeOn {
         when: fn(&EngineEvent) -> bool,
         armed: AtomicBool,
         session: std::sync::Mutex<Option<Arc<NetworkSession>>>,
     }
 
+    const WEDGE_WAIT: Duration = Duration::from_secs(30);
+
     impl EventSink for WedgeOn {
         fn emit(&self, event: EngineEvent) {
             if (self.when)(&event) && self.armed.swap(false, Ordering::SeqCst) {
                 let session = self.session.lock().unwrap().clone().unwrap();
-                wedge_engine(&session);
+                let free = park_engine_task(&session).unwrap();
+                free.started
+                    .recv_timeout(WEDGE_WAIT)
+                    .expect("no worker came free to be parked");
+                let other = park_engine_task(&session).unwrap();
+                other
+                    .queued
+                    .recv_timeout(WEDGE_WAIT)
+                    .expect("the second parked task was never queued");
                 panic!("injected event callback panic");
             }
         }

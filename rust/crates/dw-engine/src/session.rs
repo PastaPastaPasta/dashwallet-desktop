@@ -288,6 +288,11 @@ pub struct NetworkSession {
     pub(crate) withdrawal_nonces: crate::platform::withdrawal::WithdrawalNonces,
 }
 
+/// Tests: an operation [`NetworkSession::on_runtime`] spawns, boxed so the
+/// tests' task-locals can wrap it.
+#[cfg(test)]
+type TestRun<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, EngineError>> + Send>>;
+
 impl NetworkSession {
     /// Opens the session. Must run on the engine runtime: the manager spawns
     /// its persistence adapter task with `tokio::spawn`.
@@ -416,8 +421,9 @@ impl NetworkSession {
             })
             .await??,
         );
-        // dash-qt loads only the wallets of its settings list; an empty or
-        // missing list loads every wallet.
+        // dash-qt loads only the wallets of its settings list; a missing
+        // list loads every wallet, and so does one that would load none of
+        // them: with no wallet open, closed ones cannot be reached.
         let startup_list = {
             let appdb = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::multiwallet::read_startup_list(&appdb))
@@ -431,10 +437,14 @@ impl NetworkSession {
                 })
                 .await?
                 .map_err(|e| EngineError::Storage(format!("wallet list: {e}")))?;
-                registered
-                    .into_iter()
-                    .filter(|id| !list.contains(&WalletId(*id)))
-                    .collect()
+                if registered.iter().any(|id| list.contains(&WalletId(*id))) {
+                    registered
+                        .into_iter()
+                        .filter(|id| !list.contains(&WalletId(*id)))
+                        .collect()
+                } else {
+                    Default::default()
+                }
             }
             None => Default::default(),
         };
@@ -696,6 +706,13 @@ impl NetworkSession {
                 }
             };
             let _ = live.tap.on_contact_profiles.set(Box::new(checked));
+            let weak = Arc::downgrade(&session);
+            let queued = move |wallet| {
+                if let Some(session) = weak.upgrade() {
+                    session.platform.contact_accounts_queued(wallet);
+                }
+            };
+            let _ = live.tap.on_contact_accounts_queued.set(Box::new(queued));
             let _ = live
                 .tap
                 .registrations
@@ -871,14 +888,19 @@ impl NetworkSession {
         F: Future<Output = Result<T, EngineError>> + Send + 'static,
         T: Send + 'static,
     {
-        // Tests: a held app.sqlite job stays held in the spawned task.
+        // Tests: a held app.sqlite job and the gate's holds stay with the
+        // spawned task.
         #[cfg(test)]
-        if let Ok(pause) = crate::coins::HOLD_APPDB_JOB.try_with(Arc::clone) {
-            return self
-                .rt
-                .spawn(crate::coins::HOLD_APPDB_JOB.scope(pause, fut))
-                .await?;
-        }
+        let fut = {
+            let mut fut: TestRun<T> = Box::pin(fut);
+            if let Ok(pause) = crate::coins::HOLD_APPDB_JOB.try_with(Arc::clone) {
+                fut = Box::pin(crate::coins::HOLD_APPDB_JOB.scope(pause, fut));
+            }
+            if let Ok(holds) = crate::coins::GATE_HOLDS.try_with(Arc::clone) {
+                fut = Box::pin(crate::coins::GATE_HOLDS.scope(holds, fut));
+            }
+            fut
+        };
         self.rt.spawn(fut).await?
     }
 
@@ -955,6 +977,10 @@ impl NetworkSession {
     /// databases: it returns once the last reference to the wallet database
     /// is gone, within [`PERSISTER_RELEASE`]. Must run on the engine runtime.
     pub(crate) async fn close(&self) {
+        // From here the dispatch hook accepts no spend and allows no re-send:
+        // a quit is not refused by a signing call in flight; it revokes the
+        // leases and drains the passes before its gate waits for that call.
+        self.platform.hook_fence.close();
         // A running bring-up ends first (DASHPAY §3.2). It holds no
         // operation guard, so it is cancelled before waiting for the guards,
         // and again after, for a start admitted meanwhile; then its blocking

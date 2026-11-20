@@ -9,7 +9,8 @@ import type { Backend } from "../api/backend";
 import { hasCode, retryAfterSecs } from "../api/backend";
 import type { LockStateName } from "../api/generated/LockStateName";
 import type { LockStatus } from "../api/generated/LockStatus";
-import { failureText, Model, PASSPHRASE_REQUIRED, tryAgainIn, WRONG_PASSPHRASE } from "./model";
+import { t } from "../i18n";
+import { failureText, Model, tryAgainIn } from "./model";
 
 export type LockVerdict = { kind: "allowed" } | { kind: "wait"; secs: number } | { kind: "disabled" };
 
@@ -33,10 +34,16 @@ export const LockoutPolicy = {
 };
 
 export const LockText = {
-  title: "Unlock wallet",
-  prompt: "Enter your passphrase to unlock your wallet.",
-  disabled: "Too many incorrect attempts. Restore the wallet with your recovery phrase to set a new passphrase.",
-  attemptsRemaining: (n: number) => (n === 1 ? "1 attempt remaining" : `${n} attempts remaining`),
+  get title() {
+    return t("lock.title");
+  },
+  get prompt() {
+    return t("lock.prompt");
+  },
+  get disabled() {
+    return t("lock.disabled");
+  },
+  attemptsRemaining: (count: number) => t("lock.attemptsRemaining", { count }),
 };
 
 type Api = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly">;
@@ -128,7 +135,7 @@ export class LockModel extends Model {
     if (this.disabled) return this.#say(LockText.disabled);
     const wait = this.retryAfterSecs;
     if (wait !== null) return this.#say(tryAgainIn(wait));
-    if (!passphrase) return this.#say(PASSPHRASE_REQUIRED);
+    if (!passphrase) return this.#say(t("lock.passphraseRequired"));
     this.working = true;
     this.#seq++;
     this.changed();
@@ -185,8 +192,8 @@ export class LockModel extends Model {
     this.#wait(wait);
     this.message =
       wait > 0
-        ? `${WRONG_PASSPHRASE} ${tryAgainIn(wait)}`
-        : `${WRONG_PASSPHRASE} ${LockText.attemptsRemaining(LockoutPolicy.attemptsRemaining(failures))}`;
+        ? `${t("lock.wrongPassphrase")} ${tryAgainIn(wait)}`
+        : `${t("lock.wrongPassphrase")} ${LockText.attemptsRemaining(LockoutPolicy.attemptsRemaining(failures))}`;
   }
 
   /** The policy's verdict, except that a vault with nothing to recover keeps waiting past the

@@ -15,6 +15,7 @@ import type { MoveToCoreQuote } from "./generated/MoveToCoreQuote";
 import type { PlatformReceiveAddress } from "./generated/PlatformReceiveAddress";
 import type { PendingPlatformFund } from "./generated/PendingPlatformFund";
 import type { PlatformFundOutcome } from "./generated/PlatformFundOutcome";
+import type { FundAmount } from "./generated/FundAmount";
 import type { PlatformFundQuote } from "./generated/PlatformFundQuote";
 import type { PlatformSendOutcome } from "./generated/PlatformSendOutcome";
 import type { PlatformSendQuote } from "./generated/PlatformSendQuote";
@@ -164,6 +165,7 @@ import type { ContactActivityPage } from "./generated/ContactActivityPage";
 import type { ContactRecipient } from "./generated/ContactRecipient";
 import type { ContactSummaryInfo } from "./generated/ContactSummaryInfo";
 import type { FlowKindName } from "./generated/FlowKindName";
+import type { PaymentSourceName } from "./generated/PaymentSourceName";
 import type { LockResolutionName } from "./generated/LockResolutionName";
 import type { ContactDetailInfo } from "./generated/ContactDetailInfo";
 import type { ContactRequestOutcome } from "./generated/ContactRequestOutcome";
@@ -223,8 +225,9 @@ export interface Backend {
   authorizePlatformSend(walletId: string, operation: string, credential: CredentialSpec): Promise<AuthGrant>;
   /** One credential check for several grants, all or none (E0-04: "Accept and pay"). */
   authorizeSet(purposes: GrantPurposeSpec[], walletId: string | null, credential: CredentialSpec): Promise<AuthGrant[]>;
-  /** Redeems grants into a flow's lease; returns the lease id a write or a prepare takes. */
-  beginFlow(walletId: string, flow: FlowKindName, grants: string[]): Promise<string>;
+  /** Redeems grants into a flow's lease; returns the lease id a write or a prepare takes. `source`:
+   * the payment's, for `acceptAndPay` (`null` is `core`) and `contactPayFromBalance`; else `null`. */
+  beginFlow(walletId: string, flow: FlowKindName, grants: string[], source: PaymentSourceName | null): Promise<string>;
   /** Ends a lease (idempotent). */
   endFlow(lease: string): Promise<null>;
   /** Drops a grant before it expires (unknown ids are ignored). */
@@ -245,8 +248,8 @@ export interface Backend {
   /** The account's receive address, for Receive and its QR. */
   shieldedReceiveAddress(walletId: string): Promise<ShieldedAddress>;
   /** Core → Shielded: what `duffs` cost and buy. */
-  shieldQuote(walletId: string, duffs: number): Promise<ShieldQuote>;
-  shieldFromCore(walletId: string, duffs: number, grant: string): Promise<ShieldOutcome>;
+  shieldQuote(walletId: string, amount: FundAmount): Promise<ShieldQuote>;
+  shieldFromCore(walletId: string, amount: FundAmount, grant: string): Promise<ShieldOutcome>;
   /** Applies a pending lock. */
   resumeShield(walletId: string, txid: string, grant: string): Promise<ShieldOutcome>;
   /** The Core → Shielded locks Platform is not known to have applied; `null` while dw-app has no such command. */
@@ -282,9 +285,9 @@ export interface Backend {
   /** Sends the quoted `operation` (single use) from the Platform addresses under a fresh `platformOp` `grant` (`platform_send`). */
   platformSend(walletId: string, operation: string, grant: string): Promise<PlatformSendOutcome>;
   /** What "Add from Dash wallet" of `duffs` costs and adds (`platform_fund_quote`). */
-  platformFundQuote(walletId: string, duffs: number): Promise<PlatformFundQuote>;
+  platformFundQuote(walletId: string, amount: FundAmount): Promise<PlatformFundQuote>;
   /** Locks `duffs` of the Dash wallet and funds the wallet's Platform receive address under `grant` (`platform_fund`). */
-  platformFund(walletId: string, duffs: number, grant: string): Promise<PlatformFundOutcome>;
+  platformFund(walletId: string, amount: FundAmount, grant: string): Promise<PlatformFundOutcome>;
   /** The locks not yet applied (`pending_platform_funds`); `null` while dw-app has no such command. */
   pendingPlatformFunds(walletId: string): Promise<PendingPlatformFund[] | null>;
   /** Applies a pending lock (`resume_platform_fund`). */
@@ -640,7 +643,10 @@ export interface Backend {
   onShellEvent(listener: (event: ShellEvent) => void): Promise<() => void>;
   /** The clock and locale the screens format dates with (fixed in fixtures). */
   now(): Date;
+  /** The display locale: names, prices and dates. */
   readonly locale: string | undefined;
+  /** The system's own locale, for its region (the first local currency); never the UI language. */
+  readonly regionLocale: string | undefined;
 }
 
 const KNOWN_CODES: ReadonlySet<string> = new Set(ERROR_CODES);

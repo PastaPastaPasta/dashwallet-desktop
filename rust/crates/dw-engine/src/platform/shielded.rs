@@ -15,6 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::credits::{CoreMax, FundAmount};
 use super::dashpay::DashPay;
 use super::errors::ShieldedError;
 use super::flows::{DispatchState, GrantRequest};
@@ -99,6 +100,9 @@ pub struct ShieldQuote {
     pub credits: u64,
     /// `max_duffs` = `total_duffs`, `max_credits` 0.
     pub grant: GrantRequest,
+    /// A Core Max's (`FundAmount::All`): `total_duffs` is then the coins'
+    /// sum and `duffs` the lock's value at least, the fee out of it.
+    pub max: Option<CoreMax>,
 }
 
 /// What moving CoinJoin account 0's mixed coins into the pool ("Move mixed
@@ -228,7 +232,10 @@ pub enum ShieldedSpendState {
     /// (done), or `failed` when the library's prune backstop releases them
     /// (not executed). Meanwhile the library re-sends the same signed
     /// transition (`transition`) during sync passes, at most 3 times. The
-    /// facade offers no resend and the host offers no retry.
+    /// facade offers no resend and the host offers no retry. A spend the
+    /// library resolves without attributing its notes' spend to it
+    /// (`Unattributable`) while its history row reads `confirmed` is done
+    /// too: never failed, and never retried, rebuilt or re-sent.
     Pending,
 }
 
@@ -417,28 +424,31 @@ impl DashPay {
         .await
     }
 
-    /// What moving `duffs` of the Core balance into the pool costs and
+    /// What moving `amount` of the Core balance into the pool costs and
     /// buys, with the refusals of [`Self::shield_from_core`].
-    pub async fn shield_quote(&self, duffs: u64) -> Result<ShieldQuote, ShieldedError> {
-        on_pool(
-            &self.session,
-            self.wallet_id,
-            move |session, lib| async move { pool::shield_quote(&session, &lib, duffs).await },
-        )
+    pub async fn shield_quote(&self, amount: FundAmount) -> Result<ShieldQuote, ShieldedError> {
+        let wallet = self.wallet_id;
+        on_pool(&self.session, wallet, move |session, lib| async move {
+            match amount {
+                FundAmount::Duffs { duffs } => pool::shield_quote(&session, &lib, duffs).await,
+                FundAmount::All => pool::shield_max_quote(&session, wallet, &lib).await,
+            }
+        })
         .await
     }
 
-    /// Core → Shielded: an asset lock of `duffs` from the Core balance under
-    /// a `Shield` lease begun from `grant`, then Platform's
+    /// Core → Shielded: an asset lock of `amount` from the Core balance
+    /// under a `Shield` lease begun from `grant`, then Platform's
     /// ShieldFromAssetLock of it to the wallet's own shielded address.
+    /// `All` drains BIP44 account 0 (`core_max.rs`).
     pub async fn shield_from_core(
         &self,
-        duffs: u64,
+        amount: FundAmount,
         grant: String,
     ) -> Result<ShieldOutcome, ShieldedError> {
         let wallet = self.wallet_id;
         on_pool_signing(&self.session, wallet, move |session, lib| async move {
-            pool::shield(&session, wallet, &lib, duffs, &grant).await
+            pool::shield(&session, wallet, &lib, amount, &grant).await
         })
         .await
     }

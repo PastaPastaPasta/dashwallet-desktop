@@ -271,6 +271,8 @@ struct Gather {
     purposes: BTreeMap<String, String>,
     hd_pubs: BTreeSet<Vec<u8>>,
     key_pubs: Vec<Vec<u8>>,
+    /// A `key` or `wkey` record was read.
+    plain_key: bool,
 }
 
 /// The records of a wallet.dat an import uses, not yet decrypted.
@@ -344,6 +346,29 @@ impl std::fmt::Debug for HdRoot {
 }
 
 impl SqliteWallet {
+    /// The wallet the `(key, value)` records of its `main` table describe,
+    /// as [`read_sqlite`] and [`read_bdb_bytes`] read them. Each record is
+    /// parsed and dropped before the next is read, and the first error,
+    /// from the source or from a record, ends the read.
+    pub fn from_records<K: AsRef<[u8]>, V: AsRef<[u8]>>(
+        records: impl IntoIterator<Item = Result<(K, V), WalletDatError>>,
+    ) -> Result<Self, WalletDatError> {
+        let mut wallet = empty_wallet();
+        let mut gather = Gather::default();
+        for record in records {
+            let (key, value) = record?;
+            parse_record(key.as_ref(), value.as_ref(), &mut wallet, &mut gather)?;
+        }
+        finish(&mut wallet, gather)?;
+        Ok(wallet)
+    }
+
+    /// The key derivation rounds a passphrase costs here: every `mkey`
+    /// record's together (at most [`crypter::MAX_ROUNDS`]).
+    pub fn derivation_rounds(&self) -> u64 {
+        self.master_keys.iter().map(|m| u64::from(m.rounds)).sum()
+    }
+
     /// Whether the wallet has a master key record (`encryptwallet` ran).
     pub fn encrypted(&self) -> bool {
         !self.master_keys.is_empty()
@@ -892,15 +917,10 @@ pub fn read_sqlite(path: &Path) -> Result<SqliteWallet, WalletDatError> {
             Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
         })
         .map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
-    let mut wallet = empty_wallet();
-    let mut gather = Gather::default();
-    for row in rows {
+    SqliteWallet::from_records(rows.map(|row| {
         let (key, value) = row.map_err(|e| WalletDatError::Unreadable(e.to_string()))?;
-        let value = Zeroizing::new(value);
-        parse_record(&key, &value, &mut wallet, &mut gather)?;
-    }
-    finish(&mut wallet, gather)?;
-    Ok(wallet)
+        Ok((key, Zeroizing::new(value)))
+    }))
 }
 
 /// Reads a legacy Berkeley DB `wallet.dat` (or a descriptor wallet stored in
@@ -956,14 +976,7 @@ fn read_into_fixed(
 
 /// [`read_bdb`] over bytes already in memory.
 pub fn read_bdb_bytes(bytes: &[u8]) -> Result<SqliteWallet, WalletDatError> {
-    let pairs = crate::bdb::read_pairs(bytes)?;
-    let mut wallet = empty_wallet();
-    let mut gather = Gather::default();
-    for (key, value) in pairs {
-        parse_record(&key, &value, &mut wallet, &mut gather)?;
-    }
-    finish(&mut wallet, gather)?;
-    Ok(wallet)
+    SqliteWallet::from_records(crate::bdb::read_pairs(bytes)?.into_iter().map(Ok))
 }
 
 fn empty_wallet() -> SqliteWallet {
@@ -993,6 +1006,7 @@ fn finish(w: &mut SqliteWallet, gather: Gather) -> Result<(), WalletDatError> {
         mut purposes,
         hd_pubs,
         key_pubs,
+        plain_key,
     } = gather;
     for (address, label) in names {
         note_network(w, &address)?;
@@ -1006,11 +1020,10 @@ fn finish(w: &mut SqliteWallet, gather: Gather) -> Result<(), WalletDatError> {
     let encrypted = !w.master_keys.is_empty()
         || !w.crypted_keys.is_empty()
         || w.legacy.as_ref().is_some_and(|c| c.crypted);
-    if encrypted {
-        let crypted: BTreeSet<_> = w.crypted_keys.iter().map(|k| k.pubkey.as_slice()).collect();
-        if key_pubs.iter().any(|p| !crypted.contains(p.as_slice())) {
-            return Err(corrupt("encrypted wallet has a plaintext key"));
-        }
+    // Dash Core refuses any plaintext key in an encrypted wallet, one
+    // beside a `ckey` of the same public key included.
+    if encrypted && plain_key {
+        return Err(corrupt("encrypted wallet has a plaintext key"));
     }
     if let Some(chain) = &w.legacy {
         check_chain_range(chain, &w.hd_children)?;
@@ -1220,7 +1233,11 @@ fn parse_record(
         }
         b"key" | b"ckey" => {
             let pubkey = k.bytes().ok_or_else(|| bad("key"))?.to_vec();
-            let secret = Zeroizing::new(v.bytes().ok_or_else(|| bad("key"))?.to_vec());
+            let secret = v.bytes().ok_or_else(|| bad("key"))?;
+            if kind == b"ckey" && (secret.len() != CRYPTED_KEY_LEN || !valid_pubkey(&pubkey)) {
+                return Err(corrupt("encrypted key record"));
+            }
+            let secret = Zeroizing::new(secret.to_vec());
             if !v.is_empty() {
                 let checksum = v.hash256().ok_or_else(|| bad("key"))?;
                 let hashed = if kind == b"ckey" {
@@ -1240,6 +1257,8 @@ fn parse_record(
                 w.crypted_keys.push(CryptedKey { pubkey, secret });
             } else if !plain_key_matches(&pubkey, &secret) {
                 return Err(corrupt("private key does not match its public key"));
+            } else {
+                g.plain_key = true;
             }
         }
         b"wkey" => {
@@ -1253,6 +1272,7 @@ fn parse_record(
                 return Err(corrupt("private key does not match its public key"));
             }
             g.key_pubs.push(pubkey);
+            g.plain_key = true;
         }
         b"keymeta" => {
             let _pubkey = k.bytes().ok_or_else(|| bad("keymeta"))?;
@@ -1317,6 +1337,19 @@ fn parse_record(
 }
 
 const MAX_CHAIN_FIELD: usize = 4096;
+
+/// A `ckey`'s ciphertext: Dash Core's 32-byte private key (compressed or
+/// not) under AES-256-CBC with PKCS#7 padding (`EncryptSecret`).
+const CRYPTED_KEY_LEN: usize = 48;
+
+/// A compressed (`02`/`03`) or uncompressed (`04`) serialization of a point
+/// on the curve, as Dash Core writes a `CPubKey`.
+fn valid_pubkey(pubkey: &[u8]) -> bool {
+    matches!(
+        (pubkey.len(), pubkey.first()),
+        (33, Some(0x02 | 0x03)) | (65, Some(0x04))
+    ) && PublicKey::from_slice(pubkey).is_ok()
+}
 /// Most keys a legacy wallet may have derived on one HD chain, keypool
 /// included. Larger wallets are refused.
 pub const MAX_LEGACY_CHAIN_KEYS: u32 = 10_000;
@@ -1477,6 +1510,35 @@ mod tests {
         assert!(!w.has_mnemonic());
         let root = w.hd_root(None).unwrap();
         assert!(root.mnemonic.is_none());
+    }
+
+    /// Records are parsed as SQLite yields them, so a malformed record is
+    /// reported before an unreadable row after it.
+    #[test]
+    fn a_bad_record_is_reported_before_a_later_unreadable_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.dat");
+        std::fs::copy(vector("desc_nomnemonic.dat"), &path).unwrap();
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            let updated = conn
+                .execute(
+                    "UPDATE main SET value = ?1 WHERE key = ?2",
+                    rusqlite::params![vec![1u8], db_key("flags")],
+                )
+                .unwrap();
+            assert_eq!(updated, 1);
+            conn.execute(
+                "INSERT INTO main (key, value) VALUES (?1, 7)",
+                rusqlite::params![db_key("zzzz")],
+            )
+            .unwrap();
+        }
+        let got = read_sqlite(&path);
+        assert!(
+            matches!(&got, Err(WalletDatError::Corrupt(d)) if d.contains("flags")),
+            "{got:?}"
+        );
     }
 
     /// Review M1: an `mkey` record asking for more than 10^7 rounds is
@@ -1721,6 +1783,8 @@ mod tests {
         Address::p2pkh(&pk, Network::Regtest).to_string()
     }
 
+    type Records = Vec<(Vec<u8>, Vec<u8>)>;
+
     struct Built {
         bytes: Vec<u8>,
         seed: Vec<u8>,
@@ -1728,6 +1792,75 @@ mod tests {
     }
 
     fn plain_hd_wallet(swap: bool) -> Built {
+        let (pairs, seed, address) = plain_hd_records();
+        let refs: Vec<(&[u8], &[u8])> = pairs
+            .iter()
+            .map(|(k, v)| (k.as_slice(), v.as_slice()))
+            .collect();
+        Built {
+            bytes: build::pairs(&refs, swap),
+            seed,
+            address,
+        }
+    }
+
+    /// [`plain_hd_wallet`] laid out as a larger file is: an internal root
+    /// over two leaves, with the `hdchain` record's value in a two-page
+    /// overflow chain.
+    fn tree_overflow_hd_wallet() -> Vec<u8> {
+        let (pairs, _, _) = plain_hd_records();
+        let leaf = |page_num: u32, pairs: &[(Vec<u8>, Vec<u8>)], first: Vec<Vec<u8>>| {
+            let mut items = first;
+            for (k, v) in pairs {
+                items.push(build::data_item(k, false, false));
+                items.push(build::data_item(v, false, false));
+            }
+            build::pack(page_num, &items, TYPE_LEAF, 1, 0, false)
+        };
+        let (chain_key, chain) = &pairs[0];
+        assert_eq!(Reader::new(chain_key).bytes(), Some(b"hdchain".as_slice()));
+        let half = chain.len() / 2;
+        let root = build::pack(
+            3,
+            &[build::child_item(4, false), build::child_item(5, false)],
+            TYPE_INTERNAL,
+            2,
+            0,
+            false,
+        );
+        let first = vec![
+            build::data_item(chain_key, false, false),
+            build::overflow_item(6, chain.len() as u32, false),
+        ];
+        build::assemble(
+            &[
+                root,
+                leaf(4, &pairs[1..5], first),
+                leaf(5, &pairs[5..], Vec::new()),
+                build::overflow_page(6, &chain[..half], 7, false),
+                build::overflow_page(7, &chain[half..], 0, false),
+            ],
+            false,
+        )
+    }
+
+    #[test]
+    fn a_tree_with_an_overflow_chain_reads_as_its_records() {
+        let flat = read_bdb_bytes(&plain_hd_wallet(false).bytes).unwrap();
+        let tree = read_bdb_bytes(&tree_overflow_hd_wallet()).unwrap();
+        assert_eq!(
+            tree.legacy.as_ref().unwrap().seed.as_slice(),
+            flat.legacy.as_ref().unwrap().seed.as_slice()
+        );
+        assert_eq!(tree.loose_keys, flat.loose_keys);
+        assert_eq!(tree.address_book.len(), flat.address_book.len());
+        assert_eq!(
+            tree.hd_root(None).unwrap().master_pubkey,
+            flat.hd_root(None).unwrap().master_pubkey
+        );
+    }
+
+    fn plain_hd_records() -> (Records, Vec<u8>, String) {
         let seed = core_seed(PHRASE.as_bytes(), MNEMONIC_PASS.as_bytes());
         let id = sha256d(&seed[..]);
         let address = receive_address(&seed[..]);
@@ -1789,15 +1922,7 @@ mod tests {
             (db_key("cj_salt"), [0xab; 32].to_vec()),
             (db_key("watchs"), vec![b'1']),
         ];
-        let refs: Vec<(&[u8], &[u8])> = pairs
-            .iter()
-            .map(|(k, v)| (k.as_slice(), v.as_slice()))
-            .collect();
-        Built {
-            bytes: build::pairs(&refs, swap),
-            seed: seed.to_vec(),
-            address,
-        }
+        (pairs.to_vec(), seed.to_vec(), address)
     }
 
     fn encrypted_hd_wallet() -> Vec<u8> {
@@ -2304,6 +2429,86 @@ mod tests {
         );
     }
 
+    /// A plaintext `key` or `wkey` whose public key also has a `ckey` is
+    /// refused: Dash Core loads no plaintext key into an encrypted wallet.
+    #[test]
+    fn a_plaintext_key_beside_its_own_ckey_is_corrupt() {
+        let secret = [0x44u8; 32];
+        let pubkey = compressed(&secret);
+        let mut key = Vec::new();
+        ser_bytes(&mut key, &der_of(&secret));
+        let mut wkey = Vec::new();
+        wkey.extend_from_slice(&1i32.to_le_bytes());
+        ser_bytes(&mut wkey, &der_of(&secret));
+        wkey.extend_from_slice(&0i64.to_le_bytes());
+        wkey.extend_from_slice(&0i64.to_le_bytes());
+        ser_bytes(&mut wkey, b"");
+        let ct = [0x99u8; 48];
+        let mut ckey = Vec::new();
+        ser_bytes(&mut ckey, &ct);
+        ckey.extend_from_slice(&sha256d(&ct));
+        for (kind, value) in [("key", key), ("wkey", wkey)] {
+            let pairs = [
+                (db_key_pub(kind, &pubkey), value),
+                (db_key_pub("ckey", &pubkey), ckey.clone()),
+            ];
+            let refs: Vec<(&[u8], &[u8])> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                .collect();
+            let err = read_bdb_bytes(&build::pairs(&refs, false)).err().unwrap();
+            assert!(
+                matches!(err, WalletDatError::Corrupt(ref d) if d.contains("plaintext key")),
+                "{kind}: {err:?}"
+            );
+        }
+    }
+
+    fn lone_ckey(pubkey: &[u8], ct: &[u8]) -> Result<SqliteWallet, WalletDatError> {
+        let mut value = Vec::new();
+        ser_bytes(&mut value, ct);
+        value.extend_from_slice(&sha256d(ct));
+        let key = db_key_pub("ckey", pubkey);
+        read_bdb_bytes(&build::pairs(&[(&key, &value)], false))
+    }
+
+    /// A `ckey` is kept only with a valid public key and Core's 48-byte
+    /// ciphertext, before any passphrase probe hashes or decrypts it.
+    #[test]
+    fn a_ckey_of_the_wrong_shape_is_corrupt() {
+        let secret = [0x45u8; 32];
+        let ct = [0x99u8; 48];
+        let sk = dashcore::secp256k1::SecretKey::from_secret_bytes(secret).unwrap();
+        let pk = dashcore::secp256k1::PublicKey::from_secret_key(&sk);
+        let (short, long) = (pk.serialize(), pk.serialize_uncompressed());
+        let mut bad_prefix = short;
+        bad_prefix[0] = 0x05;
+        let mut hybrid = long;
+        hybrid[0] = 0x06 | (long[64] & 1);
+        let bad_pubkeys: [&[u8]; 5] =
+            [&[0x02; 300], &long[..64], &bad_prefix, &hybrid, &[0x04; 65]];
+        for pubkey in bad_pubkeys {
+            let err = lone_ckey(pubkey, &ct).err().unwrap();
+            assert!(
+                matches!(err, WalletDatError::Corrupt(ref d) if d.contains("encrypted key record")),
+                "{} bytes: {err:?}",
+                pubkey.len()
+            );
+        }
+        for len in [0, 32, 47, 49, 64, 1024] {
+            let err = lone_ckey(&short, &vec![0x99; len]).err().unwrap();
+            assert!(
+                matches!(err, WalletDatError::Corrupt(ref d) if d.contains("encrypted key record")),
+                "{len} bytes: {err:?}"
+            );
+        }
+        for pubkey in [&short[..], &long[..]] {
+            let wallet = lone_ckey(pubkey, &ct).unwrap();
+            assert!(wallet.encrypted());
+            assert_eq!(wallet.crypted_keys.len(), 1);
+        }
+    }
+
     /// A plaintext key beside a master key or an encrypted HD chain, with
     /// no encrypted key, is refused as well.
     #[test]
@@ -2587,10 +2792,16 @@ mod tests {
             .join("../../../testdata/compat/walletdat");
         let plain = plain_hd_wallet(false);
         let encrypted = encrypted_hd_wallet();
+        let tree = tree_overflow_hd_wallet();
         if std::env::var_os("DW_WRITE_BDB_FIXTURES").is_some() {
             std::fs::write(dir.join("bdb_hd_plain.dat"), &plain.bytes).unwrap();
             std::fs::write(dir.join("bdb_hd_encrypted.dat"), &encrypted).unwrap();
+            std::fs::write(dir.join("bdb_tree_overflow.dat"), &tree).unwrap();
         }
+        assert_eq!(
+            std::fs::read(dir.join("bdb_tree_overflow.dat")).unwrap(),
+            tree
+        );
         assert_eq!(
             std::fs::read(dir.join("bdb_hd_plain.dat")).unwrap(),
             plain.bytes
@@ -2662,6 +2873,23 @@ mod tests {
                 .collect();
             build::pairs(&refs, false)
         };
+        let wide_change = {
+            let pairs = [
+                (
+                    db_key("hdchain"),
+                    hd(&abandon_id, &abandon_seed[..], abandon, 4, 2600),
+                ),
+                (
+                    db_key_pub("hdpubkey", &abandon_child),
+                    ser_hdpubkey(&abandon_child),
+                ),
+            ];
+            let refs: Vec<(&[u8], &[u8])> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                .collect();
+            build::pairs(&refs, false)
+        };
         let mut account1_chain = hd(&abandon_id, &abandon_seed[..], abandon, 1, 0);
         let n = account1_chain.len();
         account1_chain[n - 12..n - 8].copy_from_slice(&1u32.to_le_bytes());
@@ -2682,6 +2910,7 @@ mod tests {
         vec![
             ("bdb_label_free.dat", label_free),
             ("bdb_wide_range.dat", wide),
+            ("bdb_wide_change.dat", wide_change),
             ("bdb_account1.dat", account1),
         ]
     }

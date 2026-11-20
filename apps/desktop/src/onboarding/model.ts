@@ -4,6 +4,8 @@
 import { useSyncExternalStore } from "react";
 import { hasCode, isAppError, retryAfterSecs } from "../api/backend";
 import type { ErrorCode } from "../api/generated/ErrorCode";
+import { t } from "../i18n";
+import { en } from "../i18n/en";
 
 export abstract class Model {
   #version = 0;
@@ -35,8 +37,8 @@ export interface WalletChoice {
 }
 
 /** dash-qt `AskPassphraseDialog`. */
-export const WRONG_PASSPHRASE = "The passphrase entered for the wallet decryption was incorrect.";
-export const PASSPHRASE_REQUIRED = "Enter your wallet passphrase.";
+export const WRONG_PASSPHRASE = en.lock.wrongPassphrase;
+export const PASSPHRASE_REQUIRED = en.lock.passphraseRequired;
 export const INVALID_PHRASE = "The recovery phrase is not valid. Check every word.";
 
 /** Copy for a failure chosen by its code alone (U-02 D16): the engine's `message` can quote the
@@ -101,13 +103,12 @@ export function failureText(e: unknown): string {
 /** "6 minutes", "4 hours": minutes below two hours (rounded up), hours above. */
 export function waitText(secs: number): string {
   const minutes = Math.max(1, Math.ceil(secs / 60));
-  if (minutes < 120) return minutes === 1 ? "1 minute" : `${minutes} minutes`;
-  const hours = Math.ceil(secs / 3600);
-  return hours === 1 ? "1 hour" : `${hours} hours`;
+  if (minutes < 120) return t("lock.minutes", { count: minutes });
+  return t("lock.hours", { count: Math.ceil(secs / 3600) });
 }
 
 /** iOS lockout copy. */
-export const tryAgainIn = (secs: number) => `Wallet disabled, please try again in ${waitText(secs)}`;
+export const tryAgainIn = (secs: number) => t("lock.tryAgainIn", { wait: waitText(secs) });
 
 /** Why a passphrase was not accepted: wrong (with the vault's wait, when it set one), or the
  * wait itself, or another failure. */

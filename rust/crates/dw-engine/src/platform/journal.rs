@@ -215,6 +215,9 @@ pub(crate) struct Classified {
     /// A contact profile the library checked since the engine expired it
     /// (DP4-01 D12): a pass fetched contact profiles.
     contact_profiles_checked: bool,
+    /// A contact's account build was queued (`RegisterReceiving`,
+    /// `RegisterExternal`): drained at once while the vault is unlocked.
+    contact_accounts_queued: bool,
 }
 
 impl Classified {
@@ -374,6 +377,13 @@ pub(crate) fn classify(cs: &PlatformWalletChangeSet) -> Option<Classified> {
     // the channel (DP2-01). Not news; `ContactInfoDecrypt` changes neither.
     let setup =
         |kind: PendingContactCryptoKind| kind != PendingContactCryptoKind::ContactInfoDecrypt;
+    c.contact_accounts_queued = (cs.pending_contact_crypto_added.iter()).any(|p| {
+        matches!(
+            p.op.kind(),
+            PendingContactCryptoKind::RegisterReceiving
+                | PendingContactCryptoKind::RegisterExternal
+        )
+    });
     let queued = (cs.pending_contact_crypto_added.iter())
         .filter(|p| setup(p.op.kind()))
         .map(|p| p.owner_identity_id);
@@ -420,6 +430,9 @@ pub(crate) struct ChangesetTap {
     /// Told when a pass fetched contact profiles (DP4-01 D12), so the
     /// session expires them again. Set once the session exists.
     pub(crate) on_contact_profiles: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
+    /// Told when a changeset queued a contact's account build, so the
+    /// session drains it while unlocked. Set once the session exists.
+    pub(crate) on_contact_accounts_queued: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// The session's registration flows, whose actors write a tracked
     /// lock's outpoint (DEC-173). Set once the session exists.
     pub(crate) registrations: OnceLock<Arc<super::registration_flow::Flows>>,
@@ -461,6 +474,7 @@ impl ChangesetTap {
             locks_changed: OnceLock::new(),
             on_funded: OnceLock::new(),
             on_contact_profiles: OnceLock::new(),
+            on_contact_accounts_queued: OnceLock::new(),
             registrations: OnceLock::new(),
             unread: Mutex::new(HashMap::new()),
             counts_queued: AtomicU64::new(0),
@@ -795,6 +809,11 @@ impl ChangesetTap {
             && let Some(expire) = self.on_contact_profiles.get()
         {
             expire(id);
+        }
+        if c.contact_accounts_queued
+            && let Some(queued) = self.on_contact_accounts_queued.get()
+        {
+            queued(id);
         }
         let mut changes = std::mem::take(&mut c.changes);
         // Before the library broadcasts a registration's lock, its

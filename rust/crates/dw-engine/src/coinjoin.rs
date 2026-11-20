@@ -3644,7 +3644,7 @@ pub(crate) mod sweep_test_hooks {
 #[cfg(test)]
 pub(crate) async fn test_pause(pause: Option<Arc<crate::coins::TestPause>>) {
     if let Some(p) = pause {
-        p.reached.store(true, std::sync::atomic::Ordering::SeqCst);
+        p.mark_reached();
         p.release.notified().await;
     }
 }
@@ -3723,7 +3723,7 @@ fn settle_sweep_failure(
     let (unsent, code, unknown) = match e {
         platform_wallet::PlatformWalletError::TransactionBroadcast(reason) => (
             n,
-            if reason.to_lowercase().contains("no peers") {
+            if crate::send::reason_means_no_peers(reason) {
                 "coinjoin.no_peers"
             } else {
                 "coinjoin.broadcast_rejected"
@@ -4129,7 +4129,7 @@ mod tests {
             wallet,
             &signed,
             2,
-            &E::TransactionBroadcast("No peers connected".into()),
+            &E::TransactionBroadcast("SPV broadcast not sent: no connected peers".into()),
         );
         assert_eq!(code, "coinjoin.no_peers");
         assert_eq!(unknown, None);

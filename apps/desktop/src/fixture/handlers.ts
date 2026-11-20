@@ -22,6 +22,7 @@ import type { ContactDetailInfo } from "../api/generated/ContactDetailInfo";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CredentialSpec } from "../api/generated/CredentialSpec";
 import type { FlowKindName } from "../api/generated/FlowKindName";
+import type { FundAmount } from "../api/generated/FundAmount";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { Lease } from "../api/generated/Lease";
 import type { LockOutcome } from "../api/generated/LockOutcome";
@@ -38,7 +39,7 @@ import type { UserHit } from "../api/generated/UserHit";
 import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { userLinkText } from "../contacts/add";
 import { CANDIDATE_GONE, MAX_FILE_BYTES } from "../dashpay/editProfile";
-import { activityPage, contactList, eventOf, fixtureLoops, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
+import { activityPage, contactList, coreActivity, eventOf, fixtureLoops, relationOf, type DashPayWorld, type FixtureScan } from "./dashpay";
 import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
@@ -317,6 +318,12 @@ export function checkGrant(w: World, id: string, walletId: string, kinds: GrantP
 
 export function useGrant(w: World, id: string) {
   for (const g of w.grants) if (g.grant.id === id) g.used = true;
+}
+
+/** A shield's or a fund's amount in duffs; the fixture has no Core Max (`all`) yet. */
+export function fundDuffs(amount: FundAmount): number {
+  if (amount.kind === "duffs") return amount.duffs;
+  throw fail("invalid_argument", "the fixture has no Core Max", { kind: "reason", reason: "the fixture has no Core Max" });
 }
 
 /** An unused `changeCredential` grant whose key is usable (it is bound to no wallet). */
@@ -665,7 +672,7 @@ const sendDeps: SendDeps = {
   contactPaid: (ctx, walletId, r, txid, amount) => {
     const dp = dashpay(ctx.world, walletId, r.identity);
     const c = pairContact(ctx.world, walletId, r);
-    (dp.activity[r.contact] ??= []).push({ txid, direction: "sent", amount, height: null, timestamp: secs(FIXTURE_NOW) });
+    (dp.activity[r.contact] ??= []).push(coreActivity({ txid, direction: "sent", amount, height: null, timestamp: secs(FIXTURE_NOW) }));
     c.summary = { ...c.summary, lastActivityAt: secs(FIXTURE_NOW) };
     paymentsChanged(ctx, walletId, r.identity);
     return { identity: r.contact, username: c.summary.username, displayName: c.summary.displayName, avatarUrl: c.profile?.avatarUrl ?? null };
@@ -884,9 +891,15 @@ export const HANDLERS: Handlers = {
   // `issue`): unused, the wallet's, usable by a key, one per kind, of a kind the flow allows (a
   // `platformOp`, and for "Accept and pay" a `spend` too; a contact payment's only a `spend`; the
   // masternode flows' one `governance` or `masternodeOp`, MG-05).
-  begin_flow: ({ walletId, flow, grants }, ctx) => {
+  begin_flow: ({ walletId, flow, grants, source }, ctx) => {
     const { world } = ctx;
     wallet(world, walletId);
+    if ((flow === "acceptAndPay" || flow === "contactPayFromBalance") && source !== null && source !== "core") {
+      const feature = `${source}_contact_payment`;
+      throw fail("platform.feature_off", feature, { kind: "feature", feature });
+    }
+    if (flow === "contactPayFromBalance" || (source !== null && flow !== "acceptAndPay"))
+      throw fail("invalid_argument", "the payment source does not fit the flow");
     const kinds: GrantPurposeSpec["kind"][] =
       flow === "acceptAndPay"
         ? ["platformOp", "spend"]

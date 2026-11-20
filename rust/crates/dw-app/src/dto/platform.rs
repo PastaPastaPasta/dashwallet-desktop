@@ -62,6 +62,9 @@ pub enum FlowKindName {
     /// An evonode's Platform credit withdrawal under a
     /// `masternodeWithdraw` grant (MG-13).
     MasternodeWithdraw,
+    /// One payment to a contact from the Shielded or Platform balance under
+    /// a `platformOp` grant.
+    ContactPayFromBalance,
 }
 
 mirror_enum!(FlowKind => FlowKindName {
@@ -69,14 +72,14 @@ mirror_enum!(FlowKind => FlowKindName {
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
     MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal,
     PlatformAddressMove, PlatformAddressSend, Shield, PlatformAddressFund, ShieldedSpend, ShieldDrain,
-    MasternodeWithdraw
+    MasternodeWithdraw, ContactPayFromBalance
 });
 mirror_enum!(FlowKindName => FlowKind {
     Registration, TopUp, Withdraw, NameRegistration, ProfileEdit, ContactRequest, Accept,
     AcceptAndPay, PrivateDetails, EnableDashPayKeys, ContactPayment, Voting,
     MasternodeRegistration, KeyChange, SharedMasternode, Dissolution, Proposal,
     PlatformAddressMove, PlatformAddressSend, Shield, PlatformAddressFund, ShieldedSpend, ShieldDrain,
-    MasternodeWithdraw
+    MasternodeWithdraw, ContactPayFromBalance
 });
 
 /// A lease budget: `funding`, `spend` and `masternode` are duffs, `credits`

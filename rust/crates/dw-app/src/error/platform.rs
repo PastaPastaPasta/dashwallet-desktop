@@ -123,6 +123,9 @@ codes! {
         QuoteChanged = "credits.quote_changed",
         FundPending = "credits.fund_pending",
         TooManyInputs = "credits.too_many_inputs",
+        CoinsChanged = "credits.coins_changed",
+        MixingActive = "credits.mixing_active",
+        MoveRunning = "credits.move_running",
     }
 }
 
@@ -507,6 +510,9 @@ impl From<CreditsError> for AppError {
                 CreditsCode::TooManyInputs,
                 Some(ErrorData::Number { value: inputs }),
             ),
+            C::CoinsChanged => (CreditsCode::CoinsChanged, None),
+            C::MixingActive => (CreditsCode::MixingActive, None),
+            C::MoveRunning => (CreditsCode::MoveRunning, None),
             C::Shielded(e) => return e.into(),
             C::Platform(e) => return e.into(),
         };
@@ -690,6 +696,9 @@ mod tests {
                 inputs: 51,
                 max: 50,
             },
+            CreditsError::CoinsChanged,
+            CreditsError::MixingActive,
+            CreditsError::MoveRunning,
             CreditsError::Shielded(ShieldedError::NotActive {
                 protocol_version: 11,
                 activation_version: 12,

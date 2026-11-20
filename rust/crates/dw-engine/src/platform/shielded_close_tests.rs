@@ -13,8 +13,10 @@ use std::time::Duration;
 
 use dw_appdb::dispatch::{ArtifactKind, ArtifactOrigin, ArtifactStatus, NewShieldedArtifact};
 use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, UnlockScope, VaultConfig};
-use platform_wallet::wallet::shielded::store::{PendingRedrive, StalePendingSpend};
-use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
+use platform_wallet::wallet::shielded::store::{
+    NotExecutedReason, PendingRedrive, StalePendingSpend, UnresolvedReason,
+};
+use platform_wallet::wallet::shielded::{ShieldedSpendDisposition, ShieldedStore, SubwalletId};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -339,8 +341,11 @@ fn expected() -> Kept {
 
 /// Close Wallet and an in-app close (the network switch's) are refused
 /// while a spend is unresolved, and leave everything of it as it was; so
-/// does any removal but the user's. Once the scan resolves the spends,
-/// both go ahead.
+/// does any removal but the user's. Once the scan resolves the spends the
+/// library keeps their dispositions, which hold the notes until the engine
+/// acknowledges them, and both stay refused; acknowledged, nothing holds.
+/// A spend stored under the hook and not sent yet holds again; refused
+/// before its first broadcast (`NotExecuted`), it holds nothing.
 #[test]
 fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() {
     let dir = dw_testutil::private_tempdir();
@@ -381,11 +386,12 @@ fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() 
     assert!(matches!(removed, Err(EngineError::ShieldedSpendUnresolved)));
     assert_eq!(kept(&engine, &session, wallet), expected());
 
-    // The scan finds both spent: nothing is held any more.
+    // The scan finds both spent: the library resolves them.
     let (s, m) = (Arc::clone(&session), session.manager().unwrap());
-    engine.block_on(async move {
-        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
-        let mut store = coordinator.store().write().await;
+    let coordinator = engine.block_on(pool::coordinator(&s, &m, None)).unwrap();
+    let c = Arc::clone(&coordinator);
+    let settled = engine.block_on(async move {
+        let mut store = c.store().write().await;
         for r in spends() {
             for n in &r.nullifiers {
                 store.mark_spent(subwallet(wallet), n).unwrap();
@@ -394,7 +400,56 @@ fn close_wallet_and_the_network_close_are_refused_while_a_spend_is_unresolved() 
                 .clear_redrive(subwallet(wallet), &r.activity_id)
                 .unwrap();
         }
+        assert!(
+            store
+                .pending_redrives(subwallet(wallet))
+                .unwrap()
+                .is_empty()
+        );
+        store.dispositions(wallet.0).unwrap()
     });
+    assert_eq!(settled.len(), 2, "{settled:?}");
+    assert!(
+        (settled.iter())
+            .all(|d| !matches!(d.disposition, ShieldedSpendDisposition::NotExecuted(_))),
+        "{settled:?}"
+    );
+    let unloaded = engine.block_on(session.unload_wallet(wallet));
+    assert!(
+        matches!(unloaded, Err(EngineError::ShieldedSpendUnresolved)),
+        "{unloaded:?}"
+    );
+    let closed = engine.block_on(engine.close_network(DashNetwork::Regtest));
+    assert!(
+        matches!(closed, Err(EngineError::ShieldedSpendUnresolved)),
+        "{closed:?}"
+    );
+
+    // Acknowledged: nothing is held. Then a hooked spend, stored and not
+    // sent yet, holds until the hook's refusal resolves it.
+    let c = Arc::clone(&coordinator);
+    engine.block_on(async move {
+        let mut store = c.store().write().await;
+        for d in &settled {
+            assert!(store.ack_disposition(d.subwallet, &d.st_hash).unwrap());
+        }
+        let mut unsent = spends().remove(0);
+        unsent.activity_id = [3; 32];
+        unsent.nullifiers = vec![[0x13; 32]];
+        store.arm_unsent_redrive(subwallet(wallet), unsent).unwrap();
+    });
+    let unloaded = engine.block_on(session.unload_wallet(wallet));
+    assert!(
+        matches!(unloaded, Err(EngineError::ShieldedSpendUnresolved)),
+        "{unloaded:?}"
+    );
+    let c = Arc::clone(&coordinator);
+    engine.block_on(async move {
+        (c.store().write().await)
+            .resolve_unsent_redrive(subwallet(wallet), &[3; 32], NotExecutedReason::Refused)
+            .unwrap();
+    });
+    drop(coordinator);
     engine.block_on(session.unload_wallet(wallet)).unwrap();
     assert!(
         engine
@@ -673,6 +728,8 @@ fn quit_with_unresolved_spends_child() {
     let engine = engine_at(Path::new(&root));
     let (session, wallet) = first_launch(&engine);
     store_spends(&engine, &session, wallet);
+    let other = cancelled_wallet(&engine, &session);
+    std::fs::write(Path::new(&root).join("other"), other.to_string()).unwrap();
     let address = engine
         .block_on(session.next_receive_address(wallet, Some("before the quit".into())))
         .unwrap();
@@ -699,7 +756,9 @@ fn quit_with_unresolved_spends_child() {
 /// quitting process, which exited without dropping anything: the viewing
 /// key in wallet.sqlite (bound again with the vault locked), the address
 /// book in app.sqlite, the spends in the shielded store and their records
-/// in the dispatch journal.
+/// in the dispatch journal. A second wallet whose only spend ended
+/// `Unresolved` and is not acknowledged is kept too: its hold still waits
+/// for an acknowledgement, not for the next scan as a removal leaves it.
 #[test]
 fn a_quit_keeps_unresolved_spends_for_the_next_launch() {
     let dir = dw_testutil::private_tempdir();
@@ -719,9 +778,13 @@ fn a_quit_keeps_unresolved_spends_for_the_next_launch() {
         String::from_utf8_lossy(&child.stderr)
     );
     let address = std::fs::read_to_string(dir.path().join("address")).unwrap();
+    let other: WalletId = (std::fs::read_to_string(dir.path().join("other")).unwrap())
+        .parse()
+        .unwrap();
 
     let engine = engine_at(dir.path());
     let session = open(&engine);
+    assert_eq!(released_by_scan(&session, other), [false]);
     let wallet: WalletId = (std::fs::read_to_string(dir.path().join("wallet")).unwrap())
         .parse()
         .unwrap();
@@ -754,6 +817,59 @@ fn a_quit_keeps_unresolved_spends_for_the_next_launch() {
         assert!(pool::guarded_pass(&s, &m, true).await, "the pass ran");
     });
     assert_eq!(kept(&engine, &session, wallet), expected());
+}
+
+/// Imports the second wallet and resolves a spend of it `Unresolved`, as a
+/// failed send of an armed record leaves it (`Cancelled`): the wallet holds
+/// only that disposition, not acknowledged.
+fn cancelled_wallet(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
+    let other = engine
+        .block_on(session.import_wallet(
+            Zeroizing::new(OTHER_PHRASE.as_bytes().to_vec()),
+            Zeroizing::new(Vec::new()),
+            ImportOptions {
+                birth_height: Some(0),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    assert!(bind(engine, session, other));
+    let (s, m) = (Arc::clone(session), session.manager().unwrap());
+    engine.block_on(async move {
+        let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+        let mut store = coordinator.store().write().await;
+        let mut r = spends().remove(0);
+        r.activity_id = [5; 32];
+        for n in &r.nullifiers {
+            assert!(store.mark_pending(subwallet(other), n).unwrap());
+            (store.set_pending_spend(subwallet(other), n, r.anchor, r.activity_id)).unwrap();
+        }
+        store.arm_redrive(subwallet(other), r).unwrap();
+        store
+            .resolve_redrive(
+                subwallet(other),
+                &[5; 32],
+                ShieldedSpendDisposition::Unresolved(UnresolvedReason::Cancelled),
+            )
+            .unwrap();
+        assert!(store.pending_redrives(subwallet(other)).unwrap().is_empty());
+    });
+    other
+}
+
+/// Whether each of `wallet`'s dispositions had its hold handed to the next
+/// scan, as the library's purge of a removed wallet does
+/// (`shielded_spend_dispositions.released_by_scan`).
+fn released_by_scan(session: &NetworkSession, wallet: WalletId) -> Vec<bool> {
+    let path = session.data_dir().join(pool::SHIELDED_DB_FILE);
+    let db = rusqlite::Connection::open(path).unwrap();
+    let mut rows = db
+        .prepare("SELECT released_by_scan FROM shielded_spend_dispositions WHERE wallet_id = ?1")
+        .unwrap();
+    rows.query_map([&wallet.0[..]], |r| r.get::<_, bool>(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
 }
 
 /// DEC-1057: the marker of a spend whose record the library lost: its
@@ -977,7 +1093,9 @@ fn a_marked_spend_needs_a_confirmation_after_a_relaunch() {
         };
         assert_eq!((code(sent), code(unshielded)), want);
     }
-    let shield = engine.block_on(dp.shield_quote(100_000)).unwrap_err();
+    let shield = engine
+        .block_on(dp.shield_quote(crate::platform::FundAmount::Duffs { duffs: 100_000 }))
+        .unwrap_err();
     assert_ne!(shield.code(), "shielded.unrecorded_spend", "{shield:?}");
 }
 
@@ -1606,3 +1724,6 @@ fn a_cancel_during_an_admitted_settle_keeps_the_close_behind_it() {
     });
     assert!(matches!(closed, Ok(true)), "{closed:?}");
 }
+
+#[path = "shielded_disposition_tests.rs"]
+mod disposition_tests;

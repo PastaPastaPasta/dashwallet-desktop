@@ -149,6 +149,27 @@ pub enum WithdrawAmount {
     },
 }
 
+/// How much of the Core balance a shield or a fund moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FundAmount {
+    /// A lock of `duffs`, its fee on top.
+    Duffs { duffs: u64 },
+    /// Every final coin of BIP44 account 0, the fee out of the lock.
+    All,
+}
+
+/// What a Core Max quote adds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CoreMax {
+    /// The coins the lock spends.
+    pub inputs: u32,
+    /// Spendable coins of the wallet's other accounts, which stay.
+    pub left_duffs: u64,
+    /// Coins of the account not final yet, which stay.
+    pub arriving_duffs: u64,
+}
+
 /// What a withdrawal of `amount` takes and pays out, at the network's
 /// protocol version (`withdrawal.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

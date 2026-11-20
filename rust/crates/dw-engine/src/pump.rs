@@ -51,13 +51,31 @@ impl TxidSet {
     }
 }
 
+/// One wallet's transactions of a new-transaction batch.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct NewTxs {
+    /// Seen for the first time, in arrival order.
+    pub(crate) txids: Vec<Txid>,
+    /// Those of `txids` learned live (`EngineEvent::NewTransactions`).
+    pub(crate) live: BTreeSet<Txid>,
+}
+
+impl NewTxs {
+    /// The live ones, in arrival order.
+    pub(crate) fn live_in_order(&self) -> Vec<Txid> {
+        (self.txids.iter())
+            .filter(|t| self.live.contains(*t))
+            .copied()
+            .collect()
+    }
+}
+
 #[derive(Debug, Default)]
 struct Pending {
     sync: bool,
     balances: BTreeSet<WalletId>,
     history: BTreeMap<WalletId, TxidSet>,
-    /// Transactions seen for the first time, in arrival order per wallet.
-    new_txs: BTreeMap<WalletId, Vec<Txid>>,
+    new_txs: BTreeMap<WalletId, NewTxs>,
     /// When the current new-transaction batch is delivered.
     new_txs_due: Option<Instant>,
     platform: BTreeMap<WalletId, BTreeSet<PlatformChange>>,
@@ -83,7 +101,7 @@ pub(crate) trait PumpTarget: Send + Sync {
     fn flush_history(&self, changes: BTreeMap<WalletId, TxidSet>);
     /// One batch of first-seen transactions, [`NEW_TX_BATCH`] after the
     /// first of them.
-    fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>);
+    fn flush_new_txs(&self, batches: BTreeMap<WalletId, NewTxs>);
     /// The changes first, then the news: a host that re-queries on a
     /// change already sees the rows the news names.
     fn flush_platform(
@@ -137,14 +155,18 @@ impl EventPump {
         });
     }
 
-    /// Transactions seen for the first time. The first mark of a batch
-    /// starts its [`NEW_TX_BATCH`] window.
-    pub(crate) fn mark_new_txs(&self, wallet: WalletId, txids: &[Txid]) {
+    /// Transactions seen for the first time, each with whether it was
+    /// learned live. The first mark of a batch starts its
+    /// [`NEW_TX_BATCH`] window.
+    pub(crate) fn mark_new_txs(&self, wallet: WalletId, txs: &[(Txid, bool)]) {
         self.with_pending(|p| {
-            let list = p.new_txs.entry(wallet).or_default();
-            for t in txids {
-                if !list.contains(t) {
-                    list.push(*t);
+            let batch = p.new_txs.entry(wallet).or_default();
+            for &(t, live) in txs {
+                if !batch.txids.contains(&t) {
+                    batch.txids.push(t);
+                }
+                if live {
+                    batch.live.insert(t);
                 }
             }
             if p.new_txs_due.is_none() {
@@ -220,7 +242,7 @@ impl EventPump {
 
     /// Takes the pending new-transaction marks without delivering them.
     #[cfg(test)]
-    pub(crate) fn take_new_txs(&self) -> BTreeMap<WalletId, Vec<Txid>> {
+    pub(crate) fn take_new_txs(&self) -> BTreeMap<WalletId, NewTxs> {
         self.take(|p| {
             p.new_txs_due = None;
             std::mem::take(&mut p.new_txs)
@@ -395,9 +417,10 @@ mod tests {
                 .sum();
             self.push(format!("history={n}"));
         }
-        fn flush_new_txs(&self, batches: BTreeMap<WalletId, Vec<Txid>>) {
-            let n: usize = batches.values().map(Vec::len).sum();
-            self.push(format!("new={n}/{}", batches.len()));
+        fn flush_new_txs(&self, batches: BTreeMap<WalletId, NewTxs>) {
+            let n: usize = batches.values().map(|b| b.txids.len()).sum();
+            let live: usize = batches.values().map(|b| b.live.len()).sum();
+            self.push(format!("new={n}/{} live={live}", batches.len()));
         }
         fn flush_platform(
             &self,
@@ -484,11 +507,11 @@ mod tests {
             tokio::spawn(async move { pump.run(&*rec, stop_rx).await })
         };
         let (a, b) = (WalletId([1; 32]), WalletId([2; 32]));
-        pump.mark_new_txs(a, &[txid(1)]);
+        pump.mark_new_txs(a, &[(txid(1), false)]);
         settle().await;
         tokio::time::advance(Duration::from_millis(40)).await;
-        pump.mark_new_txs(a, &[txid(2), txid(1)]);
-        pump.mark_new_txs(b, &[txid(3)]);
+        pump.mark_new_txs(a, &[(txid(2), true), (txid(1), false)]);
+        pump.mark_new_txs(b, &[(txid(3), false)]);
         settle().await;
         tokio::time::advance(Duration::from_millis(40)).await;
         settle().await;
@@ -501,16 +524,29 @@ mod tests {
         settle().await;
         let log = rec.log();
         assert_eq!(log.len(), 1, "{log:?}");
-        assert_eq!(log[0].1, "new=3/2");
+        assert_eq!(log[0].1, "new=3/2 live=1");
         assert!(log[0].0 >= 100 && log[0].0 < 120, "{log:?}");
         // A later transaction opens a new batch.
-        pump.mark_new_txs(a, &[txid(4)]);
+        pump.mark_new_txs(a, &[(txid(4), true)]);
         settle().await;
         tokio::time::advance(NEW_TX_BATCH).await;
         settle().await;
-        assert_eq!(rec.log().last().unwrap().1, "new=1/1");
+        assert_eq!(rec.log().last().unwrap().1, "new=1/1 live=1");
         stop_tx.send(true).unwrap();
         task.await.unwrap();
+    }
+
+    /// Issue #141: a txid marked twice in a batch is named once, and is
+    /// live when either mark says so; the live ones keep arrival order.
+    #[test]
+    fn a_batch_names_each_txid_once_and_keeps_it_live() {
+        let pump = EventPump::default();
+        let a = WalletId([1; 32]);
+        pump.mark_new_txs(a, &[(txid(3), true), (txid(1), false)]);
+        pump.mark_new_txs(a, &[(txid(2), true), (txid(1), true), (txid(3), false)]);
+        let batch = pump.take_new_txs().remove(&a).unwrap();
+        assert_eq!(batch.txids, [txid(3), txid(1), txid(2)]);
+        assert_eq!(batch.live_in_order(), [txid(3), txid(1), txid(2)]);
     }
 
     /// Review M4: many wallet events become one event per domain and

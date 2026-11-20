@@ -26,8 +26,10 @@ import {
   voteResult,
   voteRows,
   votesView,
+  type NodeNames,
 } from "../../governance/model";
 import { useGovernanceInfo, useGovernanceRefresh, useVotingMasternodes } from "../../governance/queries";
+import { useNodeNames } from "../../masternodes/queries";
 import { failureText } from "../pay/model";
 import { StatusChip, useNowSecs } from "./common";
 import { CredentialField, useCredential } from "./credential";
@@ -43,12 +45,13 @@ interface VoteDone {
 
 export function VoteSheet({ row, wallet, network, onClose }: { row: ProposalRow; wallet: WalletSummary; network: NetworkInfo; onClose: () => void }) {
   const nodes = useVotingMasternodes(wallet.walletId, row.hash);
+  const names = useNodeNames(wallet.walletId);
   const [result, setResult] = useState<VoteDone | null>(null);
   const [busy, setBusy] = useState(false);
   return (
     <Sheet title={`Vote on ${row.name}`} width="medium" testId="vote-sheet" closable={!busy} onClose={onClose} focusKey={result ? "result" : nodes.data ? "form" : "loading"}>
       {result ? (
-        <VoteResult {...result} onDone={onClose} />
+        <VoteResult {...result} names={names} onDone={onClose} />
       ) : nodes.data ? (
         // A failed re-read (after a vote elsewhere) keeps the form on the last rows.
         <VoteForm row={row} wallet={wallet} network={network} nodes={nodes.data} busy={busy} setBusy={setBusy} onCancel={onClose} onResult={setResult} />
@@ -87,7 +90,8 @@ function VoteForm({
   const now = useNowSecs();
   const info = useGovernanceInfo();
   const refresh = useGovernanceRefresh();
-  const rows = useMemo(() => voteRows(nodes, now), [nodes, now]);
+  const names = useNodeNames(wallet.walletId);
+  const rows = useMemo(() => voteRows(nodes, now, undefined, names), [nodes, now, names]);
   const [outcome, setOutcome] = useState<VoteOutcomeName | null>(() => presetOutcome(nodes));
   const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set(rows.filter((r) => r.eligible).map((r) => r.proTxHash)));
   const credential = useCredential(wallet.walletId, "Enter your passphrase to vote.", null);
@@ -239,8 +243,8 @@ function OutcomePicker({ outcome, disabled, onChange }: { outcome: VoteOutcomeNa
   );
 }
 
-function VoteResult({ casts, nodes, outcome, onDone }: VoteDone & { onDone: () => void }) {
-  const view = voteResult(casts, nodes, outcome);
+function VoteResult({ casts, nodes, outcome, names, onDone }: VoteDone & { names: NodeNames; onDone: () => void }) {
+  const view = voteResult(casts, nodes, outcome, names);
   return (
     <div className="mg-sheet-body" data-testid="vote-result">
       <div className="tx-detail-summary">

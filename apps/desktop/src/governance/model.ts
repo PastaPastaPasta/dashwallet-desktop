@@ -340,9 +340,14 @@ export const linkText = (url: string) => url.replace(/^https?:\/\//, "").replace
 
 export const shortHash = (hash: string) => hash.slice(0, 8);
 
-/** "Masternode 1a2b3c4d" (D4: the binding carries no label or service). */
-export function nodeName(n: Pick<VotingMasternode, "proTxHash" | "kind">): string {
-  return `${n.kind === "evonode" ? "Evonode" : "Masternode"} ${shortHash(n.proTxHash)}`;
+/** The wallet's label and the list's service of a masternode, by ProTx hash (MG-09 F3). */
+export type NodeNames = ReadonlyMap<string, { label: string | null; service: string | null }>;
+
+/** "Home node · 203.0.113.7:19999", else "Masternode 1a2b3c4d" (D4, F3). */
+export function nodeName(n: Pick<VotingMasternode, "proTxHash" | "kind">, names?: NodeNames): string {
+  const known = names?.get(n.proTxHash);
+  const name = known?.label ?? `${n.kind === "evonode" ? "Evonode" : "Masternode"} ${shortHash(n.proTxHash)}`;
+  return known?.service ? `${name} · ${known.service}` : name;
 }
 
 const OUTCOME: Record<VoteOutcomeName, string> = { yes: "Yes", no: "No", abstain: "Abstain" };
@@ -393,10 +398,10 @@ export interface NodeRowView {
 
 /** §4.25.4's rows (D4, D11): eligible rows start checked; a banned masternode and one that voted
  * less than an hour ago are disabled with the reason. */
-export function voteRows(nodes: VotingMasternode[], now: number, locale?: string): NodeRowView[] {
+export function voteRows(nodes: VotingMasternode[], now: number, locale?: string, names?: NodeNames): NodeRowView[] {
   return nodes.map((n) => {
     const v = seenVote(n);
-    const base = { proTxHash: n.proTxHash, name: nodeName(n), weight: n.weight, lastSeen: v ? outcomeText(v.outcome) : "None" };
+    const base = { proTxHash: n.proTxHash, name: nodeName(n, names), weight: n.weight, lastSeen: v ? outcomeText(v.outcome) : "None" };
     if (!n.valid) return { ...base, sub: "PoSe banned: a banned masternode can't vote", eligible: false, lastSeen: "—" };
     if (v && !v.shared && v.time !== null && now - v.time < VOTE_CHANGE_SECS) {
       const after = new Date((v.time + VOTE_CHANGE_SECS) * 1000).toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" });
@@ -458,7 +463,7 @@ export interface VoteResultView {
 }
 
 /** §4.25.4's result: "1 of 2 votes sent", "Yes · weight 4 of 8", a line per masternode. */
-export function voteResult(casts: VoteCast[], nodes: VotingMasternode[], outcome: VoteOutcomeName): VoteResultView {
+export function voteResult(casts: VoteCast[], nodes: VotingMasternode[], outcome: VoteOutcomeName, names?: NodeNames): VoteResultView {
   const byHash = new Map(nodes.map((n) => [n.proTxHash, n]));
   const weightOf = (h: string) => byHash.get(h)?.weight ?? 1;
   const sent = casts.filter((c) => c.rejected === null);
@@ -469,7 +474,7 @@ export function voteResult(casts: VoteCast[], nodes: VotingMasternode[], outcome
     line: `${outcomeText(outcome)} · weight ${sentWeight} of ${total}`,
     rows: casts.map((c) => {
       const n = byHash.get(c.proTxHash);
-      const name = n ? nodeName(n) : `Masternode ${shortHash(c.proTxHash)}`;
+      const name = n ? nodeName(n, names) : `Masternode ${shortHash(c.proTxHash)}`;
       if (c.rejected !== null) return { proTxHash: c.proTxHash, name, sub: rejectedText(c.rejected), sent: false };
       const peers = c.peers === 0 ? "sent when the wallet reconnects" : `to ${plural(c.peers, "peer")}`;
       return { proTxHash: c.proTxHash, name, sub: `weight ${weightOf(c.proTxHash)} · ${peers}`, sent: true };
