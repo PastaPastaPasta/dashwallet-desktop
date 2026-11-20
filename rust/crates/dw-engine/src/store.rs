@@ -120,6 +120,28 @@ impl WalletStore {
     }
 }
 
+/// platform-wallet hands the store every `Received` / `Change` output of a
+/// record as a new coin and names in `utxo_credit_verdicts` the ones
+/// key-wallet did not credit; the SQLite persister writes them unspent all
+/// the same, so the next load gives back a coin the wallet does not hold
+/// (#88: one an unmined own spend claims, scanned in a later process). They
+/// are stored as spent instead: a later credit stores the coin unspent
+/// again, as a sweep or an abandon releasing it does.
+fn withhold_uncredited(changeset: &mut PlatformWalletChangeSet) {
+    let Some(core) = changeset.core.as_mut() else {
+        return;
+    };
+    if core.utxo_credit_verdicts.is_empty() {
+        return;
+    }
+    let verdicts = &core.utxo_credit_verdicts;
+    let (uncredited, credited) = std::mem::take(&mut core.new_utxos)
+        .into_iter()
+        .partition(|u| verdicts.contains_key(&u.outpoint));
+    core.new_utxos = credited;
+    core.spent_utxos.extend::<Vec<_>>(uncredited);
+}
+
 impl PlatformWalletPersistence for WalletStore {
     fn store_commits_inline(&self) -> bool {
         self.inner.store_commits_inline()
@@ -181,6 +203,8 @@ impl PlatformWalletPersistence for WalletStore {
                     .collect()
             })
             .unwrap_or_default();
+        let mut changeset = changeset;
+        withhold_uncredited(&mut changeset);
         if let Err(e) = self.inner.store(wallet_id, changeset) {
             if core && let Some(replay) = replay() {
                 replay.note_store_failed(WalletId(wallet_id));

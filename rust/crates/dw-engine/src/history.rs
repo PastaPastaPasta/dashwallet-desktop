@@ -22,7 +22,7 @@ use dashcore::blockdata::transaction::special_transaction::TransactionType as Sp
 use dashcore::{Address, Network, OutPoint, ScriptBuf, Transaction, Txid};
 use dw_protx::payloads::resolve_collateral;
 use key_wallet::managed_account::transaction_record::TransactionRecord;
-use key_wallet::transaction_checking::TransactionContext;
+use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
 
 use crate::platform::Counterparty;
 use crate::platform::attribution::Payees;
@@ -342,16 +342,73 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
 /// with its spender, by the rule of [`spent_outpoints`]: what key-wallet
 /// held for each such spend when it recorded it (`own_inputs`), as
 /// key-wallet's spent-output claims (`restore_spent_outpoints`).
-pub(crate) fn unmined_own_spends(txs: &HashMap<Txid, TxEntry>) -> Vec<(OutPoint, Option<Txid>)> {
+pub(crate) fn unmined_own_spends(txs: &HashMap<Txid, TxEntry>) -> Vec<(OutPoint, Txid)> {
     let conflicted = conflicted(txs);
     (txs.iter())
         .filter(|(t, e)| !mined(e) && !e.is_abandoned() && !conflicted.contains(*t))
         .flat_map(|(t, e)| {
             (e.own_inputs.keys())
                 .filter_map(|i| e.tx.input.get(*i as usize))
-                .map(move |i| (i.previous_output, Some(*t)))
+                .map(move |i| (i.previous_output, *t))
         })
         .collect()
+}
+
+/// A transaction out of a block that `winner`, in a block, beats to an
+/// input ([`beaten_unrecorded`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Beaten {
+    pub txid: Txid,
+    pub winner: Txid,
+    pub winner_block: Option<BlockInfo>,
+}
+
+/// The transactions out of a block that one in a block beats to an input
+/// and key-wallet holds no record of (`session_held`), so its own conflict
+/// sweep cannot drop them: an own spend restored as a claimant at load
+/// ([`unmined_own_spends`]), or one whose unmined descendants include one.
+/// Abandoned ones are left to the abandon.
+pub(crate) fn beaten_unrecorded(h: &WalletHistory) -> Vec<Beaten> {
+    let txs = &h.txs;
+    let in_block: HashMap<OutPoint, Txid> = (txs.iter().filter(|(_, e)| mined(e)))
+        .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
+        .collect();
+    let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
+    for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
+        for i in &e.tx.input {
+            children.entry(i.previous_output.txid).or_default().push(*t);
+        }
+    }
+    let claims = |root: Txid| {
+        let mut todo = vec![root];
+        let mut seen = HashSet::new();
+        while let Some(t) = todo.pop() {
+            if !seen.insert(t) {
+                continue;
+            }
+            if txs.get(&t).is_some_and(|e| !e.own_inputs.is_empty()) {
+                return true;
+            }
+            todo.extend(children.get(&t).into_iter().flatten());
+        }
+        false
+    };
+    let mut beaten: Vec<Beaten> = (txs.iter())
+        .filter(|(t, e)| !mined(e) && !e.is_abandoned() && !h.session_held.contains(*t))
+        .filter_map(|(t, e)| {
+            let winner = (e.tx.input.iter())
+                .filter_map(|i| in_block.get(&i.previous_output))
+                .find(|w| *w != t)?;
+            Some(Beaten {
+                txid: *t,
+                winner: *winner,
+                winner_block: txs[winner].context.block_info().copied(),
+            })
+        })
+        .filter(|b| claims(b.txid))
+        .collect();
+    beaten.sort_by_key(|b| b.txid);
+    beaten
 }
 
 fn mined(e: &TxEntry) -> bool {
@@ -2490,7 +2547,7 @@ mod tests {
 
         let mut claims = unmined_own_spends(&txs);
         claims.sort();
-        let mut want = vec![(coin(1), Some(live)), (coin(3), Some(live))];
+        let mut want = vec![(coin(1), live), (coin(3), live)];
         want.sort();
         assert_eq!(
             claims, want,

@@ -345,6 +345,9 @@ impl NetworkSession {
             // stored replay is resumed (`WalletState::loading`); a store
             // SPV commits for it meanwhile ends no record
             // (`ReplayRecords::committed`).
+            // Read first so they are restored as soon as the wallet is
+            // registered, not after the history load (#88).
+            let claims = this.stored_spend_claims(id).await?;
             this.hub.admit(id);
             this.hub.update_wallet_state(id, |s| s.loading = true);
             live.store.set_unloaded(id.0, false);
@@ -353,6 +356,7 @@ impl NetworkSession {
                 this.hub.unload_wallet(&id);
                 return Err(e.into());
             }
+            Self::apply_spend_claims(&live.manager, id, &claims).await;
             this.admit_loaded(&live.manager, id).await;
             if live.manager.get_wallet(&id.0).await.is_none() {
                 live.store.set_unloaded(id.0, true);

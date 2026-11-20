@@ -325,29 +325,19 @@ impl NetworkSession {
             .collect();
         let released = self.released(wallet, &abandoned);
 
-        let live = self.live()?;
-        let persister = Arc::clone(&live.persister);
-        let sweep = SweepBatch {
-            txids: abandoned.iter().copied().collect(),
-            // Every input is released below, so no spend claim is attributed
-            // to this txid; the field only names the batch.
-            superseded_by: root,
-            winner_mined_height: None,
-            released_outpoints: released.clone(),
-        };
-        tokio::task::spawn_blocking(move || {
-            let changeset = PlatformWalletChangeSet {
-                core: Some(CoreChangeSet {
-                    sweeps: vec![sweep],
-                    ..Default::default()
-                }),
-                ..Default::default()
-            };
-            persister.store(wallet.0, changeset)?;
-            persister.flush(wallet.0)
-        })
-        .await?
-        .map_err(|e| EngineError::Storage(format!("abandon: {e}")))?;
+        self.store_sweep(
+            wallet,
+            SweepBatch {
+                txids: abandoned.iter().copied().collect(),
+                // Every input is released below, so no spend claim is attributed
+                // to this txid; the field only names the batch.
+                superseded_by: root,
+                winner_mined_height: None,
+                released_outpoints: released.clone(),
+            },
+            "abandon",
+        )
+        .await?;
 
         let rows: Vec<(String, String)> = txs
             .iter()
@@ -386,6 +376,196 @@ impl NetworkSession {
         self.hub.pump.mark_history(wallet, Some(&changed));
         self.hub.pump.mark_balances(wallet);
         Ok(abandoned)
+    }
+
+    /// Stores `sweep` in wallet.sqlite, flushed.
+    async fn store_sweep(
+        &self,
+        wallet: WalletId,
+        sweep: SweepBatch,
+        what: &'static str,
+    ) -> Result<(), EngineError> {
+        let persister = Arc::clone(&self.live()?.persister);
+        tokio::task::spawn_blocking(move || {
+            let changeset = PlatformWalletChangeSet {
+                core: Some(CoreChangeSet {
+                    sweeps: vec![sweep],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            persister.store(wallet.0, changeset)?;
+            persister.flush(wallet.0)
+        })
+        .await?
+        .map_err(|e| EngineError::Storage(format!("{what}: {e}")))
+    }
+
+    /// Drops the wallet's transactions out of a block that a mined one
+    /// beats and key-wallet holds no record of (an own spend restored as a
+    /// claimant at load, #88), as key-wallet's conflict sweep drops a
+    /// recorded one: with their unmined descendants, the claims they hold
+    /// and the coins they made, stored as a sweep that releases the coins
+    /// they spent. A released coin whose funding block the scan already
+    /// passed comes back through a replay from below it.
+    pub(crate) async fn release_beaten_claims(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+    ) -> Result<(), EngineError> {
+        let beaten = self
+            .hub
+            .history
+            .read_wallet(&wallet, crate::history::beaten_unrecorded);
+        for beaten in beaten {
+            self.release_beaten(manager, wallet, beaten).await?;
+        }
+        Ok(())
+    }
+
+    async fn release_beaten(
+        &self,
+        manager: &Manager,
+        wallet: WalletId,
+        beaten: crate::history::Beaten,
+    ) -> Result<(), EngineError> {
+        let spenders: BTreeMap<OutPoint, Txid> = self.hub.history.read(&wallet, |txs| {
+            (txs.iter())
+                .filter(|(_, e)| e.context.block_info().is_none())
+                .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
+                .collect()
+        });
+        let (dropped, freed, checkpoint, balance, accounts) = {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let info = wm
+                .get_wallet_info_mut(&wallet.0)
+                .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
+            let planned = (info.core_wallet.clone())
+                .abandon_transaction_with_spends(beaten.txid, &spenders)
+                .abandoned;
+            // Settled in key-wallet (the history is behind), or dropped
+            // already with an earlier one.
+            let known = self
+                .hub
+                .history
+                .read(&wallet, |txs| txs.contains_key(&beaten.txid));
+            if planned.is_empty() || !known {
+                return Ok(());
+            }
+            let freed = self.freed_by(wallet, &planned);
+            let checkpoint = self.replay_point(wallet, &freed, &info.core_wallet);
+            if let Some(checkpoint) = checkpoint {
+                self.record_rewind_locked(wallet, info, checkpoint).await?;
+            }
+            let dropped = (info.core_wallet)
+                .abandon_transaction_with_spends(beaten.txid, &spenders)
+                .abandoned;
+            info.core_wallet.update_balance();
+            // Under the lock, so a concurrent run finds them gone.
+            self.hub.history.with_wallet(wallet, |h| {
+                for t in &dropped {
+                    h.forget(t);
+                }
+            });
+            let core = &info.core_wallet;
+            (
+                dropped,
+                freed,
+                checkpoint,
+                core.balance(),
+                core.account_balances(),
+            )
+        };
+        let txids: Vec<Txid> = dropped.iter().copied().collect();
+        tracing::info!(wallet_id = %wallet, winner = %beaten.winner, ?txids, ?freed,
+            "dropped unmined spends a mined transaction beats");
+        self.store_sweep(
+            wallet,
+            SweepBatch {
+                txids: txids.clone(),
+                superseded_by: beaten.winner,
+                winner_mined_height: beaten.winner_block.map(|b| b.height()),
+                released_outpoints: freed.clone(),
+            },
+            "beaten spend",
+        )
+        .await?;
+        self.hub.apply_wallet_event(
+            &platform_wallet::key_wallet_manager::WalletEvent::TransactionsSwept {
+                wallet_id: wallet.0,
+                txids: txids.clone(),
+                superseded_by: beaten.winner,
+                winner_block: beaten.winner_block,
+                released_outpoints: freed,
+                balance,
+                account_balances: accounts,
+            },
+        );
+        for t in &dropped {
+            self.spends
+                .release(&wallet, crate::send::SpendOwner::Tx(*t));
+        }
+        if let Some(checkpoint) = checkpoint {
+            self.rewind_recorded(manager, wallet, checkpoint).await?;
+        }
+        self.refresh_wallet_state(manager, wallet).await;
+        self.hub.pump.mark_balances(wallet);
+        Ok(())
+    }
+
+    /// The wallet's coins dropping `dropped` frees: the inputs key-wallet
+    /// held for them (`own_inputs`) that none of them created and no
+    /// surviving transaction spends.
+    fn freed_by(&self, wallet: WalletId, dropped: &BTreeSet<Txid>) -> Vec<OutPoint> {
+        self.hub.history.read(&wallet, |txs| {
+            let survivors: std::collections::HashMap<Txid, crate::history::TxEntry> = (txs.iter())
+                .filter(|(t, _)| !dropped.contains(*t))
+                .map(|(t, e)| (*t, e.clone()))
+                .collect();
+            let spent = crate::history::spent_outpoints(&survivors);
+            (dropped.iter())
+                .filter_map(|t| txs.get(t))
+                .flat_map(|e| {
+                    (e.own_inputs.keys())
+                        .filter_map(|i| e.tx.input.get(*i as usize))
+                        .map(|i| i.previous_output)
+                        .collect::<Vec<_>>()
+                })
+                .filter(|o| !dropped.contains(&o.txid) && !spent.contains(o))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect()
+        })
+    }
+
+    /// Where a replay must start for `freed` to be credited: below the
+    /// lowest funding block among them the scan already passed (the
+    /// birth height when one's funding is unknown). One the wallet holds,
+    /// or whose funding is out of a block or above the checkpoint, the scan
+    /// credits as it goes.
+    fn replay_point(
+        &self,
+        wallet: WalletId,
+        freed: &[OutPoint],
+        info: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    ) -> Option<u32> {
+        let held: HashSet<OutPoint> = (info.accounts.all_funding_accounts().into_iter())
+            .flat_map(|a| a.utxos.keys().copied())
+            .collect();
+        let synced = info.synced_height();
+        let mut lowest = None::<u32>;
+        for o in freed.iter().filter(|o| !held.contains(o)) {
+            let height = match self.hub.history.get(&wallet, &o.txid) {
+                None => info.birth_height(),
+                Some(e) => match e.context.block_info() {
+                    Some(b) if b.height() <= synced => b.height(),
+                    _ => continue,
+                },
+            };
+            lowest = Some(lowest.map_or(height, |l| l.min(height)));
+        }
+        lowest.map(|h| h.saturating_sub(1))
     }
 
     /// The coins abandoning `abandoned` releases: their inputs that none of

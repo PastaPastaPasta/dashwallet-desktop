@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use dashcore::hashes::Hash;
-use dashcore::{ScriptBuf, Txid};
+use dashcore::{OutPoint, ScriptBuf, Txid};
 use dw_appdb::{AppDb, LabelKind};
 use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
 use key_wallet::managed_account::managed_account_type::ManagedAccountType;
@@ -382,21 +382,80 @@ impl NetworkSession {
     /// scan reaching such a coin's funding block would credit it again
     /// beside the change the store gave back (#88). Each one is restored
     /// as a spent-output claim held by its spender, which a block, an
-    /// InstantSend lock or an abandon of the spender settles.
-    async fn restore_unmined_spends(&self, manager: &crate::session::Manager, wallet: WalletId) {
+    /// InstantSend lock or an abandon of the spender settles; a spender a
+    /// mined transaction already beats is dropped and its other coins
+    /// released.
+    async fn restore_unmined_spends(&self, manager: &Manager, wallet: WalletId) {
         let claims = self.hub.history.with_wallet(wallet, |h| {
             let mut claims = crate::history::unmined_own_spends(&h.txs);
-            claims.retain(|(_, spender)| spender.is_some_and(|t| !h.session_held.contains(&t)));
+            claims.retain(|(_, spender)| !h.session_held.contains(spender));
             claims
         });
+        Self::apply_spend_claims(manager, wallet, &claims).await;
+        if let Err(e) = self.release_beaten_claims(manager, wallet).await {
+            tracing::warn!(%wallet, error = %e, "could not release the claims of beaten spends");
+        }
+    }
+
+    /// Restores `claims` as key-wallet spent-output claims of `wallet`.
+    pub(crate) async fn apply_spend_claims(
+        manager: &Manager,
+        wallet: WalletId,
+        claims: &[(OutPoint, Txid)],
+    ) {
         if claims.is_empty() {
             return;
         }
-        let wm = manager.wallet_manager_arc();
-        let mut wm = wm.write().await;
-        if let Some(info) = wm.get_wallet_info_mut(&wallet.0) {
-            info.core_wallet.restore_spent_outpoints(&claims);
+        let restore: Vec<(OutPoint, Option<Txid>)> =
+            claims.iter().map(|(o, t)| (*o, Some(*t))).collect();
+        let held = {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            match wm.get_wallet_info_mut(&wallet.0) {
+                Some(info) => info.core_wallet.restore_spent_outpoints(&restore),
+                None => return,
+            }
+        };
+        for outpoint in held {
+            let spenders: Vec<Txid> = (claims.iter())
+                .filter(|(o, _)| *o == outpoint)
+                .map(|(_, t)| *t)
+                .collect();
+            tracing::warn!(%wallet, %outpoint, ?spenders,
+                "a coin an unmined own transaction spends is still held; it stays counted and spendable");
         }
+    }
+
+    /// The spend claims of `wallet`'s stored own transactions out of a block,
+    /// read from wallet.sqlite before the wallet is loaded, so they can be
+    /// restored before a block is processed for it.
+    pub(crate) async fn stored_spend_claims(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Vec<(OutPoint, Txid)>, EngineError> {
+        let live = self.live()?;
+        let db_path = self.data_dir().join(WALLET_DB_FILE);
+        let persister = Arc::clone(&live.persister);
+        let claims = tokio::task::spawn_blocking(move || {
+            let persisted = match persisted_txids(&db_path) {
+                Ok(mut all) => all.remove(&wallet.0).unwrap_or_default(),
+                Err(e) => {
+                    tracing::warn!(%wallet, error = %e, "could not list stored transactions for spend claims");
+                    return Vec::new();
+                }
+            };
+            let mut history = crate::history::WalletHistory::default();
+            for t in &persisted.records {
+                if let Ok(Some(r)) = persister.get_core_tx_record(wallet.0, t)
+                    && r.txid == *t
+                {
+                    history.upsert(&r, None);
+                }
+            }
+            crate::history::unmined_own_spends(&history.txs)
+        })
+        .await?;
+        Ok(claims)
     }
 
     /// Transaction and address labels of a wallet (dw-appdb).
