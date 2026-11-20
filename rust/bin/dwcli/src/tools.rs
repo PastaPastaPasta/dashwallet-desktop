@@ -27,7 +27,8 @@ pub enum ToolsCommand {
     /// dash-qt Close Wallet.
     Unload {
         wallet: String,
-        /// Also remove it from the load-on-startup list (dash-qt does).
+        /// Also remove it from the load-on-startup list (dash-qt does). When
+        /// it is the last wallet on it, the first open one takes its place.
         #[arg(long)]
         keep_startup: bool,
     },
@@ -263,9 +264,22 @@ pub fn run(
             let id = wallet_id(&wallet)?;
             engine.block_on(session.unload_wallet(id)).map_err(e)?;
             if !keep_startup {
-                engine
-                    .block_on(session.set_load_on_startup(id, false))
-                    .map_err(e)?;
+                let unlisted = engine.block_on(session.set_load_on_startup(id, false));
+                let next = (session.wallet_infos().map_err(e)?.into_iter())
+                    .map(|w| w.wallet_id)
+                    .find(|w| *w != id);
+                match (unlisted, next) {
+                    (Err(EngineError::LastStartupWallet), Some(next)) => {
+                        engine
+                            .block_on(session.set_load_on_startup(next, true))
+                            .map_err(e)?;
+                        engine
+                            .block_on(session.set_load_on_startup(id, false))
+                            .map_err(e)?;
+                        println!("startup {next}");
+                    }
+                    (unlisted, _) => unlisted.map_err(e)?,
+                }
             }
             println!("unloaded {id}");
         }
