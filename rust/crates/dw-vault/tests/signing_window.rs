@@ -22,6 +22,7 @@ fn a_passphrase_unlock_covers_the_spend_limit_for_five_minutes() {
     let v = fx.open();
     assert!(!v.signing_window_open());
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     let w = wallet(1);
     v.store_wallet_secret(&w, &secret(1)).unwrap();
     assert!(v.signing_window_open());
@@ -78,6 +79,8 @@ fn a_passphrase_unlock_covers_the_spend_limit_for_five_minutes() {
     drop(v);
     let again = fx.open();
     assert_eq!(again.status().state, LockState::Locked);
+    assert!(!again.signing_window_open());
+    allow_window(&again);
     assert!(!again.signing_window_open());
 }
 
@@ -156,6 +159,7 @@ fn two_grants_cannot_add_up_past_the_sealed_limit() {
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     let w = wallet(1);
     v.store_wallet_secret(&w, &secret(1)).unwrap();
     let half = DEFAULT_QUICK_UNLOCK_SPEND_LIMIT / 2 + 1;
@@ -189,6 +193,7 @@ fn a_tampered_spend_limit_does_not_raise_the_window() {
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     let w = wallet(1);
     v.store_wallet_secret(&w, &secret(1)).unwrap();
     let change = v
@@ -205,6 +210,7 @@ fn a_tampered_spend_limit_does_not_raise_the_window() {
     json["quick_unlock"]["spend_limit_duffs"] = serde_json::json!(500_000_000u64);
     fx.write_json(&json);
     let v = fx.open();
+    allow_window(&v);
     v.unlock(PASS, UnlockScope::Full).unwrap();
     assert_eq!(v.quick_unlock_policy().spend_limit_duffs, 500_000_000);
     assert!(matches!(
@@ -219,6 +225,7 @@ fn an_expired_window_does_not_reopen_when_the_wall_clock_moves_back() {
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     let w = wallet(1);
     v.store_wallet_secret(&w, &secret(1)).unwrap();
     fx.clock.advance(SIGNING_WINDOW_SECS);
@@ -239,6 +246,7 @@ fn one_window_admits_only_one_full_limit_at_a_time() {
     let fx = Fixture::new();
     let v = Arc::new(fx.open());
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     let w = wallet(1);
     v.store_wallet_secret(&w, &secret(1)).unwrap();
     let left = v.clone();
@@ -269,6 +277,7 @@ fn an_unencrypted_vault_has_no_signing_window() {
     let fx = Fixture::new();
     let v = fx.open();
     v.create(None).unwrap();
+    allow_window(&v);
     assert!(!v.signing_window_open());
     assert!(!v.signing_window_covers(&[spend(1)]));
 }
@@ -335,8 +344,106 @@ fn grant_at_the_deadline(fx: &Fixture, v: &dw_vault::Vault, credential: Credenti
 fn unlocked_with_wallet(fx: &Fixture) -> dw_vault::Vault {
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
     v
+}
+
+fn payments() -> [GrantPurpose; 3] {
+    [
+        spend(1),
+        GrantPurpose::PlatformOp {
+            max_duffs: 1,
+            max_credits: 1,
+        },
+        GrantPurpose::MasternodeWithdraw {
+            pro_tx_hash: [7; 32],
+            max_credits: 1,
+            destination: None,
+        },
+    ]
+}
+
+/// No credential-free way of asking for a payment gets one.
+fn every_payment_asks(v: &dw_vault::Vault) {
+    let w = wallet(1);
+    assert!(!v.signing_window_open());
+    assert_eq!(v.signing_window_remaining(), None);
+    for purpose in payments() {
+        assert!(!v.signing_window_covers(&[purpose]), "{purpose:?}");
+        assert_eq!(
+            v.authorize(purpose, Some(&w), Credential::None).map(drop),
+            Err(VaultError::CredentialRequired),
+            "{purpose:?}"
+        );
+        for set in [
+            [purpose, GrantPurpose::IdentityScan],
+            [GrantPurpose::SignMessage, purpose],
+        ] {
+            assert_eq!(
+                v.authorize_set(&set, Some(&w), Credential::None).map(drop),
+                Err(VaultError::CredentialRequired),
+                "{set:?}"
+            );
+        }
+    }
+    assert_eq!(
+        v.authorize_set(&payments(), Some(&w), Credential::None)
+            .map(drop),
+        Err(VaultError::CredentialRequired)
+    );
+}
+
+/// "Ask for my passphrase for every payment" is the vault's rule, not only
+/// the app's: whoever asks without a credential gets no payment grant, and
+/// a passphrase unlock does not change that.
+#[test]
+fn ask_every_payment_refuses_every_credential_free_payment() {
+    let fx = Fixture::new();
+    let v = fx.open();
+    v.create(Some(PASS)).unwrap();
+    let w = wallet(1);
+    v.store_wallet_secret(&w, &secret(1)).unwrap();
+    every_payment_asks(&v);
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    every_payment_asks(&v);
+    // What never needs a credential still issues.
+    v.authorize(GrantPurpose::IdentityScan, Some(&w), Credential::None)
+        .unwrap();
+    v.authorize(GrantPurpose::SignMessage, Some(&w), Credential::None)
+        .unwrap();
+
+    // The choice of another vault is not this one's.
+    v.set_signing_window_allowed(&[9; 16], true);
+    every_payment_asks(&v);
+
+    allow_window(&v);
+    assert!(v.signing_window_open());
+    let held = v.authorize(spend(1), Some(&w), Credential::None).unwrap();
+    let typed = v
+        .authorize(spend(1), Some(&w), Credential::Passphrase(PASS))
+        .unwrap();
+    v.set_signing_window_allowed(&v.vault_id().unwrap(), false);
+    every_payment_asks(&v);
+    assert_eq!(
+        v.window_lease_allowed(std::slice::from_ref(&held.id)),
+        Err(VaultError::GrantInvalid)
+    );
+    assert_eq!(
+        v.redeem_grant(&held.id, GrantKind::Spend, Some(&w))
+            .map(drop),
+        Err(VaultError::GrantInvalid)
+    );
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    every_payment_asks(&v);
+    v.redeem_grant(&typed.id, GrantKind::Spend, Some(&w))
+        .unwrap();
+
+    // A new opening of the file knows nothing of the setting until told.
+    drop(v);
+    let v = fx.open();
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    every_payment_asks(&v);
 }
 
 #[test]

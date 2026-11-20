@@ -100,6 +100,23 @@ fn payment_auth_key(vault_id: &[u8]) -> String {
     format!("{PAYMENT_AUTH_KEY}{}", hex::encode(vault_id))
 }
 
+/// Tells the vault the stored choice for the vault it holds, so it opens a
+/// signing window only when the user chose one. A row that cannot be read
+/// asks every time.
+pub(crate) fn sync_signing_window(vault: &Vault, db: &dw_appdb::AppDb) {
+    let Some(vault_id) = vault.vault_id() else {
+        return;
+    };
+    let allowed = match db.setting(dw_appdb::GLOBAL_SCOPE, &payment_auth_key(&vault_id)) {
+        Ok(stored) => !asks_every_payment(stored.as_deref()),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the payment setting; every payment asks");
+            false
+        }
+    };
+    vault.set_signing_window_allowed(&vault_id, allowed);
+}
+
 /// "Require authentication for every payment" as read for one vault
 /// ([`NetworkSession::payment_authentication`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,9 +343,10 @@ impl NetworkSession {
 
     /// "Ask for my passphrase for every payment". While on, a host issues a
     /// payment grant on an encrypted vault only against a credential (dw-app
-    /// enforces it at its IPC boundary). While off, the vault's signing
-    /// window may issue one, up to the sealed spend limit for the whole
-    /// window. Stored per vault id. A vault that has no row yet is on:
+    /// enforces it at its IPC boundary), and the vault opens no signing
+    /// window ([`Vault::set_signing_window_allowed`]). While off, the
+    /// vault's signing window may issue one, up to the sealed spend limit
+    /// for the whole window. Stored per vault id. A vault that has no row yet is on:
     /// that is how every vault from before the window stored the default.
     /// [`Self::adopt_signing_window_default`] writes the window for a vault
     /// this build creates.
@@ -366,12 +384,16 @@ impl NetworkSession {
     /// `VaultError::NotEncrypted` without one. A vault with no passphrase
     /// has no credential to ask for, and a value stored then would carry
     /// over, unasked, to the vault once encrypted. The value is stored for
-    /// the vault that redeemed the grant.
+    /// the vault that redeemed the grant. The vault learns it too: "on"
+    /// ends the open window and drops its grants before the row is written;
+    /// "off" lets the window of a passphrase unlock admit payments once the
+    /// row is written.
     pub async fn set_payment_authentication(
         self: &Arc<Self>,
         on: bool,
         grant_id: String,
     ) -> Result<(), EngineError> {
+        let _auth = self.payment_auth.lock().await;
         let vault_id = self
             .vault_op(move |v| {
                 if !v.status().encrypted {
@@ -379,40 +401,55 @@ impl NetworkSession {
                 }
                 let vault_id = v.vault_id().ok_or(VaultError::NoVault)?;
                 v.redeem_grant(&grant_id, GrantKind::ChangeCredential, None)?;
+                if on {
+                    v.set_signing_window_allowed(&vault_id, false);
+                }
                 Ok(vault_id)
             })
             .await?;
         let this = Arc::clone(self);
+        let key = payment_auth_key(&vault_id);
         self.on_runtime(async move {
             let _op = this.enter().await?;
-            let key = payment_auth_key(&vault_id);
             let value = if on { "strict" } else { "window" };
             this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some(value)))
                 .await
         })
-        .await
+        .await?;
+        if !on {
+            self.vault().set_signing_window_allowed(&vault_id, true);
+        }
+        Ok(())
     }
 
     /// Writes the signing-window default for a vault this build just
     /// created, when the vault has no row yet. An older vault is left
-    /// absent, which still asks every time.
+    /// absent, which still asks every time. The vault then follows the row
+    /// as stored; a failure leaves it asking every time.
     pub async fn adopt_signing_window_default(self: &Arc<Self>) -> Result<(), EngineError> {
+        let _auth = self.payment_auth.lock().await;
         let Some(vault_id) = self.vault().vault_id() else {
             return Ok(());
         };
         let key = payment_auth_key(&vault_id);
         let this = Arc::clone(self);
-        self.on_runtime(async move {
-            let _op = this.enter().await?;
-            this.appdb_op(move |db| {
-                if db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.is_none() {
-                    db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some("window"))?;
-                }
-                Ok(())
+        let stored = self
+            .on_runtime(async move {
+                let _op = this.enter().await?;
+                this.appdb_op(move |db| {
+                    if db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.is_none() {
+                        db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some("window"))?;
+                    }
+                    db.setting(dw_appdb::GLOBAL_SCOPE, &key)
+                })
+                .await
             })
-            .await
-        })
-        .await
+            .await;
+        let allowed = stored
+            .as_ref()
+            .is_ok_and(|stored| !asks_every_payment(stored.as_deref()));
+        self.vault().set_signing_window_allowed(&vault_id, allowed);
+        stored.map(drop)
     }
 
     /// Replaces this vault's payment-auth row. `None` deletes it, which is
@@ -427,13 +464,16 @@ impl NetworkSession {
             return Ok(());
         };
         let key = payment_auth_key(&vault_id);
+        let allowed = !asks_every_payment(value.as_deref());
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
             this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, value.as_deref()))
                 .await
         })
-        .await
+        .await?;
+        self.vault().set_signing_window_allowed(&vault_id, allowed);
+        Ok(())
     }
 
     /// Dash Core's `walletpassphrase` timer (console, QT-145): locks the

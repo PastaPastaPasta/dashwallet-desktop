@@ -651,6 +651,7 @@ fn session_with(
     engine
         .block_on(s.vault_op(move |v| v.create(passphrase)))
         .unwrap();
+    engine.block_on(s.adopt_signing_window_default()).unwrap();
     *guard(&s.platform.recovery.mock) = Some(platform);
     (engine, s)
 }

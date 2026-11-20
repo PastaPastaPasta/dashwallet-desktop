@@ -61,6 +61,15 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: a sleep in this process ends the window; lock drops it with the key",
     ),
     (
+        "Vault::set_signing_window_allowed",
+        "internal: the engine tells the vault the stored \"ask every payment\" choice",
+    ),
+    (
+        "Vault::signing_window_allowed",
+        "internal: tests read the choice the engine gave the vault",
+    ),
+
+    (
         "Vault::stash_link",
         "internal: the engine's `NetworkSession::stash_link` calls it after classifying the link itself (DP5-01 D3)",
     ),

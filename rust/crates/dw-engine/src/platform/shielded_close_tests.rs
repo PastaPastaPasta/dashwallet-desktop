@@ -86,6 +86,9 @@ fn unbound_launch_with(
     engine
         .block_on(session.vault_op(|v| v.create(Some(PASS))))
         .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
+        .unwrap();
     let wallet = engine
         .block_on(session.import_wallet(
             Zeroizing::new(PHRASE.as_bytes().to_vec()),
@@ -543,6 +546,9 @@ fn a_coordinator_setup_during_the_close_check_is_refused() {
     let session = open(&engine);
     engine
         .block_on(session.vault_op(|v| v.create(Some(PASS))))
+        .unwrap();
+    engine
+        .block_on(session.adopt_signing_window_default())
         .unwrap();
     let wallet = engine
         .block_on(session.import_wallet(

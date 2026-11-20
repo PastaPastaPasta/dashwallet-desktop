@@ -77,6 +77,7 @@ fn owner_identity() -> [u8; 32] {
 fn encrypted(fx: &Fixture) -> Vault {
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
     v.store_masternode_key(&PRO_TX, "owner", &ATTACHED_OWNER)
         .unwrap();

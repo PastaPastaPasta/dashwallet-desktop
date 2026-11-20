@@ -837,6 +837,13 @@ fn payment_authentication_is_enforced_over_ipc() {
         json!({ "on": false, "grantId": grant }),
     );
     assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    // Turning it on ended the window; a passphrase unlock opens one.
+    demo.err(
+        "authorize",
+        authorize(&spend, &wallet, &none),
+        "vault.credential_required",
+    );
+    demo.ok("unlock", json!({ "passphrase": "pw" }));
     demo.ok("authorize", authorize(&spend, &wallet, &none));
 
     // Locked, the vault answers first, as without the setting.
@@ -883,6 +890,7 @@ fn an_absent_payment_auth_row_keeps_asking_after_upgrade() {
 
     write(Some("0"));
     assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    demo.ok("unlock", json!({ "passphrase": "pw" }));
     demo.ok("authorize", spend.clone());
 
     write(Some("garbage"));
@@ -895,7 +903,68 @@ fn an_absent_payment_auth_row_keeps_asking_after_upgrade() {
     assert_eq!(demo.ok("payment_authentication", json!({})), true);
     write(Some("window"));
     assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    demo.ok("unlock", json!({ "passphrase": "pw" }));
     demo.ok("authorize", spend);
+}
+
+/// "Ask every payment" holds in the vault, not only in `authorize`: a
+/// caller that asks the vault directly, past the IPC check, gets no
+/// credential-free payment, after an unlock and after the network is
+/// opened again from the stored choice.
+#[test]
+fn ask_every_payment_holds_for_a_caller_that_skips_the_ipc_check() {
+    use dw_vault::{Credential, GrantPurpose, VaultError};
+    use tauri::Manager;
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let wallet = crate::state::parse_wallet_id(&wallet).unwrap().0;
+    let grant = demo.ok(
+        "authorize",
+        json!({
+            "purpose": { "kind": "changeCredential" },
+            "walletId": null,
+            "credential": { "kind": "passphrase", "passphrase": "pw" },
+        }),
+    )["id"]
+        .clone();
+    demo.ok(
+        "set_payment_authentication",
+        json!({ "on": true, "grantId": grant }),
+    );
+    let direct = || {
+        let session =
+            tauri::async_runtime::block_on(demo.app.state::<crate::state::AppState>().session())
+                .unwrap();
+        let v = session.vault();
+        v.unlock(b"pw", dw_vault::UnlockScope::Full).unwrap();
+        for purposes in [
+            vec![GrantPurpose::Spend { max_duffs: 1000 }],
+            vec![
+                GrantPurpose::PlatformOp {
+                    max_duffs: 0,
+                    max_credits: 1000,
+                },
+                GrantPurpose::IdentityScan,
+            ],
+        ] {
+            assert_eq!(
+                v.authorize_set(&purposes, Some(&wallet), Credential::None)
+                    .map(drop),
+                Err(VaultError::CredentialRequired),
+                "{purposes:?}"
+            );
+        }
+        assert!(!v.signing_window_open());
+    };
+    direct();
+    assert_eq!(demo.ok("close_network", json!({})), true);
+    demo.open();
+    direct();
 }
 
 /// logind's PrepareForSleep(true) ends the window and leaves the vault

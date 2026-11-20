@@ -392,7 +392,9 @@ fn window_purpose(purpose: &GrantPurpose) -> bool {
 }
 
 /// Opens a new window. The previous one ends first, with its grants and
-/// its charge, so two windows never add up past the limit.
+/// its charge, so two windows never add up past the limit. It admits
+/// grants only while the user's setting allows it for this vault
+/// ([`Vault::set_signing_window_allowed`]).
 fn arm_signing_window(inner: &mut Inner, now: Instant) {
     clear_signing_window(inner);
     inner.signing_deadline = Some(now + Duration::from_secs(SIGNING_WINDOW_SECS));
@@ -401,6 +403,15 @@ fn arm_signing_window(inner: &mut Inner, now: Instant) {
         wall: SystemTime::now(),
         mono: Instant::now(),
     });
+}
+
+/// The user chose the signing window, not "ask every payment", for the
+/// vault in memory now.
+fn window_allowed(inner: &Inner) -> bool {
+    match (&inner.window_vault, &inner.file) {
+        (Some(id), Some(f)) => bool::from(id.ct_eq(&f.vault_id)),
+        _ => false,
+    }
 }
 
 fn clear_signing_window(inner: &mut Inner) {
@@ -499,6 +510,9 @@ struct Inner {
     window_charged: u64,
     /// Clocks at the last look, for [`observe_sleep`].
     sleep_sample: Option<SleepSample>,
+    /// The vault id the host said uses the signing window. Any other vault,
+    /// one made by a recovery included, has none until the host says so.
+    window_vault: Option<Vec<u8>>,
     #[cfg(test)]
     gate_log: Option<Vec<GateEvent>>,
 }
@@ -648,6 +662,7 @@ impl Vault {
                     signing_deadline: None,
                     window_charged: 0,
                     sleep_sample: None,
+                    window_vault: None,
                     #[cfg(test)]
                     gate_log: None,
                 }),
@@ -851,7 +866,8 @@ impl Vault {
 
     /// Creates the vault. `Some(passphrase)` = encrypted (slot P);
     /// `None` = unencrypted (data key in the OS store, slot O). Leaves the
-    /// vault unlocked.
+    /// vault unlocked. The new vault's signing window admits nothing until
+    /// the host allows it ([`Self::set_signing_window_allowed`]).
     pub fn create(&self, passphrase: Option<&[u8]>) -> Result<VaultStatus, VaultError> {
         let writer = self.writer();
         if self.inner().file.is_some() || file::read(&self.shared.dir)?.is_some() {
@@ -1403,7 +1419,7 @@ impl Vault {
         purposes: &[GrantPurpose],
     ) -> Result<u64, VaultError> {
         settle_window(inner, self.clock_mono());
-        if inner.signing_deadline.is_none() {
+        if !window_allowed(inner) || inner.signing_deadline.is_none() {
             return Err(VaultError::CredentialRequired);
         }
         let limit = sealed_spend_limit(inner)?;
@@ -2826,12 +2842,13 @@ impl Vault {
         Ok(self.status())
     }
 
-    /// The post-unlock signing window is open. Expiry clears it, so a later
-    /// clock change cannot open it again. A fresh open is closed.
+    /// The post-unlock signing window is open and the user's setting
+    /// allows it. Expiry clears it, so a later clock change cannot open it
+    /// again. A fresh open is closed.
     pub fn signing_window_open(&self) -> bool {
         let mut inner = self.inner();
         settle_window(&mut inner, self.clock_mono());
-        inner.signing_deadline.is_some()
+        window_allowed(&inner) && inner.signing_deadline.is_some()
     }
 
     /// Duff still authorizable from the open window, against the sealed
@@ -2841,6 +2858,9 @@ impl Vault {
         let mut inner = self.inner();
         settle_window(&mut inner, self.clock_mono());
         inner.signing_deadline?;
+        if !window_allowed(&inner) {
+            return None;
+        }
         let limit = sealed_spend_limit(&inner).ok()?;
         Some(limit.saturating_sub(inner.window_charged))
     }
@@ -2849,6 +2869,31 @@ impl Vault {
     /// clears it too. Grants the window issued are dropped.
     pub fn end_signing_window(&self) {
         clear_signing_window(&mut self.inner());
+    }
+
+    /// The user's "ask for my passphrase for every payment" for the vault
+    /// `vault_id`, which the host stores: `allowed` is the signing window.
+    /// The window admits grants only for the vault id allowed last, so a
+    /// caller that never read the setting gets none, and a new vault (a
+    /// recovery's, or one made after a destroy) admits none until the host
+    /// allows it. Refusing it ends the open window and drops its grants.
+    pub fn set_signing_window_allowed(&self, vault_id: &[u8], allowed: bool) {
+        let mut inner = self.inner();
+        if allowed {
+            inner.window_vault = Some(vault_id.to_vec());
+        } else if inner
+            .window_vault
+            .as_ref()
+            .is_some_and(|id| bool::from(id.ct_eq(vault_id)))
+        {
+            inner.window_vault = None;
+            clear_signing_window(&mut inner);
+        }
+    }
+
+    /// Whether the host allowed the signing window for the vault in memory.
+    pub fn signing_window_allowed(&self) -> bool {
+        window_allowed(&self.inner())
     }
 
     /// A lease may redeem `ids` together only when the ones the window
@@ -3302,6 +3347,7 @@ mod tests {
         )
         .unwrap();
         v.create(Some(b"correct horse")).unwrap();
+        v.set_signing_window_allowed(&v.vault_id().unwrap(), true);
         assert!(v.signing_window_open());
         v.test_backdate_sleep_sample(Duration::from_secs(30));
         assert!(!v.signing_window_open());
@@ -3335,6 +3381,7 @@ mod tests {
     ) -> Vault {
         let v = open_in(dir, os_store);
         v.create(passphrase).unwrap();
+        v.set_signing_window_allowed(&v.vault_id().unwrap(), true);
         let secret = WalletSecret {
             mnemonic: Zeroizing::new(b"unused".to_vec()),
             mnemonic_passphrase: Zeroizing::new(Vec::new()),

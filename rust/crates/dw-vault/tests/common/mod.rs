@@ -116,6 +116,12 @@ impl Fixture {
     }
 }
 
+/// The user's setting is the signing window for the vault `v` holds, as
+/// the engine tells it from the stored choice.
+pub fn allow_window(v: &Vault) {
+    v.set_signing_window_allowed(&v.vault_id().expect("a vault"), true);
+}
+
 pub fn wallet(n: u8) -> WalletId {
     [n; 32]
 }

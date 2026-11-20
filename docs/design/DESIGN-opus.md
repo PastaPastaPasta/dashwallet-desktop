@@ -291,7 +291,10 @@ GUI unlock has no timeout, as in dash-qt. Auto-lock (IOS-015) drops to `Locked`,
 | `Wipe` | wallet removal |
 
 - Biometric grants carry the iOS spend allowance (default 0.5 DASH; options 0 / 0.1 / 0.5 / 1 / 5) and the 7-day passphrase freshness rule. Rust enforces both, so a buggy view cannot bypass them.
-- Setting "Require authentication for every payment": default **on** (iOS behaviour). Turning it off gives dash-qt behaviour, where an unlocked wallet signs without re-prompting.
+- Setting "Ask for my passphrase for every payment": on, or the signing window below. A vault this build creates starts on the window; a vault from before the window (no stored choice) asks every time.
+
+**Signing window ("unlock once").** For five minutes after a passphrase unlock, payments (`Spend`, `PlatformOp`, `MasternodeWithdraw`) need no passphrase while they add up to no more than the sealed spending limit. Votes, masternode owner operations, reveal, wipe and credential changes always ask.
+- The user's choice is stored by the engine per vault id (`app.sqlite`). The vault holds it too: the engine tells it at session open and at every change (`Vault::set_signing_window_allowed`), and the vault admits a credential-free payment only for the vault id it was told uses the window. A caller that skips the app's own check, or a vault the engine has not told (a recovery's new vault, another opening of the file), gets no window grant. Turning "ask every payment" on ends the open window and drops its grants.
 
 **Lockout policy (IOS-012).** iOS's `6^(n−3)·60 s` waits run on passphrase/PIN attempts, using a monotonic secure-time ratchet persisted in the vault header. It is explicitly **UX throttling**: the real protection is Argon2id cost. There is no "disabled at 8" wipe on desktop. Instead, after 8 failures the UI offers "Restore with recovery phrase".
 
