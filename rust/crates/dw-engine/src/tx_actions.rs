@@ -444,13 +444,20 @@ impl NetworkSession {
             let planned = (info.core_wallet.clone())
                 .abandon_transaction_with_spends(beaten.txid, &spenders)
                 .abandoned;
-            // Settled in key-wallet (the history is behind), or dropped
-            // already with an earlier one.
+            // Dropped already with an earlier one.
             let known = self
                 .hub
                 .history
                 .read(&wallet, |txs| txs.contains_key(&beaten.txid));
-            if planned.is_empty() || !known {
+            if !known {
+                return Ok(());
+            }
+            // key-wallet holds it as settled: its record is this session's,
+            // and the history catches up with its event.
+            if planned.is_empty() {
+                self.hub.history.with_wallet(wallet, |h| {
+                    h.session_held.insert(beaten.txid);
+                });
                 return Ok(());
             }
             let freed = self.freed_by(wallet, &planned);

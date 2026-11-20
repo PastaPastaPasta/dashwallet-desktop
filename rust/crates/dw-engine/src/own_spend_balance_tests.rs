@@ -737,7 +737,7 @@ fn after_the_rival(paid: &Transaction, b: OutPoint, rival: &Transaction) -> BTre
         .collect()
 }
 
-/// #88 review: a payment restored as the claimant of A and B loses to a
+/// #88: a payment restored as the claimant of A and B loses to a
 /// mined spend of B by another device of the wallet. key-wallet holds no
 /// record of the payment, so its conflict sweep drops nothing: the engine
 /// drops it, releases A and replays A's funding block, which the scan had
@@ -968,4 +968,295 @@ fn a_coin_spent_unmined_stays_spent_two_restarts_later() {
         assert_holds(&engine, &session, id, &want, "a third restart").total,
         scanned.total
     );
+}
+
+/// The wallet's own output of `tx` (its change).
+fn change_of(tx: &Transaction, own: &BTreeSet<dashcore::ScriptBuf>) -> OutPoint {
+    let vout = (0..tx.output.len() as u32)
+        .find(|v| own.contains(&tx.output[*v as usize].script_pubkey))
+        .expect("with change");
+    OutPoint::new(tx.txid(), vout)
+}
+
+/// key-wallet's copy of the wallet's coin `outpoint`.
+fn utxo(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    outpoint: OutPoint,
+) -> key_wallet::Utxo {
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm.get_wallet_info(&id.0).unwrap();
+        (info.core_wallet.accounts.all_funding_accounts().into_iter())
+            .find_map(|a| a.utxos.get(&outpoint).cloned())
+            .expect("held")
+    })
+}
+
+/// Writes `changeset`'s core part to wallet.sqlite as the SQLite persister
+/// alone writes it (no engine wrapper).
+fn store_raw(
+    session: &NetworkSession,
+    id: WalletId,
+    core: platform_wallet::changeset::CoreChangeSet,
+) {
+    use platform_wallet::changeset::{PlatformWalletChangeSet, PlatformWalletPersistence};
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    let changeset = PlatformWalletChangeSet {
+        core: Some(core),
+        ..Default::default()
+    };
+    persister.store(id.0, changeset).unwrap();
+    persister.flush(id.0).unwrap();
+}
+
+fn abandon(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, txid: Txid) {
+    let s = Arc::clone(session);
+    let abandoned = engine
+        .block_on(session.on_runtime(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, id, txid).await
+        }))
+        .unwrap();
+    assert!(abandoned.contains(&txid));
+}
+
+/// A wallet that hit #88 on an earlier build has its spent coin X stored
+/// unspent beside the payment's change. The load drops X (the payment
+/// claims it), stores it spent, and abandoning the payment gives it back.
+#[test]
+fn a_store_written_before_the_fix_loads_the_spent_coin_once() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let before = coins(&engine, &session, id);
+    let x = OutPoint::new(paid.txid(), 0);
+    let x_coin = utxo(&engine, &session, id, x);
+    let tx = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![x]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &tx);
+    let own = assert_counted_once(&engine, &session, id, &before, &tx, "own broadcast");
+    wait_stored(&session, id, &[tx.txid()]);
+    store_raw(
+        &session,
+        id,
+        platform_wallet::changeset::CoreChangeSet {
+            new_utxos: vec![x_coin],
+            ..Default::default()
+        },
+    );
+
+    let session = reopen(&engine, session);
+    let loaded = assert_counted_once(&engine, &session, id, &before, &tx, "loaded");
+    assert_eq!(loaded.total, own.total);
+    let session = reopen(&engine, session);
+    let again = assert_counted_once(&engine, &session, id, &before, &tx, "another restart");
+    assert_eq!(again.total, own.total);
+
+    abandon(&engine, &session, id, tx.txid());
+    assert_eq!(synced(&engine, &session, id), FUNDED_AT - 1);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    let all: BTreeSet<OutPoint> = before.iter().map(|c| c.0).collect();
+    assert_eq!(
+        assert_holds(&engine, &session, id, &all, "abandoned").total,
+        12 * COIN
+    );
+    let session = reopen(&engine, session);
+    assert_eq!(
+        assert_holds(&engine, &session, id, &all, "abandoned, then a restart").total,
+        12 * COIN
+    );
+}
+
+/// A wallet opened later in the session whose funding block is processed
+/// before its claims are set (block writes queued on the wallet manager's
+/// lock): the coins the payment spent are dropped again once they are,
+/// and stay dropped after a restart.
+#[test]
+fn a_wallet_opened_later_drops_a_spent_coin_credited_before_its_claims() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let before = coins(&engine, &session, id);
+    let tx = send(&engine, &session, id, CoinSource::Any, COIN * 5 / 2, false);
+    mempool(&engine, &session, id, &tx);
+    let own = assert_counted_once(&engine, &session, id, &before, &tx, "own broadcast");
+    wait_stored(&session, id, &[tx.txid()]);
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_claims.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the load's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    mined(&engine, &session, id, TIP, vec![paid]);
+    let credited: BTreeSet<OutPoint> = coins(&engine, &session, id)
+        .into_iter()
+        .map(|c| c.0)
+        .collect();
+    assert!(
+        tx.input
+            .iter()
+            .all(|i| credited.contains(&i.previous_output)),
+        "the block credited the spent coins before the claims"
+    );
+    pause.release.notify_one();
+    engine.block_on(load).unwrap().unwrap();
+    let b = assert_counted_once(&engine, &session, id, &before, &tx, "opened later");
+    assert_eq!(b.total, own.total);
+
+    let session = reopen(&engine, session);
+    let b = assert_counted_once(&engine, &session, id, &before, &tx, "after a restart");
+    assert_eq!(b.total, own.total);
+}
+
+/// Abandoning the stored payment after its funding block was scanned in a
+/// later process stores the coins it spent unspent again: the restart
+/// after the abandon loads them, before any replay.
+#[test]
+fn coins_freed_by_an_abandon_after_their_funding_block_load_after_a_restart() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let all: BTreeSet<OutPoint> = coins(&engine, &session, id)
+        .into_iter()
+        .map(|c| c.0)
+        .collect();
+    let tx = send(&engine, &session, id, CoinSource::Any, COIN * 5 / 2, false);
+    mempool(&engine, &session, id, &tx);
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    abandon(&engine, &session, id, tx.txid());
+
+    let session = reopen(&engine, session);
+    assert!(
+        synced(&engine, &session, id) < TIP,
+        "the replay is still due"
+    );
+    let b = assert_holds(&engine, &session, id, &all, "abandoned, then a restart");
+    assert_eq!(b.total, 12 * COIN);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert_eq!(
+        assert_holds(&engine, &session, id, &all, "replayed").total,
+        12 * COIN
+    );
+}
+
+/// The store keeps an output key-wallet did not credit as spent whatever
+/// the verdict: one a block spent before it was seen (`ObservedSpent`) and
+/// one of a transaction a block already beat (`Doomed`) do not come back
+/// at the next load; a credited one does.
+#[test]
+fn outputs_with_any_credit_verdict_are_stored_spent() {
+    use platform_wallet::changeset::changeset::UtxoCreditVerdict;
+    use platform_wallet::changeset::{
+        CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+    };
+    let (_dir, engine, session, id) = engine_wallet();
+    let to: Vec<Address> = (0..3)
+        .map(|_| fresh_address(&engine, &session, id))
+        .collect();
+    let paid = funding(9, &to, COIN);
+    let utxos: Vec<key_wallet::Utxo> = (0..3)
+        .map(|v| {
+            key_wallet::Utxo::new(
+                OutPoint::new(paid.txid(), v as u32),
+                paid.output[v].clone(),
+                to[v].clone(),
+                FUNDED_AT,
+                false,
+            )
+        })
+        .collect();
+    let store = Arc::clone(&session.live().unwrap().store);
+    store
+        .store(
+            id.0,
+            PlatformWalletChangeSet {
+                core: Some(CoreChangeSet {
+                    new_utxos: utxos.clone(),
+                    utxo_credit_verdicts: [
+                        (
+                            utxos[1].outpoint,
+                            UtxoCreditVerdict::ObservedSpent {
+                                height: FUNDED_AT + 1,
+                            },
+                        ),
+                        (utxos[2].outpoint, UtxoCreditVerdict::Doomed),
+                    ]
+                    .into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    store.flush(id.0).unwrap();
+    let credited = BTreeSet::from([utxos[0].outpoint]);
+    let stored: BTreeSet<OutPoint> = (store.load().unwrap().wallets[&id.0].wallet_info.accounts)
+        .all_funding_accounts()
+        .into_iter()
+        .flat_map(|a| a.utxos.keys().copied())
+        .collect();
+    assert_eq!(stored, credited);
+    drop(store);
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &credited, "after a restart");
+}
+
+/// A beaten payment is dropped with its unmined child, which spent its
+/// change: neither change counts, and the coin only the payment spent
+/// does.
+#[test]
+fn a_beaten_payment_is_dropped_with_its_child() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    let own = own_scripts(&engine, &session, id);
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change_of(&payment, &own)]),
+        COIN / 10,
+        false,
+    );
+    mempool(&engine, &session, id, &child);
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let rival = rival(&engine, &session, id, &paid, 1);
+    mined(&engine, &session, id, TIP + 1, vec![rival.clone()]);
+    eventually(
+        "the payment and its child dropped, the scan rewound",
+        || {
+            !in_history(&session, id, payment.txid())
+                && !in_history(&session, id, child.txid())
+                && synced(&engine, &session, id) < TIP
+        },
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![rival.clone()]);
+    let want = after_the_rival(&paid, b, &rival);
+    assert_holds(&engine, &session, id, &want, "replayed");
+
+    let session = reopen(&engine, session);
+    assert!(!in_history(&session, id, child.txid()));
+    assert_holds(&engine, &session, id, &want, "after a restart");
 }

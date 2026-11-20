@@ -391,14 +391,19 @@ impl NetworkSession {
             claims.retain(|(_, spender)| !h.session_held.contains(spender));
             claims
         });
-        Self::apply_spend_claims(manager, wallet, &claims).await;
+        self.apply_spend_claims(manager, wallet, &claims).await;
         if let Err(e) = self.release_beaten_claims(manager, wallet).await {
             tracing::warn!(%wallet, error = %e, "could not release the claims of beaten spends");
         }
     }
 
-    /// Restores `claims` as key-wallet spent-output claims of `wallet`.
+    /// Restores `claims` as key-wallet spent-output claims of `wallet`. A
+    /// claimed coin the wallet still holds (a store written before #88 was
+    /// fixed, or a block processed for a wallet opened later before its
+    /// claims were set) is spent by a live own transaction: it leaves the
+    /// funds accounts, is stored as spent and the balance is announced.
     pub(crate) async fn apply_spend_claims(
+        &self,
         manager: &Manager,
         wallet: WalletId,
         claims: &[(OutPoint, Txid)],
@@ -408,21 +413,52 @@ impl NetworkSession {
         }
         let restore: Vec<(OutPoint, Option<Txid>)> =
             claims.iter().map(|(o, t)| (*o, Some(*t))).collect();
-        let held = {
+        let removed = {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
-            match wm.get_wallet_info_mut(&wallet.0) {
-                Some(info) => info.core_wallet.restore_spent_outpoints(&restore),
-                None => return,
+            let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
+                return;
+            };
+            let core = &mut info.core_wallet;
+            let held = core.restore_spent_outpoints(&restore);
+            if held.is_empty() {
+                return;
             }
+            let mut removed: Vec<key_wallet::Utxo> = Vec::new();
+            for account in core.accounts.all_funding_accounts_mut() {
+                removed.extend(held.iter().filter_map(|o| account.utxos.remove(o)));
+            }
+            core.update_balance();
+            self.hub
+                .publish_core_balance(wallet, &core.balance(), &core.account_balances());
+            removed
         };
-        for outpoint in held {
+        for utxo in &removed {
             let spenders: Vec<Txid> = (claims.iter())
-                .filter(|(o, _)| *o == outpoint)
+                .filter(|(o, _)| *o == utxo.outpoint)
                 .map(|(_, t)| *t)
                 .collect();
-            tracing::warn!(%wallet, %outpoint, ?spenders,
-                "a coin an unmined own transaction spends is still held; it stays counted and spendable");
+            tracing::warn!(%wallet, outpoint = %utxo.outpoint, value = utxo.value(), ?spenders,
+                "dropped a coin an unmined own transaction spends");
+        }
+        let Ok(live) = self.live() else {
+            return;
+        };
+        let persister = Arc::clone(&live.persister);
+        let stored = tokio::task::spawn_blocking(move || {
+            let changeset = platform_wallet::changeset::PlatformWalletChangeSet {
+                core: Some(platform_wallet::changeset::CoreChangeSet {
+                    spent_utxos: removed,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            persister.store(wallet.0, changeset)?;
+            persister.flush(wallet.0)
+        })
+        .await;
+        if !matches!(stored, Ok(Ok(()))) {
+            tracing::warn!(%wallet, ?stored, "could not store the dropped coins as spent");
         }
     }
 

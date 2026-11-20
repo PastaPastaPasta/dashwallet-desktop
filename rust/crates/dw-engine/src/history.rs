@@ -370,6 +370,11 @@ pub(crate) struct Beaten {
 /// Abandoned ones are left to the abandon.
 pub(crate) fn beaten_unrecorded(h: &WalletHistory) -> Vec<Beaten> {
     let txs = &h.txs;
+    let unrecorded =
+        |(t, e): (&Txid, &TxEntry)| !mined(e) && !e.is_abandoned() && !h.session_held.contains(t);
+    if !txs.iter().any(unrecorded) {
+        return Vec::new();
+    }
     let in_block: HashMap<OutPoint, Txid> = (txs.iter().filter(|(_, e)| mined(e)))
         .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
         .collect();
@@ -394,7 +399,7 @@ pub(crate) fn beaten_unrecorded(h: &WalletHistory) -> Vec<Beaten> {
         false
     };
     let mut beaten: Vec<Beaten> = (txs.iter())
-        .filter(|(t, e)| !mined(e) && !e.is_abandoned() && !h.session_held.contains(*t))
+        .filter(|(t, e)| unrecorded((t, e)))
         .filter_map(|(t, e)| {
             let winner = (e.tx.input.iter())
                 .filter_map(|i| in_block.get(&i.previous_output))

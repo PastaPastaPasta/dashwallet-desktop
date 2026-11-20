@@ -321,3 +321,85 @@ pub(crate) fn registered_wallet_ids(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use dashcore::hashes::Hash;
+    use dashcore::{OutPoint, TxOut, Txid};
+    use platform_wallet::changeset::changeset::UtxoCreditVerdict;
+    use platform_wallet::changeset::{CoreChangeSet, PlatformWalletChangeSet};
+
+    use super::withhold_uncredited;
+
+    fn coin(vout: u32) -> key_wallet::Utxo {
+        let script =
+            dashcore::ScriptBuf::new_p2pkh(&dashcore::PubkeyHash::from_byte_array([7; 20]));
+        key_wallet::Utxo::new(
+            OutPoint::new(Txid::from_byte_array([1; 32]), vout),
+            TxOut {
+                value: 1_000 + u64::from(vout),
+                script_pubkey: script.clone(),
+            },
+            dashcore::Address::from_script(&script, dashcore::Network::Regtest).unwrap(),
+            10,
+            false,
+        )
+    }
+
+    fn outpoints(utxos: &[key_wallet::Utxo]) -> Vec<OutPoint> {
+        utxos.iter().map(|u| u.outpoint).collect()
+    }
+
+    /// Every output with a verdict moves from the new coins to the spent
+    /// ones, whatever the verdict; the others stay new; a spent coin the
+    /// batch already carried stays.
+    #[test]
+    fn outputs_the_wallet_did_not_credit_are_stored_spent() {
+        let mut changeset = PlatformWalletChangeSet {
+            core: Some(CoreChangeSet {
+                new_utxos: (0..4).map(coin).collect(),
+                spent_utxos: vec![coin(9)],
+                utxo_credit_verdicts: [
+                    (coin(1).outpoint, UtxoCreditVerdict::Uncredited),
+                    (
+                        coin(2).outpoint,
+                        UtxoCreditVerdict::ObservedSpent { height: 9 },
+                    ),
+                    (coin(3).outpoint, UtxoCreditVerdict::Doomed),
+                    (coin(5).outpoint, UtxoCreditVerdict::Uncredited),
+                ]
+                .into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        withhold_uncredited(&mut changeset);
+        let core = changeset.core.unwrap();
+        assert_eq!(outpoints(&core.new_utxos), [coin(0).outpoint]);
+        assert_eq!(
+            outpoints(&core.spent_utxos),
+            [9, 1, 2, 3].map(|v| coin(v).outpoint)
+        );
+        assert_eq!(core.spent_utxos[1], coin(1), "the coin itself, unchanged");
+    }
+
+    /// Without verdicts, or without a core part, nothing changes.
+    #[test]
+    fn a_batch_without_verdicts_is_stored_as_given() {
+        let mut changeset = PlatformWalletChangeSet {
+            core: Some(CoreChangeSet {
+                new_utxos: (0..2).map(coin).collect(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        withhold_uncredited(&mut changeset);
+        let core = changeset.core.unwrap();
+        assert_eq!(outpoints(&core.new_utxos), [0, 1].map(|v| coin(v).outpoint));
+        assert!(core.spent_utxos.is_empty());
+
+        let mut empty = PlatformWalletChangeSet::default();
+        withhold_uncredited(&mut empty);
+        assert!(empty.core.is_none());
+    }
+}

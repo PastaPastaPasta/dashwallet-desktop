@@ -356,7 +356,16 @@ impl NetworkSession {
                 this.hub.unload_wallet(&id);
                 return Err(e.into());
             }
-            Self::apply_spend_claims(&live.manager, id, &claims).await;
+            #[cfg(test)]
+            let pause = this.hub.pause_claims.lock().unwrap().take();
+            #[cfg(test)]
+            if let Some(pause) = pause {
+                pause
+                    .reached
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                pause.release.notified().await;
+            }
+            this.apply_spend_claims(&live.manager, id, &claims).await;
             this.admit_loaded(&live.manager, id).await;
             if live.manager.get_wallet(&id.0).await.is_none() {
                 live.store.set_unloaded(id.0, true);
