@@ -426,23 +426,33 @@ export interface SendDeps {
 const unknownHandle = (h: number) => fail("app.unknown_handle", `unknown handle: ${h}`);
 
 /** An address of the wallet's receiving chain: the same one for an index every run. */
+/** How the engine learned of a payment: relayed with its InstantSend lock, or found by the catch-up
+ * scan in an old block (`newTransactions`' `live`). */
+export type PaymentSource = "live" | "scanned";
+
 /** A payment of `duffs` to the wallet's current receiving address (or to `to`), as the engine reports one: the row,
- * the address used (the next one is current from now on), `historyChanged` and `newTransactions`.
- * Returns the paid address. */
-export function receivePayment(ctx: Ctx, walletId: string, duffs: number, to?: string): string {
+ * the address used (the next one is current from now on), `historyChanged` and `newTransactions`, its
+ * `catchUp` the world's sync. Returns the paid address. */
+export function receivePayment(ctx: Ctx, walletId: string, duffs: number, to?: string, source: PaymentSource = "live"): string {
   const w = ctx.world.wallets.find((x) => x.summary.walletId === walletId)!;
   const current = receiveAddress(w, w.receive.firstUnused, null).address;
   const address = to ?? current;
   const txid = (0xfeed0000 + w.rows.length).toString(16).padStart(64, "0");
+  const live = source === "live";
+  const sync = ctx.world.sync;
+  const tip = sync.tipHeight ?? 0;
+  const scannedAt = Math.max(1, sync.phases.find((p) => p.phase === "filters")?.currentHeight ?? tip);
   w.rows = [
     {
       txid,
       recordIndex: 0,
       txType: "recvWithAddress",
       category: "received",
-      status: { kind: "confirming", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
-      timestamp: secs(FIXTURE_NOW),
-      blockHeight: null,
+      status: live
+        ? { kind: "confirming", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null }
+        : { kind: "confirmed", confirmations: Math.max(1, tip - scannedAt + 1), instantLocked: false, chainLocked: true, maturesIn: null },
+      timestamp: live ? secs(FIXTURE_NOW) : secs(FIXTURE_NOW) - (tip - scannedAt) * 150,
+      blockHeight: live ? null : scannedAt,
       amount: duffs,
       fee: null,
       address,
@@ -459,7 +469,7 @@ export function receivePayment(ctx: Ctx, walletId: string, duffs: number, to?: s
   }
   const network = ctx.world.launch.network.dirName;
   ctx.emit({ kind: "historyChanged", network, walletId, txids: [txid] });
-  ctx.emit({ kind: "newTransactions", network, walletId, txids: [txid], count: 1, catchUp: false });
+  ctx.emit({ kind: "newTransactions", network, walletId, txids: [txid], live: [live], count: 1, catchUp: !sync.caughtUp });
   return address;
 }
 
