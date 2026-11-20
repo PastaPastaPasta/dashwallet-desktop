@@ -136,6 +136,16 @@ fn snapshot_problems(tag: &str, expected: &Value) -> Vec<String> {
         }
     }
     if !BEFORE_FUNDED_SIGNATURES.contains(&tag) {
+        let undeclared = listed.map_or(0, |l| {
+            l.iter()
+                .filter(|w| !every_wallet.contains(&&w["walletId"]))
+                .count()
+        });
+        if undeclared != 0 {
+            problems.push(format!(
+                "list_wallets has {undeclared} wallets the snapshot does not declare"
+            ));
+        }
         problems.extend(funded_signature_problems(&wallets, calls, expected));
         problems.extend(balance_problems(&every_wallet, calls, &expected["dashd"]));
     }
@@ -149,6 +159,19 @@ fn first_answer<'a>(calls: &'a [Value], cmd: &str, wallet: &Value) -> Option<&'a
         .map(|c| &c["result"])
 }
 
+/// The `utxos` answer that lists every coin of `wallet`: the one asked with
+/// the writer's filter, wherever a narrower one stands among the calls.
+fn every_coin<'a>(calls: &'a [Value], wallet: &Value) -> Option<&'a [Value]> {
+    let all = json!({ "includeLocked": true, "fullyMixedOnly": false, "minConfirmations": null });
+    calls
+        .iter()
+        .find(|c| {
+            c["cmd"] == "utxos" && &c["args"]["walletId"] == wallet && c["args"]["filter"] == all
+        })
+        .and_then(|c| c["result"].as_array())
+        .map(Vec::as_slice)
+}
+
 /// Each wallet's distinct `utxos` addresses, change included, against the
 /// addresses of its `fundedSignatures`. A recorded coin without an address
 /// is a problem: it would otherwise drop out of what must be signed.
@@ -158,9 +181,10 @@ fn funded_signature_problems(wallets: &[&Value], calls: &[Value], expected: &Val
     };
     let mut problems = Vec::new();
     for id in wallets {
-        let coins = first_answer(calls, "utxos", id)
-            .and_then(Value::as_array)
-            .map_or(&[][..], Vec::as_slice);
+        let Some(coins) = every_coin(calls, id) else {
+            problems.push(format!("wallet {id}: no utxos answer for every coin"));
+            continue;
+        };
         let mut want: Vec<&str> = coins
             .iter()
             .filter_map(|u| u["address"].as_str())
@@ -808,6 +832,36 @@ fn a_snapshot_without_a_funded_signature_or_with_an_unaccounted_balance_is_refus
         full["fundedSignatures"].as_array().unwrap().len() - 1
     );
     assert!(!snapshot_problems("v0.2.0", &coin_unaddressed).is_empty());
+    let mut narrow_first = full.clone();
+    let calls = narrow_first["calls"].as_array_mut().unwrap();
+    let at = calls
+        .iter()
+        .position(|c| c["cmd"] == "utxos" && c["args"]["walletId"] == payer.as_str())
+        .unwrap();
+    let mut narrow = calls[at].clone();
+    narrow["args"]["filter"]["includeLocked"] = json!(false);
+    let hidden = narrow["result"].as_array_mut().unwrap().remove(1);
+    calls.insert(at, narrow);
+    narrow_first["fundedSignatures"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|s| s["address"] != hidden["address"]);
+    assert_eq!(
+        narrow_first["fundedSignatures"].as_array().unwrap().len(),
+        full["fundedSignatures"].as_array().unwrap().len() - 1
+    );
+    assert!(!snapshot_problems("v0.2.0", &narrow_first).is_empty());
+    let watch_only = full["watchOnly"]["walletId"].as_str().unwrap().to_string();
+    let mut watch_only_dropped = full.clone();
+    watch_only_dropped
+        .as_object_mut()
+        .unwrap()
+        .remove("watchOnly");
+    watch_only_dropped["dashd"]["deposits"]
+        .as_object_mut()
+        .unwrap()
+        .remove(&watch_only);
+    assert!(!snapshot_problems("v0.2.0", &watch_only_dropped).is_empty());
 }
 
 #[cfg(unix)]

@@ -1,6 +1,7 @@
 // Writes an upgrade-path fixture with a released app (rust/crates/dw-app/src/upgrade_path_tests.rs reads it).
-// The release binary is the only thing that writes the data root: tauri-driver drives it and every
-// change goes through its own IPC, as its renderer would send it. dashd regtest is the chain and the
+// After this writer seeds settings.json (the pre-release notice dismissed), the release binary is the
+// only thing that writes the data root: tauri-driver drives it and every change goes through its own
+// IPC, as its renderer would send it. dashd regtest is the chain and the
 // judge of what the app reports.
 //
 // Phase 1, syncing from dashd: an encrypted vault, two wallets from BIP39 test vectors, dashd pays
