@@ -280,11 +280,9 @@ pub fn inspect_wallet_file(path: &Path) -> Result<WalletFileKind, EngineError> {
             });
         }
         Some(Container::BerkeleyDb) => {
-            return Ok(match walletdat::read_bdb(path) {
-                Ok(w) => WalletFileKind::WalletDatBdb {
-                    encrypted: Some(w.encrypted()),
-                },
-                Err(_) => WalletFileKind::WalletDatBdb { encrypted: None },
+            let w = walletdat::read_bdb(path).map_err(walletdat_failure)?;
+            return Ok(WalletFileKind::WalletDatBdb {
+                encrypted: Some(w.encrypted()),
             });
         }
         None => {}
@@ -927,16 +925,19 @@ pub(crate) const ISSUED_SETTING: &str = "bip44.legacy_issued";
 
 impl NetworkSession {
     /// Derives account 0's receive and change chains up to the last address
-    /// Core derived on each, marks it used and keeps the gap past it. The
-    /// two counters are not one lookahead, and either can be past the
-    /// largest gap limit.
+    /// Core derived on each and keeps the gap past it. The two counters are
+    /// not one lookahead, and either can be past the largest gap limit.
+    /// Core may have handed out any address below its counter, so each one
+    /// not yet paid is held reserved: no receive or change address is picked
+    /// below the counter, and none is reported used before a payment marks
+    /// it. A reservation stamped 0 never expires.
     pub(crate) async fn cover_issued(
         &self,
         manager: &crate::session::Manager,
         id: WalletId,
         (external, internal): (u32, u32),
     ) -> Result<(), EngineError> {
-        use key_wallet::managed_account::address_pool::AddressPoolType;
+        use key_wallet::managed_account::address_pool::{AddressPoolType, AddressState};
         let unsupported = || {
             EngineError::from(CompatFailure::UnsupportedFormat(
                 "HD account 0 cannot be restored".into(),
@@ -968,7 +969,12 @@ impl NetworkSession {
             };
             pool.generate_up_to(last, &key)
                 .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
-            pool.mark_index_used(last);
+            for info in pool.addresses.range_mut(..=last).map(|(_, info)| info) {
+                if info.is_available() {
+                    info.state = AddressState::Reserved { at: 0 };
+                }
+            }
+            pool.highest_used = pool.highest_used.max(Some(last));
             pool.maintain_gap_limit(&key)
                 .map_err(|e| EngineError::Internal(format!("address range: {e}")))?;
         }
@@ -978,9 +984,11 @@ impl NetworkSession {
 
     /// Stores `state` for wallet `id` in one transaction: the range
     /// setting, Core's coin locks and its CoinJoin salt, so the same coins
-    /// count as fully mixed (QT-043, m3-engine.md §5). The range and salt
-    /// replace stored ones; Core's locks are added to any the wallet has.
-    /// Returns what was replaced, for [`Self::restore_imported_state`].
+    /// count as fully mixed (QT-043, m3-engine.md §5). The salt replaces a
+    /// stored one; each stored counter of the range only rises, so an older
+    /// copy of the file does not narrow it; Core's locks are added to any
+    /// the wallet has. Returns what was replaced, for
+    /// [`Self::restore_imported_state`].
     pub(crate) async fn write_imported_state(
         self: &Arc<Self>,
         id: WalletId,
@@ -1003,7 +1011,13 @@ impl NetworkSession {
         }
         let key = id.to_string();
         self.appdb_op(move |db| {
-            db.write_settings_and_locks(&key, &settings, &locks, crate::coins::now_secs())
+            db.write_settings_and_locks(
+                &key,
+                &settings,
+                &widen_issued,
+                &locks,
+                crate::coins::now_secs(),
+            )
         })
         .await
         .map(Some)
@@ -1066,6 +1080,20 @@ pub(crate) fn parse_issued(value: &str) -> Option<(u32, u32)> {
     let (external, internal) = value.split_once(',')?;
     let issued = (external.parse().ok()?, internal.parse().ok()?);
     (issued.0 <= MAX_ISSUED && issued.1 <= MAX_ISSUED).then_some(issued)
+}
+
+/// The value stored for setting `key` when `stored` is there and `new` is
+/// written: the range setting keeps the larger counter of each chain, any
+/// other setting (or a stored range that does not parse) takes `new`.
+fn widen_issued(key: &str, stored: &str, new: &str) -> String {
+    match (
+        key == ISSUED_SETTING,
+        parse_issued(stored),
+        parse_issued(new),
+    ) {
+        (true, Some((e0, i0)), Some((e1, i1))) => format!("{},{}", e0.max(e1), i0.max(i1)),
+        _ => new.to_owned(),
+    }
 }
 
 /// Tests: the next legacy range an import applies in a session on one of
@@ -1309,18 +1337,87 @@ mod tests {
         )
         .unwrap();
         let s = engine
-            .block_on(engine.open_network(
-                DashNetwork::Regtest,
-                crate::SessionOptions {
-                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                    quorum_url: Some("http://127.0.0.1:1".into()),
-                    spv_peers: vec!["127.0.0.1:1".into()],
-                    ..Default::default()
-                },
-            ))
+            .block_on(engine.open_network(DashNetwork::Regtest, offline()))
             .unwrap();
         engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
         (dir, engine, s, created)
+    }
+
+    fn offline() -> crate::SessionOptions {
+        crate::SessionOptions {
+            dapi_addresses: vec!["http://127.0.0.1:1".into()],
+            quorum_url: Some("http://127.0.0.1:1".into()),
+            spv_peers: vec!["127.0.0.1:1".into()],
+            ..Default::default()
+        }
+    }
+
+    /// Closes the session and opens it again: its wallets load from storage.
+    fn reopen(engine: &crate::Engine, s: Arc<NetworkSession>) -> Arc<NetworkSession> {
+        drop(s);
+        assert!(
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        );
+        engine
+            .block_on(engine.open_network(DashNetwork::Regtest, offline()))
+            .unwrap()
+    }
+
+    fn import(engine: &crate::Engine, s: &Arc<NetworkSession>, name: &str) -> WalletId {
+        let file = testdata(&format!("compat/walletdat/{name}"));
+        (engine.block_on(s.import_wallet_dat(file, None, ImportOptions::default())))
+            .unwrap()
+            .wallet_id
+    }
+
+    fn addresses_of(
+        engine: &crate::Engine,
+        s: &Arc<NetworkSession>,
+        id: WalletId,
+    ) -> Vec<crate::receive::AddressInfo> {
+        engine
+            .block_on(s.addresses(id, crate::receive::AddressFilter::default()))
+            .unwrap()
+    }
+
+    fn highest(addresses: &[crate::receive::AddressInfo], chain: AddressChain) -> u32 {
+        (addresses.iter())
+            .filter(|a| a.chain == chain)
+            .map(|a| a.index)
+            .max()
+            .unwrap()
+    }
+
+    /// Attaching an older copy of a wallet.dat to a wallet keeps the larger
+    /// counter of each chain, whichever copy it came from, and a reload
+    /// watches that range.
+    #[test]
+    fn an_older_wallet_dat_does_not_narrow_the_stored_range() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let id = wide_range_id();
+        let stored = |s: &NetworkSession| {
+            (s.live().unwrap().appdb)
+                .setting(&id.to_string(), ISSUED_SETTING)
+                .unwrap()
+        };
+        assert_eq!(import(&engine, &s, "bdb_wide_change.dat"), id);
+        assert_eq!(stored(&s).as_deref(), Some("4,2600"));
+        let attach = |name: &str| {
+            assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+            assert_eq!(import(&engine, &s, name), id);
+        };
+        attach("bdb_wide_range.dat");
+        assert_eq!(stored(&s).as_deref(), Some("1001,2600"));
+        attach("bdb_wide_change.dat");
+        assert_eq!(stored(&s).as_deref(), Some("1001,2600"));
+
+        let s = reopen(&engine, s);
+        let addresses = addresses_of(&engine, &s, id);
+        assert!(highest(&addresses, AddressChain::Receiving) >= 1000 + CORE_COMPAT_LOOKAHEAD);
+        assert!(highest(&addresses, AddressChain::Change) >= 2599 + CORE_COMPAT_LOOKAHEAD);
+        engine.block_on(engine.shutdown()).unwrap();
     }
 
     /// The id of `bdb_wide_range.dat`'s wallet (`abandon … about`).
@@ -1397,6 +1494,65 @@ mod tests {
         engine.block_on(engine.shutdown()).unwrap();
     }
 
+    /// After a legacy import, and after a reload, neither the receive nor
+    /// the change address the wallet picks is one Core may have handed out
+    /// (below its counter on that chain); none of them is reported used
+    /// without a payment, and the whole derived range plus the gap is
+    /// still watched.
+    #[test]
+    fn core_issued_addresses_are_not_handed_out_again() {
+        use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+        let (_dir, engine, s, _created) = regtest_session();
+        let id = import(&engine, &s, "bdb_wide_range.dat");
+        let (external, internal) = (1001, 2);
+        let check = |s: &Arc<NetworkSession>| {
+            let current = engine.block_on(s.current_receive_address(id)).unwrap();
+            assert!(current.index >= external, "{current:?}");
+            let issued = engine.block_on(s.next_receive_address(id, None)).unwrap();
+            assert!(issued.index >= external, "{issued:?}");
+            let (change, watched) = engine.block_on(async {
+                let manager = s.manager().unwrap();
+                let wallet = manager.get_wallet(&id.0).await.unwrap();
+                let change = wallet
+                    .core()
+                    .next_change_address_for_account(0)
+                    .await
+                    .unwrap();
+                let wm = manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                let watched = (wm.get_wallet_info(&id.0).unwrap().core_wallet)
+                    .monitored_addresses()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<std::collections::HashSet<_>>();
+                (change.to_string(), watched)
+            });
+            let addresses = addresses_of(&engine, s, id);
+            let change = addresses.iter().find(|a| a.address == change).unwrap();
+            assert_eq!(change.chain, AddressChain::Change);
+            assert!(change.index >= internal, "{change:?}");
+            assert!(
+                addresses.iter().all(|a| !a.used),
+                "an address reported used without a payment"
+            );
+            for (chain, counter) in [
+                (AddressChain::Receiving, external),
+                (AddressChain::Change, internal),
+            ] {
+                let derived: Vec<_> = (addresses.iter())
+                    .filter(|a| a.chain == chain && a.index < counter)
+                    .collect();
+                assert_eq!(derived.len(), counter as usize, "{chain:?}");
+                assert!(derived.iter().all(|a| watched.contains(&a.address)));
+                assert!(highest(&addresses, chain) >= counter - 1 + CORE_COMPAT_LOOKAHEAD);
+            }
+        };
+        check(&s);
+        let s = reopen(&engine, s);
+        check(&s);
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
     /// Review L4: what the guard's drop runs replaces the private key.
     #[test]
     fn master_key_guard_erases_the_private_key() {
@@ -1434,8 +1590,10 @@ mod tests {
             }
         );
         assert_eq!(
-            inspect_wallet_file(&testdata("compat/walletdat/bdb_legacy_head.dat")).unwrap(),
-            WalletFileKind::WalletDatBdb { encrypted: None }
+            inspect_wallet_file(&testdata("compat/walletdat/bdb_hd_encrypted.dat")).unwrap(),
+            WalletFileKind::WalletDatBdb {
+                encrypted: Some(true)
+            }
         );
         assert_eq!(
             inspect_wallet_file(&testdata("compat/psbt/unsigned.b64")).unwrap(),
@@ -1449,6 +1607,24 @@ mod tests {
             inspect_wallet_file(&testdata("compat")),
             Err(EngineError::Compat(CompatFailure::FileUnreadable(_)))
         ));
+    }
+
+    /// A Berkeley DB file that does not parse is reported with its error,
+    /// as an import of it would be, not as a wallet.dat to import.
+    #[test]
+    fn inspecting_a_bdb_file_that_does_not_parse_returns_its_error() {
+        let dir = dw_testutil::private_tempdir();
+        let whole = std::fs::read(testdata("compat/walletdat/bdb_core24_hd_plain.dat")).unwrap();
+        let truncated = dir.path().join("truncated.dat");
+        std::fs::write(&truncated, &whole[..whole.len() / 2]).unwrap();
+        for path in [testdata("compat/walletdat/bdb_legacy_head.dat"), truncated] {
+            let got = inspect_wallet_file(&path);
+            assert!(
+                matches!(got, Err(EngineError::Compat(CompatFailure::Corrupt(_)))),
+                "{}: {got:?}",
+                path.display()
+            );
+        }
     }
 
     #[test]

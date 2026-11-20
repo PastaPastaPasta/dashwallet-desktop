@@ -889,7 +889,7 @@ impl From<MasternodesError> for Failure {
         // `TxDraft`'s failures are one engine code, `send`; the line names
         // the variant as the UI's `send.*` codes do.
         let code = match e.engine() {
-            Some(dw_engine::EngineError::Send(f)) => format!("send.{}", snake(&format!("{f:?}"))),
+            Some(dw_engine::EngineError::Send(f)) => send_code(f),
             _ => e.code().into(),
         };
         let message = match &e {
@@ -903,6 +903,11 @@ impl From<MasternodesError> for Failure {
         };
         Self { code, message }
     }
+}
+
+/// A send failure's code, `send.` and its variant as the UI's codes name it.
+pub(crate) fn send_code(f: &dw_engine::SendFailure) -> String {
+    format!("send.{}", snake(&format!("{f:?}")))
 }
 
 /// `GrantExceeded { … }` → `grant_exceeded`: the leading identifier only.

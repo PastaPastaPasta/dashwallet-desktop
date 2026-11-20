@@ -75,10 +75,31 @@ expect_security http://security.ubuntu.com/ubuntu/ "a healthy regional mirror"
 write_sources
 printf '%s\n%s\n%s\n' "$regional" "$main" "$security" > "$work/mirrors"
 if run nowhere; then fail "every mirror stalled: the script passed"; fi
-expect_log "download http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ download http://azure.archive.ubuntu.com/ubuntu/ download http://azure.archive.ubuntu.com/ubuntu/ " "every mirror stalled"
+expect_log "download http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ download http://azure.archive.ubuntu.com/ubuntu/ download https://archive.ubuntu.com/ubuntu/ " "every mirror stalled"
 expect_mirrors "$(printf '%s\n%s\n%s' "$azure" "$main" "$security")" "every mirror stalled"
 expect_security "$from_list" "every mirror stalled"
 [ "$(wc -l < "$work/sources")" = 7 ] || fail "every mirror stalled: sources were: $(cat "$work/sources")"
+
+write_sources
+printf '%s\n%s\n%s\n' "$azure" "$main" "$security" > "$work/mirrors"
+run https://archive.ubuntu. || fail "the Azure mirror is the regional one and stalled: the script failed"
+expect_log "download http://azure.archive.ubuntu.com/ubuntu/ download https://archive.ubuntu.com/ubuntu/ install " \
+  "the Azure mirror is the regional one and stalled"
+expect_mirrors "$(printf '%s\n%s\n%s' $'https://archive.ubuntu.com/ubuntu/\tpriority:1' \
+  $'https://security.ubuntu.com/ubuntu/\tpriority:2' $'http://azure.archive.ubuntu.com/ubuntu/\tpriority:3')" \
+  "the Azure mirror is the regional one and stalled"
+expect_security "$from_list" "the Azure mirror is the regional one and stalled"
+
+write_sources
+printf '%s\n%s\n%s\n' "$regional" "$main" "$security" > "$work/mirrors"
+run https://archive.ubuntu. || fail "the regional and Azure mirrors stalled: the script failed"
+expect_log "download http://us-east-2.ec2.archive.ubuntu.com/ubuntu/ download http://azure.archive.ubuntu.com/ubuntu/ download https://archive.ubuntu.com/ubuntu/ install " \
+  "the regional and Azure mirrors stalled"
+
+write_sources
+printf '%s\n' "$azure" > "$work/mirrors"
+if run nowhere; then fail "only the Azure mirror listed: the script passed"; fi
+expect_mirrors "$azure" "only the Azure mirror listed"
 
 write_sources
 printf '%s\n%s\n' "$regional" "$security" > "$work/mirrors"

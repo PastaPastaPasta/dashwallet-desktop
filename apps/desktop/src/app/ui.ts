@@ -52,8 +52,13 @@ export type Protection = "off" | "pending" | "on" | "failed";
 /** `recoveryPhrase`: Show Recovery Phrase (U-02 D13); `unlock`: the full unlock from mixing only (D12). */
 export type Dialog = "openUri" | "about" | "recoveryPhrase" | "unlock" | "savedLinks";
 
+/** Activity's filter from Masternodes (MG-10 §1.9): one node's payout txids, or coinbase income. */
+export type ActivityFilter = { kind: "txids"; title: string; txids: string[] } | { kind: "generated" };
+
 export interface UiState {
   route: Route;
+  /** Cleared by every navigation that doesn't set it. */
+  activityFilter: ActivityFilter | null;
   /** Pay's tab; `null` until Pay picks one by whether the wallet has contacts. */
   payTab: PayTab | null;
   payPrefill: PayPrefill | null;
@@ -126,11 +131,14 @@ export const DEFAULT_PREFS: UiSettings = {
   autoLockSecs: null,
   subtractFeeByDefault: false,
   showMasternodes: false,
+  masternodesTab: "myMasternodes",
   preReleaseNoticeDismissed: false,
+  language: null,
 };
 
 let state: UiState = {
   route: "home",
+  activityFilter: null,
   payTab: null,
   payPrefill: null,
   payLinks: 0,
@@ -187,12 +195,15 @@ export function setLeaveGuard(guard: LeaveGuard): () => void {
   };
 }
 
+/** The toolbar's wallet switch: a route filter (a node's payouts) belongs to the wallet it came from. */
+export const switchWallet = (walletId: string) => ui.set({ walletId, detail: null, activityFilter: null });
+
 /** Opens `route`, closing the detail sheet. */
 export function navigate(route: Route, patch: Partial<UiState> = {}) {
   // Coming to Pay from elsewhere chooses its tab afresh and starts an empty form with no payee,
   // unless the caller names a tab, a contact or fills the form (openPayForm).
   const fresh = (): Partial<UiState> => (route === "pay" && ui.get().route !== "pay" ? { payTab: null, payPrefill: null, payCoins: null, payContact: null } : {});
-  const go = () => ui.set({ route, detail: null, ...fresh(), ...patch });
+  const go = () => ui.set({ route, detail: null, activityFilter: null, ...fresh(), ...patch });
   if (!leaveGuard?.(route, go)) go();
 }
 

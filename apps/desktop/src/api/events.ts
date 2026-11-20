@@ -12,6 +12,7 @@ import type { PlatformChangeName } from "./generated/PlatformChangeName";
 import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
 import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
+import { mnKeys } from "../masternodes/queries";
 import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
 import { announceReceived } from "../payments/received";
@@ -45,9 +46,9 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // statuses without an identity are re-read (bridgeEvents), `startupIncomplete` too (DP1-09 D28).
     // The Platform loops start and stop with SPV, also without one (DP6-03 D6).
     case "spvStateChanged":
-      return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, keys.protocolCompatibility];
+      return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, keys.protocolCompatibility, mnKeys.listState];
     case "sync":
-      return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll];
+      return [keys.sync, keys.scanHeightAll, keys.dashpayStatusAll, dashpayKeys.syncInfoAll, keys.unfinishedTransfersAll, mnKeys.listState];
     // The username quote's fee grows with the wallet's coins (DP1-08).
     case "balances":
       // A status read keeps an idle wallet in the engine's CoinJoin refresher (U-06 D7).
@@ -59,11 +60,13 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
         keys.receiveAll(event.walletId),
         keys.coinsAll(event.walletId),
         keys.contactsAll(event.walletId),
+        mnKeys.payoutsAll(event.walletId),
       ];
     // A registration parks for an unlock or an authorization without writing its row, so
     // without a Platform signal (DP1-08 D19).
     case "vaultLockState":
-      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll];
+      // Masternode rows and panes carry the attached keys, `null` while locked (MG-10 §3.5 names only the pane).
+      return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll];
     case "lockProgress":
       // `done` carries the report itself (bridgeEvents sets it).
       return event.progress.kind === "done" ? [keys.lockStatus, keys.lockReconcile] : [];
@@ -104,15 +107,16 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // block sends none, so the tip-derived clock and statuses go stale until the next (MG-02 D96).
     case "governance":
       return [keys.governanceAll];
+    // A list, tracking, label or attached-key change (MG-10 §3.5); Platform's credits are not under it.
+    case "masternodes":
+      return [keys.masternodesAll];
     // A fetch, a setting, a price turning stale or expiring, mainnet opened or closed (MP-01).
     case "rates":
       return [keys.ratesAll];
-    // No screen reads these yet (the notice and masternode views come with their tasks).
-    // `masternodes` also follows a shared-masternode session change (mn-engine §6, MG-04b).
+    // No screen reads these yet (the notice view comes with its task).
     // `newTransactions` is announced above (payments/received.ts), not read as a query.
     case "newTransactions":
     case "notice":
-    case "masternodes":
       return [];
     default:
       return unreachable(event);

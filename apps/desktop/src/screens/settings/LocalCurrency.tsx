@@ -10,20 +10,14 @@ import { hasCode } from "../../api/backend";
 import { keys, useBackend } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { DashButton } from "../../components/basics";
-import { RATES_DISCLOSURE, ratesStatusText, useRateCurrencies, useRates } from "../../fiat/rates";
-import { currencyName, fiatText, isLocalCurrency, localeCurrency } from "../../format/fiat";
+import { ratesStatusText, useRateCurrencies, useRates } from "../../fiat/rates";
+import { currencyName, fiatText, firstCurrency, isLocalCurrency } from "../../format/fiat";
+import { useT } from "../../i18n";
 import { failureText } from "../../onboarding/model";
 import { Hint, Problem, SettingsCard } from "./parts";
 
-export const LocalCurrencyText = {
-  title: "Local currency",
-  switchLabel: "Show values in local currency",
-  emptyList: "The list of currencies fills after the first update.",
-  noMatch: "No currency matches the search.",
-  throttled: "Prices were just updated. Try again in a moment.",
-};
-
 export function LocalCurrencyCard() {
+  const t = useT();
   const b = useBackend();
   const client = useQueryClient();
   const { network } = useLaunch();
@@ -54,7 +48,7 @@ export function LocalCurrencyCard() {
     try {
       await b.refreshRates();
     } catch (e) {
-      setProblem(hasCode(e, "rates.throttled") ? LocalCurrencyText.throttled : failureText(e));
+      setProblem(hasCode(e, "rates.throttled") ? t("settings.currency.throttled") : failureText(e));
     } finally {
       setBusy(false);
       await client.invalidateQueries({ queryKey: keys.ratesAll });
@@ -63,7 +57,7 @@ export function LocalCurrencyCard() {
   const status = ratesStatusText(view, b.locale);
   const mayRefresh = on && network.kind === "mainnet";
   return (
-    <SettingsCard title={LocalCurrencyText.title} testId="settings-currency">
+    <SettingsCard title={t("settings.currency.title")} testId="settings-currency">
       <label className="checkbox-row">
         <input
           type="checkbox"
@@ -71,14 +65,14 @@ export function LocalCurrencyCard() {
           checked={on}
           disabled={busy}
           aria-describedby={`${id}-disclosure`}
-          // On: the disclosure beside it was seen, and a first currency comes from the locale.
+          // On: the disclosure beside it was seen, and a first currency comes from the system region.
           onChange={(e) =>
-            void save(e.target.checked ? { enabled: true, disclosed: true, currency: view.settings.currency ?? localeCurrency(b.locale) } : { enabled: false })
+            void save(e.target.checked ? { enabled: true, disclosed: true, currency: firstCurrency(view.settings.currency, b.regionLocale) } : { enabled: false })
           }
         />
-        {LocalCurrencyText.switchLabel}
+        {t("settings.currency.switchLabel")}
       </label>
-      <Hint id={`${id}-disclosure`}>{RATES_DISCLOSURE}</Hint>
+      <Hint id={`${id}-disclosure`}>{t("rates.disclosure")}</Hint>
       {on && <CurrencyPicker rows={currencies.data ?? []} chosen={view.settings.currency} busy={busy} onPick={(code) => void save({ currency: code })} />}
       {on && (
         <div className="settings-row settings-currency-status">
@@ -87,7 +81,7 @@ export function LocalCurrencyCard() {
           </span>
           {mayRefresh && (
             <DashButton variant="plainBlue" size="small" data-testid="settings-currency-refresh" disabled={busy} onClick={() => void refresh()}>
-              Update now
+              {t("settings.currency.updateNow")}
             </DashButton>
           )}
         </div>
@@ -98,6 +92,7 @@ export function LocalCurrencyCard() {
 }
 
 function CurrencyPicker({ rows, chosen, busy, onPick }: { rows: CurrencyRate[]; chosen: string | null; busy: boolean; onPick: (code: string) => void }) {
+  const t = useT();
   const b = useBackend();
   const [search, setSearch] = useState("");
   const id = useId();
@@ -108,27 +103,27 @@ function CurrencyPicker({ rows, chosen, busy, onPick }: { rows: CurrencyRate[]; 
     <div className="currency-picker" data-testid="settings-currency-picker">
       {chosen && (
         <p className="settings-row-title" data-testid="settings-currency-chosen">
-          {chosen}, {currencyName(chosen, b.locale)}
+          {t("settings.currency.chosen", { code: chosen, name: currencyName(chosen, b.locale) })}
         </p>
       )}
       <div className="form-field">
-        <label htmlFor={`${id}-search`}>Search currencies</label>
+        <label htmlFor={`${id}-search`}>{t("settings.currency.search")}</label>
         <input
           id={`${id}-search`}
           type="search"
           data-testid="settings-currency-search"
-          placeholder="Search by name or code"
+          placeholder={t("settings.currency.searchPlaceholder")}
           autoComplete="off"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
       {local.length === 0 ? (
-        <Hint>{LocalCurrencyText.emptyList}</Hint>
+        <Hint>{t("settings.currency.emptyList")}</Hint>
       ) : shown.length === 0 ? (
-        <Hint>{LocalCurrencyText.noMatch}</Hint>
+        <Hint>{t("settings.currency.noMatch")}</Hint>
       ) : (
-        <ul className="currency-list" aria-label="Currencies">
+        <ul className="currency-list" aria-label={t("settings.currency.list")}>
           {shown.map((r) => (
             <li key={r.code}>
               <button

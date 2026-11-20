@@ -29,11 +29,26 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   autoLockSecs: null,
   subtractFeeByDefault: false,
   showMasternodes: false,
+  masternodesTab: "myMasternodes",
   // dw-app's default is false (the first-run notice); the fixture starts past it so a scenario
   // opens on its screen, and `pre-release-notice` is the one that shows it.
   preReleaseNoticeDismissed: true,
+  language: null,
 };
 const MAX_AUTO_LOCK_SECS = 86_400;
+/** The language tags `settings.rs` accepts: narrower than BCP 47. A 2–3 letter language, subtags of
+ * 1–8 letters or digits, and each single-character subtag followed by a longer one. */
+export function isLanguageTag(tag: string): boolean {
+  if (tag.length > 35) return false;
+  const [lang, ...subtags] = tag.split("-");
+  if (!/^[A-Za-z]{2,3}$/.test(lang)) return false;
+  let openSingleton = false;
+  for (const p of subtags) {
+    if (!/^[A-Za-z0-9]{1,8}$/.test(p) || (p.length === 1 && openSingleton)) return false;
+    openSingleton = p.length === 1;
+  }
+  return !openSingleton;
+}
 const MAX_KEEP = 10;
 const MAX_DUST = 1_000_000;
 
@@ -218,6 +233,7 @@ export function settingsHandlers({ wallet, grant, useGrant }: SettingsDeps): Han
       if (settings.decimalDigits < 2 || settings.decimalDigits > 8) throw fail("invalid_argument", "decimal digits must be 2 to 8");
       if (settings.autoLockSecs !== null && (settings.autoLockSecs < 1 || settings.autoLockSecs > MAX_AUTO_LOCK_SECS))
         throw fail("invalid_argument", "auto lock must be 1 s to 24 hours");
+      if (settings.language !== null && !isLanguageTag(settings.language)) throw fail("invalid_argument", "language must be a BCP 47 tag");
       world.settings.ui = { ...settings };
       return world.settings.ui;
     },

@@ -28,7 +28,7 @@ import type { SyncStatus } from "../api/generated/SyncStatus";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
+import { coreActivity, IDENTITY, noIdentity, registered, registering, type DashPayWorld } from "./dashpay";
 import { identitiesWorld } from "./identities";
 import { newCreditsWorld, topUpStep, withdrawalId, withdrawPayout, type CreditsWorld } from "./topup";
 import type { Utxo } from "../api/generated/Utxo";
@@ -42,6 +42,7 @@ import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
+import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { transferScenarios } from "./transfer";
 import { MAIN_PHRASE, SECOND_PHRASE, throttleWaitSecs } from "./vault";
 import { COIN } from "../format/amount";
@@ -147,6 +148,8 @@ export interface World {
   coinjoin: CoinJoinWorld;
   /** Governance: sync, proposals, voting masternodes and own proposals (governance.ts, MG-09). */
   governance: GovernanceWorld;
+  /** My masternodes: the SPV list, own and tracked masternodes, attached keys (masternodes.ts, MG-10). */
+  masternodes: MasternodesWorld;
   /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
   rates: RatesWorld;
   /** The commands dw-app does not have yet: network choice, shielded and Platform balances (pending.ts). */
@@ -248,6 +251,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     scan: scanWorld(),
     coinjoin: newCoinJoinWorld(),
     governance: newGovernanceWorld(),
+    masternodes: newMasternodesWorld(),
     rates: newRatesWorld(),
     pending: newPendingWorld(),
   };
@@ -379,7 +383,7 @@ function attributePayments(w: World) {
     row.counterparty = party(name);
     // The contact's activity lists it too (DP2-09), so its row opens the transaction.
     const items = (w.dashpay.activity[IDENTITY[name]] ??= []);
-    items.push({ txid: row.txid, direction, amount: Math.abs(row.amount) - (direction === "sent" ? (row.fee ?? 0) : 0), height: row.blockHeight, timestamp: row.timestamp });
+    items.push(coreActivity({ txid: row.txid, direction, amount: Math.abs(row.amount) - (direction === "sent" ? (row.fee ?? 0) : 0), height: row.blockHeight, timestamp: row.timestamp }));
   };
   attribute(first("recvWithAddress")!, "bob", "received");
   attribute(first("sendToAddress")!, "dave", "sent");
@@ -430,13 +434,13 @@ function attributeMore(w: World) {
   // The newest labelled receipt, "Coffee refund" (its text stays wallet.ts's sentinel).
   const refund = rows.find((r) => r.label && r.amount > 0)!;
   refund.counterparty = { identity: IDENTITY.bob, username: "bob", displayName: "Bob Builder", avatarUrl: null };
-  w.dashpay.activity[IDENTITY.bob].unshift({ txid: refund.txid, direction: "received", amount: refund.amount, height: refund.blockHeight, timestamp: refund.timestamp });
+  w.dashpay.activity[IDENTITY.bob].unshift(coreActivity({ txid: refund.txid, direction: "received", amount: refund.amount, height: refund.blockHeight, timestamp: refund.timestamp }));
   const nameless = rows.find((r) => r.txType === "recvWithAddress" && r.category === "received" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
   nameless.counterparty = { identity: IDENTITY.mateo, username: null, displayName: null, avatarUrl: null };
   // The oldest plain payment went to Judy, a contact the user hid: listed, in the collapsed Hidden section.
   const hidden = rows.findLast((r) => r.txType === "sendToAddress" && !r.label && !r.counterparty && r.status.kind === "confirmed")!;
   hidden.counterparty = { identity: IDENTITY.judy, username: "judy", displayName: "Judy", avatarUrl: null };
-  (w.dashpay.activity[IDENTITY.judy] ??= []).push({ txid: hidden.txid, direction: "sent", amount: Math.abs(hidden.amount) - (hidden.fee ?? 0), height: hidden.blockHeight, timestamp: hidden.timestamp });
+  (w.dashpay.activity[IDENTITY.judy] ??= []).push(coreActivity({ txid: hidden.txid, direction: "sent", amount: Math.abs(hidden.amount) - (hidden.fee ?? 0), height: hidden.blockHeight, timestamp: hidden.timestamp }));
 }
 
 function twoWallets(w: World): World {
@@ -591,6 +595,48 @@ function withInvitation(w: World, status?: InvitationStatus): World {
 function quietOptionalHistory(w: World): World {
   if (w.pending.platform) w.pending.platform.activity = [];
   if (w.pending.shielded) w.pending.shielded.activity = [];
+  return w;
+}
+
+/** A new wallet still catching up when a 25 DASH payment arrives, InstantSend-locked or only seen. */
+function catchingUpPayment(t: ThemeName | null, locked: boolean): World {
+  const w = base(t, "empty");
+  const paid = 25 * COIN;
+  const main = w.wallets[0];
+  const arrived = locked ? { confirmed: paid } : { unconfirmed: paid };
+  main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, ...arrived, total: paid, catchingUp: true } };
+  main.rows = [
+    {
+      txid: "5f0c2a6e9d4b4a3c8e7f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
+      recordIndex: 0,
+      txType: "recvWithAddress",
+      category: "received",
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: locked, chainLocked: false, maturesIn: null },
+      timestamp: secs(FIXTURE_NOW),
+      blockHeight: null,
+      amount: paid,
+      fee: null,
+      address: "yXbH3JxbVWgEzq6aZDyEbNQx5PtUfZvvXZ",
+      label: null,
+      countsTowardBalance: locked,
+      involvesWatchOnly: false,
+    },
+  ];
+  w.sync = syncing();
+  return w;
+}
+
+/** A wallet whose own scan trails the tip by 2,000 blocks: SPV stopped short, or the network caught
+ * up while this wallet still scans. `empty`: nothing found so far, no Shielded or Platform pool. */
+function walletBehind(t: ThemeName | null, stopped: boolean, empty: boolean): World {
+  const w = empty ? base(t, "empty") : base(t);
+  if (empty) {
+    w.pending.shielded = null;
+    w.pending.platform = null;
+  }
+  const tip = w.sync.tipHeight!;
+  w.wallets[0].scanHeight = tip - 2000;
+  if (stopped) w.sync = { ...syncing(), running: false, connectedPeers: 0 };
   return w;
 }
 
@@ -1053,31 +1099,24 @@ const SCENARIOS = {
   // DP1-08: the Home card's other banner states (the status read failing is `fail=dashpay_status:none`).
   /** A new wallet still catching up when a 25 DASH payment arrives: the engine reports it at once,
    * InstantSend-locked and unconfirmed, in a balance flagged `catchingUp` (PRODUCT backlog 1). */
-  "catching-up-payment": (t) => {
-    const w = base(t, "empty");
-    const paid = 25 * COIN;
+  "catching-up-payment": (t) => catchingUpPayment(t, true),
+  /** The same payment seen but not InstantSend-locked yet: unconfirmed, Pending. */
+  "catching-up-pending-payment": (t) => catchingUpPayment(t, false),
+  /** The same new wallet before anything has arrived: Home shows 0 while it syncs. */
+  "catching-up-nothing-yet": (t) => {
+    const w = catchingUpPayment(t, true);
     const main = w.wallets[0];
-    main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, confirmed: paid, total: paid, catchingUp: true } };
-    main.rows = [
-      {
-        txid: "5f0c2a6e9d4b4a3c8e7f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d",
-        recordIndex: 0,
-        txType: "recvWithAddress",
-        category: "received",
-        status: { kind: "unconfirmed", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
-        timestamp: secs(FIXTURE_NOW),
-        blockHeight: null,
-        amount: paid,
-        fee: null,
-        address: "yXbH3JxbVWgEzq6aZDyEbNQx5PtUfZvvXZ",
-        label: null,
-        countsTowardBalance: true,
-        involvesWatchOnly: false,
-      },
-    ];
-    w.sync = syncing();
+    main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, catchingUp: true } };
+    main.rows = [];
     return w;
   },
+  /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */
+  "wallet-behind-stopped": (t) => walletBehind(t, true, false),
+  /** The same with nothing found yet: Home shows 0. */
+  "wallet-behind-stopped-empty": (t) => walletBehind(t, true, true),
+  /** The network caught up while this wallet's own scan is still 2,000 blocks short. */
+  "wallet-behind-at-tip": (t) => walletBehind(t, false, false),
+  "wallet-behind-at-tip-empty": (t) => walletBehind(t, false, true),
   /** No identity while the wallet syncs: Join DashPay disabled, "Available after sync finishes". */
   "dashpay-waiting-for-sync": (t) => {
     const w = withStatus(base(t), { kind: "noIdentity", reason: "waitingForSync" });
@@ -1420,6 +1459,8 @@ const SCENARIOS = {
   ...coinjoinScenarios(base),
   // Governance (MG-09): governance.ts.
   ...governanceScenarios(base),
+  // My masternodes (MG-10): masternodes.ts.
+  ...masternodesScenarios(base),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesScenarios(base),
   // Transfer (POLISH 25): transfer.ts.

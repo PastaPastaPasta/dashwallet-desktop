@@ -131,8 +131,10 @@ fn a_flow_admitted_before_the_check_refuses_the_close() {
     let _release = ReleaseOnDrop(vec![Arc::clone(&admitted)]);
     let flowing = {
         let (s, w) = (Arc::clone(&f.session), f.wallet);
-        (f.session.rt)
-            .spawn(async move { s.begin_flow(w, FlowKind::ContactRequest, vec![grant]).await })
+        (f.session.rt).spawn(async move {
+            s.begin_flow(w, FlowKind::ContactRequest, vec![grant], None)
+                .await
+        })
     };
     reached(&admitted);
     let broadcasts = Arc::new(AtomicUsize::new(0));

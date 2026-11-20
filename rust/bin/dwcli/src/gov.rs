@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
 use crate::governance::proposal_grant_cap;
-use crate::masternodes::{Failure, snake, value, wait_for_list, wallet};
+use crate::masternodes::{Failure, send_code, value, wait_for_list, wallet};
 
 #[derive(Args)]
 pub struct GovArgs {
@@ -221,7 +221,7 @@ fn parse_outcome(s: &str) -> Result<VoteOutcome, String> {
 
 fn gov_failure(e: GovernanceError) -> Failure {
     let code = match e.engine() {
-        Some(EngineError::Send(f)) => format!("send.{}", snake(&format!("{f:?}"))),
+        Some(EngineError::Send(f)) => send_code(f),
         _ => e.code().into(),
     };
     let message = match &e {

@@ -80,8 +80,8 @@ describe("enableBanner", () => {
 
 describe("activity and announcements", () => {
   it("AND-093 signs sent payments and marks unmined ones", () => {
-    expect(activityRow({ txid: "t", direction: "sent", amount: 5, height: null, timestamp: 1 })).toEqual({ title: "Sent", signed: -5, pending: true });
-    expect(activityRow({ txid: "t", direction: "received", amount: 5, height: 9, timestamp: 1 })).toEqual({ title: "Received", signed: 5, pending: false });
+    expect(activityRow({ txid: "t", direction: "sent", amount: 5, height: null, timestamp: 1, source: "core", reference: "t", coreTxid: "t" })).toEqual({ title: "Sent", signed: -5, pending: true });
+    expect(activityRow({ txid: "t", direction: "received", amount: 5, height: 9, timestamp: 1, source: "core", reference: "t", coreTxid: "t" })).toEqual({ title: "Received", signed: 5, pending: false });
   });
 
   it("D14 announces the selection by name and relation", () => {
