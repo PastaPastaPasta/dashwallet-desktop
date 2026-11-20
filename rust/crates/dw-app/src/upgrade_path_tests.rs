@@ -212,7 +212,9 @@ fn funded_signature_problems(wallets: &[&Value], calls: &[Value], expected: &Val
 
 /// `dashd.deposits` names exactly the fixture's wallets, the paying wallet
 /// among them, and each reports, as `balance.confirmed`, its deposits less
-/// what it paid and dashd's fee for that payment.
+/// what it paid and dashd's fee for that payment. Each wallet's recorded
+/// coins add up to its `balance.total`, and no balance is recorded for a
+/// wallet without a deposit.
 fn balance_problems(wallets: &[&Value], calls: &[Value], dashd: &Value) -> Vec<String> {
     let Some(deposits) = dashd["deposits"].as_object().filter(|d| !d.is_empty()) else {
         return vec!["no dashd.deposits".to_string()];
@@ -247,6 +249,26 @@ fn balance_problems(wallets: &[&Value], calls: &[Value], dashd: &Value) -> Vec<S
         if want.is_none() || want != got {
             problems.push(format!(
                 "wallet {id}: balance {got:?}, dashd's deposits less payment and fee {want:?}"
+            ));
+        }
+        let total = first_answer(calls, "balance", &id).and_then(|b| b["total"].as_u64());
+        let coins = every_coin(calls, &id).map(|coins| {
+            coins
+                .iter()
+                .filter_map(|u| u["amount"].as_u64())
+                .sum::<u64>()
+        });
+        if coins.is_none() || coins != total {
+            problems.push(format!(
+                "wallet {id}: its recorded coins add up to {coins:?}, its balance is {total:?}"
+            ));
+        }
+    }
+    for call in calls.iter().filter(|c| c["cmd"] == "balance") {
+        let id = &call["args"]["walletId"];
+        if !id.as_str().is_some_and(|i| deposits.contains_key(i)) {
+            problems.push(format!(
+                "a balance is recorded for wallet {id}, which has no deposit"
             ));
         }
     }
@@ -862,6 +884,34 @@ fn a_snapshot_without_a_funded_signature_or_with_an_unaccounted_balance_is_refus
         .unwrap()
         .remove(&watch_only);
     assert!(!snapshot_problems("v0.2.0", &watch_only_dropped).is_empty());
+    let mut watch_only_unlisted = watch_only_dropped.clone();
+    for call in watch_only_unlisted["calls"].as_array_mut().unwrap() {
+        if call["cmd"] == "list_wallets" {
+            call["result"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|w| w["walletId"] != watch_only.as_str());
+        }
+    }
+    assert!(!snapshot_problems("v0.2.0", &watch_only_unlisted).is_empty());
+    let mut coin_dropped = full.clone();
+    let mut gone = None;
+    for call in coin_dropped["calls"].as_array_mut().unwrap() {
+        if call["cmd"] == "utxos" && call["args"]["walletId"] == payer.as_str() {
+            gone = Some(call["result"].as_array_mut().unwrap().remove(1));
+            break;
+        }
+    }
+    let gone = gone.expect("the paying wallet has two coins");
+    coin_dropped["fundedSignatures"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|s| s["address"] != gone["address"]);
+    assert_eq!(
+        coin_dropped["fundedSignatures"].as_array().unwrap().len(),
+        full["fundedSignatures"].as_array().unwrap().len() - 1
+    );
+    assert!(!snapshot_problems("v0.2.0", &coin_dropped).is_empty());
 }
 
 #[cfg(unix)]
