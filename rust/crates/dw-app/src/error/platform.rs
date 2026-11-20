@@ -507,6 +507,7 @@ impl From<CreditsError> for AppError {
                 CreditsCode::TooManyInputs,
                 Some(ErrorData::Number { value: inputs }),
             ),
+            C::Shielded(e) => return e.into(),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -689,6 +690,10 @@ mod tests {
                 inputs: 51,
                 max: 50,
             },
+            CreditsError::Shielded(ShieldedError::NotActive {
+                protocol_version: 11,
+                activation_version: 12,
+            }),
             CreditsError::Platform(PlatformError::Unavailable),
         ];
         for e in credits {

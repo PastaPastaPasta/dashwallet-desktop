@@ -533,6 +533,11 @@ impl Rig for ShieldRig {
             ShieldLocks::new(&s, wallet, &*lib).minimum()
         })
     }
+
+    /// The conformance run's locks are restored ones.
+    fn reports_used(&self) -> bool {
+        true
+    }
 }
 
 /// Type 5 holds the contract every kind does (`unfinished_conformance`).
@@ -899,18 +904,18 @@ fn finish_transfers_counts_by_outpoint() {
 }
 
 /// Repair's "Finish transfers" under its one lease: each unfinished lock
-/// once, in order, an unproved answer leaving that lock pending while the
-/// next runs; one with no proof is pending, not tried.
+/// once, in order, a restored lock Platform reports used counted as such
+/// while the next runs; one with no proof is pending, not tried.
 #[test]
 fn finish_transfers_runs_each_lock_once_and_reports_the_kind() {
     let fx = Fixture::new(0);
-    let (checking, applied, unproved) = (
+    let (used, applied, unproved) = (
         lock(1, LockStatus::RecoveredFromChain),
         lock(2, LockStatus::RecoveredFromChain),
         lock(3, LockStatus::Broadcast),
     );
     let lib = Arc::new(FakeShielded {
-        locks: vec![unproved.clone(), applied.clone(), checking.clone()],
+        locks: vec![unproved.clone(), applied.clone(), used.clone()],
         ..FakeShielded::default()
     });
     // In txid order: the first apply hears "already consumed", the second
@@ -933,29 +938,26 @@ fn finish_transfers_runs_each_lock_once_and_reports_the_kind() {
         super::super::FinishReport {
             resumed: 2,
             completed: 1,
-            still_pending: 2,
-            already_used: 0,
+            still_pending: 1,
+            already_used: 1,
             by_kind: vec![locks::TransfersReport {
                 kind: LockKindId::Shielded,
                 resumed: 2,
                 completed: 1,
-                still_pending: 2,
+                still_pending: 1,
             }],
             unread: Vec::new(),
         }
     );
     assert_eq!(
         *lib.applied.lock().unwrap(),
-        [checking.outpoint, applied.outpoint]
+        [used.outpoint, applied.outpoint]
     );
     assert_eq!(*lib.settles.lock().unwrap(), [applied.outpoint.txid]);
     assert_no_funding(&lib, before);
     assert_eq!(
         state_of(&fx, &lib),
-        [
-            (LockOrigin::Restored, UnfinishedState::Checking),
-            (LockOrigin::Restored, UnfinishedState::Confirming),
-        ]
+        [(LockOrigin::Restored, UnfinishedState::Confirming)]
     );
 }
 
@@ -1114,4 +1116,123 @@ fn finish_transfers_reports_a_kind_it_could_not_read() {
         }
     );
     assert!(lib.applied.lock().unwrap().is_empty());
+}
+
+/// The library's refusal to record Platform's "already consumed" is the
+/// one smoke02 logged: the session's real persister attests no
+/// `WALLET_RESTORE`.
+#[test]
+fn the_real_persister_cannot_record_a_consumed_report() {
+    use platform_wallet::changeset::{PersistenceCapabilities, PlatformWalletPersistence};
+    let fx = Fixture::new(0);
+    let capabilities = fx.s.live().unwrap().store.persistence_capabilities();
+    assert!(!capabilities.contains(PersistenceCapabilities::WALLET_RESTORE));
+    assert_eq!(
+        conformance::unrecorded_consumed(&fx.s).to_string(),
+        "Failed to persist state: asset-lock reconciliation requires persistence \
+         capabilities [\"wallet_restore\"] (missing mask 0x80)"
+    );
+}
+
+/// F2: a restored lock, `RecoveredFromChain` with its proof, that Platform
+/// answers "already consumed" for, the library unable to record the answer
+/// at the real persister: finished elsewhere, off the list and the card,
+/// settled nowhere, and so after a restart, with no second apply.
+#[test]
+fn a_restored_lock_platform_reports_used_leaves_the_card_across_a_restart() {
+    let mut fx = Fixture::new(0);
+    let restored = lock(1, LockStatus::RecoveredFromChain);
+    let lib = Arc::new(FakeShielded {
+        locks: vec![restored.clone()],
+        ..FakeShielded::default()
+    });
+    (lib.lib_errors.lock().unwrap()).push_back(conformance::unrecorded_consumed(&fx.s));
+    let (finished, begun) = finish(&fx, &lib, restored.outpoint);
+    assert!(begun);
+    assert_eq!(finished.unwrap(), LockFinish::ReportedUsed);
+    assert!(listed(&fx, &lib).unwrap().is_empty(), "off the card");
+    assert!(lib.settles.lock().unwrap().is_empty(), "settled nowhere");
+
+    reopen(&mut fx, &lib);
+    assert!(listed(&fx, &lib).unwrap().is_empty(), "after a restart");
+    let (again, begun) = finish(&fx, &lib, restored.outpoint);
+    assert_eq!(again.unwrap(), LockFinish::ReportedUsed);
+    assert!(!begun, "no lease, so no passphrase");
+    assert_eq!(*lib.applied.lock().unwrap(), [restored.outpoint]);
+}
+
+/// F2's "Finish all": both restored locks answered "already consumed",
+/// unrecorded by the library, count as already used, none pending.
+#[test]
+fn finish_transfers_counts_restored_locks_platform_reports_used() {
+    let fx = Fixture::new(0);
+    let (a, b) = (
+        lock(1, LockStatus::RecoveredFromChain),
+        lock(2, LockStatus::RecoveredFromChain),
+    );
+    let lib = Arc::new(FakeShielded {
+        locks: vec![a, b],
+        ..FakeShielded::default()
+    });
+    for _ in 0..2 {
+        (lib.lib_errors.lock().unwrap()).push_back(conformance::unrecorded_consumed(&fx.s));
+    }
+    assert_eq!(
+        finish_transfers(&fx, &lib),
+        super::super::FinishReport {
+            resumed: 2,
+            completed: 0,
+            still_pending: 0,
+            already_used: 2,
+            by_kind: vec![locks::TransfersReport {
+                kind: LockKindId::Shielded,
+                resumed: 2,
+                completed: 0,
+                still_pending: 0,
+            }],
+            unread: Vec::new(),
+        }
+    );
+    assert!(listed(&fx, &lib).unwrap().is_empty());
+    assert!(lib.settles.lock().unwrap().is_empty());
+}
+
+/// Only Platform's answer for the applied outpoint finishes a restored
+/// lock: another persistence failure after the signature, or "already
+/// consumed" naming another outpoint, leaves it Checking; this device's own
+/// lock answered "already consumed" stays Checking (SR1); an untried lock
+/// stays Ready.
+#[test]
+fn only_the_outpoints_own_answer_finishes_a_restored_lock() {
+    let fx = Fixture::new(0);
+    let own = lock(1, LockStatus::InstantSendLocked);
+    let (failed, misnamed, untried) = (
+        lock(2, LockStatus::RecoveredFromChain),
+        lock(3, LockStatus::RecoveredFromChain),
+        lock(4, LockStatus::RecoveredFromChain),
+    );
+    let lib = Arc::new(FakeShielded {
+        locks: vec![own.clone(), failed.clone(), misnamed.clone(), untried],
+        own: Some(HashSet::from([own.outpoint.txid])),
+        ..FakeShielded::default()
+    });
+    let elsewhere = OutPoint::new(Txid::from_byte_array([0x99; 32]), 0);
+    lib.lib_errors.lock().unwrap().extend([
+        conformance::unrecorded_consumed(&fx.s),
+        PlatformWalletError::Persistence("database is locked".into()),
+        PlatformWalletError::AssetLockAlreadyConsumed(elsewhere),
+    ]);
+    for at in [own.outpoint, failed.outpoint, misnamed.outpoint] {
+        assert_eq!(finish(&fx, &lib, at).0.unwrap(), LockFinish::Checking);
+    }
+    assert_eq!(
+        state_of(&fx, &lib),
+        [
+            (LockOrigin::ThisDevice, UnfinishedState::Checking),
+            (LockOrigin::Restored, UnfinishedState::Checking),
+            (LockOrigin::Restored, UnfinishedState::Checking),
+            (LockOrigin::Restored, UnfinishedState::Ready),
+        ]
+    );
+    assert!(lib.settles.lock().unwrap().is_empty());
 }

@@ -119,9 +119,29 @@ pub(crate) enum ApplyReply {
     Unknown,
 }
 
+/// The start of platform-wallet's refusal to keep a lock "consumption
+/// unknown" at a persister that does not attest asset-lock reconciliation
+/// (`sync/tracking.rs:343-355` at the pin). The library raises it only on
+/// Platform's "already consumed" for the outpoint its call applied, matched
+/// first (`asset_lock/orchestration.rs:474-528`), and the pinned storage
+/// never attests `WALLET_RESTORE` (`persister.rs:1362-1389`), so after a
+/// restore it is how that answer arrives.
+const UNRECORDED_CONSUMED: &str = "asset-lock reconciliation requires persistence capabilities ";
+
+/// Whether an apply's `error` is the library's [`UNRECORDED_CONSUMED`]
+/// refusal: Platform's "already consumed" for the lock the call applied.
+/// No other persistence error is.
+pub(crate) fn consumed_unrecorded(error: &PlatformWalletError) -> bool {
+    match error {
+        PlatformWalletError::Persistence(detail) => detail.starts_with(UNRECORDED_CONSUMED),
+        _ => false,
+    }
+}
+
 /// The library's apply result as an [`ApplyReply`], for the lock at
 /// `outpoint`; `signed`: the lock's credit key signed in the call. Only
-/// `AssetLockAlreadyConsumed` naming `outpoint` is `AlreadyConsumed`;
+/// `AssetLockAlreadyConsumed` naming `outpoint` is `AlreadyConsumed`, the
+/// library's refusal to record it included ([`consumed_unrecorded`]);
 /// one naming another outpoint, a timeout or any other failure is
 /// `Unknown` after a signature and the refusal before one.
 pub(crate) fn reply_from(
@@ -134,6 +154,7 @@ pub(crate) fn reply_from(
         Err(PlatformWalletError::AssetLockAlreadyConsumed(o)) if o == outpoint => {
             Ok(ApplyReply::AlreadyConsumed)
         }
+        Err(e) if consumed_unrecorded(&e) => Ok(ApplyReply::AlreadyConsumed),
         Err(e) if signed => {
             tracing::warn!(%outpoint, error = %e, "a lock's apply failed after its signature");
             Ok(ApplyReply::Unknown)
@@ -504,6 +525,16 @@ pub(crate) struct Evidence<'a> {
     pub(crate) minimum: Option<Minimum>,
 }
 
+/// Whose `lock` is: this device's when one of the kind's own funding steps
+/// signed its transaction and it is alone in it, else restored.
+pub(crate) fn origin(lock: &KindLock, own: &HashSet<Txid>) -> LockOrigin {
+    if lock.alone() && own.contains(&lock.info.outpoint.txid) {
+        LockOrigin::ThisDevice
+    } else {
+        LockOrigin::Restored
+    }
+}
+
 /// `lock`'s standing as an unfinished lock of `kind`; `None` once it is
 /// finished (the library's proved `Consumed`, or recorded settled).
 pub(crate) fn classify(kind: LockKindId, lock: &KindLock, ev: &Evidence) -> Option<UnfinishedLock> {
@@ -515,11 +546,7 @@ pub(crate) fn classify(kind: LockKindId, lock: &KindLock, ev: &Evidence) -> Opti
     {
         return None;
     }
-    let origin = if lock.alone() && ev.own.contains(&txid) {
-        LockOrigin::ThisDevice
-    } else {
-        LockOrigin::Restored
-    };
+    let origin = origin(lock, ev.own);
     let state = if info.outpoint.vout != 0 {
         UnfinishedState::Unsupported
     } else if !lock.proof || !info.status.has_proof() {

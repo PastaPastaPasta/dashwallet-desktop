@@ -55,6 +55,7 @@ async function landsInPsbt(page: Page, from: number) {
   const calls = await callsSince(page, from);
   expect(calls).toEqual(expect.arrayContaining(["draft_create_unsigned", "analyze_psbt"]));
   expect(calls.filter((c) => SIGNS_OR_SENDS.includes(c))).toEqual([]);
+  expect(await seriousAxeViolations(page)).toEqual([]);
 }
 
 for (const theme of THEMES) {

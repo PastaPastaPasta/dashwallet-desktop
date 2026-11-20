@@ -1820,11 +1820,9 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     
     /**
      * Restores from a Dash Core `wallet.dat` (QT-106): SQLite descriptor
-     * wallets in M2 (decrypts `walletdescriptorckey` with `mkey` and the
-     * passphrase, extracts mnemonic and passphrase). Berkeley DB files
-     * return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6;
-     * descriptor wallets without a phrase
-     * `NotImplemented{call: "import_wallet_dat.xprv"}`.
+     * wallets and legacy Berkeley DB wallets. Decrypts with the wallet
+     * passphrase when the file is encrypted. A descriptor wallet without
+     * a phrase returns `NotImplemented{call: "import_wallet_dat.xprv"}`.
      */
     func importWalletDat(path: String, walletPassphrase: Data?, options: ImportOptions) async throws  -> ImportReport
     
@@ -2801,11 +2799,9 @@ open func importKeyMaterial(material: KeyMaterial, options: ImportOptions)async 
     
     /**
      * Restores from a Dash Core `wallet.dat` (QT-106): SQLite descriptor
-     * wallets in M2 (decrypts `walletdescriptorckey` with `mkey` and the
-     * passphrase, extracts mnemonic and passphrase). Berkeley DB files
-     * return `NotImplemented{call: "import_wallet_dat.bdb"}` until M6;
-     * descriptor wallets without a phrase
-     * `NotImplemented{call: "import_wallet_dat.xprv"}`.
+     * wallets and legacy Berkeley DB wallets. Decrypts with the wallet
+     * passphrase when the file is encrypted. A descriptor wallet without
+     * a phrase returns `NotImplemented{call: "import_wallet_dat.xprv"}`.
      */
 open func importWalletDat(path: String, walletPassphrase: Data?, options: ImportOptions)async throws  -> ImportReport  {
     return
@@ -21811,7 +21807,8 @@ public enum WalletFileKind: Equatable, Hashable {
     case walletDatSqlite(encrypted: Bool, hasMnemonic: Bool
     )
     /**
-     * Legacy Berkeley DB `wallet.dat`: detected; import lands in M6.
+     * Legacy Berkeley DB `wallet.dat`. `encrypted` is `None` when the
+     * file is recognised but does not parse.
      */
     case walletDatBdb(encrypted: Bool?
     )
@@ -24157,7 +24154,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_import_key_material() != 46906) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet_dat() != 60912) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_import_wallet_dat() != 7980) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_console_execute() != 60587) {

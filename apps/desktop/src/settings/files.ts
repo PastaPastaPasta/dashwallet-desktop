@@ -22,9 +22,6 @@ export const FilesText = {
   backedUp: (path: string) => `The backup was written to ${path}.`,
   backupPassphraseHint: "This wallet has no passphrase: choose one to protect the backup. You need it to restore the backup.",
   backupUnlocked: "The backup is protected with your wallet passphrase.",
-  /** QT-106. */
-  berkeleyDBUnavailable:
-    "This wallet.dat uses Berkeley DB, which Dash Wallet cannot read. In Dash Core, run dumpwallet and import that file instead.",
   /** QT-078. */
   psbtFile: "This is a partially signed transaction. Open it in Tools ▸ PSBT.",
   unknownFile: "Dash Wallet does not recognise this file. It reads Dash Wallet backups, dumpwallet files and wallet.dat files.",
@@ -149,7 +146,7 @@ export type ImportStep = "path" | "inspecting" | "details" | "working" | "done";
 /** What a detected file asks for before its import, or why it cannot be imported. */
 export interface ImportPlan {
   kind: WalletFileInfo["kind"];
-  /** Why this file stops here (Berkeley DB, a PSBT, unknown, another network). */
+  /** Why this file stops here (a PSBT, unknown, another network). */
   refusal: string | null;
   /** The passphrase field's label, when the file needs one. */
   passphrase: string | null;
@@ -173,14 +170,15 @@ export function importPlan(info: WalletFileInfo, network: string): ImportPlan {
     case "dumpWallet":
       return { ...base, refusal: other(info.network), named: true, summary: "A Dash Core dumpwallet file." };
     case "walletDatSqlite":
+    case "walletDatBdb": {
+      const encrypted = info.kind === "walletDatSqlite" ? info.encrypted : info.encrypted === true;
       return {
         ...base,
-        passphrase: info.encrypted ? "wallet.dat passphrase" : null,
+        passphrase: encrypted ? "wallet.dat passphrase" : null,
         named: true,
-        summary: info.encrypted ? "An encrypted Dash Core wallet.dat." : "A Dash Core wallet.dat.",
+        summary: encrypted ? "An encrypted Dash Core wallet.dat." : "A Dash Core wallet.dat.",
       };
-    case "walletDatBdb":
-      return { ...base, refusal: FilesText.berkeleyDBUnavailable, summary: "A Berkeley DB wallet.dat." };
+    }
     case "psbt":
       return { ...base, refusal: FilesText.psbtFile, summary: "A partially signed transaction." };
     case "unknown":
