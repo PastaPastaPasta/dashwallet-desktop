@@ -8,8 +8,8 @@
 # pytest's output goes only to that directory; the journal and this log get its summary lines once
 # the harness's end-of-run secret scan has passed.
 #
-# Install this script outside DW_DP_STATE and outside any checkout (ci/agentbox/
-# dw-dashpay-nightly.service); it refuses to run from inside DW_DP_STATE.
+# Install this script, with dashpay-unfunded.sh beside it, outside DW_DP_STATE and outside any
+# checkout (ci/agentbox/dw-dashpay-nightly.service); it refuses to run from inside DW_DP_STATE.
 #
 #   DW_DP_STATE=<dir>          absolute, outside any checkout, owner-only (0700): data roots, the vault
 #                              passphrase, the checkout; required
@@ -31,9 +31,10 @@ fail() {
 }
 [[ ${DW_DP_NET:-testnet} == testnet ]] || fail "DW_DP_NET=$DW_DP_NET; the nightly runs on testnet only"
 [[ $DW_DP_NOTIFY == /* && -x $DW_DP_NOTIFY ]] || fail "DW_DP_NOTIFY must be an absolute path to an executable"
-# The fetch, the build and the dependency install run without the funder's variables. They run
-# as the same user, so the files stay readable to them: the funder is a dedicated testnet wallet
-# with a small capped balance (regtest/README.md).
+# The fetch, the build and the dependency install run code of the fetched revision. They run
+# without the funder's variables and through dashpay-unfunded.sh, where the state root holds only
+# the checkout and the funder's phrase file reads empty. The suites then run that revision with
+# the funder: it is a dedicated testnet wallet with a small capped balance (regtest/README.md).
 export -n DW_DP_FUNDER DW_DP_FUNDER_BIRTH DW_DP_HOLD_UPSTREAM DW_DP_STATE
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-12}
 unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR
@@ -66,19 +67,26 @@ exec 9>"$state/nightly.lock"
 flock -n 9 || fail "another run holds $state/nightly.lock"
 
 repo=$state/repo
-mkdir -p "$state/nightly"
+mkdir -p "$state/nightly" "$repo"
+unfunded() {
+  "$(dirname "$self")/dashpay-unfunded.sh" "$state" "$repo" "$DW_DP_FUNDER" "$@"
+}
 out=$state/nightly/$(date -u +%Y%m%d-%H%M%S)
 mkdir "$out"
 exec > >(tee -a "$out/nightly.log") 2>&1
 
-if [[ ! -d $repo/.git ]]; then
-  git clone --quiet https://github.com/PastaPastaPasta/dashwallet-desktop.git "$repo"
+if ! unfunded "$repo" bash -c '[[ ! -s $1 && ! -e $2 ]]' _ "$(realpath -e "$DW_DP_FUNDER")" "$state/nightly"; then
+  echo "dashpay-nightly: the build's sandbox did not start, or it can read the funder's file or the state root"
+  exit 1
 fi
-git -C "$repo" fetch --quiet origin
-git -C "$repo" checkout --quiet --detach "${DW_DP_REF:-origin/main}"
+if [[ ! -d $repo/.git ]]; then
+  unfunded "$repo" git clone --quiet https://github.com/PastaPastaPasta/dashwallet-desktop.git "$repo"
+fi
+unfunded "$repo" git fetch --quiet origin
+unfunded "$repo" git checkout --quiet --detach "${DW_DP_REF:-origin/main}"
 echo "dashpay-nightly: $(git -C "$repo" rev-parse HEAD) on testnet, output in $out"
 
-DWCLI=$(cd "$repo/rust" && cargo build -p dwcli --locked --message-format=json-render-diagnostics |
+DWCLI=$(unfunded "$repo/rust" cargo build -p dwcli --locked --message-format=json-render-diagnostics |
   python3 -c 'import json, sys
 paths = [m["executable"] for m in map(json.loads, sys.stdin)
          if m.get("reason") == "compiler-artifact" and m["target"]["name"] == "dwcli" and m.get("executable")]
@@ -91,9 +99,9 @@ echo "dashpay-nightly: dwcli $DWCLI"
 
 cd "$repo/regtest/harness"
 if [[ ! -x .venv/bin/python ]]; then
-  uv venv .venv --python 3.12 -q
+  unfunded "$PWD" uv venv .venv --python 3.12 -q
 fi
-uv pip install -q --python .venv/bin/python -r requirements.txt
+unfunded "$PWD" uv pip install -q --python .venv/bin/python -r requirements.txt
 
 export DW_DP_NET=testnet DW_DP_STATE=$state DW_DP_FUNDER DW_DP_FUNDER_BIRTH DW_DP_HOLD_UPSTREAM DWCLI
 export DW_DP_STRICT=1 DW_DP_LOGS=$out/dwcli

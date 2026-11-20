@@ -254,14 +254,20 @@ under `DW_DP_STATE` (with `umask 077`, under a `flock` on `DW_DP_STATE/nightly.l
 core. Before it writes anything in the state root it checks it at its canonical path: absolute,
 not a symlink, the user's own, 0700, no git checkout and inside none, and not where the script
 itself is installed; the lock, the run directory and the checkout must not be symlinks. The
-fetch, the build and the dependency install run before the funder's variables are exported to
-anything. They still run as the same user, so they could read the funder's files: the funder must
-be a dedicated testnet wallet with a small capped balance, never one holding anything else.
+fetch, the build and the dependency install run code of the fetched revision, so they run before
+the funder's variables are exported to anything and through `scripts/dashpay-unfunded.sh`: in a
+bubblewrap mount namespace where the state root holds only the checkout and the funder's phrase
+file reads empty. The launcher checks that at every run and fails without it; there is no
+fallback. The sandbox hides files. It does not confine a build that asks this user's service
+manager or a container daemon to run something outside it, and the suites then run the fetched
+revision with the funder: the funder must be a dedicated testnet wallet with a small capped
+balance, never one holding anything else.
 pytest's output goes to `pytest.log` only; the script's log and the journal get its summary lines
 once the secret scan has passed. Everything stays in `DW_DP_STATE/nightly/<date>`.
 
-On agentbox it runs from the systemd user timer in `ci/agentbox/`, with the launcher and
-`scripts/dashpay-nightly-notify.sh` installed outside `DW_DP_STATE` and outside any checkout
+On agentbox it runs from the systemd user timer in `ci/agentbox/`, with the launcher,
+`scripts/dashpay-unfunded.sh` and `scripts/dashpay-nightly-notify.sh` installed outside
+`DW_DP_STATE` and outside any checkout
 (`~/.local/libexec/dashwallet-desktop/`; install steps in the service file). It does not gate
 anything; it alerts. A failed run fails the unit, and its `OnFailure=` unit
 (`dw-dashpay-nightly-failed.service`) runs the site-provided notifier `DW_DP_NOTIFY` with the
@@ -501,6 +507,7 @@ regtest/
 ├── docker-compose.yml       services: dashd (single node), functional (profile; runs one test script)
 ├── scripts/
 │   ├── dashpay-nightly.sh   the DashPay suites on testnet, nightly (agentbox)
+│   ├── dashpay-unfunded.sh  the nightly's build sandbox: no funder file, no state root
 │   ├── fetch-dashcore.sh    download + SHA-256 verify + unpack (+ ad-hoc codesign on macOS)
 │   ├── node-entrypoint.sh   dashd regtest command line used by the image
 │   ├── regtest.sh           up/down/status/mine/fund/cli/wcli

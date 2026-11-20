@@ -798,3 +798,28 @@ def test_the_failure_notice_goes_out_before_any_run_left_a_directory(tmp_path):
     run.mkdir(parents=True)
     subprocess.run(notify, env=env, check=True, timeout=60)
     assert (tmp_path / "sent").read_text().endswith(f"artifacts: {run}")
+
+
+def test_the_nightlys_build_cannot_read_the_funder_or_the_state_root(tmp_path):
+    """The fetch and the build run where the state root holds only the checkout and the phrase reads empty."""
+    if subprocess.run(["bwrap", "--dev-bind", "/", "/", "true"], capture_output=True).returncode != 0:
+        pytest.skip("bubblewrap cannot start a sandbox here")
+    state = tmp_path / "state"
+    repo = state / "repo"
+    repo.mkdir(parents=True)
+    (state / "vault-passphrase").write_text("secret")
+    funder = tmp_path / "funder"
+    funder.write_text("phrase")
+    funder.chmod(0o600)
+    unfunded = ["bash", str(REPO / "regtest/scripts/dashpay-unfunded.sh"), str(state), str(repo), str(funder)]
+    probe = 'cat "$1"; ls "$2"; pwd; touch built'
+    out = subprocess.run(
+        [*unfunded, str(repo), "bash", "-c", probe, "_", str(funder), str(state)],
+        capture_output=True, text=True, check=True, timeout=60,
+    ).stdout.split()
+    assert out == ["repo", str(repo)]
+    assert (repo / "built").exists()
+    assert funder.read_text() == "phrase" and (state / "vault-passphrase").read_text() == "secret"
+    outside = subprocess.run([*unfunded[:3], str(tmp_path), str(funder), str(tmp_path), "true"], capture_output=True)
+    assert outside.returncode != 0
+

@@ -1,8 +1,10 @@
 # Install (every step is required; do not enable the timer before step 5 has delivered its message):
-#  1. Install the launcher and the notifier outside DW_DP_STATE and outside any checkout:
-#     `install -d -m 700 ~/.local/libexec/dashwallet-desktop` and
-#     `install -m 700 regtest/scripts/dashpay-nightly.sh regtest/scripts/dashpay-nightly-notify.sh
-#     ~/.local/libexec/dashwallet-desktop/`.
+#  1. Install the launcher, its build sandbox and the notifier outside DW_DP_STATE and outside
+#     any checkout: `install -d -m 700 ~/.local/libexec/dashwallet-desktop` and
+#     `install -m 700 regtest/scripts/dashpay-nightly.sh regtest/scripts/dashpay-unfunded.sh
+#     regtest/scripts/dashpay-nightly-notify.sh ~/.local/libexec/dashwallet-desktop/`.
+#     The sandbox needs bubblewrap (`bwrap`); the launcher fails at every run where the build
+#     could read the funder's file or the state root.
 #  2. Copy this unit, dw-dashpay-nightly-failed.service and dw-dashpay-nightly.timer to
 #     ~/.config/systemd/user/.
 #  3. Write the environment file below (mode 0600).
@@ -18,7 +20,8 @@
 # others, a symlink, or one that is or sits in a git checkout). DW_DP_FUNDER names the funder's
 # phrase file, owner-only (0600 or 0400; the harness refuses any other mode): on agentbox the
 # secret store's link, never a file in this repository. The funder is a dedicated testnet wallet
-# with a small capped balance: the build runs as this same user. DW_DP_NOTIFY is the absolute
+# with a small capped balance: the build cannot read its file, but the suites run the fetched
+# revision with it. DW_DP_NOTIFY is the absolute
 # path of a site-provided executable that delivers its one argument (a message, chat or mail);
 # the launcher refuses to run without it.
 #
