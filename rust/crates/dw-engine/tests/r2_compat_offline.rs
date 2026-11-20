@@ -37,6 +37,10 @@ fn manifest() -> serde_json::Value {
 }
 
 fn engine(root: &Path) -> Engine {
+    engine_with(root, Arc::new(Quiet))
+}
+
+fn engine_with(root: &Path, sink: Arc<dyn EventSink>) -> Engine {
     Engine::new(
         EngineConfig {
             data_root: root.to_path_buf(),
@@ -47,23 +51,26 @@ fn engine(root: &Path) -> Engine {
                 ..VaultConfig::default()
             },
         },
-        Arc::new(Quiet),
+        sink,
     )
     .unwrap()
 }
 
+fn session(e: &Engine, network: DashNetwork) -> Arc<NetworkSession> {
+    e.block_on(e.open_network(
+        network,
+        SessionOptions {
+            dapi_addresses: vec!["http://127.0.0.1:1".into()],
+            quorum_url: Some("http://127.0.0.1:1".into()),
+            spv_peers: vec!["127.0.0.1:1".into()],
+            ..Default::default()
+        },
+    ))
+    .unwrap()
+}
+
 fn open(e: &Engine, passphrase: Option<&[u8]>) -> Arc<NetworkSession> {
-    let s = e
-        .block_on(e.open_network(
-            DashNetwork::Regtest,
-            SessionOptions {
-                dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                quorum_url: Some("http://127.0.0.1:1".into()),
-                spv_peers: vec!["127.0.0.1:1".into()],
-                ..Default::default()
-            },
-        ))
-        .unwrap();
+    let s = session(e, DashNetwork::Regtest);
     let pw = passphrase.map(<[u8]>::to_vec);
     e.block_on(s.vault_op(move |v| v.create(pw.as_deref())))
         .unwrap();
@@ -241,7 +248,7 @@ fn test_qt_106_import_wallet_dat() {
         opts(),
     ));
     assert!(
-        matches!(&bdb, Err(EngineError::NotImplemented(c)) if c == "import_wallet_dat.bdb"),
+        matches!(&bdb, Err(EngineError::Compat(CompatFailure::Corrupt(_)))),
         "{bdb:?}"
     );
     let xprv_only = e.block_on(s.import_wallet_dat(
@@ -254,6 +261,38 @@ fn test_qt_106_import_wallet_dat() {
         "{xprv_only:?}"
     );
 
+    // A synthetic legacy wallet (the test builder) restores the phrase,
+    // labels and loose-key count. Real Dash Core files are
+    // `test_qt_106_import_dash_core_bdb`.
+    let phrase = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
+    let plain = e
+        .block_on(s.import_wallet_dat(testdata("compat/walletdat/bdb_hd_plain.dat"), None, opts()))
+        .unwrap();
+    assert_eq!(plain.wallet_id, core_id(phrase, "TREZOR"));
+    assert_eq!(plain.labels_imported, 1);
+    assert_eq!(plain.keys_not_imported, 2);
+    assert_eq!(plain.scripts_not_imported, 2);
+    assert!(plain.core_compat_seed);
+    let got = receive_addresses(&e, &s, plain.wallet_id, 1);
+    assert_eq!(got.len(), 1);
+
+    let enc_path = testdata("compat/walletdat/bdb_hd_encrypted.dat");
+    assert_eq!(
+        inspect_wallet_file(&enc_path).unwrap(),
+        WalletFileKind::WalletDatBdb {
+            encrypted: Some(true)
+        }
+    );
+    let missing = e.block_on(s.import_wallet_dat(enc_path.clone(), None, opts()));
+    assert!(matches!(
+        missing,
+        Err(EngineError::Compat(CompatFailure::PassphraseRequired))
+    ));
+    let opened = e
+        .block_on(s.import_wallet_dat(enc_path, Some(Zeroizing::new(b"bdb-pass".to_vec())), opts()))
+        .unwrap();
+    assert_eq!(opened.wallet_id, core_id(phrase, "second"));
+
     // A locked vault cannot take the seed.
     s.lock_vault_sync().unwrap();
     let locked =
@@ -264,6 +303,530 @@ fn test_qt_106_import_wallet_dat() {
             Err(EngineError::Vault(dw_vault::VaultError::Locked))
         ),
         "{locked:?}"
+    );
+}
+
+/// Dash Core v24.0.2 regtest wallets (`createwallet` with `descriptors=false`,
+/// `upgradetohd`, `encryptwallet`). The first receive addresses are the ones
+/// Core's `dumpwallet` recorded for `m/44'/1'/0'/0/0` and `/1`.
+#[test]
+fn test_qt_106_import_dash_core_bdb() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = open(&e, Some(b"vault pass"));
+    e.block_on(s.vault_op(|v| v.unlock(b"vault pass", UnlockScope::Full)))
+        .unwrap();
+    let opts = ImportOptions::default;
+    let zoo = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
+    let plain = e
+        .block_on(s.import_wallet_dat(
+            testdata("compat/walletdat/bdb_core24_hd_mnem.dat"),
+            None,
+            opts(),
+        ))
+        .unwrap();
+    assert_eq!(plain.wallet_id, core_id(zoo, "TREZOR"));
+    assert_eq!(plain.labels_imported, 2);
+    assert_eq!(plain.keys_not_imported, 0);
+    assert_eq!(
+        receive_addresses(&e, &s, plain.wallet_id, 2),
+        [
+            "yfzF8VHskautet5pKeKo1aoK1EgkyJpeU1",
+            "yhjzbZYPH8hXV9xMfgi1g9927o5kxfXfHa",
+        ]
+    );
+
+    let enc = testdata("compat/walletdat/bdb_core24_hd_encrypted.dat");
+    assert!(matches!(
+        e.block_on(s.import_wallet_dat(enc.clone(), None, opts())),
+        Err(EngineError::Compat(CompatFailure::PassphraseRequired))
+    ));
+    assert!(matches!(
+        e.block_on(s.import_wallet_dat(
+            enc.clone(),
+            Some(Zeroizing::new(b"nope".to_vec())),
+            opts()
+        )),
+        Err(EngineError::Compat(CompatFailure::WrongPassphrase))
+    ));
+    let opened = e
+        .block_on(s.import_wallet_dat(
+            enc,
+            Some(Zeroizing::new(b"core-wallet-pass".to_vec())),
+            opts(),
+        ))
+        .unwrap();
+    assert_eq!(
+        opened.wallet_id,
+        core_id(
+            "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+            ""
+        )
+    );
+    assert_eq!(
+        receive_addresses(&e, &s, opened.wallet_id, 2),
+        [
+            "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+            "yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw",
+        ]
+    );
+}
+
+fn regtest_address(phrase: &str, pass: &str, path: &str) -> String {
+    let secret =
+        dw_vault::mnemonic::derive_secret(phrase.as_bytes(), pass.as_bytes(), true).unwrap();
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &secret.seed[..]).unwrap();
+    let child = master
+        .derive_priv(&DerivationPath::from_str(path).unwrap())
+        .unwrap();
+    dashcore::Address::p2pkh(
+        &dashcore::PublicKey::new(child.private_key.public_key()),
+        dashcore::Network::Regtest,
+    )
+    .to_string()
+}
+
+/// A label-free keypool is still checked against the session network, loose
+/// keys are reported, coin locks are stored before any spend, and a chain
+/// past the gap limit is actually derived.
+#[test]
+fn test_qt_106_import_checks_network_range_locks_and_loose_keys() {
+    let zoo = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
+    let main_dir = dw_testutil::private_tempdir();
+    let main = engine(main_dir.path());
+    let main_session = session(&main, DashNetwork::Mainnet);
+    let refused = main.block_on(main_session.import_wallet_dat(
+        testdata("compat/walletdat/bdb_label_free.dat"),
+        None,
+        ImportOptions::default(),
+    ));
+    assert!(
+        matches!(
+            refused,
+            Err(EngineError::Compat(CompatFailure::NetworkMismatch {
+                mainnet: false
+            }))
+        ),
+        "{refused:?}"
+    );
+
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = open(&e, Some(b"vault pass"));
+    e.block_on(s.vault_op(|v| v.unlock(b"vault pass", UnlockScope::Full)))
+        .unwrap();
+    let opts = ImportOptions::default;
+    let plain = e
+        .block_on(s.import_wallet_dat(
+            testdata("compat/walletdat/bdb_label_free.dat"),
+            None,
+            opts(),
+        ))
+        .unwrap();
+    assert_eq!(plain.wallet_id, core_id(zoo, ""));
+    assert_eq!(plain.labels_imported, 0);
+    assert_eq!(
+        receive_addresses(&e, &s, plain.wallet_id, 1),
+        [regtest_address(zoo, "", "m/44'/1'/0'/0/0")]
+    );
+
+    let wide = e
+        .block_on(s.import_wallet_dat(
+            testdata("compat/walletdat/bdb_wide_range.dat"),
+            None,
+            opts(),
+        ))
+        .unwrap();
+    assert_eq!(wide.keys_not_imported, 1);
+    let receive = e
+        .block_on(s.addresses(
+            wide.wallet_id,
+            AddressFilter {
+                chain: Some(AddressChain::Receiving),
+                used: None,
+            },
+        ))
+        .unwrap();
+    assert!(
+        receive.iter().any(|a| a.index == 1000),
+        "receive index 1000 was not derived"
+    );
+    let change = e
+        .block_on(s.addresses(
+            wide.wallet_id,
+            AddressFilter {
+                chain: Some(AddressChain::Change),
+                used: None,
+            },
+        ))
+        .unwrap();
+    assert!(change.iter().any(|a| a.index == 1));
+    let locks = e.block_on(s.locked_outpoints(wide.wallet_id)).unwrap();
+    assert_eq!(locks.len(), 1);
+    assert_eq!(locks[0].vout, 7);
+    assert_eq!(locks[0].txid.to_string(), "ab".repeat(32));
+
+    e.block_on(e.close_network(DashNetwork::Regtest)).unwrap();
+    let s = session(&e, DashNetwork::Regtest);
+    let chain_reach = |chain| {
+        e.block_on(s.addresses(
+            wide.wallet_id,
+            AddressFilter {
+                chain: Some(chain),
+                used: None,
+            },
+        ))
+        .unwrap()
+        .iter()
+        .map(|a| a.index)
+        .max()
+    };
+    assert!(
+        chain_reach(AddressChain::Receiving) >= Some(1000),
+        "the receive range was not restored after a restart"
+    );
+    assert!(chain_reach(AddressChain::Change) >= Some(1));
+    assert_eq!(
+        e.block_on(s.locked_outpoints(wide.wallet_id))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let account = e.block_on(s.import_wallet_dat(
+        testdata("compat/walletdat/bdb_account1.dat"),
+        None,
+        opts(),
+    ));
+    assert!(
+        matches!(
+            &account,
+            Err(EngineError::Compat(CompatFailure::UnsupportedFormat(d))) if d.contains("account 1")
+        ),
+        "{account:?}"
+    );
+}
+
+const ABANDON: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+fn app_db(s: &Arc<NetworkSession>) -> rusqlite::Connection {
+    let conn = rusqlite::Connection::open(s.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.busy_timeout(Duration::from_secs(30)).unwrap();
+    conn
+}
+
+/// A wallet's setting `key` as stored, read past the engine.
+fn stored_setting(s: &Arc<NetworkSession>, id: WalletId, key: &str) -> Option<String> {
+    app_db(s)
+        .query_row(
+            "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+            [id.to_string().as_str(), key],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+/// Makes every CoinJoin salt write fail, or work again: the last write of
+/// a wallet.dat import, after its range and locks are stored.
+fn refuse_salt_writes(s: &Arc<NetworkSession>, refuse: bool) {
+    let sql = if refuse {
+        "CREATE TRIGGER refuse_salt_insert BEFORE INSERT ON settings_kv
+           WHEN NEW.key = 'coinjoin.salt' BEGIN SELECT RAISE(ABORT, 'test: salt refused'); END;
+         CREATE TRIGGER refuse_salt_update BEFORE UPDATE ON settings_kv
+           WHEN NEW.key = 'coinjoin.salt' BEGIN SELECT RAISE(ABORT, 'test: salt refused'); END;"
+    } else {
+        "DROP TRIGGER refuse_salt_insert; DROP TRIGGER refuse_salt_update;"
+    };
+    app_db(s).execute_batch(sql).unwrap();
+}
+
+fn import_wide(e: &Engine, s: &Arc<NetworkSession>) -> Result<WalletId, EngineError> {
+    e.block_on(s.import_wallet_dat(
+        testdata("compat/walletdat/bdb_wide_range.dat"),
+        None,
+        ImportOptions::default(),
+    ))
+    .map(|r| r.wallet_id)
+}
+
+fn restore_abandon(e: &Engine, s: &Arc<NetworkSession>) -> WalletId {
+    e.block_on(s.import_wallet(
+        Zeroizing::new(ABANDON.as_bytes().to_vec()),
+        Zeroizing::new(Vec::new()),
+        ImportOptions {
+            core_compat: true,
+            ..ImportOptions::default()
+        },
+    ))
+    .unwrap()
+}
+
+fn reaches_index_1000(e: &Engine, s: &Arc<NetworkSession>, id: WalletId) -> bool {
+    e.block_on(s.addresses(
+        id,
+        AddressFilter {
+            chain: Some(AddressChain::Receiving),
+            used: None,
+        },
+    ))
+    .unwrap()
+    .iter()
+    .any(|a| a.index == 1000)
+}
+
+fn unlocked_session(e: &Engine) -> Arc<NetworkSession> {
+    let s = open(e, Some(b"vault pass"));
+    e.block_on(s.vault_op(|v| v.unlock(b"vault pass", UnlockScope::Full)))
+        .unwrap();
+    s
+}
+
+/// An import whose last write fails is refused; importing the file again
+/// restores the range, Core's lock and its salt.
+#[test]
+fn test_qt_106_a_failed_wallet_dat_import_can_be_retried() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = unlocked_session(&e);
+    let id = core_id(ABANDON, "");
+    refuse_salt_writes(&s, true);
+    let failed = import_wide(&e, &s);
+    assert!(failed.is_err(), "{failed:?}");
+    refuse_salt_writes(&s, false);
+    assert_eq!(import_wide(&e, &s).unwrap(), id);
+    assert!(
+        reaches_index_1000(&e, &s, id),
+        "the retry did not restore the receive range"
+    );
+    let locks = e.block_on(s.locked_outpoints(id)).unwrap();
+    assert_eq!(locks.len(), 1, "the retry did not install Core's lock");
+    assert_eq!(locks[0].vout, 7);
+    assert_eq!(e.block_on(s.coinjoin_salt(id)).unwrap(), CORE_SALT);
+}
+
+/// A failed import leaves nothing of the file: restoring the same seed from
+/// its phrase gets no Core lock, salt or range.
+#[test]
+fn test_qt_106_a_failed_wallet_dat_import_leaves_nothing_for_a_phrase_restore() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = unlocked_session(&e);
+    refuse_salt_writes(&s, true);
+    let failed = import_wide(&e, &s);
+    assert!(failed.is_err(), "{failed:?}");
+    refuse_salt_writes(&s, false);
+    let id = restore_abandon(&e, &s);
+    assert!(e.block_on(s.locked_outpoints(id)).unwrap().is_empty());
+    assert_eq!(stored_setting(&s, id, "bip44.legacy_issued"), None);
+    assert_ne!(e.block_on(s.coinjoin_salt(id)).unwrap(), CORE_SALT);
+    assert!(!reaches_index_1000(&e, &s, id));
+}
+
+/// Importing the wallet.dat of a wallet already there, open or closed,
+/// says it exists and changes nothing of it: its own salt, the locks the
+/// user left, its range.
+#[test]
+fn test_qt_106_an_import_of_a_wallet_already_there_changes_nothing() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = unlocked_session(&e);
+    let id = restore_abandon(&e, &s);
+    let own_salt = e.block_on(s.coinjoin_salt(id)).unwrap();
+    assert_ne!(own_salt, CORE_SALT);
+    let exists = |again: Result<WalletId, EngineError>| {
+        assert!(
+            matches!(&again, Err(EngineError::WalletAlreadyExists(w)) if *w == id.to_string()),
+            "{again:?}"
+        );
+    };
+    exists(import_wide(&e, &s));
+    assert_eq!(e.block_on(s.coinjoin_salt(id)).unwrap(), own_salt);
+    assert!(e.block_on(s.locked_outpoints(id)).unwrap().is_empty());
+    assert_eq!(stored_setting(&s, id, "bip44.legacy_issued"), None);
+    assert!(!reaches_index_1000(&e, &s, id));
+    e.block_on(s.unload_wallet(id)).unwrap();
+    exists(import_wide(&e, &s));
+    assert_eq!(
+        stored_setting(&s, id, "coinjoin.salt").as_deref(),
+        Some(own_salt.as_str())
+    );
+    assert_eq!(stored_setting(&s, id, "bip44.legacy_issued"), None);
+
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = unlocked_session(&e);
+    let id = import_wide(&e, &s).unwrap();
+    let locks = e.block_on(s.locked_outpoints(id)).unwrap();
+    assert_eq!(locks.len(), 1);
+    e.block_on(s.unlock_outpoints(id, locks)).unwrap();
+    exists(import_wide(&e, &s));
+    assert!(
+        e.block_on(s.locked_outpoints(id)).unwrap().is_empty(),
+        "the coin the user unlocked was locked again"
+    );
+}
+
+/// A watch-only wallet: the `abandon` wallet restored from its phrase,
+/// with its own salt, then its seed deleted from the vault.
+fn watch_only_abandon(e: &Engine, s: &Arc<NetworkSession>) -> (WalletId, String) {
+    let id = restore_abandon(e, s);
+    let own_salt = e.block_on(s.coinjoin_salt(id)).unwrap();
+    assert_ne!(own_salt, CORE_SALT);
+    assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+    (id, own_salt)
+}
+
+/// A wallet.dat of a watch-only wallet's seed attaches its keys with Core's
+/// range, locks and salt, all in place when the wallet is announced.
+#[test]
+fn test_qt_106_a_wallet_dat_attaches_keys_to_a_watch_only_wallet() {
+    let dir = dw_testutil::private_tempdir();
+    let probe = Arc::new(CreatedProbe::default());
+    let e = engine_with(dir.path(), Arc::clone(&probe) as Arc<dyn EventSink>);
+    let s = unlocked_session(&e);
+    probe
+        .db
+        .set(s.data_dir().join(dw_appdb::APP_DB_FILE))
+        .unwrap();
+    let (id, _) = watch_only_abandon(&e, &s);
+    assert_eq!(import_wide(&e, &s).unwrap(), id);
+    assert!(s.vault().has_wallet_secret(&id.0));
+    assert!(reaches_index_1000(&e, &s, id));
+    assert_eq!(e.block_on(s.locked_outpoints(id)).unwrap().len(), 1);
+    assert_eq!(e.block_on(s.coinjoin_salt(id)).unwrap(), CORE_SALT);
+    let seen = probe.seen.lock().unwrap().clone();
+    assert_eq!(
+        seen.last(),
+        Some(&(
+            id.to_string(),
+            1,
+            Some("1001,2".to_owned()),
+            Some(CORE_SALT.to_owned())
+        )),
+        "what the app database held when the keys were announced: {seen:?}"
+    );
+}
+
+/// Attaching keys whose last write fails leaves the watch-only wallet as it
+/// was: no seed, its own salt, no Core lock or range setting.
+#[test]
+fn test_qt_106_a_failed_key_attachment_leaves_the_watch_only_wallet_as_it_was() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(dir.path());
+    let s = unlocked_session(&e);
+    let (id, own_salt) = watch_only_abandon(&e, &s);
+    refuse_salt_writes(&s, true);
+    let failed = import_wide(&e, &s);
+    assert!(failed.is_err(), "{failed:?}");
+    refuse_salt_writes(&s, false);
+    assert!(!s.vault().has_wallet_secret(&id.0));
+    assert_eq!(stored_setting(&s, id, "coinjoin.salt"), Some(own_salt));
+    assert_eq!(stored_setting(&s, id, "bip44.legacy_issued"), None);
+    assert!(e.block_on(s.locked_outpoints(id)).unwrap().is_empty());
+}
+
+/// A `.dwbackup` of a legacy wallet restores its range before the wallet
+/// is announced, in that session, without a reload.
+#[test]
+fn test_qt_110_a_restored_legacy_wallet_has_its_range_at_once() {
+    let dir = dw_testutil::private_tempdir();
+    let e = engine(&dir.path().join("a"));
+    let s = unlocked_session(&e);
+    let id = import_wide(&e, &s).unwrap();
+    let dest = dir.path().join("legacy.dwbackup");
+    e.block_on(s.backup_wallet(id, dest.clone(), None)).unwrap();
+
+    let e2 = engine(&dir.path().join("b"));
+    let s2 = open(&e2, None);
+    let ids = e2
+        .block_on(s2.restore_backup(dest, Some(Zeroizing::new(b"vault pass".to_vec()))))
+        .unwrap();
+    assert_eq!(ids, vec![id]);
+    assert!(
+        reaches_index_1000(&e2, &s2, id),
+        "the range was not restored"
+    );
+    assert_eq!(e2.block_on(s2.locked_outpoints(id)).unwrap().len(), 1);
+}
+
+/// Core's CoinJoin salt in `bdb_wide_range.dat`.
+const CORE_SALT: &str = "5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c";
+
+type Seen = (String, i64, Option<String>, Option<String>);
+
+/// What the app database held for a wallet when `WalletCreated` was
+/// emitted: its open locks, stored range and CoinJoin salt.
+#[derive(Default)]
+struct CreatedProbe {
+    db: std::sync::OnceLock<PathBuf>,
+    seen: std::sync::Mutex<Vec<Seen>>,
+}
+
+impl EventSink for CreatedProbe {
+    fn emit(&self, event: EngineEvent) {
+        let EngineEvent::WalletCreated { wallet_id, .. } = event else {
+            return;
+        };
+        let Some(db) = self.db.get() else {
+            return;
+        };
+        let conn =
+            rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let id = wallet_id.to_string();
+        let locks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM utxo_locks WHERE wallet_id = ?1 AND released_at IS NULL",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let setting = |key: &str| {
+            conn.query_row(
+                "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                [id.as_str(), key],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+        };
+        let issued = setting("bip44.legacy_issued");
+        let salt = setting("coinjoin.salt");
+        self.seen.lock().unwrap().push((id, locks, issued, salt));
+    }
+}
+
+/// Nothing hears of an imported legacy wallet before Core's range, coin
+/// locks and salt are stored: `WalletCreated` finds them already there.
+#[test]
+fn test_qt_106_a_legacy_wallet_is_announced_with_its_locks_in_place() {
+    let dir = dw_testutil::private_tempdir();
+    let probe = Arc::new(CreatedProbe::default());
+    let e = engine_with(dir.path(), Arc::clone(&probe) as Arc<dyn EventSink>);
+    let s = open(&e, Some(b"vault pass"));
+    e.block_on(s.vault_op(|v| v.unlock(b"vault pass", UnlockScope::Full)))
+        .unwrap();
+    probe
+        .db
+        .set(s.data_dir().join(dw_appdb::APP_DB_FILE))
+        .unwrap();
+    let report = e
+        .block_on(s.import_wallet_dat(
+            testdata("compat/walletdat/bdb_wide_range.dat"),
+            None,
+            ImportOptions::default(),
+        ))
+        .unwrap();
+    let seen = probe.seen.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        [(
+            report.wallet_id.to_string(),
+            1,
+            Some("1001,2".to_owned()),
+            Some(CORE_SALT.to_owned())
+        )],
+        "what the app database held when the wallet was announced"
     );
 }
 
