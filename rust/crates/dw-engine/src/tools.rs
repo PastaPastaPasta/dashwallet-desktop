@@ -869,6 +869,11 @@ impl NetworkSession {
         }
         for id in wallets {
             let from = start(&id);
+            // Its replay is stored before a lower birth is: a quit in
+            // between leaves the rescan owed, not a birth below a checkpoint
+            // that is trusted.
+            self.record_rewind(&manager, id, from.saturating_sub(1))
+                .await?;
             self.lower_birth_height(&manager, id, from).await?;
             let target = (self.rewind_recorded(&manager, id, from.saturating_sub(1))).await?;
             match (target, state.wallets.get_mut(&id)) {
@@ -934,8 +939,9 @@ impl NetworkSession {
 
     /// IOS-113 "edit birth height": stores `height` as the wallet's birth
     /// height (wallet.sqlite and memory). Lower than the filter checkpoint:
-    /// a rescan of this wallet from `height` is scheduled. Above the known
-    /// tip: `HeightOutOfRange`.
+    /// a rescan of this wallet from `height` is stored first, then
+    /// scheduled; `RescanInProgress` while one runs. Above the known tip:
+    /// `HeightOutOfRange`.
     pub async fn set_birth_height(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -950,9 +956,25 @@ impl NetworkSession {
             if this.known_tip().is_some_and(|tip| height > tip) {
                 return Err(EngineError::HeightOutOfRange(height));
             }
+            // A lower birth than the checkpoint owes a rescan from it: no
+            // second rescan is started, and the replay is stored before the
+            // birth, so a quit in between leaves it owed.
+            let checkpoint = height.saturating_sub(1);
+            let synced = {
+                let wm = live.manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                (wm.get_wallet_info(&wallet_id.0)).map_or(0, |i| i.core_wallet.synced_height())
+            };
+            if checkpoint < synced {
+                if this.rescan_running() {
+                    return Err(EngineError::RescanInProgress);
+                }
+                this.record_rewind(&live.manager, wallet_id, checkpoint)
+                    .await?;
+            }
             let synced = this.store_birth_height(wallet_id, height).await?;
             this.refresh_wallet_state(&live.manager, wallet_id).await;
-            if height.saturating_sub(1) < synced {
+            if checkpoint < synced {
                 this.start_rescan(vec![wallet_id], height, |_| height)
                     .await?;
             }

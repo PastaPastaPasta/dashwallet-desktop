@@ -451,6 +451,9 @@ impl NetworkSession {
             // Read under the coin fence, held through the signing, as an
             // engine build reads and spends them (`coins.rs`).
             let _fence = this.coin_fence(wallet_id).await?;
+            // Not while a replay may still credit or spend a coin it signs
+            // for, as a send or contact payment.
+            this.replay_guard(wallet_id, 0).await?;
             let snapshot = this.coin_snapshot(&_fence, &w).await?;
             // The raw set too: an input the wallet already reads spent (the
             // lock seen, not proved) is no coin of the snapshot.

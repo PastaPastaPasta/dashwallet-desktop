@@ -216,12 +216,16 @@ fn bundled_issued(tables: &[TableRows], id: WalletId) -> Result<Option<(u32, u32
         .transpose()
 }
 
-/// The lookahead a bundle's `settings_kv` rows of `id` carry, if a valid
-/// one, as the stored setting is read.
-fn bundled_lookahead(tables: &[TableRows], id: WalletId) -> Option<u32> {
-    bundled_setting(tables, id, crate::keys::LOOKAHEAD_SETTING)?
-        .and_then(|v| v.parse::<u32>().ok())
-        .filter(|g| (1..=crate::MAX_LOOKAHEAD).contains(g))
+/// The lookahead a bundle's `settings_kv` rows of `id` carry, if any;
+/// `Corrupt` for one that is present but not a valid lookahead.
+fn bundled_lookahead(tables: &[TableRows], id: WalletId) -> Result<Option<u32>, EngineError> {
+    bundled_setting(tables, id, crate::keys::LOOKAHEAD_SETTING)
+        .map(|v| {
+            v.and_then(|v| v.parse::<u32>().ok())
+                .filter(|g| (1..=crate::MAX_LOOKAHEAD).contains(g))
+                .ok_or_else(|| BackupFailure::Corrupt("lookahead".into()).into())
+        })
+        .transpose()
 }
 
 /// The value of `key` in a bundle's `settings_kv` rows of `id`: `Some(None)`
@@ -728,6 +732,7 @@ impl NetworkSession {
             issued: bundled_issued(&tables, id)?,
             ..Default::default()
         };
+        let lookahead = bundled_lookahead(&tables, id)?;
         let existed = self.manager()?.get_wallet(&id.0).await.is_some();
         // A wallet already there gets back, if the restore fails later, the
         // settings it writes: its range and the bundle's rows (its salt).
@@ -746,7 +751,7 @@ impl NetworkSession {
             birth_height: Some(payload.birth_height.unwrap_or(0)),
             core_compat: false,
             name: payload.name.clone(),
-            lookahead: bundled_lookahead(&tables, id),
+            lookahead,
         };
         match self
             .import_secret_locked(

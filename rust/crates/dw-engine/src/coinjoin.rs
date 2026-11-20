@@ -2404,8 +2404,9 @@ impl NetworkSession {
             tracing::warn!(%wallet_id, error = %e, "the recovery scan could not raise the lookahead");
         }
         raised?;
-        self.store_lookahead(wallet_id, RECOVERY_LOOKAHEAD).await;
-        Ok(())
+        // Stored, or the recovery is refused: a restart during its replay
+        // scans with the lookahead it needs.
+        self.write_lookahead(wallet_id, RECOVERY_LOOKAHEAD).await
     }
 
     /// IOS-057 recovery scan: raises the CoinJoin account's and the BIP44

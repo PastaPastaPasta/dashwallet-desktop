@@ -129,6 +129,11 @@ pub(crate) static FAIL_WIDE_SCAN_IO: std::sync::Mutex<Vec<[u8; 32]>> =
 pub(crate) static FAIL_WIDE_SCAN_READ: std::sync::Mutex<Vec<[u8; 32]>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Tests: wallets whose lookahead cannot be stored.
+#[cfg(test)]
+pub(crate) static FAIL_LOOKAHEAD_WRITE: std::sync::Mutex<Vec<[u8; 32]>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// Tests: wallets whose stored CoinJoin use cannot be read.
 #[cfg(test)]
 pub(crate) static FAIL_COINJOIN_USE_READ: std::sync::Mutex<Vec<[u8; 32]>> =
@@ -1001,6 +1006,8 @@ impl NetworkSession {
         Ok(wallet_id)
     }
 
+    /// Tests: stores wallet `id`'s lookahead, a failure logged.
+    #[cfg(test)]
     pub(crate) async fn store_lookahead(&self, wallet_id: WalletId, gap: u32) {
         if self.write_lookahead(wallet_id, gap).await.is_err() {
             tracing::warn!(%wallet_id, "could not store the lookahead; it lasts until restart");
@@ -1010,6 +1017,10 @@ impl NetworkSession {
     /// Stores wallet `id`'s lookahead `gap`, durable when it returns `Ok`:
     /// before a wallet is published, so a load after a crash scans with it.
     pub(crate) async fn write_lookahead(&self, id: WalletId, gap: u32) -> Result<(), EngineError> {
+        #[cfg(test)]
+        if fails_for(&FAIL_LOOKAHEAD_WRITE, id) {
+            return Err(EngineError::Storage("test: lookahead not stored".into()));
+        }
         let key = id.to_string();
         self.appdb_op(move |db| {
             db.set_setting_durable(&key, LOOKAHEAD_SETTING, Some(&gap.to_string()))
@@ -1140,9 +1151,16 @@ impl NetworkSession {
         // A wallet whose CoinJoin use cannot be read is replayed and stays
         // without a marker, so its next load reads it again.
         let mut unsure = false;
-        let from = match marker {
-            Ok(Some(WideScan::Done)) | Err(_) => loaded_at,
-            Ok(Some(WideScan::From(h))) => Some(loaded_at.map_or(h, |c| c.min(h))),
+        let from = match &marker {
+            Ok(Some(WideScan::Done)) => loaded_at,
+            // It may owe any start: replayed from the birth, and nothing
+            // writes `Done` over it.
+            Err(e) => {
+                tracing::warn!(wallet_id = %id, error = %e, "could not read the wallet's wide-scan marker; replaying it from its birth");
+                unsure = true;
+                Some(birth_checkpoint(manager, id).await)
+            }
+            Ok(Some(WideScan::From(h))) => Some(loaded_at.map_or(*h, |c| c.min(*h))),
             Ok(Some(WideScan::Birth)) => Some(birth_checkpoint(manager, id).await),
             Ok(None) => match self.scanned_narrow(manager, id, lookahead).await {
                 Ok(true) => Some(birth_checkpoint(manager, id).await),
@@ -1165,7 +1183,14 @@ impl NetworkSession {
             Ok(live) => live.replay.stored(id).await.ok().flatten(),
             Err(_) => None,
         };
+        // A cancelled one holding above an owed start leaves that start
+        // owed: the marker stays for the next open, not `Done`.
+        let mut owed_below_hold = false;
         let from = match (from, record) {
+            (Some(f), Some(r)) if r.cancelled && r.reached > f => {
+                owed_below_hold = true;
+                loaded_at
+            }
             (Some(f), Some(r))
                 if r.cancelled || (r.reached <= f && loaded_at.is_some_and(|c| c <= r.target)) =>
             {
@@ -1187,7 +1212,10 @@ impl NetworkSession {
                 tracing::warn!(wallet_id = %id, error = %e, "could not mark the wallet for a replay at the next load");
                 return Err(e);
             }
-        } else if !unsure && matches!(marker, Ok(m) if m != Some(WideScan::Done)) {
+        } else if !unsure
+            && !owed_below_hold
+            && matches!(marker, Ok(m) if m != Some(WideScan::Done))
+        {
             self.set_wide_scan(id, Some(WideScan::Done)).await;
         }
         Ok(())

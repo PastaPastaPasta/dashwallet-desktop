@@ -33,6 +33,10 @@ const PHRASE: &[u8] =
 const HOOK_PHRASE: &[u8] =
     b"legal winner thank year wave sausage worth useful legal winner thank yellow";
 
+/// As [`HOOK_PHRASE`], for the test whose marker cannot be read at open.
+const MARKER_READ_PHRASE: &[u8] =
+    b"jelly better achieve collect unaware mountain thought cargo oxygen act hood bridge";
+
 /// As [`HOOK_PHRASE`], for the test that cannot read a wallet's CoinJoin use.
 const READ_PHRASE: &[u8] =
     b"letter advice cage absurd amount doctor acoustic avoid letter advice cage above";
@@ -1234,7 +1238,8 @@ fn signs(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, prev: &Tr
 /// BIP44 coin at external index 79, written by the real persister with no
 /// pool row and no used address near it, no lookahead stored. After
 /// `unload_wallet` and `load_wallet` its address is derived and used, the gap
-/// is kept past it, it counts once, and the wallet signs a spend of it.
+/// is kept past it, it counts once, and the wallet signs a spend of it once
+/// the replay the load started from the birth has caught up.
 #[test]
 fn a_real_load_restores_a_sparse_bip44_coin_spendable() {
     let (_dir, engine, session, id) = engine_wallet();
@@ -1280,6 +1285,11 @@ fn a_real_load_restores_a_sparse_bip44_coin_spendable() {
     });
     let coin = [(OutPoint::new(tx.txid(), 0), to)];
     assert_coins(&engine, &session, id, &coin, bip44(), VALUE);
+    assert!(
+        !signs(&engine, &session, id, &tx),
+        "signing waits for the load's replay"
+    );
+    store_checkpoint(&engine, &session, id, HEIGHT + 300);
     assert!(
         signs(&engine, &session, id, &tx),
         "the wallet signs a spend of it"
@@ -2487,6 +2497,198 @@ fn a_restored_backup_raises_its_lookahead_before_the_wallet_is_registered() {
 
     assert_eq!(seen.lock().unwrap().as_deref(), Some("200"));
     assert_eq!(gap(&engine, &session, id, bip44()), 200);
+}
+
+/// Review r7 finding 3: CoinJoin Recovery whose larger lookahead cannot be
+/// stored is refused, rather than rescanning with a range a restart would
+/// lose.
+#[test]
+fn a_recovery_scan_whose_lookahead_cannot_be_stored_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+
+    let recovered = failing(&crate::keys::FAIL_LOOKAHEAD_WRITE, id, || {
+        engine.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                session.coinjoin_recovery_scan(id),
+            )
+            .await
+        })
+    });
+
+    assert!(
+        matches!(recovered, Ok(Err(_))),
+        "refused at once: {recovered:?}"
+    );
+    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+}
+
+/// Review r7 finding 2: a wallet scanned to 1,000 holds a cancelled replay
+/// at 800, and CoinJoin Recovery stored a wide replay owed from block 0 with
+/// its lookahead before the app quit, ahead of its rescan. The next open
+/// leaves the cancelled replay as it was and keeps the replay from 0 owed:
+/// done is not written over it.
+#[test]
+fn a_cancelled_replay_above_an_owed_start_keeps_that_start_owed() {
+    let (_dir, engine, session, id) = engine_wallet();
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    engine.block_on(session.store_lookahead(id, 1_000));
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::From(0)));
+    store_setting(&engine, &session, id, "replay", "2:1000:800:1:0");
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(0))
+    );
+    let live = session.live().unwrap();
+    let record = engine.block_on(live.replay.get(id)).unwrap().unwrap();
+    assert!(record.cancelled && record.reached == 800, "{record:?}");
+}
+
+/// A wallet born at block 700 and scanned to 1,000.
+fn born_at_700(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
+    let id = created(engine, session);
+    engine.block_on(session.set_birth_height(id, 700)).unwrap();
+    store_checkpoint(engine, session, id, HEIGHT);
+    assert_eq!(birth_height(engine, session, id), 700);
+    id
+}
+
+fn fail_replay_writes(session: &NetworkSession, fail: bool) {
+    (session.live().unwrap().replay.fail_writes).store(fail, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Review r7 finding 4: a birth height lowered below the checkpoint stores
+/// its rescan before the birth. When the rescan cannot be stored, the birth
+/// stays, so no open trusts the old checkpoint under the lower birth.
+#[test]
+fn a_lower_birth_height_whose_rescan_cannot_be_stored_is_not_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = born_at_700(&engine, &session);
+
+    fail_replay_writes(&session, true);
+    let set = engine.block_on(session.set_birth_height(id, 100));
+    fail_replay_writes(&session, false);
+
+    assert!(set.is_err());
+    assert_eq!(birth_height(&engine, &session, id), 700);
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, id), 700);
+}
+
+/// Review r7 finding 4: a lower birth height asked for while a rescan runs
+/// is refused before anything is stored.
+#[test]
+fn a_lower_birth_height_during_a_rescan_is_refused_before_it_is_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = born_at_700(&engine, &session);
+    start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.rescan(crate::RescanFrom::Height(900)))
+        .unwrap();
+
+    let set = engine.block_on(session.set_birth_height(id, 100));
+
+    assert!(matches!(set, Err(EngineError::RescanInProgress)), "{set:?}");
+    assert_eq!(birth_height(&engine, &session, id), 700);
+}
+
+/// Review r7 finding 4: a rescan from below the birth stores its replay
+/// before the lower birth; when the replay cannot be stored, the birth
+/// stays.
+#[test]
+fn a_rescan_below_the_birth_whose_replay_cannot_be_stored_keeps_the_birth() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = born_at_700(&engine, &session);
+    start_offline_spv(&engine, &session);
+
+    fail_replay_writes(&session, true);
+    let rescanned = engine.block_on(session.rescan(crate::RescanFrom::Height(100)));
+    fail_replay_writes(&session, false);
+
+    assert!(rescanned.is_err());
+    assert_eq!(birth_height(&engine, &session, id), 700);
+}
+
+/// Review r7 finding 5a: a session open that cannot read a wallet's marker
+/// treats it as owed: the wallet is replayed from its birth, though its
+/// widening succeeds, and the marker it could not read is not overwritten
+/// with done. Here that marker owed a replay from block 100.
+#[test]
+fn a_marker_that_cannot_be_read_at_open_is_owed_from_the_birth() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = import_phrase(&engine, &session, MARKER_READ_PHRASE, 0).unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    set_wide_scan(
+        &engine,
+        &session,
+        id,
+        Some(crate::keys::WideScan::From(100)),
+    );
+
+    let session = failing(&crate::keys::FAIL_WIDE_SCAN_READ, id, || {
+        reopen(&engine, session)
+    });
+
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    assert_eq!(replay_record(&engine, &session, id), Some((0, HEIGHT)));
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(100))
+    );
+}
+
+/// Review r7 finding 5b: a backup whose lookahead is present but malformed
+/// is refused as corrupt before its wallet is registered, as one with a
+/// malformed legacy range is: it is not restored as having none.
+#[test]
+fn a_backup_with_a_malformed_lookahead_is_refused_before_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let backup = dir.path().join("w.dwbackup");
+    let pass = || Some(zeroize::Zeroizing::new(b"bk".to_vec()));
+    let id = {
+        let (engine, session) = open_engine(dir.path().join("a"));
+        create_vault(&engine, &session);
+        let id = created(&engine, &session);
+        store_setting(
+            &engine,
+            &session,
+            id,
+            crate::keys::LOOKAHEAD_SETTING,
+            "two hundred",
+        );
+        engine
+            .block_on(session.backup_wallet(id, backup.clone(), pass()))
+            .unwrap();
+        id
+    };
+    let (engine, session) = open_engine(dir.path().join("b"));
+    create_vault(&engine, &session);
+
+    let restored = engine.block_on(session.restore_backup(backup, pass()));
+
+    assert!(restored.is_err(), "{restored:?}");
+    assert!(
+        engine
+            .block_on(session.manager().unwrap().get_wallet(&id.0))
+            .is_none()
+    );
+    assert!(!session.vault().has_wallet_secret(&id.0));
 }
 
 /// A rescan that can neither widen a wallet's pools nor store its marker is
