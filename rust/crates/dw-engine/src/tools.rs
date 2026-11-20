@@ -521,7 +521,8 @@ impl NetworkSession {
 
     /// Resumes `wallet`'s stored replay as it is loaded, before
     /// SPV scans it: the checkpoint goes back to the record's start and
-    /// spends wait for the record's target. A cancelled replay is not
+    /// spends wait for the record's target; a record from below the birth
+    /// height lowers the birth to its start first. A cancelled replay is not
     /// resumed: its hold comes back, no lower than a rescan from the birth
     /// height rewinds to. A record that cannot be read, or a failed resume,
     /// holds spends until such a rescan; the record stays. The record is
@@ -600,6 +601,15 @@ impl NetworkSession {
         }
         if record.cancelled {
             hold(true).await;
+            return;
+        }
+        // A replay from below the birth is a rescan from there whose lower
+        // birth was not stored: dash-spv would never certify the wallet.
+        if let Err(e) =
+            (self.lower_birth_height(manager, wallet, record.reached.saturating_add(1))).await
+        {
+            tracing::warn!(error = %e, wallet = %wallet, "replay not resumed: its start below the birth height could not be stored; spends wait for a rescan");
+            hold(false).await;
             return;
         }
         let resumed = (self.rewind(

@@ -1207,8 +1207,14 @@ fn a_recovery_raise_failing_twice_names_both_failures() {
 }
 
 /// Signs, through the session, a PSBT spending `outpoint` of `prev`: whether
-/// the wallet signed it (it has the coin's key and derivation path).
-fn signs(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, prev: &Transaction) -> bool {
+/// the wallet signed it (it has the coin's key and derivation path), or
+/// why it refused.
+fn signs(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    prev: &Transaction,
+) -> Result<bool, EngineError> {
     use dw_vault::{Credential, GrantPurpose};
     let unsigned = dw_psbt::create_unsigned(
         spends(prev),
@@ -1228,10 +1234,8 @@ fn signs(engine: &Engine, session: &Arc<NetworkSession>, id: WalletId, prev: &Tr
         )
         .unwrap()
         .id;
-    match engine.block_on(session.sign_psbt(id, unsigned, grant)) {
-        Ok(mut signed) => dw_psbt::finalize(&mut signed),
-        Err(_) => false,
-    }
+    (engine.block_on(session.sign_psbt(id, unsigned, grant)))
+        .map(|mut signed| dw_psbt::finalize(&mut signed))
 }
 
 /// Sol r1 M2 (the deleted `a_real_load_marks_a_sparse_bip44_coin_used`): a
@@ -1286,12 +1290,15 @@ fn a_real_load_restores_a_sparse_bip44_coin_spendable() {
     let coin = [(OutPoint::new(tx.txid(), 0), to)];
     assert_coins(&engine, &session, id, &coin, bip44(), VALUE);
     assert!(
-        !signs(&engine, &session, id, &tx),
+        matches!(
+            signs(&engine, &session, id, &tx),
+            Err(EngineError::RescanInProgress)
+        ),
         "signing waits for the load's replay"
     );
     store_checkpoint(&engine, &session, id, HEIGHT + 300);
     assert!(
-        signs(&engine, &session, id, &tx),
+        signs(&engine, &session, id, &tx).unwrap(),
         "the wallet signs a spend of it"
     );
 }
@@ -2559,6 +2566,28 @@ fn born_at_700(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
     store_checkpoint(engine, session, id, HEIGHT);
     assert_eq!(birth_height(engine, session, id), 700);
     id
+}
+
+/// A replay stored from below the birth, by a lower birth height or a
+/// rescan below it that quit before the birth was stored, lowers the birth
+/// to its start when it is resumed: dash-spv scans no block below the
+/// earliest birth and never certifies a wallet whose checkpoint is below
+/// it, so the replay would never finish and spends would wait for good.
+#[test]
+fn a_replay_resumed_from_below_the_birth_lowers_the_birth_to_its_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = born_at_700(&engine, &session);
+    store_setting(&engine, &session, id, "replay", "2:1000:99:0:0");
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(synced_height(&engine, &session, id), 99);
+    assert_eq!(birth_height(&engine, &session, id), 100);
+    assert_eq!(replay_record(&engine, &session, id), Some((99, HEIGHT)));
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, id), 100);
 }
 
 fn fail_replay_writes(session: &NetworkSession, fail: bool) {
