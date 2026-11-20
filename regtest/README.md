@@ -212,6 +212,7 @@ network.
 | `DW_DP_STRICT` | `1`: the unknown-outcome case fails instead of skipping when the relay is not configured |
 | `DWCLI` | the dwcli binary |
 | `DW_DP_NOTIFY` | nightly only: the absolute path of the site's notifier, an executable that delivers its one argument (a failure message, or `<unit>: result=success` after a run that passed) |
+| `DW_DP_ISSUE_REPO` | nightly only, for the issue notifier `scripts/dashpay-nightly-issue.sh`: the repository (`owner/name`) its issue lives in. That notifier also needs `gh`, signed in with issue access to that repository, and `jq` |
 | `DW_DP_HOLD_UPSTREAM` | `ip:port` of a testnet peer serving BIP157 filters, for the unknown-outcome relay (DP3); that case is skipped when unset (fails with `DW_DP_STRICT=1`) |
 
 The harness assumes `DW_DP_STATE` is private to it: mode 0700, owned by the user that runs the
@@ -279,7 +280,7 @@ enabled. After a run that passed, the unit runs the notifier once more with `res
 On agentbox the notifier is `scripts/dashpay-nightly-issue.sh`: it keeps one open issue labelled
 `nightly-failure` ("Nightly failure: DashPay suites on testnet") in `DW_DP_ISSUE_REPO` while the
 nightly is red, adds a comment for each further red night, and closes it after the next green
-one. The issue is public, so it names the artifact directory by its date only. The scheduled
+one. The issue is public, so it names the artifact directory by the launcher's name for it only, and publishes nothing from a notice of any other form. The scheduled
 GitHub Actions nightly reports the same way ("Nightly failure: GitHub Actions", with links to
 the failed jobs), through the same `ci/github/nightly-issue.sh`.
 

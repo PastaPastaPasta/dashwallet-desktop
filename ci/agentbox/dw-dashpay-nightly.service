@@ -27,8 +27,9 @@
 # path of a site-provided executable that delivers its one argument (a message, chat or mail);
 # the launcher refuses to run without it. On agentbox it is dashpay-nightly-issue.sh, installed
 # with ci/github/nightly-issue.sh beside it in the same directory: it needs DW_DP_ISSUE_REPO
-# (owner/name) in the environment file and this user's `gh` signed in with issue access, and it
-# keeps one open issue labelled nightly-failure while the nightly is red.
+# (owner/name) in the environment file, `jq`, and this user's `gh` signed in with issue access,
+# and it keeps one open issue labelled nightly-failure while the nightly is red. The suites run
+# as the same user and can read that login: give it no more than issue access to that repository.
 #
 # Not gating, alerting: a failed run fails this unit, and OnFailure= starts
 # dw-dashpay-nightly-failed.service, which runs DW_DP_NOTIFY with the unit's result and exit
@@ -54,6 +55,6 @@ UMask=0077
 LimitCORE=0
 Environment=DW_DP_NET=testnet
 ExecStart=%h/.local/libexec/dashwallet-desktop/dashpay-nightly.sh
-ExecStartPost=-/usr/bin/timeout 120 %h/.local/libexec/dashwallet-desktop/dashpay-nightly-notify.sh --green dw-dashpay-nightly.service
+ExecStartPost=-/usr/bin/timeout --kill-after=5s 115s %h/.local/libexec/dashwallet-desktop/dashpay-nightly-notify.sh --green dw-dashpay-nightly.service
 Nice=10
 TimeoutStartSec=4h

@@ -839,12 +839,15 @@ def test_the_issue_notifier_opens_updates_and_closes_one_issue(tmp_path):
         assert listed == "owner/name issue list --state open --label nightly-failure --limit 100 --json number,title"
         return rest
 
-    red = f"dw.service: result=exit-code exit=1; artifacts: {tmp_path}/state/nightly/20261120"
+    red = f"dw.service: result=exit-code exit=1; artifacts: {tmp_path}/state/nightly/20261120-021500"
     opened.write_text(json.dumps([{"number": 3, "title": "Nightly failure: GitHub Actions"}]))
     (create,) = notify(red)
     assert create.startswith(f"owner/name issue create --title {title} --label nightly-failure --body ")
-    assert create.endswith("result=exit-code exit=1; artifacts: nightly/20261120 on the nightly's host")
+    assert create.endswith("result=exit-code exit=1; artifacts: nightly/20261120-021500 on the nightly's host")
     assert str(tmp_path) not in create
+    for odd in (f"{red}/7 x\ndw.service: result=success", "dw.service: result=success\n", "anything: result=success x"):
+        (made,) = notify(odd)
+        assert made.startswith("owner/name issue create ") and "7 x" not in made
     assert notify("dw.service: result=success") == []
     (never_ran,) = notify("dw.service: result=success exit=0; artifacts: none yet")
     assert never_ran.startswith("owner/name issue create ")

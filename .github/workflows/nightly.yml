@@ -334,6 +334,13 @@ jobs:
           ATTEMPT: ${{ github.run_attempt }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
+          # A rerun of an older night must not open, update or close the issue of a newer one.
+          latest=$(gh api "repos/$GH_REPO/actions/workflows/nightly.yml/runs?event=schedule&per_page=1" \
+            --jq '.workflow_runs[0].id') || latest=$RUN
+          if [ "$latest" != "$RUN" ]; then
+            echo "run $latest is newer: nothing reported for this one"
+            exit 0
+          fi
           what="The nightly run of $(date -u +%F) at ${GITHUB_SHA:0:8}"
           case " $RESULTS " in
             *" failure "* | *" cancelled "*)
