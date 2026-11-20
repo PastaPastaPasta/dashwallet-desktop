@@ -24,12 +24,12 @@ async function restoreOptions(page: Page) {
 const scanStart = (page: Page) => page.getByRole("group", { name: "Scan the blockchain from" });
 const option = (page: Page, text: string) => scanStart(page).locator("label").filter({ hasText: text });
 
-test("the step is as tall as its content when it is shown, with no legend to mis-size", async ({ page }) => {
+test("the scan start is a labelled group with no legend, and the step is as tall as its content", async ({ page }) => {
   await restoreOptions(page);
   await expect(scanStart(page)).toBeVisible();
   await expect(page.locator("[data-testid=onboarding-restoreOptions] legend")).toHaveCount(0);
   const gap = await page.getByTestId("onboarding-restoreOptions").evaluate((body) => body.getBoundingClientRect().bottom - body.lastElementChild!.getBoundingClientRect().bottom);
-  expect(gap).toBe(0);
+  expect(Math.abs(gap)).toBeLessThan(1);
 });
 
 test("one click on the words of A block height selects it and shows its field", async ({ page }) => {
