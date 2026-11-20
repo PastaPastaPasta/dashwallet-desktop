@@ -3071,17 +3071,16 @@ input[type="radio"]:disabled {
   font-weight: 600;
 }
 
+/* A group, not a fieldset: WebKitGTK sizes a flex fieldset's rendered legend twice when the
+   step mounts, so the first click's blur moved the step under the pointer (issue 108). */
 .scan-start {
   display: flex;
   flex-direction: column;
   gap: var(--dw-space-s);
-  margin: 0;
-  padding: 0;
-  border: 0;
 }
 
-.scan-start legend {
-  margin-bottom: var(--dw-space-s);
+.scan-start-title {
+  padding-inline: 2px;
   font-size: var(--dw-type-footnote-medium-size);
   font-weight: var(--dw-type-footnote-medium-weight);
 }
