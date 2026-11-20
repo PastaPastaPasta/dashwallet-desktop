@@ -115,6 +115,56 @@ only) is not applied, on pasta's decision of 2026-11-19: localization is in 1.0,
 - **If it slips:** the release candidate ships the languages that are complete and checked; the rest follow in
   1.0.x. Localization never holds the release candidate.
 
+### H-08: the upgrade path from an earlier release
+
+Users of 0.1.0 (and of each later release) upgrade in place, so a data root an older release wrote must open with
+the same wallets, balances, history, labels, settings and keys.
+
+**Linux, automated.** `testdata/upgrade/<tag>/` holds a data root written by that release's own Linux binary
+(`apps/desktop/scripts/upgrade-fixture.sh <tag>`; how, in `testdata/upgrade/README.md`) and the release's answers
+to 46 read commands. `dw-app`'s `upgrade_path_tests` opens a copy twice with the current build and requires the
+same answers and the same message signatures. It runs in `cargo test --workspace`: "Rust tests (Linux)" on every
+pull request, and the macOS job on `main`. A new release is covered by committing its directory:
+
+```sh
+cd apps/desktop && DASHD=<dir>/dashd scripts/upgrade-fixture.sh v0.2.0   # then commit testdata/upgrade/v0.2.0
+cd rust && cargo test -p dw-app --lib upgrade_path_tests                  # test upgrade_path_tests::… ok
+```
+
+**macOS and Windows, by hand in the QA pass** (not run yet; a test user account with no
+`org.dash.wallet.desktop` data root: `~/Library/Application Support/org.dash.wallet.desktop` on macOS,
+`%APPDATA%\org.dash.wallet.desktop` on Windows). The automated check does not cover each OS's installer
+upgrading in place, its default data root or its keychain, so the steps below do. The Touch ID and Windows Hello
+steps (marked "biometric") apply only to a release pair whose shipped app has quick-unlock enrolment and unlock
+in both releases. Neither 0.1.0 nor the 0.2 line has them yet (Settings ▸ Security shows the row as not yet
+available), so skip them for an upgrade from 0.1.0:
+
+1. macOS only: the same fixture check, from a checkout: `cd rust && cargo test -p dw-app --lib upgrade_path_tests`.
+   Expected: `test upgrade_path_tests::every_release_data_root_opens_with_the_same_answers ... ok`. (CI runs it on
+   macOS on `main`. It cannot run on Windows, where `dw-app`'s test binaries do not load (docs/ci.md); there,
+   steps 2 to 5 are the check.)
+2. Install the previous release from its GitHub release after checking it against `SHA256SUMS`
+   (`shasum -a 256 -c SHA256SUMS --ignore-missing` on macOS; on Windows compare
+   `(Get-FileHash dash-wallet-0.1.0-windows-x64-setup.exe).Hash` with its line). Open it, choose testnet in
+   Settings, create a wallet with a passphrase, fund it from the testnet faucet, pay 0.1 tDASH back with a
+   recipient label, add an address-book entry and a receive request, set unit mDASH, auto-lock 15 minutes, dark
+   theme and CoinJoin rounds 6; biometric: enrol Touch ID or Windows Hello. In Tools ▸ Sign/Verify sign
+   `h08 upgrade` with the first receive address. Write down the balance, every Activity row (txid, amount, status), the labels and the
+   signature, and take screenshots of Home, Activity and Settings.
+3. Quit the app (⌘Q on macOS, File ▸ Exit on Windows) and keep a copy of the data root:
+   `ditto ~/Library/Application\ Support/org.dash.wallet.desktop ~/h08-backup` (macOS) or
+   `robocopy "%APPDATA%\org.dash.wallet.desktop" "%USERPROFILE%\h08-backup" /E` (Windows).
+4. Install the release candidate over it (drag to Applications and replace; or run the new `setup.exe`). Open it.
+   Expected: the lock screen, not Welcome; the old passphrase unlocks (biometric: so do Touch ID or Windows Hello,
+   with the spending limit set before); the same
+   wallet name, balance, Activity rows, labels, address book, receive request and Settings values; the network is
+   still testnet; Tools ▸ Sign/Verify accepts the old signature, and signing the same text again gives the same
+   signature. Quit and open again: the same.
+5. Downgrade, after step 4: install the previous release again and open it. Expected for 0.1.0 (seen on Linux):
+   "Dash Wallet could not open the wallet: storage error: app database: migration: migration
+   V2026110501__tx_fiat is missing from the filesystem" with Try again, and the release candidate still opens the
+   data root afterwards with nothing changed. Restore the copy from step 3 before going on.
+
 ## What only pasta can unblock
 
 Without these the release still ships on 12-02, in the reduced form the release plan already allows.
