@@ -1312,12 +1312,23 @@ impl SessionHub {
                     },
                 );
                 // Upstream deleted these records (provably beaten spends);
-                // the history drops them too.
-                self.history.with_wallet(id, |h| {
+                // the history drops them too. A child it holds no record of
+                // (restored from the store) is beaten with them: the
+                // reconcile drops it (`NetworkSession::release_beaten_claims`).
+                let orphaned = self.history.with_wallet(id, |h| {
                     for t in txids {
                         h.forget(t);
+                        h.swept.insert(*t, (*superseded_by, *winner_block));
                     }
+                    (h.txs.iter()).any(|(t, e)| {
+                        e.context.block_info().is_none()
+                            && !h.session_held.contains(t)
+                            && (e.tx.input.iter()).any(|i| txids.contains(&i.previous_output.txid))
+                    })
                 });
+                if orphaned {
+                    self.schedule_reconcile(id);
+                }
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {
                     self.pump.mark_balances(id);

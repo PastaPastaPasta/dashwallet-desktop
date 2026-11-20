@@ -363,9 +363,10 @@ pub(crate) struct Beaten {
     pub winner_block: Option<BlockInfo>,
 }
 
-/// The transactions out of a block that one in a block beats to an input
-/// and key-wallet holds no record of (`session_held`), so its own conflict
-/// sweep cannot drop them: an own spend restored as a claimant at load
+/// The transactions out of a block that one in a block beats to an input,
+/// or that spend an output of one key-wallet swept, and that key-wallet
+/// holds no record of (`session_held`), so its own conflict sweep cannot
+/// drop them: an own spend restored as a claimant at load
 /// ([`unmined_own_spends`]), or one whose unmined descendants include one.
 /// Abandoned ones are left to the abandon.
 pub(crate) fn beaten_unrecorded(h: &WalletHistory) -> Vec<Beaten> {
@@ -403,11 +404,20 @@ pub(crate) fn beaten_unrecorded(h: &WalletHistory) -> Vec<Beaten> {
         .filter_map(|(t, e)| {
             let winner = (e.tx.input.iter())
                 .filter_map(|i| in_block.get(&i.previous_output))
-                .find(|w| *w != t)?;
+                .find(|w| *w != t);
+            if let Some(winner) = winner {
+                return Some(Beaten {
+                    txid: *t,
+                    winner: *winner,
+                    winner_block: txs[winner].context.block_info().copied(),
+                });
+            }
+            let (winner, winner_block) =
+                (e.tx.input.iter()).find_map(|i| h.swept.get(&i.previous_output.txid))?;
             Some(Beaten {
                 txid: *t,
                 winner: *winner,
-                winner_block: txs[winner].context.block_info().copied(),
+                winner_block: *winner_block,
             })
         })
         .filter(|b| claims(b.txid))
@@ -478,6 +488,10 @@ pub(crate) struct WalletHistory {
     /// still names a collateral, locked as an own ProRegTx's is
     /// ([`HistoryStore::registration_collaterals`]).
     hidden_registrations: HashMap<Txid, Transaction>,
+    /// The transactions key-wallet swept this session, each with the one
+    /// that beat it and that one's block: an unmined child the history
+    /// holds and key-wallet does not ([`beaten_unrecorded`]) is beaten too.
+    pub swept: HashMap<Txid, (Txid, Option<BlockInfo>)>,
 }
 
 impl WalletHistory {

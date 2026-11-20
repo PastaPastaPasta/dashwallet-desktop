@@ -522,10 +522,11 @@ impl NetworkSession {
     }
 
     /// The wallet's coins dropping `dropped` frees: the inputs key-wallet
-    /// held for them (`own_inputs`) that none of them created and no
-    /// surviving transaction spends.
+    /// held for them (`own_inputs`) that none of them, and no transaction
+    /// key-wallet swept, created and no surviving transaction spends.
     fn freed_by(&self, wallet: WalletId, dropped: &BTreeSet<Txid>) -> Vec<OutPoint> {
-        self.hub.history.read(&wallet, |txs| {
+        self.hub.history.read_wallet(&wallet, |h| {
+            let txs = &h.txs;
             let survivors: std::collections::HashMap<Txid, crate::history::TxEntry> = (txs.iter())
                 .filter(|(t, _)| !dropped.contains(*t))
                 .map(|(t, e)| (*t, e.clone()))
@@ -539,7 +540,11 @@ impl NetworkSession {
                         .map(|i| i.previous_output)
                         .collect::<Vec<_>>()
                 })
-                .filter(|o| !dropped.contains(&o.txid) && !spent.contains(o))
+                .filter(|o| {
+                    !dropped.contains(&o.txid)
+                        && !h.swept.contains_key(&o.txid)
+                        && !spent.contains(o)
+                })
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect()

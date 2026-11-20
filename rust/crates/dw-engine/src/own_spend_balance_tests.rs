@@ -1260,3 +1260,59 @@ fn a_beaten_payment_is_dropped_with_its_child() {
     assert!(!in_history(&session, id, child.txid()));
     assert_holds(&engine, &session, id, &want, "after a restart");
 }
+
+/// key-wallet sweeps a payment it recorded this session (relayed again
+/// after a restart) when a mined spend of its coin beats it; the payment's
+/// child, restored from the store and never relayed, has no record there.
+/// The engine drops the child too: the other coin it spent counts again and
+/// its change does not.
+#[test]
+fn a_child_of_a_payment_key_wallet_sweeps_is_dropped_with_it() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let (a, d) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 3));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    let own = own_scripts(&engine, &session, id);
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change_of(&payment, &own), d]),
+        COIN,
+        false,
+    );
+    assert_eq!(child.input.len(), 2);
+    mempool(&engine, &session, id, &child);
+
+    let session = reopen(&engine, session);
+    mempool(&engine, &session, id, &payment);
+    let rival = rival(&engine, &session, id, &paid, 0);
+    mined(&engine, &session, id, TIP + 1, vec![rival.clone()]);
+    eventually(
+        "the payment and its child dropped, the scan rewound",
+        || {
+            !in_history(&session, id, payment.txid())
+                && !in_history(&session, id, child.txid())
+                && synced(&engine, &session, id) < FUNDED_AT
+        },
+    );
+    mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![rival.clone()]);
+    let want: BTreeSet<OutPoint> = (0..paid.output.len() as u32)
+        .map(|v| OutPoint::new(paid.txid(), v))
+        .filter(|o| *o != a)
+        .chain([OutPoint::new(rival.txid(), 1)])
+        .collect();
+    assert_holds(&engine, &session, id, &want, "replayed");
+
+    let session = reopen(&engine, session);
+    assert!(!in_history(&session, id, child.txid()));
+    assert_holds(&engine, &session, id, &want, "after a restart");
+}
