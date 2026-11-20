@@ -146,11 +146,11 @@ platform-encryption = { git = "https://github.com/PastaPastaPasta/platform", rev
 #   and doc commits on it (f0f5cd08, 846ffe54); the gaps #1326 leaves are tracked in #1361.
 #   9359687d93 adds `TransactionsSwept::winner_block` (the winner's block, height and
 #   hash). Back to a dashpay revision at the next platform re-pin.
-dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d" }
-key-wallet = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d" }
-key-wallet-manager = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d" }
-dash-spv = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d" }
-dashcore-rpc = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d" }
+dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "86b9cde20714f070b7bcb2613891adf180234fe6" }
+key-wallet = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "86b9cde20714f070b7bcb2613891adf180234fe6" }
+key-wallet-manager = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "86b9cde20714f070b7bcb2613891adf180234fe6" }
+dash-spv = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "86b9cde20714f070b7bcb2613891adf180234fe6" }
+dashcore-rpc = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "86b9cde20714f070b7bcb2613891adf180234fe6" }
 # ---- dashpay/base-sdk: EXACTLY the revision that rust-dashcore pins ----
 dash-pkc = { git = "https://github.com/dashpay/base-sdk", rev = "33fcc59e1868c803f9608e0e78ee8bddf3abcee7", default-features = false }
 
