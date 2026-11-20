@@ -369,6 +369,8 @@ export interface Backend {
   installUpdate(version: string): Promise<UpdateStatus>;
   /** Quits through the normal exit path and starts the installed update. */
   restartToUpdate(): Promise<null>;
+  /** Opens the page of the release on offer, on this repository. */
+  openUpdateNotes(): Promise<null>;
   // Prices (MP-01, rates-engine): the app's, not a network's. A `rates` event makes them stale.
   ratesStatus(): Promise<RatesView>;
   ratesCurrencies(): Promise<CurrencyRate[]>;

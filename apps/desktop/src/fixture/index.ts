@@ -101,7 +101,7 @@ const notImplemented = (call: string): AppError => ({
 });
 
 const UPDATE_AVAILABILITIES: UpdateAvailability[] = ["available", "notInThisBuild", "flatpak", "packageManager", "notInstalled", "moveToApplications"];
-const UPDATE_PHASES: UpdatePhase["kind"][] = ["idle", "checking", "upToDate", "found", "downloading", "installing", "installed", "restartRequired"];
+const UPDATE_PHASES: UpdatePhase["kind"][] = ["idle", "checking", "upToDate", "found", "downloaded", "downloading", "installing", "installed", "restartRequired"];
 
 function oneOf<T extends string>(p: URLSearchParams, name: string, allowed: readonly T[]): T | undefined {
   const v = p.get(name);

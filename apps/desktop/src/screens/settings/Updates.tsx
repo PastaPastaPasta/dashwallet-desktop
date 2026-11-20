@@ -79,12 +79,13 @@ function UpdateState({ view, model }: { view: UpdatesView; model: UpdatesModel }
     case "upToDate":
       return line(t("settings.updates.upToDate"));
     case "found":
+    case "downloaded":
       return (
         <>
-          {line(t("settings.updates.found", { version: view.version }))}
+          {line(t(view.kind === "found" ? "settings.updates.found" : "settings.updates.downloaded", { version: view.version }))}
           {closes && <Hint>{t("settings.updates.installClosesApp")}</Hint>}
           <div className="settings-row">
-            <DashButton variant="plainBlue" size="small" data-testid="settings-updates-notes" onClick={() => void model.openReleases()}>
+            <DashButton variant="plainBlue" size="small" data-testid="settings-updates-notes" onClick={() => void model.openNotes()}>
               {t("settings.updates.notes")}
             </DashButton>
             <DashButton variant="filledBlue" size="small" data-testid="settings-updates-install" disabled={model.busy} onClick={() => void model.install()}>

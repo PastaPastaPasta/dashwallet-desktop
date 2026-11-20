@@ -14,7 +14,7 @@ import { showToast } from "../components/toast";
 import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 
-export type UpdatesApi = Pick<Backend, "updateStatus" | "checkForUpdate" | "installUpdate" | "restartToUpdate" | "openReleasesPage">;
+export type UpdatesApi = Pick<Backend, "updateStatus" | "checkForUpdate" | "installUpdate" | "restartToUpdate" | "openUpdateNotes" | "openReleasesPage">;
 
 /** The first automatic check waits this long after launch, then one runs a day. */
 export const AUTO_CHECK_DELAY_MS = 60_000;
@@ -34,7 +34,7 @@ export function unavailableText(reason: Exclude<UpdateAvailability, "available">
 }
 
 export function updateFailureText(e: unknown): string {
-  if (hasCode(e, "app.update_busy")) return t(`settings.updates.busy.${e.data?.kind === "updateBusy" ? e.data.reason : "payment"}`);
+  if (hasCode(e, "app.update_busy")) return t(`settings.updates.busy.${e.data?.kind === "updateBusy" ? e.data.reason : "unknown"}`);
   if (hasCode(e, "app.update_check")) return t("settings.updates.failed.check");
   if (hasCode(e, "app.update_not_published")) return t("settings.updates.failed.notPublished");
   if (hasCode(e, "app.update_download")) return t("settings.updates.failed.download");
@@ -97,12 +97,15 @@ export class UpdatesModel extends Model {
     return after.kind === "found" && (before.kind !== "found" || before.version !== after.version) ? after.version : null;
   }
 
-  /** Downloads, verifies and installs the version on offer, showing the download's progress. */
+  /** Downloads (unless it is downloaded already), verifies and installs the version on offer, showing
+   * the download's progress. */
   async install() {
     const view = this.view;
-    if (this.busy || view.kind !== "found" || !this.status) return;
+    if (this.busy || (view.kind !== "found" && view.kind !== "downloaded") || !this.status) return;
     this.busy = true;
-    this.status = { ...this.status, phase: { kind: "downloading", version: view.version, received: 0, total: null } };
+    const phase: UpdatePhase =
+      view.kind === "found" ? { kind: "downloading", version: view.version, received: 0, total: null } : { kind: "installing", version: view.version };
+    this.status = { ...this.status, phase };
     const poll = setInterval(() => {
       void this.api.updateStatus().then(
         (s) => {
@@ -130,6 +133,11 @@ export class UpdatesModel extends Model {
 
   async openReleases() {
     await this.attempt(() => this.api.openReleasesPage());
+  }
+
+  /** The page of the release on offer. */
+  async openNotes() {
+    await this.attempt(() => this.api.openUpdateNotes());
   }
 }
 

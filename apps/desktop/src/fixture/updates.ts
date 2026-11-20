@@ -9,6 +9,7 @@ import type { UpdateAvailability } from "../api/generated/UpdateAvailability";
 import type { UpdateBusyReason } from "../api/generated/UpdateBusyReason";
 import type { UpdatePhase } from "../api/generated/UpdatePhase";
 import type { UpdateStatus } from "../api/generated/UpdateStatus";
+import { installClosesApp } from "../settings/updates";
 import type { Handlers } from "./handlers";
 
 /** What goes wrong next: the feed is unreachable or unpublished, the download's signature does not
@@ -27,11 +28,13 @@ export interface UpdatesWorld {
   /** Feed reads made: what would have gone to the network. */
   requests: number;
   restarts: number;
+  /** The versions whose release page Release notes opened. */
+  notesOpened: string[];
 }
 
 /** A build without the updater key, as every build is until the release key exists. */
 export function newUpdatesWorld(): UpdatesWorld {
-  return { availability: "notInThisBuild", serves: null, fault: null, phase: { kind: "idle" }, requests: 0, restarts: 0 };
+  return { availability: "notInThisBuild", serves: null, fault: null, phase: { kind: "idle" }, requests: 0, restarts: 0, notesOpened: [] };
 }
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
@@ -70,10 +73,13 @@ export function updatesHandlers(): Handlers {
       u.phase = u.serves !== null && isOffered(world.launch.appVersion, u.serves) ? { kind: "found", version: u.serves } : { kind: "upToDate" };
       return status(u);
     },
+    // Only where installing closes the engine (Windows) does it wait for what runs, as in dw-app.
     install_update: ({ version }, { world: { updates: u } }) => {
       available(u);
-      notBusy(u);
-      if (u.phase.kind !== "found" || u.phase.version !== version) throw fail("app.update_state", `install ${version} in ${u.phase.kind}`);
+      if ((u.phase.kind !== "found" && u.phase.kind !== "downloaded") || u.phase.version !== version) {
+        throw fail("app.update_state", `install ${version} in ${u.phase.kind}`);
+      }
+      if (installClosesApp()) notBusy(u);
       if (u.fault === "signature") throw fail("app.update_signature", "the signature does not verify");
       if (u.fault === "install") throw fail("app.update_install", "the update could not be put in place");
       if (u.fault === "closed") {
@@ -88,6 +94,12 @@ export function updatesHandlers(): Handlers {
       if (u.phase.kind !== "restartRequired") notBusy(u);
       if (u.phase.kind !== "installed" && u.phase.kind !== "restartRequired") throw fail("app.update_state", `restart in ${u.phase.kind}`);
       u.restarts++;
+      return null;
+    },
+    open_update_notes: (_, { world: { updates: u } }) => {
+      available(u);
+      if (!("version" in u.phase)) throw fail("app.update_state", `release notes in ${u.phase.kind}`);
+      u.notesOpened.push(u.phase.version);
       return null;
     },
   };

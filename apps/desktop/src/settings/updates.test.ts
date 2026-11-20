@@ -19,6 +19,8 @@ function install(updates?: Parameters<typeof installFixture>[0]["updates"], upda
 const feedReads = () => fixture.world.updates.requests;
 const updateCalls = () => fixture.calls.filter((c) => /update/.test(c));
 const ON = { checkUpdatesAutomatically: true };
+const WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
+const LINUX = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15";
 
 beforeEach(() => {
   vi.stubGlobal("window", globalThis);
@@ -120,8 +122,8 @@ describe("available", () => {
     install("available", "0.3.0");
     const model = new UpdatesModel(b);
     await model.check();
-    await model.openReleases();
-    expect(fixture.calls).toContain("open_releases_page");
+    await model.openNotes();
+    expect(fixture.world.updates.notesOpened).toEqual(["0.3.0"]);
     await model.restart();
     expect(fixture.calls).not.toContain("restart_to_update");
     await model.install();
@@ -165,7 +167,8 @@ describe("available", () => {
     expect(model.view).toEqual({ kind: "idle" });
   });
 
-  it("Install and Restart wait while a payment, mixing, a Platform action or start-up runs", async () => {
+  it("on Windows, Install and Restart wait while a payment, mixing, a Platform action or start-up runs", async () => {
+    vi.stubGlobal("navigator", { userAgent: WINDOWS });
     for (const reason of ["startup", "payment", "mixing", "platform"] as const) {
       install("available", "0.3.0");
       const model = new UpdatesModel(b);
@@ -176,6 +179,40 @@ describe("available", () => {
       expect(model.view).toEqual({ kind: "found", version: "0.3.0" });
     }
     expect(updateFailureText({ code: "app.update_busy", message: "", data: { kind: "updateBusy", reason: "mixing" } })).toMatch(/Stop mixing/);
+  });
+
+  it("a busy refusal without a reason says only that Dash Wallet is busy", () => {
+    expect(updateFailureText({ code: "app.update_busy", message: "", data: null })).toBe("Dash Wallet is busy. Try again when it has finished.");
+  });
+
+  it("on macOS and Linux, Install runs while mixing, and only Restart waits", async () => {
+    vi.stubGlobal("navigator", { userAgent: LINUX });
+    install("available", "0.3.0");
+    const model = new UpdatesModel(b);
+    await model.check();
+    fixture.world.updates.fault = "mixing";
+    await model.install();
+    expect(model.problem).toBeNull();
+    expect(model.view).toEqual({ kind: "installed", version: "0.3.0" });
+    await model.restart();
+    expect(model.problem).toMatch(/Stop mixing/);
+    expect(fixture.world.updates.restarts).toBe(0);
+  });
+
+  it("a download kept while something ran installs without downloading again", async () => {
+    vi.stubGlobal("navigator", { userAgent: WINDOWS });
+    fixture = installFixture({ scenario: "funded", updates: "available", updateServes: "0.3.0", updatePhase: "downloaded", updateFault: "payment" });
+    b = new IpcBackend("fixture", () => fixture.now, fixture.locale);
+    const model = new UpdatesModel(b);
+    await model.load();
+    expect(model.view).toEqual({ kind: "downloaded", version: "0.3.0" });
+    await model.install();
+    expect(model.problem).toMatch(/payment is being sent/);
+    expect(model.view).toEqual({ kind: "downloaded", version: "0.3.0" });
+    fixture.world.updates.fault = null;
+    await model.install();
+    expect(model.view).toEqual({ kind: "installed", version: "0.3.0" });
+    expect(feedReads()).toBe(0);
   });
 
   it("a failed install after the app closed the wallet asks for a restart, which works", async () => {
