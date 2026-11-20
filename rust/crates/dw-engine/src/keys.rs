@@ -407,34 +407,107 @@ impl NetworkSession {
                 Ok(vault_id)
             })
             .await?;
-        let this = Arc::clone(self);
-        let key = payment_auth_key(&vault_id);
-        self.on_runtime(async move {
-            let _op = this.enter().await?;
-            let value = if on { "strict" } else { "window" };
-            this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some(value)))
-                .await
-        })
-        .await?;
+        self.write_payment_auth(&vault_id, on).await?;
         if !on {
             self.vault().set_signing_window_allowed(&vault_id, true);
         }
         Ok(())
     }
 
-    /// Writes the signing-window default for a vault this build just
-    /// created, when the vault has no row yet. An older vault is left
-    /// absent, which still asks every time. The vault then follows the row
-    /// as stored; a failure leaves it asking every time.
+    /// Stores the choice for `vault_id`: `"strict"` when `asks`, else
+    /// `"window"`. The caller holds `payment_auth`.
+    async fn write_payment_auth(
+        self: &Arc<Self>,
+        vault_id: &[u8],
+        asks: bool,
+    ) -> Result<(), EngineError> {
+        #[cfg(all(debug_assertions, feature = "test-support"))]
+        if self
+            .payment_auth_fault
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(EngineError::Storage(
+                "injected payment setting fault".into(),
+            ));
+        }
+        let this = Arc::clone(self);
+        let key = payment_auth_key(vault_id);
+        self.on_runtime(async move {
+            let _op = this.enter().await?;
+            let value = if asks { "strict" } else { "window" };
+            this.appdb_op(move |db| db.set_setting(dw_appdb::GLOBAL_SCOPE, &key, Some(value)))
+                .await
+        })
+        .await
+    }
+
+    /// After a recovery: the new vault keeps the choice of the vault it
+    /// replaced (`asks`, read before the recovery). A failed write leaves
+    /// the vault asking every time and returns the error.
+    pub async fn carry_payment_authentication(
+        self: &Arc<Self>,
+        asks: bool,
+    ) -> Result<(), EngineError> {
+        let _auth = self.payment_auth.lock().await;
+        let Some(vault_id) = self.vault().vault_id() else {
+            return Ok(());
+        };
+        self.vault().set_signing_window_allowed(&vault_id, false);
+        self.write_payment_auth(&vault_id, asks).await?;
+        if !asks {
+            self.vault().set_signing_window_allowed(&vault_id, true);
+        }
+        Ok(())
+    }
+
+    /// Before a vault without a passphrase is encrypted: it will ask for
+    /// every payment until the user chooses the window, whatever an
+    /// earlier build stored for it. Ends any window first.
+    pub async fn reset_payment_authentication(self: &Arc<Self>) -> Result<(), EngineError> {
+        let _auth = self.payment_auth.lock().await;
+        let Some(vault_id) = self.vault().vault_id() else {
+            return Ok(());
+        };
+        self.vault().set_signing_window_allowed(&vault_id, false);
+        self.write_payment_auth(&vault_id, true).await
+    }
+
+    /// The next write of "ask every payment" fails. Tests use it to prove
+    /// that creating a vault does not fail on it.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub fn fail_next_payment_auth_write_for_test(&self) {
+        self.payment_auth_fault
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Writes the signing-window default for an encrypted vault this build
+    /// just created, when the vault has no row yet. An older vault is left
+    /// absent, which still asks every time, and so is a vault without a
+    /// passphrase: encrypting it later starts on "ask every payment". The
+    /// vault then follows the row as stored; a failure leaves it asking
+    /// every time.
     pub async fn adopt_signing_window_default(self: &Arc<Self>) -> Result<(), EngineError> {
         let _auth = self.payment_auth.lock().await;
         let Some(vault_id) = self.vault().vault_id() else {
             return Ok(());
         };
+        if !self.vault().status().encrypted {
+            return Ok(());
+        }
+        #[cfg(all(debug_assertions, feature = "test-support"))]
+        let fault = self
+            .payment_auth_fault
+            .swap(false, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(all(debug_assertions, feature = "test-support")))]
+        let fault = false;
         let key = payment_auth_key(&vault_id);
         let this = Arc::clone(self);
-        let stored = self
-            .on_runtime(async move {
+        let stored = if fault {
+            Err(EngineError::Storage(
+                "injected payment setting fault".into(),
+            ))
+        } else {
+            self.on_runtime(async move {
                 let _op = this.enter().await?;
                 this.appdb_op(move |db| {
                     if db.setting(dw_appdb::GLOBAL_SCOPE, &key)?.is_none() {
@@ -444,7 +517,8 @@ impl NetworkSession {
                 })
                 .await
             })
-            .await;
+            .await
+        };
         let allowed = stored
             .as_ref()
             .is_ok_and(|stored| !asks_every_payment(stored.as_deref()));

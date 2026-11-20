@@ -266,6 +266,9 @@ pub struct NetworkSession {
     /// Orders every write of "ask for my passphrase for every payment"
     /// with what the vault is told of it (`keys.rs`).
     pub(crate) payment_auth: tokio::sync::Mutex<()>,
+    /// Other crates' tests: the next write of that setting fails.
+    #[cfg(all(debug_assertions, feature = "test-support"))]
+    pub(crate) payment_auth_fault: std::sync::atomic::AtomicBool,
     /// The resends' acceptance waits (QT-091), aborted before SPV stops
     /// (`stop_spv_inner`, and `close` before the manager's shutdown): each
     /// holds platform-wallet's SPV client read lock for dash-spv's acceptance
@@ -621,6 +624,8 @@ impl NetworkSession {
             startup_list: Mutex::new(startup_list),
             relock: Mutex::new(None),
             payment_auth: tokio::sync::Mutex::new(()),
+            #[cfg(all(debug_assertions, feature = "test-support"))]
+            payment_auth_fault: Default::default(),
             resends: Mutex::new(Vec::new()),
             coinjoin: crate::coinjoin::CoinJoinRuntime::new(coinjoin_settings),
             masternodes,

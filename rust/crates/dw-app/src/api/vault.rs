@@ -65,6 +65,18 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: the engine tells the vault the stored \"ask every payment\" choice",
     ),
     (
+        "NetworkSession::carry_payment_authentication",
+        "internal: `recover_with_mnemonic` keeps the replaced vault's choice for the new one",
+    ),
+    (
+        "NetworkSession::reset_payment_authentication",
+        "internal: `encrypt_vault` starts the encrypted vault on \"ask every payment\"",
+    ),
+    (
+        "NetworkSession::fail_next_payment_auth_write_for_test",
+        "test-only (`test-support`): proves vault creation does not fail on the setting's write",
+    ),
+    (
         "Vault::signing_window_allowed",
         "internal: tests read the choice the engine gave the vault",
     ),
@@ -861,7 +873,9 @@ commands! {
         let status = session
             .vault_op(move |v| v.create(passphrase.as_ref().map(|p| &p[..])))
             .await?;
-        session.adopt_signing_window_default().await?;
+        if let Err(e) = session.adopt_signing_window_default().await {
+            tracing::warn!(error = %e, "the new vault's payment setting was not stored; every payment asks");
+        }
         Ok(status.into())
     }
 
@@ -872,6 +886,7 @@ commands! {
     fn encrypt_vault(state, new_passphrase: String, grant_id: String) -> LockStatus {
         let new_passphrase = Zeroizing::new(new_passphrase.into_bytes());
         let session = state.session().await?;
+        session.reset_payment_authentication().await?;
         let status = session
             .revoking_vault_op(RevokeCause::Lock, move |v| {
                 v.encrypt(&new_passphrase, &grant_id)
@@ -1128,12 +1143,15 @@ commands! {
         let id = parse_wallet_id(&wallet_id)?;
         let session = state.session().await?;
         session.wallet_info(&id)?;
+        let asks = session.payment_authentication().await.map_or(true, |p| p.on);
         let lost = session
             .revoking_vault_op(RevokeCause::Lock, move |v| {
                 v.recover_with_mnemonic(&id.0, &mnemonic, &bip39_passphrase, &new_passphrase)
             })
             .await?;
-        session.adopt_signing_window_default().await?;
+        if let Err(e) = session.carry_payment_authentication(asks).await {
+            tracing::warn!(error = %e, "the recovered vault's payment setting was not stored; every payment asks");
+        }
         Ok(VaultRecovery {
             status: session.vault().status().into(),
             wallets_without_secrets: lost.iter().map(hex::encode).collect(),

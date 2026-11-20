@@ -1146,14 +1146,15 @@ fn a_failed_platform_send_bind_revokes_the_grant_it_issued() {
 
 /// On an unencrypted vault there is no credential to ask for: the setting
 /// changes nothing and cannot be changed, so no value stored without a
-/// credential carries over to the vault once encrypted.
+/// credential carries over to the vault once encrypted. Creating it stores
+/// no choice either, so it reads as "ask every payment".
 #[test]
 fn payment_authentication_needs_an_encrypted_vault() {
     let demo = Demo::new();
     demo.open();
     demo.ok("create_vault", json!({ "passphrase": null }));
     let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
-    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
     demo.ok(
         "authorize",
         json!({
@@ -1176,7 +1177,144 @@ fn payment_authentication_needs_an_encrypted_vault() {
         json!({ "on": true, "grantId": grant }),
         "vault.not_encrypted",
     );
-    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+}
+
+/// Encrypts the unencrypted vault of `demo` with passphrase "pw" and
+/// unlocks it.
+fn encrypt_and_unlock(demo: &Demo) {
+    let grant = demo.ok(
+        "authorize",
+        json!({
+            "purpose": { "kind": "changeCredential" },
+            "walletId": null,
+            "credential": { "kind": "unencrypted" },
+        }),
+    )["id"]
+        .clone();
+    demo.ok(
+        "encrypt_vault",
+        json!({ "newPassphrase": "pw", "grantId": grant }),
+    );
+    demo.ok("unlock", json!({ "passphrase": "pw" }));
+}
+
+/// A no-credential payment of `wallet`, as the renderer asks it.
+fn no_credential_spend(wallet: &Value) -> Value {
+    json!({
+        "purpose": { "kind": "spend", "maxDuffs": 1000 },
+        "walletId": wallet,
+        "credential": { "kind": "unencrypted" },
+    })
+}
+
+/// A vault made without a passphrase and encrypted later starts on "ask
+/// every payment": the user never chose the window for it. A window an
+/// earlier build stored for it is not kept either.
+#[test]
+fn encrypting_a_vault_made_without_a_passphrase_asks_every_payment() {
+    use tauri::Manager;
+    for earlier_row in [None, Some("window")] {
+        let demo = Demo::new();
+        demo.open();
+        demo.ok("create_vault", json!({ "passphrase": null }));
+        let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+        if let Some(row) = earlier_row {
+            let session = tauri::async_runtime::block_on(
+                demo.app.state::<crate::state::AppState>().session(),
+            )
+            .unwrap();
+            tauri::async_runtime::block_on(
+                session.set_payment_auth_row_for_test(Some(row.to_owned())),
+            )
+            .unwrap();
+        }
+        encrypt_and_unlock(&demo);
+        assert_eq!(
+            demo.ok("payment_authentication", json!({})),
+            true,
+            "{earlier_row:?}"
+        );
+        demo.err(
+            "authorize",
+            no_credential_spend(&wallet),
+            "vault.credential_required",
+        );
+        assert_eq!(
+            demo.ok("quick_unlock_policy", json!({}))["signingWindowOpen"],
+            false
+        );
+    }
+}
+
+/// A recovery with the recovery phrase keeps "ask every payment" and the
+/// window as the user had them, for the new vault it makes.
+#[test]
+fn a_recovery_keeps_the_payment_setting() {
+    for on in [true, false] {
+        let demo = Demo::new();
+        demo.open();
+        demo.ok("create_vault", json!({ "passphrase": "pw" }));
+        let created = demo.ok("create_wallet", json!({ "wordCount": 12 }));
+        let wallet = created["walletId"].clone();
+        let grant = demo.ok(
+            "authorize",
+            json!({
+                "purpose": { "kind": "changeCredential" },
+                "walletId": null,
+                "credential": { "kind": "passphrase", "passphrase": "pw" },
+            }),
+        )["id"]
+            .clone();
+        demo.ok(
+            "set_payment_authentication",
+            json!({ "on": on, "grantId": grant }),
+        );
+        demo.ok("lock", json!({}));
+        demo.ok(
+            "recover_with_mnemonic",
+            json!({
+                "walletId": wallet,
+                "mnemonic": created["mnemonic"],
+                "bip39Passphrase": "",
+                "newPassphrase": "second",
+            }),
+        );
+        assert_eq!(demo.ok("payment_authentication", json!({})), on, "{on}");
+        if on {
+            demo.err(
+                "authorize",
+                no_credential_spend(&wallet),
+                "vault.credential_required",
+            );
+        } else {
+            demo.ok("authorize", no_credential_spend(&wallet));
+        }
+    }
+}
+
+/// The window default is written after the vault exists: a failed write
+/// does not fail the creation (a retry would find the vault there), and
+/// the vault asks every payment.
+#[test]
+fn a_failed_default_write_does_not_fail_vault_creation() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    demo.open();
+    let session =
+        tauri::async_runtime::block_on(demo.app.state::<crate::state::AppState>().session())
+            .unwrap();
+    session.fail_next_payment_auth_write_for_test();
+    let status = demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    assert_eq!(status["state"], "unlocked", "{status}");
+    let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();
+    assert_eq!(demo.ok("payment_authentication", json!({})), true);
+    demo.err(
+        "authorize",
+        no_credential_spend(&wallet),
+        "vault.credential_required",
+    );
+    assert!(!session.vault().signing_window_allowed());
 }
 
 /// Sol r2 F1: the setting belongs to the vault. "Ask every payment", set
@@ -1215,13 +1353,10 @@ fn payment_authentication_does_not_outlive_its_vault() {
     );
     demo.ok("destroy_vault", json!({ "credential": pw("pw") }));
 
-    // A new vault, encrypted later, then locked and unlocked.
-    demo.ok("create_vault", json!({ "passphrase": null }));
-    let grant = change(&none);
-    demo.ok(
-        "encrypt_vault",
-        json!({ "newPassphrase": "pw", "grantId": grant }),
-    );
+    // A new vault starts on its own default, the window, not on the old
+    // vault's choice. (One made without a passphrase and encrypted later
+    // asks: `encrypting_a_vault_made_without_a_passphrase_asks_every_payment`.)
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
     demo.ok("lock", json!({}));
     demo.ok("unlock", json!({ "passphrase": "pw" }));
     let wallet = demo.ok("create_wallet", json!({ "wordCount": 12 }))["walletId"].clone();

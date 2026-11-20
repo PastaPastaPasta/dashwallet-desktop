@@ -3052,6 +3052,7 @@ impl Vault {
             .filter_map(|k| seed_record_wallet(k))
             .filter(|w| w != wallet)
             .collect();
+        let spend_limit_duffs = self.carried_spend_limit(&old);
 
         let now = self.now();
         let tag = &self.shared.tag;
@@ -3111,8 +3112,8 @@ impl Vault {
                 &vault_id,
                 tag,
                 PolicyPayload {
+                    spend_limit_duffs,
                     last_passphrase_at: Some(now),
-                    ..PolicyPayload::default()
                 },
             )?),
         };
@@ -3154,6 +3155,29 @@ impl Vault {
         self.sync_links_after_key(&dek, &vault_id);
         drop(writer);
         Ok(lost)
+    }
+
+    /// The spending limit a recovery keeps from the vault it replaces. With
+    /// the data key in memory it is the sealed limit (0 if that does not
+    /// authenticate). Without it, the plain copy is all there is and anyone
+    /// who can write the file can change it, so it can lower the default but
+    /// not raise it.
+    fn carried_spend_limit(&self, old: &VaultFile) -> u64 {
+        let inner = self.inner();
+        match (&inner.dek, &old.quick_unlock) {
+            (Some(dek), _) => match open_policy(old, dek) {
+                Ok(Some(policy)) => policy.spend_limit_duffs,
+                Ok(None) => DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
+                Err(_) => 0,
+            },
+            (None, None) => DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
+            (None, Some(plain)) if QUICK_UNLOCK_SPEND_LIMITS.contains(&plain.spend_limit_duffs) => {
+                plain
+                    .spend_limit_duffs
+                    .min(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT)
+            }
+            (None, Some(_)) => 0,
+        }
     }
 
     /// Deletes the vault (IOS-009 "Delete All", IOS-109 wipe): the vault
