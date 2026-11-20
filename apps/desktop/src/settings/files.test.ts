@@ -116,10 +116,21 @@ describe("import a wallet file (D21)", () => {
     expect(model.done?.lines).toEqual([FilesText.imported(1), FilesText.scriptsNotImported(1)]);
   });
 
-  it("QT106_berkeleyDBSaysWhatToDoInstead", async () => {
+  it("QT106_berkeleyDBImportsLikeASqliteWallet", async () => {
     const model = new ImportFileModel(b, "testnet");
     await model.inspect(FIXTURE_FILES.walletDatBdb);
-    expect(model.plan?.refusal).toBe(FilesText.berkeleyDBUnavailable);
+    expect(model.plan).toMatchObject({ kind: "walletDatBdb", refusal: null, passphrase: null, named: true });
+    await model.run(null, "From Berkeley");
+    expect(model.done?.lines[0]).toBe(FilesText.imported(0));
+    expect((await b.listWallets()).at(-1)?.name).toBe("From Berkeley");
+
+    const locked = new ImportFileModel(b, "testnet");
+    await locked.inspect(FIXTURE_FILES.walletDatBdbLocked);
+    expect(locked.plan).toMatchObject({ kind: "walletDatBdb", passphrase: "wallet.dat passphrase", refusal: null });
+    await locked.run("nope", "");
+    expect(locked.error).toBe("The passphrase does not open this wallet.dat.");
+    await locked.run(CORE_WALLET_PASSPHRASE, "");
+    expect(locked.done?.lines[0]).toBe(FilesText.imported(0));
   });
 
   it("QT078_psbtFileIsHandedToThePSBTDialog", async () => {
