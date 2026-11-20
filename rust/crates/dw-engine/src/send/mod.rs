@@ -2147,7 +2147,8 @@ impl PreparedTx {
         *self.phase() == Phase::Released
     }
 
-    /// Not handed off yet: nothing of it left.
+    /// Not handed off yet. Means nothing left only for a leased hand-off:
+    /// an unleased first broadcast can end `Pending` after a library error.
     pub(crate) fn pending(&self) -> bool {
         *self.phase() == Phase::Pending
     }
