@@ -17,3 +17,5 @@ Artifacts/
 *.xcodeproj/
 # SwiftPM / Xcode derived data from local builds
 .derived/
+# The .deb ci/github/flatpak-bundle.sh copies next to the manifest
+packaging/flatpak/dash-wallet.deb

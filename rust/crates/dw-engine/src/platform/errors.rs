@@ -551,8 +551,23 @@ pub enum CreditsError {
     /// a consolidation, a drain).
     #[error("another move of the wallet's coins is running")]
     MoveRunning,
+    /// A move between the Platform addresses and Shielded refused by the
+    /// pool's side (its gate, its key state), with the pool's code.
+    #[error(transparent)]
+    Shielded(ShieldedError),
     #[error(transparent)]
     Platform(#[from] PlatformError),
+}
+
+/// The pool's `Platform` variant becomes this enum's own, so one code has
+/// one representation.
+impl From<ShieldedError> for CreditsError {
+    fn from(e: ShieldedError) -> Self {
+        match e {
+            ShieldedError::Platform(p) => Self::Platform(p),
+            other => Self::Shielded(other),
+        }
+    }
 }
 
 impl CreditsError {
@@ -573,12 +588,14 @@ impl CreditsError {
             Self::CoinsChanged => "credits.coins_changed",
             Self::MixingActive => "credits.mixing_active",
             Self::MoveRunning => "credits.move_running",
+            Self::Shielded(e) => e.code(),
             Self::Platform(e) => e.code(),
         }
     }
 
     pub fn platform(&self) -> Option<&PlatformError> {
         match self {
+            Self::Shielded(e) => e.platform(),
             Self::Platform(e) => Some(e),
             _ => None,
         }

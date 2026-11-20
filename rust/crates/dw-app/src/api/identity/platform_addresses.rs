@@ -199,6 +199,53 @@ impl From<engine::MoveToCoreQuote> for MoveToCoreQuote {
     }
 }
 
+/// What moving credits from the Platform addresses into Shielded takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformShieldQuote {
+    /// What the shielded balance gains.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub credits: u64,
+    /// The pool's flat fee, claimed on the first input.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub pool_fee_credits: u64,
+    /// What the first input keeps for the fee Platform meters there
+    /// ("about").
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub fee_reserve_credits: u64,
+    /// The planned debit and the grant's cap.
+    #[ts(type = "string")]
+    #[serde(with = "crate::dto::credits")]
+    pub debit_credits: u64,
+    /// The addresses taken from with their claims; the first pays the fee.
+    pub inputs: Vec<PlatformAddressRow>,
+    pub grant: GrantRequest,
+}
+
+impl From<engine::PlatformShieldQuote> for PlatformShieldQuote {
+    fn from(q: engine::PlatformShieldQuote) -> Self {
+        let engine::PlatformShieldQuote {
+            credits,
+            pool_fee_credits,
+            fee_reserve_credits,
+            debit_credits,
+            inputs,
+            grant,
+        } = q;
+        PlatformShieldQuote {
+            credits,
+            pool_fee_credits,
+            fee_reserve_credits,
+            debit_credits,
+            inputs: inputs.into_iter().map(Into::into).collect(),
+            grant: grant.into(),
+        }
+    }
+}
+
 /// A move's outcome: `done` once a proved read shows its inputs' signed
 /// nonces, else `pending`; `replaced` when another move of its group
 /// carries the outcome.

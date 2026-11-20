@@ -199,6 +199,37 @@ fn to_json(v: &SqlValue) -> serde_json::Value {
     }
 }
 
+/// Tests: the next stored-wallet delete of a rollback in a session on one
+/// of these data directories fails.
+#[cfg(test)]
+pub(crate) static FAIL_STORED_WALLET_DELETE_IN: std::sync::Mutex<Vec<PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The legacy address range a bundle's `settings_kv` rows of `id` carry,
+/// checked before anything is registered.
+fn bundled_issued(tables: &[TableRows], id: WalletId) -> Result<Option<(u32, u32)>, EngineError> {
+    let scope = id.to_string();
+    for t in tables.iter().filter(|t| t.table == "settings_kv") {
+        let col = |name: &str| t.columns.iter().position(|c| c == name);
+        let (Some(s), Some(k), Some(v)) = (col("scope"), col("key"), col("value")) else {
+            continue;
+        };
+        for row in &t.rows {
+            let text = |i: usize| match row.get(i) {
+                Some(SqlValue::Text(t)) => Some(t.as_str()),
+                _ => None,
+            };
+            if text(s) == Some(scope.as_str()) && text(k) == Some(crate::compat::ISSUED_SETTING) {
+                return text(v)
+                    .and_then(crate::compat::parse_issued)
+                    .map(Some)
+                    .ok_or_else(|| BackupFailure::Corrupt("legacy address range".into()).into());
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn from_json(v: &serde_json::Value) -> Result<SqlValue, EngineError> {
     let bad = || BackupFailure::Corrupt("app row value".into());
     if v.is_null() {
@@ -642,6 +673,12 @@ impl NetworkSession {
                 })
             })
             .collect::<Result<Vec<_>, EngineError>>()?;
+        // A legacy wallet's range is applied before it is announced, as
+        // its file import does; its rows land after registration.
+        let state = crate::compat::ImportedState {
+            issued: bundled_issued(&tables, id)?,
+            ..Default::default()
+        };
         let existed = self.manager()?.get_wallet(&id.0).await.is_some();
         let options = ImportOptions {
             birth_height: Some(payload.birth_height.unwrap_or(0)),
@@ -656,6 +693,7 @@ impl NetworkSession {
                 secret,
                 AutoBackup::Caller,
                 Origin::Imported,
+                state,
             )
             .await
         {
@@ -677,6 +715,58 @@ impl NetworkSession {
         Ok(())
     }
 
+    /// Takes a wallet a failed call registered out of the manager and
+    /// deletes its stored wallet and rows, recording it as removed (DEC-210).
+    /// The caller has ended its discoveries and forgotten it in the platform
+    /// runtime.
+    pub(crate) async fn remove_registered(
+        self: &Arc<Self>,
+        id: WalletId,
+    ) -> Result<(), EngineError> {
+        let live = self.live()?;
+        // A wallet holding a stored shielded spend stays (DEC-1046), as does
+        // one with a marked spend (DEC-1057).
+        let removal = (self.platform)
+            .remove_from_manager(
+                &self.leases,
+                &live.manager,
+                id,
+                crate::platform::runtime::StoredSpends::Refuse,
+            )
+            .await;
+        // Again, now that it is out of the manager (or failed to leave it):
+        // a scan begun since the first forget passed the wallet check, and a
+        // names check begun since read the wallet (D33).
+        self.platform.users.scans.forget(&id);
+        self.platform.recovery.fence_names(&id);
+        removal?;
+        self.hub.forget_wallet(&id);
+        self.coin_fences.forget(&id);
+        let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+        #[cfg(test)]
+        let refused =
+            crate::keys::take_test_failure(&FAIL_STORED_WALLET_DELETE_IN, self.data_dir());
+        tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
+            // Both are attempted: rows left behind would outlive a failed
+            // delete of the stored wallet with no removal record.
+            #[cfg(test)]
+            let stored = if refused {
+                Err(EngineError::Storage(
+                    "test: stored wallet not deleted".into(),
+                ))
+            } else {
+                persister.delete_wallet(id.0).map_err(EngineError::from)
+            };
+            #[cfg(not(test))]
+            let stored = persister.delete_wallet(id.0).map_err(EngineError::from);
+            let rows = appdb
+                .delete_wallet(&id.to_string())
+                .map_err(|e| EngineError::Storage(e.to_string()));
+            stored.and(rows)
+        })
+        .await?
+    }
+
     /// Undoes what a failed restore registered, newest first: a new wallet
     /// is unloaded and its rows and vault records deleted; keys attached
     /// to a watch-only wallet are deleted again. Best effort: a failing
@@ -694,37 +784,7 @@ impl NetworkSession {
             let _discoveries = self.platform.recovery.end_discoveries(id).await;
             self.platform.forget(&id);
             if created {
-                let removed = async {
-                    let live = self.live()?;
-                    // A wallet holding a stored shielded spend stays (DEC-1046),
-                    // as does one with a marked spend (DEC-1057).
-                    let removal = (self.platform)
-                        .remove_from_manager(
-                            &self.leases,
-                            &live.manager,
-                            id,
-                            crate::platform::runtime::StoredSpends::Refuse,
-                        )
-                        .await;
-                    // Again, now that it is out of the manager (or failed to
-                    // leave it): a scan begun since the first forget passed
-                    // the wallet check, and a names check begun since read
-                    // the wallet (D33).
-                    self.platform.users.scans.forget(&id);
-                    self.platform.recovery.fence_names(&id);
-                    removal?;
-                    self.hub.forget_wallet(&id);
-                    self.coin_fences.forget(&id);
-                    let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
-                    tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
-                        persister.delete_wallet(id.0)?;
-                        appdb
-                            .delete_wallet(&id.to_string())
-                            .map_err(|e| EngineError::Storage(e.to_string()))
-                    })
-                    .await?
-                }
-                .await;
+                let removed = self.remove_registered(id).await;
                 if let Err(EngineError::ShieldedSpendUnresolved) = removed {
                     // It stays whole, its seed with it: without the seed it
                     // would never hold a background lease again, and every

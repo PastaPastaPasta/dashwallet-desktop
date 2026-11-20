@@ -124,10 +124,14 @@ extension DashColor {
         /// Red text (error states, danger chips) on canvas, card and `dangerTint`: iOS red is 4.06:1 on
         /// white and 4.2:1 on the dark card (≥ 4.9:1 and ≥ 5.3:1 here).
         public static let danger = DashColor(light: RGBA(hex: 0xC8202B), dark: RGBA(hex: 0xFF6961))
+        /// Green success text (form confirmations, Receive's ✓ mark) on canvas, card and `successTint` in light:
+        /// iOS green is 2.6:1 on white (≥ 4.6:1 here). Dark keeps the iOS green; fills and icons keep `success`.
+        public static let successText = DashColor(light: RGBA(hex: 0x177857), dark: DashColor.successText.dark)
 
         public static let all: [(name: String, color: DashColor)] = [
             ("accent", accent), ("textLink", textLink), ("hero", hero), ("textTertiary", textTertiary),
             ("warning", warning), ("networkCapsule", networkCapsule), ("danger", danger),
+            ("successText", successText),
         ]
     }
 }

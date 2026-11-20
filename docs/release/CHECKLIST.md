@@ -48,7 +48,7 @@ first candidate.
 - [ ] **Known limitations**: what does not work or behaves surprisingly, in the user's words; signing and
       notarization state (section 6).
 - [ ] **How X.Y was tested**: the test bar of section 4 as it was actually run, with OS and build.
-- [ ] **Files**: one row per OS with the four bundles, plus `SHA256SUMS` and the two SBOMs
+- [ ] **Files**: one row per OS with the five bundles (Linux: AppImage, .deb, Flatpak), plus `SHA256SUMS` and the two SBOMs
       (`dash-wallet-X.Y.Z-sbom-rust.cdx.json`, `dash-wallet-X.Y.Z-sbom-npm.cdx.json`).
 - [ ] **Install**: the first-launch steps for each OS (they change once signing exists).
 - [ ] **Verify**: `gh attestation verify` and `sha256sum -c` for this version, and a pointer to
@@ -122,8 +122,8 @@ The workflow screenshots only Linux: on the hosted macOS and Windows runners the
 
 The Release run on the tag (`.github/workflows/release.yml`):
 
-1. `decide` checks the commit is on `main`; `macos`, `windows`, `linux` build and launch-check the bundles; `sbom`
-   writes the two SBOMs (`ci/github/release-sbom.sh`); `checksums` writes `SHA256SUMS` over all six files.
+1. `decide` checks the commit is on `main`; `macos`, `windows`, `linux` and `flatpak` build and launch-check the bundles; `sbom`
+   writes the two SBOMs (`ci/github/release-sbom.sh`); `checksums` writes `SHA256SUMS` over all seven files.
 2. `publish` (the only job with write permissions) attests every file and `SHA256SUMS` with
    `actions/attest-build-provenance`, then creates the release: a full release for `vX.Y.Z` (GitHub picks Latest by
    version), a prerelease for `-rc.N`. Seven assets:

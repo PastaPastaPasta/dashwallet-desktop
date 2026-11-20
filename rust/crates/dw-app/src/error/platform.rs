@@ -503,6 +503,7 @@ impl From<CreditsError> for AppError {
             C::CoinsChanged => (CreditsCode::CoinsChanged, None),
             C::MixingActive => (CreditsCode::MixingActive, None),
             C::MoveRunning => (CreditsCode::MoveRunning, None),
+            C::Shielded(e) => return e.into(),
             C::Platform(e) => return e.into(),
         };
         AppError {
@@ -683,6 +684,10 @@ mod tests {
             CreditsError::CoinsChanged,
             CreditsError::MixingActive,
             CreditsError::MoveRunning,
+            CreditsError::Shielded(ShieldedError::NotActive {
+                protocol_version: 11,
+                activation_version: 12,
+            }),
             CreditsError::Platform(PlatformError::Unavailable),
         ];
         for e in credits {

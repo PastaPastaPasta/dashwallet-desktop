@@ -15,6 +15,7 @@ use super::errors::{CreditsError, PlatformError};
 use super::flows::GrantRequest;
 use super::platform_fund;
 use super::platform_moves;
+use super::shielded_pool;
 use super::unfinished::UnfinishedState;
 
 /// The wallet's Platform addresses (payment account 0), as the last sync
@@ -279,6 +280,30 @@ pub struct PlatformSendOutcome {
     pub estimated: bool,
 }
 
+/// What moving credits from the Platform addresses into Shielded takes, at
+/// the network's protocol version (C-routes C1-4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformShieldQuote {
+    /// The note's value: what the shielded balance gains.
+    pub credits: u64,
+    /// The pool's flat fee, claimed on input 0 with its share.
+    pub pool_fee_credits: u64,
+    /// What input 0 keeps unclaimed: Platform takes the fee it meters from
+    /// it at execution, with no cap, so the fee is "about".
+    pub fee_reserve_credits: u64,
+    /// `credits + pool_fee_credits + fee_reserve_credits`: the planned
+    /// debit, the grant's cap.
+    pub debit_credits: u64,
+    /// The addresses the shield takes from and what each is claimed for,
+    /// in `PlatformAddress` order: input 0, the address the fee comes from,
+    /// first, its claim with the pool fee. A later input's claim may exceed
+    /// its share by up to Platform's input minimum; Drive leaves the excess
+    /// there.
+    pub inputs: Vec<PlatformAddressRow>,
+    /// What to authorize: no duffs, `debit_credits` credits.
+    pub grant: GrantRequest,
+}
+
 /// What "Add from Dash wallet" of `duffs` costs and adds, at the network's
 /// protocol version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -519,6 +544,27 @@ impl DashPay {
                 wallet: Arc::clone(&wallet),
             };
             platform_moves::send(&net, &session, &wallet, wallet_id, &operation, &grant).await
+        })
+        .await
+    }
+
+    /// What moving `amount` of the Platform addresses' credits into the
+    /// wallet's own shielded account takes: the pool's gates first, then
+    /// one proved read of the addresses, the hold and the input-0 plan.
+    pub async fn platform_shield_quote(
+        &self,
+        amount: WithdrawAmount,
+    ) -> Result<PlatformShieldQuote, CreditsError> {
+        let wallet_id = self.wallet_id;
+        self.on_wallet(move |session, manager, wallet| async move {
+            let lib = shielded_pool::PwShielded::open(&session, wallet_id).await?;
+            let version = shielded_pool::platform_shield_gate(&lib).await?;
+            let net = platform_moves::SdkMoves {
+                sdk: manager.sdk_arc(),
+                wallet: Arc::clone(&wallet),
+            };
+            let ask = (version, amount);
+            platform_moves::shield_quote(&net, &session, &wallet, wallet_id, ask).await
         })
         .await
     }

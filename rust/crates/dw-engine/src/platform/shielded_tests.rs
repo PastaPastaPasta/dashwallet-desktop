@@ -281,6 +281,10 @@ struct FakeShielded {
     /// consumed" (`PlatformWalletError::AssetLockAlreadyConsumed`), after
     /// its transition was signed.
     consumed: AtomicBool,
+    /// The next applies end with these library errors, in order, after
+    /// their transitions were signed, mapped as `PwShielded::apply` maps
+    /// them.
+    lib_errors: Mutex<std::collections::VecDeque<PlatformWalletError>>,
     /// What the next apply leaves of the lock's real row.
     row_after: Mutex<RowAfter>,
     /// The coin reads and the funding permits asked for.
@@ -438,6 +442,7 @@ impl Default for FakeShielded {
             probed: Mutex::default(),
             real_rows: false,
             consumed: AtomicBool::new(false),
+            lib_errors: Mutex::default(),
             row_after: Mutex::default(),
             coin_reads: AtomicU32::new(0),
             permits: AtomicU32::new(0),
@@ -993,6 +998,9 @@ impl ShieldedLib for FakeShielded {
             let consumed = PlatformWalletError::AssetLockAlreadyConsumed(outpoint);
             return pool::applied_from(Err(consumed), outpoint, true);
         }
+        if let Some(e) = self.lib_errors.lock().unwrap().pop_front() {
+            return pool::applied_from(Err(e), outpoint, true);
+        }
         let answer = (self.applies.lock().unwrap().take()).expect("a scripted apply");
         *self.applies.lock().unwrap() = self.queued.lock().unwrap().pop_front();
         answer
@@ -1274,6 +1282,33 @@ fn the_gate_refuses_below_the_activation_after_a_proved_read() {
         pool::receive_address(&*lib).await.unwrap()
     });
     assert_eq!(held.refreshes.load(Ordering::SeqCst), 0);
+}
+
+/// A shield from the Platform addresses passes the pool's gates before
+/// anything else (C-routes C1-6): active after a proved read, then the
+/// account's viewing keys bound; its rules are the proved version's.
+#[test]
+fn the_platform_shield_gate_is_active_then_bound() {
+    let fx = Fixture::new(0);
+    let gate = |lib: FakeShielded| {
+        run(&fx, &Arc::new(lib), |_, lib| async move {
+            (pool::platform_shield_gate(&*lib).await).map(|v| v.protocol_version)
+        })
+    };
+    let below_unbound = FakeShielded {
+        bound: false,
+        ..FakeShielded::at(11, 11)
+    };
+    assert_eq!(code(gate(below_unbound)), "shielded.not_active");
+    let unbound = FakeShielded {
+        bound: false,
+        ..FakeShielded::at(11, 12)
+    };
+    assert_eq!(
+        gate(unbound),
+        Err(ShieldedError::not_synced(ShieldedSyncWait::Account))
+    );
+    assert_eq!(gate(FakeShielded::at(11, 12)), Ok(12));
 }
 
 #[test]

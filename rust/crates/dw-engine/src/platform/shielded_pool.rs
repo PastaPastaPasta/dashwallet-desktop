@@ -456,6 +456,26 @@ pub(super) async fn priced_gate(
     rules_at(active(lib.refresh_protocol_version().await)?)
 }
 
+/// The pool's gates for a shield from the Platform addresses (C-routes
+/// C1-6), before anything else is read: [`priced_gate`], then the
+/// account's viewing keys bound (`shielded.not_synced{account}`).
+pub(super) async fn platform_shield_gate(
+    lib: &impl ShieldedLib,
+) -> Result<&'static PlatformVersion, ShieldedError> {
+    let version = priced_gate(lib).await?;
+    if !lib.bind().await? {
+        return Err(ShieldedError::not_synced(Wait::Account));
+    }
+    Ok(version)
+}
+
+/// The flat fee platform-wallet's `shield_to` adds to input 0's claim:
+/// the minimum shielded fee of a one-output bundle, which Orchard pads to
+/// two actions.
+pub(super) fn platform_shield_fee(version: &PlatformVersion) -> Result<u64, ShieldedError> {
+    compute_minimum_shielded_fee(MIN_ACTIONS, version).map_err(internal)
+}
+
 fn active(protocol_version: u32) -> Result<u32, ShieldedError> {
     if protocol_version < SHIELDED_ACTIVATION_VERSION {
         return Err(ShieldedError::NotActive {
@@ -2660,7 +2680,9 @@ pub(crate) fn shield_funding(outpoint: OutPoint) -> AssetLockFunding {
 
 /// How the library's shield call of the lock at `outpoint` ended, given
 /// whether the lock's credit key signed a transition in it. Only "already
-/// consumed" naming `outpoint` is [`Applied::Taken`].
+/// consumed" naming `outpoint` is [`Applied::Taken`], the library's refusal
+/// to record it included
+/// ([`consumed_unrecorded`](super::unfinished_locks::consumed_unrecorded)).
 pub(crate) fn applied_from(
     result: Result<(), PlatformWalletError>,
     outpoint: OutPoint,
@@ -2673,6 +2695,7 @@ pub(crate) fn applied_from(
         Err(PlatformWalletError::AssetLockAlreadyConsumed(o)) if o == outpoint => {
             Ok(Applied::Taken)
         }
+        Err(e) if super::unfinished_locks::consumed_unrecorded(&e) => Ok(Applied::Taken),
         // The library signs the transition and then broadcasts it
         // (`build_and_broadcast_shielded`, `fund_from_asset_lock.rs:707-757`):
         // a failure after a signature may follow its submission.
