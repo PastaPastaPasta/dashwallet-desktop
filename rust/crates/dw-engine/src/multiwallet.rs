@@ -552,7 +552,8 @@ impl NetworkSession {
     /// Puts a wallet registered here on the load-on-startup list (`listed`),
     /// when there is one, so it loads at the next start whatever was closed
     /// before it; or takes off one a restore's rollback removed. A failed
-    /// write is logged only: the wallet's registration stands.
+    /// write is logged only: the wallet's registration stands, and the list
+    /// in memory changes all the same.
     pub(crate) async fn list_on_startup(&self, _held: &Lifecycle<'_>, id: WalletId, listed: bool) {
         let Some(mut list) = self
             .startup_list
@@ -571,15 +572,24 @@ impl NetworkSession {
             return;
         }
         let stored = list.clone();
-        match self
-            .appdb_op(move |db| write_startup_list(db, &stored))
-            .await
-        {
-            Ok(()) => *self.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list),
-            Err(e) => {
-                tracing::warn!(wallet_id = %id, error = %e, "could not update the load-on-startup list");
-            }
+        #[cfg(test)]
+        let fail =
+            crate::keys::take_test_failure(&crate::wallets::FAIL_LISTING_RETRY_IN, self.data_dir());
+        let written = self
+            .appdb_op(move |db| {
+                #[cfg(test)]
+                if fail {
+                    return Err(AppDbError::Corrupt(
+                        "test: load-on-startup write failed".into(),
+                    ));
+                }
+                write_startup_list(db, &stored)
+            })
+            .await;
+        if let Err(e) = written {
+            tracing::warn!(wallet_id = %id, error = %e, "could not update the load-on-startup list");
         }
+        *self.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list);
     }
 
     /// The BIP44 account xpub (IOS-111). Public data, no grant. A

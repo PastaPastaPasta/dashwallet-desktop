@@ -138,3 +138,37 @@ fn a_list_that_cannot_be_stored_is_repaired_in_memory() {
     assert_eq!(stored_list(&s), Some(b.to_string()));
     engine.block_on(engine.shutdown()).unwrap();
 }
+
+/// A removal whose store deletion fails leaves the stored list naming the
+/// wallet: it is still in the store, so the next start loads it and the
+/// removal can be tried again. The session shows the next wallet ticked.
+#[test]
+fn a_failed_store_deletion_keeps_the_stored_list() {
+    let (_dir, engine, s, a, b) = remove_the_only_listed(&[&crate::wallets::FAIL_DELETE_IN]);
+    assert!(on_startup(&s).contains(&(b, true)));
+    assert_eq!(stored_list(&s), Some(a.to_string()));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// The first wallet added after the last one was removed shows ticked even
+/// when the list cannot be stored with it on.
+#[test]
+fn a_wallet_added_after_the_last_removal_is_ticked_when_the_write_fails() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = engine(&dir.path().join("data"));
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let a = import(&engine, &s, ABANDON_12);
+    let wipe = s
+        .vault()
+        .authorize(GrantPurpose::Wipe, Some(&a.0), Credential::None)
+        .unwrap()
+        .id;
+    engine.block_on(s.remove_wallet(a, wipe)).unwrap();
+    assert_eq!(stored_list(&s).as_deref(), Some("none"));
+    (crate::wallets::FAIL_LISTING_RETRY_IN.lock().unwrap()).push(s.data_dir().to_path_buf());
+    let b = import(&engine, &s, LEGAL_12);
+    assert_eq!(on_startup(&s), vec![(b, true)]);
+    assert_eq!(stored_list(&s).as_deref(), Some("none"));
+    engine.block_on(engine.shutdown()).unwrap();
+}

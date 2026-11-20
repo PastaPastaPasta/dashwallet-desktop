@@ -25,8 +25,8 @@ pub(crate) static FAIL_DELETE_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
 pub(crate) static FAIL_LISTING_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(Vec::new());
 
-/// Tests: the load-on-startup write after a failed removal transaction
-/// fails too.
+/// Tests: the next load-on-startup write on its own fails: the one after
+/// a failed removal transaction, or the one that lists a registered wallet.
 #[cfg(test)]
 pub(crate) static FAIL_LISTING_RETRY_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(Vec::new());
@@ -313,6 +313,8 @@ impl NetworkSession {
             let fail_delete = crate::keys::take_test_failure(&FAIL_DELETE_IN, this.data_dir());
             #[cfg(test)]
             let fail_listing = crate::keys::take_test_failure(&FAIL_LISTING_IN, this.data_dir());
+            let wallet_gone = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let gone = Arc::clone(&wallet_gone);
             let deleted = tokio::task::spawn_blocking(move || -> Result<(), EngineError> {
                 #[cfg(test)]
                 if let Some(pause) = pause {
@@ -323,6 +325,7 @@ impl NetworkSession {
                     return Err(EngineError::Storage("test: wallet delete failed".into()));
                 }
                 persister.delete_wallet(id.0)?;
+                gone.store(true, std::sync::atomic::Ordering::SeqCst);
                 #[cfg(test)]
                 if fail_listing {
                     return Err(EngineError::Storage("test: app rows delete failed".into()));
@@ -332,7 +335,11 @@ impl NetworkSession {
             })
             .await;
             if let Some(list) = startup {
-                if !matches!(deleted, Ok(Ok(()))) {
+                // A wallet still in the store stays on the stored list, so
+                // the next start loads it and the removal can be retried.
+                if wallet_gone.load(std::sync::atomic::Ordering::SeqCst)
+                    && !matches!(deleted, Ok(Ok(())))
+                {
                     this.store_startup_list(&live, &list).await;
                 }
                 *this.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list);
