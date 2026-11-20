@@ -318,19 +318,25 @@ test("a payment's lookup that answers after the vault locked again is read again
   expect(errors).toEqual([]);
 });
 
-/** Masternodes ▸ Governance ▸ Create a proposal, up to Pay pressed, its `create_proposal` held. */
-async function payProposalHeld(page: Page) {
+/** Masternodes ▸ Governance ▸ Create a proposal, up to Pay pressed, its `create_proposal` held.
+ * `to`: an address typed in, rather than a new one of the wallet's. */
+async function payProposalHeld(page: Page, to?: string) {
   await page.getByTestId("sidebar-masternodes").click();
   await page.getByTestId("governance-create").click();
   await page.getByTestId("create-name").fill("desktop-translations");
   await page.getByTestId("create-url").fill("https://www.dashcentral.org/p/desktop-translations");
   await page.getByTestId("create-continue").click();
   await page.getByTestId("create-amount").fill("12.5");
+  if (to) {
+    await page.getByTestId("create-pay-to").selectOption("other");
+    await page.getByTestId("create-address").fill(to);
+  }
   await page.getByTestId("create-continue").click();
   await page.getByTestId("create-passphrase").fill(FIXTURE_PASSPHRASE);
+  const paid = (await calls(page)).filter((c) => c === "governance_create_proposal").length;
   const release = await page.evaluateHandle(() => window.__dwFixture!.hold("governance_create_proposal"));
   await page.getByTestId("create-pay").click();
-  await expect.poll(async () => (await calls(page)).includes("governance_create_proposal")).toBe(true);
+  await expect.poll(async () => (await calls(page)).filter((c) => c === "governance_create_proposal").length).toBe(paid + 1);
   return release;
 }
 
@@ -434,6 +440,59 @@ test("unsure after the lock, Mine unreadable: Create stays off, the notice offer
   await page.getByTestId("create-kept-read-again").click();
   await expect(keptText(page)).toHaveAttribute("data-check", "found");
   await expect(page.getByTestId("governance-create")).toBeDisabled();
+  expect(errors).toEqual([]);
+});
+
+test("a second payment for the same draft, the first unsure: a proposal either could have made is credited to neither", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  const to = "yXdjeVZqmWp4ZcVJ2Hh8hcFhUzFE8wD1Cd";
+  await page.clock.setFixedTime(FIXTURE_NOW);
+  await page.goto(fixtureUrl("governance", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "none"));
+  const first = await payProposalHeld(page, to);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await expect(page.getByTestId("lock-field")).toBeVisible();
+  await first.evaluate((r) => r());
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+  await unlock(page);
+  await expect(keptText(page)).toHaveAttribute("data-check", "absent");
+  await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", null));
+  // The second stores its proposal at once; its answer is held across a lock.
+  const second = await payProposalHeld(page, to);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await expect(page.getByTestId("lock-field")).toBeVisible();
+  await unlock(page);
+  await expect(keptText(page)).toHaveAttribute("data-check", "twin");
+  await expect(keptText(page)).toContainText("both fees may have gone out");
+  await expect(page.getByTestId("governance-create")).toBeDisabled();
+  // Its own answer names it: the first made nothing, so its notice is the one left.
+  await second.evaluate((r) => r());
+  await expect(keptText(page)).toHaveAttribute("data-check", "absent");
+  await expect(page.getByTestId("governance-create")).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test("lost events while in use show the lock screen while no status read answers, then the same page", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("locked", "light"));
+  await unlock(page);
+  await page.getByTestId("sidebar-activity").click();
+  await expect(page.getByTestId("page-activity")).toBeVisible();
+  // No status read answers: the window stays closed, and reads again on its own.
+  await page.evaluate(() => {
+    const f = window.__dwFixture!;
+    f.fail("lock_status", "none");
+    f.emit({ kind: "eventsOverflowed" });
+  });
+  await expect(page.getByTestId("lock-screen")).toBeVisible();
+  await expect(page.getByTestId("page-activity")).toHaveCount(0);
+  expect(await page.evaluate(() => document.body.innerText)).not.toContain("32.04698287");
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 1_500)));
+  await expect(page.getByTestId("lock-screen")).toBeVisible();
+  await page.evaluate(() => window.__dwFixture!.fail("lock_status", null));
+  await expect(page.getByTestId("page-activity")).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByTestId("lock-screen")).toHaveCount(0);
   expect(errors).toEqual([]);
 });
 

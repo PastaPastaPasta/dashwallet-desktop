@@ -214,6 +214,16 @@ describe("two attempts at the same draft", () => {
     expect(keptCreate(W)).toMatchObject({ kind: "unsure", check: { kind: "found", p: a } });
   });
 
+  it("B's own answer, Mine unchanged since it was read, ends the doubt at once", async () => {
+    await absentA();
+    const b = startCreate(W, draft("fresh"), [OLD]);
+    const own = proposal("b1", "fresh");
+    sawMine(W, [own, OLD]);
+    expect(keptCreate(W)).toMatchObject({ check: { kind: "twin" } });
+    settleCreate(W, b, { kind: "created", p: own, shown: true });
+    expect(keptCreate(W)).toMatchObject({ kind: "unsure", check: { kind: "absent" } });
+  });
+
   it("A never appearing leaves A unsure and not found, B's proposal being B's", async () => {
     await absentA();
     const b = startCreate(W, draft("fresh"), [OLD]);

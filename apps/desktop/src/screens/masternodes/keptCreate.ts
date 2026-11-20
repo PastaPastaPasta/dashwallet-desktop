@@ -46,6 +46,8 @@ type Entry = {
 const MAX_ENTRIES = 32;
 
 const ledger = new Map<string, Entry[]>();
+/** Mine as last read, to settle against once an attempt's own answer names its proposal. */
+const lastMine = new Map<string, readonly MyProposal[]>();
 const views = new Map<string, KeptCreate | null>();
 const reading = new Set<string>();
 const listeners = new Set<() => void>();
@@ -169,7 +171,8 @@ export function settleCreate(walletId: string, attempt: CreateAttempt, outcome: 
       // Its own answer names it, whatever Mine was credited with.
       e.state = { kind: "made", p: outcome.p, wasUnsure: e.state.kind === "made" && e.state.wasUnsure };
       if (outcome.shown) e.seenAs = status(e);
-      return entries;
+      const mine = lastMine.get(walletId);
+      return mine ? credit(entries, mine) : entries;
     }
     if (e.state.kind === "paying") e.state = { kind: "unsure", read: "reading" };
     return entries;
@@ -178,6 +181,7 @@ export function settleCreate(walletId: string, attempt: CreateAttempt, outcome: 
 
 /** Mine as the page read it. */
 export function sawMine(walletId: string, mine: readonly MyProposal[]) {
+  lastMine.set(walletId, mine);
   if (entriesOf(walletId).length) update(walletId, (entries) => credit(entries, mine));
 }
 
@@ -202,6 +206,7 @@ export async function checkKept(walletId: string, read: () => Promise<MyProposal
     update(walletId, (entries) => entries, true);
     return;
   }
+  if (mine) lastMine.set(walletId, mine);
   update(walletId, (entries) => {
     for (const e of entries) if (ids.has(e.attempt.id) && e.state.kind === "unsure" && e.state.read === "reading") e.state = { kind: "unsure", read: mine ? "done" : "failed" };
     return mine ? credit(entries, mine) : entries;
@@ -245,6 +250,7 @@ export function createHeldBack(k: KeptCreate | null): string | null {
 /** Tests: nothing kept. */
 export function resetKeptCreate() {
   ledger.clear();
+  lastMine.clear();
   views.clear();
   reading.clear();
   listeners.forEach((l) => l());
