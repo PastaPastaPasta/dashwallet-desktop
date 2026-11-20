@@ -336,7 +336,10 @@ jobs:
         run: |
           # A rerun of an older night must not open, update or close the issue of a newer one.
           latest=$(gh api "repos/$GH_REPO/actions/workflows/nightly.yml/runs?event=schedule&per_page=1" \
-            --jq '.workflow_runs[0].id') || latest=$RUN
+            --jq '.workflow_runs[0].id') || {
+            echo "the latest scheduled run could not be read: the issue is left as it is" >&2
+            exit 1
+          }
           if [ "$latest" != "$RUN" ]; then
             echo "run $latest is newer: nothing reported for this one"
             exit 0
