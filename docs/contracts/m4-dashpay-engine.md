@@ -4347,7 +4347,7 @@ renames or reshapes them takes the next version bump:
     un-acknowledged `Executed` or `Unresolved` disposition, and for a spend stored under the hook and not sent yet.
     While the dispatch journal is unavailable, removal, every seed import, `import_watch_only` and `restore_backup` are
     refused with `storage` before anything changes (§2.13 "Closing with an unresolved spend").
-90. **The library's spend outcomes, read and acknowledged (version 71).** After each pass and at the shielded store's
+91. **The library's spend outcomes, read and acknowledged (version 71).** After each pass and at the shielded store's
     open the engine settles each spend's artifact from the library's disposition, then acknowledges it: `NotExecuted`
     at once, `Executed` once its notes read spent in the journal, an unreadable one by its key once its held notes read
     spent; never an `Unresolved` one. `Unattributable` with a confirmed history row reads done, with no retry and no
