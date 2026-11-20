@@ -921,18 +921,28 @@ impl Vault {
     /// [`Self::persist`] of a file whose manifest is at `generation`: the
     /// file and the high-water mark are published together, so no reader
     /// checks the old file against the new mark. The policy generation is
-    /// committed first ([`Self::commit_policy`]); a failed commit changes
-    /// nothing.
+    /// committed first ([`Self::commit_policy`]); a failed commit writes
+    /// nothing. With `end_window`, the signing window ends in the same
+    /// step, so no window grant issued under the old policy signs under the
+    /// new one; it ends when the commit or the write fails too, since the
+    /// user asked for less.
     fn persist_at(
         &self,
         _writer: &WriteGuard<'_>,
         next: VaultFile,
         generation: u64,
+        end_window: bool,
     ) -> Result<(), VaultError> {
-        let committed = self.commit_policy(&next.vault_id, generation)?;
-        let written = file::write(&self.shared.dir, &next);
+        let committed = self.commit_policy(&next.vault_id, generation);
+        let written = match &committed {
+            Ok(_) => file::write(&self.shared.dir, &next),
+            Err(e) => Err(e.clone()),
+        };
         let mut inner = self.inner();
-        if committed {
+        if end_window {
+            clear_signing_window(&mut inner);
+        }
+        if let Ok(true) = committed {
             raise(&mut inner.policy_floor, generation);
         }
         written?;
@@ -3044,7 +3054,7 @@ impl Vault {
                     ..policy
                 },
             )?;
-            self.persist_at(&writer, next, generation)?;
+            self.persist_at(&writer, next, generation, false)?;
             Ok(Zeroizing::new(wrap_key.to_vec()))
         })
     }
@@ -3222,7 +3232,11 @@ impl Vault {
 
     /// Sets the quick-unlock spending limit to one of
     /// [`QUICK_UNLOCK_SPEND_LIMITS`] (`InvalidArgument` otherwise). Needs an
-    /// encrypted vault (`NotEncrypted`) and a `ChangeCredential` grant.
+    /// encrypted vault (`NotEncrypted`) and a `ChangeCredential` grant. A
+    /// lower limit ends the signing window, with its grants and the tokens
+    /// redeemed from it, in the step that publishes the new limit; a higher
+    /// or equal one ends nothing. A failed commitment or write keeps the
+    /// limit in memory and still ends the window.
     pub fn set_quick_unlock_spend_limit(
         &self,
         grant_id: &str,
@@ -3245,6 +3259,7 @@ impl Vault {
             let dek = self.key_for(op, &token)?;
             let floor = self.inner().policy_floor;
             let policy = open_policy(&next, &dek, floor)?.unwrap_or_default();
+            let lowered = spend_limit_duffs < policy.spend_limit_duffs;
             let high_water = self.inner().high_water;
             let generation = put_policy(
                 &mut next,
@@ -3259,7 +3274,7 @@ impl Vault {
                     generation: None,
                 },
             )?;
-            self.persist_at(&writer, next, generation)
+            self.persist_at(&writer, next, generation, lowered)
         })?;
         drop(writer);
         Ok(self.quick_unlock_policy())
@@ -3669,6 +3684,38 @@ mod tests {
         });
         v.unlock(pw, UnlockScope::Full).unwrap();
         assert_eq!(*seen.borrow(), Some(Ok(())));
+    }
+
+    /// A lower limit whose write fails (here after the new file reached the
+    /// disk) keeps the limit in memory and still ends the window.
+    #[test]
+    fn a_failed_write_of_a_lower_limit_still_ends_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw: &[u8] = b"correct horse";
+        let v = vault_with_wallet(dir.path(), Some(pw), 3);
+        let spend = GrantPurpose::Spend { max_duffs: 1 };
+        let grant = v
+            .authorize(spend, Some(&[1; 32]), Credential::None)
+            .unwrap();
+        let change = v
+            .authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(pw),
+            )
+            .unwrap();
+        crate::fault::arm(&dir.path().join("vault"), crate::fault::Fault::DirSync);
+        assert!(v.set_quick_unlock_spend_limit(&change.id, 0).is_err());
+        assert_eq!(
+            v.quick_unlock_policy().spend_limit_duffs,
+            DEFAULT_QUICK_UNLOCK_SPEND_LIMIT
+        );
+        assert!(!v.signing_window_open());
+        assert_eq!(
+            v.redeem_grant(&grant.id, GrantKind::Spend, Some(&[1; 32]))
+                .map(drop),
+            Err(VaultError::GrantInvalid)
+        );
     }
 
     /// A clock whose monotonic reading jumps (with the wall clock) at a
