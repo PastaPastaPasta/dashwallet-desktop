@@ -1018,22 +1018,28 @@ impl From<VaultError> for CliError {
     }
 }
 
+/// [`crate::masternodes::send_code`], kept for the process: one string per
+/// `SendFailure` variant.
+fn send_code_of(f: &SendFailure) -> &'static str {
+    static CODES: std::sync::Mutex<std::collections::BTreeSet<&'static str>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    let code = crate::masternodes::send_code(f);
+    let mut codes = CODES.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(known) = codes.get(code.as_str()) {
+        return known;
+    }
+    let code: &'static str = Box::leak(code.into_boxed_str());
+    codes.insert(code);
+    code
+}
+
 impl From<EngineError> for CliError {
     fn from(e: EngineError) -> Self {
         match e {
             EngineError::Vault(v) => v.into(),
             EngineError::Contact(c) => c.into(),
             e if e.is_task_panic() => panic_error("an engine task", "the call"),
-            EngineError::Send(f) => {
-                let code = match f {
-                    SendFailure::NoPeers => "send.no_peers",
-                    SendFailure::BroadcastRejected { .. } => "send.broadcast_rejected",
-                    SendFailure::BroadcastUnknown { .. } => "send.broadcast_unknown",
-                    SendFailure::Cancelled => "send.cancelled",
-                    _ => "send",
-                };
-                Self::new(code, EngineError::Send(f), json!({}))
-            }
+            EngineError::Send(f) => Self::new(send_code_of(&f), EngineError::Send(f), json!({})),
             e => Self::new(e.code(), &e, json!({})),
         }
     }
@@ -2466,7 +2472,7 @@ mod tests {
     }
 
     #[test]
-    fn each_broadcast_failure_has_its_own_code() {
+    fn each_send_failure_has_its_own_code() {
         let code = |f: SendFailure| CliError::from(EngineError::Send(f)).code;
         assert_eq!(code(SendFailure::NoPeers), "send.no_peers");
         assert_eq!(
@@ -2482,7 +2488,14 @@ mod tests {
             "send.broadcast_unknown"
         );
         assert_eq!(code(SendFailure::Cancelled), "send.cancelled");
-        assert_eq!(code(SendFailure::TxTooLarge), "send");
+        assert_eq!(code(SendFailure::TxTooLarge), "send.tx_too_large");
+        assert_eq!(
+            code(SendFailure::GrantExceeded {
+                max_duffs: 1,
+                outflow: 2
+            }),
+            "send.grant_exceeded"
+        );
     }
 
     /// D15 (Sol r1): an accept that went through and a payment that did
