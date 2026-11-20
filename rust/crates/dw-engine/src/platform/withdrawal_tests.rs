@@ -296,6 +296,8 @@ pub(crate) struct FakeWithdrawals {
     /// The nonce state and height a node behind the chain answers, if one
     /// does.
     lag: Mutex<Option<(u64, u64)>>,
+    /// After this many more nonce reads the lag clears; 0: it stays.
+    lag_reads: Mutex<u32>,
     /// The document reads come from a node at height 0, which has none.
     /// How many of the next document reads come from before every nonce
     /// read.
@@ -339,6 +341,7 @@ impl FakeWithdrawals {
             used: Mutex::new((1..=4).collect()),
             height: Mutex::new(1),
             lag: Mutex::default(),
+            lag_reads: Mutex::new(0),
             stale_reads: Mutex::new(0),
             answer: Mutex::new(Answer::Applied { fee: FEE }),
             sent: Mutex::default(),
@@ -379,6 +382,12 @@ impl FakeWithdrawals {
         *self.lag.lock().unwrap() = Some(snapshot);
     }
 
+    /// A node stopped at `snapshot` answers the next `reads` nonce reads.
+    pub(crate) fn lag_for(&self, snapshot: (u64, u64), reads: u32) {
+        self.lag(snapshot);
+        *self.lag_reads.lock().unwrap() = reads;
+    }
+
     /// The nonce reads are current again.
     pub(crate) fn caught_up(&self) {
         *self.lag.lock().unwrap() = None;
@@ -402,7 +411,7 @@ impl FakeWithdrawals {
     }
 
     /// Another identity-nonce write (a key update) executes at `nonce`.
-    fn other_write(&self, nonce: u64) {
+    pub(crate) fn other_write(&self, nonce: u64) {
         assert!(validate_identity_nonce_update(self.state(), nonce, id(ME)).is_valid());
         self.used.lock().unwrap().insert(nonce);
     }
@@ -471,8 +480,16 @@ impl WithdrawNet for FakeWithdrawals {
     }
 
     async fn nonce_state(&self, _: Identifier) -> Result<(u64, u64), PlatformError> {
-        let lag = *self.lag.lock().unwrap();
-        Ok(lag.unwrap_or_else(|| self.snapshot()))
+        let mut lag = self.lag.lock().unwrap();
+        let read = lag.unwrap_or_else(|| self.snapshot());
+        let mut left = self.lag_reads.lock().unwrap();
+        if *left > 0 {
+            *left -= 1;
+            if *left == 0 {
+                *lag = None;
+            }
+        }
+        Ok(read)
     }
 
     async fn broadcast(&self, transition: StateTransition) -> Result<u64, Unsent> {

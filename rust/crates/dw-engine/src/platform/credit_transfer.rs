@@ -186,7 +186,8 @@ pub(crate) async fn transition(
 }
 
 /// C6-7 after the broadcast: the nonce read again, at least as recent as
-/// `height`, until it decides, at most [`READ_BACK_TRIES`] times.
+/// `height`, until it decides, at most [`READ_BACK_TRIES`] times; a failed
+/// read ends it, and decides nothing.
 async fn decide(
     net: &impl WithdrawNet,
     signed: &[Signed],

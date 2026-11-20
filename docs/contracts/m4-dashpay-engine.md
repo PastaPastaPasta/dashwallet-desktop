@@ -4294,13 +4294,14 @@ renames or reshapes them takes the next version bump:
     `PlatformActivityKind::FromIdentity` and its record (C6a-2) and the withdraw sheet's destination (C6b) follow.
     A failed transfer holds the route for the session (§2.8, `withdraw_to_platform`): a refusal is CheckTx's, which
     reaches the engine as no answer, or one node's unproved answer, and neither proves the transfer can no longer
-    execute; unlocking it sooner is C6a-2's design. Known gap (BL-919, MG ruling M7): `enable_dashpay_keys` writes an
-    IdentityUpdate at the identity nonce the SDK chooses, outside this record. One whose outcome is unknown can execute
-    at the nonce a later transfer signs at; the transfer is then refused by Drive but its nonce reads used, so it is
-    reported executed (`credits.withdrawal_landed` or the outcome) though the credits stayed. No money moves twice.
-    Follow-up: build that update at a recorded nonce, or mark the record on an unknown outcome so a used nonce there
-    reads unresolved. Before C6b offers Max, T2 measures the fee Platform charges for one recipient at a fresh address
-    against the 48.6M-credit reserve.
+    execute; unlocking it sooner is C6a-2's design. C6b inherits it (BL-925): after a failed transfer it either shows
+    `credits.move_pending`, which a withdrawal or a restart releases, or waits for C6a-2. Known gap (BL-919, MG ruling
+    M7): `enable_dashpay_keys` writes an IdentityUpdate at the identity nonce the SDK chooses, outside this record. One
+    whose outcome is unknown can execute at the nonce a later transfer signs at; the transfer is then refused by Drive
+    but its nonce reads used, so it is reported executed (`credits.withdrawal_landed` or the outcome) though the credits
+    stayed. No money moves twice. Follow-up: build that update at a recorded nonce, or mark the record on an unknown
+    outcome so a used nonce there reads unresolved. Before C6b offers Max, T2 measures the fee Platform charges for one
+    recipient at a fresh address against the 48.6M-credit reserve.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

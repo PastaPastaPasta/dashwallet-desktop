@@ -457,6 +457,27 @@ fn a_lagging_read_decides_nothing() {
     assert_eq!(nonce_of(&w.net.sent()[2]), nonce_of(&t) + 1);
 }
 
+/// C6-7: a read-back older than the pre-sign read is skipped, even one so
+/// far behind that Drive could not take N from it; the next, current, read
+/// decides the transfer executed.
+#[test]
+fn a_read_far_behind_is_skipped() {
+    let w = World::new(10 * DASH);
+    let (behind, _) = w.net.snapshot();
+    for n in 5..=30 {
+        w.net.other_write(n);
+    }
+    let net = Arc::downgrade(&w.net);
+    *w.net.before_send.lock().unwrap() = Some(Box::new(move |_: &StateTransition| {
+        net.upgrade().unwrap().lag_for((behind, 0), 1);
+    }));
+    w.net.answer(Answer::Applied { fee: TRANSFER_FEE });
+    let out = w.send(DASH);
+    assert_eq!(nonce_of(&w.net.sent()[0]), 31, "more than 24 past the read");
+    assert_eq!(w.executed(), 1);
+    assert_eq!(out.unwrap().transition, hash(&w.net.sent()[0]));
+}
+
 /// R1 for the nonce record: the transfer is in the session's record at its
 /// nonce before it leaves, so nothing it signed can execute unrecorded.
 #[test]
