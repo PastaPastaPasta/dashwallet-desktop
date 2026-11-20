@@ -30,6 +30,7 @@ use platform_wallet::changeset::{
     PlatformWalletPersistence, WalletMetadataEntry,
 };
 
+use crate::gate::Lifecycle;
 use crate::keys::MAX_LOOKAHEAD;
 use crate::platform::runtime::PlatformSignal;
 use crate::session::WALLET_DB_FILE;
@@ -454,11 +455,11 @@ impl NetworkSession {
         .await
     }
 
-    /// Puts a wallet registered here on the load-on-startup list, when there
-    /// is one, so it loads at the next start whatever was closed before it.
-    /// Under the lifecycle lock. A failed write is logged only: the wallet
-    /// is registered.
-    pub(crate) async fn list_new_wallet_on_startup(&self, id: WalletId) {
+    /// Puts a wallet registered here on the load-on-startup list (`listed`),
+    /// when there is one, so it loads at the next start whatever was closed
+    /// before it; or takes off one a restore's rollback removed. A failed
+    /// write is logged only: the wallet's registration stands.
+    pub(crate) async fn list_on_startup(&self, _held: &Lifecycle<'_>, id: WalletId, listed: bool) {
         let Some(mut list) = self
             .startup_list
             .lock()
@@ -467,7 +468,12 @@ impl NetworkSession {
         else {
             return;
         };
-        if !list.insert(id) {
+        let changed = if listed {
+            list.insert(id)
+        } else {
+            list.remove(&id)
+        };
+        if !changed {
             return;
         }
         let stored = list.clone();
@@ -477,7 +483,7 @@ impl NetworkSession {
         {
             Ok(()) => *self.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list),
             Err(e) => {
-                tracing::warn!(wallet_id = %id, error = %e, "could not list the wallet to load at start-up");
+                tracing::warn!(wallet_id = %id, error = %e, "could not update the load-on-startup list");
             }
         }
     }
@@ -612,7 +618,7 @@ impl NetworkSession {
             {
                 tracing::warn!(wallet_id = %id, error = %e, "could not store the watch-only xpub");
             }
-            this.list_new_wallet_on_startup(id).await;
+            this.list_on_startup(&held, id, true).await;
             this.sink.emit(EngineEvent::WalletCreated {
                 network: this.network.clone(),
                 wallet_id: id,

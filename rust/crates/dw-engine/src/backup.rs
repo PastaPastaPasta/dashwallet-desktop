@@ -792,6 +792,9 @@ impl NetworkSession {
                     tracing::warn!(wallet_id = %id, "a restored wallet holding a shielded spend stays");
                     continue;
                 }
+                if removed.is_ok() {
+                    self.list_on_startup(held, id, false).await;
+                }
                 if let Err(e) = removed {
                     tracing::warn!(wallet_id = %id, error = %e, "could not roll back a restored wallet");
                 }
