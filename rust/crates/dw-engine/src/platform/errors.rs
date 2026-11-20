@@ -538,6 +538,19 @@ pub enum CreditsError {
     /// first.
     #[error("the asset lock would spend {inputs} coins, at most {max}")]
     TooManyInputs { inputs: u64, max: u64 },
+    /// A Core Max's build is not its plan (a coin came, went or changed
+    /// since the quote): refused unsigned, nothing tracked or sent. Quote
+    /// it again.
+    #[error("the Dash wallet changed since this was quoted")]
+    CoinsChanged,
+    /// A Core Max while the wallet mixes: it would take coins the mixer
+    /// spends. Stop mixing first, or enter an amount.
+    #[error("the wallet is mixing")]
+    MixingActive,
+    /// A Core Max while another move of the wallet's coins runs (a sweep,
+    /// a consolidation, a drain).
+    #[error("another move of the wallet's coins is running")]
+    MoveRunning,
     /// A move between the Platform addresses and Shielded refused by the
     /// pool's side (its gate, its key state), with the pool's code.
     #[error(transparent)]
@@ -572,6 +585,9 @@ impl CreditsError {
             Self::QuoteChanged => "credits.quote_changed",
             Self::FundPending { .. } => "credits.fund_pending",
             Self::TooManyInputs { .. } => "credits.too_many_inputs",
+            Self::CoinsChanged => "credits.coins_changed",
+            Self::MixingActive => "credits.mixing_active",
+            Self::MoveRunning => "credits.move_running",
             Self::Shielded(e) => e.code(),
             Self::Platform(e) => e.code(),
         }

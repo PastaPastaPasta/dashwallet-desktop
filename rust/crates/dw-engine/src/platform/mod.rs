@@ -26,6 +26,7 @@ mod contacts_tests;
 pub(crate) mod contest_watch;
 #[cfg(test)]
 mod contest_watch_tests;
+pub(crate) mod core_max;
 mod credit_costs;
 mod credits;
 mod dashpay;
@@ -121,8 +122,9 @@ pub use contacts::{
     RequestOutcome, ScannedCode, ScannedContact,
 };
 pub use credits::{
-    CostTable, CreditLevel, PendingTopUp, StuckTopUpFunding, TopUpOutcome, TopUpQuote, TopUpState,
-    WithdrawAmount, WithdrawOutcome, WithdrawQuote, Withdrawal, WithdrawalStatus,
+    CoreMax, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding, TopUpOutcome,
+    TopUpQuote, TopUpState, WithdrawAmount, WithdrawOutcome, WithdrawQuote, Withdrawal,
+    WithdrawalStatus,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{

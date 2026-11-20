@@ -405,7 +405,8 @@ struct CheckedInputs {
 /// path, value), at most `max_duffs` in all, a fee of at most `fee_bound`
 /// (the quote's), a credit of at least `minimum_lock_duffs` (the
 /// library's drain minimum, `build.rs` `DrainAll`) to `credit_script` (the
-/// step's funding key).
+/// step's funding key). `instant_locked`: an InstantSend-locked input is
+/// final too (a Core Max's BIP44 coins; a mixed coin must be in a block).
 #[derive(Debug, Clone)]
 pub(crate) struct DrainPlan {
     pub coins: Vec<(OutPoint, DerivationPath, u64)>,
@@ -413,6 +414,7 @@ pub(crate) struct DrainPlan {
     pub fee_bound: u64,
     pub minimum_lock_duffs: u64,
     pub credit_script: ScriptBuf,
+    pub instant_locked: bool,
 }
 
 /// Why a drain's signer refused its build, before any signature.
@@ -447,6 +449,7 @@ struct DrainCap {
     fee_bound: u64,
     minimum_lock_duffs: u64,
     credit_script: ScriptBuf,
+    instant_locked: bool,
     /// Per path, the sighashes signed there; and their values' sum.
     signed: std::sync::Mutex<(SignedByPath, u64)>,
     refusal: std::sync::Mutex<Option<DrainRefusal>>,
@@ -470,6 +473,7 @@ impl DrainCap {
             fee_bound: plan.fee_bound,
             minimum_lock_duffs: plan.minimum_lock_duffs,
             credit_script: plan.credit_script,
+            instant_locked: plan.instant_locked,
             signed: std::sync::Mutex::default(),
             refusal: std::sync::Mutex::default(),
         }
@@ -481,11 +485,11 @@ impl DrainCap {
     }
 
     /// Whether the build of `tx` over `inputs` is the plan's: exactly its
-    /// coins at their values, each in a block (an InstantSend lock is not
-    /// enough), within the grant; one output, the burn of the credit; one
-    /// credit, to the step's key, short of the coins' sum by at most the
-    /// quote's fee bound and at least the library's drain minimum (as
-    /// `build.rs` judges it, after signing).
+    /// coins at their values, each final (in a block; or InstantSend-locked
+    /// when the plan is `instant_locked`, a Core Max's), within the grant;
+    /// one output, the burn of the credit; one credit, to the step's key,
+    /// short of the coins' sum by at most the quote's fee bound and at least
+    /// the library's drain minimum (as `build.rs` judges it, after signing).
     fn approve(&self, tx: &Transaction, inputs: &[Utxo]) -> Result<(), DrainRefusal> {
         use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
         let changed = Err(DrainRefusal::CoinsChanged);
@@ -494,7 +498,7 @@ impl DrainCap {
         if spent.len() != inputs.len() || spent != self.inputs {
             return changed;
         }
-        if inputs.iter().any(|u| !u.is_confirmed) {
+        if (inputs.iter()).any(|u| !(u.is_confirmed || self.instant_locked && u.is_instantlocked)) {
             return changed;
         }
         let total = spent.values().try_fold(0u64, |sum, v| sum.checked_add(*v));
@@ -1134,6 +1138,7 @@ mod drain_cap_tests {
             fee_bound: 10,
             minimum_lock_duffs: 1,
             credit_script: credit_script(),
+            instant_locked: false,
         }
     }
 
@@ -1287,6 +1292,22 @@ mod drain_cap_tests {
             ok(&c, &coins, &lock_tx(&coins, 146, credit_script())),
             Ok(())
         );
+    }
+
+    /// A Core Max's plan (`instant_locked`) takes an InstantSend-locked
+    /// coin as final, and still refuses one neither in a block nor locked.
+    #[test]
+    fn a_core_max_cap_takes_instant_locked_coins_only_as_final() {
+        let mut p = plan(&[(0, 100), (1, 50)], 150);
+        p.instant_locked = true;
+        let c = DrainCap::new(p);
+        let mut coins = [utxo(0, 100), utxo(1, 50)];
+        coins[1].is_confirmed = false;
+        coins[1].is_instantlocked = true;
+        let tx = lock_tx(&coins, 145, credit_script());
+        assert_eq!(c.approve(&tx, &coins), Ok(()));
+        coins[1].is_instantlocked = false;
+        assert_eq!(c.approve(&tx, &coins), Err(DrainRefusal::CoinsChanged));
     }
 
     /// A drain's signer signs each planned coin once (a retry of the same

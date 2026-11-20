@@ -150,7 +150,7 @@ test("a payment that arrives between the lock event and the status read is looke
   await engineLocks(page);
   await page.evaluate(() => {
     const f = window.__dwFixture!;
-    f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [f.world.wallets[0].rows[0].txid], count: 1, catchUp: false });
+    f.emit({ kind: "newTransactions", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, txids: [f.world.wallets[0].rows[0].txid], live: [true], count: 1, catchUp: false });
   });
   await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
   const meanwhile = (await calls(page)).slice(asked);

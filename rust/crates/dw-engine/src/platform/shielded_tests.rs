@@ -39,6 +39,7 @@ use platform_wallet::{
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+use super::credits::FundAmount;
 use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait};
 use super::flows::FlowKind;
 use super::lease::{CallPermit, FundingKey, Lease};
@@ -307,6 +308,9 @@ struct FakeShielded {
     drain_claimed: Mutex<Vec<bool>>,
     /// Per drain funding: the smallest lock it may build.
     pub(super) drain_floors: Mutex<Vec<u64>>,
+    /// BIP44 account 0 as a Core Max reads it (`core_coins`); a Core Max's
+    /// funding is a drain's over these, its build `drain_built`'s.
+    pub(super) core: Mutex<super::core_max::CoreCoins>,
     /// How the next funding (a shield's or a drain's) ends once its
     /// inputs are signed; it funds a proved lock when unset.
     pub(super) fund_end: Mutex<Option<FundEnd>>,
@@ -450,6 +454,7 @@ impl Default for FakeShielded {
             drained: Mutex::default(),
             drain_claimed: Mutex::default(),
             drain_floors: Mutex::default(),
+            core: Mutex::default(),
             fund_end: Mutex::default(),
         }
     }
@@ -1008,18 +1013,49 @@ impl ShieldedLib for FakeShielded {
         Ok(self.drain.lock().unwrap().clone())
     }
 
-    /// A new lock of the planned coins (or `drain_built`'s), shown to the
-    /// permit's drain signer as the library's builder shows it, then each
-    /// input signed through it over a sighash of the whole transaction, as
-    /// `SIGHASH_ALL` commits to every input and output and the payload,
-    /// recorded under its own txid as the step's lock, proved. A signer's
-    /// refusal fails the build, as the library's does: nothing is stored.
     async fn fund_drain(
         &self,
         coins: &[DrainCoin],
         total_duffs: u64,
         minimum_lock_duffs: u64,
         permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        self.drain_lock((coins, total_duffs), minimum_lock_duffs, permit, false)
+            .await
+    }
+
+    async fn core_coins(
+        &self,
+        _: &crate::coins::CoinFence,
+    ) -> Result<super::core_max::CoreCoins, PlatformError> {
+        Ok(self.core.lock().unwrap().clone())
+    }
+
+    async fn fund_core_max(
+        &self,
+        coins: &[DrainCoin],
+        total_duffs: u64,
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+    ) -> Result<OutPoint, FundError> {
+        self.drain_lock((coins, total_duffs), minimum_lock_duffs, permit, true)
+            .await
+    }
+}
+
+impl FakeShielded {
+    /// A new lock of the planned coins (or `drain_built`'s), shown to the
+    /// permit's drain signer as the library's builder shows it, then each
+    /// input signed through it over a sighash of the whole transaction, as
+    /// `SIGHASH_ALL` commits to every input and output and the payload,
+    /// recorded under its own txid as the step's lock, proved. A signer's
+    /// refusal fails the build, as the library's does: nothing is stored.
+    pub(super) async fn drain_lock(
+        &self,
+        (coins, total_duffs): (&[DrainCoin], u64),
+        minimum_lock_duffs: u64,
+        permit: &CallPermit,
+        instant_locked: bool,
     ) -> Result<OutPoint, FundError> {
         self.drain_floors.lock().unwrap().push(minimum_lock_duffs);
         let (session, wallet) = self.funder();
@@ -1033,37 +1069,10 @@ impl ShieldedLib for FakeShielded {
             total_duffs,
             minimum_lock_duffs,
             fake_credit_script(),
+            instant_locked,
         )?;
         let built = (self.drain_built.lock().unwrap().clone()).unwrap_or_else(|| coins.to_vec());
-        let (tx, utxos) = fake_drain_build(&built);
-        if key_wallet::Signer::approve_inputs(&signer, &tx, &utxos)
-            .await
-            .is_err()
-            && let Some(refusal) = signer.drain_refusal()
-        {
-            return Err(drain::drain_refused(permit, refusal));
-        }
-        let unsigned = dashcore::consensus::serialize(&tx);
-        let mut sighashes = Vec::new();
-        for (i, coin) in built.iter().enumerate() {
-            let sighash: [u8; 32] = Sha256::new()
-                .chain_update(&unsigned)
-                .chain_update((i as u32).to_le_bytes())
-                .finalize()
-                .into();
-            if let Err(e) = key_wallet::Signer::sign_ecdsa(&signer, &coin.path, sighash).await {
-                return Err(match signer.drain_refusal() {
-                    Some(refusal) => drain::drain_refused(permit, refusal),
-                    None if signer.capped() => FundError::TooManyInputs {
-                        max: MAX_LOCK_INPUTS as u64,
-                    },
-                    None => FundError::NotSent(PlatformError::Internal {
-                        detail: format!("the drain's signer refused: {e}"),
-                    }),
-                });
-            }
-            sighashes.push(sighash);
-        }
+        let (tx, sighashes) = sign_fake_drain(&signer, permit, &built).await?;
         let n = self.funded.lock().unwrap().len() as u8 + 0x90;
         let outpoint = OutPoint::new(tx.txid(), 0);
         let inputs: Vec<OutPoint> = coins.iter().map(|c| c.outpoint).collect();
@@ -1089,8 +1098,50 @@ impl ShieldedLib for FakeShielded {
     }
 }
 
+/// The library's drain build of `built` ([`fake_drain_build`]) shown to
+/// the drain `signer` as the library's builder shows it, then each input
+/// signed through it over a sighash of the whole transaction, as
+/// `SIGHASH_ALL` commits to every input and output and the payload. A
+/// refusal fails the build, as the library's does.
+pub(super) async fn sign_fake_drain(
+    signer: &super::signers::CountingFundingSigner,
+    permit: &CallPermit,
+    built: &[DrainCoin],
+) -> Result<(dashcore::Transaction, Vec<[u8; 32]>), FundError> {
+    let (tx, utxos) = fake_drain_build(built);
+    if key_wallet::Signer::approve_inputs(signer, &tx, &utxos)
+        .await
+        .is_err()
+        && let Some(refusal) = signer.drain_refusal()
+    {
+        return Err(drain::drain_refused(permit, refusal));
+    }
+    let unsigned = dashcore::consensus::serialize(&tx);
+    let mut sighashes = Vec::new();
+    for (i, coin) in built.iter().enumerate() {
+        let sighash: [u8; 32] = Sha256::new()
+            .chain_update(&unsigned)
+            .chain_update((i as u32).to_le_bytes())
+            .finalize()
+            .into();
+        if let Err(e) = key_wallet::Signer::sign_ecdsa(signer, &coin.path, sighash).await {
+            return Err(match signer.drain_refusal() {
+                Some(refusal) => drain::drain_refused(permit, refusal),
+                None if signer.capped() => FundError::TooManyInputs {
+                    max: MAX_LOCK_INPUTS as u64,
+                },
+                None => FundError::NotSent(PlatformError::Internal {
+                    detail: format!("the drain's signer refused: {e}"),
+                }),
+            });
+        }
+        sighashes.push(sighash);
+    }
+    Ok((tx, sighashes))
+}
+
 /// The credit script of the fake's drain locks.
-fn fake_credit_script() -> dashcore::ScriptBuf {
+pub(super) fn fake_credit_script() -> dashcore::ScriptBuf {
     dashcore::ScriptBuf::new_p2pkh(&PubkeyHash::from_byte_array([0x5c; 20]))
 }
 
@@ -1951,7 +2002,16 @@ fn a_refusal_while_shielded_syncs_is_not_synced_with_what_it_waits_for() {
                     "send_quote" => wait_of(pool::send_quote(lib, &payee_text(), credits).await),
                     "unshield_quote" => wait_of(pool::unshield_quote(lib, credits, None).await),
                     "shield_quote" => wait_of(pool::shield_quote(&s, lib, 100_000).await),
-                    "shield" => wait_of(pool::shield(&s, wallet, lib, 100_000, &grant).await),
+                    "shield" => wait_of(
+                        pool::shield(
+                            &s,
+                            wallet,
+                            lib,
+                            FundAmount::Duffs { duffs: 100_000 },
+                            &grant,
+                        )
+                        .await,
+                    ),
                     "resume" => wait_of(pool::resume(&s, wallet, lib, &txid, &grant).await),
                     "drain_quote" => wait_of(drain::quote(&s, wallet, lib).await),
                     "drain" => wait_of(drain::drain(&s, wallet, lib, &grant).await),
@@ -2352,7 +2412,14 @@ fn an_unknown_shield_pends_and_resume_applies_the_same_lock() {
     *lib.applies.lock().unwrap() = Some(Ok(Applied::Unknown));
     let (wallet, grant) = (fx.wallet, shield_grant(&fx, 2_000_000));
     let shielded = run(&fx, &lib, move |s, lib| async move {
-        pool::shield(&s, wallet, &*lib, 1_000_000, &grant).await
+        pool::shield(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &grant,
+        )
+        .await
     })
     .unwrap();
     let new = lib.funded.lock().unwrap()[0].outpoint;
@@ -3376,7 +3443,14 @@ fn shield_on(fx: &Fixture, lib: &Arc<FakeShielded>) -> (OutPoint, ShieldState) {
     let (wallet, grant) = (fx.wallet, shield_grant(fx, 2_000_000));
     let funded = lib.funded.lock().unwrap().len();
     let shielded = run(fx, lib, move |s, lib| async move {
-        pool::shield(&s, wallet, &*lib, 1_000_000, &grant).await
+        pool::shield(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &grant,
+        )
+        .await
     })
     .unwrap();
     let outpoint = lib.funded.lock().unwrap()[funded].outpoint;
@@ -3633,7 +3707,14 @@ fn check_again_keeps_the_outpoint_whatever_proof_the_library_derives() {
 fn shield_with(fx: &Fixture, lib: &Arc<FakeShielded>) -> Result<ShieldState, ShieldedError> {
     let (wallet, grant) = (fx.wallet, shield_grant(fx, 2_000_000));
     run(fx, lib, move |s, lib| async move {
-        pool::shield(&s, wallet, &*lib, 1_000_000, &grant).await
+        pool::shield(
+            &s,
+            wallet,
+            &*lib,
+            FundAmount::Duffs { duffs: 1_000_000 },
+            &grant,
+        )
+        .await
     })
     .map(|o| o.state)
 }
@@ -3947,3 +4028,9 @@ mod drain_tests;
 
 #[path = "shield_drain_lib_tests.rs"]
 mod drain_lib_tests;
+
+#[path = "core_max_tests.rs"]
+mod core_max_tests;
+
+#[path = "core_max_lib_tests.rs"]
+mod core_max_lib_tests;

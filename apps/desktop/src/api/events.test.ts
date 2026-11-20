@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InfiniteData } from "@tanstack/react-query";
-import { bridgeEvents, invalidationsFor, ofOtherNetwork, RECONCILE_COALESCE_MS, RECONCILE_MAX_WAIT_MS } from "./events";
+import { bridgeEvents, invalidationsFor, ofOtherNetwork, RECONCILE_COALESCE_MS, RECONCILE_MAX_WAIT_MS, toAnnounce } from "./events";
 import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
 import type { HistoryRows } from "./generated/HistoryRows";
@@ -308,7 +308,7 @@ describe("event bridge", () => {
     emit({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } });
     emit({ kind: "balances", network: "testnet", walletId: "w", balances: null });
     emit({ kind: "sessionClosed", network: "testnet" });
-    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["t"], catchUp: false } as AppEvent);
+    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["t"], live: [true], count: 1, catchUp: false });
     await new Promise((r) => setTimeout(r, 0));
     expect(client.getQueryData(keys.lastLockReport)).toEqual(mine);
     expect(client.getQueryData(keys.lockDrain)).toBeUndefined();
@@ -480,3 +480,54 @@ describe("event bridge", () => {
   });
 });
 
+// Issue #141: a payment learned live is announced while the wallet catches up; the scan's findings are not.
+describe("announcing new transactions", () => {
+  type NewTxs = Extract<AppEvent, { kind: "newTransactions" }>;
+  const batch = (txids: string[], live: boolean[], catchUp: boolean): NewTxs => ({ kind: "newTransactions", network: "testnet", walletId: "w", txids, live, count: txids.length, catchUp });
+
+  it("announces the live ones of a catch-up batch, and every one once caught up or near the tip", () => {
+    const mixed = batch(["scanned", "mempool", "locked"], [false, true, true], true);
+    expect(toAnnounce(mixed, false)).toEqual(["mempool", "locked"]);
+    expect(toAnnounce(mixed, true)).toEqual(["scanned", "mempool", "locked"]);
+    expect(toAnnounce({ ...mixed, catchUp: false }, false)).toEqual(["scanned", "mempool", "locked"]);
+    expect(toAnnounce(batch(["scanned"], [false], true), false)).toEqual([]);
+  });
+
+  it("looks up only the live payments while catching up, and none of a restore's scanned history", async () => {
+    const client = new QueryClient();
+    let emit: (e: AppEvent) => void = () => undefined;
+    const asked: string[][] = [];
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      txNotices: async (_: string, txids: string[]) => (asked.push(txids), []),
+    } as unknown as Backend;
+    await bridged(fake, client, "testnet");
+    const history = Array.from({ length: 256 }, (_, i) => `old${i}`);
+    emit(batch(history, history.map(() => false), true));
+    emit(batch(["old", "paid"], [false, true], true));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([["paid"]]);
+  });
+
+  it("holds only the live payments of a catch-up batch that arrives while locked, and looks them up at the unlock", async () => {
+    resetReceived();
+    const client = new QueryClient();
+    seedLockStatus(client, LOCK, lockGeneration());
+    let emit: (e: AppEvent) => void = () => undefined;
+    const asked: string[][] = [];
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      txNotices: async (_: string, txids: string[]) => (asked.push(txids), txids.map((txid) => ({ ...NOTICE, txid }))),
+    } as unknown as Backend;
+    await bridged(fake, client, "testnet");
+    expect(walletGateClosed()).toBe(true);
+    emit(batch(["scanned", "paid"], [false, true], true));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([]);
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([["paid"]]);
+    expect(receivedNow().map((p) => p.txid)).toEqual(["paid"]);
+    resetReceived();
+  });
+});

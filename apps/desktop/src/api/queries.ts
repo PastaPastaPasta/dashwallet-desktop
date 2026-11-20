@@ -217,7 +217,7 @@ export function usePlatformFundQuote(walletId: string, duffs: number | null) {
   const b = useBackend();
   return useQuery({
     queryKey: keys.platformFundQuote(walletId, duffs ?? 0),
-    queryFn: () => b.platformFundQuote(walletId, duffs!),
+    queryFn: () => b.platformFundQuote(walletId, { kind: "duffs", duffs: duffs! }),
     enabled: duffs !== null,
     retry: false,
     gcTime: 0,
@@ -277,7 +277,7 @@ export function useShieldedQuote(walletId: string, request: ShieldedRequest | nu
     queryFn: async (): Promise<ShieldedQuoteView> => {
       switch (request?.kind) {
         case "add": {
-          return { kind: "add", quote: await b.shieldQuote(walletId, request.duffs) };
+          return { kind: "add", quote: await b.shieldQuote(walletId, { kind: "duffs", duffs: request.duffs }) };
         }
         case "send": {
           return { kind: "spend", quote: await b.shieldedSendQuote(walletId, request.to, request.credits) };
