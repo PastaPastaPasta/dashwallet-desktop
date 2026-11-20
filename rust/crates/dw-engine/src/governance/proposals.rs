@@ -427,7 +427,7 @@ impl Governance {
             self.session.require_wallet(&wallet)?;
             // Until this call's row is saved, a second call for the name
             // finds no row: the mark refuses it.
-            let Some(named) = rt.creating.begin((wallet, name.clone())) else {
+            let Some(named) = rt.creating.begin((wallet, name.to_ascii_lowercase())) else {
                 return Err(GovernanceError::ProposalInProgress { hash: None });
             };
             if let Some(hash) = self.in_progress_named(wallet, &name)? {
@@ -452,8 +452,9 @@ impl Governance {
     }
 
     /// The hash of `wallet`'s own proposal named `name` (as its data
-    /// stores it) that is in progress: any state but `fee_failed` and
-    /// `expired` (MG-06 D26). A row that does not decode is skipped.
+    /// stores it, without regard to ASCII case) that is in progress: any
+    /// state but `fee_failed` and `expired` (MG-06 D26). A row that does
+    /// not decode is skipped.
     fn in_progress_named(
         &self,
         wallet: WalletId,
@@ -472,7 +473,10 @@ impl Governance {
                     None
                 }
             })
-            .filter(|saved| saved.data.name.as_deref() == Some(name))
+            .filter(|saved| {
+                let stored = saved.data.name.as_deref();
+                stored.is_some_and(|stored| stored.eq_ignore_ascii_case(name))
+            })
             .find(|saved| {
                 !matches!(
                     derive_state(self.facts(saved, false)),

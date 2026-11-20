@@ -408,8 +408,9 @@ export function governanceHandlers({
       const hash = draftHash(draft);
       const mine = mineOf(world, walletId);
       const inProgressText = "a proposal of this name is in progress";
-      if (world.governance.creating.includes(draft.name)) throw fail("governance.proposal_in_progress", `${inProgressText} (its create call is still out)`);
-      const same = mine.find((p) => p.name === draft.name && inProgress(p));
+      const named = draft.name.toLowerCase();
+      if (world.governance.creating.some((n) => n.toLowerCase() === named)) throw fail("governance.proposal_in_progress", `${inProgressText} (its create call is still out)`);
+      const same = mine.find((p) => p.name.toLowerCase() === named && inProgress(p));
       if (same) throw fail("governance.proposal_in_progress", `${inProgressText} (${same.hash})`, { kind: "proposalHash", hash: same.hash });
       if (mine.some((p) => p.hash === hash)) throw fail("governance.submit_refused", "submit refused: in_flight", { kind: "reason", reason: "in_flight" });
       const g = grant(world, grantId, walletId, ["spend"]);

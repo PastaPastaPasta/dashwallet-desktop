@@ -1727,6 +1727,24 @@ fn the_same_draft_again_is_refused_naming_the_first() {
     p.assert_unredeemed(grant);
 }
 
+/// MG-06 D26: names are compared without regard to case, as Core validates
+/// them: the name typed in another case pays no second fee.
+#[test]
+fn the_name_in_another_case_is_refused_naming_the_first() {
+    let p = props(Mode::Accept);
+    let first = p.created();
+    let reserved = p.f.reserved();
+    let grant = p.spend(2 * COIN);
+    let e = p
+        .create_with(p.named("DW-Proposal"), grant.clone())
+        .unwrap_err();
+    assert_in_progress(&e, Some(&first));
+    assert_eq!(p.lib.entered.load(Ordering::SeqCst), 1, "one fee");
+    assert_eq!(p.rows().len(), 1, "one row");
+    assert_eq!(p.f.reserved(), reserved, "nothing reserved");
+    p.assert_unredeemed(grant);
+}
+
 /// MG-06 D26: a first attempt whose fee definitely did not go out left no
 /// row, so the same draft is created again.
 #[test]
@@ -1814,6 +1832,8 @@ fn a_create_holding_the_name_refuses_another_with_no_hash() {
     let mark = rt.creating.begin((p.f.wallet, "dw-proposal".into()));
     let grant = p.spend(2 * COIN);
     assert_in_progress(&p.create(grant.clone()).unwrap_err(), None);
+    let cased = p.create_with(p.named("DW-Proposal"), grant.clone());
+    assert_in_progress(&cased.unwrap_err(), None);
     assert_eq!(p.lib.entered.load(Ordering::SeqCst), 0);
     assert!(p.rows().is_empty());
     assert_eq!(p.f.reserved(), 0);

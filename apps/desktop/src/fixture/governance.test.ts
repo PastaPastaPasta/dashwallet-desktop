@@ -130,6 +130,11 @@ describe("fixture governance", () => {
       data: { kind: "proposalHash", hash: created.hash },
     });
     expect((await cmd.governanceMyProposals(W)).filter((p) => p.name === d.name)).toHaveLength(1);
+    await expect(cmd.governanceCreateProposal(W, { ...d, name: d.name.toUpperCase() }, await pay())).rejects.toMatchObject({
+      code: "governance.proposal_in_progress",
+      data: { kind: "proposalHash", hash: created.hash },
+    });
+    expect((await cmd.governanceMyProposals(W)).filter((p) => p.name.toLowerCase() === d.name)).toHaveLength(1);
     const f = install("governance");
     f.world.governance.creating = [d.name];
     await expect(cmd.governanceCreateProposal(W, d, await pay())).rejects.toMatchObject({ code: "governance.proposal_in_progress", data: null });
