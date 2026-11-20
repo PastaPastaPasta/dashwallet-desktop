@@ -455,6 +455,7 @@
   --dw-role-plain-content-disabled: #75808A;
   --dw-role-shadow: rgb(184 194 204 / 0.1);
   --dw-role-network-capsule: #B6542C;
+  --dw-role-success-text: #177857;
   --dw-shadow-card: 0 5px 20px rgb(184 194 204 / 0.1);
   --dw-border-card: 0 solid transparent;
   --dw-shadow-menu-card: 0 5px 40px rgb(184 194 204 / 0.1);
@@ -776,6 +777,7 @@
   --dw-role-plain-content-disabled: rgb(255 255 255 / 0.6);
   --dw-role-shadow: rgb(0 0 0 / 0);
   --dw-role-network-capsule: #B6542C;
+  --dw-role-success-text: #3DB58A;
   --dw-shadow-card: 0 5px 20px rgb(0 0 0 / 0);
   --dw-border-card: 0 solid transparent;
   --dw-shadow-menu-card: 0 5px 40px rgb(0 0 0 / 0);
@@ -1098,6 +1100,7 @@
     --dw-role-plain-content-disabled: rgb(255 255 255 / 0.6);
     --dw-role-shadow: rgb(0 0 0 / 0);
     --dw-role-network-capsule: #B6542C;
+    --dw-role-success-text: #3DB58A;
     --dw-shadow-card: 0 5px 20px rgb(0 0 0 / 0);
     --dw-border-card: 0 solid transparent;
     --dw-shadow-menu-card: 0 5px 40px rgb(0 0 0 / 0);

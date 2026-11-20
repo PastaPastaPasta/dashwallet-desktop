@@ -42,7 +42,7 @@ export interface NoOwner {
   next: "join" | "retry" | null;
 }
 
-const WATCH_ONLY = "A watch-only wallet cannot pay contacts.";
+export const WATCH_ONLY = "A watch-only wallet cannot pay contacts.";
 
 export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "starting" }>): NoOwner {
   switch (owner.kind) {

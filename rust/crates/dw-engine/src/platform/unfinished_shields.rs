@@ -6,7 +6,10 @@
 //! device's; any other the library tracks (a restore's, another device's)
 //! is restored. The runner's records are by outpoint ([`locks::record`]);
 //! 0.1's by txid are kept for a lock alone in its transaction, so 0.1's
-//! pending shields agree.
+//! pending shields agree. Platform's "already consumed" for a restored
+//! lock's exact outpoint is kept ([`Mark::Reported`]): the kind takes it as
+//! finished elsewhere, as type 4 does, so it leaves the card. This device's
+//! own lock keeps 0.1's Checking (SR1), as its pending shield does.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -20,8 +23,8 @@ use super::flows::FlowKind;
 use super::shielded::SHIELDED_ACTIVATION_VERSION;
 use super::shielded_pool::{self as pool, Applied, ShieldedLib};
 use super::unfinished_locks::{
-    self as locks, ApplyReply, KindLock, LockKeySigner, LockKind, LockKindId, Mark, Marks, Minimum,
-    Readiness,
+    self as locks, ApplyReply, KindLock, LockKeySigner, LockKind, LockKindId, LockOrigin, Mark,
+    Marks, Minimum, Readiness,
 };
 use crate::{NetworkSession, PlatformChange, WalletId};
 
@@ -75,6 +78,10 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
             outpoints: self.marks(Mark::Unknown).await,
             txids: self.lib.unknown_locks().await,
         }
+    }
+
+    async fn reported_locks(&self) -> HashSet<OutPoint> {
+        self.marks(Mark::Reported).await
     }
 
     async fn mark_unknown(&self, lock: &KindLock) {
@@ -146,11 +153,16 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
     ) -> Result<ApplyReply, PlatformError> {
         let applied = self.lib.apply(outpoint, signer).await;
         (self.session.hub.pump).mark_platform(self.wallet, [PlatformChange::Shielded]);
-        Ok(match applied? {
+        let reply = match applied? {
             Applied::Done => ApplyReply::Done,
             Applied::Taken => ApplyReply::AlreadyConsumed,
             Applied::Unknown => ApplyReply::Unknown,
-        })
+        };
+        if reply == ApplyReply::AlreadyConsumed && self.restored(outpoint).await {
+            let (session, wallet, kind) = (self.session, self.wallet, LockKindId::Shielded);
+            locks::record(session, wallet, kind, Mark::Reported, outpoint).await;
+        }
+        Ok(reply)
     }
 
     async fn settle(&self, lock: &KindLock) {
@@ -163,6 +175,19 @@ impl<L: ShieldedLib> LockKind for ShieldLocks<'_, L> {
         }
         // The shielded note is the library's once a pass finds it.
         self.lib.sync_now().await;
+    }
+}
+
+impl<L: ShieldedLib> ShieldLocks<'_, L> {
+    /// Whether the tracked lock at `outpoint` is a restored one; not while
+    /// the journal is unread.
+    async fn restored(&self, outpoint: OutPoint) -> bool {
+        let Some(own) = self.lib.own_locks() else {
+            return false;
+        };
+        (self.lib.shield_lock_rows().await.iter())
+            .find(|l| l.info.outpoint == outpoint)
+            .is_some_and(|l| locks::origin(l, &own) == LockOrigin::Restored)
     }
 }
 
