@@ -897,7 +897,11 @@ fn registration_params(e: &RegistrationError) -> Value {
         | R::FundedElsewhere
         | R::FundingCancelled
         | R::NotSynced
-        | R::CoinsLocked => json!({}),
+        | R::CoinsLocked
+        | R::QuoteChanged => json!({}),
+        R::ShieldedNotReady { reason, ready_at } => {
+            json!({"reason": reason, "ready_at": ready_at})
+        }
         R::FundingUnknownRecent { draft, wait_secs } => {
             json!({"draft": draft, "wait_secs": wait_secs})
         }
