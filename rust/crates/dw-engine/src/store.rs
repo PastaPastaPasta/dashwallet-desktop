@@ -276,26 +276,25 @@ impl PlatformWalletPersistence for WalletStore {
     }
 }
 
-/// Wallet `id`'s filter checkpoint as `wallet.sqlite` holds it (read-only);
-/// `None` when it has none.
-pub(crate) fn stored_synced_height(
+/// Wallet `id`'s filter checkpoint and birth height as `wallet.sqlite`
+/// holds them (read-only); `None` for one it has none of.
+pub(crate) fn stored_heights(
     db_path: &std::path::Path,
     id: &RawWalletId,
-) -> Result<Option<u32>, rusqlite::Error> {
-    use rusqlite::OptionalExtension;
+) -> Result<(Option<u32>, Option<u32>), rusqlite::Error> {
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    let height: Option<Option<i64>> = conn
-        .query_row(
-            "SELECT synced_height FROM core_sync_state WHERE wallet_id = ?1",
-            [&id[..]],
-            |r| r.get(0),
-        )
-        .optional()?;
-    Ok(height.flatten().and_then(|h| u32::try_from(h).ok()))
+    let (synced, birth): (Option<i64>, Option<i64>) = conn.query_row(
+        "SELECT (SELECT synced_height FROM core_sync_state WHERE wallet_id = ?1), \
+                (SELECT birth_height FROM wallets WHERE wallet_id = ?1)",
+        [&id[..]],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let height = |h: Option<i64>| h.and_then(|h| u32::try_from(h).ok());
+    Ok((height(synced), height(birth)))
 }
 
 /// Ids of every wallet registered in `wallet.sqlite` (read-only).

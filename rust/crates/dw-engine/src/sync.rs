@@ -573,7 +573,8 @@ impl crate::NetworkSession {
                         RescanFrom::Genesis => Some(0),
                         RescanFrom::Height(h) => Some(h),
                     };
-                    this.note_narrow_from(*id, start).await;
+                    let birth = crate::keys::birth_checkpoint(&manager, *id).await;
+                    this.note_narrow_from(*id, start, Some(birth)).await;
                 }
             }
             let from_height = match from {

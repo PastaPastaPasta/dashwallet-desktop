@@ -300,7 +300,7 @@ impl NetworkSession {
             // replayed, across a crash too. Put back if it stays loaded.
             let marked = this.wide_scan(id).await.ok();
             if let Some(synced) = synced {
-                this.note_narrow_from(id, Some(synced)).await;
+                this.note_narrow_from(id, Some(synced), None).await;
             }
             // Marked first, so a concurrent load cannot bring it back.
             live.store.set_unloaded(id.0, true);
@@ -365,14 +365,15 @@ impl NetworkSession {
             this.hub.update_wallet_state(id, |s| s.loading = true);
             // A wallet the session opened unloaded (not on the startup list)
             // has had no unload to note its checkpoint.
-            let stored = {
+            let (synced, birth) = {
                 let db_path = this.data_dir().join(crate::session::WALLET_DB_FILE);
-                tokio::task::spawn_blocking(move || {
-                    crate::store::stored_synced_height(&db_path, &id.0)
-                })
-                .await
+                tokio::task::spawn_blocking(move || crate::store::stored_heights(&db_path, &id.0))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default()
             };
-            this.note_narrow_from(id, stored.ok().and_then(Result::ok).flatten())
+            this.note_narrow_from(id, synced, birth.map(|b| b.saturating_sub(1)))
                 .await;
             live.store.set_unloaded(id.0, false);
             if let Err(e) = live.manager.load_from_persistor().await {
@@ -543,7 +544,9 @@ impl NetworkSession {
             // DEC-210: before the first write, as an import of a seed.
             let readmit = id.to_string();
             let readmitted = this.appdb_op(move |db| db.readmit_wallet(&readmit)).await?;
-            // Before SPV can match a batch with the pools it publishes.
+            // Before SPV can match a batch with the pools it publishes; put
+            // back if nothing is registered.
+            let previous = this.wide_scan(id).await.ok();
             this.set_wide_scan(id, Some(crate::keys::WideScan::Birth)).await;
             let was_unloaded = this.hub.admit(id);
             let registered = async {
@@ -561,6 +564,9 @@ impl NetworkSession {
                 .await?;
                 if let Err(e) = stored {
                     // Not registered: removed again, as a failed seed import.
+                    if let Some(previous) = previous {
+                        this.set_wide_scan(id, previous).await;
+                    }
                     if readmitted {
                         this.record_removed_again(&held, id).await;
                     }
@@ -594,7 +600,10 @@ impl NetworkSession {
             }
             // A batch SPV committed since the load published it matched the
             // default gap.
-            let published_at = live.store.loaded_checkpoint(&id.0).unwrap_or(0);
+            let published_at = match live.store.loaded_checkpoint(&id.0) {
+                Some(checkpoint) => checkpoint,
+                None => crate::keys::birth_checkpoint(&live.manager, id).await,
+            };
             if this.widen_published_wallet(&live.manager, id, published_at).await && raised {
                 this.set_wide_scan(id, Some(crate::keys::WideScan::Done)).await;
             }

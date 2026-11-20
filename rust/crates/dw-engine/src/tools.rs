@@ -796,6 +796,29 @@ impl NetworkSession {
         Ok(synced)
     }
 
+    /// Lowers open wallet `id`'s birth height to `height` (stored and in
+    /// memory) when it is above it: dash-spv scans no block below the
+    /// earliest birth, and a wallet whose checkpoint sits below its own
+    /// birth is never certified again, so a rewind below the birth goes
+    /// after this.
+    pub(crate) async fn lower_birth_height(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        height: u32,
+    ) -> Result<(), EngineError> {
+        let birth = {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            (wm.get_wallet_info(&id.0)).map(|info| info.core_wallet.birth_height())
+        };
+        if birth.is_some_and(|birth| height < birth) {
+            self.store_birth_height(id, height).await?;
+            self.refresh_wallet_state(manager, id).await;
+        }
+        Ok(())
+    }
+
     /// Rewinds the filter checkpoint of `wallets` to just below `start(id)`
     /// and records the rescan for `rescan_progress`. dash-spv never scans
     /// below a wallet's birth height, so a rescan from below it lowers the
@@ -839,11 +862,7 @@ impl NetworkSession {
         }
         for id in wallets {
             let from = start(&id);
-            let birth = self.hub.wallet_state(&id).map_or(0, |w| w.birth_height);
-            if from < birth {
-                self.store_birth_height(id, from).await?;
-                self.refresh_wallet_state(&manager, id).await;
-            }
+            self.lower_birth_height(&manager, id, from).await?;
             let target = (self.rewind_recorded(&manager, id, from.saturating_sub(1))).await?;
             match (target, state.wallets.get_mut(&id)) {
                 (Some(target), Some(w)) => w.resume_height = w.resume_height.min(target),

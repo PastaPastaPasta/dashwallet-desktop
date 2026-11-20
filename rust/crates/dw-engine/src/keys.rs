@@ -731,7 +731,8 @@ impl NetworkSession {
         // addresses are the wallet's own.
         // Its history from the start of Core's import, which can be below the
         // wallet's own birth, was matched without that range: marked before
-        // anything stores the range, replayed once the keys are attached.
+        // anything stores the range, replayed once the keys are attached,
+        // with the birth lowered to that start if it is below.
         let attached = if registered {
             self.cover_imported_range(&manager, wallet_id, &state)
                 .await?;
@@ -1096,11 +1097,18 @@ impl NetworkSession {
 
     /// Notes that wallet `id`'s blocks above `checkpoint` (its birth's when
     /// `None`) may be matched with narrow pools, unless its marker already
-    /// names a lower start.
-    pub(crate) async fn note_narrow_from(&self, id: WalletId, checkpoint: Option<u32>) {
+    /// names a lower start. `birth` is the wallet's birth checkpoint, when
+    /// known: a marker at or below it is kept for `None`.
+    pub(crate) async fn note_narrow_from(
+        &self,
+        id: WalletId,
+        checkpoint: Option<u32>,
+        birth: Option<u32>,
+    ) {
         let lower = match (self.wide_scan(id).await, checkpoint) {
             (Ok(Some(WideScan::Done)), Some(h)) => WideScan::From(h),
             (Ok(Some(WideScan::From(old))), Some(h)) if h < old => WideScan::From(h),
+            (Ok(Some(WideScan::From(old))), None) if birth.is_some_and(|b| old <= b) => return,
             (Ok(Some(WideScan::Done | WideScan::From(_))) | Err(_), None) => WideScan::Birth,
             (Err(_), Some(h)) => WideScan::From(h),
             _ => return,
@@ -1124,7 +1132,9 @@ impl NetworkSession {
     /// checkpoint to `published_at`, the one it had when platform-wallet
     /// made it visible to SPV, if a batch committed above it since: that
     /// batch matched the narrower pools. The rewind stores its replay
-    /// record first. Returns whether both were done; failures are logged.
+    /// record first; one below the wallet's birth lowers the birth first
+    /// ([`Self::lower_birth_height`]). Returns whether all of it was done;
+    /// failures are logged.
     pub(crate) async fn widen_published_wallet(
         &self,
         manager: &crate::session::Manager,
@@ -1146,6 +1156,11 @@ impl NetworkSession {
         };
         if synced <= published_at {
             return widened.is_ok();
+        }
+        if let Err(e) = (self.lower_birth_height(manager, id, published_at.saturating_add(1))).await
+        {
+            tracing::warn!(wallet_id = %id, error = %e, "could not lower the birth height to replay below it");
+            return false;
         }
         match self.rewind_recorded(manager, id, published_at).await {
             Ok(rewound) => widened.is_ok() && rewound.is_some(),

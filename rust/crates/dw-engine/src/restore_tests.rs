@@ -240,6 +240,17 @@ fn derives(info: &ManagedWalletInfo, account: &AccountType, address: &Address) -
 /// Replays `txs` in a block, as a rescan, an abandon's rescan or a crash
 /// catch-up does, then reads the wallet into the hub.
 fn replay(engine: &Engine, session: &NetworkSession, id: WalletId, txs: &[Transaction]) {
+    replay_at(engine, session, id, txs, HEIGHT);
+}
+
+/// [`replay`] in a block at `height`.
+fn replay_at(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    txs: &[Transaction],
+    height: u32,
+) {
     engine.block_on(async {
         let manager = session.manager().unwrap();
         {
@@ -250,7 +261,7 @@ fn replay(engine: &Engine, session: &NetworkSession, id: WalletId, txs: &[Transa
             let info = &mut info.core_wallet;
             for tx in txs {
                 let context = TransactionContext::InChainLockedBlock(BlockInfo::new(
-                    HEIGHT,
+                    height,
                     BlockHash::from_byte_array([1; 32]),
                     1_793_598_712,
                 ));
@@ -1757,12 +1768,16 @@ fn a_watch_only_import_rescans_a_batch_committed_before_its_lookahead_was_raised
     );
 }
 
-/// A watch-only wallet born at `HEIGHT` synced past a payment to receive
-/// index 500, outside its pool. A Dash Core file of its seed attaches the
-/// keys with Core's range, which reaches that index, and rewinds to the start
-/// of Core's import (genesis), below the wallet's birth: the payment counts.
+/// A watch-only wallet born at `HEIGHT` synced past its birth. A payment to
+/// receive index 500, outside its pool, sits in block 10, below that birth.
+/// A Dash Core file of its seed attaches the keys with Core's range, which
+/// reaches that index, rewinds to the start of Core's import (genesis) and
+/// lowers the birth to block 1 first: dash-spv scans from the birth up, and its
+/// commit certifies a wallet whose checkpoint is just below a batch's start,
+/// so the checkpoint must not sit below the birth. The payment counts.
 #[test]
 fn a_wallet_dat_attached_to_a_synced_watch_only_wallet_recovers_a_payment_past_its_pool() {
+    const PAID_AT: u32 = 10;
     let dir = tempfile::tempdir().unwrap();
     let (engine, session) = open_engine(dir.path().join("data"));
     create_vault(&engine, &session);
@@ -1814,7 +1829,14 @@ fn a_wallet_dat_attached_to_a_synced_watch_only_wallet_recovers_a_payment_past_i
 
     assert_eq!(attached.wallet_id, id);
     assert!(session.vault().has_wallet_secret(&id.0));
-    assert_eq!(synced_height(&engine, &session, id), 0);
+    let synced = synced_height(&engine, &session, id);
+    let birth = birth_height(&engine, &session, id);
+    assert_eq!((synced, birth), (0, 1));
+    assert!(
+        synced + 1 >= birth,
+        "dash-spv restarts at the birth, above the checkpoint"
+    );
+    assert!(birth <= PAID_AT);
     assert_eq!(
         replay_record(&engine, &session, id),
         Some((0, HEIGHT + 100))
@@ -1827,7 +1849,7 @@ fn a_wallet_dat_attached_to_a_synced_watch_only_wallet_recovers_a_payment_past_i
         &filter,
         &scan_scripts(&engine, &session, id)
     ));
-    replay(&engine, &session, id, &txs);
+    replay_at(&engine, &session, id, &txs, PAID_AT);
     assert_coins(
         &engine,
         &session,
@@ -1836,6 +1858,22 @@ fn a_wallet_dat_attached_to_a_synced_watch_only_wallet_recovers_a_payment_past_i
         bip44(),
         VALUE,
     );
+    let session = reopen(&engine, session);
+    assert_eq!(
+        birth_height(&engine, &session, id),
+        1,
+        "the lowered birth is stored"
+    );
+}
+
+/// Wallet `id`'s birth height, as dash-spv reads it.
+fn birth_height(engine: &Engine, session: &NetworkSession, id: WalletId) -> u32 {
+    engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        (wm.get_wallet_info(&id.0).unwrap().core_wallet).birth_height()
+    })
 }
 
 /// A load whose widening fails keeps the wallet's marker, so the next load
@@ -2024,6 +2062,66 @@ fn a_rescan_that_cannot_widen_a_wallet_marks_it_for_the_next_load() {
     assert_eq!(
         wide_scan(&engine, &session, w),
         Some(crate::keys::WideScan::From(0))
+    );
+}
+
+/// A marker at or below the wallet's birth checkpoint already names a
+/// replay from below the birth: a rescan from the birth that cannot widen
+/// the wallet keeps it instead of raising it to the birth.
+#[test]
+fn a_rescan_from_the_birth_that_cannot_widen_keeps_a_marker_below_the_birth() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let w = engine
+        .block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(HEIGHT),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    set_wide_scan(&engine, &session, w, Some(crate::keys::WideScan::From(5)));
+    start_offline_spv(&engine, &session);
+    crate::keys::FAIL_WIDEN.lock().unwrap().push(w.0);
+
+    let rescanned = engine.block_on(session.rescan(crate::RescanFrom::WalletBirth));
+
+    crate::keys::FAIL_WIDEN
+        .lock()
+        .unwrap()
+        .retain(|x| *x != w.0);
+    rescanned.unwrap();
+    assert_eq!(
+        wide_scan(&engine, &session, w),
+        Some(crate::keys::WideScan::From(5))
+    );
+}
+
+/// A watch-only import whose registration fails puts the wallet's marker
+/// back as it was before the import wrote its own, as a seed import does.
+#[test]
+fn a_watch_only_import_whose_registration_fails_puts_the_marker_back() {
+    use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[9; 64]).unwrap();
+    let path: DerivationPath = "m/44'/1'/0'".parse().unwrap();
+    let xpub = ExtendedPubKey::from_priv(&master.derive_priv(&path).unwrap());
+    let id = crate::multiwallet::watch_only_wallet_id(&xpub, dashcore::Network::Regtest);
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
+    (crate::keys::FAIL_REGISTRATION_IN.lock().unwrap()).push(session.data_dir().to_path_buf());
+
+    let refused = engine
+        .block_on(session.import_watch_only(xpub.to_string(), crate::WatchOnlyOptions::default()));
+
+    assert!(refused.is_err());
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
     );
 }
 
