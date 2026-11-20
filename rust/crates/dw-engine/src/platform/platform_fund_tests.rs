@@ -2502,9 +2502,13 @@ fn a_lease_revoked_between_the_funding_and_the_apply_leaves_the_lock_for_finish(
             }
         );
         assert_eq!(lib.applied(), [outpoint], "applied once");
+        assert_eq!(*lib.signed.lock().unwrap(), [true], "Finish signed it");
         assert_eq!(lib.funds.load(Ordering::SeqCst), 1, "no new lock");
     }
 }
+
+/// Only guards against a hang: a correct run ends in well under a second.
+const HANDSHAKE_GUARD: Duration = Duration::from_secs(300);
 
 /// A fund whose lease a passphrase change revokes once its funding call is
 /// over and before its apply's call permit: with the apply asked while the
@@ -2522,34 +2526,43 @@ fn revoked_before_the_apply(
         let (in_gate, gate_open) = (tokio::sync::oneshot::channel(), std::sync::mpsc::channel());
         let (in_gate_tx, in_gate_rx) = in_gate;
         let (open_tx, open_rx) = gate_open;
-        let revoke = async {
-            waiting.notified().await;
-            let revoking = s.revoking_vault_op(RevokeCause::PassphraseChange, move |_| {
-                if during_the_revocation {
-                    in_gate_tx.send(()).unwrap();
-                    open_rx.recv_timeout(Duration::from_secs(300)).unwrap();
-                }
-                Ok(())
-            });
-            if during_the_revocation {
-                let apply = async {
-                    in_gate_rx.await.unwrap();
-                    release.notify_one();
-                };
-                let (revoked, ()) = tokio::join!(revoking, apply);
-                revoked.unwrap();
-            } else {
-                revoking.await.unwrap();
-                release.notify_one();
-            }
-        };
         let fund = async {
             let out = fund::fund(&s, wallet, &*lib, 1_000_000, &grant).await;
             let _ = open_tx.send(());
             out
         };
-        let (out, ()) = tokio::join!(fund, revoke);
-        out
+        tokio::pin!(fund);
+        let handshake = async {
+            tokio::select! {
+                early = &mut fund => panic!("the fund ended before its apply: {early:?}"),
+                () = waiting.notified() => {}
+            }
+            let revoking = s.revoking_vault_op(RevokeCause::PassphraseChange, move |_| {
+                if during_the_revocation {
+                    in_gate_tx.send(()).unwrap();
+                    open_rx.recv_timeout(HANDSHAKE_GUARD).unwrap();
+                }
+                Ok(())
+            });
+            let revoke = async {
+                if during_the_revocation {
+                    let apply = async {
+                        in_gate_rx.await.unwrap();
+                        release.notify_one();
+                    };
+                    let (revoked, ()) = tokio::join!(revoking, apply);
+                    revoked.unwrap();
+                } else {
+                    revoking.await.unwrap();
+                    release.notify_one();
+                }
+            };
+            let (out, ()) = tokio::join!(&mut fund, revoke);
+            out
+        };
+        tokio::time::timeout(HANDSHAKE_GUARD, handshake)
+            .await
+            .expect("hang guard: the fund's apply checkpoint, the revocation and the fund's end")
     })
     .unwrap();
     (fx, lib, out)
