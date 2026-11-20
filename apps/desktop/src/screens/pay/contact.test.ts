@@ -256,7 +256,7 @@ describe("IOS-050 U-03's promise and refusals for a contact (D9, D13)", () => {
   });
 
   it("a contact's first broadcast held back before its hand-off was not sent (DP3-01 D20, D23)", () => {
-    const held = { draft: 1, prepared: 2, amount: 1_000_000, fee: 226 };
+    const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 1_000_000, fee: 226 };
     expect(broadcastFailure(err("contact.payment_locked"), "test", held, true, "DASH", true)).toMatchObject({ kind: "failed" });
     expect(broadcastFailure(err("storage"), "test", held, true, "DASH", true)).toMatchObject({ kind: "failed" });
     // To an address, or on a retry, it stays unknown.

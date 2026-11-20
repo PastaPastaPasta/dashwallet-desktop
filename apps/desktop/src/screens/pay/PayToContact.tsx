@@ -28,9 +28,9 @@ import { FrequentStrip } from "./FrequentStrip";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { acceptsToo, blocks, noOwner, payBanner, payeeOf, pickerGroups, pickerHits, pickerListing, pickerNetworkState, pickerView, resolveText, searchAnnouncement, type Banner, type Payee } from "./contact";
 import { useFrequentContacts, usePayPicker, useResolveLock } from "./contactQueries";
-import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
+import { AmountFields, draftSpec, FormField, PayFooter, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
 import { confirmedOf, DEFAULT_ADVANCED, type Advanced } from "./model";
-import { ResultSheet } from "./ResultSheet";
+import { ResultSheet, SendingSheet } from "./ResultSheet";
 import { useDraft } from "./useDraft";
 
 export function PayToContact({ walletId, network }: { walletId: string; network: NetworkInfo }) {
@@ -343,7 +343,7 @@ function ContactForm({
   const [note, setNote] = useState("");
   const [advanced, setAdvanced] = useState<Advanced>(DEFAULT_ADVANCED);
   // As To an address: a payment that went, or may have, ends the form; the payee stays.
-  const sheets = usePaySheets(walletId, draft, () => {
+  const sheets = usePaySheets(payFormKey(walletId, contact), walletId, draft, () => {
     amount.setText("");
     setSubtractFee(subtractFeeByDefault());
     setNote("");
@@ -431,6 +431,7 @@ function ContactForm({
           returnFocus={backToForm}
           onCancel={sheets.cancel}
           onOutcome={sheets.outcome}
+          onBroadcast={sheets.broadcasting}
           contact={{
             identity,
             payee,
@@ -442,6 +443,7 @@ function ContactForm({
           }}
         />
       )}
+      {phase.kind === "sending" && <SendingSheet sending={phase.sending} network={network} />}
       {phase.kind === "result" && (
         <ResultSheet
           outcome={phase.outcome}

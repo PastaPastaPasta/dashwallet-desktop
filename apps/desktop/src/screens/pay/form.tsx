@@ -2,16 +2,16 @@
 // engine parses it, the live estimate of the draft and the refusal it brings, Max, and the footer
 // with the fee line and Review.
 
-import { useId, useState, type ReactNode, type Ref } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode, type Ref } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage } from "../../api/backend";
 import { keys, useBackend } from "../../api/queries";
-import { navigate } from "../../app/ui";
+import { navigate, ui } from "../../app/ui";
 import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
 import { FiatSecondary, FiatToggle, useFiatEntry } from "../../fiat/entry";
 import type { useDisplay } from "../../format/display";
-import { availableLabel, PAY_CHECKING, PAY_INCOMPLETE, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient } from "./model";
+import { availableLabel, PAY_CHECKING, PAY_INCOMPLETE, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient, type Sending } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 /** How long a field stays unchanged before it is checked and the draft estimated (U-03 D5). */
@@ -19,35 +19,82 @@ export const SETTLE_MS = 300;
 
 type Shown = ReturnType<typeof useDisplay>;
 
-/** Where a form is: editing, confirming, or showing the result. */
-export type Phase = { kind: "editing" } | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec; unsigned: boolean } | { kind: "result"; outcome: Outcome };
+/** Where a form is: editing, confirming, sending (the broadcast outlived the confirm sheet), or
+ * showing the result. */
+export type Phase =
+  | { kind: "editing" }
+  | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec; unsigned: boolean }
+  | { kind: "sending"; sending: Sending }
+  | { kind: "result"; outcome: Outcome };
+
+type Kept = { kind: "sending"; sending: Sending } | { kind: "result"; outcome: Outcome };
+
+/** Each form's payment from its broadcast until its result sheet closes, by `payFormKey`: a lock
+ * takes the page down at once, and the unlock shows the same result, not a form that looks unsent. */
+const kept = new Map<string, Kept>();
+const keptListeners = new Set<() => void>();
+const subscribeKept = (l: () => void) => {
+  keptListeners.add(l);
+  return () => void keptListeners.delete(l);
+};
+function keep(key: string, k: Kept | null) {
+  if (k) kept.set(key, k);
+  else kept.delete(key);
+  keptListeners.forEach((l) => l());
+}
+
+/** Tests: what the form under `key` keeps. */
+export const keptPayment = (key: string): Kept | null => kept.get(key) ?? null;
+
+export const payFormKey = (walletId: string, contact?: string) => (contact === undefined ? `${walletId}:address` : `${walletId}:contact:${contact}`);
+
+/** What an outcome says once its page went: the draft closed with the page, so it has no retry. */
+export const outliving = (o: Outcome): Outcome => (o.kind === "unknown" && o.retry ? { ...o, retry: false } : o);
 
 /** A Pay form's sheets (U-03): Review's confirm, then the result. While either is up the form
  * estimates nothing (`held`), so the payment's own events re-check nothing behind them. A payment
  * that went, or may have, ends the form at once (`clear`); its draft stays open until the result
- * sheet closes, as unknown's Try again rebroadcasts through it. A failed one leaves the form as it was. */
-export function usePaySheets(walletId: string, draft: DraftApi, clear: () => void) {
+ * sheet closes, as unknown's Try again rebroadcasts through it. A failed one leaves the form as it was.
+ * From its broadcast the payment is kept under `key` (`payFormKey`), so a remounted form shows it;
+ * `filledBy: "link"`, the form Pay's prefill and coins fill, which the broadcast spends. */
+export function usePaySheets(key: string, walletId: string, draft: DraftApi, clear: () => void, filledBy: "link" | null = null) {
   const client = useQueryClient();
-  const [phase, setPhase] = useState<Phase>({ kind: "editing" });
+  const [confirm, setConfirm] = useState<Extract<Phase, { kind: "confirm" }> | null>(null);
+  const stored = useSyncExternalStore(subscribeKept, () => kept.get(key) ?? null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const phase: Phase = stored?.kind === "result" ? stored : (confirm ?? stored ?? { kind: "editing" });
   const outcome = (o: Outcome) => {
     if (o.kind !== "failed") clear();
-    setPhase({ kind: "result", outcome: o });
+    setConfirm(null);
+    keep(key, { kind: "result", outcome: mounted.current ? o : outliving(o) });
   };
   const done = (show: boolean) => {
-    if (phase.kind !== "result") return;
-    const o = phase.outcome;
+    if (stored?.kind !== "result") return;
+    const o = stored.outcome;
     if (o.kind !== "failed") {
       void draft.close();
       void client.invalidateQueries({ queryKey: keys.coinsAll(walletId) });
     }
-    setPhase({ kind: "editing" });
+    keep(key, null);
     if (show && o.kind === "sent") navigate("activity", { detail: o.txid });
   };
   return {
     phase,
-    held: phase.kind === "confirm" || (phase.kind === "result" && phase.outcome.kind !== "failed"),
-    review: (confirmed: Confirmed, spec: DraftSpec, unsigned = false) => setPhase({ kind: "confirm", confirmed, spec, unsigned }),
-    cancel: () => setPhase({ kind: "editing" }),
+    held: phase.kind === "confirm" || phase.kind === "sending" || (phase.kind === "result" && phase.outcome.kind !== "failed"),
+    review: (confirmed: Confirmed, spec: DraftSpec, unsigned = false) => setConfirm({ kind: "confirm", confirmed, spec, unsigned }),
+    cancel: () => setConfirm(null),
+    // From here the payment may reach the network: the link or the coins that filled the form are
+    // spent on it, so a form mounted again (after a lock) starts empty rather than offering it again.
+    broadcasting: (sending: Sending) => {
+      keep(key, { kind: "sending", sending });
+      if (filledBy === "link") ui.set({ payPrefill: null, payCoins: null });
+    },
     outcome,
     done,
   };

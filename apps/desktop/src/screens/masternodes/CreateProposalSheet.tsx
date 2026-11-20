@@ -9,6 +9,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
+import { refusedWhileLocked } from "../../api/lockGate";
 import type { MyProposal } from "../../api/generated/MyProposal";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { ProposalDraft } from "../../api/generated/ProposalDraft";
@@ -43,6 +44,7 @@ import { useGovernanceInfo, useGovernanceRefresh, useMyProposals, useUpcomingSup
 import { useAmountField } from "../pay/form";
 import { failureText } from "../pay/model";
 import { useNowSecs } from "./common";
+import { keepCreate } from "./keptCreate";
 import { CredentialField, useCredential } from "./credential";
 
 type Step = 1 | 2 | 3;
@@ -197,6 +199,14 @@ export function CreateProposalSheet({
     void refresh();
   };
 
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   const create = async () => {
     // The figures the review shows as Pay is pressed: the ones the user confirms.
     const confirmed = figures;
@@ -218,18 +228,24 @@ export function CreateProposalSheet({
       const grant = await credential.authorize({ kind: "spend", maxDuffs: feeGrantCap(confirmed) });
       if (!grant || shownKey.current !== draftKey) return;
       let created: MyProposal;
+      keepCreate(wallet.walletId, { kind: "paying" });
       try {
         created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
       } catch (e) {
-        if (refuseFields(e)) return;
+        // A field refusal, or a call the lock stopped before the engine, paid nothing. Otherwise,
+        // if the sheet went (a lock), the page says the fee may have gone out once it is back.
+        const unpaid = refusedWhileLocked(e) || refuseFields(e);
+        keepCreate(wallet.walletId, mounted.current || unpaid ? null : { kind: "unsure" });
+        if (!mounted.current || unpaid) return;
         credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
         // `after` keeps Pay and Back off; the sheet may close while Mine is read.
         setBusy(false);
         await checkMine(draft, known);
         return;
       }
+      keepCreate(wallet.walletId, mounted.current ? null : { kind: "created", p: created });
       void refresh();
-      onCreated(created);
+      if (mounted.current) onCreated(created);
     } catch (e) {
       credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
     } finally {

@@ -12,6 +12,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
+import { refusedWhileLocked } from "../../api/lockGate";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -42,6 +43,8 @@ import {
   type Advanced,
   type Confirmed,
   type Outcome,
+  type Sending,
+  LOCKED_BEFORE_SEND,
 } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
@@ -74,6 +77,7 @@ export function ConfirmSheet({
   returnFocus,
   onCancel,
   onOutcome,
+  onBroadcast,
   contact,
   unsigned = false,
 }: {
@@ -89,6 +93,8 @@ export function ConfirmSheet({
   returnFocus: () => HTMLElement | null;
   onCancel: () => void;
   onOutcome: (o: Outcome) => void;
+  /** The signed payment is handed to the broadcast: from here it may reach the network. */
+  onBroadcast: (sending: Sending) => void;
 }) {
   const b = useBackend();
   const shown = useDisplay(network);
@@ -265,15 +271,18 @@ export function ConfirmSheet({
     // An accept that went through is said with whatever outcome the payment gets, a retry's too.
     const sent = { amount: estimate.totalSent, fee: prepared.summary.fee, ...(accepted && { note: accepted }) };
     const toContact = isContact(spec.recipient);
+    onBroadcast(sent);
     try {
       const { txid } = await draft.broadcast(d, prepared.handle);
       onOutcome({ kind: "sent", txid, ...sent });
     } catch (e) {
-      // "Not sent" only when the engine released it, or held a contact payment back before its
-      // hand-off (then it is abandoned here); nothing else is abandoned after a broadcast.
-      const o = broadcastFailure(e, chain, { draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
+      // "Not sent" only when the engine released it, held a contact payment back before its
+      // hand-off, or the window locked before it was asked (then it is abandoned here); nothing
+      // else is abandoned after a broadcast.
+      const never = refusedWhileLocked(e);
+      const o = never ? ({ kind: "failed", text: LOCKED_BEFORE_SEND } as const) : broadcastFailure(e, chain, { txid: prepared.summary.txid, draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
       if (o.kind === "failed") {
-        if (toContact) await draft.abandon(d, prepared.handle);
+        if (toContact || never) await draft.abandon(d, prepared.handle);
         notSent(o.text);
       } else onOutcome(accepted && o.kind === "unknown" ? { ...o, text: `${accepted} ${o.text}` } : o);
     } finally {

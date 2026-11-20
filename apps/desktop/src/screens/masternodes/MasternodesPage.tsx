@@ -5,7 +5,7 @@
 // (vote, create, numbers) live here, so a list that changes under an open sheet (a filter, a
 // re-sort, a resync) keeps it (D31).
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { errorMessage } from "../../api/backend";
 import type { GovernanceInfo } from "../../api/generated/GovernanceInfo";
 import type { MasternodesTab } from "../../api/generated/MasternodesTab";
@@ -46,6 +46,7 @@ import { savePrefs } from "../../settings/prefs";
 import { Tabs, type Tab } from "../Routes";
 import { MoreMenu, Notice, StatusChip, useNowSecs, VoteBar } from "./common";
 import { CreateProposalSheet } from "./CreateProposalSheet";
+import { keepCreate, useKeptCreate } from "./keptCreate";
 import { MineList } from "./Mine";
 import { MyMasternodes } from "./MyMasternodes";
 import { NamesTab } from "./NamesTab";
@@ -78,6 +79,18 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
   /** The proposal the vote sheet is open on, as it was when Vote was pressed. */
   const [voteOn, setVoteOn] = useState<ProposalRow | null>(null);
   const walletId = wallet.walletId;
+  // A proposal paid for as the wallet locked: made, it is shown in Mine as if the sheet had stayed.
+  const kept = useKeptCreate(walletId);
+  const showMine = () => {
+    setShownTab("governance");
+    setFilter("mine");
+  };
+  useEffect(() => {
+    if (kept?.kind !== "created") return;
+    keepCreate(walletId, null);
+    showMine();
+    showToast(createdToast(kept.p));
+  }, [kept, walletId]); // eslint-disable-line react-hooks/exhaustive-deps
   const sync = useGovernanceSyncState();
   const info = useGovernanceInfo();
   const mine = useMyProposals(walletId);
@@ -171,8 +184,8 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
                 variant="filledBlue"
                 size="small"
                 data-testid="governance-create"
-                disabled={wallet.watchOnly}
-                title={wallet.watchOnly ? GovText.createWatchOnly : undefined}
+                disabled={wallet.watchOnly || kept?.kind === "paying"}
+                title={wallet.watchOnly ? GovText.createWatchOnly : kept?.kind === "paying" ? GovText.keptPaying : undefined}
                 onClick={() => setSheet("create")}
               >
                 {GovText.create}
@@ -180,6 +193,33 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
             </span>
           )}
         </header>
+        {kept?.kind === "paying" && sheet !== "create" && (
+          <Notice tone="warning" testId="create-kept-paying">
+            {GovText.keptPaying}
+          </Notice>
+        )}
+        {kept?.kind === "unsure" && sheet !== "create" && (
+          <Notice
+            tone="warning"
+            testId="create-kept-unsure"
+            action={
+              <DashButton
+                variant="filledBlue"
+                size="small"
+                data-testid="create-kept-show-mine"
+                onClick={() => {
+                  keepCreate(walletId, null);
+                  showMine();
+                  void refresh();
+                }}
+              >
+                Show Mine
+              </DashButton>
+            }
+          >
+            {GovText.keptUnsure}
+          </Notice>
+        )}
         <Tabs label="Masternodes" tabs={TABS} current={tab} onSelect={setTab} testId="masternodes-tabs">
           {!mnList.isError && mnList.data?.synced && mnList.data.height !== null && (
             <p className="mg-muted mg-small" data-testid="mn-list-height">

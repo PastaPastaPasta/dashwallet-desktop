@@ -60,6 +60,8 @@ export const GovText = {
   voteCounts: "The counts update as peers relay the votes.",
   feeWarning: "Creating a proposal pays 1 DASH to the network. This fee is non-refundable regardless of outcome.",
   feeAfter: "After it confirms, the wallet submits the proposal for you. You can close this window; Mine shows the progress.",
+  keptPaying: "Your proposal is being made, and its fee may already have gone out. Don't pay again: it shows in Mine once it is made.",
+  keptUnsure: "Your proposal may have been made, and its fee may have gone out. Check Mine before you pay again.",
   firstPaymentHelp: "Payments happen at superblocks, about every 29 days.",
   nameHelp: "Lower case letters, digits, - and _",
   linkHelp: "A page describing the proposal, such as a Dash Central or forum post",

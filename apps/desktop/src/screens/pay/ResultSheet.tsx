@@ -9,7 +9,7 @@ import { CopyValue, DetailRow } from "../../components/detail";
 import type { UsedIcon } from "../../components/icons";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
-import { broadcastFailure, type Outcome } from "./model";
+import { broadcastFailure, type Outcome, type Sending } from "./model";
 import type { DraftApi } from "./useDraft";
 
 const TITLE: Record<Outcome["kind"], string> = {
@@ -50,12 +50,12 @@ export function ResultSheet({
   const retry = async () => {
     if (outcome.kind !== "unknown" || !outcome.retry || busy) return;
     setBusy(true);
-    const { draft: d, prepared, amount, fee, note } = outcome;
+    const { txid: held, draft: d, prepared, amount, fee, note } = outcome;
     try {
       const { txid } = await draft.broadcast(d, prepared);
       onOutcome({ kind: "sent", txid, amount, fee, note });
     } catch (e) {
-      onOutcome(broadcastFailure(e, shown.chain, { draft: d, prepared, amount, fee, note }, false, shown.amountUnit));
+      onOutcome(broadcastFailure(e, shown.chain, { txid: held, draft: d, prepared, amount, fee, note }, false, shown.amountUnit));
     } finally {
       setBusy(false);
       setTries((n) => n + 1);
@@ -91,7 +91,7 @@ export function ResultSheet({
           </>
         )}
       </div>
-      {outcome.kind === "sent" && (
+      {outcome.kind !== "failed" && (
         <dl className="detail-list card-l1" data-testid="pay-result-facts">
           <DetailRow label="Network fee">
             <AmountText text={shown.full(outcome.fee)} unitName={unit} glyph={false} />
@@ -129,6 +129,21 @@ export function ResultSheet({
             Back to payment
           </DashButton>
         )}
+      </div>
+    </Sheet>
+  );
+}
+
+/** A payment whose broadcast is still running when its form comes back (after an unlock): held up
+ * until the result replaces it, so nothing behind it looks unsent. */
+export function SendingSheet({ sending, network }: { sending: Sending; network: NetworkInfo }) {
+  const shown = useDisplay(network);
+  return (
+    <Sheet title="Sending payment" width="small" testId="pay-sending" closable={false} onClose={() => undefined}>
+      <div className="result" role="status">
+        <span className="spinner" aria-hidden="true" />
+        <AmountText className="result-amount" text={shown.full(sending.amount)} unitName={shown.name} glyphFactor={0.8} />
+        <p className="result-text">The payment is being sent. Its result shows here.</p>
       </div>
     </Sheet>
   );
