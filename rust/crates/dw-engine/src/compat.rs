@@ -280,11 +280,9 @@ pub fn inspect_wallet_file(path: &Path) -> Result<WalletFileKind, EngineError> {
             });
         }
         Some(Container::BerkeleyDb) => {
-            return Ok(match walletdat::read_bdb(path) {
-                Ok(w) => WalletFileKind::WalletDatBdb {
-                    encrypted: Some(w.encrypted()),
-                },
-                Err(_) => WalletFileKind::WalletDatBdb { encrypted: None },
+            let w = walletdat::read_bdb(path).map_err(walletdat_failure)?;
+            return Ok(WalletFileKind::WalletDatBdb {
+                encrypted: Some(w.encrypted()),
             });
         }
         None => {}
@@ -1581,8 +1579,10 @@ mod tests {
             }
         );
         assert_eq!(
-            inspect_wallet_file(&testdata("compat/walletdat/bdb_legacy_head.dat")).unwrap(),
-            WalletFileKind::WalletDatBdb { encrypted: None }
+            inspect_wallet_file(&testdata("compat/walletdat/bdb_hd_encrypted.dat")).unwrap(),
+            WalletFileKind::WalletDatBdb {
+                encrypted: Some(true)
+            }
         );
         assert_eq!(
             inspect_wallet_file(&testdata("compat/psbt/unsigned.b64")).unwrap(),
@@ -1596,6 +1596,24 @@ mod tests {
             inspect_wallet_file(&testdata("compat")),
             Err(EngineError::Compat(CompatFailure::FileUnreadable(_)))
         ));
+    }
+
+    /// A Berkeley DB file that does not parse is reported with its error,
+    /// as an import of it would be, not as a wallet.dat to import.
+    #[test]
+    fn inspecting_a_bdb_file_that_does_not_parse_returns_its_error() {
+        let dir = dw_testutil::private_tempdir();
+        let whole = std::fs::read(testdata("compat/walletdat/bdb_core24_hd_plain.dat")).unwrap();
+        let truncated = dir.path().join("truncated.dat");
+        std::fs::write(&truncated, &whole[..whole.len() / 2]).unwrap();
+        for path in [testdata("compat/walletdat/bdb_legacy_head.dat"), truncated] {
+            let got = inspect_wallet_file(&path);
+            assert!(
+                matches!(got, Err(EngineError::Compat(CompatFailure::Corrupt(_)))),
+                "{}: {got:?}",
+                path.display()
+            );
+        }
     }
 
     #[test]
