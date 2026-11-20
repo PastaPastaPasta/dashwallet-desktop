@@ -57,7 +57,7 @@ type FieldErrors = Partial<Record<ProposalFieldName, string>>;
 
 /** After a failed `create_proposal` (D34): reading Mine, the proposal it made anyway, or Mine
  *  unreadable. Pay stays off in all three. */
-type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "unknown" };
+type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "twin"; name: string } | { kind: "unknown" };
 
 export function CreateProposalSheet({
   wallet,
@@ -193,8 +193,18 @@ export function CreateProposalSheet({
     if (!mounted.current) return;
     const k = keptCreate(wallet.walletId);
     const check = k?.kind === "unsure" ? k.check : null;
-    if (check?.kind === "found") credential.setError(null); // the notice says what happened instead
-    setAfter(check?.kind === "found" ? { kind: "created", p: check.p } : check?.kind === "failed" ? { kind: "unknown" } : check?.kind === "reading" ? { kind: "checking" } : null);
+    if (check?.kind === "found" || check?.kind === "twin") credential.setError(null); // the notice says what happened instead
+    setAfter(
+      check?.kind === "found"
+        ? { kind: "created", p: check.p }
+        : check?.kind === "twin" && k?.kind === "unsure"
+          ? { kind: "twin", name: k.attempt.name }
+          : check?.kind === "failed"
+            ? { kind: "unknown" }
+            : check?.kind === "reading"
+              ? { kind: "checking" }
+              : null,
+    );
     void refresh();
   };
 
@@ -233,7 +243,7 @@ export function CreateProposalSheet({
         return;
       }
       let created: MyProposal;
-      const attempt = startCreate(wallet.walletId, draft.name, mine.data ?? []);
+      const attempt = startCreate(wallet.walletId, draft, mine.data ?? []);
       try {
         created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
       } catch (e) {
@@ -248,7 +258,7 @@ export function CreateProposalSheet({
         await checkMine();
         return;
       }
-      settleCreate(wallet.walletId, attempt, mounted.current ? null : { kind: "created", p: created });
+      settleCreate(wallet.walletId, attempt, { kind: "created", p: created, shown: mounted.current });
       void refresh();
       if (mounted.current) onCreated(created);
     } catch (e) {
@@ -450,6 +460,11 @@ export function CreateProposalSheet({
                   Show it in Mine
                 </DashButton>
               </div>
+            )}
+            {after?.kind === "twin" && (
+              <p className="mg-notice mg-notice-warning" role="alert" data-testid="create-twin">
+                {GovText.keptTwin(after.name)}
+              </p>
             )}
             {after?.kind === "unknown" && (
               <div className="mg-notice mg-notice-warning" role="alert" data-testid="create-unknown">

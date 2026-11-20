@@ -68,6 +68,9 @@ export const GovText = {
   createChecking: "Mine is being read first: the proposal you paid for may have been made",
   createReadFailed: "Read Mine again first: the proposal you paid for may have been made",
   createFound: (name: string) => `${name} is already made: dismiss the notice to create a new proposal`,
+  keptTwin: (name: string) =>
+    `A proposal ${name} is in Mine, and it may be from either of your two payments for it: both fees may have gone out. Check Mine, and the fee payments in Activity, before you pay again.`,
+  createTwin: (name: string) => `${name} may have been paid for twice: check Mine and Activity, then dismiss the notice to create a new proposal`,
   firstPaymentHelp: "Payments happen at superblocks, about every 29 days.",
   nameHelp: "Lower case letters, digits, - and _",
   linkHelp: "A page describing the proposal, such as a Dash Central or forum post",

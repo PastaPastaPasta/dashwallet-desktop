@@ -481,7 +481,15 @@ function ProposalRowButton({
 function KeptUnsureNotice({ walletId, kept, onShowMine }: { walletId: string; kept: Extract<KeptCreate, { kind: "unsure" }>; onShowMine: () => void }) {
   const { check } = kept;
   const text =
-    check.kind === "reading" ? GovText.keptChecking : check.kind === "failed" ? GovText.keptReadFailed : check.kind === "found" ? GovText.keptFound(check.p.name) : GovText.keptUnsure;
+    check.kind === "reading"
+      ? GovText.keptChecking
+      : check.kind === "failed"
+        ? GovText.keptReadFailed
+        : check.kind === "found"
+          ? GovText.keptFound(check.p.name)
+          : check.kind === "twin"
+            ? GovText.keptTwin(kept.attempt.name)
+            : GovText.keptUnsure;
   const action =
     check.kind === "reading" ? undefined : check.kind === "failed" ? (
       <DashButton variant="filledBlue" size="small" data-testid="create-kept-read-again" onClick={() => readKeptAgain(walletId)}>
