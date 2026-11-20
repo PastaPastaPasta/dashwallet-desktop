@@ -1,7 +1,7 @@
 // Server state lives in TanStack Query. Keys mirror the dw-app commands, so an engine
 // signal names exactly the queries to refetch (events.ts).
 
-import { createContext, useContext } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./backend";
 import type { Balances } from "./generated/Balances";
@@ -21,7 +21,7 @@ import type { PlatformActivity } from "./generated/PlatformActivity";
 import type { LockOutcome } from "./generated/LockOutcome";
 import type { LockProgress } from "./generated/LockProgress";
 import { hasPendingMove } from "../platform/move";
-import type { PoolReading } from "../format/homeBalance";
+import { heroQuietEnds, heroSync, newHeroWatch, watchHero, type HeroReading, type HeroSync, type HeroWatch, type PoolReading } from "../format/homeBalance";
 import { reconcileLockReport } from "./lockReport";
 import { isChangingUsernameInRequests } from "./username";
 import { catchUpArrival } from "../components/emptyStates";
@@ -148,12 +148,12 @@ export function useWallets(enabled = true) {
   return useQuery({ queryKey: keys.wallets, queryFn: () => b.listWallets(), enabled });
 }
 
-/** `null` while the wallet is catching up: no screen shows a partial balance yet. */
+/** `null` while the wallet is catching up, for a reading that must not count a partial balance. */
 export const settledBalance = (balances: Balances | null): Balances | null => (balances?.catchingUp ? null : balances);
 
 export function useBalance(walletId: string) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.balance(walletId), queryFn: async () => settledBalance(await b.balance(walletId)) });
+  return useQuery({ queryKey: keys.balance(walletId), queryFn: () => b.balance(walletId) });
 }
 
 /** The wallet's Platform addresses; `null` while dw-app has no such command (api/pending.ts). */
@@ -400,6 +400,36 @@ export function useWalletCatchUp(walletId: string) {
     if (scan.isError) void scan.refetch();
   };
   return { arrival, recheck };
+}
+
+/** What Home's balance line needs of this wallet's sync: its catch-up, read errors whatever is
+ * still cached, and the first-read and new-block quiet, which end on a timer of their own. */
+export function useHeroSync(walletId: string): HeroSync {
+  const sync = useSyncStatus();
+  const scan = useWalletScanHeight(walletId);
+  const { arrival } = useWalletCatchUp(walletId);
+  const reading: HeroReading = {
+    walletId,
+    arrival,
+    running: !!sync.raw?.running,
+    networkCaughtUp: !!sync.data?.caughtUp,
+    tip: sync.raw?.tipHeight ?? null,
+    scanHeight: scan.data,
+    scanPending: scan.isPending,
+    readFailed: sync.isError || scan.isError,
+  };
+  const watch = useRef<HeroWatch | null>(null);
+  const now = Date.now();
+  const w = watchHero(watch.current ?? newHeroWatch(walletId, now), reading, now);
+  watch.current = w;
+  const [, wake] = useState(0);
+  const ends = heroQuietEnds(w, reading);
+  useEffect(() => {
+    if (ends === null) return;
+    const timer = setTimeout(() => wake((n) => n + 1), Math.max(0, ends - Date.now()) + 1);
+    return () => clearTimeout(timer);
+  }, [ends]);
+  return heroSync(w, reading, now);
 }
 
 /** Pages of `limit` records; `fetchNextPage` follows the engine's keyset cursor. */
