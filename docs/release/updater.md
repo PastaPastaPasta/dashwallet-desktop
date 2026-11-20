@@ -48,7 +48,8 @@ What is checked (`rust/crates/dw-app/src/updates.rs`):
 - The check gives up after 30 s and a download after 60 s without data, so a stalled connection never blocks the
   next check.
 - The request carries no wallet data and no identifier: it is the static URL, the updater's user agent and an
-  `Accept` header. GitHub sees the IP address and the time.
+  `Accept` header. The status request after a failed check is the same URL with neither header. GitHub sees the IP
+  address and the time.
 
 ## The release key (set up 2026-11-20)
 

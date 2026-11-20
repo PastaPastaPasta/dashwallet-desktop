@@ -102,6 +102,7 @@ impl TestKey {
 
 /// The release public key, minisign key ID ED322B963B527B21.
 const RELEASE_KEY_ID: &str = "ED322B963B527B21";
+const RELEASE_KEY: &str = "RWQhe1I7lisy7VSCxCb7l68xDmzM20krIOD6L6lNybwEJAZuzX4aFEFS";
 
 /// The shipped config carries the release public key but no feed: a build
 /// without the signing key (main, pull requests, rc, dev) has no updater,
@@ -114,12 +115,20 @@ fn the_shipped_build_has_no_updater() {
         .decode(pubkey)
         .unwrap();
     let decoded = String::from_utf8(decoded).unwrap();
-    assert!(
-        decoded.starts_with(&format!(
-            "untrusted comment: minisign public key: {RELEASE_KEY_ID}\n"
-        )),
-        "{decoded}"
+    assert_eq!(
+        decoded,
+        format!("untrusted comment: minisign public key: {RELEASE_KEY_ID}\n{RELEASE_KEY}\n")
     );
+    let key = base64::engine::general_purpose::STANDARD
+        .decode(RELEASE_KEY)
+        .unwrap();
+    assert_eq!((key.len(), &key[..2]), (42, &b"Ed"[..]));
+    let id: String = key[2..10]
+        .iter()
+        .rev()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    assert_eq!(id, RELEASE_KEY_ID);
     assert_eq!(shipped["plugins"]["updater"]["endpoints"], json!([]));
     assert!(shipped["bundle"].get("createUpdaterArtifacts").is_none());
     for pubkey in [json!(pubkey), json!(TestKey::new().pubkey())] {
