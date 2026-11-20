@@ -6,9 +6,10 @@ balance (DP1-02), and the suite then checks what a user relies on:
 
 1. a fresh non-contested label is available, a contested-shaped one is available but contested,
    and the offline rules normalize homographs (o → 0) before the contest rule (DP1-03);
-2. the registration's quote, its grant and the funding it charged (the funding cap holds), the
-   flow ending `done`, and the identity listed with its name as the main one, its DashPay keys
-   and credits;
+2. the registration's quote and its grant, and what the funding actually took: the funding
+   transaction's own debit and the wallet's balance change, both the same, above the locked
+   amount and within the grant's cap; the flow ending `done`, and the identity listed with its
+   name as the main one, its DashPay keys and credits;
 3. the name is taken once registered, resolves to the identity and finds it as the wallet's own;
 4. after a DashPay sync pass and in a new process the main name is still the same (#4978);
 5. the phrase restored on another data root finds the identity and its name (DP1-05).
@@ -32,8 +33,8 @@ FUND_DUFFS = 5_000_000
 def registered(dp, funder):
     root = dp.root("dp1")
     wallet = root.create(f"dp1-{dp.run_id}")
-    txid, tip = funder.pay(root, wallet.id, FUND_DUFFS)
-    print(f"funded {wallet.id} with {FUND_DUFFS} duffs: {txid}")
+    txid, tip, funded = funder.pay(root, wallet.id, FUND_DUFFS)
+    print(f"funded {wallet.id} with {FUND_DUFFS} duffs: {txid}, total {funded}")
     label = dp.label("dwdp1n")
     with root.session(wallet.id, name="dp1") as s:
         before = s.ok("identity", "list")
@@ -48,11 +49,14 @@ def registered(dp, funder):
         found = s.ok("identity", "find", label)
         wait_pass(s, ("dash_pay_sync", "dpns_sync"), timeout=1500)
         after_sync = s.ok("identity", "list")
+    funding = root.extras(wallet.id, row["txid"]) if row.get("txid") else None
+    after = int(root.sync_wallet(wallet.id, root.tip())["total"])
     return {
         "root": root, "wallet": wallet, "label": label, "before": before, "availability": availability,
         "contested": contested, "quote": quote, "row": row, "steps": steps, "identities": identities,
         "balance": balance, "taken": taken, "resolved": resolved, "found": found, "after_sync": after_sync,
-        "funding": txid, "birth": tip - 12,
+        "funding": txid, "birth": tip - 12, "balance_before": funded, "balance_after": after,
+        "funding_tx": funding,
     }
 
 
@@ -80,6 +84,13 @@ def test_registration_ends_done_within_its_grant(registered):
     quote, row = registered["quote"], registered["row"]
     assert quote["contested"] is False
     assert quote["grant"]["max_duffs"] >= quote["total_duffs"] > quote["lock_duffs"] > 0
+    funding = registered["funding_tx"]
+    assert funding is not None, f"the registration row names no funding transaction: {row}"
+    charged = int(funding["debit"]) - int(funding["credit"])
+    assert int(funding["net"]) == -charged, funding
+    assert registered["balance_before"] - registered["balance_after"] == charged, (registered["balance_before"],
+                                                                                registered["balance_after"], funding)
+    assert quote["lock_duffs"] < charged <= quote["grant"]["max_duffs"], (charged, quote)
     assert row["phase"] == "done", row
     assert row["failure"] is None and row["name_failure"] is None, row
     assert row["funds_committed"] is True and row["identity"]

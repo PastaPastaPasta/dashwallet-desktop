@@ -10,13 +10,16 @@ root:
    set, and the next payment with peers goes through. The engine reports it as a rejection rather
    than "no peers" (marked xfail: `reason_means_no_peers` misses dash-spv's wording);
 3. unknown outcome: A pays B through a relay that holds the transaction back, so no node gets it:
-   the outcome is unknown; the contact is locked to that txid and a second payment is refused;
-   once the relay lets the bytes through, `contact resolve-lock` settles the lock `Sent` and B
-   sees the payment;
+   the outcome is unknown; the contact is locked to that txid, the relay holds exactly that
+   transaction (its hash is the txid), and a second payment is refused; once the relay has
+   written those bytes on to its peer, `contact resolve-lock` settles the lock `Sent` and B sees
+   the payment;
 4. 25 cancelled confirms (more than the 20-address DIP-15 gap) in one session, each a prepared
-   payment abandoned unsent, then a payment: B still sees it.
+   payment abandoned unsent (`paid: false`) that names its contact address, every one the same,
+   then a payment to that same address: B sees it.
 
-    DW_DP_HOLD_UPSTREAM=<ip:port of a peer serving BIP157 filters> (the relay's peer)
+    DW_DP_HOLD_UPSTREAM=<ip:port of a peer serving BIP157 filters> (the relay's peer; with
+    DW_DP_STRICT=1, as the nightly sets, the unknown-outcome case fails rather than skips without it)
 """
 
 from __future__ import annotations
@@ -25,7 +28,15 @@ import os
 
 import pytest
 
-from dwd_regtest.dashpay import HoldingPeer, pay_contact, send_kind, synced_until, try_pay, wait_until
+from dwd_regtest.dashpay import (
+    NO_PEER_REASONS,
+    HoldingPeer,
+    pay_contact,
+    send_kind,
+    synced_until,
+    try_pay,
+    wait_until,
+)
 
 CANCELS = 25
 
@@ -66,25 +77,30 @@ def no_peers(pair, contacts):
 
 def test_no_peers_sets_no_lock(pair, no_peers):
     a, b = pair
-    assert no_peers["error"]["code"] == "send", no_peers["error"]
-    assert send_kind(no_peers["error"]) in ("no_peers", "rejected"), no_peers["error"]
+    error = no_peers["error"]
+    assert error["code"] == "send", error
+    assert send_kind(error) in ("no_peers", "broadcast_rejected"), error
+    assert error["params"]["outcome"] == "not_sent", error
     assert no_peers["lock"] is None
     assert recipient_sees(b, a.identity, no_peers["paid"]["txid"], "dp3-b-sees-2")["amount"] == 130_000
 
 
 def test_no_peers_is_reported_as_no_peers(no_peers):
     error = no_peers["error"]
-    if send_kind(error) == "rejected" and "no connected peers" in error["message"]:
+    if (error["code"], send_kind(error), error["params"].get("reason"), error["params"].get("outcome")) == (
+            "send", "broadcast_rejected", NO_PEER_REASONS[0], "not_sent"):
         pytest.xfail("engine bug: dash-spv's 'SPV broadcast not sent: no connected peers' is not matched by "
                      "reason_means_no_peers (dw-engine send/mod.rs), so a broadcast no peer got is reported "
                      "as `broadcast rejected`, not `no peers`")
     assert send_kind(error) == "no_peers", error
 
 
-def test_unknown_outcome_locks_until_resolved(pair, contacts):
+def test_unknown_outcome_locks_until_resolved(dp, pair, contacts):
     a, b = pair
     upstream = os.environ.get("DW_DP_HOLD_UPSTREAM")
     if not upstream:
+        if dp.strict:
+            pytest.fail("DW_DP_STRICT=1 and DW_DP_HOLD_UPSTREAM is unset: the unknown-outcome case cannot run")
         pytest.skip("set DW_DP_HOLD_UPSTREAM to a peer that serves BIP157 filters")
     relay = HoldingPeer(upstream)
     try:
@@ -93,16 +109,18 @@ def test_unknown_outcome_locks_until_resolved(pair, contacts):
             answer = try_pay(sa, b.identity, 140_000)
             assert not answer.get("ok"), answer
             error = answer["error"]
-            assert send_kind(error) == "unknown", error
-            assert relay.held_count() >= 1
+            assert send_kind(error) == "broadcast_unknown", error
             lock = sa.ok("contact", "lock", b.identity)
             assert lock and lock["txid"], lock
             txid = lock["txid"]
+            assert error["params"]["prepared_txid"] == txid, (error, lock)
+            assert txid in relay.held_txids(), (txid, relay.held_txids())
             refused = try_pay(sa, b.identity, 1000)["error"]
             assert refused["code"] == "contact.payment_locked", refused
             assert refused["params"]["txid"] == txid
             assert sa.ok("contact", "resolve-lock", b.identity) == "unknown"
-            relay.release()
+            released = relay.release()
+            assert released.get(txid) is True, f"the relay could not pass {txid} on: {released}"
             wait_until(lambda: sa.ok("contact", "resolve-lock", b.identity) == "sent", 900,
                        "the lock to resolve Sent", interval=15)
             assert sa.ok("contact", "lock", b.identity) is None
@@ -118,12 +136,16 @@ def test_cancelled_confirms_past_the_gap(pair, contacts):
         lock = sa.ok("contact", "lock", b.identity)
         assert lock is None, f"an earlier case left the contact locked: {lock}"
         addresses = []
-        for _ in range(CANCELS):
+        for i in range(CANCELS):
             cancelled = pay_contact(sa, b.identity, 150_000, "--cancel")
-            assert cancelled["cancelled"] is True
+            assert (cancelled["cancelled"], cancelled["paid"]) == (True, False), cancelled
+            assert "txid" not in cancelled and cancelled["prepared_txid"], cancelled
+            assert isinstance(cancelled["address"], str) and cancelled["address"], (i, cancelled)
             addresses.append(cancelled["address"])
+        assert sa.ok("contact", "lock", b.identity) is None
         paid = pay_contact(sa, b.identity, 150_000)
     print(f"{CANCELS} cancelled confirms used {len(set(addresses))} address(es); paid {paid.get('address')}")
+    assert paid.get("address"), f"the payment's outcome was settled through its lock, so its output is unknown: {paid}"
     assert recipient_sees(b, a.identity, paid["txid"], "dp3-b-sees-4")["amount"] == 150_000
     assert len(set(addresses)) == 1, addresses
-    assert paid.get("address", addresses[0]) == addresses[0], (paid, addresses)
+    assert paid["address"] == addresses[0], (paid, addresses)

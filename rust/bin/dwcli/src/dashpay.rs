@@ -47,7 +47,8 @@ use dw_engine::platform::{
     ShieldedError, WithdrawAmount, check_username,
 };
 use dw_engine::{
-    ContactRecipient, Engine, EngineError, NetworkSession, PreparedTx, SendFailure, TASK_PANICKED,
+    ContactRecipient, Engine, EngineError, NetworkSession, PreparedSummary, PreparedTx,
+    SendFailure, TASK_PANICKED,
 };
 use dw_vault::{GrantPurpose, VaultError};
 use serde::Serialize;
@@ -1027,6 +1028,13 @@ impl From<EngineError> for CliError {
             EngineError::Vault(v) => v.into(),
             EngineError::Contact(c) => c.into(),
             e if e.is_task_panic() => panic_error("an engine task", "the call"),
+            EngineError::Send(ref f) => {
+                let mut params = json!({"kind": crate::pay::send_failure_kind(f)});
+                if let Some(reason) = crate::pay::send_failure_reason(f) {
+                    params["reason"] = json!(reason);
+                }
+                Self::new(e.code(), &e, params)
+            }
             e => Self::new(e.code(), &e, json!({})),
         }
     }
@@ -2039,12 +2047,18 @@ fn pay_contact(
         let prepared = ctx.block_on(draft.prepare(grant))?;
         if cancel {
             ctx.block_on(draft.abandon(Arc::clone(&prepared)))?;
-            let mut result = paid(Value::Null, &prepared, &prepared.summary().txid);
-            result["cancelled"] = json!(true);
-            return Ok(result);
+            return Ok(cancelled(prepared.summary()));
         }
-        let outcome = ctx.block_on(draft.broadcast(Arc::clone(&prepared)))?;
-        return Ok(paid(Value::Null, &prepared, &outcome.txid));
+        return match ctx.block_on(draft.broadcast(Arc::clone(&prepared))) {
+            Ok(outcome) => Ok(paid(Value::Null, &prepared, &outcome.txid)),
+            Err(e) => {
+                let not_sent = ctx.block_on(draft.abandon(Arc::clone(&prepared))).is_ok();
+                let mut e = CliError::from(e);
+                e.params["outcome"] = json!(if not_sent { "not_sent" } else { "unknown" });
+                e.params["prepared_txid"] = json!(prepared.summary().txid);
+                Err(e)
+            }
+        };
     }
     // "Accept and pay" (DP3-01 D14): one credential for both grants, one
     // lease; the payment's `prepare` refuses until the accept established
@@ -2133,17 +2147,34 @@ fn after_accept(grant: Value, payment: Result<Value, PaymentFailed>) -> Value {
 /// the payment.
 fn paid(grant: Value, prepared: &PreparedTx, txid: &str) -> Value {
     let s = prepared.summary();
-    let address = (s.outputs.iter())
-        .find(|o| !o.is_change)
-        .and_then(|o| o.address.clone());
     json!({
         "grant": grant,
+        "paid": true,
         "txid": txid,
-        "address": address,
+        "address": recipient_address(s),
         "sent": s.total_sent,
         "fee": s.fee,
         "debit": s.total_debit,
     })
+}
+
+/// `pay-contact --cancel`'s result: the payment prepared and abandoned
+/// unsent, with what it would have cost; nothing left the wallet.
+fn cancelled(s: &PreparedSummary) -> Value {
+    json!({
+        "grant": Value::Null,
+        "paid": false,
+        "cancelled": true,
+        "prepared_txid": s.txid,
+        "address": recipient_address(s),
+        "estimated": {"sent": s.total_sent, "fee": s.fee, "debit": s.total_debit},
+    })
+}
+
+fn recipient_address(s: &PreparedSummary) -> Option<String> {
+    (s.outputs.iter())
+        .find(|o| !o.is_change)
+        .and_then(|o| o.address.clone())
 }
 
 /// A write's result: the grant it asked for and the call's outcome.
@@ -2450,7 +2481,9 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
     use dw_engine::platform::{DashPayStatus, Eligibility, UsernameRule};
-    use dw_engine::{DashNetwork, EngineConfig, EngineEvent, EventSink, SessionOptions};
+    use dw_engine::{
+        DashNetwork, EngineConfig, EngineEvent, EventSink, PreparedOutput, SessionOptions,
+    };
     use dw_vault::{KdfParams, KdfPolicy, MemoryOsStore, VaultConfig};
 
     use super::*;
@@ -3067,6 +3100,57 @@ mod tests {
             let parsed = RequestArgs::try_parse_from(args.iter().map(|a| a.as_str()));
             assert!(parsed.is_ok(), "{line:?}");
         }
+    }
+
+    #[test]
+    fn a_cancelled_payment_reports_nothing_paid() {
+        let output = |address: &str, is_change| PreparedOutput {
+            address: Some(address.into()),
+            amount: 7,
+            is_change,
+            is_mine: is_change,
+            label: None,
+        };
+        let s = PreparedSummary {
+            txid: "t1".into(),
+            fee: 3,
+            fee_rate_per_kb: 1000,
+            size_bytes: 200,
+            inputs: vec![],
+            outputs: vec![output("change", true), output("contact", false)],
+            total_sent: 7,
+            external_sent: 7,
+            total_debit: 10,
+        };
+        let r = cancelled(&s);
+        assert_eq!(
+            r,
+            json!({
+                "grant": null,
+                "paid": false,
+                "cancelled": true,
+                "prepared_txid": "t1",
+                "address": "contact",
+                "estimated": {"sent": 7, "fee": 3, "debit": 10},
+            })
+        );
+        for key in ["txid", "sent", "debit"] {
+            assert!(r.get(key).is_none(), "{key}");
+        }
+    }
+
+    #[test]
+    fn a_send_failure_names_its_kind_and_reason() {
+        let rejected = CliError::from(EngineError::Send(SendFailure::BroadcastRejected {
+            reason: "SPV broadcast not sent: no connected peers".into(),
+        }));
+        assert_eq!(rejected.code, "send");
+        assert_eq!(
+            rejected.params,
+            json!({"kind": "broadcast_rejected", "reason": "SPV broadcast not sent: no connected peers"})
+        );
+        let no_peers = CliError::from(EngineError::Send(SendFailure::NoPeers));
+        assert_eq!(no_peers.params, json!({"kind": "no_peers"}));
     }
 
     #[test]

@@ -1,15 +1,29 @@
 # Install: copy this and dw-dashpay-nightly.timer to ~/.config/systemd/user/, write the
-# environment file below (DW_DP_STATE, DW_DP_FUNDER, DW_DP_FUNDER_BIRTH, DW_DP_HOLD_UPSTREAM; the
-# funder's phrase lives in the secret store, never in this repository), copy
-# regtest/scripts/dashpay-nightly.sh to $DW_DP_STATE/dashpay-nightly.sh, then
+# environment file below, copy regtest/scripts/dashpay-nightly.sh to
+# $DW_DP_STATE/dashpay-nightly.sh, then
 # `systemctl --user daemon-reload && systemctl --user enable --now dw-dashpay-nightly.timer`.
+#
+# The environment file (mode 0600) sets DW_DP_STATE, DW_DP_FUNDER, DW_DP_FUNDER_BIRTH and
+# DW_DP_HOLD_UPSTREAM. DW_DP_STATE is an absolute directory outside any checkout, owned by this
+# user with mode 0700 (the harness creates it so, and refuses one open to group or others).
+# DW_DP_FUNDER names the funder's phrase file, owner-only (0600 or 0400; the harness refuses any
+# other mode): on agentbox the secret store's link, never a file in this repository.
+#
+# Log-only: a failed run shows as this unit's failed status (`systemctl --user status
+# dw-dashpay-nightly`) and in the junit.xml, pytest.log and nightly.log kept under
+# $DW_DP_STATE/nightly/<date>; nothing notifies anyone. For someone to be told, add a notifier
+# yourself, e.g. `OnFailure=<a unit that sends a message>` under [Unit], or monitoring that
+# checks `systemctl --user is-failed dw-dashpay-nightly`.
+#
+# The unit uses the system's default temporary directory; to use another, set TMPDIR in the
+# environment file to an existing directory this user can write.
 [Unit]
 Description=dashwallet-desktop DashPay suites on testnet, nightly (DASHPAY §6 T3)
 
 [Service]
 Type=oneshot
 EnvironmentFile=%h/.config/dashwallet-desktop/dashpay-nightly.env
-Environment=TMPDIR=/work/tmp
+UMask=0077
 ExecStart=/bin/bash -c 'exec "$DW_DP_STATE/dashpay-nightly.sh"'
 Nice=10
 TimeoutStartSec=4h

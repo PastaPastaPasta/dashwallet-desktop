@@ -13,12 +13,16 @@ Two fresh members A and B, each on its own data root (its own device) with a reg
    row goes at once, and the next requests sweep brings C's request back;
 4. hidden: A hides B (the hidden section only, the relation still `contact`), then shows it again;
 5. restore with contact accounts before SPV: A pays B through the contact channel; B's phrase is
-   restored on a new data root; the bring-up before SPV finds B's identity and its contact A, so
-   the first scan from the birth height finds the payment, attributed to A.
+   restored on a new data root and first opened with SPV pointed at no reachable peer, so no
+   block can be scanned: the bring-up still finds B's identity and its contact A with a ready
+   channel, and the payment is not in A's activity yet. Only then does a session with peers run
+   the wallet's first scan from the birth height, which finds the payment, attributed to A.
 
-The one-way contact (a request sent but never answered, paid to) needs platform's receiving
-account for sent-only contacts (#4740, which superseded #5256), which the pinned revision does not
-have; its case is skipped with that reason.
+The one-way contact (a request sent but never answered, paid to) needs the sender to build its
+receiving account from a sent-only request. The pinned platform-wallet collects account-building
+candidates only from established contacts (`collect_account_build_candidates`), so a sent-only
+request never gets a receiving account; platform #4740 (v5.1-dev) adds that. The case is skipped
+until a pin bump (ROADMAP E0-14) brings it.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from dwd_regtest.dashpay import (
 )
 
 PAY_DUFFS = 150_000
+UNREACHABLE_PEER = "127.0.0.1:9"
 
 
 def test_round_trip(pair, contacts):
@@ -52,7 +57,10 @@ def test_round_trip(pair, contacts):
 
 
 def test_channel_ready_while_unlocked(contacts):
+    assert contacts["a_live_pass"]["failure_code"] is None, contacts["a_live_pass"]
+    assert contacts["a_live"] is not None, "A's live session no longer lists B"
     section, row = contacts["a_live"]
+    assert (section, row["relation"]) == ("contacts", "contact"), contacts["a_live"]
     if row["channel"] == "setup_pending":
         pytest.xfail("engine bug: B's accept, seen by A's sync while A's vault is unlocked, queues A's account "
                      "build for a drain that runs only on an unlock or a bring-up, so the contact stays "
@@ -117,11 +125,13 @@ def test_restore_has_contact_accounts_before_spv(dp, pair, contacts):
     print(f"A paid B {PAY_DUFFS} duffs: {paid['txid']}")
     root = dp.root("restore")
     restored = root.restore(b.wallet.mnemonic, b.birth, f"dp2r-{dp.run_id}")
+    with root.session(restored.id, peers=[UNREACHABLE_PEER], name="dp2-restore-no-scan") as sr:
+        found = wait_until(lambda: (r := find_contact(sr, a.identity)) and r[1]["channel"] == "ready" and r, 900,
+                           "the restored wallet's contact A, ready, with no block scanned")
+        unscanned = [p for p in sr.ok("contact", "activity", a.identity)["items"] if p.get("txid") == paid["txid"]]
+    assert (found[0], found[1]["relation"]) == ("contacts", "contact"), found
+    assert unscanned == [], f"the payment was found before any block could be scanned: {unscanned}"
     with root.session(restored.id, name="dp2-restore") as sr:
-        status = sr.ok("dashpay", "sync-status")
-        assert status["startup"] in ("ready", "starting"), status
-        found = wait_until(lambda: find_contact(sr, a.identity), 600, "the restored wallet's contact A")
-        assert found[1]["relation"] == "contact", found
         activity = wait_until(
             lambda: [p for p in sr.ok("contact", "activity", a.identity)["items"] if p.get("txid") == paid["txid"]],
             900, "the restored wallet's scan to find A's payment")
@@ -129,7 +139,8 @@ def test_restore_has_contact_accounts_before_spv(dp, pair, contacts):
     assert row["amount"] == PAY_DUFFS, row
 
 
-@pytest.mark.skip(reason="one-way contacts need platform #4740 (supersedes #5256); the pinned revision "
-                         "72d0a3e74c does not contain it")
+@pytest.mark.skip(reason="one-way contacts need platform #4740 (ROADMAP E0-14): the pinned platform-wallet "
+                         "collects receiving-account candidates only from established contacts, not from "
+                         "sent-only requests; enable once it queues receiving accounts for sent-only requests")
 def test_one_way_contact():
     raise AssertionError("unreachable")

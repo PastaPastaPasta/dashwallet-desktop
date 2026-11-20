@@ -67,22 +67,54 @@ def funded_miner(regtest_node: RegtestNode):
 
 # ---- DashPay suites (DASHPAY §6 T2 and T3; regtest/README.md "DashPay suites") ----
 
+import os  # noqa: E402
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
 from dwd_regtest.dashpay import Harness, befriend, dwcli_path, make_member  # noqa: E402
+
+_DASHPAY: dict[str, object] = {}
 
 
 @pytest.fixture(scope="session")
 def dp() -> Iterator[Harness]:
-    """The DashPay run: skipped unless DW_DP_NET names a network and dwcli is built. At the end
-    every wallet the run created is closed, and the run fails if a log holds a secret."""
+    """The DashPay run: skipped while DW_DP_NET is unset; any other misconfiguration (an invalid
+    DW_DP_NET, an unsafe state directory, no dwcli) is an error. At the end of the pytest run
+    every artifact is scanned for the run's secrets (`pytest_unconfigure`)."""
     harness = Harness.from_env()
     if harness is None:
         pytest.skip("set DW_DP_NET (testnet or devnet) to run the DashPay suites")
+    _DASHPAY["harness"] = harness
     if dwcli_path() is None:
-        pytest.skip("no dwcli binary (set DWCLI)")
+        raise RuntimeError("DW_DP_NET is set but there is no dwcli binary (set DWCLI)")
     print(f"DashPay run {harness.run_id} on {harness.net.tier}, logs in {harness.logs}")
     yield harness
-    leaks = harness.close()
-    assert not leaks, f"a secret is in the run's logs: {leaks}"
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    _DASHPAY["session"] = session
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """After the junit file and the terminal summary are written: the secret scan of the logs,
+    the junit file and DW_DP_SCAN's files. A secret found, or a file that cannot be read, fails
+    the run."""
+    harness = _DASHPAY.get("harness")
+    if harness is None:
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    extra = [Path(config.option.xmlpath)] if getattr(config.option, "xmlpath", None) else []
+    extra += [Path(p) for p in os.environ.get("DW_DP_SCAN", "").split(":") if p]
+    try:
+        clean = harness.scan(extra)
+    except Exception as e:  # noqa: BLE001
+        print(f"DashPay secret scan FAILED: {type(e).__name__}", file=sys.__stderr__, flush=True)
+        clean = False
+    session = _DASHPAY.get("session")
+    if not clean and session is not None:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 @pytest.fixture(scope="session")
