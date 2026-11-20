@@ -978,9 +978,11 @@ impl NetworkSession {
 
     /// Stores `state` for wallet `id` in one transaction: the range
     /// setting, Core's coin locks and its CoinJoin salt, so the same coins
-    /// count as fully mixed (QT-043, m3-engine.md §5). The range and salt
-    /// replace stored ones; Core's locks are added to any the wallet has.
-    /// Returns what was replaced, for [`Self::restore_imported_state`].
+    /// count as fully mixed (QT-043, m3-engine.md §5). The salt replaces a
+    /// stored one; each stored counter of the range only rises, so an older
+    /// copy of the file does not narrow it; Core's locks are added to any
+    /// the wallet has. Returns what was replaced, for
+    /// [`Self::restore_imported_state`].
     pub(crate) async fn write_imported_state(
         self: &Arc<Self>,
         id: WalletId,
@@ -1003,7 +1005,13 @@ impl NetworkSession {
         }
         let key = id.to_string();
         self.appdb_op(move |db| {
-            db.write_settings_and_locks(&key, &settings, &locks, crate::coins::now_secs())
+            db.write_settings_and_locks(
+                &key,
+                &settings,
+                &widen_issued,
+                &locks,
+                crate::coins::now_secs(),
+            )
         })
         .await
         .map(Some)
@@ -1055,6 +1063,20 @@ pub(crate) fn parse_issued(value: &str) -> Option<(u32, u32)> {
     let (external, internal) = value.split_once(',')?;
     let issued = (external.parse().ok()?, internal.parse().ok()?);
     (issued.0 <= MAX_ISSUED && issued.1 <= MAX_ISSUED).then_some(issued)
+}
+
+/// The value stored for setting `key` when `stored` is there and `new` is
+/// written: the range setting keeps the larger counter of each chain, any
+/// other setting (or a stored range that does not parse) takes `new`.
+fn widen_issued(key: &str, stored: &str, new: &str) -> String {
+    match (
+        key == ISSUED_SETTING,
+        parse_issued(stored),
+        parse_issued(new),
+    ) {
+        (true, Some((e0, i0)), Some((e1, i1))) => format!("{},{}", e0.max(e1), i0.max(i1)),
+        _ => new.to_owned(),
+    }
 }
 
 /// Tests: the next legacy range an import applies in a session on one of
@@ -1298,18 +1320,87 @@ mod tests {
         )
         .unwrap();
         let s = engine
-            .block_on(engine.open_network(
-                DashNetwork::Regtest,
-                crate::SessionOptions {
-                    dapi_addresses: vec!["http://127.0.0.1:1".into()],
-                    quorum_url: Some("http://127.0.0.1:1".into()),
-                    spv_peers: vec!["127.0.0.1:1".into()],
-                    ..Default::default()
-                },
-            ))
+            .block_on(engine.open_network(DashNetwork::Regtest, offline()))
             .unwrap();
         engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
         (dir, engine, s, created)
+    }
+
+    fn offline() -> crate::SessionOptions {
+        crate::SessionOptions {
+            dapi_addresses: vec!["http://127.0.0.1:1".into()],
+            quorum_url: Some("http://127.0.0.1:1".into()),
+            spv_peers: vec!["127.0.0.1:1".into()],
+            ..Default::default()
+        }
+    }
+
+    /// Closes the session and opens it again: its wallets load from storage.
+    fn reopen(engine: &crate::Engine, s: Arc<NetworkSession>) -> Arc<NetworkSession> {
+        drop(s);
+        assert!(
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        );
+        engine
+            .block_on(engine.open_network(DashNetwork::Regtest, offline()))
+            .unwrap()
+    }
+
+    fn import(engine: &crate::Engine, s: &Arc<NetworkSession>, name: &str) -> WalletId {
+        let file = testdata(&format!("compat/walletdat/{name}"));
+        (engine.block_on(s.import_wallet_dat(file, None, ImportOptions::default())))
+            .unwrap()
+            .wallet_id
+    }
+
+    fn addresses_of(
+        engine: &crate::Engine,
+        s: &Arc<NetworkSession>,
+        id: WalletId,
+    ) -> Vec<crate::receive::AddressInfo> {
+        engine
+            .block_on(s.addresses(id, crate::receive::AddressFilter::default()))
+            .unwrap()
+    }
+
+    fn highest(addresses: &[crate::receive::AddressInfo], chain: AddressChain) -> u32 {
+        (addresses.iter())
+            .filter(|a| a.chain == chain)
+            .map(|a| a.index)
+            .max()
+            .unwrap()
+    }
+
+    /// Attaching an older copy of a wallet.dat to a wallet keeps the larger
+    /// counter of each chain, whichever copy it came from, and a reload
+    /// watches that range.
+    #[test]
+    fn an_older_wallet_dat_does_not_narrow_the_stored_range() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let id = wide_range_id();
+        let stored = |s: &NetworkSession| {
+            (s.live().unwrap().appdb)
+                .setting(&id.to_string(), ISSUED_SETTING)
+                .unwrap()
+        };
+        assert_eq!(import(&engine, &s, "bdb_wide_change.dat"), id);
+        assert_eq!(stored(&s).as_deref(), Some("4,2600"));
+        let attach = |name: &str| {
+            assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+            assert_eq!(import(&engine, &s, name), id);
+        };
+        attach("bdb_wide_range.dat");
+        assert_eq!(stored(&s).as_deref(), Some("1001,2600"));
+        attach("bdb_wide_change.dat");
+        assert_eq!(stored(&s).as_deref(), Some("1001,2600"));
+
+        let s = reopen(&engine, s);
+        let addresses = addresses_of(&engine, &s, id);
+        assert!(highest(&addresses, AddressChain::Receiving) >= 1000 + CORE_COMPAT_LOOKAHEAD);
+        assert!(highest(&addresses, AddressChain::Change) >= 2599 + CORE_COMPAT_LOOKAHEAD);
+        engine.block_on(engine.shutdown()).unwrap();
     }
 
     /// The id of `bdb_wide_range.dat`'s wallet (`abandon … about`).

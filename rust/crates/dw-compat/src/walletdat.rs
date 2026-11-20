@@ -2662,6 +2662,23 @@ mod tests {
                 .collect();
             build::pairs(&refs, false)
         };
+        let wide_change = {
+            let pairs = [
+                (
+                    db_key("hdchain"),
+                    hd(&abandon_id, &abandon_seed[..], abandon, 4, 2600),
+                ),
+                (
+                    db_key_pub("hdpubkey", &abandon_child),
+                    ser_hdpubkey(&abandon_child),
+                ),
+            ];
+            let refs: Vec<(&[u8], &[u8])> = pairs
+                .iter()
+                .map(|(k, v)| (k.as_slice(), v.as_slice()))
+                .collect();
+            build::pairs(&refs, false)
+        };
         let mut account1_chain = hd(&abandon_id, &abandon_seed[..], abandon, 1, 0);
         let n = account1_chain.len();
         account1_chain[n - 12..n - 8].copy_from_slice(&1u32.to_le_bytes());
@@ -2682,6 +2699,7 @@ mod tests {
         vec![
             ("bdb_label_free.dat", label_free),
             ("bdb_wide_range.dat", wide),
+            ("bdb_wide_change.dat", wide_change),
             ("bdb_account1.dat", account1),
         ]
     }
