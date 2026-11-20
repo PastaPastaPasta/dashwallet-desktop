@@ -11,7 +11,7 @@ use common::*;
 use dw_vault::mnemonic;
 use dw_vault::{
     Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose, LockState,
-    PASSPHRASE_MAX_AGE_SECS, UnlockScope, Vault, VaultError,
+    PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS, UnlockScope, Vault, VaultError,
 };
 use key_wallet::Network;
 
@@ -470,4 +470,81 @@ fn a_recovery_keeps_the_spending_limit() {
         allow_window(&v);
         assert_eq!(v.signing_window_remaining(), Some(kept), "{limit}");
     }
+}
+
+/// An older sealed policy put back on its own (the file's other parts left
+/// as they are) is refused: it no longer counts as the user's limit, and
+/// quick unlock and the signing window both fall to 0.
+#[test]
+fn an_older_sealed_policy_put_back_is_refused() {
+    let limit = *QUICK_UNLOCK_SPEND_LIMITS
+        .iter()
+        .max()
+        .expect("spending limit options");
+    let fx = Fixture::new();
+    let (v, key) = enrolled(&fx);
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    v.set_quick_unlock_spend_limit(&change_credential_grant(&v), limit)
+        .unwrap();
+    let generous = fx.read_json()["quick_unlock"].clone();
+    v.set_quick_unlock_spend_limit(&change_credential_grant(&v), 0)
+        .unwrap();
+    drop(v);
+
+    let mut json = fx.read_json();
+    json["quick_unlock"] = generous;
+    fx.write_json(&json);
+
+    let v = fx.open();
+    assert_eq!(
+        v.authorize(
+            spend(limit),
+            Some(&wallet(1)),
+            Credential::QuickUnlock(&key)
+        ),
+        Err(VaultError::PassphraseStale)
+    );
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    allow_window(&v);
+    assert_eq!(v.signing_window_remaining(), Some(0));
+    assert_eq!(v.quick_unlock_policy().spend_limit_duffs, 0);
+    v.lock();
+    assert_eq!(
+        v.authorize(spend(1), Some(&wallet(1)), Credential::QuickUnlock(&key)),
+        Err(VaultError::QuickUnlockLimitExceeded { limit_duffs: 0 })
+    );
+}
+
+/// Deleting the policy from a vault that had one does not bring back the
+/// default: the limit is 0 until the user sets it again.
+#[test]
+fn a_deleted_policy_counts_as_limit_zero() {
+    let fx = Fixture::new();
+    let (v, key) = enrolled(&fx);
+    drop(v);
+    let mut json = fx.read_json();
+    json.as_object_mut()
+        .expect("vault file object")
+        .remove("quick_unlock");
+    fx.write_json(&json);
+
+    let v = fx.open();
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    allow_window(&v);
+    assert_eq!(v.signing_window_remaining(), Some(0));
+    v.lock();
+    assert_eq!(
+        v.authorize(spend(1), Some(&wallet(1)), Credential::QuickUnlock(&key)),
+        Err(VaultError::QuickUnlockLimitExceeded { limit_duffs: 0 })
+    );
+
+    v.unlock(PASS, UnlockScope::Full).unwrap();
+    v.set_quick_unlock_spend_limit(
+        &change_credential_grant(&v),
+        DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
+    )
+    .unwrap();
+    v.lock();
+    v.authorize(spend(1), Some(&wallet(1)), Credential::QuickUnlock(&key))
+        .expect("the limit the user set again");
 }

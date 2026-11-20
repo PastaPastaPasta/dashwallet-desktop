@@ -303,6 +303,9 @@ fn decode_seed(payload: &[u8]) -> Result<(Zeroizing<[u8; 64]>, SeedDerivation), 
 struct PolicyPayload {
     spend_limit_duffs: u64,
     last_passphrase_at: Option<u64>,
+    /// The manifest's `policy` when this was sealed ([`put_policy`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generation: Option<u64>,
 }
 
 impl Default for PolicyPayload {
@@ -310,6 +313,20 @@ impl Default for PolicyPayload {
         Self {
             spend_limit_duffs: DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
             last_passphrase_at: None,
+            generation: None,
+        }
+    }
+}
+
+impl PolicyPayload {
+    /// What a policy the manifest names but the file no longer holds, or
+    /// holds only in an older copy, counts as: no spending without the
+    /// passphrase, and no recent passphrase entry.
+    fn withdrawn() -> Self {
+        Self {
+            spend_limit_duffs: 0,
+            last_passphrase_at: None,
+            generation: None,
         }
     }
 }
@@ -333,11 +350,41 @@ fn seal_policy(
     })
 }
 
-/// The authenticated policy of `f`; `None` when the file has none. A plain
-/// copy that differs from the sealed one is `Corrupt`.
+/// Seals `payload` as the policy of `next` at a new manifest generation,
+/// which the manifest records as the policy's, so the sealed policy it
+/// replaces is refused if it is put back. Returns that generation; the
+/// caller raises `high_water` to it once the file is written.
+fn put_policy(
+    next: &mut VaultFile,
+    dek: &[u8; 32],
+    high_water: u64,
+    payload: PolicyPayload,
+) -> Result<u64, VaultError> {
+    let mut manifest = verify_manifest(next, dek, high_water)?;
+    manifest.generation += 1;
+    manifest.policy = Some(manifest.generation);
+    next.manifest = seal_manifest(dek, &next.vault_id, &next.network, &manifest)?;
+    next.quick_unlock = Some(seal_policy(
+        dek,
+        &next.vault_id,
+        &next.network,
+        PolicyPayload {
+            generation: manifest.policy,
+            ..payload
+        },
+    )?);
+    Ok(manifest.generation)
+}
+
+/// The authenticated policy of `f`; `None` when the file has none and never
+/// had one this build wrote. A plain copy that differs from the sealed one,
+/// or a manifest that does not authenticate, is `Corrupt`. Once the
+/// manifest names a policy generation, a missing policy or one sealed at
+/// another generation is [`PolicyPayload::withdrawn`].
 fn open_policy(f: &VaultFile, dek: &[u8; 32]) -> Result<Option<PolicyPayload>, VaultError> {
+    let manifest = verify_manifest(f, dek, 0)?;
     let Some(settings) = &f.quick_unlock else {
-        return Ok(None);
+        return Ok(manifest.policy.map(|_| PolicyPayload::withdrawn()));
     };
     let plain = crypto::open(
         dek,
@@ -354,7 +401,12 @@ fn open_policy(f: &VaultFile, dek: &[u8; 32]) -> Result<Option<PolicyPayload>, V
             "quick-unlock policy differs from its sealed copy".into(),
         ));
     }
-    Ok(Some(payload))
+    match manifest.policy {
+        Some(generation) if payload.generation != Some(generation) => {
+            Ok(Some(PolicyPayload::withdrawn()))
+        }
+        _ => Ok(Some(payload)),
+    }
 }
 
 /// How a grant token relates to the vault it is presented to
@@ -917,6 +969,7 @@ impl Vault {
         let manifest = Manifest {
             generation: 1,
             records: BTreeMap::new(),
+            policy: None,
         };
         let vault_file = VaultFile {
             format: file::FORMAT,
@@ -1223,15 +1276,18 @@ impl Vault {
             let mut next = self.file_copy(writer)?;
             next.throttle = Throttle::default();
             if let Some(policy) = policy {
-                next.quick_unlock = Some(seal_policy(
+                let high_water = self.inner().high_water;
+                let generation = put_policy(
+                    &mut next,
                     &dek,
-                    &next.vault_id,
-                    &next.network,
+                    high_water,
                     PolicyPayload {
                         last_passphrase_at: Some(now),
                         ..policy
                     },
-                )?);
+                )?;
+                let mut inner = self.inner();
+                inner.high_water = inner.high_water.max(generation);
             }
             // The passphrase is already proven: a failed write of the reset
             // counter (or the sealed passphrase time) must not refuse it (a
@@ -2816,16 +2872,19 @@ impl Vault {
                 )?,
                 enrolled_at,
             });
-            next.quick_unlock = Some(seal_policy(
+            let high_water = self.inner().high_water;
+            let generation = put_policy(
+                &mut next,
                 &dek,
-                &next.vault_id,
-                &next.network,
+                high_water,
                 PolicyPayload {
                     last_passphrase_at,
                     ..policy
                 },
-            )?);
+            )?;
             self.persist(&writer, next)?;
+            let mut inner = self.inner();
+            inner.high_water = inner.high_water.max(generation);
             Ok(Zeroizing::new(wrap_key.to_vec()))
         })
     }
@@ -2951,16 +3010,23 @@ impl Vault {
         });
     }
 
-    /// The quick-unlock rules (IOS-016). In-memory read of the plain copy,
-    /// so it works while locked; `authorize` enforces the sealed copy.
+    /// The quick-unlock rules (IOS-016). While locked the limit is the plain
+    /// copy; with the data key in memory it is the sealed one, which is what
+    /// `authorize` enforces.
     pub fn quick_unlock_policy(&self) -> QuickUnlockPolicy {
         let inner = self.inner();
         let file = inner.file.as_ref();
         let settings = file.and_then(|f| f.quick_unlock.as_ref());
+        let shown = settings.map_or(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, |s| s.spend_limit_duffs);
         QuickUnlockPolicy {
             enrolled: file.is_some_and(|f| f.slot_b.is_some()),
-            spend_limit_duffs: settings
-                .map_or(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, |s| s.spend_limit_duffs),
+            spend_limit_duffs: match (file, inner.dek.as_ref()) {
+                (Some(f), Some(dek)) => match open_policy(f, dek) {
+                    Ok(Some(policy)) => policy.spend_limit_duffs,
+                    _ => shown,
+                },
+                _ => shown,
+            },
             passphrase_max_age_secs: PASSPHRASE_MAX_AGE_SECS,
             last_passphrase_at: settings
                 .and_then(|s| s.last_passphrase_at)
@@ -2992,18 +3058,23 @@ impl Vault {
         self.gated(VaultError::Locked, |op| {
             let dek = self.key_for(op, &token)?;
             let policy = open_policy(&next, &dek)?.unwrap_or_default();
-            next.quick_unlock = Some(seal_policy(
+            let high_water = self.inner().high_water;
+            let generation = put_policy(
+                &mut next,
                 &dek,
-                &next.vault_id,
-                &next.network,
+                high_water,
                 PolicyPayload {
                     spend_limit_duffs,
                     last_passphrase_at: policy
                         .last_passphrase_at
                         .max(self.inner().last_passphrase_at),
+                    generation: None,
                 },
-            )?);
-            self.persist(&writer, next)
+            )?;
+            self.persist(&writer, next)?;
+            let mut inner = self.inner();
+            inner.high_water = inner.high_water.max(generation);
+            Ok(())
         })?;
         drop(writer);
         Ok(self.quick_unlock_policy())
@@ -3088,6 +3159,7 @@ impl Vault {
         let mut manifest = Manifest {
             generation: 1,
             records: BTreeMap::new(),
+            policy: Some(1),
         };
         for (id, payload) in &payloads {
             let sealed = crypto::seal(&dek, payload, &file::record_aad(&vault_id, tag, id))?;
@@ -3114,6 +3186,7 @@ impl Vault {
                 PolicyPayload {
                     spend_limit_duffs,
                     last_passphrase_at: Some(now),
+                    generation: manifest.policy,
                 },
             )?),
         };
@@ -3376,6 +3449,79 @@ mod tests {
         v.test_backdate_sleep_sample(Duration::from_secs(30));
         assert!(!v.signing_window_open());
         assert_eq!(v.status().state, LockState::Unlocked);
+    }
+
+    /// What each mix of an older and a newer build leaves in the file: a
+    /// manifest without the policy generation keeps the old rule (any
+    /// authentic policy), and a policy sealed without it under a manifest
+    /// that names one counts as withdrawn.
+    #[test]
+    fn the_policy_generation_across_older_builds() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::open(
+            dir.path().join("vault"),
+            Network::Regtest,
+            "regtest",
+            test_config(step_clock()),
+        )
+        .unwrap();
+        v.create(Some(b"correct horse")).unwrap();
+        let dek = *v.inner().dek.clone().unwrap();
+        let payload = |limit, generation| PolicyPayload {
+            spend_limit_duffs: limit,
+            last_passphrase_at: None,
+            generation,
+        };
+        let with = |edit: &dyn Fn(&mut VaultFile)| {
+            let mut inner = v.inner();
+            edit(inner.file.as_mut().unwrap());
+            sealed_spend_limit(&inner).unwrap()
+        };
+        let reseal_manifest = |f: &mut VaultFile, policy: Option<u64>| {
+            let mut manifest = verify_manifest(f, &dek, 0).unwrap();
+            manifest.policy = policy;
+            f.manifest = seal_manifest(&dek, &f.vault_id, &f.network, &manifest).unwrap();
+        };
+
+        assert_eq!(with(&|_| {}), DEFAULT_QUICK_UNLOCK_SPEND_LIMIT);
+        assert_eq!(
+            with(&|f| {
+                f.quick_unlock = Some(
+                    seal_policy(&dek, &f.vault_id, &f.network, payload(10_000_000, None)).unwrap(),
+                );
+            }),
+            10_000_000
+        );
+        assert_eq!(
+            with(&|f| {
+                put_policy(f, &dek, 0, payload(20_000_000, None)).unwrap();
+            }),
+            20_000_000
+        );
+        assert_eq!(
+            with(&|f| {
+                f.quick_unlock = Some(
+                    seal_policy(&dek, &f.vault_id, &f.network, payload(30_000_000, None)).unwrap(),
+                );
+            }),
+            0
+        );
+        assert_eq!(
+            with(&|f| {
+                let generation = verify_manifest(f, &dek, 0).unwrap().policy;
+                f.quick_unlock = Some(
+                    seal_policy(
+                        &dek,
+                        &f.vault_id,
+                        &f.network,
+                        payload(40_000_000, generation),
+                    )
+                    .unwrap(),
+                );
+                reseal_manifest(f, None);
+            }),
+            40_000_000
+        );
     }
 
     /// Opens the vault in `dir` with the shared `os_store`.
