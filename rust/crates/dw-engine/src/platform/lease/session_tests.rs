@@ -812,6 +812,93 @@ fn a_lease_racing_window_grants_stays_within_the_limit() {
     assert_eq!(f.session.vault().signing_window_remaining(), Some(0));
 }
 
+/// A recovery reads the replaced vault's payment choice under the same
+/// lock as a change of it: a change that holds the lock when the recovery
+/// starts lands first, and the new vault keeps it rather than the value
+/// stored before the change.
+#[test]
+fn a_recovery_keeps_a_payment_choice_changed_while_it_waited() {
+    let f = fixture(true);
+    let old = f.session.vault().vault_id().unwrap();
+    assert!(f.session.vault().signing_window_allowed());
+    let setter = f.engine.block_on(f.session.payment_auth.lock());
+    std::thread::scope(|scope| {
+        let recovery = scope.spawn(|| {
+            f.engine.block_on(f.session.recover_vault(
+                f.wallet.0,
+                Zeroizing::new(PHRASE.as_bytes().to_vec()),
+                Zeroizing::new(Vec::new()),
+                Zeroizing::new(b"another pass phrase".to_vec()),
+            ))
+        });
+        std::thread::sleep(Duration::from_secs(1));
+        assert_eq!(f.session.vault().vault_id(), Some(old.clone()));
+        f.engine
+            .block_on(f.session.write_payment_auth(&old, true))
+            .unwrap();
+        drop(setter);
+        recovery.join().unwrap().unwrap();
+    });
+    assert_ne!(f.session.vault().vault_id(), Some(old));
+    assert!(
+        f.engine
+            .block_on(f.session.payment_authentication())
+            .unwrap()
+            .on
+    );
+    assert!(!f.session.vault().signing_window_allowed());
+}
+
+/// "Ask every payment" is stored durably: once turning it on returns, a
+/// power loss does not bring back the window.
+#[test]
+fn an_acknowledged_ask_every_payment_survives_a_power_loss() {
+    use dw_appdb::durability_sim::{arm, power_loss};
+    let mut f = fixture(true);
+    let appdb = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let reopen = |f: &mut Fixture| {
+        f.engine
+            .block_on(f.engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+    };
+    reopen(&mut f);
+    arm(&appdb, false);
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    assert!(
+        !f.engine
+            .block_on(f.session.payment_authentication())
+            .unwrap()
+            .on
+    );
+    let grant = f
+        .session
+        .vault()
+        .authorize(
+            GrantPurpose::ChangeCredential,
+            None,
+            Credential::Passphrase(PASS),
+        )
+        .unwrap();
+    f.engine
+        .block_on(f.session.set_payment_authentication(true, grant.id))
+        .unwrap();
+    reopen(&mut f);
+    power_loss(&appdb);
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    assert!(
+        f.engine
+            .block_on(f.session.payment_authentication())
+            .unwrap()
+            .on
+    );
+}
+
 #[test]
 fn a_txdraft_under_a_lease_is_charged_fenced_and_refunded() {
     let f = fixture(false);

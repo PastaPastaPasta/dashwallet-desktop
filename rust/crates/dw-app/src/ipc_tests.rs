@@ -1247,6 +1247,41 @@ fn encrypting_a_vault_made_without_a_passphrase_asks_every_payment() {
     }
 }
 
+/// A refused encrypt changes no payment choice: an encrypted vault on the
+/// window stays on it after `vault.already_encrypted` (whatever the grant),
+/// and a vault without a passphrase keeps its stored row after a grant that
+/// is not a live change-credential grant.
+#[test]
+fn a_refused_encrypt_keeps_the_payment_choice() {
+    use tauri::Manager;
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": "pw" }));
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+    demo.err(
+        "encrypt_vault",
+        json!({ "newPassphrase": "other", "grantId": "no such grant" }),
+        "vault.already_encrypted",
+    );
+    assert_eq!(demo.ok("payment_authentication", json!({})), false);
+
+    let demo = Demo::new();
+    demo.open();
+    demo.ok("create_vault", json!({ "passphrase": null }));
+    let session =
+        tauri::async_runtime::block_on(demo.app.state::<crate::state::AppState>().session())
+            .unwrap();
+    tauri::async_runtime::block_on(session.set_payment_auth_row_for_test(Some("window".into())))
+        .unwrap();
+    demo.err(
+        "encrypt_vault",
+        json!({ "newPassphrase": "pw", "grantId": "no such grant" }),
+        "vault.grant_invalid",
+    );
+    let stored = tauri::async_runtime::block_on(session.payment_authentication()).unwrap();
+    assert!(!stored.on);
+}
+
 /// A recovery with the recovery phrase keeps "ask every payment" and the
 /// window as the user had them, for the new vault it makes.
 #[test]
