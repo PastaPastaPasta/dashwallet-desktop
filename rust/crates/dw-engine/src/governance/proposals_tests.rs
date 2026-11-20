@@ -1805,6 +1805,11 @@ fn an_expired_or_failed_proposal_of_the_name_does_not_block() {
     p.confirm_tx(rival, 1);
     assert_eq!(p.state(&first), MyProposalState::FeeFailed);
     p.f.credit(2, 3 * COIN);
+    // A later second: the same draft, stamped with it, has another hash.
+    let at = now();
+    while now() == at {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     let again = p.create(p.spend(2 * COIN)).unwrap();
     assert_eq!(again.state, MyProposalState::FeePaid { confirmations: 0 });
     assert_eq!(p.rows().len(), 3);
