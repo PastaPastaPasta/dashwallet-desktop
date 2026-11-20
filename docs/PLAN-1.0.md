@@ -20,16 +20,18 @@ owner updates the State column as items land and reports against it daily.
     localization foundation (#146), the upgrade-path check from v0.2.0, which closes part of #101 (#152),
     #141 (#158), #122 (#147), #113 (#154), the H-02 fuzz targets with their nightly job (#149), the three
     DashPay suites (#129), and capture protection on Import keys (#164).
-  - In a pull request, ready, with its review closed, merging when its checks are green: #88 (#134) and
-    #78 (#160).
-  - In a pull request, a draft: #68, #69 and the engine part of #74 (#121; the fixes from its review are
-    pushed and being checked again), the renderer part of #133 (#137; it waits for the #148 fix), and the
+  - In a pull request, ready: #88 (#134) and #78 (#160). #134 is held: the reviews of its head found that a
+    load which cannot read all of its evidence can hide a coin, and that fix is being written. #160 merges
+    when its checks are green and the findings on its head are answered.
+  - In a pull request, a draft: #68, #69 and the engine part of #74 (#121; a second check of its review
+    fixes found one more defect, a replay that cannot finish after a quit, which is being fixed), the
+    renderer part of #133 (#137; it waits for the #148 fix), and the
     pin of the rust-dashcore and platform forks for #45, #46, #47 and #120 (#159; eight Rust tests fail on
     it, and the fork lane's fixes are due on it on 11-20).
   - Being written, no pull request yet: #148, and case 14 of #170.
   - Waiting: #73 and #86, which go on top of #134.
   - Not started: the rest of #101, what is left of #81 apart from the watch-only rewind and the retry of
-    a stored range that fails at load, which are in #121, and the cases the three funds fixes leave, filed
+    a stored range that fails at load, which are in #121, and the rest of the cases the three funds fixes leave, filed
     on 11-20 as #170 (after #134), #172 (after #121) and #173 (after #160). Their plan is in "What the funds
     fixes leave for the release candidate".
 - Remaining, checked against the code on 2026-11-18: about 200 agent-days without the partner integrations
@@ -63,7 +65,7 @@ thread; "MG" is the masternode and governance thread, which is also the release 
 | C Shielded and Platform | MG | finish item 0 (BL-617) → Platform ↔ Shielded → Max drains → top-up from Shielded or Platform → funding-source picker with shielded-funded identity → pay a contact from any balance → withdrawal to own Platform address → protocol advisory banner → vault scopes and viewing-key cache | 11-18 → 11-27 | item 0 part A3b (#26), Max on Send from Shielded (#63) and the Platform → Shielded quote (#110, 11-20) merged; #49 in review |
 | D Masternode screens | MG | MG-10 app bindings → My masternodes → registration wizard → ProUpRegTx → MG-10b shared masternodes → shown by default when the wallet holds keys → voting-key import → contested-vote polish | 11-19 → 11-25 | engine done; the first app bindings (#51) and the shared abandon spends (#94) merged; the api wrappers and fixture world in review (#55) |
 | E Masternode checks | MG | MG-08 `dwcli` owner commands and regtest suites → MG-12 signing-path review and BL-582..585 | 11-19 → 11-26 | the owner gov commands and nightly regtest suites merged (#35); of MG-12, voting keys refusing plain message signing merged (#44) |
-| F CoinJoin | PO | BL-614 → BL-615 → V24 promotion and demotion → mixed-send warnings. Cut: sleep prevention, start on login | 11-19 → 11-25 | BL-614 (#38) and BL-615 (#39) merged (11-19); their follow-up fixes (#68, #69 and the engine part of #74) are in #121, a draft: the fixes from its review are pushed and being checked again, and what it leaves is listed in #172; V24 promotion and demotion is on a branch, no pull request yet; the mixed-send warnings are not started (they follow #137) |
+| F CoinJoin | PO | BL-614 → BL-615 → V24 promotion and demotion → mixed-send warnings. Cut: sleep prevention, start on login | 11-19 → 11-25 | BL-614 (#38) and BL-615 (#39) merged (11-19); their follow-up fixes (#68, #69 and the engine part of #74) are in #121, a draft: the fixes from its review are pushed, one more defect found by the second check is being fixed, and what it leaves is listed in #172; V24 promotion and demotion is on a branch, no pull request yet; the mixed-send warnings are not started (they follow #137) |
 | G Core compatibility | PO | legacy Berkeley DB `wallet.dat`. Cut: MP-07 sweep and BIP38, MP-06 phrase repair, MP-05 BIP70, spend unconfirmed change, per-transaction notifications | 11-19 → 11-23 | `wallet.dat` merged (#34, 11-20); six fixes from its last review merged (#119, 11-20); what is left is listed in #81: the watch-only rewind and the retry of a stored range that fails at load are in #121, the rest is not started |
 | H Marketplace | PO | Cut: X4 (browse, buy, extra names, instant-name offer), identity-verify link | — | cut to 1.0.x |
 | I Invitations | PO | Cut: the storage patch, X3 create, share and history, shielded-funded and small invites, the Home claim card, scanning an invitation's QR code. Claiming an invitation from a link or pasted text shipped in 0.1 and stays | — | cut to 1.0.x |
@@ -194,8 +196,9 @@ available), so skip them for an upgrade from 0.1.0:
 ## What the funds fixes leave for the release candidate
 
 Decided 2026-11-20 with the release owner. The fixes for #88 (#134), for #68, #69 and #74 (#121) and for #78
-(#160) each leave cases open. A case is RC must-fix when it can hide a payment or coins, or release a spent
-coin; the rest are for 1.0.x. The cases are listed in #170, #172 and #173.
+(#160) each leave cases open. A case is RC must-fix when it can hide a payment or coins, release a spent
+coin, or let a payment through without the credential the user chose; the rest are for 1.0.x. The cases are
+listed in #170, #172 and #173.
 
 **#170, the balance after a restart.** Nine cases are RC must-fix. Sizes are working days with tests and
 review, from reading the code; nothing was built.
@@ -225,10 +228,14 @@ review, from reading the code; nothing was built.
   this repository) takes 12 to 17 days at the shortest. It leaves the 1.0 plan and is a 1.1 item. No RC
   must-fix case needs it, and it would close cases 5 and 14 only partly.
 
-**#172, CoinJoin and restored wallets, and #173, the signing window.** #172 holds four RC must-fix cases
-and one candidate; #173 holds two. They are not sized yet. A table like the one above, with the targeted fix
-and size of each, is due by 11-21 18:00 UTC and goes here. They are worked after the #170 cases in progress,
-on the third lane.
+**#172, CoinJoin and restored wallets, and #173, the signing window.** #172 holds six RC must-fix cases;
+#173 holds two. They have no promised or attempted terms yet. The issues give rough sizes without review:
+about 3.5 days for four of #172's cases and 2.5 days for #173's two. Two of #172's cases have no size: a
+wallet whose birth is below dash-spv's header anchor, and a seed created here but mixed elsewhere, for which
+a hint on the Rescan screen and a notes line may stand in for a code fix. A table like the one above, with
+the targeted fix of each and its size with review, is due by 11-21 18:00 UTC and goes here with their terms.
+They are worked on the third lane. If no lane has freed for them by 11-24, the product owner reports it
+that day and the release owner decides what they displace.
 
 ## What only pasta can unblock
 
@@ -253,9 +260,11 @@ No longer on this list: partner credentials and Explore database access (lane L 
   warnings, CoinJoin V24, then the later items of lane C.
 - **Review and CI throughput.** A full CI run takes about 90 minutes on macOS. With 12 lanes active the runners
   queue; engine-only and renderer-only pull requests should not wait on each other's jobs.
-- **The RC must-fix list grew on 11-20.** The three funds fixes left 15 RC must-fix cases and one candidate between them
-  (#170, #172, #173): about 15 to 23 working days for #170's alone, and the other six are unsized. The terms above
-  say which are promised, which are attempted and when each is decided. If the sizing of #172 and #173 on
-  11-21 shows they do not fit by 11-28, that is reported the same day with notes lines.
+- **The RC must-fix list grew on 11-20.** The three funds fixes left 17 RC must-fix cases between them
+  (#170, #172, #173). #170's nine add up to about 16.5 to 25 working days by the table above (13.5 to 20.5
+  without case 6, which is expected in 1.0.x); the other eight are sized only roughly, or not at all. For
+  #170 the terms above say which cases are promised, which are attempted and when each is decided. If the
+  table for #172 and #173 on 11-21 shows they do not fit by 11-28, that is reported the same day with notes
+  lines.
 - **Security review on new code.** H-01 runs 11-27 → 11-29 over code written the same fortnight. Its
   findings land before the release candidate or the affected feature ships disabled.
