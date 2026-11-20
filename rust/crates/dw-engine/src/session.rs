@@ -704,9 +704,7 @@ impl NetworkSession {
             let weak = Arc::downgrade(&session);
             let queued = move |wallet| {
                 if let Some(session) = weak.upgrade() {
-                    (session.platform).signal(
-                        crate::platform::runtime::PlatformSignal::ContactAccountsQueued(wallet),
-                    );
+                    session.platform.contact_accounts_queued(wallet);
                 }
             };
             let _ = live.tap.on_contact_accounts_queued.set(Box::new(queued));

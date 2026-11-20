@@ -3,7 +3,7 @@
 //! state as the bring-up sees it, and the Platform sync loops with their
 //! cadence. The bring-up itself is in `bringup.rs`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockWriteGuard};
 use std::time::{Duration, Instant};
@@ -43,6 +43,20 @@ pub(super) const KEY_WORK_JOIN: Duration = Duration::from_secs(5);
 /// [`STARTUP_RETRY_MAX`]. The first request runs it at once.
 pub(super) const STARTUP_RETRY_MIN: Duration = Duration::from_secs(30);
 pub(super) const STARTUP_RETRY_MAX: Duration = Duration::from_secs(600);
+
+/// How long a queued-account drain that left the work queued holds back the
+/// next one a changeset asks for (#84). An unlock drains whenever.
+pub(super) const CONTACT_DRAIN_BACKOFF: Duration = Duration::from_secs(300);
+
+/// The queued-account drains asked of the supervisor (#84): a sweep stores
+/// the queue again for every contact still without its accounts.
+#[derive(Default)]
+pub(super) struct ContactDrains {
+    /// A drain is asked for and its job has not started.
+    requested: HashSet<WalletId>,
+    /// When the wallet's last such drain left work queued.
+    failed: HashMap<WalletId, Instant>,
+}
 
 /// Work the supervisor takes after SPV has started.
 #[derive(Debug, Clone, Copy)]
@@ -223,6 +237,13 @@ pub(crate) struct PlatformRuntime {
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
     pub(super) pause_after_keys: Mutex<Option<Arc<TestPause>>>,
+    /// Tests: how many contact-crypto drains ran (`bringup.rs`).
+    contact_drains: Mutex<ContactDrains>,
+    #[cfg(test)]
+    pub(super) contact_drains_run: AtomicU64,
+    /// Tests: holds the next queued-account drain job before it starts.
+    #[cfg(test)]
+    pub(super) pause_contact_drain: Mutex<Option<Arc<TestPause>>>,
 }
 
 /// What `DashPay::status` reads of a wallet's bring-up.
@@ -487,6 +508,11 @@ impl PlatformRuntime {
             identity_net: Mutex::new(None),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
+            contact_drains: Mutex::default(),
+            #[cfg(test)]
+            contact_drains_run: AtomicU64::new(0),
+            #[cfg(test)]
+            pause_contact_drain: Mutex::new(None),
         }
     }
 
@@ -519,12 +545,59 @@ impl PlatformRuntime {
 
     /// [`Self::signal`] for an event stamped earlier.
     pub(crate) fn signal_at(&self, at: u64, signal: PlatformSignal) {
-        if !self.enabled {
-            return;
+        self.send_signal(at, signal);
+    }
+
+    /// [`Self::signal_at`]; whether a supervisor took it.
+    fn send_signal(&self, at: u64, signal: PlatformSignal) -> bool {
+        self.enabled
+            && guard(&self.supervisor)
+                .as_ref()
+                .is_some_and(|s| s.signals.send((at, signal)).is_ok())
+    }
+
+    /// A changeset queued a contact's account build for `id` (#84): one
+    /// drain is asked of the supervisor, unless one is asked for already
+    /// or the wallet's last such drain left work queued less than
+    /// [`CONTACT_DRAIN_BACKOFF`] ago. Called inside the library's store.
+    pub(crate) fn contact_accounts_queued(&self, id: WalletId) {
+        {
+            let mut drains = guard(&self.contact_drains);
+            if (drains.failed.get(&id)).is_some_and(|at| at.elapsed() < CONTACT_DRAIN_BACKOFF) {
+                return;
+            }
+            if !drains.requested.insert(id) {
+                return;
+            }
         }
-        if let Some(s) = &*guard(&self.supervisor) {
-            let _ = s.signals.send((at, signal));
+        if !self.send_signal(self.stamp(), PlatformSignal::ContactAccountsQueued(id)) {
+            guard(&self.contact_drains).requested.remove(&id);
         }
+    }
+
+    /// The drain job for `id` starts: a changeset from now on asks again.
+    pub(super) fn contact_drain_started(&self, id: WalletId) {
+        guard(&self.contact_drains).requested.remove(&id);
+    }
+
+    /// The job's drain ended; `drained`: it left nothing queued.
+    pub(super) fn contact_drain_ended(&self, id: WalletId, drained: bool) {
+        let mut drains = guard(&self.contact_drains);
+        if drained {
+            drains.failed.remove(&id);
+        } else {
+            drains.failed.insert(id, Instant::now());
+        }
+    }
+
+    /// An unlock drains every wallet: the back-offs end.
+    pub(super) fn contact_drains_unlocked(&self) {
+        guard(&self.contact_drains).failed.clear();
+    }
+
+    /// A new supervisor: nothing is asked of it yet.
+    pub(super) fn contact_drains_reset(&self) {
+        *guard(&self.contact_drains) = ContactDrains::default();
     }
 
     /// The time on the clock that orders events against admissions. Stamp
@@ -721,6 +794,11 @@ impl PlatformRuntime {
         }
         self.write_startup().remove(id);
         guard(&self.startup_retries).remove(id);
+        {
+            let mut drains = guard(&self.contact_drains);
+            drains.requested.remove(id);
+            drains.failed.remove(id);
+        }
         self.recovery.forget(id);
         self.contacts.forget(id);
         self.users.scans.forget(id);

@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use dw_vault::{KdfParams, KdfPolicy, LockState, MemoryOsStore, VaultConfig};
+use platform_wallet::changeset::PendingContactCryptoOp;
 use platform_wallet::manager::startup::WalletStartupStatus;
 use zeroize::Zeroizing;
 
@@ -1280,14 +1281,23 @@ fn a_close_locks_the_vault_of_a_retained_session() {
 /// identity ([`give_identity`]), stored through the session's store and
 /// its tap as the library stores it.
 fn queue_contact_account(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) {
+    queue_contact_op(engine, s, id, PendingContactCryptoOp::RegisterReceiving);
+}
+
+/// [`queue_contact_account`] with `op` for the contact.
+fn queue_contact_op(
+    engine: &Engine,
+    s: &Arc<NetworkSession>,
+    id: WalletId,
+    op: PendingContactCryptoOp,
+) {
     use platform_wallet::changeset::{
-        PendingContactCrypto, PendingContactCryptoOp, PlatformWalletChangeSet,
-        PlatformWalletPersistence,
+        PendingContactCrypto, PlatformWalletChangeSet, PlatformWalletPersistence,
     };
     let entry = PendingContactCrypto {
         owner_identity_id: [7u8; 32].into(),
         contact_id: [8u8; 32].into(),
-        op: PendingContactCryptoOp::RegisterReceiving,
+        op,
         enqueued_at_ms: 0,
     };
     let manager = s.manager().unwrap();
@@ -1361,4 +1371,95 @@ fn a_contact_account_queued_while_unlocked_is_built_at_once() {
         });
         engine.block_on(engine.shutdown()).unwrap();
     }
+}
+
+fn drains_run(s: &NetworkSession) -> u64 {
+    s.platform.contact_drains_run.load(Ordering::SeqCst)
+}
+
+/// An unlocked session with SPV started and our identity on file, past
+/// its bring-up.
+fn started_with_identity(dir: &std::path::Path) -> (Engine, Arc<NetworkSession>, WalletId) {
+    let (engine, s) = session_at(dir, vec!["http://127.0.0.1:1".into()], true);
+    let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
+    give_identity(&engine, &s, id);
+    engine.block_on(s.start_spv()).unwrap();
+    wait_until("the bring-up", Duration::from_secs(30), || {
+        !matches!(
+            startup(&s, &id),
+            StartupStatus::NotRun | StartupStatus::Starting
+        )
+    });
+    (engine, s, id)
+}
+
+/// #84: every sweep stores the queue again for a contact still without its
+/// accounts; the changesets that arrive before a requested drain starts
+/// make that one drain.
+#[test]
+fn queued_changesets_before_a_drain_make_one_drain() {
+    let _serial = serial();
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id) = started_with_identity(dir.path());
+    std::thread::sleep(Duration::from_millis(500));
+    let pause = Arc::new(TestPause::default());
+    *guard(&s.platform.pause_contact_drain) = Some(Arc::clone(&pause));
+    let before = drains_run(&s);
+    queue_contact_account(&engine, &s, id);
+    wait_until("the drain job", Duration::from_secs(10), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    queue_contact_account(&engine, &s, id);
+    queue_contact_account(&engine, &s, id);
+    pause.release.notify_one();
+    wait_until("the drain", Duration::from_secs(20), || {
+        queued_contact_work(&engine, &s, id) == 0
+    });
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(drains_run(&s) - before, 1);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #84: a drain that leaves the work queued is not run again for the next
+/// sweep's changeset within the back-off; an unlock drains it, and after
+/// the unlock a changeset asks for a drain again.
+#[test]
+fn a_failed_drain_waits_for_the_back_off_or_an_unlock() {
+    let _serial = serial();
+    let dir = dw_testutil::private_tempdir();
+    let (engine, s, id) = started_with_identity(dir.path());
+    std::thread::sleep(Duration::from_millis(500));
+    // The contact's identity cannot be fetched: the build stays queued.
+    let failing = || PendingContactCryptoOp::RegisterExternal {
+        encrypted_public_key: vec![1; 96],
+        our_decryption_key_index: 0,
+        contact_encryption_key_index: 0,
+    };
+    let before = drains_run(&s);
+    queue_contact_op(&engine, &s, id, failing());
+    wait_until("the first drain", Duration::from_secs(30), || {
+        drains_run(&s) > before
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(queued_contact_work(&engine, &s, id), 1, "left queued");
+    let failed = drains_run(&s);
+
+    queue_contact_op(&engine, &s, id, failing());
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(drains_run(&s), failed, "not again within the back-off");
+
+    s.lock_vault_sync().unwrap();
+    engine
+        .block_on(s.vault_op(|v| v.unlock(PASSPHRASE, dw_vault::UnlockScope::Full)))
+        .unwrap();
+    wait_until("the unlock's drain", Duration::from_secs(30), || {
+        drains_run(&s) > failed
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    let unlocked = drains_run(&s);
+    queue_contact_op(&engine, &s, id, failing());
+    wait_until("a drain after the unlock", Duration::from_secs(30), || {
+        drains_run(&s) > unlocked
+    });
+    engine.block_on(engine.shutdown()).unwrap();
 }

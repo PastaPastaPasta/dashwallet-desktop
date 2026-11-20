@@ -135,6 +135,7 @@ impl NetworkSession {
                 task: None,
                 running: false,
             });
+            this.platform.contact_drains_reset();
             let listed = this.platform.stamp();
             let wallets: Vec<WalletId> = if this.platform.enabled {
                 let ids = manager.wallet_ids().await.into_iter().map(WalletId);
@@ -374,6 +375,7 @@ impl NetworkSession {
                     continue;
                 }
                 PlatformSignal::Unlocked => {
+                    this.platform.contact_drains_unlocked();
                     let ids = manager.wallet_ids().await.into_iter().map(WalletId);
                     (ids.collect(), Job::Unlock)
                 }
@@ -412,10 +414,12 @@ impl NetworkSession {
             if matches!(job, Job::Unlock) {
                 this.kick_dashpay_sync(&manager);
             }
+            // A drain discovers no identities.
             if !done
-                || !this
-                    .names_passes(&manager, wallets, epoch, &mut cancel)
-                    .await
+                || (!matches!(job, Job::Drain)
+                    && !this
+                        .names_passes(&manager, wallets, epoch, &mut cancel)
+                        .await)
             {
                 return;
             }
@@ -890,22 +894,34 @@ impl NetworkSession {
             self.bring_up_wallet(manager, id, Instant::now(), false)
                 .await;
         } else {
-            self.drain_contact_crypto(manager, id).await;
+            self.drain_contact_crypto(manager, id, true).await;
         }
         self.reconcile_rescan(manager, id).await;
     }
 
     /// A sync queued a contact's account build: drained now, as an unlock
     /// drains it, while the vault is prompt-free; otherwise, or when the
-    /// drain fails, it stays queued for the next unlock.
+    /// drain fails, it stays queued for the next unlock, and a failed one
+    /// holds back the next for [`super::runtime::CONTACT_DRAIN_BACKOFF`].
+    /// Unlike an unlock, it never runs an unsettled bring-up again: only a
+    /// lock leaves a bring-up unsettled, and the unlock after it reruns it.
     async fn after_contact_accounts_queued(self: &Arc<Self>, manager: &Manager, id: WalletId) {
+        #[cfg(test)]
+        let pause = guard(&self.platform.pause_contact_drain).take();
+        #[cfg(test)]
+        if let Some(pause) = pause {
+            pause.reached.store(true, Ordering::SeqCst);
+            pause.release.notified().await;
+        }
+        self.platform.contact_drain_started(id);
         let admitted = self
             .platform
             .admit(&id, || self.vault.has_wallet_secret(&id.0));
         if admitted != Some(true) || !prompt_free(self.platform.lock.borrow().state) {
             return;
         }
-        self.drain_contact_crypto(manager, id).await;
+        let drained = self.drain_contact_crypto(manager, id, false).await;
+        self.platform.contact_drain_ended(id, drained);
         self.reconcile_rescan(manager, id).await;
     }
 
@@ -922,34 +938,55 @@ impl NetworkSession {
         }
     }
 
-    async fn drain_contact_crypto(self: &Arc<Self>, manager: &Manager, id: WalletId) {
+    /// The seed-gated contact-crypto drain; `true` when it left no account
+    /// build queued. `notice_again`: a seed mismatch already reported is
+    /// reported again.
+    async fn drain_contact_crypto(
+        self: &Arc<Self>,
+        manager: &Manager,
+        id: WalletId,
+        notice_again: bool,
+    ) -> bool {
+        #[cfg(test)]
+        self.platform
+            .contact_drains_run
+            .fetch_add(1, Ordering::SeqCst);
         let Some(wallet) = manager.get_wallet(&id.0).await else {
-            return;
+            return false;
         };
         let locks = self.platform.lock.borrow().locks;
         let Some(crypto) = self.contact_crypto(id).await else {
-            return;
+            return false;
         };
         let deadline = Instant::now() + DEFAULT_STARTUP_BUDGET;
         let mut lock = self.platform.lock.subscribe();
-        tokio::select! {
+        let answered = tokio::select! {
             drained = wallet.drain_pending_contact_crypto_verified(
                 &crypto,
                 None::<&VaultIdentitySigner>,
                 Some(deadline),
             ) => match drained {
-                Ok(_) => {}
+                Ok(_) => true,
                 Err(e @ PlatformWalletError::SeedMismatch { .. }) => {
+                    let known = !notice_again
+                        && (self.platform.startup_of(&id))
+                            .is_some_and(|s| s.startup == StartupStatus::SeedBindingUnverified);
                     tracing::error!(wallet_id = %id, error = %e, "the vault's seed does not bind this wallet");
                     self.platform.set_status(id, StartupStatus::SeedBindingUnverified);
-                    self.notice_incomplete(id, StartupStatus::SeedBindingUnverified);
+                    if !known {
+                        self.notice_incomplete(id, StartupStatus::SeedBindingUnverified);
+                    }
+                    false
                 }
                 // Unanswered in time, or the vault locked: still queued for
                 // the next drain.
-                Err(e) => tracing::warn!(wallet_id = %id, error = %e, "contact-crypto drain refused"),
+                Err(e) => {
+                    tracing::warn!(wallet_id = %id, error = %e, "contact-crypto drain refused");
+                    false
+                }
             },
-            () = until(&mut lock, |v| v.locks != locks) => return,
-        }
+            () = until(&mut lock, |v| v.locks != locks) => return false,
+        };
         let pending = wallet
             .identity()
             .dashpay()
@@ -961,6 +998,7 @@ impl NetworkSession {
         // The settle checks the seed binding itself: a drain of an empty
         // queue checks nothing.
         self.settle_later(id, crypto);
+        answered && pending == 0
     }
 
     /// The vault's DashPay crypto for wallet `id`
