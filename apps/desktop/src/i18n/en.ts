@@ -131,6 +131,7 @@ export const en = {
       shield: "Shielding",
       shieldedSpend: "Shielded payment",
       shieldDrain: "Moving mixed coins to Shielded",
+      contactPayFromBalance: "Contact payment",
     },
   },
   network: {

@@ -2087,11 +2087,11 @@ fn pay_contact(
         credential(ctx.session, ctx.passphrase),
     )?;
     let grants = grants.into_iter().map(|g| g.id).collect();
-    let lease = ctx.block_on(ctx.session.begin_flow(
-        dp.wallet_id(),
-        FlowKind::AcceptAndPay,
-        grants,
-    ))?;
+    let lease =
+        ctx.block_on(
+            ctx.session
+                .begin_flow(dp.wallet_id(), FlowKind::AcceptAndPay, grants, None),
+        )?;
     let result = ctx
         .block_on(dp.accept_request(identity, contact, lease.clone()))
         .map_err(CliError::from)

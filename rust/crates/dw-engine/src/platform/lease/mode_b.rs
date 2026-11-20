@@ -1520,6 +1520,21 @@ impl LeaseTable {
         Ok(artifacts.into_iter().find(|a| a.activity == activity))
     }
 
+    /// Whether `wallet` has a shielded artifact, archived or not, for the
+    /// transition `st_hash`; an error as [`Self::shielded_artifact`]'s.
+    pub(crate) async fn has_shielded_artifact(
+        &self,
+        wallet: WalletId,
+        st_hash: [u8; 32],
+    ) -> Result<bool, String> {
+        let backend = self.journal.get().ok_or("the journal is closed")?;
+        let artifacts = (self.rt)
+            .spawn_blocking(move || backend.shielded_artifacts(&wallet.0))
+            .await
+            .map_err(|e| e.to_string())??;
+        Ok(artifacts.iter().any(|a| a.st_hash == Some(st_hash)))
+    }
+
     /// Marks the shielded spend `activity` of `wallet`, of unknown result
     /// and with no record of the library's, built on `anchor` and spending
     /// `nullifiers` (schema 10, DEC-1057), in dispatch.sqlite

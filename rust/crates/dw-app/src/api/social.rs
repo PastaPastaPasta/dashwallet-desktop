@@ -19,6 +19,7 @@ use self::contacts::{
 };
 pub(crate) use self::events::DashPayEventInfo;
 use self::events::DashPayEventPage;
+pub(crate) use self::payments::PaymentSourceName;
 use self::payments::{
     ActivityFilterName, ContactActivityPage, LockResolutionName, PaymentLockInfo,
 };
@@ -29,7 +30,16 @@ use self::profile::{
 use crate::dto::platform::EligibilityName;
 use crate::ipc::commands;
 
-pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
+pub(crate) const EXCLUDED: &[(&str, &str)] = &[
+    (
+        "DashPay::contact_pay_quote",
+        "every source refuses `platform.feature_off` until its slice; bound when one lands (C-funding C5a, C5b)",
+    ),
+    (
+        "DashPay::contact_pay",
+        "every source refuses `platform.feature_off` until its slice; bound when one lands (C-funding C5a, C5b)",
+    ),
+];
 
 commands! {
     /// The contacts of `identity` in the sections `query` selects.
