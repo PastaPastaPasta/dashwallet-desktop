@@ -237,8 +237,9 @@ pub(crate) struct PlatformRuntime {
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
     pub(super) pause_after_keys: Mutex<Option<Arc<TestPause>>>,
-    /// Tests: how many contact-crypto drains ran (`bringup.rs`).
+    /// The queued-account drains asked of the supervisor (#84).
     contact_drains: Mutex<ContactDrains>,
+    /// Tests: how many contact-crypto drains ran (`bringup.rs`).
     #[cfg(test)]
     pub(super) contact_drains_run: AtomicU64,
     /// Tests: holds the next queued-account drain job before it starts.
@@ -588,6 +589,12 @@ impl PlatformRuntime {
         } else {
             drains.failed.insert(id, Instant::now());
         }
+    }
+
+    /// Tests: whether `id`'s last queued-account drain left work queued.
+    #[cfg(test)]
+    pub(super) fn contact_drain_backed_off(&self, id: &WalletId) -> bool {
+        guard(&self.contact_drains).failed.contains_key(id)
     }
 
     /// An unlock drains every wallet: the back-offs end.

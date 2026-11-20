@@ -1440,7 +1440,9 @@ fn a_failed_drain_waits_for_the_back_off_or_an_unlock() {
     wait_until("the first drain", Duration::from_secs(30), || {
         drains_run(&s) > before
     });
-    std::thread::sleep(Duration::from_secs(1));
+    wait_until("the first drain's end", Duration::from_secs(60), || {
+        s.platform.contact_drain_backed_off(&id)
+    });
     assert_eq!(queued_contact_work(&engine, &s, id), 1, "left queued");
     let failed = drains_run(&s);
 
