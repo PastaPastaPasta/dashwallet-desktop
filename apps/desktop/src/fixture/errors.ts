@@ -50,6 +50,7 @@ const SAMPLES: Samples = {
   txid: { code: "contact.payment_locked", data: { kind: "txid", txid: TXID } },
   draft: { code: "registration.in_progress", data: { kind: "draft", draft: "reg-1" } },
   draftWait: { code: "registration.funding_unknown_recent", data: { kind: "draftWait", draft: "reg-1", waitSecs: 600 } },
+  shieldedNotReady: { code: "registration.shielded_not_ready", data: { kind: "shieldedNotReady", reason: "rested", readyAt: 1_800_000_000 } },
   usernameRules: { code: "name.invalid", data: { kind: "usernameRules", rules: ["minLength", "noEdgeHyphen"] } },
   ineligible: { code: "contact.ineligible", data: { kind: "ineligible", reason: "noDashPayKeys" } },
   keysMissing: { code: "identity.keys_missing", data: { kind: "keysMissing", purpose: "encryption" } },

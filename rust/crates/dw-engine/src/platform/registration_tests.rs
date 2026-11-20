@@ -441,6 +441,8 @@ enum FundScript {
 
 #[derive(Default)]
 struct World {
+    /// What a Shielded-funded registration reads.
+    shielded: super::registration::ShieldedFacts,
     locks: Vec<LockInfo>,
     identities: Vec<(u32, String)>,
     names: Vec<(String, String)>,
@@ -1151,6 +1153,10 @@ impl RegistrationLib for Fake {
         let id = self.create_identity(invitation::outpoint(), index);
         self.maybe_hang(Call::Claim, When::After).await;
         Ok(id)
+    }
+
+    async fn shielded_facts(&self) -> Result<super::registration::ShieldedFacts, PlatformError> {
+        Ok(self.w().shielded.clone())
     }
 
     async fn request_inviter(
@@ -4375,6 +4381,7 @@ fn another_lock_awaiting_its_resend_holds_the_funding_without_failing_the_row() 
 mod invitation;
 mod ledger;
 mod rules;
+mod shielded;
 mod step2;
 
 /// Review r2 R2-m3: the funding of a registration or top-up (one

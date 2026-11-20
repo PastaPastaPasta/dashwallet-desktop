@@ -60,6 +60,8 @@ codes! {
         FundingCancelled = "registration.funding_cancelled",
         NotSynced = "registration.not_synced",
         FundingUnknownRecent = "registration.funding_unknown_recent",
+        ShieldedNotReady = "registration.shielded_not_ready",
+        QuoteChanged = "registration.quote_changed",
     }
 }
 
@@ -351,6 +353,14 @@ impl From<RegistrationError> for AppError {
                 RegistrationCode::FundingUnknownRecent,
                 Some(ErrorData::DraftWait { draft, wait_secs }),
             ),
+            R::ShieldedNotReady { reason, ready_at } => (
+                RegistrationCode::ShieldedNotReady,
+                Some(ErrorData::ShieldedNotReady {
+                    reason: reason.into(),
+                    ready_at,
+                }),
+            ),
+            R::QuoteChanged => (RegistrationCode::QuoteChanged, None),
             R::Name(e) => return e.into(),
             R::Invitation(e) => return e.into(),
             R::Platform(e) => return e.into(),
@@ -518,7 +528,7 @@ impl From<CreditsError> for AppError {
 mod tests {
     use dw_engine::platform::{
         BudgetPurpose, Eligibility, KeyPurpose, ProfileField, RecipientProblem, RevokeCause,
-        ShieldedSyncWait, UsernameRule,
+        ShieldedCheck, ShieldedSyncWait, UsernameRule,
     };
 
     use super::*;
@@ -598,6 +608,11 @@ mod tests {
                 draft: s(),
                 wait_secs: Some(1),
             },
+            RegistrationError::ShieldedNotReady {
+                reason: ShieldedCheck::Rested,
+                ready_at: Some(1),
+            },
+            RegistrationError::QuoteChanged,
             RegistrationError::Name(NameError::Taken),
             RegistrationError::Invitation(InvitationError::Expired),
             RegistrationError::Platform(PlatformError::Timeout),
@@ -821,6 +836,14 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&e).unwrap()["data"],
             serde_json::json!({ "kind": "draftWait", "draft": "d", "waitSecs": 600 })
+        );
+        let e = AppError::from(RegistrationError::ShieldedNotReady {
+            reason: ShieldedCheck::Rested,
+            ready_at: Some(10_800),
+        });
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["data"],
+            serde_json::json!({ "kind": "shieldedNotReady", "reason": "rested", "readyAt": 10_800 })
         );
     }
 

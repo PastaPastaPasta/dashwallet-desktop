@@ -169,7 +169,7 @@ pub use profile::{
 pub use registration::{
     FaucetLockKey, FinishReport, InitialProfile, RegistrationFailure, RegistrationFunding,
     RegistrationInvitation, RegistrationPhase, RegistrationQuote, RegistrationRequest,
-    RegistrationStatus, RegistrationWait,
+    RegistrationStatus, RegistrationWait, ShieldedCheck, ShieldedCheckState, ShieldedReadiness,
 };
 pub use shielded::{
     MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote,
