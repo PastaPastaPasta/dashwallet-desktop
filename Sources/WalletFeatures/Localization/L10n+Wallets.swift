@@ -15,8 +15,6 @@ extension L10n {
         public static func removeQuestion(_ name: String) -> String {
             "Remove the wallet \(name) from this computer? Its keys are deleted; you can only restore it from its recovery phrase or a backup."
         }
-        public static let berkeleyDBUnavailable =
-            "This is a legacy Berkeley DB wallet.dat. Importing it is not available yet; export it from Dash Core with dumpwallet and import that file."
         public static let psbtFile = "This file is a partially signed transaction."
         public static let unknownFile = "This file is not a wallet backup, dumpwallet file or wallet.dat."
         public static func imported(labels: Int) -> String {

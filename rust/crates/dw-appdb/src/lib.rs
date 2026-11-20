@@ -508,6 +508,18 @@ pub struct DpContactPayoutRow {
     pub since: u64,
 }
 
+/// Settings and lock rows of one wallet as they were before
+/// [`AppDb::write_settings_and_locks`] replaced them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PriorRows {
+    wallet_id: String,
+    settings: Vec<(String, Option<String>)>,
+    locks: Vec<PriorLock>,
+}
+
+/// An outpoint and its lock row (reason, created, released), if it had one.
+type PriorLock = (String, u32, Option<(String, i64, Option<i64>)>);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockRow {
     pub txid: String,
@@ -1150,6 +1162,77 @@ impl AppDb {
     /// Locks an outpoint by the user. Replaces a dust row (released or not).
     pub fn lock_manual(&self, wallet_id: &str, txid: &str, vout: u32, now: u64) -> Result<()> {
         Self::lock_manual_on(&self.conn(), wallet_id, txid, vout, now)
+    }
+
+    /// Sets `settings` in wallet scope `wallet_id` and a manual lock on each
+    /// of `locks`, all in one transaction, and returns what they replaced
+    /// for [`Self::restore_settings_and_locks`].
+    pub fn write_settings_and_locks(
+        &self,
+        wallet_id: &str,
+        settings: &[(&str, String)],
+        locks: &[(String, u32)],
+        now: u64,
+    ) -> Result<PriorRows> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut prior = PriorRows {
+            wallet_id: wallet_id.to_owned(),
+            settings: Vec::with_capacity(settings.len()),
+            locks: Vec::with_capacity(locks.len()),
+        };
+        for (key, value) in settings {
+            let old = tx
+                .query_row(
+                    "SELECT value FROM settings_kv WHERE scope = ?1 AND key = ?2",
+                    params![wallet_id, key],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?;
+            Self::put_setting(&tx, wallet_id, key, Some(value))?;
+            prior.settings.push(((*key).to_owned(), old));
+        }
+        for (txid, vout) in locks {
+            let old = tx
+                .query_row(
+                    "SELECT reason, created_at, released_at FROM utxo_locks
+                     WHERE wallet_id = ?1 AND txid = ?2 AND vout = ?3",
+                    params![wallet_id, txid, vout],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            Self::lock_manual_on(&tx, wallet_id, txid, *vout, now)?;
+            prior.locks.push((txid.clone(), *vout, old));
+        }
+        tx.commit()?;
+        Ok(prior)
+    }
+
+    /// Puts back, in one transaction, what
+    /// [`Self::write_settings_and_locks`] replaced.
+    pub fn restore_settings_and_locks(&self, prior: &PriorRows) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let id = &prior.wallet_id;
+        // Newest first, so a key or outpoint written twice ends as it began.
+        for (key, value) in prior.settings.iter().rev() {
+            Self::put_setting(&tx, id, key, value.as_deref())?;
+        }
+        for (txid, vout, old) in prior.locks.iter().rev() {
+            match old {
+                Some((reason, created_at, released_at)) => tx.execute(
+                    "UPDATE utxo_locks SET reason = ?4, created_at = ?5, released_at = ?6
+                     WHERE wallet_id = ?1 AND txid = ?2 AND vout = ?3",
+                    params![id, txid, vout, reason, created_at, released_at],
+                )?,
+                None => tx.execute(
+                    "DELETE FROM utxo_locks WHERE wallet_id = ?1 AND txid = ?2 AND vout = ?3",
+                    params![id, txid, vout],
+                )?,
+            };
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// [`Self::lock_manual`] on `conn`, inside a caller's transaction.
@@ -2473,6 +2556,38 @@ mod tests {
             db.add_receive_request(W, 1, "a", Some(0), None, None)
                 .is_err()
         );
+    }
+
+    /// Written settings and locks are put back as they were: a changed
+    /// value, a released lock, a key and a lock that did not exist.
+    #[test]
+    fn written_settings_and_locks_are_put_back() {
+        let db = AppDb::open_in_memory().unwrap();
+        db.set_setting(W, "a", Some("old")).unwrap();
+        assert!(db.lock_dust(W, "d", 1, 4).unwrap());
+        assert!(db.unlock(W, "d", 1, 5).unwrap());
+        let before = (db.setting(W, "a").unwrap(), db.locks(W).unwrap());
+        let locks = [
+            ("d".to_owned(), 1),
+            ("n".to_owned(), 2),
+            ("n".to_owned(), 2),
+        ];
+        let settings = [("a", "new".to_owned()), ("b", "x".to_owned())];
+        let prior = db
+            .write_settings_and_locks(W, &settings, &locks, 9)
+            .unwrap();
+        assert_eq!(db.setting(W, "b").unwrap().as_deref(), Some("x"));
+        assert_eq!(
+            db.locks(W)
+                .unwrap()
+                .iter()
+                .filter(|r| r.is_locked())
+                .count(),
+            2
+        );
+        db.restore_settings_and_locks(&prior).unwrap();
+        assert_eq!((db.setting(W, "a").unwrap(), db.locks(W).unwrap()), before);
+        assert_eq!(db.setting(W, "b").unwrap(), None);
     }
 
     #[test]
