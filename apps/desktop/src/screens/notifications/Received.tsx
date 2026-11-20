@@ -5,7 +5,7 @@ import { useEffect, useId, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useLockStatus } from "../../api/queries";
 import { useUi } from "../../app/ui";
-import { dismissPrivateToast, showToast } from "../../components/toast";
+import { showToast } from "../../components/toast";
 import { useDisplay, type Display } from "../../format/display";
 import { detailDate } from "../../format/tx";
 import { exposedNow, markReceivedRead, onReceived, useReceived, type ReceivedPayment } from "../../payments/received";
@@ -16,15 +16,12 @@ export function receivedText(duffs: number, shown: Display, discreet: boolean): 
 }
 
 /** The toast for every payment that arrives, wherever the window is (one per batch, its total). It holds
- * both texts, so Discreet mode masks it while it is up; locking takes it down, and none comes while locked. */
+ * both texts, so Discreet mode masks it while it is up; locking takes it down (App), and none comes while locked. */
 export function ReceivedToaster({ network }: { network: NetworkInfo }) {
   const shown = useDisplay(network);
   const locked = useLockStatus().data?.state === "locked";
   useEffect(() => {
-    if (locked) {
-      dismissPrivateToast();
-      return;
-    }
+    if (locked) return;
     return onReceived((batch) => {
       const total = batch.reduce((n, p) => n + p.duffs, 0);
       showToast(receivedText(total, shown, false), undefined, receivedText(total, shown, true));

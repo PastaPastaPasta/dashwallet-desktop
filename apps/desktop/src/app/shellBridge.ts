@@ -10,7 +10,7 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { UriRejected } from "../api/generated/UriRejected";
 import { inTauri, tauriTools } from "../api/tauri";
-import { showToast } from "../components/toast";
+import { showShellToast } from "../components/toast";
 import { NetworkText } from "../network/choice";
 import { noteLiveLink, SavedLinksText } from "./savedLinks";
 import { navigate, openPayForm, ui } from "./ui";
@@ -114,7 +114,7 @@ export const WIPE_OPEN = "The link was not opened: close “Delete all wallet da
  * once it unlocks. While the wipe sheet is open nothing opens: the page would go from under it,
  * and a wipe that then failed would say so nowhere (D38). */
 export function applyLink(route: LinkRoute) {
-  if (ui.get().wiping) return showToast(WIPE_OPEN);
+  if (ui.get().wiping) return showShellToast(WIPE_OPEN);
   noteLiveLink();
   ui.set({ dialog: null });
   switch (route.kind) {
@@ -131,18 +131,18 @@ export function applyLink(route: LinkRoute) {
       break;
     // Kept in the link stash, offered once a wallet exists (DP5-01 D11).
     case "saved":
-      showToast(SavedLinksText.saved);
+      showShellToast(SavedLinksText.saved);
       return;
     case "invitation":
       // Saved in the stash either way; during onboarding there is no Join DashPay to show.
       if (ui.get().onboarding) {
-        showToast(SavedLinksText.invitationSaved);
+        showShellToast(SavedLinksText.invitationSaved);
         return;
       }
       navigate("joinDashPay", { invitation: { linkId: route.linkId, entry: "join" } });
       break;
     default:
-      showToast(linkProblem(route)!);
+      showShellToast(linkProblem(route)!);
       return;
   }
   focusPage();
@@ -229,7 +229,7 @@ let heldHere: HeldLinks | null = null;
 
 function holdLinks(network: string, routes: LinkRoute[]) {
   const held = takeHeldLinks();
-  if (held && held.network !== network && held.routes.length > 0) showToast(NetworkText.linksDropped(held.network));
+  if (held && held.network !== network && held.routes.length > 0) showShellToast(NetworkText.linksDropped(held.network));
   heldHere = { network, routes: [...(held?.network === network ? held.routes : []), ...routes] };
   try {
     sessionStorage.setItem(HELD_LINKS, JSON.stringify(heldHere));
@@ -275,7 +275,7 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
         // they were routed for the network the window left, so they are not opened on this one.
         const held = takeHeldLinks();
         if (held?.network === network) apply(held.routes);
-        else if (held && held.routes.length > 0) showToast(NetworkText.linksDropped(held.network));
+        else if (held && held.routes.length > 0) showShellToast(NetworkText.linksDropped(held.network));
         // Applied even after an unmount: the queue is drained, so these routes exist only here.
         const routes = await backend.takeLinks(network);
         // A switch began while they were taken: kept until it is decided.
@@ -285,7 +285,7 @@ export function useShellBridge(backend: Backend, network: string, trace: boolean
         }
         apply(routes);
       } catch (e) {
-        showToast(`Could not open the link: ${errorMessage(e)}`);
+        showShellToast(`Could not open the link: ${errorMessage(e)}`);
       }
     };
     const take = () => (drains = drains.then(drain));

@@ -7,6 +7,9 @@ import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { LockOutcome } from "./generated/LockOutcome";
+import type { LockStatus } from "./generated/LockStatus";
+import type { TxNoticeRow } from "./generated/TxNoticeRow";
+import { onReceived, resetReceived } from "../payments/received";
 import { installFixture } from "../fixture";
 import { FIXTURE_WALLET_ID } from "../fixture/scenarios";
 import { profileKeys } from "../dashpay/profileQueries";
@@ -14,6 +17,9 @@ import { dashpayKeys } from "../dashpay/queries";
 import { mnKeys } from "../masternodes/queries";
 import { keys } from "./queries";
 import { IpcBackend } from "./tauri";
+
+const LOCK: LockStatus = { state: "locked", encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] };
+const NOTICE: TxNoticeRow = { txid: "", recordIndex: 0, amount: 5000, timestamp: null, txType: "recvWithAddress", address: null, label: null, coinjoinInternal: false };
 
 const REPORT: LockOutcome = {
   status: { state: "locked", encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] },
@@ -294,5 +300,38 @@ describe("event bridge", () => {
     // The window's own network still goes through.
     emit({ kind: "balances", network: "mainnet", walletId: "w", balances: null });
     expect(client.getQueryState(keys.balance("w"))?.isInvalidated).toBe(true);
+  });
+
+  it("looks up a payment that arrives while locked only at the unlock, for the bell, without a toast", async () => {
+    resetReceived();
+    const client = new QueryClient();
+    const lock = (state: LockStatus["state"]) => client.setQueryData<LockStatus>(keys.lockStatus, { ...LOCK, state });
+    lock("locked");
+    let emit: (e: AppEvent) => void = () => undefined;
+    const asked: string[][] = [];
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      txNotices: async (_w: string, txids: string[]) => (asked.push(txids), txids.map((txid) => ({ ...NOTICE, txid }))),
+    } as unknown as Backend;
+    const toasts: unknown[] = [];
+    const stopToasts = onReceived((b) => toasts.push(b));
+    await bridgeEvents(fake, client, "testnet");
+    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["a"], catchUp: false } as AppEvent);
+    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["a", "b"], catchUp: false } as AppEvent);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([]);
+    lock("unlockedMixingOnly");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([["a", "b"]]);
+    lock("unlocked");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toHaveLength(1);
+    expect(toasts).toEqual([]);
+    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["c"], catchUp: false } as AppEvent);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([["a", "b"], ["c"]]);
+    expect(toasts).toHaveLength(1);
+    stopToasts();
+    resetReceived();
   });
 });

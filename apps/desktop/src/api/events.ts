@@ -8,6 +8,7 @@ import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRows } from "./generated/HistoryRows";
+import type { LockStatus } from "./generated/LockStatus";
 import type { PlatformChangeName } from "./generated/PlatformChangeName";
 import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
 import { profileKeys } from "../dashpay/profileQueries";
@@ -15,7 +16,7 @@ import { dashpayKeys } from "../dashpay/queries";
 import { mnKeys } from "../masternodes/queries";
 import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
-import { announceReceived } from "../payments/received";
+import { announceReceived, LOOKUP_TIMEOUT_MS } from "../payments/received";
 import { onMoveSettled } from "../platform/move";
 import { onRecoverySettled } from "../recovery/model";
 import { onShieldedSettled } from "../shielded/flow";
@@ -147,6 +148,15 @@ export function ofOtherNetwork(event: AppEvent, network: string): boolean {
 /** Subscribes the query client to the backend's events of the window's `network` (its directory
  * name); returns the unsubscribe function. */
 export async function bridgeEvents(backend: Backend, client: QueryClient, network: string): Promise<() => void> {
+  const locked = () => client.getQueryData<LockStatus>(keys.lockStatus)?.state === "locked";
+  // A locked window reads nothing of the wallet: payments that arrive meanwhile are looked
+  // up at the unlock, for the bell, without a toast (none comes while locked).
+  const heldNews = new Map<string, Set<string>>();
+  const stopHeldNews = client.getQueryCache().subscribe((e) => {
+    if (e.type !== "updated" || e.query.queryKey[0] !== keys.lockStatus[0] || heldNews.size === 0 || locked()) return;
+    for (const [walletId, txids] of heldNews) void announceReceived(backend, walletId, [...txids], LOOKUP_TIMEOUT_MS, false);
+    heldNews.clear();
+  });
   let reconcile: ReturnType<typeof setTimeout> | undefined;
   let reconcileBy = 0;
   const stopReconcile = () => {
@@ -166,7 +176,12 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
     // at most (`announceable`). A wallet that has not been caught up yet is catching up. The smoothed
     // display never decides this.
     if (event.kind === "newTransactions" && (!event.catchUp || announceable(backend))) {
-      void announceReceived(backend, event.walletId, event.txids);
+      if (!locked()) void announceReceived(backend, event.walletId, event.txids);
+      else {
+        const held = heldNews.get(event.walletId) ?? new Set<string>();
+        for (const txid of event.txids) held.add(txid);
+        heldNews.set(event.walletId, held);
+      }
     }
     if (event.kind === "historyChanged" || (event.kind === "platform" && rereadsHistory(event.change.domain))) {
       // Refetch only the first page of each list: every history_page call re-reads the whole
@@ -234,6 +249,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
   const stopRecovery = onRecoverySettled(() => void client.invalidateQueries({ queryKey: keys.dashpayAll }));
   return () => {
     stopReconcile();
+    stopHeldNews();
     stopTopUps();
     stopWithdrawals();
     stopMoves();

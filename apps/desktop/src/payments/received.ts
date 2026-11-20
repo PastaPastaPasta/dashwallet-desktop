@@ -37,8 +37,9 @@ const announced = new Set<(batch: ReceivedPayment[]) => void>();
 
 const changed = () => listeners.forEach((l) => l());
 
-/** Keeps the payments among `rows` that are new, newest first, and tells `onReceived` listeners. */
-export function recordReceived(walletId: string, rows: readonly TxNoticeRow[], now: number = Date.now()): ReceivedPayment[] {
+/** Keeps the payments among `rows` that are new, newest first, and tells `onReceived` listeners
+ * unless `announce` is false (payments that came while the wallet was locked). */
+export function recordReceived(walletId: string, rows: readonly TxNoticeRow[], now: number = Date.now(), announce = true): ReceivedPayment[] {
   const fresh = rows
     .filter(isReceivedPayment)
     .map((r): ReceivedPayment => ({ id: `${r.txid}:${r.recordIndex}`, walletId, txid: r.txid, duffs: r.amount, address: r.address, at: now, read: false }))
@@ -46,7 +47,7 @@ export function recordReceived(walletId: string, rows: readonly TxNoticeRow[], n
   if (fresh.length === 0) return [];
   list = [...fresh, ...list].slice(0, MAX_KEPT);
   changed();
-  for (const f of announced) f(fresh);
+  if (announce) for (const f of announced) f(fresh);
   return fresh;
 }
 
@@ -70,7 +71,13 @@ export const lookupPending = (walletId: string): boolean => lookups.has(walletId
  * says so, so a screen does not take the lack of a payment for proof (Receive's rotation). A failed read
  * says nothing: Activity still shows the payment. A lookup slower than `timeoutMs` stops being waited
  * for, and is recorded all the same if it answers later. */
-export async function announceReceived(backend: Pick<Backend, "txNotices">, walletId: string, txids: string[], timeoutMs: number = LOOKUP_TIMEOUT_MS): Promise<void> {
+export async function announceReceived(
+  backend: Pick<Backend, "txNotices">,
+  walletId: string,
+  txids: string[],
+  timeoutMs: number = LOOKUP_TIMEOUT_MS,
+  announce = true,
+): Promise<void> {
   let open = true;
   const end = () => {
     if (!open) return;
@@ -80,7 +87,7 @@ export async function announceReceived(backend: Pick<Backend, "txNotices">, wall
   setLookups(walletId, 1);
   const timer = setTimeout(end, timeoutMs);
   try {
-    recordReceived(walletId, await backend.txNotices(walletId, txids));
+    recordReceived(walletId, await backend.txNotices(walletId, txids), Date.now(), announce);
   } catch (e) {
     console.warn("could not read the notices of new transactions", e);
   } finally {

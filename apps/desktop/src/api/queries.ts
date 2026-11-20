@@ -141,9 +141,9 @@ export function useLockStatus() {
   return useQuery({ queryKey: keys.lockStatus, queryFn: () => b.lockStatus() });
 }
 
-export function useWallets() {
+export function useWallets(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.wallets, queryFn: () => b.listWallets() });
+  return useQuery({ queryKey: keys.wallets, queryFn: () => b.listWallets(), enabled });
 }
 
 /** `null` while the wallet is catching up: no screen shows a partial balance yet. */
