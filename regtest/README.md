@@ -267,8 +267,8 @@ pytest's output goes to `pytest.log` only; the script's log and the journal get 
 once the secret scan has passed. Everything stays in `DW_DP_STATE/nightly/<date>`.
 
 On agentbox it runs from the systemd user timer in `ci/agentbox/`, with the launcher,
-`scripts/dashpay-unfunded.sh` and `scripts/dashpay-nightly-notify.sh` installed outside
-`DW_DP_STATE` and outside any checkout
+`scripts/dashpay-unfunded.sh`, `scripts/dashpay-nightly-notify.sh`, `scripts/dashpay-nightly-issue.sh`
+and `ci/github/nightly-issue.sh` installed outside `DW_DP_STATE` and outside any checkout
 (`~/.local/libexec/dashwallet-desktop/`; install steps in the service file). It does not gate
 anything; it alerts. A failed run fails the unit, and its `OnFailure=` unit
 (`dw-dashpay-nightly-failed.service`) runs the site-provided notifier `DW_DP_NOTIFY` with the
