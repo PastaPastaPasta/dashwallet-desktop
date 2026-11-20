@@ -96,6 +96,7 @@ function WalletItem({
   const busy = model.busy !== null;
   const closable = model.canClose(row);
   const removable = model.canRemove(row);
+  const untickable = model.canUntickStartup(row);
   const cannotClose = row.loaded && !closable && !model.fallback;
   const hint =
     cannotClose && !removable
@@ -118,16 +119,24 @@ function WalletItem({
       </div>
       <span className="mono field-hint">{row.walletId}</span>
       {!model.fallback && (
-        <label className="checkbox-row">
-          <input
-            type="checkbox"
-            data-testid={`${testId}-startup`}
-            checked={row.loadOnStartup}
-            disabled={busy}
-            onChange={(e) => void model.setStartup(row.walletId, e.target.checked).then(() => onChanged())}
-          />
-          Open when Dash Wallet starts
-        </label>
+        <>
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              data-testid={`${testId}-startup`}
+              checked={row.loadOnStartup}
+              disabled={busy || !untickable}
+              aria-describedby={untickable ? undefined : `${id}-startup-why`}
+              onChange={(e) => void model.setStartup(row.walletId, e.target.checked).then(() => onChanged())}
+            />
+            Open when Dash Wallet starts
+          </label>
+          {!untickable && (
+            <span id={`${id}-startup-why`} className="field-hint" data-testid={`${testId}-startup-why`}>
+              {WalletsText.oneOpensAtStart}
+            </span>
+          )}
+        </>
       )}
       {/* The group names the wallet the buttons act on ("Remove…" of which wallet). */}
       <div className="settings-wallet-actions" role="group" aria-labelledby={`${id}-name`}>

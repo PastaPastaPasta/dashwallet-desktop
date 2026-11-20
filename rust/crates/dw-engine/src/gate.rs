@@ -45,16 +45,6 @@ pub(crate) struct OpGate {
     /// Tests: how many wait on a pause now ([`OpGate::unpaused`]).
     #[cfg(test)]
     waiting_on_pause: AtomicUsize,
-    /// Tests: how many entrants, admitted, saw the pause and backed off.
-    #[cfg(test)]
-    backed_off: AtomicUsize,
-    /// Tests: hold the next `enter` before it is admitted (its read lock
-    /// taken, the gate not closed), and between its last two loads.
-    #[cfg(test)]
-    pub(crate) hold_entering: std::sync::Mutex<Option<std::sync::Arc<crate::coins::TestPause>>>,
-    #[cfg(test)]
-    pub(crate) hold_between_loads:
-        std::sync::Mutex<Option<std::sync::Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next in-app close once it is checked, before it
     /// takes the engine's sessions lock.
     #[cfg(test)]
@@ -231,16 +221,26 @@ impl OpGate {
                 return None;
             }
             #[cfg(test)]
-            crate::coins::pause_at(&self.hold_entering).await;
+            let holds = crate::coins::GATE_HOLDS
+                .try_with(std::sync::Arc::clone)
+                .ok();
+            #[cfg(test)]
+            if let Some(h) = &holds {
+                crate::coins::pause_at(&h.entering).await;
+            }
             let guard = self.admit(guard);
             // Paused after the wait: back off, the pause may be draining.
             if self.paused.load(Ordering::SeqCst) {
                 #[cfg(test)]
-                self.backed_off.fetch_add(1, Ordering::SeqCst);
+                if let Some(h) = &holds {
+                    h.backed_off.fetch_add(1, Ordering::SeqCst);
+                }
                 continue;
             }
             #[cfg(test)]
-            crate::coins::pause_at(&self.hold_between_loads).await;
+            if let Some(h) = &holds {
+                crate::coins::pause_at(&h.between_loads).await;
+            }
             // Read last: a commit seals before its pause ends, so a pause
             // seen ended by a commit is seen sealed.
             if self.closed.load(Ordering::SeqCst) {
@@ -345,12 +345,6 @@ impl OpGate {
     #[cfg(test)]
     pub(crate) fn waiting_on_pause(&self) -> usize {
         self.waiting_on_pause.load(Ordering::SeqCst)
-    }
-
-    /// Tests: how many admitted entrants backed off on a pause.
-    #[cfg(test)]
-    pub(crate) fn backed_off(&self) -> usize {
-        self.backed_off.load(Ordering::SeqCst)
     }
 
     /// Tests: guards alive.

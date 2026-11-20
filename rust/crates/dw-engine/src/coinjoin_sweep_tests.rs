@@ -4,7 +4,6 @@
 //! that may be on the network.
 
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use dashcore::bls_sig_utils::BLSSignature;
@@ -272,29 +271,34 @@ impl Drop for ReleaseOnDrop {
     }
 }
 
-/// `fut` on the engine's runtime, or `Internal` after 20 s: a call that
-/// waits on a fence another task holds fails the test instead of hanging
-/// it.
+/// How long a wait that a correct run always ends goes on before the test
+/// calls it a hang: far past any slow runner, short of a stuck CI job.
+pub(super) const HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// `fut` on the engine's runtime, or `Internal` after [`HANG_GUARD`]: a call
+/// that waits on a fence another task holds fails the test instead of
+/// hanging it.
 pub(super) fn within<T>(
     f: &Fixture,
     fut: impl std::future::Future<Output = Result<T, EngineError>>,
 ) -> Result<T, EngineError> {
     f.engine.block_on(async {
-        tokio::time::timeout(std::time::Duration::from_secs(20), fut)
+        tokio::time::timeout(HANG_GUARD, fut)
             .await
-            .unwrap_or_else(|_| Err(EngineError::Internal("waited 20 s".into())))
+            .unwrap_or_else(|_| {
+                Err(EngineError::Internal(format!(
+                    "hang guard: the call did not end in {HANG_GUARD:?}"
+                )))
+            })
     })
 }
 
 /// Waits (on the test thread) until `pause` is reached.
 pub(super) fn reached(pause: &TestPause) {
-    for _ in 0..2_000 {
-        if pause.reached.load(Ordering::SeqCst) {
-            return;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    panic!("pause never reached");
+    assert!(
+        pause.wait_reached(HANG_GUARD),
+        "hang guard: the pause was not reached in {HANG_GUARD:?}"
+    );
 }
 
 /// The move, on the session's runtime, while the test thread goes on.
@@ -1025,12 +1029,17 @@ fn a_chunk_is_sent_again_with_its_recorded_bytes_until_the_wallet_sees_it() {
         &*f.session.hub,
         &dash_spv::network::NetworkEvent::PeerConnected { address: peer },
     );
-    for _ in 0..2_000 {
-        if wire.txs().len() >= 2 {
-            break;
-        }
+    // Sent under the background resend's claim: the claim ends with that
+    // resend, and an explicit resend before then is refused.
+    let resending = || (f.session.coinjoin.mixers().get(&f.wallet)).is_some_and(|m| m.resending);
+    let guard = std::time::Instant::now() + HANG_GUARD;
+    while (wire.txs().len() < 2 || resending()) && std::time::Instant::now() < guard {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    assert!(
+        !resending(),
+        "hang guard: the reconnect's resend did not end in {HANG_GUARD:?}"
+    );
     let wire_txs = wire.txs();
     assert_eq!(wire_txs.len(), 2, "sent again on the reconnect");
     for tx in &wire_txs {

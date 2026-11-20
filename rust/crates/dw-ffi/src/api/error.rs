@@ -116,6 +116,7 @@ impl From<dw_engine::EngineError> for EngineError {
             // The frozen Swift shells have no shielded funds, so no wallet
             // of theirs holds a shielded spend (0.1 E1, DEC-1046).
             E::ShieldedSpendUnresolved => Self::Wallet { detail },
+            E::LastStartupWallet => Self::InvalidArgument { detail },
         }
     }
 }
