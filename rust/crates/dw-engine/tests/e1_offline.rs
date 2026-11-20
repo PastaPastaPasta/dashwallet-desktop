@@ -318,7 +318,7 @@ fn remove_wallet_fails_closed_when_the_seed_cannot_be_deleted() {
         .unwrap()
         .id;
     engine
-        .block_on(s.begin_flow(a, FlowKind::ContactRequest, vec![op]))
+        .block_on(s.begin_flow(a, FlowKind::ContactRequest, vec![op], None))
         .unwrap();
     let grant = wipe(&s);
     let r = engine.block_on(s.remove_wallet(a, grant.clone()));

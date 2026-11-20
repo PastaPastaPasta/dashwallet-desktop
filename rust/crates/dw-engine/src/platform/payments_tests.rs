@@ -30,7 +30,10 @@ use super::attribution::{
 };
 use super::contacts::{ChannelState, ContactSummary, Relation};
 use super::contacts_tests::{BOB, CAROL, DAVE, ERIN, Fixture, ME, b58, established_contact, id};
-use super::payments::{ActivityDirection, ActivityFilter, ActivityItem, Counterparty};
+use super::payment_locks::Payout;
+use super::payments::{
+    ActivityDirection, ActivityFilter, ActivityItem, Counterparty, PaymentSource, PayoutState,
+};
 use super::runtime::guard;
 use crate::history::{
     AddressChain, ChainView, Labels, Owned, TxEntry, TxRecord, TxType, records_of,
@@ -210,7 +213,7 @@ impl Pure {
         f: ActivityFilter,
         after: Option<&str>,
     ) -> (Vec<ActivityItem>, Option<String>) {
-        let p = activity(&self.view(), &id(ME), &id(contact), f, after).unwrap();
+        let p = activity(&self.view(), &[], &id(ME), &id(contact), f, after).unwrap();
         (p.items, p.next_cursor)
     }
 }
@@ -410,7 +413,7 @@ fn a_shared_script_is_nobodys() {
     for contact in [CAROL, DAVE, ERIN] {
         assert!(txids(contact).is_empty(), "{contact}");
     }
-    let s = scores(&p.view(), &id(ME), 2_000);
+    let s = scores(&p.view(), &[], &id(ME), 2_000);
     assert_eq!(s.keys().collect::<Vec<_>>(), vec![&id(BOB)]);
     assert_eq!((s[&id(BOB)].sent, s[&id(BOB)].received), (0, 1));
 
@@ -454,6 +457,9 @@ fn activity_is_the_pairs_payments_newest_first() {
         amount,
         height: mined.then_some(10),
         timestamp: time,
+        source: PaymentSource::Core,
+        reference: txid.to_string(),
+        core_txid: Some(txid.to_string()),
     };
     let (sent, received) = (ActivityDirection::Sent, ActivityDirection::Received);
     let all = vec![
@@ -476,7 +482,14 @@ fn activity_is_the_pairs_payments_newest_first() {
     );
     assert_eq!(p.page(CAROL, ActivityFilter::All, None).0.len(), 1);
     assert!(p.page(DAVE, ActivityFilter::All, None).0.is_empty());
-    let other_owner = activity(&p.view(), &id(CAROL), &id(BOB), ActivityFilter::All, None);
+    let other_owner = activity(
+        &p.view(),
+        &[],
+        &id(CAROL),
+        &id(BOB),
+        ActivityFilter::All,
+        None,
+    );
     assert!(other_owner.unwrap().items.is_empty());
 }
 
@@ -527,7 +540,14 @@ fn activity_pages_by_cursor() {
         // A time past "unmined".
         &format!("{}100000001{}", &cursor[..15], &cursor[24..]),
     ] {
-        let e = activity(&p.view(), &id(ME), &id(BOB), ActivityFilter::All, Some(bad));
+        let e = activity(
+            &p.view(),
+            &[],
+            &id(ME),
+            &id(BOB),
+            ActivityFilter::All,
+            Some(bad),
+        );
         assert_eq!(e.unwrap_err().code(), "invalid_argument", "{bad:?}");
     }
 
@@ -538,7 +558,14 @@ fn activity_pages_by_cursor() {
         (ME, CAROL, ActivityFilter::All),
         (CAROL, BOB, ActivityFilter::All),
     ] {
-        let e = activity(&p.view(), &id(owner), &id(contact), filter, Some(&cursor));
+        let e = activity(
+            &p.view(),
+            &[],
+            &id(owner),
+            &id(contact),
+            filter,
+            Some(&cursor),
+        );
         assert_eq!(e.unwrap_err().code(), "invalid_argument", "{filter:?}");
     }
     let (_, received) = p.page(BOB, ActivityFilter::Received, None);
@@ -606,7 +633,7 @@ fn the_frequent_strip_ranks_sent_then_received() {
     }
     p.sent(next(), ERIN, 1_000, at(91));
 
-    let s = scores(&p.view(), &id(ME), NOW);
+    let s = scores(&p.view(), &[], &id(ME), NOW);
     assert_eq!(
         s.get(&id(CAROL)),
         Some(&Score {
@@ -617,7 +644,10 @@ fn the_frequent_strip_ranks_sent_then_received() {
         })
     );
     assert_eq!(s.get(&id(ERIN)), None, "outside the window");
-    assert!(scores(&p.view(), &id(BOB), NOW).is_empty(), "another owner");
+    assert!(
+        scores(&p.view(), &[], &id(BOB), NOW).is_empty(),
+        "another owner"
+    );
 
     let everyone = || [BOB, CAROL, DAVE, ERIN, 6].map(summary).to_vec();
     let strip = |limit| {
@@ -638,7 +668,7 @@ fn the_frequent_strip_ranks_sent_then_received() {
     );
     p.add(ours(entry(unmined, TransactionContext::Mempool), 2_000));
     p.sent(next(), DAVE, 1_000, at(85));
-    let s = scores(&p.view(), &id(ME), NOW);
+    let s = scores(&p.view(), &[], &id(ME), NOW);
     assert_eq!(s[&id(DAVE)].last_sent, NOW);
     let strip: Vec<String> = (frequent(everyone(), &s, 4).into_iter())
         .map(|c| c.contact)
@@ -1432,4 +1462,68 @@ fn id_bytes(b58: &str) -> [u8; 32] {
     Identifier::from_string(b58, Encoding::Base58)
         .unwrap()
         .to_buffer()
+}
+
+/// C-funding P10–P12: a payout row is the contact's activity and counts
+/// for the strip; its Core arrival, an asset unlock the wallet did not
+/// fund, fills `core_txid` and is no row of its own, here or in history;
+/// a payout never sent shows nowhere.
+#[test]
+fn a_payout_is_activity_and_its_core_arrival_no_second_row() {
+    let mut p = Pure::new();
+    let payout = |reference: &str, duffs, state| Payout {
+        pair: (id(ME), id(BOB)),
+        source: PaymentSource::Platform,
+        reference: reference.into(),
+        script: Some(external(BOB)),
+        expected_duffs: duffs,
+        state,
+        since: NOW - DAY,
+    };
+    let payouts = vec![
+        payout("move-1", 40_000, PayoutState::Pending),
+        payout("move-2", 50_000, PayoutState::NotSent),
+    ];
+    let page = |p: &Pure, f| {
+        (activity(&p.view(), &payouts, &id(ME), &id(BOB), f, None))
+            .unwrap()
+            .items
+    };
+    let items = page(&p, ActivityFilter::All);
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    assert_eq!(
+        (item.txid.as_str(), item.reference.as_str(), item.source),
+        ("move-1", "move-1", PaymentSource::Platform)
+    );
+    assert_eq!(
+        (item.direction, item.amount, item.height, item.timestamp),
+        (ActivityDirection::Sent, 40_000, None, Some(NOW - DAY))
+    );
+    assert_eq!(item.core_txid, None);
+    assert!(page(&p, ActivityFilter::Received).is_empty());
+
+    let unlock = tx(
+        1,
+        vec![input(Txid::from_byte_array([0xF2; 32]), 0)],
+        vec![out(40_000, external(BOB))],
+    );
+    let txid = p.add(entry(unlock, mined(12, 9_000)));
+    assert!(p.records(&txid).is_empty(), "no history row");
+    assert!(p.page(BOB, ActivityFilter::All, None).0.is_empty());
+    let items = page(&p, ActivityFilter::All);
+    assert_eq!(items.len(), 1, "no second row");
+    assert_eq!(items[0].core_txid, Some(txid.to_string()));
+    assert_eq!(
+        (items[0].height, items[0].timestamp),
+        (Some(12), Some(9_000))
+    );
+
+    let s = scores(&p.view(), &payouts, &id(ME), NOW);
+    let bob = Score {
+        sent: 1,
+        last_sent: NOW - DAY,
+        ..Score::default()
+    };
+    assert_eq!(s, BTreeMap::from([(id(BOB), bob)]));
 }

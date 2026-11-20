@@ -296,7 +296,7 @@ impl Fixture {
         self.engine
             .block_on(
                 self.session
-                    .begin_flow(self.wallet, FlowKind::AcceptAndPay, grants),
+                    .begin_flow(self.wallet, FlowKind::AcceptAndPay, grants, None),
             )
             .unwrap()
     }
