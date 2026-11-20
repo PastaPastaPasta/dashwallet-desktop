@@ -57,7 +57,8 @@ def test_round_trip(pair, contacts):
 
 
 def test_channel_ready_while_unlocked(contacts):
-    assert contacts["a_live_pass"]["failure_code"] is None, contacts["a_live_pass"]
+    live = contacts["a_live_pass"]
+    assert live["startup"] == "ready" and (live["ran_at"] or 0) >= live["listed_at"], live
     assert contacts["a_live"] is not None, "A's live session no longer lists B"
     section, row = contacts["a_live"]
     assert (section, row["relation"]) == ("contacts", "contact"), contacts["a_live"]

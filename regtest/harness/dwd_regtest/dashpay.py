@@ -855,27 +855,6 @@ def wait_pass(session: Session, loops: tuple[str, ...] = ("dash_pay_sync",), tim
     return wait_until(done, timeout, f"a pass of {', '.join(loops)}", interval=10)
 
 
-def wait_good_pass(session: Session, since: float, timeout: float = 900) -> dict:
-    """The first DashPay pass that started at or after `since` (epoch seconds) and finished
-    without a failure."""
-    failed: list[dict] = []
-
-    def done() -> dict | None:
-        last = session.ok("dashpay", "sync-status")["last_pass"]
-        if not last or (_seconds(last["started_at"]) or 0) < since:
-            return None
-        if last["failure_code"] is not None:
-            if last not in failed:
-                failed.append(last)
-            return None
-        return last
-
-    try:
-        return wait_until(done, timeout, "a successful DashPay pass", interval=10)
-    except AssertionError as e:
-        raise AssertionError(f"{e}; the failed passes since: {failed}") from None
-
-
 def iter_contacts(page: dict) -> Iterator[tuple[str, dict]]:
     for section in page["sections"]:
         for row in section["contacts"]:
@@ -1002,8 +981,10 @@ def synced_until(session: Session, check: Callable[[], Any], timeout: float, wha
 def befriend(a: Member, b: Member, timeout: float = 1200, live: float = 300) -> dict:
     """A asks B, B accepts: the round trip, with what each side saw on the way. A's session stays
     open while B accepts, as an app left unlocked; `a_live` is A's row in that session once its
-    channel is ready or `live` seconds after it lists B as a contact, read after a successful
-    pass that started since (`a_live_pass`); `a_contact` A's row once ready in a new process."""
+    channel is ready or `live` seconds after it lists B as a contact, read after A's DashPay sync
+    loop has run again since (`a_live_pass`: the engine reports no per-pass outcome, `last_pass`
+    stays empty while `sync_now` is unimplemented); `a_contact` A's row once ready in a new
+    process."""
     seen: dict[str, Any] = {}
 
     def contact_of(s: Session, other: Member, ready: bool) -> Callable[[], Any]:
@@ -1029,7 +1010,10 @@ def befriend(a: Member, b: Member, timeout: float = 1200, live: float = 300) -> 
         while row and row[1]["channel"] != "ready" and time.monotonic() < deadline:
             time.sleep(15)
             row = find_contact(sa, b.identity)
-        seen["a_live_pass"] = wait_good_pass(sa, listed)
+        status = wait_pass(sa)
+        ran = {loop["sync_loop"]: _seconds(loop["last_run_at"]) for loop in status["loops"]}
+        seen["a_live_pass"] = {"listed_at": listed, "ran_at": ran.get("dash_pay_sync"),
+                               "startup": status["startup"]}
         seen["a_live"] = find_contact(sa, b.identity)
     with a.session("befriend-a2") as sa:
         seen["a_contact"] = synced_until(sa, contact_of(sa, b, True), timeout, "A's contact B to be ready")
