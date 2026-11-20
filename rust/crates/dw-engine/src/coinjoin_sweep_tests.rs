@@ -1029,10 +1029,17 @@ fn a_chunk_is_sent_again_with_its_recorded_bytes_until_the_wallet_sees_it() {
         &*f.session.hub,
         &dash_spv::network::NetworkEvent::PeerConnected { address: peer },
     );
+    // Sent under the background resend's claim: the claim ends with that
+    // resend, and an explicit resend before then is refused.
+    let resending = || (f.session.coinjoin.mixers().get(&f.wallet)).is_some_and(|m| m.resending);
     let guard = std::time::Instant::now() + HANG_GUARD;
-    while wire.txs().len() < 2 && std::time::Instant::now() < guard {
+    while (wire.txs().len() < 2 || resending()) && std::time::Instant::now() < guard {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    assert!(
+        !resending(),
+        "hang guard: the reconnect's resend did not end in {HANG_GUARD:?}"
+    );
     let wire_txs = wire.txs();
     assert_eq!(wire_txs.len(), 2, "sent again on the reconnect");
     for tx in &wire_txs {
