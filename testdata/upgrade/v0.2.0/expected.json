@@ -1,0 +1,3235 @@
+{
+  "version": "v0.2.0",
+  "appVersion": "0.2.0",
+  "release": {
+    "asset": "dash-wallet-0.2.0-linux-amd64.deb",
+    "sha256": "981af3a867cdd8560af5feb73c66cac443923d5541ed70c3440ff4a6b64f6e0f"
+  },
+  "network": "regtest",
+  "passphrase": "upgrade fixture passphrase",
+  "dataRoot": "$DATA_ROOT",
+  "wallets": [
+    {
+      "name": "Fixture main",
+      "mnemonic": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      "bip39": null,
+      "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"
+    },
+    {
+      "name": "Fixture second",
+      "mnemonic": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+      "bip39": "TREZOR",
+      "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"
+    }
+  ],
+  "dashd": {
+    "version": "/Dash Core:24.0.0/",
+    "height": 105,
+    "funding": {
+      "mainFirst": "f2f9e1c367322b84166de97ef45811cb3ca8814bf3fc8d3096fd8fb0f462f71f",
+      "mainSavings": "a349d09cb1314cc02b65663c856fe77fb35bf115652baf363cc2dfe2b5f467b3",
+      "secondFirst": "48af46568971c9395bb11f851d26fa8b29d29dbff3484a06163aa3d448f3884d"
+    },
+    "deposits": {
+      "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add": 1250000000,
+      "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30": 300000000,
+      "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403": 75000000
+    },
+    "payment": {
+      "txid": "b93b1261f6ff19fa5405a8367cfdb51e559cc9e59e8ad470c27838c897b29d86",
+      "to": "ySbqkyC46eHu5ss4PhVHQCW9oLn8DETC93",
+      "duffs": 125000000,
+      "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+      "feeDuffs": 226
+    }
+  },
+  "watchOnly": {
+    "name": "Fixture watch-only",
+    "xpub": "tpubDDgEAMpHn8tX5Bs19WWJLZBeFzbpE7BYuP3Qo71abZnQ7FmN3idRPg4oPWt2Q6Uf9huGv7AGMTu8M2BaCxAdThQArjLWLDLpxVX2gYfh2YJ",
+    "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+    "funding": "ab0af12a4b6ba60ebacfe88edefe30a29ecca966c61490eab892750b1e3e2f0c"
+  },
+  "lockedOutpoints": {
+    "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add": [
+      {
+        "txid": "a349d09cb1314cc02b65663c856fe77fb35bf115652baf363cc2dfe2b5f467b3",
+        "vout": 0
+      }
+    ]
+  },
+  "signatures": [
+    {
+      "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+      "address": "yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw",
+      "message": "dashwallet-desktop upgrade fixture",
+      "signature": "HyJ8qBvCTJ8FWG9Fvb7USOqoUC85ZxMGQovuj35Qtc+ZPkDcefAhdF2cafndOAmiS3iM+Lwbtj2IgXeOazVYe+8="
+    },
+    {
+      "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+      "address": "yd5gjLZUx6fKUqXTb2pVTNmFz9jAmGhDHR",
+      "message": "dashwallet-desktop upgrade fixture",
+      "signature": "IBmGqYrFxlI6oPMxcBDiiqQiTNLQ2crLeFMgLY2OKLm0GMExPfBVn4r9o13ZGMI7yf1Y5UcgRhV/kF7mCjhQQ/8="
+    }
+  ],
+  "fundedSignatures": [
+    {
+      "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+      "address": "yNwHG9D2rnrJRQ8j7TG6xnWfbr8D634HeM",
+      "message": "dashwallet-desktop upgrade fixture",
+      "signature": "Hybd9p3VSHug7AyadUIR04JvW+ym3va/xmwgjkVQwxW6LFKC+kJD8HJQCwFt6lOKjzCcHk32k7/VIKevaQxIKB8="
+    },
+    {
+      "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+      "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+      "message": "dashwallet-desktop upgrade fixture",
+      "signature": "IJPCTnj7BrGBXhsS2Kh33loOqb31Har+iLDiDUo46R0Zc/pioerm0b978y/cQ03EmGpnYAvJHMn+kWAXvoJ4Vbg="
+    },
+    {
+      "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+      "address": "yLysyyQbUN8AHKPkqYuxzaSvwBUkkrJHBE",
+      "message": "dashwallet-desktop upgrade fixture",
+      "signature": "HxPIWDfuCQXYGhXHP0eNxHJtf50f6B6tO2bsrnqqa+tueYpYL8/WDop+iPKyJUHp7dQgl6WnAhOlgz9adro79Zw="
+    }
+  ],
+  "calls": [
+    {
+      "cmd": "lock_status",
+      "args": {},
+      "result": {
+        "failedAttempts": 0,
+        "quickUnlockEnrolled": false,
+        "encrypted": true,
+        "state": "unlocked",
+        "retryAfterSecs": null,
+        "walletsWithSecrets": [
+          "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+          "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"
+        ]
+      }
+    },
+    {
+      "cmd": "ui_settings",
+      "args": {},
+      "result": {
+        "autoLockSecs": 900,
+        "decimalDigits": 4,
+        "unit": "milliDash",
+        "subtractFeeByDefault": true,
+        "autohideBalance": true,
+        "preReleaseNoticeDismissed": true,
+        "theme": "dark",
+        "showMasternodes": true
+      }
+    },
+    {
+      "cmd": "get_network_choice",
+      "args": {},
+      "result": {
+        "saved": true,
+        "forcedByFlag": true,
+        "chosen": "testnet",
+        "active": {
+          "dirName": "regtest",
+          "kind": "regtest",
+          "unitName": "tDASH"
+        }
+      }
+    },
+    {
+      "cmd": "active_network",
+      "args": {},
+      "result": {
+        "dirName": "regtest",
+        "kind": "regtest",
+        "unitName": "tDASH"
+      }
+    },
+    {
+      "cmd": "existing_networks",
+      "args": {},
+      "result": [
+        {
+          "hasWalletState": true,
+          "hasOsStoreKey": false,
+          "hasVault": true,
+          "directory": "$DATA_ROOT/regtest",
+          "network": {
+            "dirName": "regtest",
+            "kind": "regtest",
+            "unitName": "tDASH"
+          }
+        }
+      ]
+    },
+    {
+      "cmd": "payment_authentication",
+      "args": {},
+      "result": true
+    },
+    {
+      "cmd": "quick_unlock_policy",
+      "args": {},
+      "result": {
+        "enrolled": false,
+        "passphraseMaxAgeSecs": 604800,
+        "lastPassphraseAt": 1795156542,
+        "spendLimitDuffs": 50000000
+      }
+    },
+    {
+      "cmd": "coinjoin_settings",
+      "args": {},
+      "result": {
+        "enabled": true,
+        "maxSessions": 3,
+        "denomsGoal": 50,
+        "rounds": 6,
+        "denomsHardCap": 300,
+        "multiSession": true,
+        "targetAmountDash": 25
+      }
+    },
+    {
+      "cmd": "dust_protection",
+      "args": {},
+      "result": 12345
+    },
+    {
+      "cmd": "backup_policy",
+      "args": {},
+      "result": {
+        "directory": "$DATA_ROOT/regtest/backups",
+        "keep": 7
+      }
+    },
+    {
+      "cmd": "list_wallets",
+      "args": {},
+      "result": [
+        {
+          "birthHeight": 0,
+          "createdAt": 1795156529,
+          "watchOnly": false,
+          "hasMnemonic": true,
+          "name": "Fixture main",
+          "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+          "balances": {
+            "total": 1124999774,
+            "unconfirmed": 0,
+            "immature": 0,
+            "confirmed": 1124999774,
+            "locked": 0,
+            "coinjoin": 0
+          },
+          "hd": true
+        },
+        {
+          "birthHeight": 0,
+          "createdAt": 1795156529,
+          "watchOnly": false,
+          "hasMnemonic": true,
+          "name": "Fixture second",
+          "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+          "balances": {
+            "total": 300000000,
+            "unconfirmed": 0,
+            "immature": 0,
+            "confirmed": 300000000,
+            "locked": 0,
+            "coinjoin": 0
+          },
+          "hd": true
+        },
+        {
+          "birthHeight": 0,
+          "createdAt": 1795156533,
+          "watchOnly": true,
+          "hasMnemonic": false,
+          "name": "Fixture watch-only",
+          "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+          "balances": {
+            "total": 75000000,
+            "unconfirmed": 0,
+            "immature": 0,
+            "confirmed": 75000000,
+            "locked": 0,
+            "coinjoin": 0
+          },
+          "hd": true
+        }
+      ]
+    },
+    {
+      "cmd": "wallet_load_states",
+      "args": {},
+      "result": [
+        {
+          "name": "Fixture main",
+          "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+          "loaded": true,
+          "watchOnly": false,
+          "loadOnStartup": true
+        },
+        {
+          "name": "Fixture second",
+          "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+          "loaded": true,
+          "watchOnly": false,
+          "loadOnStartup": true
+        },
+        {
+          "name": "Fixture watch-only",
+          "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+          "loaded": true,
+          "watchOnly": true,
+          "loadOnStartup": true
+        }
+      ]
+    },
+    {
+      "cmd": "wallet_info",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"
+      },
+      "result": {
+        "birthHeight": 0,
+        "createdAt": 1795156529,
+        "watchOnly": false,
+        "hasMnemonic": true,
+        "name": "Fixture main",
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "balances": {
+          "total": 1124999774,
+          "unconfirmed": 0,
+          "immature": 0,
+          "confirmed": 1124999774,
+          "locked": 0,
+          "coinjoin": 0
+        },
+        "hd": true
+      }
+    },
+    {
+      "cmd": "balance",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"
+      },
+      "result": {
+        "total": 1124999774,
+        "unconfirmed": 0,
+        "immature": 0,
+        "confirmed": 1124999774,
+        "locked": 0,
+        "coinjoin": 0
+      }
+    },
+    {
+      "cmd": "wallet_scan_height",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"
+      },
+      "result": 105
+    },
+    {
+      "cmd": "current_receive_address",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"
+      },
+      "result": {
+        "index": 1,
+        "used": false,
+        "txCount": 0,
+        "chain": "receiving",
+        "label": "Invoice 7",
+        "balance": 0,
+        "address": "yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw",
+        "derivationPath": "m/44'/1'/0'/0/1"
+      }
+    },
+    {
+      "cmd": "receive_requests",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"
+      },
+      "result": [
+        {
+          "message": "fixture request",
+          "includeUsername": null,
+          "createdAt": 1795156534,
+          "username": null,
+          "label": "Invoice 7",
+          "uri": "dash:yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw?amount=0.50000000&label=Invoice%207&message=fixture%20request",
+          "id": 1,
+          "address": "yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw",
+          "amount": 50000000
+        }
+      ]
+    },
+    {
+      "cmd": "username_in_requests",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"
+      },
+      "result": true
+    },
+    {
+      "cmd": "locked_outpoints",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"
+      },
+      "result": [
+        {
+          "txid": "a349d09cb1314cc02b65663c856fe77fb35bf115652baf363cc2dfe2b5f467b3",
+          "vout": 0
+        }
+      ]
+    },
+    {
+      "cmd": "coinjoin_salt",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add"
+      },
+      "result": "56bdb0a2eb832e70b0bb1089203ad63409278cd8bb84941d72ef571355ae3f74"
+    },
+    {
+      "cmd": "account_xpub",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "account": 0
+      },
+      "result": {
+        "account": 0,
+        "xpub": "tpubDC5FSnBiZDMmhiuCmWAYsLwgLYrrT9rAqvTySfuCCrgsWz8wxMXUS9Tb9iVMvcRbvFcAHGkMD5Kx8koh4GquNGNTfohfk7pgjhaPCdXpoba",
+        "derivationPath": "m/44'/1'/0'"
+      }
+    },
+    {
+      "cmd": "addresses",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "filter": {
+          "chain": null,
+          "used": null
+        }
+      },
+      "result": [
+        {
+          "index": 0,
+          "used": true,
+          "txCount": 3,
+          "chain": "receiving",
+          "label": "Savings",
+          "balance": 250000000,
+          "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+          "derivationPath": "m/44'/1'/0'/0/0"
+        },
+        {
+          "index": 1,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": "Invoice 7",
+          "balance": 0,
+          "address": "yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw",
+          "derivationPath": "m/44'/1'/0'/0/1"
+        },
+        {
+          "index": 2,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yTGFWr27HBYsb8tkLbGdxLxuKbspamdbnG",
+          "derivationPath": "m/44'/1'/0'/0/2"
+        },
+        {
+          "index": 3,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yVJYGeMP3rTLYnMe5qNt5nXSpA8WUTcz49",
+          "derivationPath": "m/44'/1'/0'/0/3"
+        },
+        {
+          "index": 4,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ygyrMEECsTQa2bErqmjLiS8SFmNbQ4ynNF",
+          "derivationPath": "m/44'/1'/0'/0/4"
+        },
+        {
+          "index": 5,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ybKB1cXmRoF7BxqVU5H2i9GMEyYjuD9GUn",
+          "derivationPath": "m/44'/1'/0'/0/5"
+        },
+        {
+          "index": 6,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yaFxaKZMqBEHhGmA7sddPkbVVHbUfvSJCc",
+          "derivationPath": "m/44'/1'/0'/0/6"
+        },
+        {
+          "index": 7,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ycSQ7GyEAJXTdgu2Lc41ucDEKbVcDu7mJr",
+          "derivationPath": "m/44'/1'/0'/0/7"
+        },
+        {
+          "index": 8,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yPmfnGjDPKSHrzvAAACjJE4riJU7XCiDtg",
+          "derivationPath": "m/44'/1'/0'/0/8"
+        },
+        {
+          "index": 9,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yTMS4GQpdy28ta4SZysp1C7fnZy1oqyBzc",
+          "derivationPath": "m/44'/1'/0'/0/9"
+        },
+        {
+          "index": 10,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ycr2va6V5uZpepsbGF1QYr7JYSY5F4ic6V",
+          "derivationPath": "m/44'/1'/0'/0/10"
+        },
+        {
+          "index": 11,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ye5paZYanizAfiaemrdSA4Lktxr9XYKnk9",
+          "derivationPath": "m/44'/1'/0'/0/11"
+        },
+        {
+          "index": 12,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yWTRQ3WzEeYvdQzEExdVXjvHawZNo4zRvp",
+          "derivationPath": "m/44'/1'/0'/0/12"
+        },
+        {
+          "index": 13,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yS8TmvmiuAyLYpt1vY5PURFUsmFJVoQrti",
+          "derivationPath": "m/44'/1'/0'/0/13"
+        },
+        {
+          "index": 14,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yT2GHyyfpQcmWZZQa9jatXG1xLsjXZQbtV",
+          "derivationPath": "m/44'/1'/0'/0/14"
+        },
+        {
+          "index": 15,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ygAN9888Yy9thRdvaFuGqHa3Qm4M3Cvrj9",
+          "derivationPath": "m/44'/1'/0'/0/15"
+        },
+        {
+          "index": 16,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yNVx1i17xhArna2wo8A4b57Q2nBeWXRLbd",
+          "derivationPath": "m/44'/1'/0'/0/16"
+        },
+        {
+          "index": 17,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yUvqtHEg2x94BsSKUz7y8uT3kvwkRykq2n",
+          "derivationPath": "m/44'/1'/0'/0/17"
+        },
+        {
+          "index": 18,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yQhR4UJNfVV7MsoWCuqfc1fP22TBKExGyz",
+          "derivationPath": "m/44'/1'/0'/0/18"
+        },
+        {
+          "index": 19,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yiN5bHWhAaTRYhgSvYE5Aom7tCdALxVjPf",
+          "derivationPath": "m/44'/1'/0'/0/19"
+        },
+        {
+          "index": 20,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yj3r9uGWMi9ZznmeUoL1gekUMJEbR7ARxy",
+          "derivationPath": "m/44'/1'/0'/0/20"
+        },
+        {
+          "index": 21,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yRpTZyAUq1dbp9E5MpZqFmEXPzbA7LvL72",
+          "derivationPath": "m/44'/1'/0'/0/21"
+        },
+        {
+          "index": 22,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ybiBrU7duFcggbJRg2ULHhzTiTsviTUjA7",
+          "derivationPath": "m/44'/1'/0'/0/22"
+        },
+        {
+          "index": 23,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yMoZc1eJfxng4EqroqjBm2JXo7qZevtjo7",
+          "derivationPath": "m/44'/1'/0'/0/23"
+        },
+        {
+          "index": 24,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yjN3dm235N2baK8p4hkKxE5Ep5eYzL86Y8",
+          "derivationPath": "m/44'/1'/0'/0/24"
+        },
+        {
+          "index": 25,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yQqCTxAzgRcj88my8Y9WDdCLGdFppci2Xc",
+          "derivationPath": "m/44'/1'/0'/0/25"
+        },
+        {
+          "index": 26,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yQf1pYfF5vjZhSsxw5QofeWWayGeQ8tyri",
+          "derivationPath": "m/44'/1'/0'/0/26"
+        },
+        {
+          "index": 27,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ydfegEcEi3hqCTqGbPzXinD7ZBezygmpWt",
+          "derivationPath": "m/44'/1'/0'/0/27"
+        },
+        {
+          "index": 28,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yZDCW6t59suH31iQLeV5K2cB9nr8CTT9Kf",
+          "derivationPath": "m/44'/1'/0'/0/28"
+        },
+        {
+          "index": 29,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ydBRhAtRx8yTMYq9AeM9px892GCuw6C7rv",
+          "derivationPath": "m/44'/1'/0'/0/29"
+        },
+        {
+          "index": 30,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yXNk9Gh47pJshgFAq8djis7WJA9Hdv5PSr",
+          "derivationPath": "m/44'/1'/0'/0/30"
+        },
+        {
+          "index": 0,
+          "used": true,
+          "txCount": 1,
+          "chain": "change",
+          "label": null,
+          "balance": 874999774,
+          "address": "yNwHG9D2rnrJRQ8j7TG6xnWfbr8D634HeM",
+          "derivationPath": "m/44'/1'/0'/1/0"
+        },
+        {
+          "index": 1,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yewnDakKiGUZqrReJqUanPt1rNH8uGWUL5",
+          "derivationPath": "m/44'/1'/0'/1/1"
+        },
+        {
+          "index": 2,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yTaCQHCPc1Zfww9GgEQ48L2JZMfnRw6WsQ",
+          "derivationPath": "m/44'/1'/0'/1/2"
+        },
+        {
+          "index": 3,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yczBun6aonpH4g6WNjQsSMcAqxnAySYBbn",
+          "derivationPath": "m/44'/1'/0'/1/3"
+        },
+        {
+          "index": 4,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yYAn4g3j57mAZWYX95HXuj25SWsUU8rLUg",
+          "derivationPath": "m/44'/1'/0'/1/4"
+        },
+        {
+          "index": 5,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yLcbLuAd4z4Ln9GTJ8nFbPgSm9TRswFuoB",
+          "derivationPath": "m/44'/1'/0'/1/5"
+        },
+        {
+          "index": 6,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yfpqC5x18XABCXfYw5poyrdFSvW55r5wtn",
+          "derivationPath": "m/44'/1'/0'/1/6"
+        },
+        {
+          "index": 7,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yd7i3XfqLFiWdHUNGQReMdvQokEtnL6SZK",
+          "derivationPath": "m/44'/1'/0'/1/7"
+        },
+        {
+          "index": 8,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yLzgpj3t78ShzMxVR1bEkZN42JeL4FnHwT",
+          "derivationPath": "m/44'/1'/0'/1/8"
+        },
+        {
+          "index": 9,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yLUVXzBYABsQNXoDRNvyKEEryeZkTVisUP",
+          "derivationPath": "m/44'/1'/0'/1/9"
+        },
+        {
+          "index": 10,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ybww2qTVwetwiu9FjgHrmevRgimuwXCjXX",
+          "derivationPath": "m/44'/1'/0'/1/10"
+        },
+        {
+          "index": 11,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yNzXETJnJLevvwDmoa2ohEGcfSGjULckDN",
+          "derivationPath": "m/44'/1'/0'/1/11"
+        },
+        {
+          "index": 12,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yUDTYYCCpEAgtBZ1LSt1g2sGCPAcUErvCS",
+          "derivationPath": "m/44'/1'/0'/1/12"
+        },
+        {
+          "index": 13,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yPczU715sdVJ88mhvzaghtT1xgVQNfnw3k",
+          "derivationPath": "m/44'/1'/0'/1/13"
+        },
+        {
+          "index": 14,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ygwmVUjASQcVckFgxnhDpgS3B8AyLN1Qb4",
+          "derivationPath": "m/44'/1'/0'/1/14"
+        },
+        {
+          "index": 15,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yenri3eQKdLoxKAmEjitX73QRhLwRMwZqw",
+          "derivationPath": "m/44'/1'/0'/1/15"
+        },
+        {
+          "index": 16,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yNb7iP7756B2hjQDg64jkTJNTpTiTQWQCw",
+          "derivationPath": "m/44'/1'/0'/1/16"
+        },
+        {
+          "index": 17,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yb4bmCA6EyJwTir1YEk4tv9PFA8tdh1Rjr",
+          "derivationPath": "m/44'/1'/0'/1/17"
+        },
+        {
+          "index": 18,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yRrTjhUNjxPhZ289vtgJH9x2mC8tya9cix",
+          "derivationPath": "m/44'/1'/0'/1/18"
+        },
+        {
+          "index": 19,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yhEtiFJHkxJM5uVHe5QnSWWWXWZBbSpXsH",
+          "derivationPath": "m/44'/1'/0'/1/19"
+        },
+        {
+          "index": 20,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yj8f2vAC5qwMSagTWHu3Jgj5Tvcx4vLnMR",
+          "derivationPath": "m/44'/1'/0'/1/20"
+        },
+        {
+          "index": 21,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yRyRN9BeHGfKyM9nfeFWqu4HviRtx8G82z",
+          "derivationPath": "m/44'/1'/0'/1/21"
+        },
+        {
+          "index": 22,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yNmRhC6shqZkGp5XuahCUjtWmJUCdgRMEs",
+          "derivationPath": "m/44'/1'/0'/1/22"
+        },
+        {
+          "index": 23,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yLSrtJjDTwDw457dWxyPzTcEhY2WJ15Q5q",
+          "derivationPath": "m/44'/1'/0'/1/23"
+        },
+        {
+          "index": 24,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yedzDp1S1szdvshok8d3XNocHZwnXishdX",
+          "derivationPath": "m/44'/1'/0'/1/24"
+        },
+        {
+          "index": 25,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yfcPAhKm8ALHeePhRskxz7mA6AXYQNE2Hz",
+          "derivationPath": "m/44'/1'/0'/1/25"
+        },
+        {
+          "index": 26,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yQbhvSQa3nhq4AJfe5uAbS5Gq91ySko4tT",
+          "derivationPath": "m/44'/1'/0'/1/26"
+        },
+        {
+          "index": 27,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yegBe3xux4353DaNQ8HBdFDkL5BNU9UWDr",
+          "derivationPath": "m/44'/1'/0'/1/27"
+        },
+        {
+          "index": 28,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ydgJaPSxHPnnceXYquH6yWQjz8H5HgwgYT",
+          "derivationPath": "m/44'/1'/0'/1/28"
+        },
+        {
+          "index": 29,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ya8uNa6eMLFsDWotFHVxohjoARkQj4oEGM",
+          "derivationPath": "m/44'/1'/0'/1/29"
+        },
+        {
+          "index": 30,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yRJ12VwQq7vuytEnHkBktukXcdGqFtQmoj",
+          "derivationPath": "m/44'/1'/0'/1/30"
+        }
+      ]
+    },
+    {
+      "cmd": "address_book",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "purpose": null,
+        "search": null
+      },
+      "result": [
+        {
+          "label": "Fixture contact",
+          "purpose": "send",
+          "createdAt": 1795156534,
+          "address": "yYWisCigY3XFMtiX7acPfLJAw1CkDszmEQ"
+        },
+        {
+          "label": "Fixture payee",
+          "purpose": "send",
+          "createdAt": 1795156532,
+          "address": "ySbqkyC46eHu5ss4PhVHQCW9oLn8DETC93"
+        },
+        {
+          "label": "Invoice 7",
+          "purpose": "receive",
+          "createdAt": 1795156534,
+          "address": "yfd64jEpzzTLrHnR1wq3iiYXh68AiU8mcw"
+        },
+        {
+          "label": "Savings",
+          "purpose": "receive",
+          "createdAt": 1795156529,
+          "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt"
+        }
+      ]
+    },
+    {
+      "cmd": "utxos",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "filter": {
+          "includeLocked": true,
+          "fullyMixedOnly": false,
+          "minConfirmations": null
+        }
+      },
+      "result": [
+        {
+          "outpoint": {
+            "txid": "b93b1261f6ff19fa5405a8367cfdb51e559cc9e59e8ad470c27838c897b29d86",
+            "vout": 1
+          },
+          "coinjoinDenominated": false,
+          "address": "yNwHG9D2rnrJRQ8j7TG6xnWfbr8D634HeM",
+          "amount": 874999774,
+          "spendable": true,
+          "chainLocked": false,
+          "timestamp": null,
+          "blockHeight": 103,
+          "instantLocked": false,
+          "reserved": false,
+          "userLocked": false,
+          "label": null,
+          "coinjoinRounds": null,
+          "isCoinbase": false,
+          "confirmations": 1,
+          "isChange": true
+        },
+        {
+          "outpoint": {
+            "txid": "a349d09cb1314cc02b65663c856fe77fb35bf115652baf363cc2dfe2b5f467b3",
+            "vout": 0
+          },
+          "coinjoinDenominated": false,
+          "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+          "amount": 250000000,
+          "spendable": false,
+          "chainLocked": false,
+          "timestamp": null,
+          "blockHeight": 102,
+          "instantLocked": false,
+          "reserved": false,
+          "userLocked": true,
+          "label": "Savings",
+          "coinjoinRounds": null,
+          "isCoinbase": false,
+          "confirmations": 2,
+          "isChange": false
+        }
+      ]
+    },
+    {
+      "cmd": "history_page",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "request": {
+          "sort": "oldestFirst",
+          "cursor": null,
+          "limit": 100,
+          "categories": [],
+          "text": null
+        }
+      },
+      "result": {
+        "nextCursor": null,
+        "rows": [
+          {
+            "category": "received",
+            "recordIndex": 0,
+            "countsTowardBalance": true,
+            "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+            "amount": 250000000,
+            "status": {
+              "chainLocked": false,
+              "maturesIn": null,
+              "kind": "confirming",
+              "confirmations": 4,
+              "instantLocked": false
+            },
+            "involvesWatchOnly": false,
+            "timestamp": 1795156530,
+            "fee": null,
+            "txid": "a349d09cb1314cc02b65663c856fe77fb35bf115652baf363cc2dfe2b5f467b3",
+            "blockHeight": 102,
+            "label": "Savings",
+            "txType": "recvWithAddress"
+          },
+          {
+            "category": "received",
+            "recordIndex": 0,
+            "countsTowardBalance": true,
+            "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+            "amount": 1000000000,
+            "status": {
+              "chainLocked": false,
+              "maturesIn": null,
+              "kind": "confirming",
+              "confirmations": 4,
+              "instantLocked": false
+            },
+            "involvesWatchOnly": false,
+            "timestamp": 1795156530,
+            "fee": null,
+            "txid": "f2f9e1c367322b84166de97ef45811cb3ca8814bf3fc8d3096fd8fb0f462f71f",
+            "blockHeight": 102,
+            "label": "Opening deposit",
+            "txType": "recvWithAddress"
+          },
+          {
+            "category": "sent",
+            "recordIndex": 0,
+            "countsTowardBalance": true,
+            "address": "ySbqkyC46eHu5ss4PhVHQCW9oLn8DETC93",
+            "amount": -125000226,
+            "status": {
+              "chainLocked": false,
+              "maturesIn": null,
+              "kind": "confirming",
+              "confirmations": 3,
+              "instantLocked": false
+            },
+            "involvesWatchOnly": false,
+            "timestamp": 1795156532,
+            "fee": 226,
+            "txid": "b93b1261f6ff19fa5405a8367cfdb51e559cc9e59e8ad470c27838c897b29d86",
+            "blockHeight": 103,
+            "label": "Fixture payee",
+            "txType": "sendToAddress"
+          }
+        ],
+        "totalMatching": 3
+      }
+    },
+    {
+      "cmd": "tx_detail",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "txid": "a349d09cb1314cc02b65663c856fe77fb35bf115652baf363cc2dfe2b5f467b3"
+      },
+      "result": {
+        "blockHash": "410f558da88b853e268ce27c70aebb764e8c193770da26c0607e7d4ca695cc17",
+        "outputs": [
+          {
+            "vout": 0,
+            "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+            "dataHex": null,
+            "isMine": true,
+            "isChange": false,
+            "amount": 250000000
+          },
+          {
+            "vout": 1,
+            "address": "yZNKTQoGz6Ug7BAnDzZCWPSA1vPUJJ4TaN",
+            "dataHex": null,
+            "isMine": false,
+            "isChange": false,
+            "amount": 48749999550
+          }
+        ],
+        "rawHex": "02000000011ff762f4b08ffd96308dfcf34b81a83ccb1158f47ee96d16842b3267c3e1f9f2010000006a4730440220683837f86308d5aea824d9e015cd05c575c31a26e2bc15755712c147290ac05302204cb967a8b8dc7a68d49b0bfd12040659e05e46f598c634ebe935294529a7b21a01210231bd301f9521194bc6461e31b28b4503feb02089cfce9b94eaf7b3bbc532ebb6feffffff0280b2e60e000000001976a9143a2d4145a4f098523b3e8127f1da87cfc55b8e7988acbef5b9590b0000001976a9148f24b63480b9328e50aa07ab2274c35b4c0b5f8788ac65000000",
+        "status": {
+          "chainLocked": false,
+          "maturesIn": null,
+          "kind": "confirming",
+          "confirmations": 4,
+          "instantLocked": false
+        },
+        "rows": [
+          {
+            "category": "received",
+            "recordIndex": 0,
+            "countsTowardBalance": true,
+            "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+            "amount": 250000000,
+            "status": {
+              "chainLocked": false,
+              "maturesIn": null,
+              "kind": "confirming",
+              "confirmations": 4,
+              "instantLocked": false
+            },
+            "involvesWatchOnly": false,
+            "timestamp": 1795156530,
+            "fee": null,
+            "txid": "a349d09cb1314cc02b65663c856fe77fb35bf115652baf363cc2dfe2b5f467b3",
+            "blockHeight": 102,
+            "label": "Savings",
+            "txType": "recvWithAddress"
+          }
+        ],
+        "timestamp": 1795156530,
+        "txid": "a349d09cb1314cc02b65663c856fe77fb35bf115652baf363cc2dfe2b5f467b3",
+        "blockHeight": 102,
+        "fee": null,
+        "label": null,
+        "sizeBytes": 225,
+        "inputs": [
+          {
+            "previousVout": 1,
+            "isMine": false,
+            "previousTxid": "f2f9e1c367322b84166de97ef45811cb3ca8814bf3fc8d3096fd8fb0f462f71f",
+            "address": "yXKFwoox9VHZfMk3iTyjctwf7p2NCxhEmN",
+            "amount": 48999999775
+          }
+        ],
+        "message": null
+      }
+    },
+    {
+      "cmd": "tx_label",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "txid": "a349d09cb1314cc02b65663c856fe77fb35bf115652baf363cc2dfe2b5f467b3"
+      },
+      "result": null
+    },
+    {
+      "cmd": "tx_detail",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "txid": "f2f9e1c367322b84166de97ef45811cb3ca8814bf3fc8d3096fd8fb0f462f71f"
+      },
+      "result": {
+        "blockHash": "410f558da88b853e268ce27c70aebb764e8c193770da26c0607e7d4ca695cc17",
+        "outputs": [
+          {
+            "vout": 0,
+            "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+            "dataHex": null,
+            "isMine": true,
+            "isChange": false,
+            "amount": 1000000000
+          },
+          {
+            "vout": 1,
+            "address": "yXKFwoox9VHZfMk3iTyjctwf7p2NCxhEmN",
+            "dataHex": null,
+            "isMine": false,
+            "isChange": false,
+            "amount": 48999999775
+          }
+        ],
+        "rawHex": "0200000001961fcb80b052c51f6c4c44cf54353b854b28017960746ca1bf84f2c1b2d3450a000000006a47304402201fb5ba34ffa9bca55d1c3906de7a135841a62ead16c473a9abf5eed5e481781402204cbccadf9eaedb83f77fc2313ba18579d55ce887f4a886ebb5f2aab61b8d1a640121027f7f292ea18ad995a50064225385ced28c57f3feeca0a77319809bcd7b8c528cfeffffff0200ca9a3b000000001976a9143a2d4145a4f098523b3e8127f1da87cfc55b8e7988ac1fa9a0680b0000001976a91478a0482deb55ddf6fce50d05d56eb44d8539e88c88ac65000000",
+        "status": {
+          "chainLocked": false,
+          "maturesIn": null,
+          "kind": "confirming",
+          "confirmations": 4,
+          "instantLocked": false
+        },
+        "rows": [
+          {
+            "category": "received",
+            "recordIndex": 0,
+            "countsTowardBalance": true,
+            "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+            "amount": 1000000000,
+            "status": {
+              "chainLocked": false,
+              "maturesIn": null,
+              "kind": "confirming",
+              "confirmations": 4,
+              "instantLocked": false
+            },
+            "involvesWatchOnly": false,
+            "timestamp": 1795156530,
+            "fee": null,
+            "txid": "f2f9e1c367322b84166de97ef45811cb3ca8814bf3fc8d3096fd8fb0f462f71f",
+            "blockHeight": 102,
+            "label": "Opening deposit",
+            "txType": "recvWithAddress"
+          }
+        ],
+        "timestamp": 1795156530,
+        "txid": "f2f9e1c367322b84166de97ef45811cb3ca8814bf3fc8d3096fd8fb0f462f71f",
+        "blockHeight": 102,
+        "fee": null,
+        "label": "Opening deposit",
+        "sizeBytes": 225,
+        "inputs": [
+          {
+            "previousVout": 0,
+            "isMine": false,
+            "previousTxid": "0a45d3b2c1f284bfa16c74607901284b853b3554cf444c6c1fc552b080cb1f96",
+            "address": null,
+            "amount": null
+          }
+        ],
+        "message": null
+      }
+    },
+    {
+      "cmd": "tx_label",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "txid": "f2f9e1c367322b84166de97ef45811cb3ca8814bf3fc8d3096fd8fb0f462f71f"
+      },
+      "result": "Opening deposit"
+    },
+    {
+      "cmd": "tx_detail",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "txid": "b93b1261f6ff19fa5405a8367cfdb51e559cc9e59e8ad470c27838c897b29d86"
+      },
+      "result": {
+        "blockHash": "601a0bfd5739cf37e8183cbbad070f40b6f5904130d1358fab8e3b4ee3536c6b",
+        "outputs": [
+          {
+            "vout": 0,
+            "address": "ySbqkyC46eHu5ss4PhVHQCW9oLn8DETC93",
+            "dataHex": null,
+            "isMine": false,
+            "isChange": false,
+            "amount": 125000000
+          },
+          {
+            "vout": 1,
+            "address": "yNwHG9D2rnrJRQ8j7TG6xnWfbr8D634HeM",
+            "dataHex": null,
+            "isMine": true,
+            "isChange": true,
+            "amount": 874999774
+          }
+        ],
+        "rawHex": "03000000011ff762f4b08ffd96308dfcf34b81a83ccb1158f47ee96d16842b3267c3e1f9f2000000006a473044022042eb0fb4dec1177a63db2e89b8b53d220eaf3d67f23d6f15aaeb0382e18193ab02204b83a291fb740ee7b2f7b664ffe9b771f2b1c97c28c6dc8b5c87b15d6372542f012102a7451395735369f2ecdfc829c0f774e88ef1303dfe5b2f04dbaab30a535dfdd6ffffffff0240597307000000001976a91444ea88c18401e389dd2de58223007ff0a8c7085888acde6f2734000000001976a9141cb73920b5ac38f460e38deb684b9c4a408ff3c088ac00000000",
+        "status": {
+          "chainLocked": false,
+          "maturesIn": null,
+          "kind": "confirming",
+          "confirmations": 3,
+          "instantLocked": false
+        },
+        "rows": [
+          {
+            "category": "sent",
+            "recordIndex": 0,
+            "countsTowardBalance": true,
+            "address": "ySbqkyC46eHu5ss4PhVHQCW9oLn8DETC93",
+            "amount": -125000226,
+            "status": {
+              "chainLocked": false,
+              "maturesIn": null,
+              "kind": "confirming",
+              "confirmations": 3,
+              "instantLocked": false
+            },
+            "involvesWatchOnly": false,
+            "timestamp": 1795156532,
+            "fee": 226,
+            "txid": "b93b1261f6ff19fa5405a8367cfdb51e559cc9e59e8ad470c27838c897b29d86",
+            "blockHeight": 103,
+            "label": "Fixture payee",
+            "txType": "sendToAddress"
+          }
+        ],
+        "timestamp": 1795156532,
+        "txid": "b93b1261f6ff19fa5405a8367cfdb51e559cc9e59e8ad470c27838c897b29d86",
+        "blockHeight": 103,
+        "fee": 226,
+        "label": null,
+        "sizeBytes": 225,
+        "inputs": [
+          {
+            "previousVout": 0,
+            "isMine": true,
+            "previousTxid": "f2f9e1c367322b84166de97ef45811cb3ca8814bf3fc8d3096fd8fb0f462f71f",
+            "address": "yRd4FhXfVGHXpsuZXPNkMrfD9GVj46pnjt",
+            "amount": 1000000000
+          }
+        ],
+        "message": null
+      }
+    },
+    {
+      "cmd": "tx_label",
+      "args": {
+        "walletId": "0ff35f248c69653efce8336ce14b78e29cd3bbaf4162c42246259850af2c2add",
+        "txid": "b93b1261f6ff19fa5405a8367cfdb51e559cc9e59e8ad470c27838c897b29d86"
+      },
+      "result": null
+    },
+    {
+      "cmd": "wallet_info",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"
+      },
+      "result": {
+        "birthHeight": 0,
+        "createdAt": 1795156529,
+        "watchOnly": false,
+        "hasMnemonic": true,
+        "name": "Fixture second",
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+        "balances": {
+          "total": 300000000,
+          "unconfirmed": 0,
+          "immature": 0,
+          "confirmed": 300000000,
+          "locked": 0,
+          "coinjoin": 0
+        },
+        "hd": true
+      }
+    },
+    {
+      "cmd": "balance",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"
+      },
+      "result": {
+        "total": 300000000,
+        "unconfirmed": 0,
+        "immature": 0,
+        "confirmed": 300000000,
+        "locked": 0,
+        "coinjoin": 0
+      }
+    },
+    {
+      "cmd": "wallet_scan_height",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"
+      },
+      "result": 105
+    },
+    {
+      "cmd": "current_receive_address",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"
+      },
+      "result": {
+        "index": 1,
+        "used": false,
+        "txCount": 0,
+        "chain": "receiving",
+        "label": null,
+        "balance": 0,
+        "address": "yd5gjLZUx6fKUqXTb2pVTNmFz9jAmGhDHR",
+        "derivationPath": "m/44'/1'/0'/0/1"
+      }
+    },
+    {
+      "cmd": "receive_requests",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"
+      },
+      "result": []
+    },
+    {
+      "cmd": "username_in_requests",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"
+      },
+      "result": false
+    },
+    {
+      "cmd": "locked_outpoints",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"
+      },
+      "result": []
+    },
+    {
+      "cmd": "coinjoin_salt",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30"
+      },
+      "result": "94c56ddec727781b770a3850e89f700064526885935813336e1545ee3fbbc3b0"
+    },
+    {
+      "cmd": "account_xpub",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+        "account": 0
+      },
+      "result": {
+        "account": 0,
+        "xpub": "tpubDCcSf3bv2kQiwxRJCbsknqJtWXkcW5bS5yfkqqp9RW2th2ZLFwDWvFo5DqHeZQUdgDh1KV7QaGujkJSWTY4EWtw8EgKpQCvacxkZw4CFox9",
+        "derivationPath": "m/44'/1'/0'"
+      }
+    },
+    {
+      "cmd": "addresses",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+        "filter": {
+          "chain": null,
+          "used": null
+        }
+      },
+      "result": [
+        {
+          "index": 0,
+          "used": true,
+          "txCount": 1,
+          "chain": "receiving",
+          "label": null,
+          "balance": 300000000,
+          "address": "yLysyyQbUN8AHKPkqYuxzaSvwBUkkrJHBE",
+          "derivationPath": "m/44'/1'/0'/0/0"
+        },
+        {
+          "index": 1,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yd5gjLZUx6fKUqXTb2pVTNmFz9jAmGhDHR",
+          "derivationPath": "m/44'/1'/0'/0/1"
+        },
+        {
+          "index": 2,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yQeRssiaNHWBjwWXYy8fVqtJebWec478Pu",
+          "derivationPath": "m/44'/1'/0'/0/2"
+        },
+        {
+          "index": 3,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ySp24QW7rBtGW91Mr3DYYDBagPYfFB7c4c",
+          "derivationPath": "m/44'/1'/0'/0/3"
+        },
+        {
+          "index": 4,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ycENCtzmUp9Cri22aVX2qcdGuTCC7krL6J",
+          "derivationPath": "m/44'/1'/0'/0/4"
+        },
+        {
+          "index": 5,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yPvhhcHWks79UUADLeGTUbBkZvjuFadSiV",
+          "derivationPath": "m/44'/1'/0'/0/5"
+        },
+        {
+          "index": 6,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yNFcQZSojxiomLKGqUHCjVZNmpFUQsZGCL",
+          "derivationPath": "m/44'/1'/0'/0/6"
+        },
+        {
+          "index": 7,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yMoqWToBTgDWUEB8rsVyr3favpm5E4joNL",
+          "derivationPath": "m/44'/1'/0'/0/7"
+        },
+        {
+          "index": 8,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yYgunGaURufW75wtRoBsNWiLiwFv3hmjVx",
+          "derivationPath": "m/44'/1'/0'/0/8"
+        },
+        {
+          "index": 9,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yMCQi3jgNPn2H5rAFLmANXbB6H4rkRjSKv",
+          "derivationPath": "m/44'/1'/0'/0/9"
+        },
+        {
+          "index": 10,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yQWsWH6oGGeDRDJyfaomZLNFUXRxgeFkPh",
+          "derivationPath": "m/44'/1'/0'/0/10"
+        },
+        {
+          "index": 11,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yc1F74PMVnA1pEGqKQ2WYqtY2s618xwDqr",
+          "derivationPath": "m/44'/1'/0'/0/11"
+        },
+        {
+          "index": 12,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yMNC29PfaZSvA6xthTRh5a9e3RPY8S9aRA",
+          "derivationPath": "m/44'/1'/0'/0/12"
+        },
+        {
+          "index": 13,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yggxeJPBZQEEvdfpqMcvZZxCNtsbzcdk22",
+          "derivationPath": "m/44'/1'/0'/0/13"
+        },
+        {
+          "index": 14,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yR3mZugVcabzeyubgoWMG6KN4bJMZL4Zoe",
+          "derivationPath": "m/44'/1'/0'/0/14"
+        },
+        {
+          "index": 15,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yPQN1ciiXkx2brZrjLAk51Pgi57iQQkh88",
+          "derivationPath": "m/44'/1'/0'/0/15"
+        },
+        {
+          "index": 16,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ySEQC3oyht1qtbvvKfXakdU9xUgYuV9YKi",
+          "derivationPath": "m/44'/1'/0'/0/16"
+        },
+        {
+          "index": 17,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ySkADGMdpSftHvtY1j1bzgyJsLHn2QBcUZ",
+          "derivationPath": "m/44'/1'/0'/0/17"
+        },
+        {
+          "index": 18,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yY4FAHy2Bntn2uv72bZA9aWMfwdimTPHBz",
+          "derivationPath": "m/44'/1'/0'/0/18"
+        },
+        {
+          "index": 19,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yWrTurBKTCwaJY2jN3ifQwwRhReN2SngBa",
+          "derivationPath": "m/44'/1'/0'/0/19"
+        },
+        {
+          "index": 20,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yP9G4juqpPtw92jXZRS4pBxYRhkfnKq14W",
+          "derivationPath": "m/44'/1'/0'/0/20"
+        },
+        {
+          "index": 21,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yXHxwmcVxs2gCr8Nh5CHRcCyq4UfV7btEm",
+          "derivationPath": "m/44'/1'/0'/0/21"
+        },
+        {
+          "index": 22,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yhqLgXXiPJ5oAcbyXjQmzxqwnRxtsKKYLZ",
+          "derivationPath": "m/44'/1'/0'/0/22"
+        },
+        {
+          "index": 23,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yffbqoz9djghZ7i8EaBjze1YHVZq3ZyHqH",
+          "derivationPath": "m/44'/1'/0'/0/23"
+        },
+        {
+          "index": 24,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yTgAiQPKsPJPBQftdi9H43fNHmY6NKYr9m",
+          "derivationPath": "m/44'/1'/0'/0/24"
+        },
+        {
+          "index": 25,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yTNah6UdrmAmLzou8JMygF9ghZSrQjU7NU",
+          "derivationPath": "m/44'/1'/0'/0/25"
+        },
+        {
+          "index": 26,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ydwk7JXHfUKAmB3T9aNcxePoe7fYLWzgVu",
+          "derivationPath": "m/44'/1'/0'/0/26"
+        },
+        {
+          "index": 27,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ySkcr54fU8WDa7fwHgy11hThrAc6WS7WJh",
+          "derivationPath": "m/44'/1'/0'/0/27"
+        },
+        {
+          "index": 28,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yjXEcGGzfoqmVCQWWoFvG2TGwJFHJibW5R",
+          "derivationPath": "m/44'/1'/0'/0/28"
+        },
+        {
+          "index": 29,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yenRFjJx2fBwZTouCTvoqCaoyAvHujfJHH",
+          "derivationPath": "m/44'/1'/0'/0/29"
+        },
+        {
+          "index": 30,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yXji7XiHbVBSLsuMEVrrFHsJtxgsqwXFFV",
+          "derivationPath": "m/44'/1'/0'/0/30"
+        },
+        {
+          "index": 0,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yT179gLvZod2e85FYzFEyVjYvesQjjXwr8",
+          "derivationPath": "m/44'/1'/0'/1/0"
+        },
+        {
+          "index": 1,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ySwdAuY3Ne77WyLJ8C8deuTLAk67NyRUW6",
+          "derivationPath": "m/44'/1'/0'/1/1"
+        },
+        {
+          "index": 2,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yRh9vY1Z95JWoB9tGmZVApDoNRSFJiT6CP",
+          "derivationPath": "m/44'/1'/0'/1/2"
+        },
+        {
+          "index": 3,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ybPKF1ULYaxWZHnx7xWErUisRBcTRvqAyu",
+          "derivationPath": "m/44'/1'/0'/1/3"
+        },
+        {
+          "index": 4,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yMgeWYz1zy6Q4bnx645H6reJQA2hN38BhC",
+          "derivationPath": "m/44'/1'/0'/1/4"
+        },
+        {
+          "index": 5,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yMGm5ciAuJXP1DwiLk9XngRRHdr6tXB8BF",
+          "derivationPath": "m/44'/1'/0'/1/5"
+        },
+        {
+          "index": 6,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yboMXm7dAZsWjLm6GCSFxTLzHKLUK8TeDi",
+          "derivationPath": "m/44'/1'/0'/1/6"
+        },
+        {
+          "index": 7,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ySWzkcnVYKrggaNLJFRhYp6PwaE2bh72we",
+          "derivationPath": "m/44'/1'/0'/1/7"
+        },
+        {
+          "index": 8,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yQHqeWQCaUN3fzMgdX2dwkVREMaJL2ePdG",
+          "derivationPath": "m/44'/1'/0'/1/8"
+        },
+        {
+          "index": 9,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yiDMpKQ5JVNqvCSPopGFvA6gSQpqxUFkUK",
+          "derivationPath": "m/44'/1'/0'/1/9"
+        },
+        {
+          "index": 10,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yZxX6zhdtyAXiTRhYjCuiqf6XxkDEMAAmb",
+          "derivationPath": "m/44'/1'/0'/1/10"
+        },
+        {
+          "index": 11,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yWQtq6tEdYz8xpDQU4n1H62UyTW2SLsZUA",
+          "derivationPath": "m/44'/1'/0'/1/11"
+        },
+        {
+          "index": 12,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yYHTF2d2bqtn16eM5j388VE3gpZvgQM36W",
+          "derivationPath": "m/44'/1'/0'/1/12"
+        },
+        {
+          "index": 13,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yYSLYrMhJiq4XL3ZG6NAjZm49iqraZ2rAC",
+          "derivationPath": "m/44'/1'/0'/1/13"
+        },
+        {
+          "index": 14,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yMcWTNPFeb35eKDQNST9xSbXuwypZMqfDq",
+          "derivationPath": "m/44'/1'/0'/1/14"
+        },
+        {
+          "index": 15,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yPBWHFVfBrkVdpiqrA1WFH2sFWrF2VsuUA",
+          "derivationPath": "m/44'/1'/0'/1/15"
+        },
+        {
+          "index": 16,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yheNYkZ3Qq9uv4XwFEw4r2QGxKFopCCZ3P",
+          "derivationPath": "m/44'/1'/0'/1/16"
+        },
+        {
+          "index": 17,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ybEnVmR4TjFJHjJdHFo8WX1no3W8G4rdQz",
+          "derivationPath": "m/44'/1'/0'/1/17"
+        },
+        {
+          "index": 18,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yXfm5DJSV5Ge6kCX7XdxPxAfsXYKcPNNEc",
+          "derivationPath": "m/44'/1'/0'/1/18"
+        },
+        {
+          "index": 19,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yeeLYwXMfWTehRkGgbog6QssXTMYkMrGyn",
+          "derivationPath": "m/44'/1'/0'/1/19"
+        },
+        {
+          "index": 20,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yVzv8QDRjY8Qz1BmWPAB1XDd5r5wHkA4kq",
+          "derivationPath": "m/44'/1'/0'/1/20"
+        },
+        {
+          "index": 21,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yYnqtbc9BkUB7YctcwQN3vmeinC2jrcimz",
+          "derivationPath": "m/44'/1'/0'/1/21"
+        },
+        {
+          "index": 22,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yeyXYVB9c59mFUN8jwytf2UhsECaa3bX5G",
+          "derivationPath": "m/44'/1'/0'/1/22"
+        },
+        {
+          "index": 23,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yhb4KJr1Xx73AV9iNdRzX7FdyTukx4hK8S",
+          "derivationPath": "m/44'/1'/0'/1/23"
+        },
+        {
+          "index": 24,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yjDgpRaaoEcMMcoEf8ZWNoXi5kB8oBbdvB",
+          "derivationPath": "m/44'/1'/0'/1/24"
+        },
+        {
+          "index": 25,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yURvC1GcFaGbfj26zrVC3PtJFxqxTn3zEX",
+          "derivationPath": "m/44'/1'/0'/1/25"
+        },
+        {
+          "index": 26,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yj8XF6YXrJv2yqDPzDGy55XJH9RKc8Dmig",
+          "derivationPath": "m/44'/1'/0'/1/26"
+        },
+        {
+          "index": 27,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yPMmB5KxU6yqRo3fT6AoFwnc23thRCRTXj",
+          "derivationPath": "m/44'/1'/0'/1/27"
+        },
+        {
+          "index": 28,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yPFZef6Z8yptnwBZv757iqYMKWp5NRrtgU",
+          "derivationPath": "m/44'/1'/0'/1/28"
+        },
+        {
+          "index": 29,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ycnM5F8XzrnDoHbzQPM6d9sJnRXjbaPfPX",
+          "derivationPath": "m/44'/1'/0'/1/29"
+        }
+      ]
+    },
+    {
+      "cmd": "address_book",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+        "purpose": null,
+        "search": null
+      },
+      "result": []
+    },
+    {
+      "cmd": "utxos",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+        "filter": {
+          "includeLocked": true,
+          "fullyMixedOnly": false,
+          "minConfirmations": null
+        }
+      },
+      "result": [
+        {
+          "outpoint": {
+            "txid": "48af46568971c9395bb11f851d26fa8b29d29dbff3484a06163aa3d448f3884d",
+            "vout": 0
+          },
+          "coinjoinDenominated": false,
+          "address": "yLysyyQbUN8AHKPkqYuxzaSvwBUkkrJHBE",
+          "amount": 300000000,
+          "spendable": true,
+          "chainLocked": false,
+          "timestamp": null,
+          "blockHeight": 102,
+          "instantLocked": false,
+          "reserved": false,
+          "userLocked": false,
+          "label": null,
+          "coinjoinRounds": null,
+          "isCoinbase": false,
+          "confirmations": 1,
+          "isChange": false
+        }
+      ]
+    },
+    {
+      "cmd": "history_page",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+        "request": {
+          "sort": "oldestFirst",
+          "cursor": null,
+          "limit": 100,
+          "categories": [],
+          "text": null
+        }
+      },
+      "result": {
+        "nextCursor": null,
+        "rows": [
+          {
+            "category": "received",
+            "recordIndex": 0,
+            "countsTowardBalance": true,
+            "address": "yLysyyQbUN8AHKPkqYuxzaSvwBUkkrJHBE",
+            "amount": 300000000,
+            "status": {
+              "chainLocked": false,
+              "maturesIn": null,
+              "kind": "confirming",
+              "confirmations": 4,
+              "instantLocked": false
+            },
+            "involvesWatchOnly": false,
+            "timestamp": 1795156530,
+            "fee": null,
+            "txid": "48af46568971c9395bb11f851d26fa8b29d29dbff3484a06163aa3d448f3884d",
+            "blockHeight": 102,
+            "label": null,
+            "txType": "recvWithAddress"
+          }
+        ],
+        "totalMatching": 1
+      }
+    },
+    {
+      "cmd": "tx_detail",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+        "txid": "48af46568971c9395bb11f851d26fa8b29d29dbff3484a06163aa3d448f3884d"
+      },
+      "result": {
+        "blockHash": "410f558da88b853e268ce27c70aebb764e8c193770da26c0607e7d4ca695cc17",
+        "outputs": [
+          {
+            "vout": 0,
+            "address": "yLysyyQbUN8AHKPkqYuxzaSvwBUkkrJHBE",
+            "dataHex": null,
+            "isMine": true,
+            "isChange": false,
+            "amount": 300000000
+          },
+          {
+            "vout": 1,
+            "address": "ybPSwtKnq3vzKDn2iUgY1KHueawmEdxHNB",
+            "dataHex": null,
+            "isMine": false,
+            "isChange": false,
+            "amount": 48449999325
+          }
+        ],
+        "rawHex": "0200000001b367f4b5e2dfc23c36af2b6515f15bb37fe76f853c66652bc04c31b19cd049a3010000006a4730440220343f3abf8900013906ca76e50c4a77e5ecef0ba812ffba95a7591616eae5f84b022016de57c5139590be53fca5a525131fd08a9a5cc2be30288f5f28adc5df2ea9ff0121026bac1ca7673829b9d58361ff29eba9917b534b832452db2065e013ccc4b00822feffffff0200a3e111000000001976a9140744c98e75b377b1cd8df7fffd0e64da6821d3a788acdd51d8470b0000001976a914a54ba1e45c68e70f48e1e6e8b636179cead1095088ac65000000",
+        "status": {
+          "chainLocked": false,
+          "maturesIn": null,
+          "kind": "confirming",
+          "confirmations": 4,
+          "instantLocked": false
+        },
+        "rows": [
+          {
+            "category": "received",
+            "recordIndex": 0,
+            "countsTowardBalance": true,
+            "address": "yLysyyQbUN8AHKPkqYuxzaSvwBUkkrJHBE",
+            "amount": 300000000,
+            "status": {
+              "chainLocked": false,
+              "maturesIn": null,
+              "kind": "confirming",
+              "confirmations": 4,
+              "instantLocked": false
+            },
+            "involvesWatchOnly": false,
+            "timestamp": 1795156530,
+            "fee": null,
+            "txid": "48af46568971c9395bb11f851d26fa8b29d29dbff3484a06163aa3d448f3884d",
+            "blockHeight": 102,
+            "label": null,
+            "txType": "recvWithAddress"
+          }
+        ],
+        "timestamp": 1795156530,
+        "txid": "48af46568971c9395bb11f851d26fa8b29d29dbff3484a06163aa3d448f3884d",
+        "blockHeight": 102,
+        "fee": null,
+        "label": null,
+        "sizeBytes": 225,
+        "inputs": [
+          {
+            "previousVout": 1,
+            "isMine": false,
+            "previousTxid": "a349d09cb1314cc02b65663c856fe77fb35bf115652baf363cc2dfe2b5f467b3",
+            "address": null,
+            "amount": null
+          }
+        ],
+        "message": null
+      }
+    },
+    {
+      "cmd": "tx_label",
+      "args": {
+        "walletId": "da8b3e81edb50926c70d3cd3c5de4102fa7c1419b0559fe19d06813c64dcca30",
+        "txid": "48af46568971c9395bb11f851d26fa8b29d29dbff3484a06163aa3d448f3884d"
+      },
+      "result": null
+    },
+    {
+      "cmd": "wallet_info",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403"
+      },
+      "result": {
+        "birthHeight": 0,
+        "createdAt": 1795156533,
+        "watchOnly": true,
+        "hasMnemonic": false,
+        "name": "Fixture watch-only",
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+        "balances": {
+          "total": 75000000,
+          "unconfirmed": 0,
+          "immature": 0,
+          "confirmed": 75000000,
+          "locked": 0,
+          "coinjoin": 0
+        },
+        "hd": true
+      }
+    },
+    {
+      "cmd": "balance",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403"
+      },
+      "result": {
+        "total": 75000000,
+        "unconfirmed": 0,
+        "immature": 0,
+        "confirmed": 75000000,
+        "locked": 0,
+        "coinjoin": 0
+      }
+    },
+    {
+      "cmd": "wallet_scan_height",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403"
+      },
+      "result": 105
+    },
+    {
+      "cmd": "current_receive_address",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403"
+      },
+      "result": {
+        "index": 1,
+        "used": false,
+        "txCount": 0,
+        "chain": "receiving",
+        "label": null,
+        "balance": 0,
+        "address": "ybS9iPvuafNHn2gexVDLBr1NQq6CddqHhR",
+        "derivationPath": "m/44'/1'/0'/0/1"
+      }
+    },
+    {
+      "cmd": "receive_requests",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403"
+      },
+      "result": []
+    },
+    {
+      "cmd": "username_in_requests",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403"
+      },
+      "result": false
+    },
+    {
+      "cmd": "locked_outpoints",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403"
+      },
+      "result": []
+    },
+    {
+      "cmd": "coinjoin_salt",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403"
+      },
+      "result": "2f7f73b08793efaf3b2a248bfd27626e393c0e5448d1c7b1a455f9f5a84d8253"
+    },
+    {
+      "cmd": "account_xpub",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+        "account": 0
+      },
+      "result": {
+        "account": 0,
+        "xpub": "tpubDDgEAMpHn8tX5Bs19WWJLZBeFzbpE7BYuP3Qo71abZnQ7FmN3idRPg4oPWt2Q6Uf9huGv7AGMTu8M2BaCxAdThQArjLWLDLpxVX2gYfh2YJ",
+        "derivationPath": "m/44'/1'/0'"
+      }
+    },
+    {
+      "cmd": "addresses",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+        "filter": {
+          "chain": null,
+          "used": null
+        }
+      },
+      "result": [
+        {
+          "index": 0,
+          "used": true,
+          "txCount": 1,
+          "chain": "receiving",
+          "label": null,
+          "balance": 75000000,
+          "address": "ya4hijmdfG9gtJHZoDWhedMYT8da2e3zu5",
+          "derivationPath": "m/44'/1'/0'/0/0"
+        },
+        {
+          "index": 1,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ybS9iPvuafNHn2gexVDLBr1NQq6CddqHhR",
+          "derivationPath": "m/44'/1'/0'/0/1"
+        },
+        {
+          "index": 2,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yhr3TAsqjUmDdF1MroYeJFGMcDuQBuKLHf",
+          "derivationPath": "m/44'/1'/0'/0/2"
+        },
+        {
+          "index": 3,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ygxaYSMnkJpqQN46gnu64Yw5maeuxEJpEr",
+          "derivationPath": "m/44'/1'/0'/0/3"
+        },
+        {
+          "index": 4,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yTvuBbf4ou9cTWqrH8FrJfkqwsvKdmNSdy",
+          "derivationPath": "m/44'/1'/0'/0/4"
+        },
+        {
+          "index": 5,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yN8QNovgxsrytHNQPRVDdWyykZM8xwno6B",
+          "derivationPath": "m/44'/1'/0'/0/5"
+        },
+        {
+          "index": 6,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yQYY2kVZWi66s2Vi6hLLw7Vt8CtCnDLApB",
+          "derivationPath": "m/44'/1'/0'/0/6"
+        },
+        {
+          "index": 7,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yWfrjpm3ieS1oThQtSo61enT8Yfy7j4SSr",
+          "derivationPath": "m/44'/1'/0'/0/7"
+        },
+        {
+          "index": 8,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yQ9XL6P5vqk9N8XNfKj9ZPDLExPdP578ZR",
+          "derivationPath": "m/44'/1'/0'/0/8"
+        },
+        {
+          "index": 9,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yfguLsmz8ubrbVoATuVivBGD4hqGUWpryW",
+          "derivationPath": "m/44'/1'/0'/0/9"
+        },
+        {
+          "index": 10,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ya5Jqk1ZGhQHFS2cU59JUAWcepBt5TUVxf",
+          "derivationPath": "m/44'/1'/0'/0/10"
+        },
+        {
+          "index": 11,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yUCXqM55iqrdJAPrr8Fai3obqBRqYTPpjw",
+          "derivationPath": "m/44'/1'/0'/0/11"
+        },
+        {
+          "index": 12,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yZEjoiaeyFoJAe3S893iArExhgXyo71JcZ",
+          "derivationPath": "m/44'/1'/0'/0/12"
+        },
+        {
+          "index": 13,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yNSXxrkkBVfiRUEK2JLcZfJXfGNTZjFXAX",
+          "derivationPath": "m/44'/1'/0'/0/13"
+        },
+        {
+          "index": 14,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yY7JifWiYjp8ffM6WTm92S2qPXJgio3yvo",
+          "derivationPath": "m/44'/1'/0'/0/14"
+        },
+        {
+          "index": 15,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yZRtEGji57EH7rwUpeigrcdtoazSdfzRmd",
+          "derivationPath": "m/44'/1'/0'/0/15"
+        },
+        {
+          "index": 16,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yM1WorPh6fa4WrBovjpNWH5JXR6WZbYiHi",
+          "derivationPath": "m/44'/1'/0'/0/16"
+        },
+        {
+          "index": 17,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yWXzg6oSXjnZswW9ADEGEXWBT8ZhfrtH5b",
+          "derivationPath": "m/44'/1'/0'/0/17"
+        },
+        {
+          "index": 18,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yXUp9Pk7H1yQ8Qdj4na9LwxUunzRzAAQzt",
+          "derivationPath": "m/44'/1'/0'/0/18"
+        },
+        {
+          "index": 19,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yePUotcrgiammmWfekcjWVW8tWKqJt57pX",
+          "derivationPath": "m/44'/1'/0'/0/19"
+        },
+        {
+          "index": 20,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yP2fxgvK3u8anNxjhJzRrfsKwjHxy5yRcD",
+          "derivationPath": "m/44'/1'/0'/0/20"
+        },
+        {
+          "index": 21,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yZZJwFJHUxTgNACxexMxdsDoEifrNGmkF5",
+          "derivationPath": "m/44'/1'/0'/0/21"
+        },
+        {
+          "index": 22,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yfNVs7ZXGZdECqRKvz42DgzM4X5EmpRoCK",
+          "derivationPath": "m/44'/1'/0'/0/22"
+        },
+        {
+          "index": 23,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ycV9saVke5nK6ErkAn9MZjNVnCb4bnELJz",
+          "derivationPath": "m/44'/1'/0'/0/23"
+        },
+        {
+          "index": 24,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yTFZHEYBeM9oAcJfdgeCoSQMd61EGd1Dh1",
+          "derivationPath": "m/44'/1'/0'/0/24"
+        },
+        {
+          "index": 25,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yhkrr4X1avrvbtcdbE4ex42BvYdECtHp8j",
+          "derivationPath": "m/44'/1'/0'/0/25"
+        },
+        {
+          "index": 26,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yS9SZWBduyZGoUuAxuB3wf4tigXNYBWsMu",
+          "derivationPath": "m/44'/1'/0'/0/26"
+        },
+        {
+          "index": 27,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yhS9uL6pLL6iYpTP85k4uCT32TwCHegc4x",
+          "derivationPath": "m/44'/1'/0'/0/27"
+        },
+        {
+          "index": 28,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yezt4jZzrqdHqAwk5NJtbqsUCQ5sb6bPKr",
+          "derivationPath": "m/44'/1'/0'/0/28"
+        },
+        {
+          "index": 29,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "ybrbngj7xhAjEK8dFdxiTimPoq2cqrGpxq",
+          "derivationPath": "m/44'/1'/0'/0/29"
+        },
+        {
+          "index": 30,
+          "used": false,
+          "txCount": 0,
+          "chain": "receiving",
+          "label": null,
+          "balance": 0,
+          "address": "yc3ibjdHEsjwuKPgzR7ju67FHi6GGAX1hZ",
+          "derivationPath": "m/44'/1'/0'/0/30"
+        },
+        {
+          "index": 0,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ycm9zhUpAXgKrV1ekikATSsJ3UieLcBAZe",
+          "derivationPath": "m/44'/1'/0'/1/0"
+        },
+        {
+          "index": 1,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ydMQAaVEf2vkSHFkL2Jf3sU4qxc5Cvby1z",
+          "derivationPath": "m/44'/1'/0'/1/1"
+        },
+        {
+          "index": 2,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yPwGGhgGeWFbyVPBkBCgVGwA5o3Hqh9Uxx",
+          "derivationPath": "m/44'/1'/0'/1/2"
+        },
+        {
+          "index": 3,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yhRSmS4rsTDxmmp4jSqd27sUacW4rvsVAu",
+          "derivationPath": "m/44'/1'/0'/1/3"
+        },
+        {
+          "index": 4,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yLeWeiEuMfuxVB7sxAUtmfCyeYhGedG4mw",
+          "derivationPath": "m/44'/1'/0'/1/4"
+        },
+        {
+          "index": 5,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yQec1RaGp1avQb7wMjbxNg8gKPb8CXxPcr",
+          "derivationPath": "m/44'/1'/0'/1/5"
+        },
+        {
+          "index": 6,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yUPmqiqkbxLqsQB2VFTekAx6dqKPceNPCC",
+          "derivationPath": "m/44'/1'/0'/1/6"
+        },
+        {
+          "index": 7,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yNtbHMZwhaj2GrGZWwgYv9MW4w6koCBCRb",
+          "derivationPath": "m/44'/1'/0'/1/7"
+        },
+        {
+          "index": 8,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yQStrxLMjoQWajdALmDvkZFbUD6JqkYEJF",
+          "derivationPath": "m/44'/1'/0'/1/8"
+        },
+        {
+          "index": 9,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yUBgPEzYrnAnk2dbDmvYT4FER6dHKf8oYr",
+          "derivationPath": "m/44'/1'/0'/1/9"
+        },
+        {
+          "index": 10,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ydYQGjNMrPTdZjQMQA3fF55QxWZtpUwLgP",
+          "derivationPath": "m/44'/1'/0'/1/10"
+        },
+        {
+          "index": 11,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yXCbBZmKjbdUDNzyMHRtToroLPFH4zsjgr",
+          "derivationPath": "m/44'/1'/0'/1/11"
+        },
+        {
+          "index": 12,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yh8L4jNNqGL8S23AGDfxzN2Fkyfz1kmd21",
+          "derivationPath": "m/44'/1'/0'/1/12"
+        },
+        {
+          "index": 13,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ySMe1EwqY9QWE8yC6VXrUwPs6ArY63ysXn",
+          "derivationPath": "m/44'/1'/0'/1/13"
+        },
+        {
+          "index": 14,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ygbqrvTYDJStgARELz4eNqxC1mWzX9UKGZ",
+          "derivationPath": "m/44'/1'/0'/1/14"
+        },
+        {
+          "index": 15,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yj62idhBpmqxxCMUdf5CAtt4Ls3xY7HZM9",
+          "derivationPath": "m/44'/1'/0'/1/15"
+        },
+        {
+          "index": 16,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yPv1Sc9qWuS2qu72vgVoNGsKP7wTUm5Vk4",
+          "derivationPath": "m/44'/1'/0'/1/16"
+        },
+        {
+          "index": 17,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yUPFVJMwdVr5bdLsrirHcxHdMnp8iSqdki",
+          "derivationPath": "m/44'/1'/0'/1/17"
+        },
+        {
+          "index": 18,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ycoYveJ4489z1ZwpXB2618PeRDEgNvrM7v",
+          "derivationPath": "m/44'/1'/0'/1/18"
+        },
+        {
+          "index": 19,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yMmPivNX4AAWEjg928i1VCyLoR3WvR6ThK",
+          "derivationPath": "m/44'/1'/0'/1/19"
+        },
+        {
+          "index": 20,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ySxEEavJVyiZEvg2KkvaogMPPjJH3cQBZc",
+          "derivationPath": "m/44'/1'/0'/1/20"
+        },
+        {
+          "index": 21,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yc9KsmrxDfZQgPLaAsps2ggopfxsHiTAvC",
+          "derivationPath": "m/44'/1'/0'/1/21"
+        },
+        {
+          "index": 22,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ygVjKRNex9akQDguwaT48jKYhiUvjfbZt9",
+          "derivationPath": "m/44'/1'/0'/1/22"
+        },
+        {
+          "index": 23,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "ybg6e2UeNUZ7Tn5XjVNszpbLdfVnLMtWVh",
+          "derivationPath": "m/44'/1'/0'/1/23"
+        },
+        {
+          "index": 24,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yWoGDoR3pEhSW1mQ1vt9tZDceg5vF3h9uX",
+          "derivationPath": "m/44'/1'/0'/1/24"
+        },
+        {
+          "index": 25,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yM9g6bdZj8e4QXjoN9NtyCLbe8K3tcEWD8",
+          "derivationPath": "m/44'/1'/0'/1/25"
+        },
+        {
+          "index": 26,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yexB3S81BhmU8jFMA6cnAKy5q8VKrSBj9C",
+          "derivationPath": "m/44'/1'/0'/1/26"
+        },
+        {
+          "index": 27,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yWH8QHoMEyPyMAyZFWp1gQM4Gq6rFQHZzT",
+          "derivationPath": "m/44'/1'/0'/1/27"
+        },
+        {
+          "index": 28,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yc7wGMG2qvYRBHrgkdhgBCzcYKq76sk1Zk",
+          "derivationPath": "m/44'/1'/0'/1/28"
+        },
+        {
+          "index": 29,
+          "used": false,
+          "txCount": 0,
+          "chain": "change",
+          "label": null,
+          "balance": 0,
+          "address": "yPwtz8RpEG8YJBagGPMDunU5MMYRwS3oy5",
+          "derivationPath": "m/44'/1'/0'/1/29"
+        }
+      ]
+    },
+    {
+      "cmd": "address_book",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+        "purpose": null,
+        "search": null
+      },
+      "result": []
+    },
+    {
+      "cmd": "utxos",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+        "filter": {
+          "includeLocked": true,
+          "fullyMixedOnly": false,
+          "minConfirmations": null
+        }
+      },
+      "result": [
+        {
+          "outpoint": {
+            "txid": "ab0af12a4b6ba60ebacfe88edefe30a29ecca966c61490eab892750b1e3e2f0c",
+            "vout": 0
+          },
+          "coinjoinDenominated": false,
+          "address": "ya4hijmdfG9gtJHZoDWhedMYT8da2e3zu5",
+          "amount": 75000000,
+          "spendable": false,
+          "chainLocked": false,
+          "timestamp": null,
+          "blockHeight": 105,
+          "instantLocked": false,
+          "reserved": false,
+          "userLocked": false,
+          "label": null,
+          "coinjoinRounds": null,
+          "isCoinbase": false,
+          "confirmations": 1,
+          "isChange": false
+        }
+      ]
+    },
+    {
+      "cmd": "history_page",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+        "request": {
+          "sort": "oldestFirst",
+          "cursor": null,
+          "limit": 100,
+          "categories": [],
+          "text": null
+        }
+      },
+      "result": {
+        "nextCursor": null,
+        "rows": [
+          {
+            "category": "received",
+            "recordIndex": 0,
+            "countsTowardBalance": true,
+            "address": "ya4hijmdfG9gtJHZoDWhedMYT8da2e3zu5",
+            "amount": 75000000,
+            "status": {
+              "chainLocked": false,
+              "maturesIn": null,
+              "kind": "confirming",
+              "confirmations": 1,
+              "instantLocked": false
+            },
+            "involvesWatchOnly": true,
+            "timestamp": 1795156533,
+            "fee": null,
+            "txid": "ab0af12a4b6ba60ebacfe88edefe30a29ecca966c61490eab892750b1e3e2f0c",
+            "blockHeight": 105,
+            "label": null,
+            "txType": "recvWithAddress"
+          }
+        ],
+        "totalMatching": 1
+      }
+    },
+    {
+      "cmd": "tx_detail",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+        "txid": "ab0af12a4b6ba60ebacfe88edefe30a29ecca966c61490eab892750b1e3e2f0c"
+      },
+      "result": {
+        "blockHash": "47600667afcc9070515963b7d84621f88b083f54aabf03638e2c013bdaa97e0e",
+        "outputs": [
+          {
+            "vout": 0,
+            "address": "ya4hijmdfG9gtJHZoDWhedMYT8da2e3zu5",
+            "dataHex": null,
+            "isMine": true,
+            "isChange": false,
+            "amount": 75000000
+          },
+          {
+            "vout": 1,
+            "address": "yZFE82x8xafj7b3anMUSY9r8TW3ZRQ2TiN",
+            "dataHex": null,
+            "isMine": false,
+            "isChange": false,
+            "amount": 48374999100
+          }
+        ],
+        "rawHex": "02000000014d88f348d4a33a16064a48f3bf9dd2298bfa261d851fb15b39c971895646af48010000006a473044022049bdd245932e97d9b4147ac3f4dd51ce38ed2fd43a0df53d07c3592565e81b63022029e35616d22acbf55c87f2daaa61441eefcca30799474135aaade8703b2d8eb901210325ed13a56ee06bf4904ba2ef5558eb864f5e6448558b0cccb143273dc8353bd6feffffff02c0687804000000001976a91496c7ef7b892183618919637045d3d44d6a3f791888ac3ce85f430b0000001976a9148dcd58eb43739550d7caae4daaab0c5e7e1a879788ac68000000",
+        "status": {
+          "chainLocked": false,
+          "maturesIn": null,
+          "kind": "confirming",
+          "confirmations": 1,
+          "instantLocked": false
+        },
+        "rows": [
+          {
+            "category": "received",
+            "recordIndex": 0,
+            "countsTowardBalance": true,
+            "address": "ya4hijmdfG9gtJHZoDWhedMYT8da2e3zu5",
+            "amount": 75000000,
+            "status": {
+              "chainLocked": false,
+              "maturesIn": null,
+              "kind": "confirming",
+              "confirmations": 1,
+              "instantLocked": false
+            },
+            "involvesWatchOnly": true,
+            "timestamp": 1795156533,
+            "fee": null,
+            "txid": "ab0af12a4b6ba60ebacfe88edefe30a29ecca966c61490eab892750b1e3e2f0c",
+            "blockHeight": 105,
+            "label": null,
+            "txType": "recvWithAddress"
+          }
+        ],
+        "timestamp": 1795156533,
+        "txid": "ab0af12a4b6ba60ebacfe88edefe30a29ecca966c61490eab892750b1e3e2f0c",
+        "blockHeight": 105,
+        "fee": null,
+        "label": null,
+        "sizeBytes": 225,
+        "inputs": [
+          {
+            "previousVout": 1,
+            "isMine": false,
+            "previousTxid": "48af46568971c9395bb11f851d26fa8b29d29dbff3484a06163aa3d448f3884d",
+            "address": null,
+            "amount": null
+          }
+        ],
+        "message": null
+      }
+    },
+    {
+      "cmd": "tx_label",
+      "args": {
+        "walletId": "36b805eb222921da782560c0216547bba60798f911de9fdaa39a35efa53a8403",
+        "txid": "ab0af12a4b6ba60ebacfe88edefe30a29ecca966c61490eab892750b1e3e2f0c"
+      },
+      "result": null
+    }
+  ]
+}

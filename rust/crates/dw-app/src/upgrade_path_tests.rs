@@ -13,8 +13,11 @@
 //! shuts the engine down. Every field the release answered must come back
 //! equal (fields this build added are free), except the renames in
 //! [`RENAMED`] and the per-unlock values in [`VOLATILE`]; and the second
-//! open must answer as the first. A new release is covered by adding its
-//! directory.
+//! open must answer exactly as the first, less [`VOLATILE`]. From v0.2.0 a
+//! snapshot also holds a signature by every funded address
+//! (`fundedSignatures`), which each open must make again, and dashd's fee
+//! for the payment, which the recorded balances must account for to the
+//! duff. A new release is covered by adding its directory.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -60,6 +63,9 @@ const KNOWN: &[(&str, &str, &str, &str)] = &[(
     "47a179cf made the unset per-wallet setting read as off; a 0.1.0 wallet that never changed it was on",
 )];
 
+/// Releases whose snapshot predates `fundedSignatures` and `dashd.deposits`.
+const BEFORE_FUNDED_SIGNATURES: &[&str] = &["v0.1.0"];
+
 /// Every release directory under `root`, each with a readable, parseable
 /// `expected.json`; files beside them (the README) are skipped. Any entry that
 /// cannot be read, or a directory without its snapshot, is an error naming it.
@@ -87,8 +93,10 @@ fn fixtures_in(root: &Path) -> Result<Vec<(PathBuf, Value)>, String> {
 }
 
 /// What makes a snapshot too thin to stand for its release: no calls, a
-/// wallet without exactly one signature, or a wallet `list_wallets` lacks.
-fn snapshot_problems(expected: &Value) -> Vec<String> {
+/// wallet without exactly one signature, or a wallet `list_wallets` lacks;
+/// and, from v0.2.0, a funded address without its signature or a balance
+/// that is not the deposits less the payment and its fee.
+fn snapshot_problems(tag: &str, expected: &Value) -> Vec<String> {
     let mut problems = Vec::new();
     let wallets: Vec<&Value> = match expected["wallets"].as_array() {
         Some(w) if !w.is_empty() => w.iter().map(|w| &w["walletId"]).collect(),
@@ -119,8 +127,82 @@ fn snapshot_problems(expected: &Value) -> Vec<String> {
         if signatures.iter().filter(|s| &&s["walletId"] == id).count() != 1 {
             problems.push(format!("wallet {id} has not exactly one signature"));
         }
-        if !listed.is_some_and(|l| l.iter().any(|w| &&w["walletId"] == id)) {
+    }
+    let watch_only = expected["watchOnly"].get("walletId");
+    for id in wallets.iter().copied().chain(watch_only) {
+        if !listed.is_some_and(|l| l.iter().any(|w| &w["walletId"] == id)) {
             problems.push(format!("wallet {id} is not in list_wallets"));
+        }
+    }
+    if !BEFORE_FUNDED_SIGNATURES.contains(&tag) {
+        problems.extend(funded_signature_problems(&wallets, calls, expected));
+        problems.extend(balance_problems(calls, &expected["dashd"]));
+    }
+    problems
+}
+
+fn first_answer<'a>(calls: &'a [Value], cmd: &str, wallet: &Value) -> Option<&'a Value> {
+    calls
+        .iter()
+        .find(|c| c["cmd"] == cmd && &c["args"]["walletId"] == wallet)
+        .map(|c| &c["result"])
+}
+
+/// Each wallet's distinct `utxos` addresses, change included, against the
+/// addresses of its `fundedSignatures`.
+fn funded_signature_problems(wallets: &[&Value], calls: &[Value], expected: &Value) -> Vec<String> {
+    let Some(funded) = expected["fundedSignatures"].as_array() else {
+        return vec!["no fundedSignatures".to_string()];
+    };
+    let mut problems = Vec::new();
+    for id in wallets {
+        let mut want: Vec<&str> = first_answer(calls, "utxos", id)
+            .and_then(Value::as_array)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter_map(|u| u["address"].as_str())
+            .collect();
+        want.sort_unstable();
+        want.dedup();
+        let mut got: Vec<&str> = funded
+            .iter()
+            .filter(|s| &&s["walletId"] == id)
+            .filter_map(|s| s["address"].as_str())
+            .collect();
+        got.sort_unstable();
+        if want.is_empty() || want != got {
+            problems.push(format!(
+                "wallet {id}: funded addresses {want:?}, signed by {got:?}"
+            ));
+        }
+    }
+    problems
+}
+
+/// Every wallet in `dashd.deposits` reports, as `balance.confirmed`, its
+/// deposits less what it paid and dashd's fee for that payment.
+fn balance_problems(calls: &[Value], dashd: &Value) -> Vec<String> {
+    let Some(deposits) = dashd["deposits"].as_object().filter(|d| !d.is_empty()) else {
+        return vec!["no dashd.deposits".to_string()];
+    };
+    let payment = &dashd["payment"];
+    let (Some(paid), Some(fee)) = (payment["duffs"].as_u64(), payment["feeDuffs"].as_u64()) else {
+        return vec!["no dashd.payment.duffs and feeDuffs".to_string()];
+    };
+    let mut problems = Vec::new();
+    for (id, deposited) in deposits {
+        let id = Value::String(id.clone());
+        let spent = if payment["walletId"] == id {
+            paid + fee
+        } else {
+            0
+        };
+        let want = deposited.as_u64().and_then(|d| d.checked_sub(spent));
+        let got = first_answer(calls, "balance", &id).and_then(|b| b["confirmed"].as_u64());
+        if want.is_none() || want != got {
+            problems.push(format!(
+                "wallet {id}: balance {got:?}, dashd's deposits less payment and fee {want:?}"
+            ));
         }
     }
     problems
@@ -167,7 +249,7 @@ fn every_release_data_root_opens_with_the_same_answers() {
     let mut report = Vec::new();
     for (fixture, expected) in &fixtures {
         let tag = fixture.file_name().unwrap().to_string_lossy().into_owned();
-        let problems = snapshot_problems(expected);
+        let problems = snapshot_problems(&tag, expected);
         assert!(
             problems.is_empty(),
             "{tag}: expected.json is incomplete: {}",
@@ -299,18 +381,23 @@ fn compare_with_release(expected: &Value, answers: &Value, found: &mut Vec<(Stri
                 .map(|d| (cmd.to_string(), d)),
         );
     }
-    if expected["signatures"] != answers["signatures"] {
-        found.push((
-            "sign_message".into(),
-            format!(
-                "release signed {}, this build {}",
-                expected["signatures"], answers["signatures"]
-            ),
-        ));
+    for key in SIGNATURES {
+        if expected[key] != answers[key] {
+            found.push((
+                "sign_message".into(),
+                format!(
+                    "{key}: release signed {}, this build {}",
+                    expected[key], answers[key]
+                ),
+            ));
+        }
     }
 }
 
-/// The second open's answers against the first's, call by call.
+const SIGNATURES: [&str; 2] = ["signatures", "fundedSignatures"];
+
+/// The second open's answers against the first's, call by call: equal once
+/// the [`VOLATILE`] values are reduced to whether they are set.
 fn compare_opens(first: &Value, second: &Value) -> Vec<(String, String)> {
     let a = first["calls"].as_array().unwrap();
     let b = second["calls"].as_array().unwrap();
@@ -324,16 +411,72 @@ fn compare_opens(first: &Value, second: &Value) -> Vec<(String, String)> {
     for (i, (a, b)) in a.iter().zip(b).enumerate() {
         let cmd = a["cmd"].as_str().unwrap();
         let path = format!("calls[{i}] {}", a["args"]);
-        found.extend(
-            answer_diffs(cmd, a, b, &path)
-                .into_iter()
-                .map(|d| (cmd.to_string(), d)),
-        );
+        let (a, b) = (stable(cmd, a), stable(cmd, b));
+        if a.get("error").is_some() || b.get("error").is_some() {
+            found.extend(
+                answer_diffs(cmd, &a, &b, &path)
+                    .into_iter()
+                    .map(|d| (cmd.to_string(), d)),
+            );
+        } else {
+            let mut diffs = Vec::new();
+            equal(&a["result"], &b["result"], &path, &mut diffs);
+            found.extend(diffs.into_iter().map(|d| (cmd.to_string(), d)));
+        }
     }
-    if first["signatures"] != second["signatures"] {
-        found.push(("sign_message".into(), "differs".into()));
+    for key in SIGNATURES {
+        if first[key] != second[key] {
+            found.push(("sign_message".into(), format!("{key} differs")));
+        }
     }
     found
+}
+
+/// `value` with each [`VOLATILE`] field of `cmd` replaced by whether it is set.
+fn stable(cmd: &str, value: &Value) -> Value {
+    match value {
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, v)| {
+                    let v = if VOLATILE.iter().any(|f| f.0 == cmd && f.1 == k) {
+                        Value::Bool(!v.is_null())
+                    } else {
+                        stable(cmd, v)
+                    };
+                    (k.clone(), v)
+                })
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.iter().map(|v| stable(cmd, v)).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Every difference between `a` and `b`: a field on one side only, an array
+/// of another length, or another value.
+fn equal(a: &Value, b: &Value, path: &str, diffs: &mut Vec<String>) {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            for (key, xv) in x {
+                match y.get(key) {
+                    Some(yv) => equal(xv, yv, &format!("{path}.{key}"), diffs),
+                    None => diffs.push(format!("{path}.{key}: only on the first open ({xv})")),
+                }
+            }
+            for (key, yv) in y {
+                if !x.contains_key(key) {
+                    diffs.push(format!("{path}.{key}: only on the second open ({yv})"));
+                }
+            }
+        }
+        (Value::Array(x), Value::Array(y)) if x.len() == y.len() => {
+            for (i, (xv, yv)) in x.iter().zip(y).enumerate() {
+                equal(xv, yv, &format!("{path}[{i}]"), diffs);
+            }
+        }
+        (x, y) if x == y => {}
+        (x, y) => diffs.push(format!("{path}: first open {x}, second {y}")),
+    }
 }
 
 /// `got` answers a call as `want` did: a result containing `want`'s, or, when
@@ -443,9 +586,10 @@ fn child(dir: &Path) {
             }
         })
         .collect();
-    let signatures: Vec<Value> = expected["signatures"]
+    let sign_again = |key: &str| -> Vec<Value> {
+        expected[key]
         .as_array()
-        .unwrap()
+        .map_or(&[][..], Vec::as_slice)
         .iter()
         .map(|s| {
             let wallet_id = &s["walletId"];
@@ -468,7 +612,12 @@ fn child(dir: &Path) {
             assert_eq!(verified["outcome"], "verified", "{verified}");
             json!({ "walletId": wallet_id, "address": s["address"], "message": s["message"], "signature": signature })
         })
-        .collect();
+        .collect()
+    };
+    let signatures = sign_again("signatures");
+    let funded = expected
+        .get("fundedSignatures")
+        .map(|_| Value::Array(sign_again("fundedSignatures")));
     tauri::async_runtime::block_on(state.shutdown_engine()).expect("engine shutdown");
     let marker = root.join(network.dir_name()).join(".session-open");
     assert!(
@@ -478,7 +627,10 @@ fn child(dir: &Path) {
     );
     std::fs::write(
         dir.join(format!("answers-{n}.json")),
-        serde_json::to_string_pretty(&json!({ "calls": calls, "signatures": signatures })).unwrap(),
+        serde_json::to_string_pretty(
+            &json!({ "calls": calls, "signatures": signatures, "fundedSignatures": funded }),
+        )
+        .unwrap(),
     )
     .unwrap();
     println!("{DONE}");
@@ -506,6 +658,43 @@ fn a_call_that_fails_on_one_open_and_answers_on_the_other_differs() {
 }
 
 #[test]
+fn the_second_open_must_answer_exactly_as_the_first_less_volatile_values() {
+    let open = |cmd: &str, result: Value| json!({ "calls": [{ "cmd": cmd, "args": {}, "result": result }], "signatures": [] });
+    let row = json!({ "txid": "aa", "amount": 1 });
+    let grown = json!({ "txid": "aa", "amount": 1, "fiatThen": 2 });
+    assert!(
+        compare_opens(
+            &open("history_page", row.clone()),
+            &open("history_page", row.clone())
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        compare_opens(
+            &open("history_page", row.clone()),
+            &open("history_page", grown.clone())
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        compare_opens(&open("history_page", grown), &open("history_page", row)).len(),
+        1
+    );
+    let policy = |at: Value| {
+        open(
+            "quick_unlock_policy",
+            json!({ "lastPassphraseAt": at, "enabled": false }),
+        )
+    };
+    assert!(compare_opens(&policy(json!(1)), &policy(json!(2))).is_empty());
+    assert_eq!(
+        compare_opens(&policy(json!(1)), &policy(Value::Null)).len(),
+        1
+    );
+}
+
+#[test]
 fn discovery_names_a_release_directory_without_a_readable_snapshot() {
     let root = dw_testutil::private_tempdir();
     std::fs::write(root.path().join("README.md"), "notes").unwrap();
@@ -523,20 +712,50 @@ fn discovery_names_a_release_directory_without_a_readable_snapshot() {
 #[test]
 fn a_thinned_snapshot_is_refused() {
     let full = v0_1_0_snapshot();
-    assert_eq!(snapshot_problems(&full), Vec::<String>::new());
+    assert_eq!(snapshot_problems("v0.1.0", &full), Vec::<String>::new());
     let mut no_calls = full.clone();
     no_calls["calls"] = json!([]);
-    assert!(!snapshot_problems(&no_calls).is_empty());
+    assert!(!snapshot_problems("v0.1.0", &no_calls).is_empty());
     let mut one_signature = full.clone();
     one_signature["signatures"].as_array_mut().unwrap().pop();
-    assert!(!snapshot_problems(&one_signature).is_empty());
+    assert!(!snapshot_problems("v0.1.0", &one_signature).is_empty());
     let mut unlisted = full.clone();
     for call in unlisted["calls"].as_array_mut().unwrap() {
         if call["cmd"] == "list_wallets" {
             call["result"].as_array_mut().unwrap().pop();
         }
     }
-    assert!(!snapshot_problems(&unlisted).is_empty());
+    assert!(!snapshot_problems("v0.1.0", &unlisted).is_empty());
+}
+
+#[test]
+fn a_snapshot_without_a_funded_signature_or_with_an_unaccounted_balance_is_refused() {
+    let full = read_json(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../testdata/upgrade/v0.2.0/expected.json"),
+    );
+    assert_eq!(snapshot_problems("v0.2.0", &full), Vec::<String>::new());
+    let mut change_unsigned = full.clone();
+    change_unsigned["fundedSignatures"]
+        .as_array_mut()
+        .unwrap()
+        .remove(0);
+    assert!(!snapshot_problems("v0.2.0", &change_unsigned).is_empty());
+    let mut no_funded = full.clone();
+    no_funded
+        .as_object_mut()
+        .unwrap()
+        .remove("fundedSignatures");
+    assert!(!snapshot_problems("v0.2.0", &no_funded).is_empty());
+    let mut fee_off = full.clone();
+    fee_off["dashd"]["payment"]["feeDuffs"] = json!(225);
+    assert!(!snapshot_problems("v0.2.0", &fee_off).is_empty());
+    let mut no_fee = full.clone();
+    no_fee["dashd"]["payment"]
+        .as_object_mut()
+        .unwrap()
+        .remove("feeDuffs");
+    assert!(!snapshot_problems("v0.2.0", &no_fee).is_empty());
 }
 
 #[cfg(unix)]
