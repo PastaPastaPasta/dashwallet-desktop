@@ -556,6 +556,10 @@ pub(crate) struct SessionHub {
     /// Tests: the next history load's first stored record read goes wrong.
     #[cfg(test)]
     pub(crate) record_read_fault: Mutex<Option<crate::history_ops::RecordFault>>,
+    /// Tests: the next history load (`.0`) or stored spend-claims read
+    /// (`.1`) cannot read this transaction's record.
+    #[cfg(test)]
+    pub(crate) unreadable_record: Mutex<(Option<dashcore::Txid>, Option<dashcore::Txid>)>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
     /// Tests: holds the next resume between its record read and its rewind.
@@ -682,6 +686,8 @@ impl SessionHub {
             fail_history_read: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             record_read_fault: Mutex::new(None),
+            #[cfg(test)]
+            unreadable_record: Mutex::default(),
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
             #[cfg(test)]

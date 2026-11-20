@@ -230,8 +230,10 @@ struct LoadedHistory {
     abandoned: Vec<(Txid, dashcore::Transaction)>,
     /// The payments this app sent (#88).
     sent: crate::tx_actions::Sent,
-    /// Every stored record was listed and read.
-    clean: bool,
+    /// Every stored record was listed and read, and so were the abandoned
+    /// and sent marks: the spend claims and the pruning of marks need all
+    /// three.
+    complete: bool,
     /// Every stored transaction of the wallet, with a record or not, when
     /// every stored record was listed and read; else none.
     stored: HashSet<Txid>,
@@ -259,6 +261,8 @@ impl NetworkSession {
         let fail = false;
         #[cfg(test)]
         let fault = self.hub.record_read_fault.lock().unwrap().take();
+        #[cfg(test)]
+        let unreadable = self.hub.unreadable_record.lock().unwrap().0.take();
         let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
@@ -289,6 +293,11 @@ impl NetworkSession {
                             Some(f) => f.apply(read),
                             None => read,
                         };
+                        #[cfg(test)]
+                        let read = match unreadable == Some(*t) {
+                            true => RecordFault::Error.apply(read),
+                            false => read,
+                        };
                         read
                     });
                     let clean = listed && read;
@@ -296,15 +305,15 @@ impl NetworkSession {
                         tracing::warn!(%wallet, error = %e, "could not read first-seen times");
                         Vec::new()
                     });
-                    let abandoned = crate::tx_actions::load_abandoned(&appdb, wallet);
-                    let sent = crate::tx_actions::load_sent(&appdb, wallet);
+                    let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
+                    let (sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
                     LoadedHistory {
                         wallet,
                         records,
                         seen,
                         abandoned,
                         sent,
-                        clean,
+                        complete: clean && marks_read && sent_read,
                         stored: if clean {
                             (persisted.records.into_iter())
                                 .chain(persisted.recordless)
@@ -336,11 +345,11 @@ impl NetworkSession {
             seen,
             abandoned,
             sent,
-            clean,
+            complete,
             stored,
         } in loaded
         {
-            sends.push((wallet, sent, clean));
+            sends.push((wallet, sent, complete));
             let info = wm.get_wallet_info(&wallet.0);
             let in_memory: Vec<TransactionRecord> = info
                 .map(|info| {
@@ -391,8 +400,8 @@ impl NetworkSession {
             });
         }
         drop(wm);
-        for (wallet, sent, clean) in sends {
-            self.restore_unmined_spends(&live.manager, wallet, &sent, clean)
+        for (wallet, sent, complete) in sends {
+            self.restore_unmined_spends(&live.manager, wallet, &sent, complete)
                 .await;
         }
         Ok(())
@@ -405,23 +414,23 @@ impl NetworkSession {
     /// one is restored as a spent-output claim held by its payment, which a
     /// block, an InstantSend lock or an abandon of the payment settles.
     /// Spends key-wallet holds a record of this session are left to it.
-    /// After a load that read every stored record, the marks of payments
-    /// no longer out of a block go.
+    /// Then the marks of payments no longer out of a block go. A load that
+    /// did not read every stored record and mark does neither.
     async fn restore_unmined_spends(
         &self,
         manager: &Manager,
         wallet: WalletId,
         sent: &crate::tx_actions::Sent,
-        clean: bool,
+        complete: bool,
     ) {
+        if !complete {
+            tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
+            return;
+        }
         let (claims, settled) = self.hub.history.with_wallet(wallet, |h| {
             let mut claims = crate::history::unmined_own_spends(&h.txs, sent);
             claims.retain(|(_, spender)| !h.session_held.contains(spender));
-            let settled = match clean {
-                true => crate::history::settled_sends(&h.txs, sent),
-                false => Vec::new(),
-            };
-            (claims, settled)
+            (claims, crate::history::settled_sends(&h.txs, sent))
         });
         self.apply_spend_claims(manager, wallet, &claims).await;
         if !settled.is_empty() {
@@ -518,7 +527,8 @@ impl NetworkSession {
     /// The stored history of `wallet` and the payments this app sent, read
     /// from wallet.sqlite before the wallet is loaded, so its spend claims
     /// can be restored before a block is processed for it
-    /// ([`Self::apply_stored_spends`]).
+    /// ([`Self::apply_stored_spends`]). No payment when a stored record or
+    /// mark could not be read, so none claims.
     pub(crate) async fn stored_spends(
         &self,
         wallet: WalletId,
@@ -526,6 +536,8 @@ impl NetworkSession {
         let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+        #[cfg(test)]
+        let unreadable = self.hub.unreadable_record.lock().unwrap().1.take();
         let stored = tokio::task::spawn_blocking(move || {
             let mut history = crate::history::WalletHistory::default();
             let persisted = match persisted_txids(&db_path) {
@@ -536,14 +548,26 @@ impl NetworkSession {
                 }
             };
             // Read and marked abandoned as the history load does.
-            let (records, _) = read_records(wallet, &persisted.records, |t| {
-                persister.get_core_tx_record(wallet.0, t)
+            let (records, read) = read_records(wallet, &persisted.records, |t| {
+                let read = persister.get_core_tx_record(wallet.0, t);
+                #[cfg(test)]
+                let read = match unreadable == Some(*t) {
+                    true => RecordFault::Error.apply(read),
+                    false => read,
+                };
+                read
             });
             for r in &records {
                 history.upsert(r, None);
             }
-            history.mark_abandoned(&crate::tx_actions::load_abandoned(&appdb, wallet));
-            (history, crate::tx_actions::load_sent(&appdb, wallet))
+            let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
+            history.mark_abandoned(&abandoned);
+            let (sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
+            if !(read && marks_read && sent_read) {
+                tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
+                return (history, crate::tx_actions::Sent::new());
+            }
+            (history, sent)
         })
         .await?;
         Ok(stored)
