@@ -302,10 +302,28 @@ mod toast {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
     use std::sync::Mutex;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    /// Writes an executable script through a child `sh`, so this process
+    /// never holds the file open for writing. A descriptor opened here could
+    /// be inherited by another test thread's fork, and running the script
+    /// while that copy is open fails with "Text file busy".
+    fn write_script(program: &std::path::Path, body: &str) {
+        let mut sh = Command::new("sh")
+            .arg("-c")
+            .arg("cat > \"$1\" && chmod 755 \"$1\"")
+            .arg("sh")
+            .arg(program)
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        sh.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
+        assert!(sh.wait().unwrap().success());
+    }
 
     /// A stand-in `notify-send` that records its arguments in `log` and
     /// prints `answer` (what the real one prints after `--wait`).
@@ -321,16 +339,14 @@ mod tests {
         } else {
             "  -u, --urgency=LEVEL"
         };
-        std::fs::write(
+        write_script(
             &program,
-            format!(
+            &format!(
                 "#!/bin/sh\nif [ \"$1\" = --help ]; then echo '{help}'; exit 0; fi\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> '{}'; done\necho '---' >> '{}'\necho '{answer}'\n",
                 log.display(),
                 log.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         program
     }
 
@@ -393,8 +409,7 @@ mod tests {
     fn test_QT_031_a_failing_notify_send_is_an_os_error() {
         let dir = tempfile::tempdir().unwrap();
         let program = dir.path().join("notify-send");
-        std::fs::write(&program, "#!/bin/sh\necho 'no daemon' >&2\nexit 1\n").unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_script(&program, "#!/bin/sh\necho 'no daemon' >&2\nexit 1\n");
         let (h, _) = handler();
         let notifier = Notifier::with_notify_send("org.dash.DashWallet", program, h);
         let err = notifier
