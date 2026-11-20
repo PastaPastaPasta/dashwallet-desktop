@@ -23,6 +23,7 @@ import {
   statusChip,
   votesView,
 } from "../../governance/model";
+import { useNodeNames } from "../../masternodes/queries";
 import { MoreMenu, StatusChip, useNowSecs, VoteBar } from "./common";
 
 /** Why Vote is disabled, or `null` (D18, §4.25.4). */
@@ -53,6 +54,7 @@ export function ProposalPane({
   const now = useNowSecs();
   const votes = votesView(row.tally, info.passingThreshold);
   const blocked = voteBlocked(row, nodes, wallet.watchOnly);
+  const names = useNodeNames(wallet.walletId);
   const copy = (text: string) => () => void copyWithToast(text);
   return (
     <aside className="contacts-pane" aria-label="Proposal" data-testid="proposal-pane">
@@ -105,7 +107,7 @@ export function ProposalPane({
               {nodes.map((n) => (
                 <li key={n.proTxHash} className="mg-roles-pair">
                   <span>
-                    {nodeName(n)}
+                    {nodeName(n, names)}
                     {n.weight > 1 && <span className="mg-muted"> · weight {n.weight}</span>}
                   </span>
                   <span className="mg-muted">{n.valid ? lastVoteLine(n, now) : "PoSe banned"}</span>
