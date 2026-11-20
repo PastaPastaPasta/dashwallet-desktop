@@ -305,7 +305,7 @@ function contact(spec: ContactSpec): ContactDetailInfo {
     publishState: spec.alias || spec.note ? "published" : "local",
     requestSentAt: incoming ? null : since,
     requestReceivedAt: outgoing ? null : since,
-    paymentLock: spec.paymentLockTxid ? { txid: spec.paymentLockTxid, since: at(0, 5) } : null,
+    paymentLock: spec.paymentLockTxid ? { txid: spec.paymentLockTxid, since: at(0, 5), source: "core", reference: spec.paymentLockTxid } : null,
   };
 }
 
@@ -492,21 +492,31 @@ function journal(contacts: ContactDetailInfo[], times: Record<string, RequestTim
     .map((s, i) => ({ id: i + 1, identity: IDENTITY.alice, ...s }));
 }
 
+/** A Core payment's activity item: its txid is its reference. */
+export const coreActivity = (item: Omit<ContactActivityItem, "source" | "reference" | "coreTxid">): ContactActivityItem => ({
+  ...item,
+  source: "core",
+  reference: item.txid,
+  coreTxid: item.txid,
+});
+
 /** Bob's payments: the one the journal shows (`b0…`, received at(1, 3)), then 52 older ones,
  * received and sent in turn, so a page of 50 leaves more; Dave's: the payment the journal shows. */
 function activity(): Record<string, ContactActivityItem[]> {
-  const bob: ContactActivityItem[] = [{ txid: "b0".repeat(32), direction: "received", amount: 50_000_000, height: 1_000_200, timestamp: at(1, 3) }];
+  const bob = [coreActivity({ txid: "b0".repeat(32), direction: "received", amount: 50_000_000, height: 1_000_200, timestamp: at(1, 3) })];
   for (let i = 0; i < 52; i++)
-    bob.push({
-      txid: (i + 1).toString(16).padStart(2, "0").repeat(32),
-      direction: i % 2 ? "sent" : "received",
-      amount: 1_000_000 * (i + 1),
-      height: 1_000_100 - i,
-      timestamp: at(2) - i * 60_480,
-    });
+    bob.push(
+      coreActivity({
+        txid: (i + 1).toString(16).padStart(2, "0").repeat(32),
+        direction: i % 2 ? "sent" : "received",
+        amount: 1_000_000 * (i + 1),
+        height: 1_000_100 - i,
+        timestamp: at(2) - i * 60_480,
+      }),
+    );
   return {
     [IDENTITY.bob]: bob,
-    [IDENTITY.dave]: [{ txid: "d4".repeat(32), direction: "received", amount: 125_000_000, height: 999_000, timestamp: at(12) }],
+    [IDENTITY.dave]: [coreActivity({ txid: "d4".repeat(32), direction: "received", amount: 125_000_000, height: 999_000, timestamp: at(12) })],
   };
 }
 
