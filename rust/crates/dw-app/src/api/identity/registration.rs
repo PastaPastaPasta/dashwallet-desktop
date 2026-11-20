@@ -8,6 +8,7 @@ use ts_rs::TS;
 use super::flows::GrantRequest;
 use super::unfinished::{LockKind, TransfersReport};
 use crate::dto::mirror_enum;
+use crate::dto::platform::ShieldedCheckName;
 
 /// What to register. Passed to the quote and to the start alike.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -80,6 +81,13 @@ pub enum RegistrationFunding {
     /// Developer builds only. `key` is a `prepareFaucetLock` key id and
     /// `proof` the hex `assetLockProof` the faucet returned for its public key.
     FaucetAssetLock { key: String, proof: String },
+    /// From the Shielded balance: `denomination`, in credits, is the quote's
+    /// `readiness.denomination` (the quote ignores it).
+    Shielded {
+        #[ts(type = "string")]
+        #[serde(with = "crate::dto::credits")]
+        denomination: u64,
+    },
 }
 
 impl From<RegistrationFunding> for engine::RegistrationFunding {
@@ -98,6 +106,9 @@ impl From<RegistrationFunding> for engine::RegistrationFunding {
             }
             RegistrationFunding::FaucetAssetLock { key, proof } => {
                 engine::RegistrationFunding::FaucetAssetLock { key, proof }
+            }
+            RegistrationFunding::Shielded { denomination } => {
+                engine::RegistrationFunding::Shielded { denomination }
             }
         }
     }
@@ -138,6 +149,49 @@ pub struct RegistrationQuote {
     pub available_duffs: u64,
     /// The grant to ask for.
     pub grant: GrantRequest,
+    /// Shielded funding only: whether the Shielded balance can pay now.
+    pub readiness: Option<ShieldedReadiness>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldedReadiness {
+    /// What the registration spends, in credits; `null` while no member of
+    /// the network's set fits.
+    #[ts(type = "string | null")]
+    #[serde(with = "crate::dto::credits::option")]
+    pub denomination: Option<u64>,
+    /// Every check, in the order the start refuses them.
+    pub checks: Vec<ShieldedCheckState>,
+    /// While `rested` is not ready: when it will be (unix seconds).
+    pub ready_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct ShieldedCheckState {
+    pub check: ShieldedCheckName,
+    pub ready: bool,
+}
+
+impl From<engine::ShieldedReadiness> for ShieldedReadiness {
+    fn from(r: engine::ShieldedReadiness) -> Self {
+        let engine::ShieldedReadiness {
+            denomination,
+            checks,
+            ready_at,
+        } = r;
+        ShieldedReadiness {
+            denomination,
+            checks: (checks.into_iter())
+                .map(|c| ShieldedCheckState {
+                    check: c.check.into(),
+                    ready: c.ready,
+                })
+                .collect(),
+            ready_at,
+        }
+    }
 }
 
 impl From<engine::RegistrationQuote> for RegistrationQuote {
@@ -150,6 +204,7 @@ impl From<engine::RegistrationQuote> for RegistrationQuote {
             remaining_credits,
             available_duffs,
             grant,
+            readiness,
         } = q;
         RegistrationQuote {
             contested,
@@ -159,6 +214,7 @@ impl From<engine::RegistrationQuote> for RegistrationQuote {
             remaining_credits,
             available_duffs,
             grant: grant.into(),
+            readiness: readiness.map(Into::into),
         }
     }
 }
@@ -427,6 +483,34 @@ mod tests {
         assert_eq!(
             engine::RegistrationFunding::from(f),
             engine::RegistrationFunding::CoreBalance
+        );
+    }
+
+    #[test]
+    fn shielded_funding_and_readiness_carry_credits_as_strings() {
+        let f: RegistrationFunding =
+            serde_json::from_str(r#"{"kind":"shielded","denomination":"3000000000"}"#).unwrap();
+        assert_eq!(
+            engine::RegistrationFunding::from(f),
+            engine::RegistrationFunding::Shielded {
+                denomination: 3_000_000_000
+            }
+        );
+        let r = ShieldedReadiness::from(engine::ShieldedReadiness {
+            denomination: Some(3_000_000_000),
+            checks: vec![engine::ShieldedCheckState {
+                check: engine::ShieldedCheck::NoUnsettledSpend,
+                ready: false,
+            }],
+            ready_at: Some(7),
+        });
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            serde_json::json!({
+                "denomination": "3000000000",
+                "checks": [{"check": "noUnsettledSpend", "ready": false}],
+                "readyAt": 7,
+            })
         );
     }
 
