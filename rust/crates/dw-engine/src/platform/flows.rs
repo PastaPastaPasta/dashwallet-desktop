@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use super::dashpay::DashPay;
 use super::errors::{NameError, PlatformError};
 use super::lease::{ArtifactId, parse_lease};
+use super::payment_locks::payout_source;
+use super::payments::PaymentSource;
 use crate::{EngineError, NetworkSession, WalletId};
 
 /// What a lease is for. It fixes which budgets its grants may fund.
@@ -27,7 +29,8 @@ pub enum FlowKind {
     ContactRequest,
     Accept,
     /// "Accept and pay": the accept, then the payment's `TxDraft.prepare`,
-    /// under one lease and one prompt (§2.3).
+    /// under one lease and one prompt (§2.3). `begin_flow` takes the
+    /// payment's source (C-funding P15).
     AcceptAndPay,
     PrivateDetails,
     EnableDashPayKeys,
@@ -82,6 +85,10 @@ pub enum FlowKind {
     /// grant (MG-13 P12): its single-use `MasternodeWithdrawal` signer and
     /// a Credits budget charged the amount plus the fee reserve.
     MasternodeWithdraw,
+    /// One `contact_pay` from the Shielded or Platform balance under a
+    /// `PlatformOp` grant (C-funding P15), with the one key class its source
+    /// needs; never a `ContactPayment` lease, nor the reverse.
+    ContactPayFromBalance,
 }
 
 /// A lease's budgets (E0-04 §4.2).
@@ -230,17 +237,31 @@ pub struct BudgetView {
 impl NetworkSession {
     /// Redeems `grants` into one lease for `flow` and returns its id, which
     /// the calls of its wallet accept as their `grant` for the purposes the
-    /// lease carries.
+    /// lease carries. `source`: the payment's, for `AcceptAndPay` (`None`
+    /// is `core`) and `ContactPayFromBalance`; no other flow takes one.
     pub async fn begin_flow(
         self: &Arc<Self>,
         wallet_id: WalletId,
         flow: FlowKind,
         grants: Vec<String>,
+        source: Option<PaymentSource>,
     ) -> Result<String, PlatformError> {
         let _op = self.enter().await.map_err(engine)?;
         #[cfg(test)]
         crate::coinjoin::test_pause(crate::coinjoin::sweep_hooks(self).flow_admitted).await;
         self.require_wallet(&wallet_id).map_err(engine)?;
+        match (flow, source) {
+            (FlowKind::AcceptAndPay, None | Some(PaymentSource::Core)) => {}
+            (FlowKind::AcceptAndPay | FlowKind::ContactPayFromBalance, Some(source)) => {
+                return Err(payout_source(source));
+            }
+            (FlowKind::ContactPayFromBalance, None) | (_, Some(_)) => {
+                return Err(PlatformError::InvalidArgument {
+                    detail: "the payment source does not fit the flow".into(),
+                });
+            }
+            _ => {}
+        }
         let lease = self.begin_lease(wallet_id, flow, &grants).await?;
         // A removal or Close Wallet holds its barrier until the wallet is
         // gone (§8.6), so a lease that waited it out finds no wallet here.
