@@ -319,6 +319,33 @@ fn merge_context(old: &TransactionContext, new: &TransactionContext) -> Transact
     }
 }
 
+/// A ChainLock covers the block `context` names: the record says so, or the
+/// block is at or below the best ChainLock (key-wallet's own rule).
+pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Option<u32>) -> bool {
+    let height = context.block_info().map(|b| b.height());
+    matches!(context, TransactionContext::InChainLockedBlock(_))
+        || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
+}
+
+/// Whether another transaction in a ChainLocked block spends one of
+/// `txid`'s inputs: a ChainLock outranks an InstantSend lock (DIP-10, as
+/// key-wallet's conflict sweep orders them), so `txid` can never confirm.
+pub(crate) fn chainlock_beaten(
+    txs: &HashMap<Txid, TxEntry>,
+    txid: &Txid,
+    chainlock_height: Option<u32>,
+) -> bool {
+    let Some(e) = txs.get(txid) else {
+        return false;
+    };
+    let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
+    (txs.iter()).any(|(w, we)| {
+        w != txid
+            && chain_locked(&we.context, chainlock_height)
+            && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
+    })
+}
+
 /// The outpoints the wallet's transactions spend by Dash Core's
 /// `CWallet::IsSpent` (v24.0.0-rc.6 8d195f18 wallet/wallet.cpp:755-770): the
 /// spender is in a block, or out of one (depth 0, :4072-4082) and not
@@ -836,9 +863,7 @@ pub(crate) fn status_of(
     all_from_me: bool,
 ) -> (TxStatus, bool) {
     let depth = depth(&entry.context, view.tip);
-    let height = entry.context.block_info().map(|b| b.height());
-    let chain_locked = matches!(entry.context, TransactionContext::InChainLockedBlock(_))
-        || matches!((height, view.chainlock_height), (Some(h), Some(cl)) if cl >= h);
+    let chain_locked = chain_locked(&entry.context, view.chainlock_height);
     let instant_locked =
         entry.instant_locked || matches!(entry.context, TransactionContext::InstantSend(_));
     let mut matures_in = None;
@@ -2543,5 +2568,43 @@ mod tests {
         let mut want = vec![mined, abandoned, unstored];
         want.sort();
         assert_eq!(settled, want);
+    }
+
+    /// #170 case 14: only another transaction in a ChainLocked block that
+    /// spends one of a payment's inputs overrides its InstantSend lock; a
+    /// plain block above the best ChainLock or another lock does not.
+    #[test]
+    fn only_a_chainlocked_spend_of_an_input_beats_a_payment() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let spend = |n: u8, coins: &[OutPoint], context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(n.into(), &hash_addr(9))],
+                ),
+                context,
+            )
+        };
+        let locked = || TransactionContext::InstantSend(dashcore::InstantLock::default());
+        let payment = spend(1, &[coin(1), coin(2)], locked());
+        let txid = payment.tx.txid();
+        let beaten = |winner: TxEntry, chainlock: Option<u32>| {
+            let txs = HashMap::from([(txid, payment.clone()), (winner.tx.txid(), winner)]);
+            chainlock_beaten(&txs, &txid, chainlock)
+        };
+        let chainlocked =
+            TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
+        assert!(beaten(spend(2, &[coin(2)], chainlocked.clone()), None));
+        assert!(beaten(spend(2, &[coin(2)], in_block(12, 0)), Some(12)));
+        assert!(!beaten(spend(2, &[coin(2)], in_block(12, 0)), Some(11)));
+        assert!(!beaten(spend(2, &[coin(2)], in_block(12, 0)), None));
+        assert!(!beaten(spend(2, &[coin(2)], locked()), Some(12)));
+        assert!(!beaten(spend(2, &[coin(3)], chainlocked), Some(12)));
+        let alone = HashMap::from([(txid, payment.clone())]);
+        assert!(!chainlock_beaten(&alone, &txid, Some(12)));
+        let mut mined = payment.clone();
+        mined.context = in_block(12, 0);
+        let alone = HashMap::from([(txid, mined)]);
+        assert!(!chainlock_beaten(&alone, &txid, Some(12)), "not by itself");
     }
 }
