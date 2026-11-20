@@ -50,10 +50,6 @@ SCAN_OK = "secret-scan.ok"
 NETWORKS = {"testnet": ("T3", "testnet"), "devnet": ("T2", "regtest")}
 NET_OPTIONS = ("--dapi", "--ca-cert", "--quorum-url", "--peer")
 
-NO_PEER_REASONS = (
-    "SPV broadcast not sent: no connected peers",
-    "SPV broadcast not sent: client not started",
-)
 FUNDER_RETRY_KINDS = ("no_peers", "amount_exceeds_balance", "amount_with_fee_exceeds_balance")
 
 MNEMONIC_LINE = re.compile(r"(?m)^mnemonic .*$")
@@ -237,6 +233,8 @@ def clean_runs(runs: Path, now: float | None = None) -> list[str]:
         if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
             continue
         marker = Path(entry.path) / RUN_MARKER
+        if not os.path.lexists(marker):
+            continue
         try:
             st = os.lstat(marker)
             if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
@@ -717,12 +715,8 @@ def parse_send_failure(stdout: str) -> dict[str, str] | None:
 
 def funder_may_retry(failure: dict[str, str]) -> bool:
     """A send that definitely sent nothing and may go through if asked again: no mined coin yet,
-    or no peer connected (reported as `no_peers`, or as a rejection with dash-spv's no-peer
-    reason)."""
-    if failure["outcome"] != "not_sent":
-        return False
-    return failure["kind"] in FUNDER_RETRY_KINDS or (
-        failure["kind"] == "broadcast_rejected" and failure["reason"] in NO_PEER_REASONS)
+    or no peer connected."""
+    return failure["outcome"] == "not_sent" and failure["kind"] in FUNDER_RETRY_KINDS
 
 
 @dataclass
@@ -901,21 +895,25 @@ def find_contact(session: Session, contact: str) -> tuple[str, dict] | None:
 
 
 def send_kind(error: dict) -> str | None:
-    """The `SendFailure` kind of a `send` error (dwcli's `params.kind`); `None` for any other
-    error."""
-    return (error.get("params") or {}).get("kind") if error.get("code") == "send" else None
+    """The `SendFailure` kind of a send error: `params.kind` of an error whose code is
+    `send.<kind>` (dwcli's per-variant code, `masternodes::send_code`); `None` for any other
+    error. A code and kind that disagree fail."""
+    code = error.get("code")
+    if not isinstance(code, str) or not code.startswith("send."):
+        return None
+    kind = (error.get("params") or {}).get("kind")
+    if kind != code.removeprefix("send."):
+        raise AssertionError(f"a send error whose code and params.kind disagree: {error}")
+    return kind
 
 
 def definitely_unsent_no_peers(error: dict) -> bool:
     """A `pay-contact` error that sent nothing and may go through once a peer connects: the
-    wallet still rescanning (refused before anything was prepared), or a broadcast dwcli could
-    abandon afterwards (`outcome: not_sent`) that failed for want of a peer."""
+    wallet still rescanning (refused before anything was prepared), or a broadcast that found no
+    peer and that dwcli could abandon afterwards (`outcome: not_sent`)."""
     if error.get("code") == "rescan_in_progress":
         return True
-    params = error.get("params") or {}
-    return send_kind(error) is not None and params.get("outcome") == "not_sent" and (
-        params.get("kind") == "no_peers"
-        or (params.get("kind") == "broadcast_rejected" and params.get("reason") in NO_PEER_REASONS))
+    return send_kind(error) == "no_peers" and (error.get("params") or {}).get("outcome") == "not_sent"
 
 
 def try_pay(session: Session, contact: str, duffs: int, *extra: str, timeout: float = 900) -> dict:

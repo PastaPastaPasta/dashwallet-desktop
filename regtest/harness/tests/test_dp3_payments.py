@@ -6,9 +6,9 @@ root:
 
 1. pay both ways: A pays B and B pays A through the contact channel; each recipient's contact
    activity shows the payment, received from the other, with its amount;
-2. no peers: A pays B with SPV running but no peer connected: definite, so no payment lock is
-   set, and the next payment with peers goes through. The engine reports it as a rejection rather
-   than "no peers" (marked xfail: `reason_means_no_peers` misses dash-spv's wording);
+2. no peers: A pays B with SPV running but no peer connected: reported as `send.no_peers` and
+   definitely not sent, so no payment lock is set, and the next payment with peers goes through
+   (#85, fixed in #123: dash-spv's "no connected peers" used to read as a rejection);
 3. unknown outcome: A pays B through a relay that holds the transaction back, so no node gets it:
    the outcome is unknown; the contact is locked to that txid, the relay holds exactly that
    transaction (its hash is the txid), and a second payment is refused; once the relay has
@@ -29,7 +29,6 @@ import os
 import pytest
 
 from dwd_regtest.dashpay import (
-    NO_PEER_REASONS,
     HoldingPeer,
     pay_contact,
     send_kind,
@@ -78,21 +77,15 @@ def no_peers(pair, contacts):
 def test_no_peers_sets_no_lock(pair, no_peers):
     a, b = pair
     error = no_peers["error"]
-    assert error["code"] == "send", error
-    assert send_kind(error) in ("no_peers", "broadcast_rejected"), error
-    assert error["params"]["outcome"] == "not_sent", error
+    assert send_kind(error) is not None and error["params"]["outcome"] == "not_sent", error
     assert no_peers["lock"] is None
     assert recipient_sees(b, a.identity, no_peers["paid"]["txid"], "dp3-b-sees-2")["amount"] == 130_000
 
 
 def test_no_peers_is_reported_as_no_peers(no_peers):
     error = no_peers["error"]
-    if (error["code"], send_kind(error), error["params"].get("reason"), error["params"].get("outcome")) == (
-            "send", "broadcast_rejected", NO_PEER_REASONS[0], "not_sent"):
-        pytest.xfail("engine bug: dash-spv's 'SPV broadcast not sent: no connected peers' is not matched by "
-                     "reason_means_no_peers (dw-engine send/mod.rs), so a broadcast no peer got is reported "
-                     "as `broadcast rejected`, not `no peers`")
-    assert send_kind(error) == "no_peers", error
+    assert (error["code"], send_kind(error)) == ("send.no_peers", "no_peers"), error
+    assert "reason" not in error["params"], error
 
 
 def test_unknown_outcome_locks_until_resolved(dp, pair, contacts):

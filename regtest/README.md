@@ -187,8 +187,8 @@ network.
 | Suite | ROADMAP | What |
 |---|---|---|
 | `test_dp1_identity.py` | DP1-07 | availability, offline name rules, a registration from the Core balance to `done`, its funding transaction's debit and the wallet's balance change equal, above the lock and within the grant; the identity, its name and keys, the name taken and resolved, the main name after a sync pass and a restart, a restore that finds the identity |
-| `test_dp2_contacts.py` | DP2-06 | the request and accept round trip between two members, the contact in a new process, ignore and unignore (hidden as `ignored` through a pass and a restart; back as a request on the next sweep), hide and show, a restore whose contact (ready) is listed while SPV can reach no peer, before any block is scanned, then the first scan attributing a payment to it; the one-way contact is skipped until a pin bump (E0-14) brings platform #4740: the pinned platform-wallet builds receiving accounts only for established contacts, not for sent-only requests |
-| `test_dp3_payments.py` | DP3-05 | contact payments both ways, a payment with no peer (definitely not sent: no lock; reported as a rejection, xfail on that exact reason), an unknown outcome through a relay that holds the transaction (the contact locked to its txid, the held bytes hashing to it, a second payment refused, `resolve-lock` settling it `Sent` once the relay passed them on), 25 cancelled confirms past the 20-address gap, each naming the same address, then a payment to it that the recipient sees |
+| `test_dp2_contacts.py` | DP2-06 | the request and accept round trip between two members (A's channel turning ready while its session stays open), the contact in a new process, ignore and unignore (hidden as `ignored` through a pass and a restart; back as a request on the next sweep), hide and show, a restore whose contact (ready) is listed while SPV can reach no peer, before any block is scanned, then the first scan attributing a payment to it; the one-way contact is skipped until a pin bump (E0-14) brings platform #4740: the pinned platform-wallet builds receiving accounts only for established contacts, not for sent-only requests |
+| `test_dp3_payments.py` | DP3-05 | contact payments both ways, a payment with no peer (reported as `send.no_peers`, definitely not sent: no lock), an unknown outcome through a relay that holds the transaction (the contact locked to its txid, the held bytes hashing to it, a second payment refused, `resolve-lock` settling it `Sent` once the relay passed them on), 25 cancelled confirms past the 20-address gap, each naming the same address, then a payment to it that the recipient sees |
 
 | Variable | Meaning |
 |---|---|
@@ -217,7 +217,11 @@ The funder keeps a dozen mined coins of 0.5 tDASH and splits its balance again w
 four are left: a restarted dwcli no longer knows its own change's InstantSend lock, so change is
 spendable only once mined. It asks again only when `dwcli send`'s last line reports
 `outcome=not_sent` for want of a mined coin or a peer; a send whose outcome is unknown keeps its
-txid and is waited for, never paid again. Top it up with the `dash-faucet` skill when its balance
+txid and is waited for, never paid again. A contact payment's failure is read from dwcli's JSON:
+an error whose code is `send.<kind>` (one per `SendFailure` variant) and whose `params.kind`
+names the same kind; `pay-contact` asks again only for `no_peers` with `params.outcome` `not_sent`
+(or while the wallet rescans), and pays again after an unknown outcome only once
+`contact resolve-lock` answers `not_sent`. Top it up with the `dash-faucet` skill when its balance
 runs low. A run costs about 0.1 tDASH per registered member.
 
 **Nightly (T3).** `scripts/dashpay-nightly.sh` builds dwcli at `origin/main` in its own checkout

@@ -264,7 +264,7 @@ def test_state_directory_rules(state_env, monkeypatch):
         Harness.from_env()
 
 
-def test_cleanup_deletes_only_old_marked_runs(tmp_path):
+def test_cleanup_deletes_only_old_marked_runs(tmp_path, capsys):
     runs = private(tmp_path / "runs")
     outside = private(tmp_path / "outside")
     (outside / "keep.txt").write_text("keep")
@@ -290,6 +290,7 @@ def test_cleanup_deletes_only_old_marked_runs(tmp_path):
     assert clean_runs(runs) == ["old-marked"]
     assert sorted(p.name for p in runs.iterdir()) == ["link", "new-marked", "old-unmarked", "wrong-marker"]
     assert (outside / "keep.txt").read_text() == "keep"
+    assert capsys.readouterr().err == ""
 
 
 def funder_with(tmp_path: Path, fake: Path, monkeypatch, stdout: str, rc: int = 1) -> Funder:
@@ -309,8 +310,6 @@ PREPARED = "estimate fee=1\nprepared txid=aa11 fee=1\n"
 @pytest.mark.parametrize("stdout,expected", [
     ("failed outcome=not_sent kind=amount_exceeds_balance txid=-\n", None),
     (PREPARED + "failed outcome=not_sent kind=no_peers txid=aa11\n", None),
-    (PREPARED + "failed outcome=not_sent kind=broadcast_rejected txid=aa11 "
-     "reason=SPV broadcast not sent: no connected peers\n", None),
     (PREPARED + "unknown aa11 reason=x\nrebroadcast 1\nfailed outcome=unknown kind=broadcast_unknown txid=aa11 "
      "reason=not sent this time: transaction broadcast rejected: SPV broadcast not sent: no connected peers\n", "aa11"),
 ])
@@ -320,6 +319,8 @@ def test_funder_retries_only_what_was_definitely_not_sent(tmp_path, fake_dwcli, 
 
 
 @pytest.mark.parametrize("stdout,message", [
+    (PREPARED + "failed outcome=not_sent kind=broadcast_rejected txid=aa11 "
+     "reason=SPV broadcast not sent: no connected peers\n", "prepared aa11"),
     (PREPARED + "failed outcome=not_sent kind=broadcast_rejected txid=aa11 reason=bad-txns-inputs-missingorspent\n",
      "prepared aa11"),
     (PREPARED, "prepared aa11"),
@@ -362,7 +363,7 @@ def send_error(kind: str, outcome: str | None = None, reason: str | None = None,
         p["outcome"] = outcome
     if reason:
         p["reason"] = reason
-    return {"ok": False, "error": {"code": "send", "message": f"send: {kind}", "params": p}}
+    return {"ok": False, "error": {"code": f"send.{kind}", "message": f"send: {kind}", "params": p}}
 
 
 PAID = {"ok": True, "result": {"paid": True, "txid": "t2", "address": "yA"}}
@@ -374,13 +375,31 @@ def no_sleep(monkeypatch):
     monkeypatch.setattr(dashpay.time, "sleep", lambda _: None)
 
 
+def test_send_kind_reads_only_send_errors():
+    assert dashpay.send_kind(send_error("no_peers", "not_sent")["error"]) == "no_peers"
+    assert dashpay.send_kind(send_error("broadcast_unknown", "unknown", "x")["error"]) == "broadcast_unknown"
+    for error in ({"code": "send", "params": {"kind": "no_peers"}},
+                  {"code": "contact.payment_locked", "params": {"kind": "no_peers", "txid": "t0"}},
+                  {"code": "coinjoin.send.no_peers", "params": {"kind": "no_peers"}},
+                  {"code": None}, {}):
+        assert dashpay.send_kind(error) is None, error
+    with pytest.raises(AssertionError, match="disagree"):
+        dashpay.send_kind({"code": "send.no_peers", "params": {"kind": "broadcast_unknown"}})
+
+
 def test_try_pay_retries_only_a_definitely_unsent_no_peer_failure(no_sleep):
-    s = FakeSession([send_error("no_peers", "not_sent"),
-                     send_error("broadcast_rejected", "not_sent", dashpay.NO_PEER_REASONS[0]), PAID])
+    rescanning = {"ok": False, "error": {"code": "rescan_in_progress", "message": "rescan", "params": {}}}
+    s = FakeSession([send_error("no_peers", "not_sent"), rescanning, PAID])
     assert try_pay(s, "c", 1) == PAID and s.paid == 3
+    old_no_peers = "SPV broadcast not sent: no connected peers"
     for answer in (send_error("broadcast_rejected", "not_sent", "bad-txns"),
-                   send_error("broadcast_rejected", "unknown", dashpay.NO_PEER_REASONS[0]),
-                   {"ok": False, "error": {"code": "send", "message": "send: no connected peers", "params": {}}}):
+                   send_error("broadcast_rejected", "not_sent", old_no_peers),
+                   send_error("no_peers", "unknown"),
+                   send_error("no_peers"),
+                   {"ok": False, "error": {"code": "send", "message": "send: no peers",
+                                           "params": {"kind": "no_peers", "outcome": "not_sent"}}},
+                   {"ok": False, "error": {"code": "contact.payment_locked", "message": "locked",
+                                           "params": {"kind": "no_peers", "outcome": "not_sent", "txid": "t0"}}}):
         s = FakeSession([answer, PAID])
         assert try_pay(s, "c", 1) == answer and s.paid == 1
     s = FakeSession([send_error("no_peers", "not_sent")], lock={"txid": "t0"})

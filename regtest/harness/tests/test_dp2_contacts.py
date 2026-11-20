@@ -5,8 +5,8 @@ Two fresh members A and B, each on its own data root (its own device) with a reg
 
 1. round trip: A may ask B, A's request leaves B in A's pending section, B sees it as a request,
    accepts, and both list the other as a contact with a ready payment channel; A's session stays
-   open meanwhile, and its channel must turn ready there too, not only after a restart (xfail:
-   the engine drains the contact crypto only on an unlock or a bring-up);
+   open meanwhile, and its channel must turn ready there too, not only after a restart (#84,
+   fixed in #123: the engine drained the contact crypto only on an unlock or a bring-up);
 2. the contact in a new process: still a contact, with its username once a pass names it;
 3. ignore and unignore: a third member C asks A; A ignores the request (it moves to the hidden
    section as `ignored`, and stays there after a sync pass and a restart), then unignores it: the
@@ -61,12 +61,7 @@ def test_channel_ready_while_unlocked(contacts):
     assert live["startup"] == "ready" and (live["ran_at"] or 0) >= live["listed_at"], live
     assert contacts["a_live"] is not None, "A's live session no longer lists B"
     section, row = contacts["a_live"]
-    assert (section, row["relation"]) == ("contacts", "contact"), contacts["a_live"]
-    if row["channel"] == "setup_pending":
-        pytest.xfail("engine bug: B's accept, seen by A's sync while A's vault is unlocked, queues A's account "
-                     "build for a drain that runs only on an unlock or a bring-up, so the contact stays "
-                     "`setup_pending` (\"Unlock to finish setting up\") until A's next unlock or restart")
-    assert (section, row["channel"]) == ("contacts", "ready"), contacts["a_live"]
+    assert (section, row["relation"], row["channel"]) == ("contacts", "contact", "ready"), contacts["a_live"]
 
 
 def test_contact_after_restart(pair, contacts):
