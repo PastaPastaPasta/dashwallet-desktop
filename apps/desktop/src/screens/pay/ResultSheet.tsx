@@ -29,18 +29,23 @@ export function ResultSheet({
   network,
   draft,
   returnFocus,
-  onOutcome,
+  retrying,
+  onRetry,
   onDone,
 }: {
   outcome: Outcome;
   network: NetworkInfo;
   draft: DraftApi;
   returnFocus: () => HTMLElement | null;
-  onOutcome: (o: Outcome) => void;
+  /** A Try again is running, perhaps from before a lock. */
+  retrying: boolean;
+  /** Starts a Try again: where its outcome goes, or `null` when there is none to run. */
+  onRetry: () => ((o: Outcome) => void) | null;
   /** `show`: open the transaction in Activity. */
   onDone: (show: boolean) => void;
 }) {
-  const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState(false);
+  const busy = running || retrying;
   // Finished retries, for a harness that must not miss a fast one's busy state (DP3-06 Sol r1 #1).
   const [tries, setTries] = useState(0);
   const shown = useDisplay(network);
@@ -49,15 +54,17 @@ export function ResultSheet({
   const retryButton = useRef<HTMLButtonElement>(null);
   const retry = async () => {
     if (outcome.kind !== "unknown" || !outcome.retry || busy) return;
-    setBusy(true);
+    const settle = onRetry();
+    if (!settle) return;
+    setRunning(true);
     const { txid: held, draft: d, prepared, amount, fee, note } = outcome;
     try {
       const { txid } = await draft.broadcast(d, prepared);
-      onOutcome({ kind: "sent", txid, amount, fee, note });
+      settle({ kind: "sent", txid, amount, fee, note });
     } catch (e) {
-      onOutcome(broadcastFailure(e, shown.chain, { txid: held, draft: d, prepared, amount, fee, note }, false, shown.amountUnit));
+      settle(broadcastFailure(e, shown.chain, { txid: held, draft: d, prepared, amount, fee, note }, false, shown.amountUnit));
     } finally {
-      setBusy(false);
+      setRunning(false);
       setTries((n) => n + 1);
     }
   };

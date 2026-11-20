@@ -19,18 +19,22 @@ export const SETTLE_MS = 300;
 
 type Shown = ReturnType<typeof useDisplay>;
 
-/** Where a form is: editing, confirming, sending (the broadcast outlived the confirm sheet), or
+/** Where a form is: editing, confirming, sending (the payment outlived the confirm sheet), or
  * showing the result. */
 export type Phase =
   | { kind: "editing" }
   | { kind: "confirm"; confirmed: Confirmed; spec: DraftSpec; unsigned: boolean }
   | { kind: "sending"; sending: Sending }
-  | { kind: "result"; outcome: Outcome };
+  | { kind: "result"; outcome: Outcome; retrying: boolean };
 
-type Kept = { kind: "sending"; sending: Sending } | { kind: "result"; outcome: Outcome };
+/** One press of Send, from before its first call until its result sheet closes: signing
+ * (`preparing`), handed to the broadcast (`sending`), then its result, with a Try again of it
+ * running (`retrying`). */
+type Kept = { kind: "preparing" | "sending"; attempt: number; sending: Sending } | { kind: "result"; attempt: number; outcome: Outcome; retrying: boolean };
 
-/** Each form's payment from its broadcast until its result sheet closes, by `payFormKey`: a lock
- * takes the page down at once, and the unlock shows the same result, not a form that looks unsent. */
+/** Each form's payment by `payFormKey`: a lock takes the page down at once, and the unlock shows
+ * the same payment, not a form that looks unsent. Only the attempt kept under a key may change
+ * it, so an older payment's late answer never replaces a newer one's. */
 const kept = new Map<string, Kept>();
 const keptListeners = new Set<() => void>();
 const subscribeKept = (l: () => void) => {
@@ -42,20 +46,82 @@ function keep(key: string, k: Kept | null) {
   else kept.delete(key);
   keptListeners.forEach((l) => l());
 }
+let attempts = 0;
 
 /** Tests: what the form under `key` keeps. */
 export const keptPayment = (key: string): Kept | null => kept.get(key) ?? null;
 
+/** Tests: nothing kept. */
+export const resetKeptPayments = () => kept.clear();
+
 export const payFormKey = (walletId: string, contact?: string) => (contact === undefined ? `${walletId}:address` : `${walletId}:contact:${contact}`);
 
-/** What an outcome says once its page went: the draft closed with the page, so it has no retry. */
+/** What an outcome says once its draft closed: it has no retry. */
 export const outliving = (o: Outcome): Outcome => (o.kind === "unknown" && o.retry ? { ...o, retry: false } : o);
+
+/** A payment's own way to report, ignored once another payment took its form's place. */
+export type PayAttempt = {
+  /** Handed to the broadcast: it may reach the network from here. */
+  broadcasting: (sending: Sending) => void;
+  outcome: (o: Outcome) => void;
+  /** Refused before anything was signed (the passphrase): the confirm sheet stays. */
+  release: () => void;
+};
+
+/** `attempt`'s handle on the payment kept under `key`. `live()`: its draft is still the page's
+ * own, so an unknown result keeps its retry. */
+export function payAttempt(key: string, attempt: number, live: () => boolean, onSettled: (o: Outcome) => void = () => {}): PayAttempt {
+  const mine = () => kept.get(key)?.attempt === attempt;
+  return {
+    broadcasting: (sending) => {
+      if (mine()) keep(key, { kind: "sending", attempt, sending });
+    },
+    outcome: (o) => {
+      if (!mine()) return;
+      onSettled(o);
+      keep(key, { kind: "result", attempt, outcome: live() ? o : outliving(o), retrying: false });
+    },
+    release: () => {
+      if (mine() && kept.get(key)?.kind === "preparing") keep(key, null);
+    },
+  };
+}
+
+/** Starts a payment under `key`, in place of whatever was kept there. */
+export function beginPayment(key: string, sending: Sending): number {
+  const attempt = ++attempts;
+  keep(key, { kind: "preparing", attempt, sending });
+  return attempt;
+}
+
+/** Starts a Try again of the unknown result kept under `key`: its attempt, or `null` for none. */
+export function beginRetry(key: string): number | null {
+  const k = kept.get(key);
+  if (k?.kind !== "result" || k.retrying || k.outcome.kind !== "unknown" || !k.outcome.retry) return null;
+  keep(key, { ...k, retrying: true });
+  return k.attempt;
+}
+
+/** The draft under `key` closed: an unknown result kept there loses its retry. */
+export function draftClosed(key: string) {
+  const k = kept.get(key);
+  if (k?.kind === "result" && k.outcome.kind === "unknown" && k.outcome.retry) keep(key, { ...k, outcome: outliving(k.outcome) });
+}
+
+/** The result sheet closed on `attempt`'s result: what it was, or `null` when it is not kept (or
+ * its Try again still runs). */
+export function acknowledge(key: string, attempt: number): Outcome | null {
+  const k = kept.get(key);
+  if (k?.kind !== "result" || k.attempt !== attempt || k.retrying) return null;
+  keep(key, null);
+  return k.outcome;
+}
 
 /** A Pay form's sheets (U-03): Review's confirm, then the result. While either is up the form
  * estimates nothing (`held`), so the payment's own events re-check nothing behind them. A payment
  * that went, or may have, ends the form at once (`clear`); its draft stays open until the result
  * sheet closes, as unknown's Try again rebroadcasts through it. A failed one leaves the form as it was.
- * From its broadcast the payment is kept under `key` (`payFormKey`), so a remounted form shows it;
+ * From Send the payment is kept under `key` (`payFormKey`), so a remounted form shows it;
  * `filledBy: "link"`, the form Pay's prefill and coins fill, which the broadcast spends. */
 export function usePaySheets(key: string, walletId: string, draft: DraftApi, clear: () => void, filledBy: "link" | null = null) {
   const client = useQueryClient();
@@ -66,37 +132,51 @@ export function usePaySheets(key: string, walletId: string, draft: DraftApi, cle
     mounted.current = true;
     return () => {
       mounted.current = false;
+      // The page's draft closes with it.
+      draftClosed(key);
     };
-  }, []);
-  const phase: Phase = stored?.kind === "result" ? stored : (confirm ?? stored ?? { kind: "editing" });
-  const outcome = (o: Outcome) => {
+  }, [key]);
+  const live = () => mounted.current;
+  const settled = (o: Outcome) => {
     if (o.kind !== "failed") clear();
-    setConfirm(null);
-    keep(key, { kind: "result", outcome: mounted.current ? o : outliving(o) });
+    if (mounted.current) setConfirm(null);
   };
-  const done = (show: boolean) => {
-    if (stored?.kind !== "result") return;
-    const o = stored.outcome;
-    if (o.kind !== "failed") {
-      void draft.close();
-      void client.invalidateQueries({ queryKey: keys.coinsAll(walletId) });
-    }
-    keep(key, null);
-    if (show && o.kind === "sent") navigate("activity", { detail: o.txid });
-  };
+  const phase: Phase =
+    stored?.kind === "result" ? { kind: "result", outcome: stored.outcome, retrying: stored.retrying } : (confirm ?? (stored ? { kind: "sending", sending: stored.sending } : { kind: "editing" }));
   return {
     phase,
     held: phase.kind === "confirm" || phase.kind === "sending" || (phase.kind === "result" && phase.outcome.kind !== "failed"),
     review: (confirmed: Confirmed, spec: DraftSpec, unsigned = false) => setConfirm({ kind: "confirm", confirmed, spec, unsigned }),
     cancel: () => setConfirm(null),
-    // From here the payment may reach the network: the link or the coins that filled the form are
-    // spent on it, so a form mounted again (after a lock) starts empty rather than offering it again.
-    broadcasting: (sending: Sending) => {
-      keep(key, { kind: "sending", sending });
-      if (filledBy === "link") ui.set({ payPrefill: null, payCoins: null });
+    /** Send was pressed, `sending` the payment as the review showed it. */
+    begin: (sending: Sending): PayAttempt => {
+      const attempt = payAttempt(key, beginPayment(key, sending), live, settled);
+      return {
+        ...attempt,
+        // From here the payment may reach the network: the link or the coins that filled the form
+        // are spent on it, so a form mounted again (after a lock) starts empty rather than offering it again.
+        broadcasting: (s) => {
+          attempt.broadcasting(s);
+          if (filledBy === "link") ui.set({ payPrefill: null, payCoins: null });
+        },
+      };
     },
-    outcome,
-    done,
+    /** A result that is no payment's (Create Unsigned's "changed"). */
+    outcome: (o: Outcome) => payAttempt(key, beginPayment(key, { amount: 0, fee: 0 }), live, settled).outcome(o),
+    retry: (): ((o: Outcome) => void) | null => {
+      const attempt = beginRetry(key);
+      return attempt === null ? null : payAttempt(key, attempt, live).outcome;
+    },
+    done: (show: boolean) => {
+      if (stored?.kind !== "result") return;
+      const o = acknowledge(key, stored.attempt);
+      if (!o) return;
+      if (o.kind !== "failed") {
+        void draft.close();
+        void client.invalidateQueries({ queryKey: keys.coinsAll(walletId) });
+      }
+      if (show && o.kind === "sent") navigate("activity", { detail: o.txid });
+    },
   };
 }
 

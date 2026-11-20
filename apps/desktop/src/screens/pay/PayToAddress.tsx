@@ -201,7 +201,7 @@ export function PayToAddress({
           returnFocus={backToForm}
           onCancel={sheets.cancel}
           onOutcome={sheets.outcome}
-          onBroadcast={sheets.broadcasting}
+          onSend={sheets.begin}
         />
       )}
       {phase.kind === "sending" && <SendingSheet sending={phase.sending} network={network} />}
@@ -211,7 +211,8 @@ export function PayToAddress({
           network={network}
           draft={draft}
           returnFocus={backToForm}
-          onOutcome={sheets.outcome}
+          retrying={phase.retrying}
+          onRetry={sheets.retry}
           onDone={sheets.done}
         />
       )}
