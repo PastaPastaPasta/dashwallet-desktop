@@ -68,7 +68,7 @@ fn gate_refusal(refusal: Refusal) -> EngineError {
 /// Refuses a payment to a payee its relation or channel does not allow
 /// (D2, D4). `pending`: a pending incoming request passes ("Accept and
 /// pay" before its accept); otherwise it is `PendingIncoming`.
-fn check_payee(payee: Payee, pending: bool) -> Result<(), ContactError> {
+pub(crate) fn check_payee(payee: Payee, pending: bool) -> Result<(), ContactError> {
     match payee {
         Some((Relation::Contact, ChannelState::Broken)) => Err(ContactError::ChannelBroken),
         Some((Relation::Contact, _)) => Ok(()),
