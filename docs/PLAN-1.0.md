@@ -293,7 +293,8 @@ built. Every fix is in this repository, with no pin bump.
   owner reports it that day and the release owner decides what they displace. In one lane the
   header-anchor and older-build cases take 3.5 to 6.25 days from #121's merge, so with #121 merging on
   11-23 the top of that range misses 11-28. The older-build cases do not depend on the header-anchor fix
-  (different functions), and the 11-24 report says whether they need a lane of their own.
+  (different functions). If #121 has not merged by 11-23 18:00 UTC, they start in a lane of their own
+  that day (the release owner's decision, 11-20); otherwise the 11-24 report says whether they need one.
 
 **#177, after the fork pin, and #178.** #177 lists what #159 leaves. Three of its items are RC
 must-fix, ruled by the release owner on 11-20:
