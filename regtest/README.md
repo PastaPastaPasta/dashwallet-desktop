@@ -199,7 +199,7 @@ network.
 |---|---|---|
 | `test_dp1_identity.py` | DP1-07 | availability, offline name rules, a registration from the Core balance to `done`, its funding transaction's debit and the wallet's balance change equal, above the lock and within the grant; the identity, its name and keys, the name taken and resolved, the main name after a sync pass and a restart, a restore that finds the identity |
 | `test_dp2_contacts.py` | DP2-06 | the request and accept round trip between two members (A's channel turning ready while its session stays open), the contact in a new process, ignore and unignore (hidden as `ignored` through a pass and a restart; back as a request on the next sweep), hide and show, a restore whose contact (ready) is listed while SPV can reach no peer, before any block is scanned, then the first scan attributing a payment to it; the one-way contact is skipped until a pin bump (E0-14) brings platform #4740: the pinned platform-wallet builds receiving accounts only for established contacts, not for sent-only requests |
-| `test_dp3_payments.py` | DP3-05 | contact payments both ways, a payment with no peer (reported as `send.no_peers`, definitely not sent: no lock; the next payment is made only after exactly that), an unknown outcome through a relay that holds the transaction (the contact locked to its txid, the held bytes hashing to it, a second payment refused, `resolve-lock` settling it `Sent` once the relay passed them on), 25 cancelled confirms past the 20-address gap, each naming the same address, then a payment to it that the recipient sees |
+| `test_dp3_payments.py` | DP3-05 | contact payments both ways, a payment with no peer (reported as `send.no_peers`, definitely not sent: no lock; the next payment is made only after exactly that), an unknown outcome through a relay that holds the transaction (the contact locked to its txid, the held bytes hashing to it, a second payment refused, `resolve-lock` settling it `Sent` once the relay passed them on), 25 cancelled confirms past the 20-address gap, each naming the same address, then a payment the recipient sees, whose output in the recipient's `dwcli history` is that address (also when it settled through its lock) |
 
 | Variable | Meaning |
 |---|---|
@@ -211,12 +211,13 @@ network.
 | `DW_DP_SCAN` | colon-separated extra files for the end-of-run secret scan |
 | `DW_DP_STRICT` | `1`: the unknown-outcome case fails instead of skipping when the relay is not configured |
 | `DWCLI` | the dwcli binary |
+| `DW_DP_NOTIFY` | nightly only: the absolute path of the site's notifier, an executable that delivers its one argument (the failure message) |
 | `DW_DP_HOLD_UPSTREAM` | `ip:port` of a testnet peer serving BIP157 filters, for the unknown-outcome relay (DP3); that case is skipped when unset (fails with `DW_DP_STRICT=1`) |
 
 The harness assumes `DW_DP_STATE` is private to it: mode 0700, owned by the user that runs the
 suites, on one filesystem, and with no other process of that user working in it while a run
-does. It refuses a state root that is a symlink, open to group or others, or owned by someone
-else; it does not defend against a process of the same user changing the tree under a run.
+does. It refuses a state root that is a symlink, open to group or others, owned by someone
+else, or a git checkout or inside one; it does not defend against a process of the same user changing the tree under a run.
 
 Each run's member data roots live in `DW_DP_STATE/runs/<run>`, which holds a `.dw-dp-run` marker
 naming the run. A run deletes the marked run directories older than three days; it refuses a
@@ -237,7 +238,7 @@ txid and is waited for, never paid again; each attempt syncs to the current tip 
 result is the one complete terminal record on the last line (`broadcast <txid>` or
 `failed …`), whose txid must be the prepared one; anything else stops the run without sending
 again. The split waits for that transaction's own outputs to be mined. A payment
-to a member counts once the member's wallet credits that txid with the amount. A contact payment's failure is read from dwcli's JSON:
+to a member counts once the member's wallet holds that txid with one confirmation (`dwcli sync --txid … --confirmations 1`) and credits it with the amount. A contact payment's failure is read from dwcli's JSON:
 an error whose code is `send.<kind>` (one per `SendFailure` variant) and whose `params.kind`
 names the same kind; `pay-contact` asks again only for `no_peers` with `params.outcome` `not_sent`
 (or while the wallet rescans), and pays again after an unknown outcome only once
@@ -248,16 +249,25 @@ runs low. A run costs about 0.1 tDASH per registered member.
 **Nightly (T3).** `scripts/dashpay-nightly.sh` builds dwcli at `origin/main` in its own checkout
 under `DW_DP_STATE` (with `umask 077`, under a `flock` on `DW_DP_STATE/nightly.lock`, with
 `CARGO_TARGET_DIR` unset and the binary path taken from that build) and runs every
-`tests/test_dp*.py` on testnet with `DW_DP_STRICT=1`; it needs `DW_DP_HOLD_UPSTREAM`, fails
-when no suite matches, refuses any `DW_DP_NET` but `testnet`, checks the state root (absolute,
-not a symlink, the user's own, 0700) before it writes anything there, and dumps no core. pytest's output goes to `pytest.log` only; the script's log and the
-journal get its summary lines once the secret scan has passed. Everything stays in
-`DW_DP_STATE/nightly/<date>`. On agentbox it runs from the systemd user timer in `ci/agentbox/`
-(install steps in the service file). It is log-only: it gates nothing and notifies no one. A failed
-run shows as the unit's failed status (`systemctl --user status dw-dashpay-nightly`) and in the
-kept `junit.xml`, `pytest.log` and `nightly.log`. For someone to be told, configure a notifier
-yourself, for example an `OnFailure=` unit that sends a message, or monitoring that watches
-`systemctl --user is-failed dw-dashpay-nightly`.
+`tests/test_dp*.py` on testnet with `DW_DP_STRICT=1`. It needs `DW_DP_HOLD_UPSTREAM` and
+`DW_DP_NOTIFY`, fails when no suite matches, refuses any `DW_DP_NET` but `testnet`, and dumps no
+core. Before it writes anything in the state root it checks it at its canonical path: absolute,
+not a symlink, the user's own, 0700, no git checkout and inside none, and not where the script
+itself is installed; the lock, the run directory and the checkout must not be symlinks. The
+fetch, the build and the dependency install run before the funder's variables are exported to
+anything. They still run as the same user, so they could read the funder's files: the funder must
+be a dedicated testnet wallet with a small capped balance, never one holding anything else.
+pytest's output goes to `pytest.log` only; the script's log and the journal get its summary lines
+once the secret scan has passed. Everything stays in `DW_DP_STATE/nightly/<date>`.
+
+On agentbox it runs from the systemd user timer in `ci/agentbox/`, with the launcher and
+`scripts/dashpay-nightly-notify.sh` installed outside `DW_DP_STATE` and outside any checkout
+(`~/.local/libexec/dashwallet-desktop/`; install steps in the service file). It does not gate
+anything; it alerts. A failed run fails the unit, and its `OnFailure=` unit
+(`dw-dashpay-nightly-failed.service`) runs the site-provided notifier `DW_DP_NOTIFY` with the
+unit's result and exit status and the run's artifact directory, never test output. The install
+requires one test start of that unit, with its message seen to arrive, before the timer is
+enabled.
 
 **T2 is blocked.** On the shared dashmate `local` devnet (3 evonodes) dash-spv never finishes
 its masternode list: the network forms no `llmq_test_dip0024` quorum, so QRInfo is never

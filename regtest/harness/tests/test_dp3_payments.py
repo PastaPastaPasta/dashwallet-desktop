@@ -17,7 +17,8 @@ root:
    the payment;
 4. 25 cancelled confirms (more than the 20-address DIP-15 gap) in one session, each a prepared
    payment abandoned unsent (`paid: false`) that names its contact address, every one the same,
-   then a payment to that same address: B sees it.
+   then a payment B sees, whose output in B's `dwcli history` is that same address (also when
+   the payment settled through its lock, which reports no address).
 
     DW_DP_HOLD_UPSTREAM=<ip:port of a peer serving BIP157 filters> (the relay's peer; with
     DW_DP_STRICT=1, as the nightly sets, the unknown-outcome case fails rather than skips without it)
@@ -32,6 +33,7 @@ import pytest
 from dwd_regtest.dashpay import (
     HoldingPeer,
     pay_contact,
+    received_at,
     send_kind,
     synced_until,
     try_pay,
@@ -143,8 +145,9 @@ def test_cancelled_confirms_past_the_gap(pair, contacts):
             addresses.append(cancelled["address"])
         assert sa.ok("contact", "lock", b.identity) is None
         paid = pay_contact(sa, b.identity, 150_000)
-    print(f"{CANCELS} cancelled confirms used {len(set(addresses))} address(es); paid {paid.get('address')}")
-    assert paid.get("address"), f"the payment's outcome was settled through its lock, so its output is unknown: {paid}"
     assert recipient_sees(b, a.identity, paid["txid"], "dp3-b-sees-4")["amount"] == 150_000
+    outputs = received_at(b.root, paid["txid"])
+    print(f"{CANCELS} cancelled confirms used {len(set(addresses))} address(es); paid {outputs}")
     assert len(set(addresses)) == 1, addresses
-    assert paid["address"] == addresses[0], (paid, addresses)
+    assert outputs == [addresses[0]], (paid, outputs, addresses)
+    assert paid.get("address") in (None, addresses[0]), (paid, addresses)

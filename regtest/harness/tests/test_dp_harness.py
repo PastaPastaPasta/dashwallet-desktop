@@ -55,6 +55,8 @@ if "import" in args:
         print("wallet_id " + hashlib.sha256(phrase.encode()).hexdigest()[:16])
         sys.exit(0)
     print("echo " + phrase)
+    print("hint: " + " ".join(phrase.split()[2:6]))
+    print("fragment " + " ".join(phrase.split()[5:9]).upper(), file=sys.stderr)
     print("words: " + "\n".join(f"{{i}}. {{w}}" for i, w in enumerate(phrase.split(), 1)), file=sys.stderr)
     print("error: could not import " + phrase, file=sys.stderr)
     sys.exit(3)
@@ -431,6 +433,13 @@ def test_state_directory_rules(state_env, monkeypatch):
     Harness.from_env()
 
     elsewhere = private(tmp / "elsewhere")
+    for checkout in (tmp / "co", tmp / "co" / "inner" / "state"):
+        (tmp / "co" / ".git").mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("DW_DP_STATE", str(private(checkout)))
+        with pytest.raises(HarnessConfigError, match="git checkout or inside one"):
+            Harness.from_env()
+    monkeypatch.setenv("DW_DP_STATE", str(state))
+
     (state / "funder").symlink_to(elsewhere)
     with pytest.raises(HarnessConfigError, match="funder data root .* is a symlink"):
         Harness.from_env().root("funder")
@@ -484,7 +493,7 @@ def test_the_funder_wallet_must_be_the_configured_phrase(state_env, fake_dwcli, 
     monkeypatch.setenv("FAKE_LIST", f'{wallet_id(FUNDER_PHRASE)} name="funder"')
     assert Harness.from_env().funder().wallet == wallet_id(FUNDER_PHRASE)
     monkeypatch.setenv("FAKE_LIST", f'{wallet_id(CREATED_PHRASE)} name="funder"')
-    with pytest.raises(HarnessConfigError, match="not DW_DP_FUNDER's .* set DW_DP_STATE to a new directory") as e:
+    with pytest.raises(HarnessConfigError, match="not DW_DP_FUNDER's; set DW_DP_STATE to a new directory") as e:
         Harness.from_env().funder()
     assert not leaks(str(e.value) + capsys.readouterr().out)
     monkeypatch.setenv("FAKE_LIST", "")
@@ -579,9 +588,12 @@ def test_funder_pay_waits_for_its_own_txid(tmp_path, fake_dwcli, monkeypatch, no
     monkeypatch.setattr(to, "tip", lambda timeout=1800: 100)
     monkeypatch.setattr(to, "address", lambda wallet: "yT")
     monkeypatch.setattr(to, "sync_wallet", lambda wallet, height, timeout=900: {"total": "900"})
+    ran: list[tuple] = []
+    monkeypatch.setattr(to, "run", lambda *args, **kw: ran.append(args) or dashpay.Output(0, "", ""))
     credits = iter([0, 0, 500])
     monkeypatch.setattr(dashpay, "credited", lambda root, wallet, txid: next(credits))
     assert funder.pay(to, "w", 500) == ("t1", 103, 900)
+    assert ran == [("sync", "--txid", "t1", "--confirmations", "1", "--timeout-secs", "1800")]
     monkeypatch.setattr(dashpay, "credited", lambda root, wallet, txid: 0)
     with pytest.raises(AssertionError, match="saw no funding t1"):
         funder.pay(to, "w", 500)
@@ -700,6 +712,22 @@ def test_pay_contact_settles_an_unknown_outcome_through_the_lock(no_sleep):
     with pytest.raises(DwcliError):
         pay_contact(s, "c", 1)
     assert s.paid == 1
+
+
+def test_a_payment_settled_through_its_lock_is_checked_by_its_history_output(no_sleep, monkeypatch):
+    s = FakeSession([UNKNOWN], lock={"txid": "t1"}, resolutions=["sent"])
+    paid = pay_contact(s, "c", 1)
+    assert (paid["txid"], paid["address"]) == ("t1", None)
+    history = ("t1 0 RecvWithAddress 150000 Confirmed 1 yContact\n"
+               "t0 0 RecvWithAddress 150000 Confirmed 9 yOther\n"
+               "t1 1 SendToAddress -5 Confirmed 1 ySelf\n"
+               "garbled t1 line\n")
+    root = Root(Path("/nonexistent"), Path("/nonexistent"), Net("T3", []), Redactor(), Path("/nonexistent"))
+    calls: list[tuple] = []
+    monkeypatch.setattr(root, "run", lambda *args, **kw: calls.append(args) or dashpay.Output(0, history, ""))
+    assert dashpay.received_at(root, paid["txid"]) == ["yContact"]
+    assert calls == [("history", "--limit", "1000")]
+    assert dashpay.received_at(root, "t9") == []
 
 
 GENESIS_COINBASE = bytes.fromhex(

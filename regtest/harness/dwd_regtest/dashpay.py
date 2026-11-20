@@ -226,6 +226,14 @@ def _outside_repo(path: Path, what: str) -> None:
         raise HarnessConfigError(f"{what} {path} is inside the checkout {REPO}; keep it outside the repository")
 
 
+def _outside_checkouts(path: Path, what: str) -> None:
+    """`path`, resolved, is no git checkout and inside none."""
+    resolved = Path(os.path.realpath(path))
+    for top in (resolved, *resolved.parents):
+        if os.path.lexists(top / ".git"):
+            raise HarnessConfigError(f"{what} {path} is a git checkout or inside one ({top}); keep it outside")
+
+
 def private_dir(path: Path, what: str) -> Path:
     """`path` (absolute, outside the checkout) as a directory owned by this user with no group
     or other access; created 0700 when missing. A symlink at `path` itself is refused."""
@@ -757,6 +765,7 @@ class Harness:
         if not raw:
             raise HarnessConfigError("set DW_DP_STATE to an absolute directory outside the checkout")
         state = private_dir(Path(raw).expanduser(), "DW_DP_STATE")
+        _outside_checkouts(state, "DW_DP_STATE")
         redactor = Redactor() if redactor is None else redactor
         passfile = state / "pass"
         if not os.path.lexists(passfile):
@@ -816,8 +825,8 @@ class Harness:
         configured = self.root("funder-check").restore(phrase, int(birth), "funder").id
         if configured != wallet:
             raise HarnessConfigError(
-                f"the funder wallet {wallet} in {root.path} is not DW_DP_FUNDER's (that phrase is wallet "
-                f"{configured}); set DW_DP_STATE to a new directory to restore DW_DP_FUNDER there")
+                f"the funder wallet {wallet} in {root.path} is not DW_DP_FUNDER's; set DW_DP_STATE to a new "
+                "directory to restore DW_DP_FUNDER there")
         return Funder(root, wallet)
 
     def scan(self, extra: Iterable[Path] = ()) -> bool:
@@ -941,8 +950,9 @@ class Funder:
         return None
 
     def pay(self, to: Root, wallet: str, duffs: int, coins: int = 1) -> tuple[str, int, int]:
-        """Pays `duffs` to `wallet` as `coins` equal outputs and waits until `to` has scanned a
-        block and credits this payment's txid with them (no other coin counts); returns the txid, the height `to`
+        """Pays `duffs` to `wallet` (the only wallet on `to`) as `coins` equal outputs, waits until
+        `to` holds that txid with one confirmation (`dwcli sync --txid … --confirmations 1`) and
+        credits it with them (no other coin counts); returns the txid, the height `to`
         scanned and its total then."""
         tip = self.ensure_coins(duffs)
         outputs = []
@@ -955,6 +965,7 @@ class Funder:
             return self._try_send(outputs, sent_at[0])
 
         txid = wait_until(attempt, 600, "the funder's payment to go out", interval=15)
+        to.run("sync", "--txid", txid, "--confirmations", "1", "--timeout-secs", "1800", timeout=1920)
         duffs = duffs // coins * coins
         height = tip
         while True:
@@ -971,6 +982,17 @@ def credited(root: Root, wallet: str, txid: str) -> int:
     out = root.run("extras", wallet, txid, check=False)
     m = re.search(r"^extras .*\bcredit=(\d+)", out.stdout, re.M) if out.returncode == 0 else None
     return int(m.group(1)) if m else 0
+
+
+def received_at(root: Root, txid: str) -> list[str]:
+    """The addresses `txid` paid on `root`'s (only) wallet, from `dwcli history`
+    (`txid index type amount status confirmations address`)."""
+    out = []
+    for line in root.run("history", "--limit", "1000").stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 7 and fields[0] == txid and fields[3].lstrip("-").isdigit() and int(fields[3]) > 0:
+            out.append(fields[6])
+    return out
 
 
 def ids(rows: list[dict], key: str = "identity") -> list[str]:
