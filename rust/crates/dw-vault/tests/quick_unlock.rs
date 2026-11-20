@@ -429,20 +429,20 @@ fn test_IOS_009_destroy_of_an_unencrypted_vault_deletes_the_os_store_key() {
     assert!(!fx.file_path().exists());
 }
 
-/// A recovery keeps the spending limit the user chose. Locked (the usual
-/// case: the passphrase is forgotten) only the plain copy can be read, and
-/// anyone who can write the file can change it, so it lowers the default
-/// but never raises it; a plain copy that is not a limit at all keeps 0.
-/// Unlocked, the sealed limit is kept as it is.
+/// A recovery keeps the replaced vault's sealed spending limit when the
+/// data key is in memory. Locked (the passphrase is forgotten) nothing
+/// authenticates the old limit: the plain copy can say anything, a valid
+/// higher limit included, so the new vault starts at 0.
 #[test]
 fn a_recovery_keeps_the_spending_limit() {
-    const TAMPERED: u64 = 123;
-    for (limit, locked, kept) in [
-        (0, true, 0),
-        (10_000_000, true, 10_000_000),
-        (500_000_000, true, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT),
-        (100_000_000, false, 100_000_000),
-        (TAMPERED, true, 0),
+    for (limit, plain, locked, kept) in [
+        (0, None, true, 0),
+        (10_000_000, None, true, 0),
+        (DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, None, true, 0),
+        (0, Some(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT), true, 0),
+        (0, Some(123), true, 0),
+        (100_000_000, None, false, 100_000_000),
+        (0, None, false, 0),
     ] {
         let fx = Fixture::new();
         let phrase_secret = mnemonic::derive_secret(PHRASE, b"", false).unwrap();
@@ -450,25 +450,23 @@ fn a_recovery_keeps_the_spending_limit() {
         let mut v = fx.open();
         v.create(Some(PASS)).unwrap();
         v.store_wallet_secret(&id, &phrase_secret).unwrap();
-        if limit == TAMPERED {
-            v.set_quick_unlock_spend_limit(&change_credential_grant(&v), 0)
-                .unwrap();
+        v.set_quick_unlock_spend_limit(&change_credential_grant(&v), limit)
+            .unwrap();
+        if let Some(plain) = plain {
             drop(v);
             let mut json = fx.read_json();
-            json["quick_unlock"]["spend_limit_duffs"] = serde_json::json!(TAMPERED);
+            json["quick_unlock"]["spend_limit_duffs"] = serde_json::json!(plain);
             fx.write_json(&json);
             v = fx.open();
-        } else {
-            v.set_quick_unlock_spend_limit(&change_credential_grant(&v), limit)
-                .unwrap();
         }
         if locked {
             v.lock();
         }
         v.recover_with_mnemonic(&id, PHRASE, b"", OTHER).unwrap();
-        assert_eq!(v.quick_unlock_policy().spend_limit_duffs, kept, "{limit}");
+        let case = format!("{limit} {plain:?} locked={locked}");
+        assert_eq!(v.quick_unlock_policy().spend_limit_duffs, kept, "{case}");
         allow_window(&v);
-        assert_eq!(v.signing_window_remaining(), Some(kept), "{limit}");
+        assert_eq!(v.signing_window_remaining(), Some(kept), "{case}");
     }
 }
 

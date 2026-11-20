@@ -409,6 +409,25 @@ fn open_policy(f: &VaultFile, dek: &[u8; 32]) -> Result<Option<PolicyPayload>, V
     }
 }
 
+#[cfg(test)]
+type PersistHook = Box<dyn FnMut(&Vault)>;
+
+#[cfg(test)]
+thread_local! {
+    static PERSIST_HOOK: std::cell::RefCell<Option<PersistHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Tests: runs this thread's hook while a passphrase check is about to
+/// write the file it changed.
+#[cfg(test)]
+fn test_persist_hook(vault: &Vault) {
+    let hook = PERSIST_HOOK.with(|h| h.borrow_mut().take());
+    if let Some(mut hook) = hook {
+        hook(vault);
+    }
+}
+
 /// How a grant token relates to the vault it is presented to
 /// ([`Vault::token_binding`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -486,6 +505,14 @@ fn window_allowed(inner: &Inner) -> bool {
     }
 }
 
+/// The window is open, the user chose it, and, where the host must beat,
+/// it has beaten at least once.
+fn window_admits(inner: &Inner) -> bool {
+    window_allowed(inner)
+        && inner.signing_deadline.is_some()
+        && (!inner.heartbeat_required || inner.heartbeat.is_some())
+}
+
 fn clear_signing_window(inner: &mut Inner) {
     inner.window_generation = inner.window_generation.wrapping_add(1);
     inner.signing_deadline = None;
@@ -518,7 +545,11 @@ fn observe_sleep(inner: &mut Inner, wall: SystemTime, mono: Instant) {
 
 fn settle_window(inner: &mut Inner, clock: &dyn Clock) {
     let now = clock.monotonic();
-    observe_sleep(inner, clock.wall(), now);
+    settle_window_at(inner, clock.wall(), now);
+}
+
+fn settle_window_at(inner: &mut Inner, wall: SystemTime, now: Instant) {
+    observe_sleep(inner, wall, now);
     if inner
         .signing_deadline
         .is_some_and(|deadline| now >= deadline)
@@ -593,6 +624,8 @@ struct Inner {
     /// The host's last [`Vault::signing_window_heartbeat`]; none until the
     /// first.
     heartbeat: Option<Instant>,
+    /// [`Vault::require_signing_window_heartbeat`] was called.
+    heartbeat_required: bool,
     #[cfg(test)]
     gate_log: Option<Vec<GateEvent>>,
 }
@@ -745,6 +778,7 @@ impl Vault {
                     window_vault: None,
                     window_generation: 0,
                     heartbeat: None,
+                    heartbeat_required: false,
                     #[cfg(test)]
                     gate_log: None,
                 }),
@@ -862,6 +896,22 @@ impl Vault {
     fn persist(&self, _writer: &WriteGuard<'_>, next: VaultFile) -> Result<(), VaultError> {
         file::write(&self.shared.dir, &next)?;
         self.inner().file = Some(next);
+        Ok(())
+    }
+
+    /// [`Self::persist`] of a file whose manifest is at `generation`: the
+    /// file and the high-water mark are published together, so no reader
+    /// checks the old file against the new mark.
+    fn persist_at(
+        &self,
+        _writer: &WriteGuard<'_>,
+        next: VaultFile,
+        generation: u64,
+    ) -> Result<(), VaultError> {
+        file::write(&self.shared.dir, &next)?;
+        let mut inner = self.inner();
+        inner.file = Some(next);
+        inner.high_water = inner.high_water.max(generation);
         Ok(())
     }
 
@@ -1305,9 +1355,10 @@ impl Vault {
         if had_failures || policy.is_some() {
             let mut next = self.file_copy(writer)?;
             next.throttle = Throttle::default();
+            let mut generation = 0;
             if let Some(policy) = policy {
                 let high_water = self.inner().high_water;
-                let generation = put_policy(
+                generation = put_policy(
                     &mut next,
                     &dek,
                     high_water,
@@ -1316,18 +1367,21 @@ impl Vault {
                         ..policy
                     },
                 )?;
-                let mut inner = self.inner();
-                inner.high_water = inner.high_water.max(generation);
             }
+            #[cfg(test)]
+            test_persist_hook(self);
             // The passphrase is already proven: a failed write of the reset
             // counter (or the sealed passphrase time) must not refuse it (a
             // full disk would otherwise lock the user out). The new file is
             // kept in memory and the write is retried by the next file
-            // change, which starts from memory.
+            // change, which starts from memory. The file and its high-water
+            // mark are published together, after the write.
             if let Err(e) = file::write(&self.shared.dir, &next) {
                 tracing::warn!(error = %e, "could not persist the reset failed-attempt counter");
             }
-            self.inner().file = Some(next);
+            let mut inner = self.inner();
+            inner.file = Some(next);
+            inner.high_water = inner.high_water.max(generation);
         }
         Ok((dek, BackupKek::of(slot.kdf, &slot.salt, &kek)))
     }
@@ -1505,7 +1559,7 @@ impl Vault {
         purposes: &[GrantPurpose],
     ) -> Result<u64, VaultError> {
         settle_window(inner, self.clock());
-        if !window_allowed(inner) || inner.signing_deadline.is_none() {
+        if !window_admits(inner) {
             return Err(VaultError::CredentialRequired);
         }
         let limit = sealed_spend_limit(inner)?;
@@ -2914,9 +2968,7 @@ impl Vault {
                     ..policy
                 },
             )?;
-            self.persist(&writer, next)?;
-            let mut inner = self.inner();
-            inner.high_water = inner.high_water.max(generation);
+            self.persist_at(&writer, next, generation)?;
             Ok(Zeroizing::new(wrap_key.to_vec()))
         })
     }
@@ -2939,7 +2991,7 @@ impl Vault {
     pub fn signing_window_open(&self) -> bool {
         let mut inner = self.inner();
         settle_window(&mut inner, self.clock());
-        window_allowed(&inner) && inner.signing_deadline.is_some()
+        window_admits(&inner)
     }
 
     /// Duff still authorizable from the open window, against the sealed
@@ -2948,8 +3000,7 @@ impl Vault {
     pub fn signing_window_remaining(&self) -> Option<u64> {
         let mut inner = self.inner();
         settle_window(&mut inner, self.clock());
-        inner.signing_deadline?;
-        if !window_allowed(&inner) {
+        if !window_admits(&inner) {
             return None;
         }
         let limit = sealed_spend_limit(&inner).ok()?;
@@ -2969,9 +3020,22 @@ impl Vault {
     /// before the watcher's next tick notices it.
     pub fn signing_window_heartbeat(&self) {
         let clock = self.clock();
+        let now = clock.monotonic();
+        let wall = clock.wall();
         let mut inner = self.inner();
-        settle_window(&mut inner, clock);
-        inner.heartbeat = Some(clock.monotonic());
+        settle_window_at(&mut inner, wall, now);
+        inner.heartbeat = Some(now);
+    }
+
+    /// The host runs a sleep watcher that beats
+    /// ([`Self::signing_window_heartbeat`]): from now on the window admits
+    /// nothing until the first beat, and nothing once the last beat is older
+    /// than three seconds. The desktop app calls this for every vault it
+    /// opens, so a watcher that never started leaves the window closed. A
+    /// host without a watcher (the CLI, tests) does not, and has only the
+    /// clock check.
+    pub fn require_signing_window_heartbeat(&self) {
+        self.inner().heartbeat_required = true;
     }
 
     /// The user's "ask for my passphrase for every payment" for the vault
@@ -3117,10 +3181,7 @@ impl Vault {
                     generation: None,
                 },
             )?;
-            self.persist(&writer, next)?;
-            let mut inner = self.inner();
-            inner.high_water = inner.high_water.max(generation);
-            Ok(())
+            self.persist_at(&writer, next, generation)
         })?;
         drop(writer);
         Ok(self.quick_unlock_policy())
@@ -3277,25 +3338,19 @@ impl Vault {
     }
 
     /// The spending limit a recovery keeps from the vault it replaces. With
-    /// the data key in memory it is the sealed limit (0 if that does not
-    /// authenticate). Without it, the plain copy is all there is and anyone
-    /// who can write the file can change it, so it can lower the default but
-    /// not raise it.
+    /// the data key in memory it is the sealed limit (the default for a
+    /// vault that never had one, 0 if it does not authenticate). Without
+    /// the key nothing authenticates the old limit, so it is 0 until the
+    /// user sets one again.
     fn carried_spend_limit(&self, old: &VaultFile) -> u64 {
         let inner = self.inner();
-        match (&inner.dek, &old.quick_unlock) {
-            (Some(dek), _) => match open_policy(old, dek) {
-                Ok(Some(policy)) => policy.spend_limit_duffs,
-                Ok(None) => DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
-                Err(_) => 0,
-            },
-            (None, None) => DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
-            (None, Some(plain)) if QUICK_UNLOCK_SPEND_LIMITS.contains(&plain.spend_limit_duffs) => {
-                plain
-                    .spend_limit_duffs
-                    .min(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT)
-            }
-            (None, Some(_)) => 0,
+        let Some(dek) = &inner.dek else {
+            return 0;
+        };
+        match open_policy(old, dek) {
+            Ok(Some(policy)) => policy.spend_limit_duffs,
+            Ok(None) => DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
+            Err(_) => 0,
         }
     }
 
@@ -3495,6 +3550,100 @@ mod tests {
         v.test_backdate_sleep_sample(Duration::from_secs(30));
         assert!(!v.signing_window_open());
         assert_eq!(v.status().state, LockState::Unlocked);
+    }
+
+    /// A passphrase check that re-seals the policy publishes the file and
+    /// its high-water mark together: a quick-unlock authorization made
+    /// while the file is being written checks a consistent pair.
+    #[test]
+    fn a_quick_unlock_during_a_passphrase_check_sees_a_consistent_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw: &[u8] = b"correct horse";
+        let v = vault_with_wallet(dir.path(), Some(pw), 3);
+        let change = v
+            .authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(pw),
+            )
+            .unwrap();
+        let key = v.enroll_quick_unlock(&change.id).unwrap();
+        v.lock();
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let out = std::rc::Rc::clone(&seen);
+        PERSIST_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(move |v: &Vault| {
+                let answer = v.authorize(
+                    GrantPurpose::Spend { max_duffs: 1 },
+                    Some(&[1; 32]),
+                    Credential::QuickUnlock(&key),
+                );
+                *out.borrow_mut() = Some(answer.map(drop));
+            }))
+        });
+        v.unlock(pw, UnlockScope::Full).unwrap();
+        assert_eq!(*seen.borrow(), Some(Ok(())));
+    }
+
+    /// A clock whose monotonic reading jumps (with the wall clock) at a
+    /// chosen call: a suspend between two reads.
+    struct JumpClock {
+        origin: Instant,
+        secs: std::sync::atomic::AtomicU64,
+        calls: std::sync::atomic::AtomicU64,
+        jump_at: std::sync::atomic::AtomicU64,
+    }
+
+    impl crate::types::Clock for JumpClock {
+        fn now_secs(&self) -> u64 {
+            1_800_000_000 + self.secs.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn monotonic(&self) -> Instant {
+            use std::sync::atomic::Ordering::SeqCst;
+            if self.calls.fetch_add(1, SeqCst) + 1 == self.jump_at.load(SeqCst) {
+                self.secs.fetch_add(60, SeqCst);
+            }
+            self.origin + Duration::from_secs(self.secs.load(SeqCst))
+        }
+
+        fn wall(&self) -> SystemTime {
+            SystemTime::UNIX_EPOCH + Duration::from_secs(self.now_secs())
+        }
+    }
+
+    /// The heartbeat records the reading it checked the last beat against:
+    /// a suspend right after that reading leaves the beat at the reading,
+    /// and the next look finds it stale.
+    #[test]
+    fn a_heartbeat_publishes_the_instant_it_checked() {
+        use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+        let dir = tempfile::tempdir().unwrap();
+        let clock = Arc::new(JumpClock {
+            origin: Instant::now(),
+            secs: AtomicU64::new(0),
+            calls: AtomicU64::new(0),
+            jump_at: AtomicU64::new(u64::MAX),
+        });
+        let v = Vault::open(
+            dir.path().join("vault"),
+            Network::Regtest,
+            "regtest",
+            VaultConfig {
+                kdf: crate::KdfPolicy::Fixed(crate::KdfParams::TEST),
+                os_store: Arc::new(crate::MemoryOsStore::new()),
+                clock: clock.clone(),
+                grant_ttl_secs: 120,
+            },
+        )
+        .unwrap();
+        v.create(Some(b"correct horse")).unwrap();
+        v.set_signing_window_allowed(&v.vault_id().unwrap(), true);
+        v.signing_window_heartbeat();
+        assert!(v.signing_window_open());
+        clock.jump_at.store(clock.calls.load(SeqCst) + 2, SeqCst);
+        v.signing_window_heartbeat();
+        assert!(!v.signing_window_open());
     }
 
     /// The decision behind the sleep backstop, on given clock readings: a

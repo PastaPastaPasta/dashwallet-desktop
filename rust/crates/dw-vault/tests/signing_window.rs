@@ -769,3 +769,25 @@ fn a_mixed_set_asks_when_every_payment_asks() {
         2
     );
 }
+
+/// A host that must beat (the desktop app) gets no window grant before its
+/// first beat, so a watcher that never started leaves the window closed;
+/// after a beat the window works, until the beats stop.
+#[test]
+fn a_host_that_must_beat_admits_nothing_before_its_first_beat() {
+    let fx = Fixture::new();
+    let v = unlocked_with_wallet(&fx);
+    let w = wallet(1);
+    v.require_signing_window_heartbeat();
+    assert!(!v.signing_window_open());
+    assert_eq!(v.signing_window_remaining(), None);
+    assert_eq!(
+        v.authorize(spend(1), Some(&w), Credential::None).map(drop),
+        Err(VaultError::CredentialRequired)
+    );
+    v.signing_window_heartbeat();
+    assert!(v.signing_window_open());
+    v.authorize(spend(1), Some(&w), Credential::None).unwrap();
+    fx.clock.advance(4);
+    assert!(!v.signing_window_open());
+}
