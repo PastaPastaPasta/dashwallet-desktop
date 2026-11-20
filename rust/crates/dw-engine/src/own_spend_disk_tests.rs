@@ -427,7 +427,10 @@ fn a_payment_locked_apart_from_its_record_is_not_abandoned_after_a_restart() {
         .unwrap()
         .unwrap();
     assert!(
-        record.context.block_info().is_none() && !record.context.is_instant_send(),
+        matches!(
+            record.context,
+            key_wallet::transaction_checking::TransactionContext::Mempool
+        ),
         "the record says mempool: {:?}",
         record.context
     );
@@ -488,13 +491,15 @@ fn abandoning_a_payment_a_foreign_spend_beat_keeps_its_coin_spent_after_a_restar
         &owner,
         super::spend_of(b, vec![(elsewhere(), COIN - 1_000)]),
     );
-    mined(&engine, &session, id, TIP, vec![winner]);
+    mined(&engine, &session, id, TIP, vec![winner.clone()]);
     abandon(&engine, &session, id, payment.txid());
 
     let session = reopen(&engine, session);
     let mut want = outputs(&paid);
     want.remove(&b);
     assert_holds(&engine, &session, id, &want, "abandoned, then a restart");
+    mined(&engine, &session, id, TIP, vec![winner]);
+    assert_holds(&engine, &session, id, &want, "replayed after a restart");
     assert!(!spendable(&engine, &session, id, b), "B is not offered");
     assert!(spendable(&engine, &session, id, a), "A is");
 }
@@ -606,7 +611,7 @@ fn a_coin_stored_unspent_stays_so_whatever_a_later_verdict_says() {
     };
     let (_dir, engine, session, id) = engine_wallet();
     let to = fresh_address(&engine, &session, id);
-    let paid = funding(9, &[to.clone()], COIN);
+    let paid = funding(9, std::slice::from_ref(&to), COIN);
     let x = key_wallet::Utxo::new(
         OutPoint::new(paid.txid(), 0),
         paid.output[0].clone(),

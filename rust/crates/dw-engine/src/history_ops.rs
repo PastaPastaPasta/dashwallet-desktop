@@ -377,7 +377,10 @@ impl NetworkSession {
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
                 h.mark_abandoned(&abandoned);
                 // Stored apart from the records, which can still say mempool.
-                for t in info.into_iter().flat_map(|i| i.core_wallet.instant_send_locks()) {
+                for t in info
+                    .into_iter()
+                    .flat_map(|i| i.core_wallet.instant_send_locks())
+                {
                     h.set_instant_locked(t);
                 }
                 for (txid, entry) in h.txs.iter_mut() {
