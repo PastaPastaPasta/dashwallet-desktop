@@ -176,7 +176,7 @@ describe("governance contract", () => {
 
   it("knows every governance code of mg-engine §4", () => {
     const codes = contractCodes();
-    expect(codes).toHaveLength(12);
+    expect(codes).toHaveLength(13);
     const union = cmd.ERROR_CODES.filter((c) => c.startsWith("governance."));
     expect([...union].sort()).toEqual([...codes].sort());
     // dw-app's own mapping reaches each of them, with an ErrorData class the fixture can inject.
@@ -296,6 +296,8 @@ describe("governance contract", () => {
     const invalid = VECTORS.errors.find((e) => e.code === "governance.invalid_proposal");
     expect(invalid?.data).toEqual({ kind: "proposalFields", fields: ["name", "payment_address"] });
     expect(VECTORS.errors.find((e) => e.code === "governance.submit_refused")?.data).toEqual({ kind: "reason", reason: "public" });
+    // A draft named as a proposal in progress names it, or nothing while the other call is still out (issue #148).
+    expect(VECTORS.errors.filter((e) => e.code === "governance.proposal_in_progress").map((e) => e.data)).toEqual([{ kind: "proposalHash", hash: "5d".repeat(32) }, null]);
     const notSynced = VECTORS.errors.find((e) => e.code === "governance.not_synced");
     expect(notSynced?.data).toEqual({ kind: "governancePhase", phase: "syncingVotes" });
     // The contested names cover every variant of the two enums with fields (MG-11).

@@ -4156,6 +4156,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "governance.vote_rejected",
   "governance.invalid_proposal",
   "governance.submit_refused",
+  "governance.proposal_in_progress",
   "governance.no_peers",
   "governance.list_unavailable",
   "governance.contest_not_found",

@@ -2,13 +2,13 @@
 // The fixture's governance (MG-09 over mg-engine §2): a synced store of proposals with tallies, the
 // main wallet's voting masternodes and the votes they cast, and the wallet's own proposals in
 // MG-06's states. The commands refuse as the facade does (`not_synced` before a run reached
-// `synced`, `invalid_argument` for a malformed hash, `submit_refused` past submitting, the
-// grant's purpose and cap). The numbers are mainnet-shaped, as the vectors are (the 16,616-block
+// `synced`, `invalid_argument` for a malformed hash, `submit_refused` past submitting,
+// `proposal_in_progress` for a draft named as a proposal in progress, the grant's purpose and cap). The numbers are mainnet-shaped, as the vectors are (the 16,616-block
 // cycle, so the clock reads in days); a scenario or a test changes the world and `emit`s
 // `governance` as the engine's notifier would.
 
 import type { AppError } from "../api/generated/commands";
-import { BANNED_REJECTION } from "../governance/model";
+import { BANNED_REJECTION, inProgress } from "../governance/model";
 import type { GovernanceInfo } from "../api/generated/GovernanceInfo";
 import type { GovernanceSyncState } from "../api/generated/GovernanceSyncState";
 import type { MyProposal } from "../api/generated/MyProposal";
@@ -81,6 +81,9 @@ export interface GovernanceWorld {
   /** `create_proposal` pays the fee and keeps the proposal, then fails (its read after the
    *  payment, or IPC): MG-09 D34. */
   createFailsAfterPaying: boolean;
+  /** Names whose `create_proposal` is still out in another call: a draft of one is refused
+   *  `proposal_in_progress` naming no proposal (MG-06 D26). */
+  creating: string[];
   /** Superblocks a test moved out of the upcoming list (MG-09 D33). Unlike the engine, which
    *  refuses a passed height in preview and create, drafts here still validate at those heights:
    *  so an engine event's re-reads land as if the list answered first (the "moved" path), never
@@ -180,6 +183,7 @@ export const newGovernanceWorld = (): GovernanceWorld => ({
   submitFails: false,
   networkFee: FEE_NETWORK,
   createFailsAfterPaying: false,
+  creating: [],
   superblocksPassed: 0,
 });
 
@@ -403,6 +407,10 @@ export function governanceHandlers({
       checkDraft(draft);
       const hash = draftHash(draft);
       const mine = mineOf(world, walletId);
+      const inProgressText = "a proposal of this name is in progress";
+      if (world.governance.creating.includes(draft.name)) throw fail("governance.proposal_in_progress", `${inProgressText} (its create call is still out)`);
+      const same = mine.find((p) => p.name === draft.name && inProgress(p));
+      if (same) throw fail("governance.proposal_in_progress", `${inProgressText} (${same.hash})`, { kind: "proposalHash", hash: same.hash });
       if (mine.some((p) => p.hash === hash)) throw fail("governance.submit_refused", "submit refused: in_flight", { kind: "reason", reason: "in_flight" });
       const g = grant(world, grantId, walletId, ["spend"]);
       if (!g || g.grant.purpose.kind !== "spend") throw fail("send.grant_invalid", "grant invalid");

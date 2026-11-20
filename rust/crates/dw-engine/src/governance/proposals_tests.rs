@@ -1637,3 +1637,253 @@ fn a_fee_in_a_replaced_block_has_no_depth_after_a_silent_truncation() {
     );
     assert_eq!(after, inputs, "the fee keeps its depth");
 }
+
+/// MG-06 D26 (issue #148): `e` is the refusal of a draft named as a
+/// proposal in progress, naming `hash`.
+fn assert_in_progress(e: &GovernanceError, hash: Option<&[u8; 32]>) {
+    match e {
+        GovernanceError::ProposalInProgress { hash: named } => {
+            assert_eq!(named.as_deref(), hash.map(display_hex).as_deref())
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(e.code(), "governance.proposal_in_progress");
+}
+
+impl Props {
+    /// Asserts `grant` is unredeemed: a lease still begins from it.
+    fn assert_unredeemed(&self, grant: String) {
+        let lease = self.f.lease(crate::platform::FlowKind::Proposal, &[grant]);
+        assert!(lease.is_ok(), "the grant was redeemed: {:?}", lease.err());
+    }
+
+    /// Saves `wallet`'s proposal `name` ending at `end`, its fee handed off
+    /// (an empty transaction, distinct per `seed`); returns its hash.
+    fn saved_named(&self, wallet: crate::WalletId, name: &str, end: i64, seed: u32) -> [u8; 32] {
+        let fee = Transaction {
+            version: 3,
+            lock_time: seed,
+            input: Vec::new(),
+            output: Vec::new(),
+            special_transaction_payload: None,
+        };
+        let data = format!(
+            r#"{{"end_epoch":{end},"name":"{name}","payment_address":"{PAYEE}","payment_amount":5,"start_epoch":1,"type":1,"url":"http://x.y"}}"#
+        );
+        let mut object = GovernanceObject::new_proposal(1, 1, data.into_bytes());
+        object.collateral_hash = fee.txid().to_byte_array();
+        let hash = object.hash();
+        (self.lib.appdb)
+            .insert_proposal(&ProposalRow {
+                wallet_id: wallet.to_string(),
+                hash,
+                revision: 1,
+                time: 1,
+                data: object.data.clone(),
+                fee_txid: object.collateral_hash,
+                fee_tx: dashcore::consensus::serialize(&fee),
+                created_at: 1,
+                fee_sent_at: Some(1),
+                submitted_at: None,
+                last_error: None,
+            })
+            .unwrap();
+        hash
+    }
+
+    fn named(&self, name: &str) -> ProposalDraft {
+        ProposalDraft {
+            name: name.into(),
+            ..draft()
+        }
+    }
+}
+
+/// Issue #148: the same draft created again while the first is saved and
+/// its fee sent is refused before anything is paid, naming the first: one
+/// fee, one row, and the second call's grant unredeemed with nothing more
+/// reserved.
+#[test]
+fn the_same_draft_again_is_refused_naming_the_first() {
+    let p = props(Mode::Accept);
+    let first = p.created();
+    assert_eq!(
+        p.state(&first),
+        MyProposalState::FeePaid { confirmations: 0 }
+    );
+    // A later second: the object, stamped with it, has another hash.
+    let at = now();
+    while now() == at {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let reserved = p.f.reserved();
+    let grant = p.spend(2 * COIN);
+    let e = p.create(grant.clone()).unwrap_err();
+    assert_in_progress(&e, Some(&first));
+    assert_eq!(p.lib.entered.load(Ordering::SeqCst), 1, "one fee");
+    assert_eq!(p.lib.sent.lock().unwrap().len(), 1, "one fee");
+    assert_eq!(p.rows().len(), 1, "one row");
+    assert_eq!(p.f.reserved(), reserved, "nothing reserved");
+    p.assert_unredeemed(grant);
+}
+
+/// MG-06 D26: a first attempt whose fee definitely did not go out left no
+/// row, so the same draft is created again.
+#[test]
+fn a_definitely_unsent_fee_leaves_the_name_free() {
+    let p = props(Mode::Reject);
+    assert!(p.create(p.spend(2 * COIN)).is_err());
+    assert!(p.rows().is_empty());
+    *p.lib.mode.lock().unwrap() = Mode::Accept;
+    let again = p.create(p.spend(2 * COIN)).unwrap();
+    assert_eq!(again.name, "dw-proposal");
+    assert_eq!(p.rows().len(), 1);
+}
+
+/// MG-06 D26: another name proceeds, and so does a name only another
+/// wallet's proposal in progress has.
+#[test]
+fn another_name_or_another_wallets_proposal_does_not_block() {
+    let p = props(Mode::Accept);
+    p.created();
+    p.f.credit(2, 3 * COIN);
+    let other = p.create_with(p.named("dw-proposal-2"), p.spend(2 * COIN));
+    assert_eq!(other.unwrap().name, "dw-proposal-2");
+
+    let theirs = p.f.engine.block_on(p.f.session.import_wallet(
+        zeroize::Zeroizing::new(
+            b"legal winner thank year wave sausage worth useful legal winner thank yellow".to_vec(),
+        ),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(0),
+            core_compat: false,
+            ..Default::default()
+        },
+    ));
+    let theirs = theirs.unwrap();
+    let hash = p.saved_named(theirs, "dw-proposal-3", now() + 86_400, 1);
+    let mine = p.gov.my_proposals(theirs).unwrap();
+    assert_eq!(mine[0].hash, display_hex(&hash));
+    assert_eq!(mine[0].state, MyProposalState::FeePaid { confirmations: 0 });
+    p.f.credit(3, 3 * COIN);
+    let made = p.create_with(p.named("dw-proposal-3"), p.spend(2 * COIN));
+    assert_eq!(made.unwrap().name, "dw-proposal-3");
+    assert_eq!(p.lib.entered.load(Ordering::SeqCst), 3);
+}
+
+/// MG-06 D26: an earlier proposal of the name that expired, or whose fee
+/// failed, is not in progress.
+#[test]
+fn an_expired_or_failed_proposal_of_the_name_does_not_block() {
+    let p = props(Mode::Accept);
+    let ended = p.saved_named(p.f.wallet, "dw-proposal", now() - 1, 1);
+    assert_eq!(p.state(&ended), MyProposalState::Expired);
+    let first = p.created();
+    let fee = p.fee(&first);
+    let mut rival = fee.clone();
+    rival.output.truncate(1);
+    rival.output[0].script_pubkey = dashcore::ScriptBuf::new();
+    p.confirm_tx(rival, 1);
+    assert_eq!(p.state(&first), MyProposalState::FeeFailed);
+    p.f.credit(2, 3 * COIN);
+    let again = p.create(p.spend(2 * COIN)).unwrap();
+    assert_eq!(again.state, MyProposalState::FeePaid { confirmations: 0 });
+    assert_eq!(p.rows().len(), 3);
+}
+
+/// MG-06 D26: a fee that may be out (`fee_unsent`) blocks its name.
+#[test]
+fn a_fee_that_may_be_out_blocks_its_name() {
+    let p = props(Mode::Unconfirmed);
+    let mine = p.create(p.spend(2 * COIN)).unwrap();
+    assert_eq!(mine.state, MyProposalState::FeeUnsent);
+    let first = dw_governance::object::parse_display_hex(&mine.hash).unwrap();
+    let grant = p.spend(2 * COIN);
+    assert_in_progress(&p.create(grant.clone()).unwrap_err(), Some(&first));
+    assert_eq!(p.lib.entered.load(Ordering::SeqCst), 1);
+    p.assert_unredeemed(grant);
+}
+
+/// MG-06 D26: while another call for the name has saved nothing, its
+/// mark refuses this one with no hash; once it is gone the name is free.
+#[test]
+fn a_create_holding_the_name_refuses_another_with_no_hash() {
+    let p = props(Mode::Accept);
+    let rt = &p.f.session.governance;
+    let mark = rt.creating.begin((p.f.wallet, "dw-proposal".into()));
+    let grant = p.spend(2 * COIN);
+    assert_in_progress(&p.create(grant.clone()).unwrap_err(), None);
+    assert_eq!(p.lib.entered.load(Ordering::SeqCst), 0);
+    assert!(p.rows().is_empty());
+    assert_eq!(p.f.reserved(), 0);
+    // The mark is the wallet's: another wallet's call is not refused by it.
+    let other = rt
+        .creating
+        .begin((crate::WalletId([7; 32]), "dw-proposal".into()));
+    assert!(other.is_some());
+    drop(mark);
+    p.create(grant).unwrap();
+    assert_eq!(p.rows().len(), 1);
+}
+
+/// MG-06 D26: two calls for one name at once: exactly one pays, the other
+/// is refused.
+#[test]
+fn two_concurrent_creates_of_one_name_pay_once() {
+    let p = props(Mode::Accept);
+    p.f.credit(2, 3 * COIN);
+    let calls: Vec<_> = (0..2)
+        .map(|n| {
+            let gov = p.f.session.governance();
+            let (wallet, grant) = (p.f.wallet, p.spend(2 * COIN));
+            let d = ProposalDraft {
+                url: format!("https://example.org/p{n}"),
+                ..draft()
+            };
+            (p.f.session.rt).spawn(async move { gov.create_proposal(wallet, d, grant).await })
+        })
+        .collect();
+    let results: Vec<_> = calls
+        .into_iter()
+        .map(|c| p.f.engine.block_on(c).unwrap())
+        .collect();
+    let paid: Vec<_> = results.iter().filter_map(|r| r.as_ref().ok()).collect();
+    assert_eq!(paid.len(), 1, "{results:?}");
+    let refused = results.iter().find_map(|r| r.as_ref().err()).unwrap();
+    assert_eq!(
+        refused.code(),
+        "governance.proposal_in_progress",
+        "{refused:?}"
+    );
+    assert_eq!(p.lib.entered.load(Ordering::SeqCst), 1);
+    assert_eq!(p.rows().len(), 1);
+}
+
+/// MG-06 D26: the mark goes once the row is saved: a call during the
+/// first's hand-off finds the row and is refused naming it.
+#[test]
+fn a_create_during_the_first_hand_off_is_refused_naming_it() {
+    let p = props(Mode::Accept);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let release = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let held = Arc::new(HeldLib {
+        entered: Mutex::new(Some(tx)),
+        release: Arc::clone(&release),
+    });
+    *p.f.session.governance.fee_broadcaster.lock().unwrap() = Some(held);
+    let gov = p.f.session.governance();
+    let (wallet, grant) = (p.f.wallet, p.spend(2 * COIN));
+    let create =
+        (p.f.session.rt).spawn(async move { gov.create_proposal(wallet, draft(), grant).await });
+    rx.recv_timeout(Duration::from_secs(120))
+        .expect("the hand-off is entered");
+    let row = p.rows().pop().expect("saved before the hand-off");
+    p.f.credit(2, 3 * COIN);
+    let grant = p.spend(2 * COIN);
+    assert_in_progress(&p.create(grant.clone()).unwrap_err(), Some(&row.hash));
+    p.assert_unredeemed(grant);
+    release.store(true, Ordering::SeqCst);
+    assert!(p.f.engine.block_on(create).unwrap().is_err());
+    assert!(p.rows().is_empty(), "a definitely unsent fee takes its row");
+}
