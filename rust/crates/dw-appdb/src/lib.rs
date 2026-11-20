@@ -698,15 +698,29 @@ impl AppDb {
     /// Whatever failed, this instance remembers the wallet, so its
     /// readmission deletes the rows even if the record could not be written.
     pub fn delete_wallet(&self, wallet_id: &str) -> Result<()> {
+        self.delete_wallet_and_set(wallet_id, None)
+    }
+
+    /// [`Self::delete_wallet`], writing `setting` (scope, key, value) in the
+    /// transaction that deletes the wallet's rows: both or neither.
+    pub fn delete_wallet_and_set(
+        &self,
+        wallet_id: &str,
+        setting: Option<(&str, &str, &str)>,
+    ) -> Result<()> {
         let mut conn = self.conn();
-        let delete = |conn: &mut Connection| -> rusqlite::Result<()> {
+        let delete = |conn: &mut Connection| -> Result<()> {
             conn.execute(
                 "INSERT OR IGNORE INTO removed_wallets (wallet_id) VALUES (?1)",
                 [wallet_id],
             )?;
             let tx = conn.transaction()?;
             delete_wallet_rows(&tx, wallet_id)?;
-            tx.commit()
+            if let Some((scope, key, value)) = setting {
+                Self::put_setting(&tx, scope, key, Some(value))?;
+            }
+            tx.commit()?;
+            Ok(())
         };
         let deleted = delete(&mut conn);
         let mut failed = unfinished(&self.unfinished);
@@ -714,7 +728,7 @@ impl AppDb {
             Ok(()) => failed.remove(wallet_id),
             Err(_) => failed.insert(wallet_id.to_owned()),
         };
-        Ok(deleted?)
+        deleted
     }
 
     /// Forgets every wallet recorded as removed (an open with no other

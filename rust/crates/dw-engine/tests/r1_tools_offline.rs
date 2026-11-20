@@ -152,12 +152,11 @@ fn a_wallet_added_after_a_close_opens_at_the_next_start() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
-/// #87: taking the last wallet off the list stores "nothing to load", not
-/// "no list": it reads back as an empty list after a restart, and a wallet
-/// added then is the only one listed. A start whose list would open no
-/// wallet opens every one, so closed wallets stay reachable.
+/// #113: the last wallet on the list cannot be taken off it
+/// (`LastStartupWallet`, nothing changed): a start with no wallet open would
+/// leave the closed ones out of reach.
 #[test]
-fn an_emptied_list_is_kept_across_a_restart() {
+fn the_last_listed_wallet_stays_listed() {
     let dir = dw_testutil::private_tempdir();
     let root = dir.path().join("data");
     let engine = new_engine(&root, Arc::default(), Arc::new(MemoryOsStore::new()));
@@ -167,21 +166,152 @@ fn an_emptied_list_is_kept_across_a_restart() {
     let b = import(&engine, &s, LEGAL_12);
     engine.block_on(s.unload_wallet(b)).unwrap();
     engine.block_on(s.set_load_on_startup(b, false)).unwrap();
-    engine.block_on(s.set_load_on_startup(a, false)).unwrap();
-    assert_eq!(on_startup(&s), vec![(a, false), (b, false)]);
+    assert!(matches!(
+        engine.block_on(s.set_load_on_startup(a, false)),
+        Err(EngineError::LastStartupWallet)
+    ));
+    assert_eq!(on_startup(&s), vec![(a, true), (b, false)]);
 
     let s = restart(&engine);
-    assert_eq!(on_startup(&s), vec![(a, false), (b, false)]);
-    assert_eq!(
-        loaded_ids(&s),
-        vec![a, b],
-        "none listed: every wallet opens"
+    assert_eq!(on_startup(&s), vec![(a, true), (b, false)]);
+    assert_eq!(loaded_ids(&s), vec![a]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #113: with no list yet every wallet is listed, so the lone wallet cannot
+/// be taken off either.
+#[test]
+fn a_lone_wallet_stays_listed() {
+    let dir = dw_testutil::private_tempdir();
+    let engine = new_engine(
+        &dir.path().join("data"),
+        Arc::default(),
+        Arc::new(MemoryOsStore::new()),
     );
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let a = import(&engine, &s, ABANDON_12);
+    assert!(matches!(
+        engine.block_on(s.set_load_on_startup(a, false)),
+        Err(EngineError::LastStartupWallet)
+    ));
+    assert_eq!(on_startup(&s), vec![(a, true)]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
 
+fn remove(engine: &Engine, s: &Arc<NetworkSession>, id: WalletId) {
+    let wipe = engine
+        .block_on(
+            s.vault_op(move |v| v.authorize(GrantPurpose::Wipe, Some(&id.0), Credential::None)),
+        )
+        .unwrap();
+    engine.block_on(s.remove_wallet(id, wipe.id)).unwrap();
+}
+
+fn stored_list(root: &std::path::Path) -> Option<String> {
+    let db = dw_appdb::AppDb::open(&root.join("regtest").join(dw_appdb::APP_DB_FILE)).unwrap();
+    db.setting(dw_appdb::GLOBAL_SCOPE, "load_on_startup")
+        .unwrap()
+}
+
+/// #113: removing the only listed wallet lists the first open one, the
+/// wallet the app shows next, in the removal's own write; removing the last
+/// wallet leaves nothing listed.
+#[test]
+fn removing_the_only_listed_wallet_lists_the_next_open_one() {
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path().join("data");
+    let engine = new_engine(&root, Arc::default(), Arc::new(MemoryOsStore::new()));
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let a = import(&engine, &s, ABANDON_12);
+    let b = import(&engine, &s, LEGAL_12);
     let c = import(&engine, &s, ZOO_12);
+    engine.block_on(s.set_load_on_startup(b, false)).unwrap();
+    engine.block_on(s.set_load_on_startup(c, false)).unwrap();
+
+    remove(&engine, &s, a);
+    assert_eq!(on_startup(&s), vec![(b, true), (c, false)]);
     let s = restart(&engine);
-    assert_eq!(loaded_ids(&s), vec![c]);
-    assert_eq!(on_startup(&s), vec![(a, false), (b, false), (c, true)]);
+    assert_eq!(loaded_ids(&s), vec![b]);
+    assert_eq!(on_startup(&s), vec![(b, true), (c, false)]);
+
+    engine.block_on(s.load_wallet(c)).unwrap();
+    remove(&engine, &s, b);
+    assert_eq!(on_startup(&s), vec![(c, true)]);
+    remove(&engine, &s, c);
+    assert!(on_startup(&s).is_empty());
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    assert_eq!(stored_list(&root).as_deref(), Some("none"));
+
+    let s = open(&engine);
+    assert!(loaded_ids(&s).is_empty());
+    let d = import(&engine, &s, ABANDON_12);
+    assert_eq!(on_startup(&s), vec![(d, true)]);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #113: removing a listed wallet while another stays listed lists no
+/// other wallet.
+#[test]
+fn removing_one_of_two_listed_wallets_lists_no_other() {
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path().join("data");
+    let engine = new_engine(&root, Arc::default(), Arc::new(MemoryOsStore::new()));
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let a = import(&engine, &s, ABANDON_12);
+    let b = import(&engine, &s, LEGAL_12);
+    let c = import(&engine, &s, ZOO_12);
+    engine.block_on(s.set_load_on_startup(b, false)).unwrap();
+
+    remove(&engine, &s, a);
+    assert_eq!(on_startup(&s), vec![(b, false), (c, true)]);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    assert_eq!(stored_list(&root), Some(c.to_string()));
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// #113: a stored list that names no wallet of this network (an older
+/// build's, a hand-edited one, "nothing to load") opens every wallet, and
+/// is stored again with every wallet on it, so Settings shows what the
+/// start did.
+#[test]
+fn a_list_naming_no_wallet_opens_every_one_and_is_repaired() {
+    let dir = dw_testutil::private_tempdir();
+    let root = dir.path().join("data");
+    let engine = new_engine(&root, Arc::default(), Arc::new(MemoryOsStore::new()));
+    let s = open(&engine);
+    engine.block_on(s.vault_op(|v| v.create(None))).unwrap();
+    let a = import(&engine, &s, ABANDON_12);
+    let b = import(&engine, &s, LEGAL_12);
+    let mut every = [a.to_string(), b.to_string()];
+    every.sort();
+    for stale in [WalletId([9; 32]).to_string(), "none".to_string()] {
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        let db = dw_appdb::AppDb::open(&root.join("regtest").join(dw_appdb::APP_DB_FILE)).unwrap();
+        db.set_setting(dw_appdb::GLOBAL_SCOPE, "load_on_startup", Some(&stale))
+            .unwrap();
+        drop(db);
+
+        let s = open(&engine);
+        assert_eq!(loaded_ids(&s), vec![a, b], "{stale}");
+        assert_eq!(on_startup(&s), vec![(a, true), (b, true)], "{stale}");
+        engine.block_on(s.set_load_on_startup(a, false)).unwrap();
+        engine.block_on(s.set_load_on_startup(a, true)).unwrap();
+    }
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    assert_eq!(stored_list(&root), Some(every.join(",")));
+    let s = open(&engine);
+    assert_eq!(loaded_ids(&s), vec![a, b]);
     engine.block_on(engine.shutdown()).unwrap();
 }
 

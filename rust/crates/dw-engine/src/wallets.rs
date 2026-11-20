@@ -225,6 +225,9 @@ impl NetworkSession {
     /// import of it in this session deletes the metadata first, or is
     /// refused (`Storage`) while it cannot, and so does the next lone open
     /// of the app database when the wallet was recorded as removed.
+    /// The load-on-startup list loses the wallet in the transaction that
+    /// deletes its app metadata; when nothing else would be on it, the first
+    /// open wallet (the one the app shows next) is put on it.
     /// `WalletRemoved` is
     /// sent once the wallet's rows are gone. The removal holds the wallet's
     /// barrier throughout, so a lease begun meanwhile finds no wallet.
@@ -288,6 +291,8 @@ impl NetworkSession {
             this.coin_fences.forget(&id);
             this.platform.forget(&id);
             let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
+            let startup = this.startup_list_after_removal(&live, id);
+            let stored = startup.clone();
             #[cfg(test)]
             let pause = crate::coins::held_appdb_job();
             #[cfg(test)]
@@ -302,11 +307,13 @@ impl NetworkSession {
                     return Err(EngineError::Storage("test: wallet delete failed".into()));
                 }
                 persister.delete_wallet(id.0)?;
-                appdb
-                    .delete_wallet(&id.to_string())
+                crate::multiwallet::delete_wallet_listing(&appdb, id, stored.as_ref())
                     .map_err(|e| EngineError::Storage(e.to_string()))
             })
             .await;
+            if let (Some(list), Ok(Ok(()))) = (startup, &deleted) {
+                *this.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list);
+            }
             // The wallet has left the manager: a journal write begun before
             // is not admitted from here on, even if a delete failed (review
             // DP2-05 r3 finding 1). An import of it deletes what a failed

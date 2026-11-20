@@ -418,8 +418,10 @@ impl NetworkSession {
         );
         // dash-qt loads only the wallets of its settings list; a missing
         // list loads every wallet, and so does one that would load none of
-        // them: with no wallet open, closed ones cannot be reached.
-        let startup_list = {
+        // them: with no wallet open, closed ones cannot be reached. Such a
+        // list is stored again with every wallet on it, so what Settings
+        // shows is what this start did.
+        let mut startup_list = {
             let appdb = Arc::clone(&appdb);
             tokio::task::spawn_blocking(move || crate::multiwallet::read_startup_list(&appdb))
                 .await??
@@ -438,6 +440,19 @@ impl NetworkSession {
                         .filter(|id| !list.contains(&WalletId(*id)))
                         .collect()
                 } else {
+                    if !registered.is_empty() {
+                        let every: std::collections::BTreeSet<WalletId> =
+                            registered.iter().copied().map(WalletId).collect();
+                        let (appdb, stored) = (Arc::clone(&appdb), every.clone());
+                        if let Err(e) = tokio::task::spawn_blocking(move || {
+                            crate::multiwallet::write_startup_list(&appdb, &stored)
+                        })
+                        .await?
+                        {
+                            tracing::warn!(error = %e, "could not repair the load-on-startup list");
+                        }
+                        startup_list = Some(every);
+                    }
                     Default::default()
                 }
             }

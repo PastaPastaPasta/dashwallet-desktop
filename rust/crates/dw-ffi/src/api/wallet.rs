@@ -188,7 +188,7 @@ impl From<dw_engine::EngineError> for WalletError {
         match e {
             E::InvalidMnemonic(_) => Self::InvalidMnemonic { detail },
             E::WalletAlreadyExists(_) => Self::AlreadyExists { detail },
-            E::InvalidConfig(_) | E::InvalidArgument(_) => Self::InvalidArgument { detail },
+            E::InvalidConfig(_) | E::InvalidArgument(_) | E::LastStartupWallet => Self::InvalidArgument { detail },
             E::NetworkNotOpen(_) => Self::NetworkNotOpen { detail },
             E::WalletNotFound(_) => Self::WalletNotFound { detail },
             E::StorageInUse(_) | E::Storage(_) | E::StorageTooNew(_) | E::Io(_) => {

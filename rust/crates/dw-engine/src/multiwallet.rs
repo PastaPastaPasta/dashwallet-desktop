@@ -100,14 +100,37 @@ pub(crate) fn read_startup_list(db: &AppDb) -> Result<Option<BTreeSet<WalletId>>
     Ok((!list.is_empty()).then_some(list))
 }
 
-fn write_startup_list(db: &AppDb, list: &BTreeSet<WalletId>) -> Result<(), AppDbError> {
+fn startup_list_value(list: &BTreeSet<WalletId>) -> String {
     let joined: Vec<String> = list.iter().map(ToString::to_string).collect();
-    let value = if joined.is_empty() {
+    if joined.is_empty() {
         NOTHING_ON_STARTUP.to_string()
     } else {
         joined.join(",")
-    };
-    db.set_setting(GLOBAL_SCOPE, STARTUP_LIST_KEY, Some(&value))
+    }
+}
+
+pub(crate) fn write_startup_list(db: &AppDb, list: &BTreeSet<WalletId>) -> Result<(), AppDbError> {
+    db.set_setting(
+        GLOBAL_SCOPE,
+        STARTUP_LIST_KEY,
+        Some(&startup_list_value(list)),
+    )
+}
+
+/// Deletes a removed wallet's app rows and stores `list` as the
+/// load-on-startup list in the same transaction.
+pub(crate) fn delete_wallet_listing(
+    db: &AppDb,
+    id: WalletId,
+    list: Option<&BTreeSet<WalletId>>,
+) -> Result<(), AppDbError> {
+    let value = list.map(startup_list_value);
+    db.delete_wallet_and_set(
+        &id.to_string(),
+        value
+            .as_deref()
+            .map(|v| (GLOBAL_SCOPE, STARTUP_LIST_KEY, v)),
+    )
 }
 
 /// Parses a BIP44 account xpub for `network`: `xpub` on mainnet, `tpub`
@@ -412,6 +435,8 @@ impl NetworkSession {
 
     /// Adds or removes the wallet from the load-on-startup list (dash-qt's
     /// settings.json `"wallet"` list), stored in app.sqlite.
+    /// `LastStartupWallet`, nothing changed, when the removal would leave no
+    /// registered wallet on the list.
     pub async fn set_load_on_startup(
         self: &Arc<Self>,
         id: WalletId,
@@ -445,6 +470,9 @@ impl NetworkSession {
                 list.insert(id);
             } else {
                 list.remove(&id);
+                if list.is_empty() {
+                    return Err(EngineError::LastStartupWallet);
+                }
             }
             let stored = list.clone();
             this.appdb_op(move |db| write_startup_list(db, &stored))
@@ -453,6 +481,37 @@ impl NetworkSession {
             Ok(())
         })
         .await
+    }
+
+    /// The load-on-startup list once `removed` is gone, when there is one:
+    /// without it and wallets that no longer exist, and with the first open
+    /// wallet in `wallet_infos` order (the one the app shows next) when
+    /// nothing else would be on it.
+    pub(crate) fn startup_list_after_removal(
+        &self,
+        live: &crate::session::Live,
+        removed: WalletId,
+    ) -> Option<BTreeSet<WalletId>> {
+        let mut list = self
+            .startup_list
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()?;
+        let mut open: Vec<WalletId> = (live.manager.list_wallet_ids_blocking().into_iter())
+            .map(WalletId)
+            .filter(|w| *w != removed)
+            .collect();
+        let order = |w: &WalletId| self.hub.name_of(w).map(|n| n.order);
+        open.sort_by_key(|w| (order(w).is_none(), order(w), *w));
+        let mut closed: Vec<WalletId> = live.store.unloaded().into_iter().map(WalletId).collect();
+        closed.sort();
+        list.retain(|w| *w != removed && (open.contains(w) || closed.contains(w)));
+        if list.is_empty()
+            && let Some(next) = open.first().or(closed.first())
+        {
+            list.insert(*next);
+        }
+        Some(list)
     }
 
     /// Puts a wallet registered here on the load-on-startup list (`listed`),

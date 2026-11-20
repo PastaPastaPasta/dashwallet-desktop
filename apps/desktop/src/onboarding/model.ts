@@ -64,6 +64,7 @@ const BY_CODE: Partial<Record<ErrorCode, string>> = {
   wallet_not_found: "This wallet is not open.",
   // DEC-1046: Close Wallet and a network close or switch wait for it.
   shielded_spend_unresolved: "A shielded payment is still being confirmed. Wait, or quit and reopen the app.",
+  last_startup_wallet: "At least one wallet opens at start.",
   invalid_xpub: "This is not an extended public key (tpub or xpub) of this network.",
   not_implemented: "Dash Wallet cannot do this yet.",
   io: "The file could not be read or written.",

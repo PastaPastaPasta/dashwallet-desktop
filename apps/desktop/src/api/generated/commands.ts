@@ -3948,6 +3948,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "outpoint_not_found",
   "stuck_funding",
   "shielded_spend_unresolved",
+  "last_startup_wallet",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",
