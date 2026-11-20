@@ -1885,7 +1885,7 @@ pub(crate) fn outcome_of_code(code: &str) -> HandoffOutcome {
 }
 
 /// dash-spv's never-sent rejections: client not started, no connected peer.
-fn reason_means_no_peers(reason: &str) -> bool {
+pub(crate) fn reason_means_no_peers(reason: &str) -> bool {
     let r = reason.to_ascii_lowercase();
     r.contains("not started")
         || r.contains("not connected")
