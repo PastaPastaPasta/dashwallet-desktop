@@ -30,6 +30,7 @@ use platform_wallet::changeset::{
     PlatformWalletPersistence, WalletMetadataEntry,
 };
 
+use crate::gate::Lifecycle;
 use crate::keys::MAX_LOOKAHEAD;
 use crate::platform::runtime::PlatformSignal;
 use crate::session::WALLET_DB_FILE;
@@ -38,6 +39,9 @@ use crate::{DashNetwork, EngineError, EngineEvent, NetworkSession, WalletId};
 
 /// Global setting: dash-qt's load-on-startup list, comma-separated ids.
 const STARTUP_LIST_KEY: &str = "load_on_startup";
+/// The stored list that loads no wallet. An empty or absent value is no
+/// list (every wallet loads), as earlier builds stored an emptied list.
+const NOTHING_ON_STARTUP: &str = "none";
 /// Wallet-scope setting: the account xpub a watch-only wallet came from.
 const WATCH_ONLY_XPUB_KEY: &str = "watch_only_xpub";
 /// Default gap limit of a watch-only wallet's chains.
@@ -79,9 +83,13 @@ pub struct NetworkDataInfo {
     pub has_os_store_key: bool,
 }
 
-/// The stored load-on-startup list; `None` when absent or empty.
+/// The stored load-on-startup list; `None` when absent or empty, an empty
+/// list when [`NOTHING_ON_STARTUP`].
 pub(crate) fn read_startup_list(db: &AppDb) -> Result<Option<BTreeSet<WalletId>>, EngineError> {
     let value = db.setting(GLOBAL_SCOPE, STARTUP_LIST_KEY)?;
+    if value.as_deref() == Some(NOTHING_ON_STARTUP) {
+        return Ok(Some(BTreeSet::new()));
+    }
     let list: BTreeSet<WalletId> = value
         .as_deref()
         .unwrap_or("")
@@ -94,7 +102,12 @@ pub(crate) fn read_startup_list(db: &AppDb) -> Result<Option<BTreeSet<WalletId>>
 
 fn write_startup_list(db: &AppDb, list: &BTreeSet<WalletId>) -> Result<(), AppDbError> {
     let joined: Vec<String> = list.iter().map(ToString::to_string).collect();
-    db.set_setting(GLOBAL_SCOPE, STARTUP_LIST_KEY, Some(&joined.join(",")))
+    let value = if joined.is_empty() {
+        NOTHING_ON_STARTUP.to_string()
+    } else {
+        joined.join(",")
+    };
+    db.set_setting(GLOBAL_SCOPE, STARTUP_LIST_KEY, Some(&value))
 }
 
 /// Parses a BIP44 account xpub for `network`: `xpub` on mainnet, `tpub`
@@ -407,6 +420,8 @@ impl NetworkSession {
         let this = Arc::clone(self);
         self.on_runtime(async move {
             let _op = this.enter().await?;
+            // Not between a new wallet's registration and its listing.
+            let _lifecycle = this.wallet_lifecycle.hold().await;
             let live = this.live()?;
             if !live.store.is_unloaded(&id.0) {
                 this.require_wallet(&id)?;
@@ -434,11 +449,43 @@ impl NetworkSession {
             let stored = list.clone();
             this.appdb_op(move |db| write_startup_list(db, &stored))
                 .await?;
-            *this.startup_list.lock().unwrap_or_else(|p| p.into_inner()) =
-                (!list.is_empty()).then_some(list);
+            *this.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list);
             Ok(())
         })
         .await
+    }
+
+    /// Puts a wallet registered here on the load-on-startup list (`listed`),
+    /// when there is one, so it loads at the next start whatever was closed
+    /// before it; or takes off one a restore's rollback removed. A failed
+    /// write is logged only: the wallet's registration stands.
+    pub(crate) async fn list_on_startup(&self, _held: &Lifecycle<'_>, id: WalletId, listed: bool) {
+        let Some(mut list) = self
+            .startup_list
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        else {
+            return;
+        };
+        let changed = if listed {
+            list.insert(id)
+        } else {
+            list.remove(&id)
+        };
+        if !changed {
+            return;
+        }
+        let stored = list.clone();
+        match self
+            .appdb_op(move |db| write_startup_list(db, &stored))
+            .await
+        {
+            Ok(()) => *self.startup_list.lock().unwrap_or_else(|p| p.into_inner()) = Some(list),
+            Err(e) => {
+                tracing::warn!(wallet_id = %id, error = %e, "could not update the load-on-startup list");
+            }
+        }
     }
 
     /// The BIP44 account xpub (IOS-111). Public data, no grant. A
@@ -572,6 +619,7 @@ impl NetworkSession {
             {
                 tracing::warn!(wallet_id = %id, error = %e, "could not store the watch-only xpub");
             }
+            this.list_on_startup(&held, id, true).await;
             this.sink.emit(EngineEvent::WalletCreated {
                 network: this.network.clone(),
                 wallet_id: id,
