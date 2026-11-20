@@ -116,6 +116,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, Weak};
 use std::time::Duration;
 
+use dash_sdk::platform::Fetch;
+use dash_sdk::query_types::{NoParamQuery, ShieldedNotesCount};
 use dashcore::{Address, Network, OutPoint, Txid};
 use dpp::address_funds::{OrchardAddress, PlatformAddress};
 use dpp::balances::credits::CREDITS_PER_DUFF;
@@ -137,7 +139,7 @@ use platform_wallet::wallet::shielded::store::StalePendingSpend;
 use platform_wallet::wallet::shielded::{
     CachedOrchardProver, DispatchRefused, FileShieldedStoreError, NetworkShieldedCoordinator,
     ShieldedActivityEntry, ShieldedActivityKind as Kind, ShieldedActivityStatus as Status,
-    ShieldedDirection as Direction, ShieldedDispatch, ShieldedDispatchKind,
+    ShieldedBalanceSource, ShieldedDirection as Direction, ShieldedDispatch, ShieldedDispatchKind,
     ShieldedDispatchPayload, ShieldedDispositionRefusal, ShieldedLocalBalanceState, ShieldedNote,
     ShieldedSpendDisposition, ShieldedStore, SubwalletId, UnresolvedReason,
 };
@@ -3422,6 +3424,15 @@ pub(crate) async fn guarded_pass(
             let _ = pause.resume.await;
         }
     }
+    if !force && let Some(count) = unchanged_pool(session, manager, &coordinator).await {
+        tracing::debug!(
+            count,
+            "the shielded pool is unchanged; the periodic pass is skipped"
+        );
+        return true;
+    }
+    #[cfg(test)]
+    session.platform.passes_run.fetch_add(1, Ordering::SeqCst);
     let summary = manager.shielded_sync().sync_now(force).await;
     if summary.error_count() > 0 {
         tracing::info!(
@@ -3444,6 +3455,73 @@ pub(crate) async fn guarded_pass(
         }
     }
     true
+}
+
+/// Platform's proved note count when a periodic pass would find nothing
+/// (#178): the count is within the local tree, every bound account has
+/// scanned the whole tree in this session, and no spend waits on a pass
+/// (stored, reserved, with an outcome or marked). `None` when any of it
+/// does not hold or cannot be read, so the pass runs.
+async fn unchanged_pool(
+    session: &NetworkSession,
+    manager: &Manager,
+    coordinator: &NetworkShieldedCoordinator,
+) -> Option<u64> {
+    #[cfg(test)]
+    let injected = *session.platform.notes_count.lock().unwrap();
+    #[cfg(not(test))]
+    let injected = None;
+    let count = match injected {
+        Some(count) => count,
+        None => notes_count(manager).await,
+    }?;
+    let tree = coordinator.store().read().await.tree_size().ok()?;
+    if count > tree {
+        return None;
+    }
+    let wallets = pass_wallets(manager, coordinator).await;
+    for &wallet in &wallets {
+        let scanned = match coordinator.local_balance_snapshot(wallet).await.ok()? {
+            ShieldedLocalBalanceState::Unbound => true,
+            ShieldedLocalBalanceState::RestoreIncomplete => false,
+            ShieldedLocalBalanceState::Ready(snapshot) => snapshot.accounts.values().all(|a| {
+                a.source == ShieldedBalanceSource::ScannedThisSession
+                    && a.last_scanned_index >= Some(tree)
+            }),
+        };
+        let settled = coordinator
+            .spend_dispositions(wallet)
+            .await
+            .ok()?
+            .is_empty()
+            && !session.leases.marks_unrecorded(WalletId(wallet)).await;
+        if !scanned || !settled {
+            return None;
+        }
+    }
+    let subwallets = coordinator.registered_subwallets().await;
+    let store = coordinator.store().read().await;
+    let idle = wallets
+        .iter()
+        .all(|&w| (store.pending_redrives_for_wallet(w)).is_ok_and(|r| r.is_empty()))
+        && (subwallets.iter()).all(|&s| store.stale_pending_spends(s).is_ok_and(|r| r.is_empty()));
+    idle.then_some(count)
+}
+
+/// The number of notes in Platform's shielded pool, proved; `None` when the
+/// read fails.
+async fn notes_count(manager: &Manager) -> Option<u64> {
+    let sdk = manager.sdk_arc();
+    if !sdk.prove() {
+        return None;
+    }
+    match ShieldedNotesCount::fetch(&sdk, NoParamQuery {}).await {
+        Ok(count) => count.map(|c| c.0),
+        Err(e) => {
+            tracing::debug!(error = %e, "the shielded note count was not read");
+            None
+        }
+    }
 }
 
 // MARK: the Platform side's start

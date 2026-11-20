@@ -147,6 +147,13 @@ pub(crate) struct PlatformRuntime {
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
     pub(crate) pass_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's proved note count for the periodic pass's check
+    /// (`Some(None)`: the read fails); the network's while `None`.
+    #[cfg(test)]
+    pub(crate) notes_count: Mutex<Option<Option<u64>>>,
+    /// How many shielded passes reached the library's pass.
+    #[cfg(test)]
+    pub(crate) passes_run: std::sync::atomic::AtomicUsize,
     /// A test's crash of the disposition consumer between its journal
     /// write and its acknowledgement (`shielded_pool::consume_dispositions`).
     #[cfg(test)]
@@ -481,6 +488,10 @@ impl PlatformRuntime {
             hook_fence: Arc::default(),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
+            #[cfg(test)]
+            notes_count: Mutex::new(None),
+            #[cfg(test)]
+            passes_run: Default::default(),
             #[cfg(test)]
             crash_before_ack: AtomicBool::new(false),
             shielded_spends: tokio::sync::RwLock::new(()),
