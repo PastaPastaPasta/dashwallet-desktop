@@ -618,11 +618,25 @@ function catchingUpPayment(t: ThemeName | null, locked: boolean): World {
       fee: null,
       address: "yXbH3JxbVWgEzq6aZDyEbNQx5PtUfZvvXZ",
       label: null,
-      countsTowardBalance: true,
+      countsTowardBalance: locked,
       involvesWatchOnly: false,
     },
   ];
   w.sync = syncing();
+  return w;
+}
+
+/** A wallet whose own scan trails the tip by 2,000 blocks: SPV stopped short, or the network caught
+ * up while this wallet still scans. `empty`: nothing found so far, no Shielded or Platform pool. */
+function walletBehind(t: ThemeName | null, stopped: boolean, empty: boolean): World {
+  const w = empty ? base(t, "empty") : base(t);
+  if (empty) {
+    w.pending.shielded = null;
+    w.pending.platform = null;
+  }
+  const tip = w.sync.tipHeight!;
+  w.wallets[0].scanHeight = tip - 2000;
+  if (stopped) w.sync = { ...syncing(), running: false, connectedPeers: 0 };
   return w;
 }
 
@@ -1088,6 +1102,21 @@ const SCENARIOS = {
   "catching-up-payment": (t) => catchingUpPayment(t, true),
   /** The same payment seen but not InstantSend-locked yet: unconfirmed, Pending. */
   "catching-up-pending-payment": (t) => catchingUpPayment(t, false),
+  /** The same new wallet before anything has arrived: Home shows 0 while it syncs. */
+  "catching-up-nothing-yet": (t) => {
+    const w = catchingUpPayment(t, true);
+    const main = w.wallets[0];
+    main.summary = { ...main.summary, balances: { ...ZERO_BALANCES, catchingUp: true } };
+    main.rows = [];
+    return w;
+  },
+  /** Past its birth block (`catchingUp` false) but 2,000 blocks short of the tip, SPV stopped. */
+  "wallet-behind-stopped": (t) => walletBehind(t, true, false),
+  /** The same with nothing found yet: Home shows 0. */
+  "wallet-behind-stopped-empty": (t) => walletBehind(t, true, true),
+  /** The network caught up while this wallet's own scan is still 2,000 blocks short. */
+  "wallet-behind-at-tip": (t) => walletBehind(t, false, false),
+  "wallet-behind-at-tip-empty": (t) => walletBehind(t, false, true),
   /** No identity while the wallet syncs: Join DashPay disabled, "Available after sync finishes". */
   "dashpay-waiting-for-sync": (t) => {
     const w = withStatus(base(t), { kind: "noIdentity", reason: "waitingForSync" });

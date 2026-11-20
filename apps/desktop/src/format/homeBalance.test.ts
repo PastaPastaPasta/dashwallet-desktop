@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Balances } from "../api/generated/Balances";
 import { compact, masked } from "./amount";
-import { breakdownRows, coreSubtitle, heroDigits, heroSyncLine, homeBalance, POOL_ROWS, type PoolReading } from "./homeBalance";
+import { breakdownRows, coreSubtitle, heroDigits, HERO_SYNC, heroSyncLine, homeBalance, POOL_ROWS, type PoolReading } from "./homeBalance";
 
 const COIN = 100_000_000;
 const core: Balances = { confirmed: 3 * COIN, unconfirmed: COIN, immature: 0, locked: 0, total: 4 * COIN, coinjoin: 2 * COIN, catchingUp: false };
@@ -94,17 +94,41 @@ describe("the hero's digits", () => {
 });
 
 describe("the line above Home's balance", () => {
+  const zero = { ...core, confirmed: 0, unconfirmed: 0, total: 0, coinjoin: 0 };
   const catchingUp = { ...core, catchingUp: true };
 
-  it("says a balance shown during sync may be incomplete, and is empty once synced", () => {
-    expect(heroSyncLine(catchingUp, true)).toBe("Still syncing, balance may be incomplete");
-    expect(heroSyncLine(core, true)).toBe("Still syncing, balance may be incomplete");
-    expect(heroSyncLine(catchingUp, false)).toBe("Not synced yet, balance may be incomplete");
-    expect(heroSyncLine(core, false)).toBe("");
+  it("is empty only when this wallet is scanned to the tip", () => {
+    expect(heroSyncLine(core, "settled", true)).toBe("");
+    expect(heroSyncLine(zero, "settled", false)).toBe("");
+    expect(heroSyncLine(null, "settled", true)).toBe("");
   });
 
-  it("keeps the syncing caption over an unknown balance", () => {
-    expect(heroSyncLine(null, true)).toBe("Syncing Balance");
-    expect(heroSyncLine(null, false)).toBe("");
+  it("says the balance may change while this wallet syncs, the network at the tip or not", () => {
+    for (const b of [core, zero, catchingUp]) expect(heroSyncLine(b, "syncing", true)).toBe(HERO_SYNC.syncing);
+    expect(HERO_SYNC.syncing).toBe("Still syncing, balance may change");
+    expect(heroSyncLine(core, "starting", true)).toBe(HERO_SYNC.syncing);
+  });
+
+  it("says syncing stopped when the wallet is behind and sync is not running", () => {
+    for (const b of [core, zero]) {
+      expect(heroSyncLine(b, "stopped", false)).toBe("Syncing has stopped, balance may be out of date");
+      expect(heroSyncLine(b, "syncing", false)).toBe(HERO_SYNC.stopped);
+    }
+  });
+
+  it("never calls a birth-block balance final, even if the scan reads settled", () => {
+    expect(heroSyncLine(catchingUp, "settled", true)).toBe(HERO_SYNC.syncing);
+    expect(heroSyncLine(catchingUp, "settled", false)).toBe(HERO_SYNC.stopped);
+  });
+
+  it("names the starting and unreadable cases without claiming a sync", () => {
+    expect(heroSyncLine(core, "starting", false)).toBe("Not synced yet, balance may change");
+    expect(heroSyncLine(core, "unreadable", true)).toBe("Could not check syncing, balance may change");
+  });
+
+  it("keeps an unknown balance's caption, and does not say Syncing when sync is not running", () => {
+    expect(heroSyncLine(null, "syncing", true)).toBe("Syncing Balance");
+    expect(heroSyncLine(null, "stopped", false)).toBe("Not synced yet");
+    expect(heroSyncLine(null, "starting", false)).toBe("Not synced yet");
   });
 });

@@ -5,6 +5,7 @@
 // keeps its row ("…" or "—"), so the hero is never lower than it looks without saying why.
 
 import type { Balances } from "../api/generated/Balances";
+import type { ListArrival } from "../components/emptyStates";
 
 export type Pool = "core" | "shielded" | "platform";
 
@@ -23,11 +24,24 @@ export interface HomeBalance {
 
 export const known = (r: PoolReading): r is number => typeof r === "number";
 
-/** The line above the hero amount: while the wallet syncs, the balance shown may still be short. */
-export function heroSyncLine(balances: Balances | null, syncing: boolean): string {
-  if (balances === null) return syncing ? "Syncing Balance" : "";
-  if (syncing) return "Still syncing, balance may be incomplete";
-  return balances.catchingUp ? "Not synced yet, balance may be incomplete" : "";
+export const HERO_SYNC = {
+  syncing: "Still syncing, balance may change",
+  stopped: "Syncing has stopped, balance may be out of date",
+  notStarted: "Not synced yet, balance may change",
+  unreadable: "Could not check syncing, balance may change",
+  unknownSyncing: "Syncing Balance",
+  unknownNotSynced: "Not synced yet",
+} as const;
+
+/** The line above the hero amount, from this wallet's own catch-up (as its history reads it): empty
+ * only once the wallet is scanned to the tip; while it is not, the balance may still move either way. */
+export function heroSyncLine(balances: Balances | null, arrival: ListArrival, running: boolean): string {
+  const behind = arrival !== "settled" || balances?.catchingUp === true;
+  if (!behind) return "";
+  if (balances === null) return running ? HERO_SYNC.unknownSyncing : HERO_SYNC.unknownNotSynced;
+  if (arrival === "unreadable") return HERO_SYNC.unreadable;
+  if (running) return HERO_SYNC.syncing;
+  return arrival === "starting" ? HERO_SYNC.notStarted : HERO_SYNC.stopped;
 }
 
 export function homeBalance(core: Balances, shielded: PoolReading, platform: PoolReading): HomeBalance {
