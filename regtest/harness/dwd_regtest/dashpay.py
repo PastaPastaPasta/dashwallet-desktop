@@ -23,6 +23,7 @@ Environment:
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -107,7 +108,10 @@ class Secret:
                                    for i in range(len(parts) - words + 1)))
 
     def masked_in(self, text: str) -> str:
-        return self._pattern().sub(MASK, text.replace(self._value, MASK))
+        """`text` with the value masked, and (for a phrase) any four of its words in a row, as
+        `found_in` looks for them."""
+        text = self._pattern().sub(MASK, text.replace(self._value, MASK))
+        return self._pattern(4).sub(MASK, text) if len(self._value.split()) >= 4 else text
 
     def found_in(self, text: str) -> bool:
         """The whole value, or (for a phrase) any four of its words in a row, whatever separates
@@ -151,27 +155,47 @@ class Redactor:
         unreadable: list[str] = []
         for path in _files(paths, unreadable):
             try:
-                found = self.found_in(path.read_bytes().decode("utf-8", "replace"))
+                found = self.found_in(_read_regular(path).decode("utf-8", "replace"))
             except OSError as e:
                 unreadable.append(f"{path} ({type(e).__name__})")
+                continue
+            except ValueError as e:
+                unreadable.append(f"{path} ({e})")
                 continue
             if found:
                 leaked.append(str(path))
         return leaked, unreadable
 
 
+def _read_regular(path: Path) -> bytes:
+    """The bytes of `path` if it is a regular file, opened without following a symlink or
+    waiting on a FIFO; anything else raises `ValueError`."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("not a regular file")
+        with os.fdopen(os.dup(fd), "rb") as f:
+            return f.read()
+    finally:
+        os.close(fd)
+
+
 def _files(paths: Iterable[Path], unreadable: list[str]) -> Iterator[Path]:
+    """Every entry under `paths` but the directories walked; a symlink is never followed, and is
+    yielded like any non-directory for the reader to refuse."""
     for path in paths:
-        if path.is_dir() and not path.is_symlink():
+        if not os.path.lexists(path):
+            unreadable.append(f"{path} (missing)")
+        elif stat.S_ISDIR(os.lstat(path).st_mode):
             def failed(e: OSError) -> None:
                 unreadable.append(f"{e.filename} ({type(e).__name__})")
-            for top, _, names in os.walk(path, onerror=failed):
-                for name in sorted(names):
+            for top, dirs, names in os.walk(path, onerror=failed):
+                links = [d for d in dirs if os.path.islink(os.path.join(top, d))]
+                dirs[:] = [d for d in dirs if d not in links]
+                for name in sorted(names + links):
                     yield Path(top) / name
-        elif path.exists():
-            yield path
         else:
-            unreadable.append(f"{path} (missing)")
+            yield path
 
 
 def _check_private(path: Path, what: str, st: os.stat_result, kind: int) -> None:
@@ -661,8 +685,7 @@ class Harness:
     def root(self, role: str) -> Root:
         if role not in self.roots:
             parent = self.state if role == "funder" else self.run_dir
-            path = parent / role
-            path.mkdir(mode=0o700, exist_ok=True)
+            path = private_dir(parent / role, f"the {role} data root")
             root = Root(path, self.state / "pass", self.net, self.redactor, self.logs)
             root.ensure_vault()
             self.roots[role] = root
@@ -678,12 +701,17 @@ class Harness:
         birth = os.environ.get("DW_DP_FUNDER_BIRTH")
         if not phrase_file or not birth:
             raise HarnessConfigError("set DW_DP_FUNDER (a phrase file outside the repository) and DW_DP_FUNDER_BIRTH")
+        phrase = self.redactor.add(read_secret(Path(phrase_file).expanduser()))
         root = self.root("funder")
         try:
             wallet = root.find("funder")
         except AssertionError:
-            phrase = self.redactor.add(read_secret(Path(phrase_file).expanduser()))
-            wallet = root.restore(phrase, int(birth), "funder").id
+            return Funder(root, root.restore(phrase, int(birth), "funder").id)
+        configured = self.root("funder-check").restore(phrase, int(birth), "funder").id
+        if configured != wallet:
+            raise HarnessConfigError(
+                f"the funder wallet {wallet} in {root.path} is not DW_DP_FUNDER's (that phrase is wallet "
+                f"{configured}); set DW_DP_STATE to a new directory to restore DW_DP_FUNDER there")
         return Funder(root, wallet)
 
     def scan(self, extra: Iterable[Path] = ()) -> bool:
@@ -748,7 +776,7 @@ class Funder:
         to = []
         for _ in range(self.coins):
             to += ["--to", f"{self.root.address(self.wallet)}:{each}"]
-        txid = wait_until(lambda: self._try_send(to, tip), 1800, "a mined coin to split", interval=30)
+        txid = wait_until(lambda: self._try_send(to, self.root.tip()), 1800, "a mined coin to split", interval=30)
         return wait_until(lambda: self._mined(duffs), 1800, f"the split coins of {txid} to be mined", interval=30)
 
     def _try_send(self, to: list[str], height: int) -> str | None:
@@ -777,21 +805,35 @@ class Funder:
 
     def pay(self, to: Root, wallet: str, duffs: int, coins: int = 1) -> tuple[str, int, int]:
         """Pays `duffs` to `wallet` as `coins` equal outputs and waits until `to` has scanned a
-        block that holds them; returns the txid, the height `to` scanned and its total then."""
+        block and credits this payment's txid with them; returns the txid, the height `to`
+        scanned and its total then."""
         tip = self.ensure_coins(duffs)
         outputs = []
         for _ in range(coins):
             outputs += ["--to", f"{to.address(wallet)}:{duffs // coins}"]
-        txid = wait_until(lambda: self._try_send(outputs, tip), 600, "the funder's payment to go out", interval=15)
+        sent_at = [tip]
+
+        def attempt() -> str | None:
+            sent_at[0] = self.root.tip()
+            return self._try_send(outputs, sent_at[0])
+
+        txid = wait_until(attempt, 600, "the funder's payment to go out", interval=15)
         duffs = duffs // coins * coins
         height = tip
         while True:
             height += 1
             balances = to.sync_wallet(wallet, height, timeout=1200)
-            if int(balances.get("total", "0")) >= duffs:
+            if int(balances.get("total", "0")) >= duffs and credited(to, wallet, txid) >= duffs:
                 return txid, height, int(balances["total"])
-            if height > tip + 6:
+            if height > sent_at[0] + 6:
                 raise AssertionError(f"{wallet} saw no funding {txid} by height {height}: {balances}")
+
+
+def credited(root: Root, wallet: str, txid: str) -> int:
+    """What `txid` credits `wallet` with, as `root` knows it; 0 while it does not know the txid."""
+    out = root.run("extras", wallet, txid, check=False)
+    m = re.search(r"^extras .*\bcredit=(\d+)", out.stdout, re.M) if out.returncode == 0 else None
+    return int(m.group(1)) if m else 0
 
 
 def ids(rows: list[dict], key: str = "identity") -> list[str]:
@@ -933,17 +975,30 @@ def try_pay(session: Session, contact: str, duffs: int, *extra: str, timeout: fl
     return wait_until(once, timeout, "a connected peer and no rescan to pay through", interval=10)
 
 
+PAY_ATTEMPTS = 2
+
+
 def pay_contact(session: Session, contact: str, duffs: int, *extra: str) -> dict:
     """A payment that went out. An unknown outcome (on a loaded host the lease's deadline can cut
     the broadcast's hand-off) is settled as the app does, through the contact's lock: `sent` is
-    the payment, under the lock's txid (no `address`); only exactly `not_sent` pays again, and
-    anything else fails with the txid."""
-    answer = try_pay(session, contact, duffs, *extra)
-    if answer.get("ok"):
-        return answer["result"]
-    error = answer["error"]
-    if send_kind(error) != "broadcast_unknown":
-        raise DwcliError(["pay-contact", contact], error, "")
+    the payment, under the lock's txid (no `address`); only exactly `not_sent` pays again, at most
+    PAY_ATTEMPTS payments in all, and every unknown outcome is resolved before anything fails."""
+    for attempt in range(1, PAY_ATTEMPTS + 1):
+        answer = try_pay(session, contact, duffs, *extra)
+        if answer.get("ok"):
+            return answer["result"]
+        error = answer["error"]
+        if send_kind(error) != "broadcast_unknown":
+            raise DwcliError(["pay-contact", contact], error, f"(payment {attempt} of {PAY_ATTEMPTS})")
+        paid = resolve_unknown(session, contact, duffs, error)
+        if paid is not None:
+            return paid
+    raise AssertionError(f"pay-contact: {PAY_ATTEMPTS} payments resolved not_sent; not paying again")
+
+
+def resolve_unknown(session: Session, contact: str, duffs: int, error: dict) -> dict | None:
+    """Settles a `broadcast_unknown` through the contact's lock: the payment when it resolves
+    `sent`, `None` when it resolves exactly `not_sent` (the lock is gone); anything else fails."""
     prepared = error["params"].get("prepared_txid")
     lock = session.ok("contact", "lock", contact)
     if not lock:
@@ -965,10 +1020,7 @@ def pay_contact(session: Session, contact: str, duffs: int, *extra: str) -> dict
         return {"paid": True, "txid": txid, "resolved": outcome, "address": None}
     if outcome != "not_sent":
         raise AssertionError(f"the lock on {txid} resolved {outcome!r}; not paying again")
-    answer = try_pay(session, contact, duffs, *extra)
-    if not answer.get("ok"):
-        raise DwcliError(["pay-contact", contact], answer["error"], f"(after {txid} resolved not_sent)")
-    return answer["result"]
+    return None
 
 
 def synced_until(session: Session, check: Callable[[], Any], timeout: float, what: str) -> Any:
@@ -1026,7 +1078,8 @@ def txid_of(payload: bytes) -> str:
 class HoldingPeer:
     """A loopback P2P relay to one real peer that holds back every `tx` message the client sends
     until `release()`: the client's broadcast reaches no node, so its outcome is unknown; released,
-    the same bytes reach the network."""
+    the same bytes reach the network. Writes to an upstream connection take its own lock, so a
+    released message never interleaves with one the client sends meanwhile."""
 
     def __init__(self, upstream: str):
         self.upstream = upstream
@@ -1035,7 +1088,8 @@ class HoldingPeer:
         self.server.bind(("127.0.0.1", 0))
         self.server.listen(4)
         self.port = self.server.getsockname()[1]
-        self.held: list[tuple[Any, bytes, str]] = []
+        self.held: list[tuple[Any, threading.Lock, bytes, str]] = []
+        self.conns: list[Any] = []
         self.holding = True
         self.lock = threading.Lock()
         self.closed = False
@@ -1058,17 +1112,26 @@ class HoldingPeer:
             except OSError:
                 client.close()
                 continue
-            threading.Thread(target=self._pipe, args=(client, up, True), daemon=True).start()
-            threading.Thread(target=self._pipe, args=(up, client, False), daemon=True).start()
+            with self.lock:
+                if self.closed:
+                    client.close()
+                    up.close()
+                    return
+                self.conns += [client, up]
+            writing = threading.Lock()
+            threading.Thread(target=self._pipe, args=(client, up, writing), daemon=True).start()
+            threading.Thread(target=self._pipe, args=(up, client, None), daemon=True).start()
 
-    def _pipe(self, src: Any, dst: Any, from_client: bool) -> None:
+    def _pipe(self, src: Any, dst: Any, writing: threading.Lock | None) -> None:
+        """Forwards `src` to `dst`; `writing` (the upstream's write lock) is set for the client's
+        side, which is read message by message and holds `tx`."""
         buf = b""
         try:
             while True:
                 data = src.recv(65536)
                 if not data:
                     break
-                if not from_client:
+                if writing is None:
                     dst.sendall(data)
                     continue
                 buf += data
@@ -1080,9 +1143,10 @@ class HoldingPeer:
                     command = message[4:16].rstrip(b"\0")
                     with self.lock:
                         if command == b"tx" and self.holding:
-                            self.held.append((dst, message, txid_of(message[24:])))
+                            self.held.append((dst, writing, message, txid_of(message[24:])))
                             continue
-                    dst.sendall(message)
+                    with writing:
+                        dst.sendall(message)
         except OSError:
             pass
         finally:
@@ -1094,7 +1158,7 @@ class HoldingPeer:
 
     def held_txids(self) -> list[str]:
         with self.lock:
-            return [txid for _, _, txid in self.held]
+            return [txid for _, _, _, txid in self.held]
 
     def release(self) -> dict[str, bool]:
         """Sends the held transactions on over the connections they came on; returns, for each
@@ -1103,17 +1167,22 @@ class HoldingPeer:
             self.holding = False
             held, self.held = self.held, []
         released: dict[str, bool] = {}
-        for dst, message, txid in held:
+        for dst, writing, message, txid in held:
             try:
-                dst.sendall(message)
+                with writing:
+                    dst.sendall(message)
                 released[txid] = True
             except OSError:
                 released.setdefault(txid, False)
         return released
 
     def close(self) -> None:
-        self.closed = True
-        try:
-            self.server.close()
-        except OSError:
-            pass
+        """Stops accepting and closes every connection it relayed."""
+        with self.lock:
+            self.closed = True
+            conns, self.conns = self.conns, []
+        for s in (self.server, *conns):
+            with contextlib.suppress(OSError):
+                s.shutdown(socket.SHUT_RDWR)
+            with contextlib.suppress(OSError):
+                s.close()

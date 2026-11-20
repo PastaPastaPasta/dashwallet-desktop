@@ -78,17 +78,33 @@ _DASHPAY: dict[str, object] = {}
 
 @pytest.fixture(scope="session")
 def dp() -> Iterator[Harness]:
-    """The DashPay run: skipped while DW_DP_NET is unset; any other misconfiguration (an invalid
-    DW_DP_NET, an unsafe state directory, no dwcli) is an error. At the end of the pytest run
-    every artifact is scanned for the run's secrets (`pytest_unconfigure`)."""
-    harness = Harness.from_env()
+    """The DashPay run (`pytest_configure`): skipped while DW_DP_NET is unset; any other
+    misconfiguration (an invalid DW_DP_NET, an unsafe state directory, no dwcli) is an error."""
+    harness = _DASHPAY.get("harness")
     if harness is None:
+        error = _DASHPAY.get("error")
+        if error is not None:
+            raise error
         pytest.skip("set DW_DP_NET (testnet or devnet) to run the DashPay suites")
-    _DASHPAY["harness"] = harness
     if dwcli_path() is None:
         raise RuntimeError("DW_DP_NET is set but there is no dwcli binary (set DWCLI)")
     print(f"DashPay run {harness.run_id} on {harness.net.tier}, logs in {harness.logs}")
     yield harness
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """With DW_DP_NET set, the run's harness exists, and is scanned at the end, whichever tests
+    run; the junit path as pytest writes it (`--junitxml`, `~` and variables expanded)."""
+    xmlpath = getattr(config.option, "xmlpath", None)
+    if xmlpath:
+        _DASHPAY["junit"] = Path(os.path.normpath(os.path.abspath(os.path.expanduser(os.path.expandvars(xmlpath)))))
+    try:
+        harness = Harness.from_env()
+    except Exception as e:  # noqa: BLE001
+        _DASHPAY["error"] = e
+        return
+    if harness is not None:
+        _DASHPAY["harness"] = harness
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
@@ -105,7 +121,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         return
     sys.stdout.flush()
     sys.stderr.flush()
-    extra = [Path(config.option.xmlpath)] if getattr(config.option, "xmlpath", None) else []
+    extra = [_DASHPAY["junit"]] if "junit" in _DASHPAY else []
     extra += [Path(p) for p in os.environ.get("DW_DP_SCAN", "").split(":") if p]
     try:
         clean = harness.scan(extra)

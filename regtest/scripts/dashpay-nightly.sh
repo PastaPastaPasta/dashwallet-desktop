@@ -75,7 +75,7 @@ export DW_DP_SCAN=$out/pytest.log:$out/nightly.log
 status=0
 .venv/bin/python -m pytest -v -rA -l "${suites[@]}" --junitxml="$out/junit.xml" > "$out/pytest.log" 2>&1 || status=$?
 if [[ ! -f $DW_DP_LOGS/secret-scan.ok ]]; then
-  echo "dashpay-nightly: the secret scan did not pass; pytest's output stays in $out only (pytest exited $status)"
+  echo "dashpay-nightly: the secret scan did not run or did not pass; pytest's output stays in $out only (pytest exited $status)"
   exit 1
 fi
 grep -E '^(tests/|PASSED|FAILED|ERROR|XFAIL|XPASS|SKIPPED|=+ .* in [0-9.]+s)' "$out/pytest.log" || true

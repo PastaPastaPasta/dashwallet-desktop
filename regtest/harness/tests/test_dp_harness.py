@@ -4,6 +4,7 @@ and the relay's txid check."""
 
 from __future__ import annotations
 
+import hashlib
 import os
 import socket
 import stat
@@ -40,12 +41,18 @@ FUNDER_PHRASE = "zebra quokka walrus meadow pigeon candle sorrow ribbon thunder 
 CREATED_PHRASE = "lantern pepper mosaic falcon ripple saddle tunnel beacon harvest copper violin jungle"
 
 FAKE_DWCLI = r'''#!{python}
-import os, sys
+import hashlib, os, sys
 args = sys.argv[1:]
-if "init-vault" in args or "list" in args:
+if "init-vault" in args:
+    sys.exit(0)
+if "list" in args:
+    print(os.environ.get("FAKE_LIST", ""))
     sys.exit(0)
 if "import" in args:
     phrase = sys.stdin.readline().strip()
+    if os.environ.get("FAKE_IMPORT_OK"):
+        print("wallet_id " + hashlib.sha256(phrase.encode()).hexdigest()[:16])
+        sys.exit(0)
     print("echo " + phrase)
     print("words: " + "\n".join(f"{{i}}. {{w}}" for i, w in enumerate(phrase.split(), 1)), file=sys.stderr)
     print("error: could not import " + phrase, file=sys.stderr)
@@ -101,10 +108,11 @@ def dp_env(tmp_path: Path, dwcli: Path, **extra: str) -> dict[str, str]:
     return env
 
 
-def run_cases(tmp_path: Path, env: dict[str, str], select: str) -> subprocess.CompletedProcess:
+def run_cases(tmp_path: Path, env: dict[str, str], select: str,
+              junit: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-l", "--tb=long", "-p", "no:cacheprovider", "-o", "addopts=",
-         f"--junitxml={tmp_path / 'junit.xml'}", "-k", select, "tests/dp_secret_cases.py"],
+         f"--junitxml={junit or tmp_path / 'junit.xml'}", "-k", select, "tests/dp_secret_cases.py"],
         cwd=HARNESS, env=env, capture_output=True, text=True, timeout=300)
 
 
@@ -123,7 +131,7 @@ def test_secrets_stay_out_of_every_artifact(tmp_path, fake_dwcli):
     assert proc.returncode == 1, proc.stdout[-4000:] + proc.stderr[-4000:]
     assert "dwcli import --birth-height 1 --name funder exited 3" in proc.stdout, proc.stdout[-4000:]
     assert "a failure after a create" in proc.stdout
-    assert "1 failed, 1 deselected, 1 error" in proc.stdout
+    assert "1 failed, 2 deselected, 1 error" in proc.stdout
     passphrase = (tmp_path / "state" / "pass").read_text().strip()
     artifacts = {"pytest stdout": proc.stdout, "pytest stderr": proc.stderr,
                  "junit": (tmp_path / "junit.xml").read_text()}
@@ -162,6 +170,36 @@ def test_the_scan_fails_on_a_secret_or_an_unreadable_file(tmp_path, fake_dwcli):
     assert (tmp_path / "logs" / SCAN_OK).exists()
 
 
+def test_the_scan_runs_without_the_dp_fixture_and_reads_the_junit_pytest_writes(tmp_path, fake_dwcli):
+    env = dp_env(tmp_path, fake_dwcli, HOME=str(tmp_path / "home"), DP_JUNIT_DIR="out")
+    (tmp_path / "home" / "out").mkdir(parents=True)
+    proc = run_cases(tmp_path, env, "without_the_harness", junit="~/$DP_JUNIT_DIR/junit.xml")
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    assert (tmp_path / "logs" / SCAN_OK).exists()
+    assert f"no secret in {tmp_path / 'logs'}, {tmp_path / 'home' / 'out' / 'junit.xml'}" in proc.stderr
+
+
+def test_the_scan_never_follows_a_link_or_waits_on_a_fifo(tmp_path):
+    logs = private(tmp_path / "logs")
+    (logs / "plain.log").write_text("fine\n")
+    os.mkfifo(logs / "fifo")
+    secret = private(tmp_path / "secret.txt", FUNDER_PHRASE)
+    (logs / "link.log").symlink_to(secret)
+    (logs / "linked-dir").symlink_to(tmp_path)
+    r = Redactor()
+    r.add(Secret(FUNDER_PHRASE))
+    result: list = []
+    worker = threading.Thread(target=lambda: result.append(r.scan([logs, logs / "fifo"])), daemon=True)
+    worker.start()
+    worker.join(30)
+    assert result, "the scan blocked"
+    leaked, unreadable = result[0]
+    assert leaked == []
+    assert sorted(unreadable) == sorted(f"{logs / n} ({why})" for n, why in (
+        ("fifo", "not a regular file"), ("fifo", "not a regular file"), ("link.log", "OSError"),
+        ("linked-dir", "OSError")))
+
+
 def test_redactor_masks_a_phrase_in_any_layout():
     r = Redactor()
     r.add(Secret(FUNDER_PHRASE))
@@ -169,6 +207,11 @@ def test_redactor_masks_a_phrase_in_any_layout():
     for text in (FUNDER_PHRASE, numbered, str(FUNDER_PHRASE.split()), f"mnemonic {CREATED_PHRASE}",
                  f"seed: {CREATED_PHRASE}"):
         assert not leaks(r.mask(text)), text
+    words = FUNDER_PHRASE.split()
+    for fragment in (" ".join(words[3:7]), "\n".join(f"{i}. {w}" for i, w in enumerate(words[5:11], 6)),
+                     f"{words[0]} x {' '.join(words[2:6])}"):
+        masked = Secret(FUNDER_PHRASE).masked_in(fragment)
+        assert not Secret(FUNDER_PHRASE).found_in(masked), (fragment, masked)
     assert repr(Secret(FUNDER_PHRASE)) == str(Secret(FUNDER_PHRASE)) == "Secret(<redacted>)"
     assert FUNDER_PHRASE not in repr(dashpay.Wallet("w", "n", Secret(FUNDER_PHRASE)))
 
@@ -258,6 +301,11 @@ def test_state_directory_rules(state_env, monkeypatch):
     Harness.from_env()
 
     elsewhere = private(tmp / "elsewhere")
+    (state / "funder").symlink_to(elsewhere)
+    with pytest.raises(HarnessConfigError, match="funder data root .* is a symlink"):
+        Harness.from_env().root("funder")
+    (state / "funder").unlink()
+
     (state / "runs").rename(tmp / "old-runs")
     (state / "runs").symlink_to(elsewhere)
     with pytest.raises(HarnessConfigError, match="runs directory .* is a symlink"):
@@ -291,6 +339,26 @@ def test_cleanup_deletes_only_old_marked_runs(tmp_path, capsys):
     assert sorted(p.name for p in runs.iterdir()) == ["link", "new-marked", "old-unmarked", "wrong-marker"]
     assert (outside / "keep.txt").read_text() == "keep"
     assert capsys.readouterr().err == ""
+
+
+def wallet_id(phrase: str) -> str:
+    return hashlib.sha256(phrase.encode()).hexdigest()[:16]
+
+
+def test_the_funder_wallet_must_be_the_configured_phrase(state_env, fake_dwcli, monkeypatch, capsys):
+    tmp = state_env
+    monkeypatch.setenv("DWCLI", str(fake_dwcli))
+    monkeypatch.setenv("DW_DP_FUNDER", str(private(tmp / "secret" / "funder", FUNDER_PHRASE + "\n")))
+    monkeypatch.setenv("DW_DP_FUNDER_BIRTH", "1")
+    monkeypatch.setenv("FAKE_IMPORT_OK", "1")
+    monkeypatch.setenv("FAKE_LIST", f'{wallet_id(FUNDER_PHRASE)} name="funder"')
+    assert Harness.from_env().funder().wallet == wallet_id(FUNDER_PHRASE)
+    monkeypatch.setenv("FAKE_LIST", f'{wallet_id(CREATED_PHRASE)} name="funder"')
+    with pytest.raises(HarnessConfigError, match="not DW_DP_FUNDER's .* set DW_DP_STATE to a new directory") as e:
+        Harness.from_env().funder()
+    assert not leaks(str(e.value) + capsys.readouterr().out)
+    monkeypatch.setenv("FAKE_LIST", "")
+    assert Harness.from_env().funder().wallet == wallet_id(FUNDER_PHRASE)
 
 
 def funder_with(tmp_path: Path, fake: Path, monkeypatch, stdout: str, rc: int = 1) -> Funder:
@@ -332,10 +400,44 @@ def test_funder_never_resends_an_unclassified_failure(tmp_path, fake_dwcli, monk
         funder._try_send(["--to", "x:1"], 1)
 
 
+def test_funder_reads_the_tip_again_for_each_attempt(tmp_path, fake_dwcli, monkeypatch, no_sleep):
+    funder = funder_with(tmp_path, fake_dwcli, monkeypatch, "")
+    tips = iter(range(100, 200))
+    heights: list[int] = []
+
+    def try_send(to: list[str], height: int) -> str | None:
+        heights.append(height)
+        return "t1" if len(heights) == 3 else None
+
+    monkeypatch.setattr(funder.root, "tip", lambda timeout=1800: next(tips))
+    monkeypatch.setattr(funder.root, "address", lambda wallet: "yF")
+    monkeypatch.setattr(funder, "mined_coins", lambda: [])
+    monkeypatch.setattr(funder, "_try_send", try_send)
+    monkeypatch.setattr(funder, "_mined", lambda duffs: 150)
+    assert funder.ensure_coins(1) == 150
+    assert heights == [101, 102, 103]
+
+
+def test_funder_pay_waits_for_its_own_txid(tmp_path, fake_dwcli, monkeypatch, no_sleep):
+    funder = funder_with(tmp_path, fake_dwcli, monkeypatch, "")
+    to = funder.root
+    monkeypatch.setattr(funder, "ensure_coins", lambda duffs: 100)
+    monkeypatch.setattr(funder, "_try_send", lambda to, height: "t1")
+    monkeypatch.setattr(to, "tip", lambda timeout=1800: 100)
+    monkeypatch.setattr(to, "address", lambda wallet: "yT")
+    monkeypatch.setattr(to, "sync_wallet", lambda wallet, height, timeout=900: {"total": "900"})
+    credits = iter([0, 0, 500])
+    monkeypatch.setattr(dashpay, "credited", lambda root, wallet, txid: next(credits))
+    assert funder.pay(to, "w", 500) == ("t1", 103, 900)
+    monkeypatch.setattr(dashpay, "credited", lambda root, wallet, txid: 0)
+    with pytest.raises(AssertionError, match="saw no funding t1"):
+        funder.pay(to, "w", 500)
+
+
 class FakeSession:
     """Answers `pay-contact`, `contact lock` and `contact resolve-lock` from scripts."""
 
-    def __init__(self, pays: list[dict], lock: dict | None = None, resolutions: list = ()):
+    def __init__(self, pays: list[dict], lock: dict | list | None = None, resolutions: list = ()):
         self.pays, self.lock, self.resolutions = list(pays), lock, list(resolutions)
         self.paid = 0
 
@@ -344,7 +446,7 @@ class FakeSession:
             self.paid += 1
             return self.pays.pop(0)
         if args[:2] == ("contact", "lock"):
-            return {"ok": True, "result": self.lock}
+            return {"ok": True, "result": self.lock.pop(0) if isinstance(self.lock, list) else self.lock}
         if args[:2] == ("contact", "resolve-lock"):
             answer = self.resolutions.pop(0)
             return answer if isinstance(answer, dict) else {"ok": True, "result": answer}
@@ -418,6 +520,15 @@ def test_pay_contact_settles_an_unknown_outcome_through_the_lock(no_sleep):
         with pytest.raises(AssertionError, match=message):
             pay_contact(s, "c", 1)
         assert s.paid == 1
+    unknown2 = send_error("broadcast_unknown", "unknown", "x", prepared_txid="t2")
+    s = FakeSession([UNKNOWN, unknown2, PAID], lock=[{"txid": "t1"}, {"txid": "t2"}],
+                    resolutions=["not_sent", "unknown", "sent"])
+    assert pay_contact(s, "c", 1)["txid"] == "t2" and s.paid == 2 and not s.resolutions
+    s = FakeSession([UNKNOWN, unknown2, PAID], lock=[{"txid": "t1"}, {"txid": "t2"}],
+                    resolutions=["not_sent", "not_sent"])
+    with pytest.raises(AssertionError, match="2 payments resolved not_sent; not paying again"):
+        pay_contact(s, "c", 1)
+    assert s.paid == 2 and not s.resolutions
     s = FakeSession([UNKNOWN, PAID], lock=None)
     with pytest.raises(AssertionError, match="t1: outcome unknown, yet the contact has no lock"):
         pay_contact(s, "c", 1)
@@ -473,6 +584,9 @@ def test_relay_holds_a_tx_by_its_txid_until_released():
             time.sleep(0.05)
         assert bytes(got) == version + tx
         assert relay.release() == {}
+        relay.close()
+        client.settimeout(3)
+        assert client.recv(1) == b""
         client.close()
     finally:
         relay.close()

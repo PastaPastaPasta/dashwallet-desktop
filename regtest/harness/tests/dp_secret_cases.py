@@ -17,3 +17,7 @@ def test_created_wallet_then_failure(dp):
 
 def test_harness_only(dp):
     assert dp.logs.is_dir()
+
+
+def test_without_the_harness():
+    assert True

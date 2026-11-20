@@ -179,8 +179,10 @@ any of `dwcli create`'s output is logged, and every dwcli output (stdout, stderr
 transcripts) is masked before it is written or raised. Their `repr` is a mask, so a traceback
 with locals (`-l --tb=long`) shows none. After pytest has written its junit file and summary, a
 scan reads the logs directory, the junit file and the files `DW_DP_SCAN` names for any secret of
-the run (the whole value, or four phrase words in a row); a hit, or a file it cannot read, fails
-the run, and only a clean scan writes `secret-scan.ok` into the logs directory.
+the run (the whole value, or four phrase words in a row, which the masking also hides); a hit, or a
+file it cannot read (a symlink or anything but a regular file counts as unreadable), fails the
+run, and only a clean scan writes `secret-scan.ok` into the logs directory. With `DW_DP_NET` set
+the scan runs whichever tests ran, even when none of them used the harness.
 `tests/test_dp_harness.py` checks all of this, and the configuration rules below, without a
 network.
 
@@ -195,7 +197,7 @@ network.
 | `DW_DP_NET` | `testnet` or `devnet` (a dashmate local network; the harness passes `--network regtest`); the suites are skipped when unset, and any other value is an error |
 | `DW_DP_NET_ARGS` | extra network options, only `--dapi`, `--ca-cert`, `--quorum-url` and `--peer` (devnet: `--dapi … --ca-cert … --quorum-url … --peer …`); `--network` and anything naming mainnet are refused |
 | `DW_DP_STATE` | absolute directory outside the checkout, owned by you, mode 0700 (created so; refused when open to group or others): the funder's data root, the vault passphrase `pass` (0600, refused otherwise), `runs/` and `logs/` |
-| `DW_DP_FUNDER`, `DW_DP_FUNDER_BIRTH` | the funder's phrase file (owner-only, 0600 or 0400; refused otherwise) and birth height; on agentbox the phrase is the secret store's `dashwallet-desktop/dashpay-suites-funder` |
+| `DW_DP_FUNDER`, `DW_DP_FUNDER_BIRTH` | the funder's phrase file (owner-only, 0600 or 0400; refused otherwise) and birth height; on agentbox the phrase is the secret store's `dashwallet-desktop/dashpay-suites-funder`. A funder wallet already in `DW_DP_STATE` must be this phrase's (its wallet id is compared with the phrase's, imported into a scratch root of the run); another phrase is refused: use a new `DW_DP_STATE` |
 | `DW_DP_LOGS` | absolute directory for the dwcli logs, 0700 (default `DW_DP_STATE/logs/<run>`) |
 | `DW_DP_SCAN` | colon-separated extra files for the end-of-run secret scan |
 | `DW_DP_STRICT` | `1`: the unknown-outcome case fails instead of skipping when the relay is not configured |
@@ -217,11 +219,13 @@ The funder keeps a dozen mined coins of 0.5 tDASH and splits its balance again w
 four are left: a restarted dwcli no longer knows its own change's InstantSend lock, so change is
 spendable only once mined. It asks again only when `dwcli send`'s last line reports
 `outcome=not_sent` for want of a mined coin or a peer; a send whose outcome is unknown keeps its
-txid and is waited for, never paid again. A contact payment's failure is read from dwcli's JSON:
+txid and is waited for, never paid again; each attempt syncs to the current tip first. A payment
+to a member counts once the member's wallet credits that txid with the amount. A contact payment's failure is read from dwcli's JSON:
 an error whose code is `send.<kind>` (one per `SendFailure` variant) and whose `params.kind`
 names the same kind; `pay-contact` asks again only for `no_peers` with `params.outcome` `not_sent`
 (or while the wallet rescans), and pays again after an unknown outcome only once
-`contact resolve-lock` answers `not_sent`. Top it up with the `dash-faucet` skill when its balance
+`contact resolve-lock` answers `not_sent`, two payments at most; every unknown outcome is resolved
+through its lock before anything fails. Top it up with the `dash-faucet` skill when its balance
 runs low. A run costs about 0.1 tDASH per registered member.
 
 **Nightly (T3).** `scripts/dashpay-nightly.sh` builds dwcli at `origin/main` in its own checkout
