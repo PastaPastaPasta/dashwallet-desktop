@@ -3865,8 +3865,9 @@ impl Fixture {
     }
 
     /// `tx` with each input that spends a coin of the wallet signed by the
-    /// wallet's key, as its own send is: key-wallet ignores an unconfirmed
-    /// spend of a coin it holds that the coin's owner did not sign.
+    /// key of the fixture's seed, as its own send signs with the vault's:
+    /// key-wallet ignores an unconfirmed spend of a coin it holds that the
+    /// coin's owner did not sign, and the manager's wallet holds no keys.
     fn signed(
         &self,
         tx: dashcore::Transaction,
@@ -3874,12 +3875,17 @@ impl Fixture {
     ) -> dashcore::Transaction {
         let manager = Arc::clone(&self.session.live().unwrap().manager);
         let id = self.wallet;
+        let device = key_wallet::Wallet::from_mnemonic(
+            key_wallet::Mnemonic::from_phrase(PHRASE).unwrap(),
+            key_wallet::Network::Regtest,
+            key_wallet::wallet::initialization::WalletAccountCreationOptions::Default,
+        )
+        .unwrap();
         self.engine.block_on(async move {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
-            let wallet = wm.get_wallet(&id.0).unwrap();
             let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
-            key_wallet::test_utils::sign_owned_inputs(wallet, info, tx, fundings).await
+            key_wallet::test_utils::sign_owned_inputs(&device, info, tx, fundings).await
         })
     }
 
