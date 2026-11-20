@@ -14,3 +14,5 @@ Round 5 (`r5/`): every image linked in the description was shot again with the s
 
 - `r5/after/`: the round 3 script's "after" states
 - `r5/r4/`: the round 4 script's states
+
+Round 6 (`r6/`): the new state for two payments of one proposal draft, a proposal in Mine either could have made, shot at PR head 346d06b6, Chromium 1280x820. Every image linked before was compared again at main 6e61b32b and head 346d06b6 (two runs each); none changed beyond the "Sending…" spinner's angle and anti-aliased pixels at the selected sidebar item's corner, so none was shot again.
