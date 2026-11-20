@@ -23,12 +23,17 @@
 # with a small capped balance: the build cannot read its file, but the suites run the fetched
 # revision with it. DW_DP_NOTIFY is the absolute
 # path of a site-provided executable that delivers its one argument (a message, chat or mail);
-# the launcher refuses to run without it.
+# the launcher refuses to run without it. On agentbox it is dashpay-nightly-issue.sh, installed
+# with ci/github/nightly-issue.sh beside it in the same directory: it needs DW_DP_ISSUE_REPO
+# (owner/name) in the environment file and this user's `gh` signed in with issue access, and it
+# keeps one open issue labelled nightly-failure while the nightly is red.
 #
 # Not gating, alerting: a failed run fails this unit, and OnFailure= starts
 # dw-dashpay-nightly-failed.service, which runs DW_DP_NOTIFY with the unit's result and exit
 # status and the run's artifact directory ($DW_DP_STATE/nightly/<date>: junit.xml, pytest.log,
-# nightly.log, the dwcli logs), never test output.
+# nightly.log, the dwcli logs), never test output. After a run that passed, ExecStartPost= runs
+# the notifier with "result=success", which closes that issue; a notifier that fails there does
+# not fail the unit.
 #
 # The unit runs on testnet only: the launcher refuses any other DW_DP_NET (one set in the
 # environment file included). LimitCORE=0 (and the harness's own core limit) keeps a crash from
@@ -47,5 +52,6 @@ UMask=0077
 LimitCORE=0
 Environment=DW_DP_NET=testnet
 ExecStart=%h/.local/libexec/dashwallet-desktop/dashpay-nightly.sh
+ExecStartPost=-%h/.local/libexec/dashwallet-desktop/dashpay-nightly-notify.sh --green dw-dashpay-nightly.service
 Nice=10
 TimeoutStartSec=4h

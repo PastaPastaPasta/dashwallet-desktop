@@ -274,7 +274,14 @@ anything; it alerts. A failed run fails the unit, and its `OnFailure=` unit
 (`dw-dashpay-nightly-failed.service`) runs the site-provided notifier `DW_DP_NOTIFY` with the
 unit's result and exit status and the run's artifact directory, never test output. The install
 requires one test start of that unit, with its message seen to arrive, before the timer is
-enabled.
+enabled. After a run that passed, the unit runs the notifier once more with `result=success`.
+
+On agentbox the notifier is `scripts/dashpay-nightly-issue.sh`: it keeps one open issue labelled
+`nightly-failure` ("Nightly failure: DashPay suites on testnet") in `DW_DP_ISSUE_REPO` while the
+nightly is red, adds a comment for each further red night, and closes it after the next green
+one. The issue is public, so it names the artifact directory by its date only. The scheduled
+GitHub Actions nightly reports the same way ("Nightly failure: GitHub Actions", with links to
+the failed jobs), through the same `ci/github/nightly-issue.sh`.
 
 **T2 is blocked.** On the shared dashmate `local` devnet (3 evonodes) dash-spv never finishes
 its masternode list: the network forms no `llmq_test_dip0024` quorum, so QRInfo is never

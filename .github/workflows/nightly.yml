@@ -309,6 +309,43 @@ jobs:
 
   # Non-blocking: on the runner the demo fails 4 AT-SPI checks, two of them known-intermittent
   # (docs/ci.md, "Known gaps"). A red X here does not turn the nightly red; the regtest job does.
+  # While a scheduled run is red, one open issue labelled nightly-failure names its failed jobs;
+  # the next green run closes it. crossui-linux is non-blocking and is left out.
+  report:
+    name: Report the nightly's result
+    if: ${{ always() && github.event_name == 'schedule' }}
+    needs: [regtest, shielded, release-check, fuzz]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: ci/github
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          RUN: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          what="The nightly run of $(date -u +%F) at ${GITHUB_SHA:0:8}"
+          case " $RESULTS " in
+            *" failure "*)
+              failed=$(gh api "repos/$GH_REPO/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" \
+                --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | "- [\(.name)](\(.html_url))"')
+              ci/github/nightly-issue.sh failed "GitHub Actions" "$what failed: $RUN_URL"$'\n\n'"$failed"
+              ;;
+            *" cancelled "*) echo "a job was cancelled: the issue is left as it is" ;;
+            *) ci/github/nightly-issue.sh green "GitHub Actions" "$what passed: $RUN_URL" ;;
+          esac
+
   crossui-linux:
     name: SwiftCrossUI AT-SPI demo (GUI, Linux; non-blocking)
     runs-on: ubuntu-24.04
