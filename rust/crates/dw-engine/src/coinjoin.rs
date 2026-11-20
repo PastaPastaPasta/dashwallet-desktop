@@ -2392,6 +2392,7 @@ impl NetworkSession {
     }
 
     /// Starts one session task.
+    #[expect(clippy::too_many_arguments, reason = "one session's parts")]
     fn spawn_session(
         self: &Arc<Self>,
         wallet_id: WalletId,
