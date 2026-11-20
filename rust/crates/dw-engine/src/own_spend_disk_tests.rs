@@ -421,8 +421,7 @@ fn a_payment_locked_apart_from_its_record_is_not_abandoned_after_a_restart() {
     );
 
     let session = reopen(&engine, session);
-    let persister = Arc::clone(&session.live().unwrap().persister);
-    let record = persister
+    let record = (session.live().unwrap().persister)
         .get_core_tx_record(id.0, &tx.txid())
         .unwrap()
         .unwrap();
