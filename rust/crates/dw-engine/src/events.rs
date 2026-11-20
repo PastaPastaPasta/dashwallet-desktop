@@ -294,12 +294,15 @@ pub trait EventSink: Send + Sync + 'static {
 pub(crate) const LIVE_DEPTH: u32 = 2;
 
 /// Whether a transaction first seen in `context` is learned live, the
-/// network's best height being `network_tip`.
+/// network's best height being `network_tip`. A block above that height is
+/// not: the reading is behind, and may be a whole scan behind.
 pub(crate) fn learned_live(context: &TransactionContext, network_tip: Option<u32>) -> bool {
     match context {
         TransactionContext::Mempool | TransactionContext::InstantSend(_) => true,
         TransactionContext::InBlock(block) | TransactionContext::InChainLockedBlock(block) => {
-            network_tip.is_some_and(|tip| tip.saturating_sub(block.height()) <= LIVE_DEPTH)
+            network_tip
+                .and_then(|tip| tip.checked_sub(block.height()))
+                .is_some_and(|depth| depth <= LIVE_DEPTH)
         }
     }
 }
@@ -1994,11 +1997,12 @@ mod tests {
 
     /// A block's transactions are live when the block is at most
     /// `LIVE_DEPTH` below the peers' best height, whatever height the scan
-    /// is at; an older block's are the scan's findings.
+    /// is at; an older block's are the scan's findings, and so are those of
+    /// a block above that height, which the reading has not reached.
     #[test]
     fn a_blocks_transactions_are_live_only_near_the_network_tip() {
         let hub = headers_at(600, 1000);
-        let [old, behind, near, tip] = [1, 2, 3, 4].map(tx);
+        let [old, behind, near, tip, above] = [1, 2, 3, 4, 5].map(tx);
         hub.apply_wallet_event(&block_of(600, vec![in_block(&old, 600)], vec![]));
         hub.apply_wallet_event(&block_of(997, vec![in_block(&behind, 997)], vec![]));
         hub.apply_wallet_event(&block_of(998, vec![in_block(&near, 998)], vec![]));
@@ -2007,10 +2011,11 @@ mod tests {
             TransactionContext::InChainLockedBlock(BlockInfo::new(1000, BlockHash::all_zeros(), 0)),
         );
         hub.apply_wallet_event(&block_of(1000, vec![locked_tip], vec![]));
+        hub.apply_wallet_event(&block_of(1001, vec![in_block(&above, 1001)], vec![]));
         let batch = new_txs(&hub);
         assert_eq!(
             batch.txids,
-            [old.txid(), behind.txid(), near.txid(), tip.txid()]
+            [&old, &behind, &near, &tip, &above].map(|t| t.txid())
         );
         assert_eq!(batch.live_in_order(), [near.txid(), tip.txid()]);
     }
