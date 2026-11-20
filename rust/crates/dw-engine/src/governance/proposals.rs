@@ -452,9 +452,9 @@ impl Governance {
     }
 
     /// The hash of `wallet`'s own proposal named `name` (as its data
-    /// stores it, without regard to ASCII case) that is in progress: any
-    /// state but `fee_failed` and `expired` (MG-06 D26). A row that does
-    /// not decode is skipped.
+    /// stores it, without regard to ASCII case) that is in progress: not
+    /// past its end, public or not, and not `fee_failed` (MG-06 D26). A
+    /// row that does not decode is skipped.
     fn in_progress_named(
         &self,
         wallet: WalletId,
@@ -478,10 +478,8 @@ impl Governance {
                 stored.is_some_and(|stored| stored.eq_ignore_ascii_case(name))
             })
             .find(|saved| {
-                !matches!(
-                    derive_state(self.facts(saved, false)),
-                    MyProposalState::Expired | MyProposalState::FeeFailed
-                )
+                let facts = self.facts(saved, false);
+                !facts.expired && !matches!(derive_state(facts), MyProposalState::FeeFailed)
             })
             .map(|saved| saved.row.hash))
     }

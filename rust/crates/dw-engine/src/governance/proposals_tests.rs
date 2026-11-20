@@ -1828,6 +1828,26 @@ fn a_fee_that_may_be_out_blocks_its_name() {
     p.assert_unredeemed(grant);
 }
 
+/// MG-06 D26: a public proposal blocks its name only until its end, also
+/// while its object is still in the store (governance sync off prunes
+/// nothing).
+#[test]
+fn a_public_proposal_past_its_end_frees_its_name() {
+    let p = props(Mode::Accept);
+    let end = now() + 4;
+    let hash = p.saved_named(p.f.wallet, "dw-proposal", end, 1);
+    p.echo(&hash);
+    assert!(matches!(p.state(&hash), MyProposalState::Public { .. }));
+    let refused = p.create(p.spend(2 * COIN)).unwrap_err();
+    assert_in_progress(&refused, Some(&hash));
+    while now() <= end {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(matches!(p.state(&hash), MyProposalState::Public { .. }));
+    p.create(p.spend(2 * COIN)).unwrap();
+    assert_eq!(p.rows().len(), 2);
+}
+
 /// MG-06 D26: while another call for the name has saved nothing, its
 /// mark refuses this one with no hash; once it is gone the name is free.
 #[test]
