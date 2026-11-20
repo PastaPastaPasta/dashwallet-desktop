@@ -13,6 +13,7 @@ import { CopiedLabel, useCopy } from "../../components/copy";
 import { useModel } from "../../onboarding/model";
 import type { GrantModel } from "../../tools/grant";
 import { PsbtModel, SESSION_BROADCASTS } from "../../tools/psbt";
+import { useAcrossLock } from "../../app/acrossLock";
 import { useDisplay } from "../../format/display";
 import { NotYet, Outcome, ToolCard } from "./common";
 
@@ -20,7 +21,9 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
   const b = useBackend();
   // Amounts in the display unit (U-04 D4); General changes it on another route, which remounts this.
   const shown = useDisplay(network);
-  const [model] = useState(() => new PsbtModel(b, grants, walletId, shown, SESSION_BROADCASTS));
+  // A broadcast under way or done when the vault locks keeps its PSBT and its line for the unlock
+  // (app/acrossLock.ts); the session's log already stops a second broadcast of it.
+  const model = useAcrossLock(`tools-psbt:${walletId}`, () => new PsbtModel(b, grants, walletId, shown, SESSION_BROADCASTS), (m) => m.step === "signing" || m.step === "broadcasting" || m.step === "broadcast");
   useModel(model);
   // A broadcast by another tab changes what this one offers (D40).
   useModel(model.broadcasts);
