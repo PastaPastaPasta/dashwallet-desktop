@@ -230,12 +230,39 @@ test("an unlock before the broadcast answers shows the payment being sent, then 
 
   await unlock(page);
   await expect(page.getByTestId("pay-sending")).toBeVisible();
+  await expect(page.getByTestId("pay-sending")).toBeFocused();
   await expect(page.getByTestId("pay-sending")).toContainText("0.50000000");
   await expect(page.getByTestId("pay-address")).toHaveValue("");
   await release.evaluate((r) => r());
   await expect(page.getByTestId("pay-result-sent")).toBeVisible();
   await expect(page.getByTestId("pay-sending")).toHaveCount(0);
   await expect(page.getByTestId("pay-result-txid")).toContainText(txid);
+  await expectNotResubmittable(page);
+  expect(errors).toEqual([]);
+});
+
+test("a Try again running as the vault locks keeps the result busy across the unlock, then shows its answer, with no retry of a closed draft", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.goto(fixtureUrl("locked", "light"));
+  await unlock(page);
+  await world(page, (w) => (w.send.broadcast = "unknown"));
+  const { release: first } = await payHeld(page);
+  await first.evaluate((r) => r());
+  await expect(page.getByTestId("pay-result-unknown")).toBeVisible();
+  await world(page, (w) => (w.send.broadcast = "ok"));
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("draft_broadcast"));
+  const asked = (await calls(page)).length;
+  await page.getByTestId("pay-result-retry").click();
+  await expect.poll(async () => (await calls(page)).slice(asked).includes("draft_broadcast")).toBe(true);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await expect(page.getByTestId("lock-field")).toBeVisible();
+
+  await unlock(page);
+  await expect(page.getByTestId("pay-result-unknown")).toBeVisible();
+  await expect(page.getByTestId("pay-result-close")).toBeDisabled();
+  await expect(page.getByTestId("pay-result-retry")).toHaveCount(0);
+  await release.evaluate((r) => r());
+  await expect(page.getByTestId("pay-result-sent")).toBeVisible();
   await expectNotResubmittable(page);
   expect(errors).toEqual([]);
 });
@@ -307,29 +334,116 @@ async function payProposalHeld(page: Page) {
   return release;
 }
 
-for (const answer of ["made", "failed"] as const)
-  test(`a proposal's fee paid as the vault locks is not offered again after the unlock (${answer})`, async ({ page }) => {
-    const errors = trackPageErrors(page);
-    await page.clock.setFixedTime(FIXTURE_NOW);
-    await page.goto(fixtureUrl("governance", "light"));
-    await page.getByTestId("toolbar").waitFor();
-    if (answer === "failed") await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "none"));
-    const release = await payProposalHeld(page);
-    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
-    await expect(page.getByTestId("lock-field")).toBeVisible();
-    // Unlocked before the engine answers: the page says the fee may be on its way, and Create waits.
-    await unlock(page);
-    await expect(page.getByTestId("create-kept-paying")).toBeVisible();
-    await expect(page.getByTestId("governance-create")).toBeDisabled();
-    await release.evaluate((r) => r());
-    if (answer === "made") {
-      await expect(page.getByTestId("create-kept-paying")).toHaveCount(0);
-      await expect(page.getByTestId("mine-chip-desktop-translations")).toBeVisible();
-    } else {
-      await expect(page.getByTestId("create-kept-unsure")).toBeVisible();
-      await page.getByTestId("create-kept-show-mine").click();
-      await expect(page.getByTestId("create-kept-unsure")).toHaveCount(0);
-    }
-    await expect(page.getByTestId("governance-create")).toBeEnabled();
-    expect(errors).toEqual([]);
-  });
+/** Masternodes after the unlock, its proposal's call answered while locked: `answer` "stored" made
+ * the proposal and then failed, "none" failed with nothing made. */
+async function proposalUnsure(page: Page, answer: "stored" | "none", mine: "readable" | "unreadable" = "readable") {
+  await page.clock.setFixedTime(FIXTURE_NOW);
+  await page.goto(fixtureUrl("governance", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  if (answer === "stored") await world(page, (w) => (w.governance.createFailsAfterPaying = true));
+  else await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "none"));
+  const release = await payProposalHeld(page);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await expect(page.getByTestId("lock-field")).toBeVisible();
+  if (mine === "unreadable") await page.evaluate(() => window.__dwFixture!.fail("governance_my_proposals", "none"));
+  await release.evaluate((r) => r());
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+  await unlock(page);
+  await expect(page.getByTestId("page-masternodes")).toBeVisible();
+}
+
+const keptText = (page: Page) => page.getByTestId("create-kept-text");
+
+test("a proposal's fee paid as the vault locks ends as made once Mine shows it, though its call never answers", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.clock.setFixedTime(FIXTURE_NOW);
+  await page.goto(fixtureUrl("governance", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  const release = await payProposalHeld(page);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await expect(page.getByTestId("lock-field")).toBeVisible();
+  await unlock(page);
+  await expect(page.getByTestId("mine-chip-desktop-translations")).toBeVisible();
+  await expect(page.getByTestId("create-kept-paying")).toHaveCount(0);
+  await expect(page.getByTestId("governance-create")).toBeEnabled();
+  await release.evaluate((r) => r());
+  await page.evaluate(() => new Promise((r) => setTimeout(r, 300)));
+  await expect(page.getByTestId("create-kept-paying")).toHaveCount(0);
+  await expect(page.getByTestId("create-kept-unsure")).toHaveCount(0);
+  await expect(page.getByTestId("governance-create")).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test("a proposal's fee still being paid after the unlock holds Create back until its call answers", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await page.clock.setFixedTime(FIXTURE_NOW);
+  await page.goto(fixtureUrl("governance", "light"));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "none"));
+  const release = await payProposalHeld(page);
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "lock" }));
+  await unlock(page);
+  await expect(page.getByTestId("create-kept-paying")).toBeVisible();
+  await expect(page.getByTestId("governance-create")).toBeDisabled();
+  await release.evaluate((r) => r());
+  await expect(keptText(page)).toHaveAttribute("data-check", "absent");
+  await expect(page.getByTestId("governance-create")).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test("unsure after the lock, with the proposal in Mine: Create stays off and the notice points to it until dismissed", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await proposalUnsure(page, "stored");
+  await expect(keptText(page)).toHaveAttribute("data-check", "found");
+  await expect(keptText(page)).toContainText("desktop-translations");
+  await expect(keptText(page)).toContainText("Mine");
+  await expect(keptText(page)).toContainText("Activity");
+  await expect(page.getByTestId("governance-create")).toBeDisabled();
+  await expect(page.getByTestId("governance-create")).toHaveAttribute("title", /dismiss the notice/);
+  await page.getByTestId("create-kept-show-mine").click();
+  await expect(page.getByTestId("mine-chip-desktop-translations")).toBeVisible();
+  await expect(page.getByTestId("create-kept-unsure")).toBeVisible();
+  await page.getByTestId("create-kept-dismiss").click();
+  await expect(page.getByTestId("create-kept-unsure")).toHaveCount(0);
+  await expect(page.getByTestId("governance-create")).toBeEnabled();
+  expect(errors).toEqual([]);
+});
+
+test("unsure after the lock, with no proposal in Mine: Create comes back after the read and the notice names both places", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await proposalUnsure(page, "none");
+  await expect(keptText(page)).toHaveAttribute("data-check", "absent");
+  await expect(keptText(page)).toContainText("check Mine, and the fee payment in Activity, before you pay again");
+  await expect(page.getByTestId("governance-create")).toBeEnabled();
+  await expect(page.getByTestId("create-kept-unsure")).toBeVisible();
+  await page.getByTestId("create-kept-dismiss").click();
+  await expect(page.getByTestId("create-kept-unsure")).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test("unsure after the lock, Mine unreadable: Create stays off, the notice offers to read again, and the read decides", async ({ page }) => {
+  const errors = trackPageErrors(page);
+  await proposalUnsure(page, "stored", "unreadable");
+  await expect(keptText(page)).toHaveAttribute("data-check", "failed");
+  await expect(page.getByTestId("governance-create")).toBeDisabled();
+  await expect(page.getByTestId("create-kept-dismiss")).toHaveCount(0);
+  await page.getByTestId("create-kept-read-again").click();
+  await expect(keptText(page)).toHaveAttribute("data-check", "failed");
+  await expect(page.getByTestId("governance-create")).toBeDisabled();
+  await page.evaluate(() => window.__dwFixture!.fail("governance_my_proposals", null));
+  await page.getByTestId("create-kept-read-again").click();
+  await expect(keptText(page)).toHaveAttribute("data-check", "found");
+  await expect(page.getByTestId("governance-create")).toBeDisabled();
+  expect(errors).toEqual([]);
+});
+
+test("Home after the unlock has its hidden title focused, with no ring", async ({ page }) => {
+  await page.goto(fixtureUrl("locked", "light"));
+  await unlock(page);
+  await expect(page.getByTestId("hero")).toBeVisible();
+  const title = page.locator(".app-body > main h1");
+  await expect(title).toHaveText("Home");
+  await expect(title).toBeFocused();
+  expect(await title.evaluate((e) => getComputedStyle(e).outlineStyle)).toBe("none");
+  expect(await page.getByTestId("page-home").evaluate((e) => getComputedStyle(e).outlineStyle)).toBe("none");
+});
