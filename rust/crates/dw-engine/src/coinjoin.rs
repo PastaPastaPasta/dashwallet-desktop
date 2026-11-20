@@ -10,7 +10,9 @@
 //! - the step creates denominations and collateral inputs from the
 //!   wallet's own coins when needed, then joins a known queue or starts a
 //!   new one with a random unused masternode (`DoAutomaticDenominating`,
-//!   client.cpp:962-1212);
+//!   client.cpp:962-1212); once V24 is seen active it also promotes ten
+//!   fully mixed coins into one of the next larger denomination, or demotes
+//!   one into ten of the next smaller, when Core would;
 //! - each session runs [`dw_coinjoin::client::run_session`] against the
 //!   masternode; this module implements its [`MixingWallet`].
 //!
@@ -26,10 +28,14 @@
 //! `nLastPaidHeight`, which the simplified list does not carry, so it is
 //! not applied; our collateral counts as valid when it is confirmed or
 //! InstantSend-locked, unspent in our view and of the right amount; foreign
-//! inputs of a final transaction are counted, not checked against a UTXO
-//! set.
+//! inputs of a final transaction are counted and their amounts inferred
+//! from the outputs (`dw_coinjoin::client::final_tx_composition`), not
+//! checked against a UTXO set. V24 counts as active once a version-3
+//! provider transaction is in the verified masternode list; until then no
+//! promotion or demotion is tried.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
@@ -39,8 +45,9 @@ use dashcore::sighash::SighashCache;
 use dashcore::{Address, BlockHash, ScriptBuf, Transaction, TxIn, TxOut, Txid};
 use dw_appdb::{AppDb, AppDbError, GLOBAL_SCOPE};
 use dw_coinjoin::client::{
-    MixCoin, MixingWallet, SessionOutcome, SessionParams, SessionProgress, WalletError,
-    choose_session_denom, run_session, select_by_denomination, select_denominated_amounts,
+    MixCoin, MixingWallet, RebalanceEntry, SessionOutcome, SessionParams, SessionProgress,
+    WalletError, choose_session_denom, run_session, select_by_denomination,
+    select_denominated_amounts,
 };
 use dw_coinjoin::denoms::{
     COLLATERAL_AMOUNT, DENOMINATIONS, MIN_MIXING_BALANCE, SMALLEST_DENOMINATION, is_denominated,
@@ -49,6 +56,7 @@ use dw_coinjoin::messages::{Queue, denomination_to_amount};
 use dw_coinjoin::planner::{self, Tally, TxPlan};
 use dw_coinjoin::progress::{self, ProgressInputs};
 use dw_coinjoin::queue::{QueueManager, QueueMasternode};
+use dw_coinjoin::rebalance::{self, DenomCounts, Rebalance};
 use dw_coinjoin::rounds::{self, RoundsCalculator, WalletTx, is_collateral_amount};
 pub use dw_coinjoin::settings::CoinJoinSettings;
 pub use dw_coinjoin::status::{PoolMessage, PoolState, StatusCode};
@@ -445,6 +453,8 @@ pub(crate) struct CoinJoinRuntime {
     listener: Mutex<Option<JoinHandle<()>>>,
     /// Each wallet's last plan per sweep target ([`SweepQuote`]).
     quotes: Mutex<HashMap<(WalletId, SweepTarget), SweepQuote>>,
+    /// V24 was seen active on this network; it never deactivates.
+    v24_seen: AtomicBool,
     /// Tests: stand-ins for a sweep's broadcast and chunk size.
     #[cfg(test)]
     pub(crate) sweep_hooks: Mutex<sweep_test_hooks::Hooks>,
@@ -462,6 +472,7 @@ impl CoinJoinRuntime {
             refresher: Mutex::new(None),
             listener: Mutex::new(None),
             quotes: Mutex::new(HashMap::new()),
+            v24_seen: AtomicBool::new(false),
             #[cfg(test)]
             sweep_hooks: Mutex::default(),
         }
@@ -508,6 +519,16 @@ impl CoinJoinRuntime {
 
     pub(crate) fn settings(&self) -> CoinJoinSettings {
         *self.settings.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Masternodes a session of any wallet mixes with: no second session
+    /// goes to one (`IsMasternodeOrDisconnectRequested`, client.cpp:1430,
+    /// 1510).
+    fn session_masternodes(&self) -> HashSet<[u8; 32]> {
+        self.mixers()
+            .values()
+            .flat_map(|m| m.sessions.values().map(|s| s.masternode.pro_tx_hash))
+            .collect()
     }
 
     fn is_mixing(&self, id: &WalletId) -> bool {
@@ -735,6 +756,52 @@ impl MixView {
             .collect();
         coins.shuffle(&mut rand::thread_rng());
         coins
+    }
+
+    /// `GetDenominationCounts` (wallet/coinjoin.cpp:428-455): confirmed,
+    /// unlocked denominations and how many of each are fully mixed.
+    pub(crate) fn rebalance_counts(&self) -> DenomCounts {
+        let mut counts = DenomCounts::default();
+        for c in self
+            .coins
+            .iter()
+            .filter(|c| c.denominated() && c.free() && c.coin.utxo.is_confirmed)
+        {
+            if let Some(i) = DENOMINATIONS.iter().position(|d| *d == c.value()) {
+                counts.total[i] += 1;
+                if c.fully_mixed {
+                    counts.fully_mixed[i] += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    /// The conversions `DoAutomaticDenominating` would try, each with the
+    /// inputs it spends: fully mixed coins on the CoinJoin account (the
+    /// session signer's), final, free, shuffled (`SelectRebalanceInputs`,
+    /// client.cpp:1308-1365). Those without enough inputs are left out.
+    pub(crate) fn rebalance_plan(
+        &self,
+        goal: u32,
+        v24_active: bool,
+    ) -> Vec<(Rebalance, Vec<MixCoin>)> {
+        let mut coins: Vec<MixCoin> = self
+            .coins
+            .iter()
+            .filter(|c| c.mixable() && c.fully_mixed && c.final_enough() && c.free())
+            .map(|c| MixCoin {
+                outpoint: c.coin.utxo.outpoint,
+                value: c.value(),
+                script_pubkey: c.coin.utxo.txout.script_pubkey.clone(),
+                rounds: c.rounds,
+            })
+            .collect();
+        coins.shuffle(&mut rand::thread_rng());
+        rebalance::opportunities(&self.rebalance_counts(), goal, v24_active)
+            .into_iter()
+            .filter_map(|r| rebalance::select_inputs(&r, &coins).map(|inputs| (r, inputs)))
+            .collect()
     }
 
     /// The coins `CreateDenominated` (`denominations`) or
@@ -2072,13 +2139,20 @@ impl NetworkSession {
         let b = view.balances;
         let target = i64::from(settings.target_amount_dash) * 100_000_000;
         let (needs, to_denominate) = mixing_amounts(b, target);
-        if needs < 0 {
-            // Nothing to do (rebalancing is not done by this client).
+        // Post-V24 conversions are looked for before the "nothing to do"
+        // exits (client.cpp:1035-1062): they matter once everything is
+        // mixed.
+        let wanted =
+            !rebalance::opportunities(&view.rebalance_counts(), settings.denoms_goal, true)
+                .is_empty();
+        let v24_active = wanted && self.v24_known_active().await;
+        let rebalances = view.rebalance_plan(settings.denoms_goal, v24_active);
+        if needs < 0 && rebalances.is_empty() {
             self.set_mix_status(wallet_id, StatusCode::Idle);
             return Ok(());
         }
         let value_min = planner::min_value_to_mix(view.has_collateral_inputs(true));
-        if b.anonymizable < value_min {
+        if b.anonymizable < value_min && rebalances.is_empty() {
             self.set_mix_status(wallet_id, StatusCode::NotEnoughFunds);
             return Ok(());
         }
@@ -2115,7 +2189,7 @@ impl NetworkSession {
             self.set_mix_status(wallet_id, StatusCode::UnconfirmedDenominated);
             return Ok(());
         }
-        if needs <= 0 {
+        if needs <= 0 && rebalances.is_empty() {
             return Ok(());
         }
         let Some((collateral, collateral_input, collateral_addrs)) =
@@ -2123,15 +2197,107 @@ impl NetworkSession {
         else {
             return Ok(());
         };
-        // JoinExistingQueue (client.cpp:1384-1471).
-        let joined = loop {
-            let next = self
+        let busy = self.coinjoin.session_masternodes();
+        // An existing queue for a conversion first, then 1:1 mixing, and a
+        // new conversion queue only when neither found one: a lone
+        // conversion queue may wait for participants that never come
+        // (client.cpp:1186-1209).
+        let mut chosen = rebalances.iter().find_map(|(r, inputs)| {
+            self.join_existing_queue(r.denom, &busy)
+                .map(|mn| (mn, r.denom, Some((r, inputs))))
+        });
+        if chosen.is_none() && needs > 0 {
+            chosen = self
+                .join_existing_queue_for(&view, needs as u64, &busy)
+                .or_else(|| self.start_new_queue(&view, needs as u64, wallet_id, &busy))
+                .map(|(mn, denom)| (mn, denom, None));
+        }
+        if chosen.is_none() {
+            chosen = rebalances.iter().find_map(|(r, inputs)| {
+                self.pick_new_masternode(wallet_id, &busy)
+                    .map(|mn| (mn, r.denom, Some((r, inputs))))
+            });
+        }
+        let Some((mn, denom, rebalance)) = chosen else {
+            self.release_coinjoin_addresses(wallet_id, &collateral_addrs)
+                .await;
+            return Ok(());
+        };
+        let rebalance = rebalance.map(|(r, inputs)| RebalanceEntry {
+            kind: r.kind,
+            inputs: inputs.clone(),
+        });
+        self.spawn_session(
+            wallet_id,
+            mn,
+            denom,
+            collateral,
+            collateral_input,
+            collateral_addrs,
+            rebalance,
+        );
+        Ok(())
+    }
+
+    /// V24 is active as far as the engine can tell: a version-3 provider
+    /// transaction, valid only once V24 is active (Core
+    /// `ProTxVersion::GetMax`, evo/specialtxman.cpp), was seen in the
+    /// verified masternode list ([`NetworkSession::v24_active`]). Unknown
+    /// reads as not active.
+    async fn v24_known_active(&self) -> bool {
+        if self.coinjoin.v24_seen.load(Ordering::Relaxed) {
+            return true;
+        }
+        let active = self.v24_active().await.unwrap_or(false);
+        if active {
+            self.coinjoin.v24_seen.store(true, Ordering::Relaxed);
+        }
+        active
+    }
+
+    /// `JoinExistingQueue` for a conversion (client.cpp:1384-1471): the
+    /// first untried queue at `denom` of a valid masternode no session of
+    /// ours mixes with.
+    fn join_existing_queue(&self, denom: u32, busy: &HashSet<[u8; 32]>) -> Option<PeerEntry> {
+        loop {
+            let dsq = self
                 .coinjoin
                 .queues
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .next_untried(0, now_secs() as i64);
-            let Some(dsq) = next else { break None };
+                .next_untried(denom, now_secs() as i64)?;
+            let mut picker = self
+                .coinjoin
+                .picker
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let Some(mn) = picker
+                .by_pro_tx_hash(&dsq.pro_tx_hash)
+                .filter(|e| e.is_valid && e.service.is_some() && !busy.contains(&e.pro_tx_hash))
+                .cloned()
+            else {
+                continue;
+            };
+            picker.mark_used(mn.pro_tx_hash);
+            return Some(mn);
+        }
+    }
+
+    /// `JoinExistingQueue` for 1:1 mixing (client.cpp:1384-1471): the first
+    /// untried queue whose denomination we hold coins of.
+    fn join_existing_queue_for(
+        &self,
+        view: &MixView,
+        needs: u64,
+        busy: &HashSet<[u8; 32]>,
+    ) -> Option<(PeerEntry, u32)> {
+        loop {
+            let dsq = self
+                .coinjoin
+                .queues
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .next_untried(0, now_secs() as i64)?;
             let mn = {
                 let picker = self
                     .coinjoin
@@ -2140,16 +2306,14 @@ impl NetworkSession {
                     .unwrap_or_else(|p| p.into_inner());
                 picker
                     .by_pro_tx_hash(&dsq.pro_tx_hash)
-                    .filter(|e| e.is_valid && e.service.is_some())
+                    .filter(|e| e.is_valid && e.service.is_some() && !busy.contains(&e.pro_tx_hash))
                     .cloned()
             };
             let Some(mn) = mn else { continue };
             let Some(amount) = denomination_to_amount(dsq.denom) else {
                 continue;
             };
-            let have =
-                select_by_denomination(&view.ready_to_mix(amount), amount, needs.max(0) as u64);
-            if have.is_empty() {
+            if select_by_denomination(&view.ready_to_mix(amount), amount, needs).is_empty() {
                 continue;
             }
             self.coinjoin
@@ -2157,26 +2321,8 @@ impl NetworkSession {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .mark_used(mn.pro_tx_hash);
-            break Some((mn, dsq.denom));
-        };
-        let chosen = match joined {
-            Some(j) => Some(j),
-            None => self.start_new_queue(&view, needs.max(0) as u64, wallet_id),
-        };
-        let Some((mn, denom)) = chosen else {
-            self.release_coinjoin_addresses(wallet_id, &collateral_addrs)
-                .await;
-            return Ok(());
-        };
-        self.spawn_session(
-            wallet_id,
-            mn,
-            denom,
-            collateral,
-            collateral_input,
-            collateral_addrs,
-        );
-        Ok(())
+            return Some((mn, dsq.denom));
+        }
     }
 
     /// `StartNewQueue` (client.cpp:1473-1555): a random unused masternode
@@ -2186,6 +2332,7 @@ impl NetworkSession {
         view: &MixView,
         needs: u64,
         wallet_id: WalletId,
+        busy: &HashSet<[u8; 32]>,
     ) -> Option<(PeerEntry, u32)> {
         let values: Vec<u64> = DENOMINATIONS
             .iter()
@@ -2195,6 +2342,19 @@ impl NetworkSession {
             self.set_mix_status(wallet_id, StatusCode::NoCompatibleInputs);
             return None;
         };
+        let mn = self.pick_new_masternode(wallet_id, busy)?;
+        let denom = choose_session_denom(&amounts, &mut rand::thread_rng())?;
+        Some((mn, denom))
+    }
+
+    /// `StartNewQueue`'s masternode (client.cpp:1490-1527, 1576-1612): up to
+    /// ten random unused ones, skipping those that queued too recently and
+    /// those a session of ours mixes with.
+    fn pick_new_masternode(
+        &self,
+        wallet_id: WalletId,
+        busy: &HashSet<[u8; 32]>,
+    ) -> Option<PeerEntry> {
         let mut picker = self
             .coinjoin
             .picker
@@ -2208,17 +2368,17 @@ impl NetworkSession {
                 return None;
             };
             picker.mark_used(mn.pro_tx_hash);
-            if self
-                .coinjoin
-                .queues
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .threshold_exceeded(&mn.pro_tx_hash, enabled)
+            if busy.contains(&mn.pro_tx_hash)
+                || self
+                    .coinjoin
+                    .queues
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .threshold_exceeded(&mn.pro_tx_hash, enabled)
             {
                 continue;
             }
-            let denom = choose_session_denom(&amounts, &mut rand::thread_rng())?;
-            return Some((mn, denom));
+            return Some(mn);
         }
         drop(picker);
         self.set_mix_status(wallet_id, StatusCode::FailedToStartQueue);
@@ -2240,6 +2400,7 @@ impl NetworkSession {
         collateral: Transaction,
         collateral_input: OutPoint,
         collateral_addrs: Vec<Address>,
+        rebalance: Option<RebalanceEntry>,
     ) {
         let settings = self.coinjoin.settings();
         let (stop, stop_rx) = watch::channel(false);
@@ -2272,13 +2433,15 @@ impl NetworkSession {
             key
         };
         self.spends.reserve(wallet_id, owner, [collateral_input]);
-        let params = SessionParams::new(
-            self.network.core_network(),
-            mn,
-            denom,
-            collateral,
-            settings.rounds,
-        );
+        let network = self.network.core_network();
+        let params = match rebalance {
+            Some(entry) => {
+                self.spends
+                    .reserve(wallet_id, owner, entry.inputs.iter().map(|c| c.outpoint));
+                SessionParams::rebalancing(network, mn, denom, collateral, settings.rounds, entry)
+            }
+            None => SessionParams::new(network, mn, denom, collateral, settings.rounds),
+        };
         let adapter = EngineMixingWallet {
             session: Arc::downgrade(self),
             wallet_id,
@@ -3847,6 +4010,15 @@ impl MixingWallet for EngineMixingWallet {
         Ok(view.map(|v| v.ready_to_mix(amount)).unwrap_or_default())
     }
 
+    async fn unspent_outpoints(&self) -> Result<HashSet<OutPoint>, WalletError> {
+        let s = self.session()?;
+        let fence = (s.coin_fence(self.wallet_id).await).map_err(|e| WalletError(e.to_string()))?;
+        let view = (s.pass_view(&fence).await)
+            .map_err(|e| WalletError(e.to_string()))?
+            .ok_or_else(|| WalletError("the wallet's coins are not readable".into()))?;
+        Ok(view.coins.iter().map(|c| c.coin.utxo.outpoint).collect())
+    }
+
     async fn reserve_scripts(&self, count: usize) -> Result<Vec<ScriptBuf>, WalletError> {
         let s = self.session()?;
         let addrs = s
@@ -4396,5 +4568,76 @@ mod tests {
         let ready = view.ready_to_mix(d);
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].rounds, 2);
+    }
+
+    fn view_of(coins: Vec<MixViewCoin>) -> MixView {
+        MixView {
+            height: 200,
+            coins,
+            balances: CoinJoinBalances::default(),
+            total: 0,
+            average_rounds: 0.0,
+        }
+    }
+
+    /// Goal 10 (gap 5): ten fully mixed 0.01 coins and no 0.1 promote (ten
+    /// 0.001 coins keep them from being demoted); one locked, nine are left
+    /// and nothing does. Without V24 nothing does either.
+    #[test]
+    fn a_promotion_needs_v24_and_ten_free_fully_mixed_coins() {
+        let small = DENOMINATIONS[3];
+        let mut coins: Vec<MixViewCoin> =
+            (1..=10).map(|n| coin(n, small, true, 4, true, C)).collect();
+        coins.extend((11..=20).map(|n| coin(n, DENOMINATIONS[4], true, 1, false, C)));
+        let view = view_of(coins);
+        assert!(view.rebalance_plan(10, false).is_empty());
+        let plan = view.rebalance_plan(10, true);
+        assert_eq!(plan.len(), 1);
+        let (r, inputs) = &plan[0];
+        assert_eq!(
+            *r,
+            Rebalance {
+                denom: 8,
+                kind: rebalance::RebalanceKind::Promotion
+            }
+        );
+        let mut picked: Vec<OutPoint> = inputs.iter().map(|c| c.outpoint).collect();
+        picked.sort();
+        let mut all: Vec<OutPoint> = view.coins[..10]
+            .iter()
+            .map(|c| c.coin.utxo.outpoint)
+            .collect();
+        all.sort();
+        assert_eq!(picked, all);
+
+        let mut locked = view.clone();
+        locked.coins[0].coin.reserved = true;
+        assert!(locked.rebalance_plan(10, true).is_empty());
+        let mut one_short = view.clone();
+        one_short.coins[0].fully_mixed = false;
+        assert!(one_short.rebalance_plan(10, true).is_empty());
+    }
+
+    /// Six 1 DASH coins (deficit 4) and no 0.1 (deficit 10 > 4 + 5): the
+    /// fully mixed one is split, the others are not spent.
+    #[test]
+    fn a_demotion_spends_one_fully_mixed_coin() {
+        let large = DENOMINATIONS[1];
+        let mut coins: Vec<MixViewCoin> =
+            (1..=5).map(|n| coin(n, large, true, 1, false, C)).collect();
+        coins.push(coin(6, large, true, 4, true, C));
+        let view = view_of(coins);
+        assert!(view.rebalance_plan(10, false).is_empty());
+        let plan = view.rebalance_plan(10, true);
+        assert_eq!(plan.len(), 1);
+        let (r, inputs) = &plan[0];
+        assert_eq!(r.kind, rebalance::RebalanceKind::Demotion);
+        assert_eq!(r.denom, 4);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].outpoint, view.coins[5].coin.utxo.outpoint);
+
+        let mut unconfirmed = view.clone();
+        unconfirmed.coins[5].coin.utxo.is_confirmed = false;
+        assert!(unconfirmed.rebalance_plan(10, true).is_empty());
     }
 }
