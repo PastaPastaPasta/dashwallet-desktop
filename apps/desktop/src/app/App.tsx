@@ -1,11 +1,11 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { errorMessage, type Backend } from "../api/backend";
 import type { LockStatus } from "../api/generated/LockStatus";
 import type { LaunchInfo } from "../api/generated/LaunchInfo";
 import type { TxRow } from "../api/generated/TxRow";
 import type { WalletSummary } from "../api/generated/WalletSummary";
-import { forgetWalletContent } from "../api/lockGate";
+import { closeWalletGate, forgetWalletContent, useWalletGateClosed } from "../api/lockGate";
 import { useBackend, useDashPayShell, useLockStatus, useOpenNetwork, useSyncStatus, useWallets } from "../api/queries";
 import { DashButton, DashLogo } from "../components/basics";
 import { EMPTY, walletListGate, walletReadyToOpen } from "../components/emptyStates";
@@ -13,7 +13,7 @@ import { EmptyState, LoadingState } from "../components/history";
 import { SwitchingCard } from "../components/networkPicker";
 import { SheetLayer, useLayeredSheet } from "../components/sheet";
 import { chipState, Sidebar, sidebarJoins, StatusBar, Toolbar } from "../components/shell";
-import { holdWalletToasts, showShellToast, ToastHost } from "../components/toast";
+import { showShellToast, ToastHost } from "../components/toast";
 import { takeSwitchNote } from "../network/switch";
 import { ForgotPassphraseSheet } from "../screens/ForgotPassphrase";
 import { LockScreen, UnlockSheet } from "../screens/LockScreen";
@@ -44,7 +44,7 @@ import { useStatusRegistration } from "../dashpay/queries";
 import { PictureScope, usePictureScopeValue } from "../dashpay/profileQueries";
 import { useMasternodesItem } from "../governance/queries";
 import { useSavedLinksOffer } from "./savedLinksOffer";
-import { useShellBridge } from "./shellBridge";
+import { focusPage, useShellBridge } from "./shellBridge";
 import { openFailure, type OpenFailure } from "./openFailure";
 import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
@@ -89,14 +89,17 @@ function Splash({ error, onRetry }: { error: OpenFailure | null; onRetry: () => 
 
 /** Auto lock (U-04 D12): armed while an encrypted vault holds its key and a wait is chosen;
  * input in the window restarts it, and on expiry the vault locks as the Lock button locks it. */
-function useAutoLock(backend: Backend, status: LockStatus | undefined, secs: number | null) {
+function useAutoLock(backend: Backend, client: QueryClient, status: LockStatus | undefined, secs: number | null) {
   const armed = secs !== null && armedFor(status?.state, status?.encrypted);
   useEffect(() => {
     if (!armed || secs === null) return;
     const timer = new AutoLockTimer();
     timer.arm(secs, () =>
       backend.lock().then(
-        () => showShellToast(SecurityText.lockedAutomatically),
+        () => {
+          closeWalletGate(client);
+          showShellToast(SecurityText.lockedAutomatically);
+        },
         (e) => showShellToast(`Could not lock: ${errorMessage(e)}`),
       ),
     );
@@ -106,7 +109,7 @@ function useAutoLock(backend: Backend, status: LockStatus | undefined, secs: num
       timer.disarm();
       for (const e of ACTIVITY_EVENTS) window.removeEventListener(e, onActivity, { capture: true });
     };
-  }, [backend, armed, secs]);
+  }, [backend, client, armed, secs]);
 }
 
 type WalletList = ReturnType<typeof useWallets>;
@@ -256,23 +259,37 @@ function Shell() {
   const [noticeClosed, setNoticeClosed] = useState(false);
   const notice = !noticeSaved && !noticeClosed;
   const lock = useLockStatus();
-  const locked = lock.data?.state === "locked";
-  // A lock unmounts the wallet's views in this commit; what they read goes once they are gone,
-  // so nothing mounted reads it again. Their toasts go too.
+  // Closed from the lock's event until a status read says unlocked (api/lockGate.ts).
+  const locked = useWalletGateClosed();
+  // The gate dropped the wallet's queries as it closed; anything a view still mounted then asked
+  // for goes too, now that the views are gone.
   useLayoutEffect(() => {
-    holdWalletToasts(locked);
     if (locked) forgetWalletContent(client);
   }, [client, locked]);
   // Read once the vault is not locked; the shell holds no wallet until then.
   const wallets = useWallets(!locked);
   const wallet = locked ? undefined : (wallets.data?.find((w) => w.walletId === walletId) ?? wallets.data?.[0]);
+  // Back from the lock screen, once the page is there again, focus lands on its title, as a link
+  // or a menu leaves it.
+  const backFromLock = useRef(false);
+  useEffect(() => {
+    if (locked) backFromLock.current = true;
+    else if (backFromLock.current && wallet) {
+      backFromLock.current = false;
+      if (document.activeElement === null || document.activeElement === document.body) focusPage();
+    }
+  }, [locked, wallet]);
 
   const canLock = lock.data?.encrypted === true && !locked;
   const lockNow = () => {
-    if (canLock) backend.lock().catch((e) => showShellToast(`Could not lock: ${errorMessage(e)}`));
+    if (canLock)
+      backend.lock().then(
+        () => closeWalletGate(client),
+        (e) => showShellToast(`Could not lock: ${errorMessage(e)}`),
+      );
   };
   useShellBridge(backend, network.dirName, launch.selftestLinkTrace, lockNow);
-  useAutoLock(backend, lock.data, useUi((s) => s.prefs.autoLockSecs));
+  useAutoLock(backend, client, lock.data, useUi((s) => s.prefs.autoLockSecs));
   // The native menus' Discreet Mode check and Lock Wallet follow the window, and so does its
   // content protection while a flow that shows or takes a recovery phrase is open (U-02 D15).
   // One call at a time, in order: a stale `secretShown` never lands last (review r1 #2). The

@@ -21,8 +21,9 @@ import { Done, Hint, NotYetRow, Problem, SettingsCard } from "./parts";
 
 type SecuritySheet = "encrypt" | "change" | "wipe" | null;
 
-/** The wipe sheet's flow when the vault locked with it open: Settings unmounts behind the lock
- * screen, and the sheet opens again with it once unlocked, the shell held meanwhile (D33, D38). */
+/** The wipe sheet's flow when the vault locked with it open: Settings unmounts with the other pages
+ * when the lock screen replaces them, and the sheet opens again with it once unlocked, the shell
+ * held meanwhile (D33, D38). */
 let wipeAcrossLock: WipeModel | null = null;
 
 export function SecurityTab() {

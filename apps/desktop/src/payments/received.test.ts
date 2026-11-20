@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TxNoticeRow } from "../api/generated/TxNoticeRow";
-import { announceReceived, exposedNow, lookupPending, LOOKUP_TIMEOUT_MS, isReceivedPayment, markReceivedRead, onReceived, recordReceived, resetReceived, unreadReceived } from "./received";
+import { announceReceived, exposedNow, forgetSealed, lookupPending, LOOKUP_TIMEOUT_MS, isReceivedPayment, markReceivedRead, onReceived, recordReceived, resetReceived, sealReceived, unreadReceived } from "./received";
 
 const row = (over: Partial<TxNoticeRow> = {}): TxNoticeRow => ({
   txid: "aa".repeat(32),
@@ -121,5 +121,43 @@ describe("exposedNow (DEC-1058 r3 #3)", () => {
     expect(exposedNow(live)).toBe(true);
     inert = true;
     expect(exposedNow(live)).toBe(false);
+  });
+});
+
+describe("the payments across a lock", () => {
+  it("a lock drops their amounts and addresses, and gives their txids back oldest first", () => {
+    recordReceived("w", [row({ txid: "a" })]);
+    recordReceived("v", [row({ txid: "b" })]);
+    markReceivedRead("w", ["a:0"]);
+    expect(sealReceived()).toEqual([
+      { walletId: "w", txid: "a" },
+      { walletId: "v", txid: "b" },
+    ]);
+    // Looked up again after the unlock: the bell's seen mark comes back with it, the amount is the new read's.
+    const again = recordReceived("w", [row({ txid: "a", amount: 7 })], 5, false);
+    expect(again).toEqual([expect.objectContaining({ txid: "a", duffs: 7, read: true })]);
+    expect(recordReceived("v", [row({ txid: "b" })], 5, false)).toEqual([expect.objectContaining({ read: false })]);
+  });
+
+  it("a lookup that answers after a lock records nothing and says so", async () => {
+    let answer!: (rows: TxNoticeRow[]) => void;
+    const seen: unknown[] = [];
+    const stop = onReceived((b) => seen.push(b));
+    const lookup = announceReceived({ txNotices: () => new Promise<TxNoticeRow[]>((r) => (answer = r)) }, "w", ["a"]);
+    sealReceived();
+    answer([row({ txid: "a" })]);
+    expect(await lookup).toBe("stale");
+    expect(seen).toEqual([]);
+    expect(sealReceived()).toEqual([]);
+    expect(await announceReceived({ txNotices: async () => [row({ txid: "a" })] }, "w", ["a"])).toBe("recorded");
+    stop();
+  });
+
+  it("forgets what the lock kept of a removed wallet", () => {
+    recordReceived("w", [row({ txid: "a" })]);
+    markReceivedRead("w", ["a:0"]);
+    sealReceived();
+    forgetSealed("w");
+    expect(recordReceived("w", [row({ txid: "a" })])).toEqual([expect.objectContaining({ read: false })]);
   });
 });

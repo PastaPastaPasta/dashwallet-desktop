@@ -48,6 +48,10 @@ expect "a failed run" '{final: true, error: "vault.wrong_passphrase: wrong passp
 expect "a refused passphrase file" \
   '{final: true, error: "app.selftest_passphrase_file: /t/passphrase: has mode 644: group and others must have no access (chmod 600)"}' \
   "the self-test failed: app.selftest_passphrase_file: /t/passphrase: has mode 644"
+# A locked vault launched without --selftest-passphrase-file ends at once, recording nothing.
+expect "a locked launch it cannot unlock" \
+  '{final: true, error: "the vault is locked and the self-test has no way to unlock it: run it with --selftest-passphrase-file"}' \
+  "the self-test failed: the vault is locked and the self-test has no way to unlock it"
 expect "no history rows" '.shown.rows = []' "showed no history row"
 expect "nothing shown" 'del(.shown)' "showed no history row"
 expect "a failed check" '.screens["dark/txDetail"].checks[0] |= (.pass = false | .actual = "blue")' \

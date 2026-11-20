@@ -76,7 +76,7 @@ let cancelLanding = () => {};
  * meanwhile stays (BL-165). A closing sheet's return to its opener, or a key that moved nothing (a
  * modifier, Escape), is not the user moving focus: the page takes it. A newer call replaces a
  * pending one, so a window whose frames are paused (hidden) holds one wait, not one per page. */
-function focusPage() {
+export function focusPage() {
   cancelLanding();
   // Where focus was at the first key or pointer press since the call; `undefined` before one.
   let atInput: Element | null | undefined;

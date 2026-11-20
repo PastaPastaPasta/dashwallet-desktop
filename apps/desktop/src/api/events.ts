@@ -8,7 +8,6 @@ import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
 import type { DashPayStatus } from "./generated/DashPayStatus";
 import type { HistoryRows } from "./generated/HistoryRows";
-import type { LockStatus } from "./generated/LockStatus";
 import type { PlatformChangeName } from "./generated/PlatformChangeName";
 import type { UnfinishedTransfers } from "./generated/UnfinishedTransfers";
 import { profileKeys } from "../dashpay/profileQueries";
@@ -16,10 +15,12 @@ import { dashpayKeys } from "../dashpay/queries";
 import { mnKeys } from "../masternodes/queries";
 import { onTopUpSettled } from "../dashpay/topup";
 import { onWithdrawSettled } from "../dashpay/withdraw";
-import { announceReceived, LOOKUP_TIMEOUT_MS } from "../payments/received";
+import { HeldNews } from "../payments/heldNews";
+import { announceReceived, forgetSealed, LOOKUP_TIMEOUT_MS, sealReceived } from "../payments/received";
 import { onMoveSettled } from "../platform/move";
 import { onRecoverySettled } from "../recovery/model";
 import { onShieldedSettled } from "../shielded/flow";
+import { closeWalletGate, followLockStatus, subscribeWalletGate, walletGateClosed } from "./lockGate";
 import { keys, scanHeightsStale } from "./queries";
 import { announceable, feedSync } from "./syncDisplay";
 
@@ -66,6 +67,8 @@ export function invalidationsFor(event: AppEvent): QueryKey[] | "all" {
     // A registration parks for an unlock or an authorization without writing its row, so
     // without a Platform signal (DP1-08 D19).
     case "vaultLockState":
+      // A lock drops the wallet's queries (lockGate.ts): only the lock screen's are read again.
+      if (event.state === "locked") return [keys.lockStatus, keys.lockReconcile];
       // Masternode rows and panes carry the attached keys, `null` while locked (MG-10 §3.5 names only the pane).
       return [keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll];
     case "lockProgress":
@@ -148,15 +151,35 @@ export function ofOtherNetwork(event: AppEvent, network: string): boolean {
 /** Subscribes the query client to the backend's events of the window's `network` (its directory
  * name); returns the unsubscribe function. */
 export async function bridgeEvents(backend: Backend, client: QueryClient, network: string): Promise<() => void> {
-  const locked = () => client.getQueryData<LockStatus>(keys.lockStatus)?.state === "locked";
-  // A locked window reads nothing of the wallet: payments that arrive meanwhile are looked
-  // up at the unlock, for the bell, without a toast (none comes while locked).
-  const heldNews = new Map<string, Set<string>>();
-  const stopHeldNews = client.getQueryCache().subscribe((e) => {
-    if (e.type !== "updated" || e.query.queryKey[0] !== keys.lockStatus[0] || heldNews.size === 0 || locked()) return;
-    for (const [walletId, txids] of heldNews) void announceReceived(backend, walletId, [...txids], LOOKUP_TIMEOUT_MS, false);
-    heldNews.clear();
+  // A locked window holds nothing of the wallet: the lock drops the bell's payments, and they and
+  // the ones that arrive meanwhile are looked up at the unlock, for the bell, without a toast (none
+  // comes while locked). The lookups go one at a time, so the bell ends newest first.
+  const heldNews = new HeldNews();
+  let draining = false;
+  const drain = async () => {
+    if (draining) return;
+    draining = true;
+    try {
+      while (!walletGateClosed() && heldNews.size > 0) {
+        const { runs, overflowed } = heldNews.take();
+        for (const [i, run] of runs.entries()) {
+          const answer = walletGateClosed() ? "stale" : await announceReceived(backend, run.walletId, run.txids, LOOKUP_TIMEOUT_MS, false);
+          if (answer !== "stale") continue;
+          // Locked again: what is left waits for the next unlock.
+          heldNews.holdOlder(runs.slice(i).flatMap((r) => [...r.txids].reverse().map((txid) => ({ walletId: r.walletId, txid }))));
+          break;
+        }
+        if (overflowed && !walletGateClosed()) void client.invalidateQueries({ queryKey: keys.dashpayAll });
+      }
+    } finally {
+      draining = false;
+    }
+  };
+  const stopHeldNews = subscribeWalletGate(() => {
+    if (walletGateClosed()) heldNews.holdOlder(sealReceived());
+    else void drain();
   });
+  const stopGate = followLockStatus(client);
   let reconcile: ReturnType<typeof setTimeout> | undefined;
   let reconcileBy = 0;
   const stopReconcile = () => {
@@ -165,6 +188,16 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
   };
   const unsubscribe = await backend.onEvent((event) => {
     if (ofOtherNetwork(event, network)) return;
+    // The lock is the engine's word: the gate closes before anything below reads again.
+    if (event.kind === "vaultLockState" && event.state === "locked") closeWalletGate(client);
+    if (event.kind === "walletRemoved") {
+      heldNews.drop(event.walletId);
+      forgetSealed(event.walletId);
+    }
+    if (event.kind === "sessionOpened" || event.kind === "sessionClosed" || (event.kind === "vaultLockState" && event.state === "noVault")) {
+      heldNews.clear();
+      forgetSealed();
+    }
     if (event.kind === "notice") console.warn("engine notice", event.code, event.detail);
     // The engine's own reading, as it arrives: the display's (api/syncDisplay.ts) and what decides
     // below. Not the query's, which only follows once its refetch is back.
@@ -176,12 +209,8 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
     // at most (`announceable`). A wallet that has not been caught up yet is catching up. The smoothed
     // display never decides this.
     if (event.kind === "newTransactions" && (!event.catchUp || announceable(backend))) {
-      if (!locked()) void announceReceived(backend, event.walletId, event.txids);
-      else {
-        const held = heldNews.get(event.walletId) ?? new Set<string>();
-        for (const txid of event.txids) held.add(txid);
-        heldNews.set(event.walletId, held);
-      }
+      if (walletGateClosed()) heldNews.hold(event.walletId, event.txids);
+      else void announceReceived(backend, event.walletId, event.txids);
     }
     if (event.kind === "historyChanged" || (event.kind === "platform" && rereadsHistory(event.change.domain))) {
       // Refetch only the first page of each list: every history_page call re-reads the whole
@@ -250,6 +279,7 @@ export async function bridgeEvents(backend: Backend, client: QueryClient, networ
   return () => {
     stopReconcile();
     stopHeldNews();
+    stopGate();
     stopTopUps();
     stopWithdrawals();
     stopMoves();
