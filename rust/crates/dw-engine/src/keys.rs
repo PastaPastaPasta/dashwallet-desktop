@@ -100,6 +100,51 @@ fn payment_auth_key(vault_id: &[u8]) -> String {
     format!("{PAYMENT_AUTH_KEY}{}", hex::encode(vault_id))
 }
 
+/// The vault's policy commitments ([`dw_vault::PolicyCommitments`]): one
+/// durable row per vault id in the app database.
+pub(crate) struct PolicyCommitmentStore(pub(crate) Arc<dw_appdb::AppDb>);
+
+fn policy_commit_key(vault_id: &[u8]) -> String {
+    format!("vault.policy_generation/{}", hex::encode(vault_id))
+}
+
+impl dw_vault::PolicyCommitments for PolicyCommitmentStore {
+    fn committed(&self, vault_id: &[u8]) -> Option<u64> {
+        let stored = self
+            .0
+            .setting(dw_appdb::GLOBAL_SCOPE, &policy_commit_key(vault_id))
+            .map_err(|e| e.to_string())
+            .and_then(|v| {
+                v.map(|v| v.parse::<u64>().map_err(|e| e.to_string()))
+                    .transpose()
+            });
+        stored.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read the policy commitment");
+            None
+        })
+    }
+
+    fn commit(&self, vault_id: &[u8], generation: u64) -> Result<(), String> {
+        if self.committed(vault_id) >= Some(generation) {
+            return Ok(());
+        }
+        let value = generation.to_string();
+        self.0
+            .set_setting_durable(
+                dw_appdb::GLOBAL_SCOPE,
+                &policy_commit_key(vault_id),
+                Some(&value),
+            )
+            .map_err(|e| e.to_string())
+    }
+
+    fn forget(&self, vault_id: &[u8]) -> Result<(), String> {
+        self.0
+            .set_setting_durable(dw_appdb::GLOBAL_SCOPE, &policy_commit_key(vault_id), None)
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// Tells the vault the stored choice for the vault it holds, so it opens a
 /// signing window only when the user chose one. A row that cannot be read
 /// asks every time.

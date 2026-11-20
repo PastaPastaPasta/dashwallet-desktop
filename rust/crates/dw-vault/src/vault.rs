@@ -108,9 +108,9 @@ use crate::mnemonic;
 use crate::signer::{SignerScope, VaultSigner};
 use crate::types::{
     AuthGrant, Clock, Credential, DEFAULT_QUICK_UNLOCK_SPEND_LIMIT, GrantKind, GrantPurpose,
-    GrantToken, KeyHold, KeySource, LockState, PASSPHRASE_MAX_AGE_SECS, QUICK_UNLOCK_SPEND_LIMITS,
-    QuickUnlockPolicy, RevealedMnemonic, SIGNING_WINDOW_SECS, SeedDerivation, SignerLife,
-    UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
+    GrantToken, KeyHold, KeySource, LockState, PASSPHRASE_MAX_AGE_SECS, PolicyCommitments,
+    QUICK_UNLOCK_SPEND_LIMITS, QuickUnlockPolicy, RevealedMnemonic, SIGNING_WINDOW_SECS,
+    SeedDerivation, SignerLife, UnlockScope, VaultConfig, VaultStatus, WalletId, WalletSecret,
 };
 use crate::vote::VoteSigner;
 use crate::{SignerError, VaultError};
@@ -358,10 +358,11 @@ fn put_policy(
     next: &mut VaultFile,
     dek: &[u8; 32],
     high_water: u64,
+    floor: Option<u64>,
     payload: PolicyPayload,
 ) -> Result<u64, VaultError> {
     let mut manifest = verify_manifest(next, dek, high_water)?;
-    manifest.generation += 1;
+    manifest.generation = manifest.generation.max(floor.unwrap_or(0)) + 1;
     manifest.policy = Some(manifest.generation);
     next.manifest = seal_manifest(dek, &next.vault_id, &next.network, &manifest)?;
     next.quick_unlock = Some(seal_policy(
@@ -376,13 +377,25 @@ fn put_policy(
     Ok(manifest.generation)
 }
 
+fn raise(floor: &mut Option<u64>, generation: u64) {
+    *floor = Some(floor.unwrap_or(0).max(generation));
+}
+
 /// The authenticated policy of `f`; `None` when the file has none and never
 /// had one this build wrote. A plain copy that differs from the sealed one,
 /// or a manifest that does not authenticate, is `Corrupt`. Once the
 /// manifest names a policy generation, a missing policy or one sealed at
-/// another generation is [`PolicyPayload::withdrawn`].
-fn open_policy(f: &VaultFile, dek: &[u8; 32]) -> Result<Option<PolicyPayload>, VaultError> {
+/// another generation is [`PolicyPayload::withdrawn`], and so is one older
+/// than `floor`, the host's commitment, or none where one is committed.
+fn open_policy(
+    f: &VaultFile,
+    dek: &[u8; 32],
+    floor: Option<u64>,
+) -> Result<Option<PolicyPayload>, VaultError> {
     let manifest = verify_manifest(f, dek, 0)?;
+    if floor.is_some_and(|floor| manifest.policy.is_none_or(|p| p < floor)) {
+        return Ok(Some(PolicyPayload::withdrawn()));
+    }
     let Some(settings) = &f.quick_unlock else {
         return Ok(manifest.policy.map(|_| PolicyPayload::withdrawn()));
     };
@@ -566,7 +579,7 @@ fn sealed_spend_limit(inner: &Inner) -> Result<u64, VaultError> {
     let (Some(file), Some(dek)) = (inner.file.as_ref(), inner.dek.as_ref()) else {
         return Err(VaultError::CredentialRequired);
     };
-    match open_policy(file, dek) {
+    match open_policy(file, dek, inner.policy_floor) {
         Ok(Some(policy)) => Ok(policy.spend_limit_duffs),
         Ok(None) => Ok(DEFAULT_QUICK_UNLOCK_SPEND_LIMIT),
         Err(_) => Err(VaultError::CredentialRequired),
@@ -626,6 +639,10 @@ struct Inner {
     heartbeat: Option<Instant>,
     /// [`Vault::require_signing_window_heartbeat`] was called.
     heartbeat_required: bool,
+    /// [`Vault::attach_policy_commitments`]; none in tests and tools.
+    commitments: Option<Arc<dyn PolicyCommitments>>,
+    /// The policy generation committed there for the vault in memory.
+    policy_floor: Option<u64>,
     #[cfg(test)]
     gate_log: Option<Vec<GateEvent>>,
 }
@@ -779,6 +796,8 @@ impl Vault {
                     window_generation: 0,
                     heartbeat: None,
                     heartbeat_required: false,
+                    commitments: None,
+                    policy_floor: None,
                     #[cfg(test)]
                     gate_log: None,
                 }),
@@ -901,18 +920,56 @@ impl Vault {
 
     /// [`Self::persist`] of a file whose manifest is at `generation`: the
     /// file and the high-water mark are published together, so no reader
-    /// checks the old file against the new mark.
+    /// checks the old file against the new mark. The policy generation is
+    /// committed first ([`Self::commit_policy`]); a failed commit changes
+    /// nothing.
     fn persist_at(
         &self,
         _writer: &WriteGuard<'_>,
         next: VaultFile,
         generation: u64,
     ) -> Result<(), VaultError> {
-        file::write(&self.shared.dir, &next)?;
+        let committed = self.commit_policy(&next.vault_id, generation)?;
+        let written = file::write(&self.shared.dir, &next);
         let mut inner = self.inner();
+        if committed {
+            raise(&mut inner.policy_floor, generation);
+        }
+        written?;
         inner.file = Some(next);
         inner.high_water = inner.high_water.max(generation);
         Ok(())
+    }
+
+    /// Commits `generation` as the policy's, durably, before the file that
+    /// seals it is written: a crash between the two leaves the commitment
+    /// ahead, so the file's policy counts as withdrawn (limit 0) until the
+    /// limit is set again, and an older, higher limit never counts.
+    /// `Ok(false)` without a host store.
+    fn commit_policy(&self, vault_id: &[u8], generation: u64) -> Result<bool, VaultError> {
+        let Some(store) = self.inner().commitments.clone() else {
+            return Ok(false);
+        };
+        store
+            .commit(vault_id, generation)
+            .map_err(VaultError::Storage)?;
+        Ok(true)
+    }
+
+    /// The host's store for policy commitments, kept outside the vault
+    /// file. The commitment of the vault in memory is read now. A file
+    /// that names a newer policy than the store holds (after an upgrade, a
+    /// recovery, or a passphrase check that re-sealed the passphrase time)
+    /// has it recorded at the next passphrase check; a new limit is
+    /// committed before it is written. A recovery keeps the replaced
+    /// vault's commitment and a destroy drops it. Without a store the vault
+    /// has only its file's own check.
+    pub fn attach_policy_commitments(&self, store: Arc<dyn PolicyCommitments>) {
+        let _writer = self.writer();
+        let floor = self.vault_id().and_then(|id| store.committed(&id));
+        let mut inner = self.inner();
+        inner.policy_floor = floor;
+        inner.commitments = Some(store);
     }
 
     fn now(&self) -> u64 {
@@ -1081,6 +1138,7 @@ impl Vault {
         let mut inner = self.inner();
         inner.file = Some(vault_file);
         inner.high_water = 1;
+        inner.policy_floor = None;
         inner.install_key(dek, UnlockScope::Full, &ops);
         inner.backup_kek = backup_kek;
         if encrypted {
@@ -1336,7 +1394,7 @@ impl Vault {
         );
 
         let now = self.now();
-        let (had_failures, policy) = {
+        let (had_failures, policy, record) = {
             let mut inner = self.inner();
             let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
             let manifest = verify_manifest(f, &dek, inner.high_water)?;
@@ -1344,24 +1402,40 @@ impl Vault {
             // With slot B enrolled the passphrase time is enforced from the
             // file, so it is persisted (sealed) on every successful check.
             let policy = if f.slot_b.is_some() {
-                Some(open_policy(f, &dek)?.unwrap_or_default())
+                Some(open_policy(f, &dek, inner.policy_floor)?.unwrap_or_default())
             } else {
                 None
             };
+            let floor = inner.policy_floor.unwrap_or(0);
+            let record = manifest
+                .policy
+                .filter(|&named| named > floor)
+                .zip(inner.commitments.clone())
+                .map(|(named, store)| (named, store, f.vault_id.clone()));
             inner.high_water = inner.high_water.max(manifest.generation);
             inner.last_passphrase_at = Some(now);
-            (had_failures, policy)
+            (had_failures, policy, record)
         };
+        if let Some((named, store, vault_id)) = record {
+            match store.commit(&vault_id, named) {
+                Ok(()) => raise(&mut self.inner().policy_floor, named),
+                Err(e) => tracing::warn!(error = %e, "could not record the policy commitment"),
+            }
+        }
         if had_failures || policy.is_some() {
             let mut next = self.file_copy(writer)?;
             next.throttle = Throttle::default();
             let mut generation = 0;
             if let Some(policy) = policy {
-                let high_water = self.inner().high_water;
+                let (high_water, floor) = {
+                    let inner = self.inner();
+                    (inner.high_water, inner.policy_floor)
+                };
                 generation = put_policy(
                     &mut next,
                     &dek,
                     high_water,
+                    floor,
                     PolicyPayload {
                         last_passphrase_at: Some(now),
                         ..policy
@@ -1627,7 +1701,7 @@ impl Vault {
                 .map_err(|_| VaultError::Corrupt("data key length".into()))?,
         );
         let manifest = verify_manifest(f, &dek, inner.high_water)?;
-        let policy = open_policy(f, &dek)?.unwrap_or_default();
+        let policy = open_policy(f, &dek, inner.policy_floor)?.unwrap_or_default();
         inner.high_water = inner.high_water.max(manifest.generation);
 
         // A clock set back gives age 0 (fresh); one set forward only stales.
@@ -2946,7 +3020,8 @@ impl Vault {
         // and released in one gated operation.
         self.gated(VaultError::Locked, |op| {
             let dek = self.key_for(op, &token)?;
-            let policy = open_policy(&next, &dek)?.unwrap_or_default();
+            let floor = self.inner().policy_floor;
+            let policy = open_policy(&next, &dek, floor)?.unwrap_or_default();
             let last_passphrase_at = policy
                 .last_passphrase_at
                 .max(self.inner().last_passphrase_at);
@@ -2963,6 +3038,7 @@ impl Vault {
                 &mut next,
                 &dek,
                 high_water,
+                floor,
                 PolicyPayload {
                     last_passphrase_at,
                     ..policy
@@ -3131,7 +3207,7 @@ impl Vault {
         QuickUnlockPolicy {
             enrolled: file.is_some_and(|f| f.slot_b.is_some()),
             spend_limit_duffs: match (file, inner.dek.as_ref()) {
-                (Some(f), Some(dek)) => match open_policy(f, dek) {
+                (Some(f), Some(dek)) => match open_policy(f, dek, inner.policy_floor) {
                     Ok(Some(policy)) => policy.spend_limit_duffs,
                     _ => shown,
                 },
@@ -3167,12 +3243,14 @@ impl Vault {
         crate::signer::test_hook::checked();
         self.gated(VaultError::Locked, |op| {
             let dek = self.key_for(op, &token)?;
-            let policy = open_policy(&next, &dek)?.unwrap_or_default();
+            let floor = self.inner().policy_floor;
+            let policy = open_policy(&next, &dek, floor)?.unwrap_or_default();
             let high_water = self.inner().high_water;
             let generation = put_policy(
                 &mut next,
                 &dek,
                 high_water,
+                floor,
                 PolicyPayload {
                     spend_limit_duffs,
                     last_passphrase_at: policy
@@ -3315,6 +3393,7 @@ impl Vault {
             inner.backup_kek = Some(backup_kek);
             inner.last_passphrase_at = Some(now);
             arm_signing_window(&mut inner, self.clock());
+            inner.policy_floor = None;
         }
         drop(ops);
         let disk = file::read(&self.shared.dir)?
@@ -3347,7 +3426,7 @@ impl Vault {
         let Some(dek) = &inner.dek else {
             return 0;
         };
-        match open_policy(old, dek) {
+        match open_policy(old, dek, inner.policy_floor) {
             Ok(Some(policy)) => policy.spend_limit_duffs,
             Ok(None) => DEFAULT_QUICK_UNLOCK_SPEND_LIMIT,
             Err(_) => 0,
@@ -3395,7 +3474,14 @@ impl Vault {
             inner.file = None;
             inner.high_water = 0;
             inner.last_passphrase_at = None;
+            inner.policy_floor = None;
             inner.forget_key(&ops);
+        }
+        let store = self.inner().commitments.clone();
+        if let Some(store) = store
+            && let Err(e) = store.forget(&current.vault_id)
+        {
+            tracing::warn!(error = %e, "could not drop the policy commitment");
         }
         drop(links);
         drop(writer);
@@ -3719,7 +3805,7 @@ mod tests {
         );
         assert_eq!(
             with(&|f| {
-                put_policy(f, &dek, 0, payload(20_000_000, None)).unwrap();
+                put_policy(f, &dek, 0, None, payload(20_000_000, None)).unwrap();
             }),
             20_000_000
         );

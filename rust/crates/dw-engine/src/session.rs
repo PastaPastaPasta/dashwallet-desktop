@@ -358,8 +358,13 @@ impl NetworkSession {
         let appdb = Arc::new(appdb);
         {
             let (vault, db) = (vault.clone(), Arc::clone(&appdb));
-            tokio::task::spawn_blocking(move || crate::keys::sync_signing_window(&vault, &db))
-                .await?;
+            tokio::task::spawn_blocking(move || {
+                vault.attach_policy_commitments(Arc::new(crate::keys::PolicyCommitmentStore(
+                    Arc::clone(&db),
+                )));
+                crate::keys::sync_signing_window(&vault, &db)
+            })
+            .await?;
         }
         // Owner-only whatever the umask (DASHPAY §3.4). The cache is
         // disposable, so a stray file, a symlink that cannot be resolved, or

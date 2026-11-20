@@ -812,6 +812,43 @@ fn a_lease_racing_window_grants_stays_within_the_limit() {
     assert_eq!(f.session.vault().signing_window_remaining(), Some(0));
 }
 
+/// A whole older vault file put back while the app is closed counts as
+/// limit 0 at the next open: the commitment is in the app database.
+#[test]
+fn an_older_vault_file_put_back_between_runs_has_limit_0() {
+    let mut f = fixture(true);
+    let set = |f: &Fixture, limit: u64| {
+        f.engine
+            .block_on(f.session.vault_op(move |v| {
+                let change = v.authorize(
+                    GrantPurpose::ChangeCredential,
+                    None,
+                    Credential::Passphrase(PASS),
+                )?;
+                v.set_quick_unlock_spend_limit(&change.id, limit).map(drop)
+            }))
+            .unwrap();
+    };
+    set(&f, 500_000_000);
+    let file = f
+        .session
+        .data_dir()
+        .join(dw_vault::VAULT_DIR)
+        .join("vault.dwv");
+    let older = std::fs::read(&file).unwrap();
+    set(&f, 0);
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    std::fs::write(&file, &older).unwrap();
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    f.session.vault().unlock(PASS, UnlockScope::Full).unwrap();
+    assert_eq!(f.session.vault().quick_unlock_policy().spend_limit_duffs, 0);
+}
+
 /// A recovery reads the replaced vault's payment choice under the same
 /// lock as a change of it: a change that holds the lock when the recovery
 /// starts lands first, and the new vault keeps it rather than the value

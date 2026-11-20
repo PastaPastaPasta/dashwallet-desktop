@@ -61,6 +61,10 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[
         "internal: a sleep in this process ends the window; lock drops it with the key",
     ),
     (
+        "Vault::attach_policy_commitments",
+        "internal: the engine attaches the app database's policy commitments when it opens a session",
+    ),
+    (
         "Vault::require_signing_window_heartbeat",
         "internal: the app requires the sleep watcher's beats for every vault it opens",
     ),
