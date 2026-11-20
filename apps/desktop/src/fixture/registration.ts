@@ -119,7 +119,7 @@ export function checkUsername(label: string): UsernameCheck {
 
 const fail = (code: AppError["code"], message: string, data: AppError["data"] = null): AppError => ({ code, message, data });
 
-/** The engine refuses a Shielded-funded start until its flow step lands (m4 item 88); C4c adds the readiness quote. */
+/** The engine refuses a Shielded-funded start until its flow step lands (m4 item 94); C4c adds the readiness quote. */
 export const shieldedOff = (): AppError =>
   fail("platform.feature_off", "shielded_registration", { kind: "feature", feature: "shielded_registration" });
 const invalid = (detail: string) => fail("invalid_argument", detail);
