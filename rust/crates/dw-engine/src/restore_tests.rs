@@ -2474,6 +2474,47 @@ fn keys_attached_with_a_lookahead_raise_it_and_replay_from_the_birth() {
     );
 }
 
+/// Keys attached with a lookahead smaller than the one the wallet has keep
+/// the larger: an address the wallet watched at index 500 is still derived
+/// after a restart.
+#[test]
+fn keys_attached_with_a_smaller_lookahead_keep_the_wallets_larger_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |lookahead| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(HEIGHT),
+                lookahead,
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(Some(1_000)).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+
+    assert_eq!(import(Some(200)).unwrap(), id);
+
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(1_000)
+    );
+    let session = reopen(&engine, session);
+    assert_eq!(gap(&engine, &session, id, bip44()), 1_000);
+    let highest = engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        let funds = info.accounts.funds_account(&bip44()).unwrap();
+        funds.managed_account_type().address_pools()[0].highest_generated
+    });
+    assert!(highest.is_some_and(|h| h >= 500), "{highest:?}");
+}
+
 /// A restored backup's lookahead is stored and raised before the wallet is
 /// registered, not only once its settings rows land.
 #[test]
@@ -2557,6 +2598,55 @@ fn a_cancelled_replay_above_an_owed_start_keeps_that_start_owed() {
     let live = session.live().unwrap();
     let record = engine.block_on(live.replay.get(id)).unwrap().unwrap();
     assert!(record.cancelled && record.reached == 800, "{record:?}");
+}
+
+/// A cancelled replay below the birth holds no lower than the birth
+/// checkpoint once resumed, so a start owed above its own start but below
+/// that hold stays owed: a rescan from the birth would clear the hold
+/// without scanning it.
+#[test]
+fn a_cancelled_replay_below_the_birth_keeps_a_start_owed_below_its_hold() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = born_at_700(&engine, &session);
+    set_wide_scan(
+        &engine,
+        &session,
+        id,
+        Some(crate::keys::WideScan::From(199)),
+    );
+    store_setting(&engine, &session, id, "replay", "2:1000:99:1:0");
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(199))
+    );
+}
+
+/// A rescan that cannot widen a wallet without a marker (an older build's,
+/// or one whose done mark was not stored) stores what it owes, from the
+/// rescan's start and no later than the birth, before it scans narrow.
+#[test]
+fn a_rescan_that_cannot_widen_a_wallet_without_a_marker_marks_it_owed() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = born_at_700(&engine, &session);
+    set_wide_scan(&engine, &session, id, None);
+    start_offline_spv(&engine, &session);
+
+    let rescanned = failing(&crate::keys::FAIL_WIDEN, id, || {
+        engine.block_on(session.rescan(crate::RescanFrom::WalletBirth))
+    });
+
+    rescanned.unwrap();
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(699))
+    );
 }
 
 /// A wallet born at block 700 and scanned to 1,000.
