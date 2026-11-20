@@ -120,6 +120,16 @@ pub(crate) enum Funding {
     /// engine re-derives the private key) and `proof` the faucet's public
     /// `assetLockProof` hex. The outpoint goes to `asset_lock_outpoint`.
     FaucetAssetLock { key: String, proof: String },
+    /// Paid from the shielded pool (C-funding F3): the accepted quote's
+    /// `denomination` in credits, and `fallback`, the wallet's own Platform
+    /// receive address fixed at Draft, where Platform returns the payment
+    /// less a penalty if it cannot create the identity (F13). `identity`:
+    /// the id the create's notes give, once the call returns it (F11).
+    Shielded {
+        denomination: u64,
+        fallback: String,
+        identity: Option<String>,
+    },
 }
 
 /// A stored value read back.
@@ -159,6 +169,19 @@ impl Funding {
             Funding::FaucetAssetLock { key, proof } => {
                 json!({"v": v, "kind": "faucet_asset_lock", "key": key, "proof": proof})
             }
+            Funding::Shielded {
+                denomination,
+                fallback,
+                identity,
+            } => {
+                let mut value = json!({
+                    "v": v, "kind": "shielded", "denomination": denomination, "fallback": fallback,
+                });
+                if let Some(identity) = identity {
+                    value["identity"] = json!(identity);
+                }
+                value
+            }
         }
         .to_string()
     }
@@ -191,6 +214,11 @@ impl Funding {
                 "faucet_asset_lock" => Funding::FaucetAssetLock {
                     key: field("key")?,
                     proof: field("proof")?,
+                },
+                "shielded" => Funding::Shielded {
+                    denomination: value.get("denomination")?.as_u64()?,
+                    fallback: field("fallback")?,
+                    identity: optional("identity")?,
                 },
                 _ => return None,
             })
@@ -287,6 +315,16 @@ mod tests {
                 key: "k1".into(),
                 proof: "00ff".into(),
             },
+            Funding::Shielded {
+                denomination: 3_000_000_000,
+                fallback: "tdash1qown".into(),
+                identity: None,
+            },
+            Funding::Shielded {
+                denomination: 3_000_000_000,
+                fallback: "tdash1qown".into(),
+                identity: Some("Carol1dentity".into()),
+            },
         ];
         for f in all {
             let text = f.encode();
@@ -316,6 +354,10 @@ mod tests {
             // No build wrote an invitation row without its identity (D26):
             // DP1-02 refused invitations at the start.
             r#"{"v":1,"kind":"invitation","link_id":"abc"}"#,
+            // A shielded row always names its denomination and fallback.
+            r#"{"v":1,"kind":"shielded","fallback":"tdash1qown"}"#,
+            r#"{"v":1,"kind":"shielded","denomination":1}"#,
+            r#"{"v":1,"kind":"shielded","denomination":1,"fallback":"f","identity":7}"#,
             "core_balance",
             "",
             "wallet",

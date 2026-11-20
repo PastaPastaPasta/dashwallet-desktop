@@ -109,7 +109,7 @@
 //!   aborts, under no engine timeout; the library's own waits are bounded
 //!   by its arguments.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -130,6 +130,7 @@ use key_wallet::wallet::managed_wallet_info::asset_lock_builder::AssetLockFundin
 use platform_wallet::changeset::{
     PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
 };
+use platform_wallet::manager::shielded_sync::WalletShieldedOutcome;
 use platform_wallet::wallet::asset_lock::AssetLockFunding;
 use platform_wallet::wallet::shielded::note_selection::{ShieldedFeeKind, select_notes_with_fee};
 use platform_wallet::wallet::shielded::store::StalePendingSpend;
@@ -148,7 +149,7 @@ use super::credits::FundAmount;
 use super::errors::{PlatformError, ShieldedError, ShieldedSyncWait as Wait};
 use super::flows::{BudgetPurpose, FlowKind, GrantRequest};
 use super::lease::{CallPermit, FundingKey, Lease, LeaseError};
-use super::registration::{RegistrationWait, funding_cap, grant_cap};
+use super::registration::{RegistrationWait, ShieldedFacts, funding_cap, grant_cap};
 use super::registration_flow::{
     FundError, LockInfo, LockStatus, PwLib, RegistrationLib as Reg, Spendable,
 };
@@ -172,7 +173,7 @@ const MAX_HISTORY: u32 = 500;
 const MEMO_BYTES: usize = 36;
 /// The fewest actions a spend's bundle carries (Orchard pads a one-note
 /// spend to two), which the library's selection and fee assume.
-const MIN_ACTIONS: usize = 2;
+pub(crate) const MIN_ACTIONS: usize = 2;
 /// The Core fee rate an unshield asks for, Platform's minimum.
 const CORE_FEE_PER_BYTE: u32 =
     dpp::state_transition::identity_credit_withdrawal_transition::MIN_CORE_FEE_PER_BYTE;
@@ -283,6 +284,15 @@ pub(crate) trait ShieldedLib: Send + Sync {
     /// outcome and whose notes it holds until that is acknowledged, each by
     /// Platform's hash of its transition.
     fn held_spends(&self) -> impl Future<Output = Result<HashSet<[u8; 32]>, PlatformError>> + Send;
+    /// The wallet's [`RestClock`], kept in `app.sqlite`.
+    fn rest_clock(&self) -> impl Future<Output = Result<RestClock, PlatformError>> + Send;
+    /// [`write_rest_clock`] on the wallet's `app.sqlite`.
+    fn record_rest(
+        &self,
+        seen: Vec<[u8; 32]>,
+        at: (u64, u64),
+        scanned: bool,
+    ) -> impl Future<Output = Result<(), PlatformError>> + Send;
     /// The account's spends the library could not confirm and keeps to
     /// re-send.
     fn unresolved(
@@ -616,6 +626,151 @@ async fn confirm_unrecorded(
     } else {
         Err(ShieldedError::UnrecordedSpend)
     }
+}
+
+/// What a Shielded-funded registration's readiness reads of the account
+/// (C-funding F16, F17), into `facts`. A held spend counts as unsettled:
+/// only the user's acknowledgement releases its notes. A rest clock that
+/// cannot be read leaves the rest unknown (not rested).
+pub(crate) async fn registration_facts(
+    session: &NetworkSession,
+    wallet: WalletId,
+    lib: &impl ShieldedLib,
+    facts: &mut ShieldedFacts,
+) -> Result<(), PlatformError> {
+    facts.unsettled = !session.leases.journal_ready()
+        || !(session.leases.unrecorded_spends(wallet).await)
+            .map_err(|detail| PlatformError::Storage { detail })?
+            .is_empty();
+    if !lib.bind().await? {
+        return Ok(());
+    }
+    facts.synced = (lib.ledger().await?).is_some_and(|l| l.synced_index.is_some());
+    facts.notes = lib.unspent().await?;
+    facts.unsettled = facts.unsettled
+        || !lib.unresolved().await?.is_empty()
+        || !lib.held_spends().await?.is_empty();
+    match observe_rest(lib, false, crate::events::unix_now()).await {
+        Ok(latest) => {
+            (facts.rest_known, facts.latest_incoming) = (latest.is_some(), latest.flatten())
+        }
+        Err(e) => {
+            tracing::warn!(wallet_id = %wallet, error = %e, "the shielded rest clock is unreadable")
+        }
+    }
+    Ok(())
+}
+
+/// C-funding F17's clock (ruling M2a), in the wallet's local scope of
+/// `app.sqlite`: whether its first shielded scan in this install has
+/// completed, and when the engine first saw each incoming note, by its
+/// commitment (`0`: in that first scan, restored).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct RestClock {
+    pub(crate) scanned: bool,
+    pub(crate) seen: HashMap<[u8; 32], u64>,
+}
+
+const REST_PREFIX: &str = "shielded.rest.";
+const REST_SCANNED: &str = "shielded.rest.scanned";
+
+/// `wallet`'s [`RestClock`]; a row that does not read is corrupt.
+pub(crate) fn read_rest_clock(
+    db: &dw_appdb::AppDb,
+    wallet: WalletId,
+) -> Result<RestClock, dw_appdb::AppDbError> {
+    let scope = dw_appdb::local_scope(&wallet.to_string());
+    let mut clock = RestClock::default();
+    for (key, value) in db.settings_with_prefix(&scope, REST_PREFIX)? {
+        let seen = (hex::decode(&key[REST_PREFIX.len()..]).ok())
+            .and_then(|cmx| <[u8; 32]>::try_from(cmx).ok())
+            .zip(value.parse().ok());
+        match seen {
+            _ if key == REST_SCANNED => clock.scanned = true,
+            Some((cmx, at)) => _ = clock.seen.insert(cmx, at),
+            None => return Err(dw_appdb::AppDbError::Corrupt(key)),
+        }
+    }
+    Ok(clock)
+}
+
+/// Adds each of `seen` the clock lacks to `wallet`'s [`RestClock`] at `at`
+/// (at `now` once the first scan is marked), and with `scanned` marks that
+/// scan complete: durably in one transaction, never moving a recorded time.
+pub(crate) fn write_rest_clock(
+    db: &dw_appdb::AppDb,
+    wallet: WalletId,
+    seen: &[[u8; 32]],
+    (at, now): (u64, u64),
+    scanned: bool,
+) -> Result<(), dw_appdb::AppDbError> {
+    let keys: Vec<String> = (seen.iter())
+        .map(|cmx| format!("{REST_PREFIX}{}", hex::encode(cmx)))
+        .collect();
+    let (at, now) = (at.to_string(), now.to_string());
+    let writes: Vec<_> = (keys.iter())
+        .map(|k| (k.as_str(), at.as_str(), now.as_str()))
+        .chain(scanned.then_some((REST_SCANNED, "1", "1")))
+        .collect();
+    db.add_settings_durable(
+        &dw_appdb::local_scope(&wallet.to_string()),
+        REST_SCANNED,
+        &writes,
+    )
+}
+
+/// Records each unspent own note, and each incoming row's note, the clock
+/// has not seen, at `now` (restored until the first scan completes; ruling
+/// M2b), and with `scanned` marks that scan complete. The newest time of
+/// those notes, the earlier of its first sight and any row's `created_at`;
+/// `None` until the first scan has completed.
+pub(crate) async fn observe_rest(
+    lib: &impl ShieldedLib,
+    scanned: bool,
+    now: u64,
+) -> Result<Option<Option<u64>>, PlatformError> {
+    let mut clock = lib.rest_clock().await?;
+    let mut keys: HashSet<[u8; 32]> = (lib.unspent().await?.iter()).map(|n| n.cmx).collect();
+    let mut created: HashMap<[u8; 32], u64> = HashMap::new();
+    let mut offset = 0;
+    loop {
+        let page = lib.activity(offset, MAX_HISTORY).await?;
+        for row in &page {
+            let cmxs = if row.note_cmxs.is_empty() {
+                vec![row.id]
+            } else {
+                row.note_cmxs.clone()
+            };
+            if row.created_at_ms / 1000 != 0 {
+                for cmx in &cmxs {
+                    let at = created.entry(*cmx).or_insert(u64::MAX);
+                    *at = (*at).min(row.created_at_ms / 1000);
+                }
+            }
+            if matches!(row.direction, Direction::In) {
+                keys.extend(cmxs);
+            }
+        }
+        if page.len() < MAX_HISTORY as usize {
+            break;
+        }
+        offset += MAX_HISTORY;
+    }
+    let new: Vec<_> = (keys.iter())
+        .filter(|k| !clock.seen.contains_key(*k))
+        .copied()
+        .collect();
+    if !new.is_empty() || (scanned && !clock.scanned) {
+        let at = if clock.scanned { now } else { 0 };
+        lib.record_rest(new, (at, now), scanned).await?;
+        clock = lib.rest_clock().await?;
+    }
+    let time = |k: &[u8; 32]| {
+        let seen = clock.seen.get(k).copied().unwrap_or(now);
+        let times = [created.get(k).copied(), Some(seen)].into_iter().flatten();
+        times.filter(|&t| t != 0).min()
+    };
+    Ok(clock.scanned.then(|| keys.iter().filter_map(time).max()))
 }
 
 pub(crate) async fn receive_address(
@@ -2481,6 +2636,21 @@ impl ShieldedLib for PwShielded {
         hooked(&self.coordinator).await
     }
 
+    async fn rest_clock(&self) -> Result<RestClock, PlatformError> {
+        let wallet = self.pw.wallet_id;
+        self.on_appdb(move |db| read_rest_clock(db, wallet)).await
+    }
+
+    async fn record_rest(
+        &self,
+        seen: Vec<[u8; 32]>,
+        at: (u64, u64),
+        scanned: bool,
+    ) -> Result<(), PlatformError> {
+        let wallet = self.pw.wallet_id;
+        (self.on_appdb(move |db| write_rest_clock(db, wallet, &seen, at, scanned))).await
+    }
+
     async fn held_spends(&self) -> Result<HashSet<[u8; 32]>, PlatformError> {
         let dispositions = (self.coordinator)
             .spend_dispositions(self.pw.wallet_id.0)
@@ -3227,7 +3397,11 @@ async fn hold_passes(
 /// before the lock outlives it. Its tail reads the library's spend
 /// outcomes into the journal ([`consume_dispositions`]). `false` when it
 /// was held back.
-pub(crate) async fn guarded_pass(session: &NetworkSession, manager: &Manager, force: bool) -> bool {
+pub(crate) async fn guarded_pass(
+    session: &Arc<NetworkSession>,
+    manager: &Manager,
+    force: bool,
+) -> bool {
     // A spend's hold first, then the drain's lock (always in this order).
     let _spends = session.platform.shielded_spends.read().await;
     let _pass = session.platform.shielded_passes.read().await;
@@ -3257,6 +3431,17 @@ pub(crate) async fn guarded_pass(session: &NetworkSession, manager: &Manager, fo
     }
     for wallet in pass_wallets(manager, &coordinator).await {
         consume_dispositions(session, &coordinator, WalletId(wallet)).await;
+    }
+    for (&id, outcome) in &summary.wallet_results {
+        let WalletShieldedOutcome::Ok(scan) = outcome else {
+            continue;
+        };
+        let wallet = WalletId(id);
+        let lib = PwShielded::open(session, wallet).await;
+        let now = crate::events::unix_now();
+        if let Err(e) = async { observe_rest(&lib?, !scan.is_cooldown_skip, now).await }.await {
+            tracing::warn!(wallet_id = %wallet, error = %e, "the shielded rest clock was not recorded");
+        }
     }
     true
 }
