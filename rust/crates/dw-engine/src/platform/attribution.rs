@@ -47,8 +47,10 @@ use platform_wallet::wallet::identity::{PaymentDirection, PaymentStatus};
 use super::contacts::{ContactSummary, Relation};
 use super::contacts_model::identifier;
 use super::errors::{ContactError, IdentityError, PlatformError};
+use super::payment_locks::Payout;
 use super::payments::{
-    ActivityDirection, ActivityFilter, ActivityItem, ActivityPage, Counterparty,
+    ActivityDirection, ActivityFilter, ActivityItem, ActivityPage, Counterparty, PaymentSource,
+    PayoutState,
 };
 use super::runtime::guard;
 use crate::history::{ChainView, Part, TxEntry, TxStatusKind, TxType, decompose, status_of};
@@ -358,6 +360,18 @@ impl ActivityKey {
         }
     }
 
+    /// A payout's (C-funding P11): its Core transaction's time once mined,
+    /// else unmined; its reference's SHA-256 in place of a txid.
+    fn payout(seen: Option<&TxEntry>, reference: &str) -> Self {
+        let mut txid = hex::encode(sha256::Hash::hash(reference.as_bytes()).as_byte_array());
+        txid.truncate(Self::TXID_DIGITS);
+        Self {
+            time: Reverse(seen.and_then(block_time).unwrap_or(Self::UNMINED)),
+            txid,
+            direction: 's',
+        }
+    }
+
     fn cursor(&self, tag: &str) -> String {
         format!("{tag}{:09x}{}{}", self.time.0, self.txid, self.direction)
     }
@@ -413,10 +427,11 @@ pub(crate) fn query_tag(
     tag
 }
 
-/// `owner`'s payments with `contact` in the view, filtered, newest first,
-/// the page after `after`.
+/// `owner`'s payments with `contact` in the view and its `payouts`,
+/// filtered, newest first, the page after `after`.
 pub(crate) fn activity(
     view: &ChainView<'_>,
+    payouts: &[Payout],
     owner: &Identifier,
     contact: &Identifier,
     filter: ActivityFilter,
@@ -453,9 +468,48 @@ pub(crate) fn activity(
                     amount,
                     height,
                     timestamp: block_time(entry).or(entry.first_seen),
+                    source: PaymentSource::Core,
+                    reference: txid.to_string(),
+                    core_txid: Some(txid.to_string()),
                 },
             );
         }
+    }
+    // A payout never sent is left out, as an abandoned transaction is. Its
+    // Core arrival (P12), an asset unlock the wallet did not fund, is found
+    // by its address and amount; it is no payment of the wallet's own.
+    for p in payouts {
+        if p.pair != (*owner, *contact)
+            || p.state == PayoutState::NotSent
+            || !wanted(ActivityDirection::Sent)
+        {
+            continue;
+        }
+        let seen = (p.script.as_ref()).and_then(|script| {
+            (view.history.iter()).find(|(_, e)| {
+                (e.tx.output.iter())
+                    .any(|o| o.script_pubkey == *script && o.value == p.expected_duffs)
+            })
+        });
+        let key = ActivityKey::payout(seen.map(|(_, e)| e), &p.reference);
+        if after.as_ref().is_some_and(|a| key <= *a) {
+            continue;
+        }
+        items.insert(
+            key,
+            ActivityItem {
+                txid: p.reference.clone(),
+                direction: ActivityDirection::Sent,
+                amount: p.expected_duffs,
+                height: seen.and_then(|(_, e)| e.context.block_info().map(|b| b.height())),
+                timestamp: seen
+                    .and_then(|(_, e)| block_time(e).or(e.first_seen))
+                    .or(Some(p.since)),
+                source: p.source,
+                reference: p.reference.clone(),
+                core_txid: seen.map(|(t, _)| t.to_string()),
+            },
+        );
     }
     let more = items.len() > ACTIVITY_PAGE;
     let page: Vec<(ActivityKey, ActivityItem)> = items.into_iter().take(ACTIVITY_PAGE).collect();
@@ -479,6 +533,7 @@ pub(crate) struct Score {
 /// counts as now), one per direction.
 pub(crate) fn scores(
     view: &ChainView<'_>,
+    payouts: &[Payout],
     owner: &Identifier,
     now: u64,
 ) -> BTreeMap<Identifier, Score> {
@@ -501,6 +556,14 @@ pub(crate) fn scores(
             *count += 1;
             *last = (*last).max(at);
         }
+    }
+    for p in payouts {
+        if p.pair.0 != *owner || p.state == PayoutState::NotSent || p.since < since {
+            continue;
+        }
+        let score = scores.entry(p.pair.1).or_default();
+        score.sent += 1;
+        score.last_sent = score.last_sent.max(p.since);
     }
     scores
 }
@@ -570,9 +633,10 @@ impl NetworkSession {
         if !owned {
             return Err(PlatformError::from(IdentityError::NotFound).into());
         }
+        let payouts = self.platform.payments.payouts(&wallet);
         let page = self
             .with_view(&manager, wallet, |view| {
-                activity(view, &owner, &contact, filter, cursor.as_deref())
+                activity(view, &payouts, &owner, &contact, filter, cursor.as_deref())
             })
             .await
             .map_err(PlatformError::from)??;
@@ -621,8 +685,9 @@ impl NetworkSession {
         };
         let network = self.network.core_network();
         let now = crate::events::unix_now();
+        let payouts = self.platform.payments.payouts(&wallet);
         let scores = (self.hub.history).read(&wallet, |history| {
-            scores(&parts.view(history, network), &owner, now)
+            scores(&parts.view(history, network), &payouts, &owner, now)
         });
         let limit = limit.clamp(1, MAX_FREQUENT) as usize;
         Ok(frequent(contacts, &scores, limit))

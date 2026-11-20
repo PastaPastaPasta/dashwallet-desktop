@@ -1,11 +1,10 @@
 // Empty screens: each has its own drawing and one next step (PRODUCT.md #11).
 
 import { expect, test, type Page } from "@playwright/test";
-import type { ToolsTab } from "../src/api/generated/ToolsTab";
 import { CREATED_12 } from "../src/fixture/vault";
 import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 import { seriousAxeViolations } from "./axe";
-import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { fixtureUrl, fontsReady, openToolsTab as tools, THEMES, trackPageErrors, type Theme } from "./helpers";
 
 const WALLET = "a1".repeat(32);
 
@@ -14,14 +13,6 @@ async function open(page: Page, scenario: string, theme: Theme, extra = "") {
   await page.goto(fixtureUrl(scenario, theme, extra));
   await page.getByTestId("toolbar").waitFor();
   return errors;
-}
-
-async function tools(page: Page, tab: ToolsTab) {
-  await page.evaluate((t) => {
-    (document.activeElement as HTMLElement | null)?.blur();
-    window.__dwFixture!.shellCommand({ kind: "tools", tab: t });
-  }, tab);
-  await expect(page.getByTestId(`tools-tabs-${tab}`)).toHaveAttribute("aria-selected", "true");
 }
 
 async function checked(page: Page, errors: string[]) {

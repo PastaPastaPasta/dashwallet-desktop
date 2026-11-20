@@ -147,6 +147,10 @@ pub(crate) struct PlatformRuntime {
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
     pub(crate) pass_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's crash of the disposition consumer between its journal
+    /// write and its acknowledgement (`shielded_pool::consume_dispositions`).
+    #[cfg(test)]
+    pub(crate) crash_before_ack: AtomicBool,
     /// Held to read by each shielded pass, before `shielded_passes`; to
     /// write by a spend from its library call to its record, so no pass
     /// runs meanwhile. Apart from `shielded_passes` so a lock's drain waits
@@ -477,6 +481,8 @@ impl PlatformRuntime {
             hook_fence: Arc::default(),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
+            #[cfg(test)]
+            crash_before_ack: AtomicBool::new(false),
             shielded_spends: tokio::sync::RwLock::new(()),
             close_preflight: tokio::sync::RwLock::new(()),
             wallet_loads: tokio::sync::RwLock::new(()),
