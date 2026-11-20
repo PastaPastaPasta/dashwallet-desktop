@@ -1037,8 +1037,8 @@ impl NetworkSession {
         self.cover_issued(manager, id, issued).await
     }
 
-    /// Wallet `id`'s stored legacy counters, if valid ones are stored; `Err`
-    /// when they cannot be read.
+    /// Wallet `id`'s stored legacy counters, if stored; `Err` when they
+    /// cannot be read or are malformed.
     pub(crate) async fn stored_issued(
         &self,
         id: WalletId,
@@ -1051,7 +1051,12 @@ impl NetworkSession {
         let value = self
             .appdb_op(move |db| db.setting(&key, ISSUED_SETTING))
             .await?;
-        Ok(value.as_deref().and_then(parse_issued))
+        value
+            .map(|v| {
+                parse_issued(&v)
+                    .ok_or_else(|| EngineError::Storage(format!("malformed stored range {v:?}")))
+            })
+            .transpose()
     }
 }
 

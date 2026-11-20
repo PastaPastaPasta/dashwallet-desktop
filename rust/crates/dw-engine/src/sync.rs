@@ -559,14 +559,22 @@ impl crate::NetworkSession {
             }
             // No wallet is loaded or removed between the list and the rewinds.
             let _lifecycle = this.wallet_lifecycle.hold().await;
+            // A refused request changes no marker.
+            if this.rescan_running() {
+                return Err(crate::EngineError::RescanInProgress);
+            }
             let ids: Vec<crate::WalletId> = manager
                 .list_wallet_ids_blocking()
                 .into_iter()
                 .map(crate::WalletId)
                 .collect();
             for id in &ids {
-                if let Err(e) = crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await {
+                let (_, ranges) = this.apply_stored_ranges(&manager, *id).await;
+                let widened = crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await;
+                if let Err(e) = &widened {
                     tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap before the rescan");
+                }
+                if ranges.is_err() || widened.is_err() {
                     // Its next load replays what this rescan matches narrow;
                     // no rescan without that marker.
                     let start = match from {

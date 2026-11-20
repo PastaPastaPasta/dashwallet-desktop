@@ -2416,7 +2416,7 @@ impl NetworkSession {
     ) -> Result<RecoveryReport, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
-            let (known_before, birth) = {
+            let (known_before, birth, marked) = {
                 let _op = this.enter().await?;
                 let manager = this.manager()?;
                 if !manager.spv().is_started() {
@@ -2427,15 +2427,31 @@ impl NetworkSession {
                         "another rescan is running".into(),
                     ));
                 }
-                this.raise_for_recovery(&manager, wallet_id).await?;
                 let birth = this
                     .hub
                     .wallet_state(&wallet_id)
                     .map(|s| s.birth_height)
                     .unwrap_or(0);
-                (this.hub.history.snapshot(&wallet_id).len(), birth)
+                // The replay from the birth is owed, durably, before the
+                // larger lookahead is stored: a crash in between replays it
+                // at the next open.
+                let marked = this.wide_scan(wallet_id).await?;
+                (this.require_replay_from(&manager, wallet_id, Some(birth.saturating_sub(1))))
+                    .await?;
+                this.raise_for_recovery(&manager, wallet_id).await?;
+                (this.hub.history.snapshot(&wallet_id).len(), birth, marked)
             };
             this.rescan(crate::sync::RescanFrom::Height(birth)).await?;
+            // The rescan's replay record holds the obligation now; done again
+            // only with every range applied and the pools wide.
+            if marked == Some(crate::keys::WideScan::Done) {
+                let manager = this.manager()?;
+                let (_, ranges) = this.apply_stored_ranges(&manager, wallet_id).await;
+                let widened = crate::keys::ensure_coinjoin_scan_gap(&manager, wallet_id).await;
+                if ranges.is_ok() && widened.is_ok() {
+                    this.set_wide_scan(wallet_id, marked).await;
+                }
+            }
             // Wait for the rescan to finish (it reports through the hub); a
             // stopped SPV client or a closed session ends it unfinished.
             loop {

@@ -383,7 +383,21 @@ impl NetworkSession {
                 })
                 .await?
                 .map_err(|e| EngineError::Storage(format!("the stored checkpoint: {e}")))?;
-                (this.note_narrow_from(id, synced, birth.map(|b| b.saturating_sub(1)))).await
+                // An unfinished replay's start too (no lower than the
+                // birth's checkpoint, where a resume starts it): SPV may
+                // finish it with narrow pools. One that cannot be read may
+                // start anywhere: from the birth.
+                let floor = birth.map_or(0, |b| b.saturating_sub(1));
+                let checkpoint = match live.replay.stored(id).await {
+                    Ok(record) => (synced.into_iter())
+                        .chain(record.map(|r| r.reached.max(floor)))
+                        .min(),
+                    Err(e) => {
+                        tracing::warn!(wallet_id = %id, error = %e, "could not read the wallet's replay record; marking it from its birth");
+                        None
+                    }
+                };
+                (this.note_narrow_from(id, checkpoint, birth.map(|b| b.saturating_sub(1)))).await
             }
             .await;
             if let Err(e) = noted {
@@ -407,7 +421,9 @@ impl NetworkSession {
             if this.hub.run_on_published(id) {
                 return Err(EngineError::Internal("test: quit after the publish".into()));
             }
-            this.restore_loaded_wallet(&live.manager, id).await;
+            // Its replay was noted before the publish; a failure here is
+            // logged with it.
+            let _ = this.restore_loaded_wallet(&live.manager, id).await;
             #[cfg(test)]
             let pause = this.hub.pause_load.lock().unwrap().take();
             #[cfg(test)]
@@ -562,20 +578,24 @@ impl NetworkSession {
             // Before SPV can match a batch with the pools it publishes: the
             // lookahead it is to scan with and the marker, put back if
             // nothing is registered.
-            let previous = this.wide_scan(id).await.ok();
             let pending = async {
+                let previous = this.wide_scan(id).await?;
+                this.mark_pending(id, crate::keys::WideScan::Birth).await?;
                 if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD {
                     this.write_lookahead(id, lookahead).await?;
                 }
-                this.mark_pending(id, crate::keys::WideScan::Birth).await
+                Ok::<_, EngineError>(previous)
             }
             .await;
-            if let Err(e) = pending {
-                if readmitted {
-                    this.record_removed_again(&held, id).await;
+            let previous = match pending {
+                Ok(previous) => previous,
+                Err(e) => {
+                    if readmitted {
+                        this.record_removed_again(&held, id).await;
+                    }
+                    return Err(e);
                 }
-                return Err(e);
-            }
+            };
             let was_unloaded = this.hub.admit(id);
             let registered = async {
                 let store = Arc::clone(&live.store);
@@ -592,9 +612,7 @@ impl NetworkSession {
                 .await?;
                 if let Err(e) = stored {
                     // Not registered: removed again, as a failed seed import.
-                    if let Some(previous) = previous {
-                        this.set_wide_scan(id, previous).await;
-                    }
+                    this.set_wide_scan(id, previous).await;
                     if readmitted {
                         this.record_removed_again(&held, id).await;
                     }

@@ -33,6 +33,10 @@ const PHRASE: &[u8] =
 const HOOK_PHRASE: &[u8] =
     b"legal winner thank year wave sausage worth useful legal winner thank yellow";
 
+/// As [`HOOK_PHRASE`], for the test that cannot read a wallet's CoinJoin use.
+const READ_PHRASE: &[u8] =
+    b"letter advice cage absurd amount doctor acoustic avoid letter advice cage above";
+
 struct Silent;
 
 impl crate::EventSink for Silent {
@@ -626,7 +630,9 @@ fn a_load_rescans_a_batch_spv_committed_before_the_coinjoin_gap_was_widened() {
     let before = scan_scripts(&engine, &session, id);
     assert!(filters.iter().all(|f| !matches_filter(f, &before)));
 
-    engine.block_on(session.restore_loaded_wallet(&live.manager, id));
+    engine
+        .block_on(session.restore_loaded_wallet(&live.manager, id))
+        .unwrap();
 
     assert_eq!(synced_height(&engine, &session, id), loaded_at);
     let after = scan_scripts(&engine, &session, id);
@@ -1517,6 +1523,26 @@ fn store_checkpoint(engine: &Engine, session: &NetworkSession, id: WalletId, hei
     engine.block_on(live.replay.settled());
 }
 
+/// Stores wallet `id`'s checkpoint in wallet.sqlite alone, as a rewind
+/// that no committed batch has stored yet leaves it.
+fn store_synced_only(session: &NetworkSession, id: WalletId, height: u32) {
+    use platform_wallet::changeset::{
+        CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+    };
+    let live = session.live().unwrap();
+    let core = CoreChangeSet {
+        last_processed_height: Some(height),
+        synced_height: Some(height),
+        ..Default::default()
+    };
+    let changeset = PlatformWalletChangeSet {
+        core: Some(core),
+        ..Default::default()
+    };
+    live.store.store(id.0, changeset).unwrap();
+    live.store.flush(id.0).unwrap();
+}
+
 fn replay_record(engine: &Engine, session: &NetworkSession, id: WalletId) -> Option<(u32, u32)> {
     let live = session.live().unwrap();
     (engine.block_on(live.replay.get(id)).unwrap()).map(|r| (r.reached, r.target))
@@ -1602,14 +1628,24 @@ fn a_quit_mid_load_replays_from_the_checkpoint_the_wallet_was_closed_at() {
     );
 }
 
-/// A wallet an older build restored and scanned has no marker: a CoinJoin
-/// coin at index 100 below its checkpoint was never matched. Its first open
-/// replays once from its birth, which finds the coin; once that replay is
-/// done, the next open replays nothing.
+/// A wallet an older build restored and scanned has no marker. Its CoinJoin
+/// account was used (a spent coin at index 5), and a coin at index 100 below
+/// its checkpoint was never matched. Its first open replays once from its
+/// birth, which finds the coin; once that replay is done, the next open
+/// replays nothing.
 #[test]
 fn a_wallet_an_older_build_scanned_is_replayed_once_from_its_birth() {
     let (_dir, engine, session, id) = engine_wallet();
-    let to = coinjoin_addresses(&engine, &session, id, &[100]).remove(0);
+    let [used, to] = coinjoin_addresses(&engine, &session, id, &[5, 100])
+        .try_into()
+        .unwrap();
+    let mixed = pays(2, &used);
+    store_coins(
+        &session,
+        id,
+        Vec::new(),
+        vec![confirmed_coin(&mixed, &used)],
+    );
     let tx = pays(1, &to);
     store_checkpoint(&engine, &session, id, HEIGHT + 300);
     set_wide_scan(&engine, &session, id, None);
@@ -2200,6 +2236,40 @@ fn a_session_open_that_cannot_widen_a_done_wallet_marks_it_pending() {
     );
 }
 
+/// Review r2 finding 1: a session open that can neither widen a wallet nor
+/// store the replay it then owes does not open, so SPV never scans that
+/// wallet with narrow pools unmarked. A healthy open after it opens.
+#[test]
+fn a_session_open_that_cannot_store_an_owed_replay_does_not_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+
+    let opened = failing(&crate::keys::FAIL_WIDEN, id, || {
+        failing(&crate::keys::FAIL_WIDE_SCAN_IO, id, || {
+            engine.block_on(engine.open_network(DashNetwork::Regtest, offline()))
+        })
+    });
+
+    assert!(opened.is_err());
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, offline()))
+        .unwrap();
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+}
+
 /// A load whose pending marker cannot be stored is refused before the
 /// wallet is published, and the wallet stays closed.
 #[test]
@@ -2438,4 +2508,562 @@ fn a_rescan_that_cannot_mark_a_wallet_it_cannot_widen_is_refused() {
 
     assert!(rescanned.is_err());
     assert_eq!(synced_height(&engine, &session, w), HEIGHT);
+}
+
+/// A wallet an older build restored and scanned, whose CoinJoin account has
+/// nothing used: no coin sits past a gap, so it is marked done without a
+/// replay, as a wallet created here is.
+#[test]
+fn an_older_build_wallet_with_an_unused_coinjoin_account_is_not_replayed() {
+    let (_dir, engine, session, id) = engine_wallet();
+    store_checkpoint(&engine, &session, id, HEIGHT + 300);
+    set_wide_scan(&engine, &session, id, None);
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT + 300);
+    assert_eq!(replay_record(&engine, &session, id), None);
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+}
+
+/// A wallet an older build scanned whose CoinJoin use cannot be read is
+/// replayed from its birth and keeps no marker; the next open reads it
+/// again.
+#[test]
+fn an_older_build_wallet_whose_coinjoin_use_cannot_be_read_stays_pending() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = engine
+        .block_on(session.import_wallet(
+            zeroize::Zeroizing::new(READ_PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(0),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT + 300);
+    set_wide_scan(&engine, &session, id, None);
+
+    let session = failing(&crate::keys::FAIL_COINJOIN_USE_READ, id, || {
+        reopen(&engine, session)
+    });
+
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((0, HEIGHT + 300))
+    );
+    assert_eq!(wide_scan(&engine, &session, id), None);
+    let session = reopen(&engine, session);
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+}
+
+/// Wallets the hook tests below import: no other test imports them.
+const ATTACH_PHRASE: &[u8] = b"zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong";
+const IMPORT_READ_PHRASE: &[u8] = b"all all all all all all all all all all all all";
+
+fn import_phrase(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    phrase: &[u8],
+    birth: u32,
+) -> Result<WalletId, EngineError> {
+    engine.block_on(session.import_wallet(
+        zeroize::Zeroizing::new(phrase.to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(birth),
+            ..Default::default()
+        },
+    ))
+}
+
+/// The BIP44 account's receive address at `index`, derived on a copy of its
+/// pool.
+fn bip44_address(engine: &Engine, session: &NetworkSession, id: WalletId, index: u32) -> Address {
+    engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let wallet = wm.get_wallet(&id.0).unwrap();
+        let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        let mut pool = (info.accounts.funds_account(&bip44()).unwrap())
+            .managed_account_type()
+            .address_pools()[0]
+            .clone();
+        let have = pool.highest_generated.unwrap_or(0);
+        if index > have {
+            pool.generate_addresses(index - have, &wallet.key_source_for_account(bip44()), true)
+                .unwrap();
+        }
+        pool.address_at_index(index).unwrap()
+    })
+}
+
+/// Review r2 finding 1: a replay from 0 to 1,000 is recorded and the wallet
+/// marked done, and the app quits before the replay reaches block 500, which
+/// holds a payment past the narrow pool. The next open cannot widen: it
+/// stores the replay's start, not the loaded checkpoint, before SPV may
+/// finish that replay with narrow pools. The open after that, healthy,
+/// replays from there and finds the payment.
+#[test]
+fn a_start_that_cannot_widen_keeps_an_unfinished_replays_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    let to = coinjoin_addresses(&engine, &session, id, &[100]).remove(0);
+    let tx = pays(1, &to);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Birth));
+    let session = reopen(&engine, session);
+    assert_eq!(replay_record(&engine, &session, id), Some((0, HEIGHT)));
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+    // The app quits before SPV commits a batch of the replay: the store
+    // still reads 1,000, and the record still starts at 0.
+    store_synced_only(&session, id, HEIGHT);
+    assert_eq!(replay_record(&engine, &session, id), Some((0, HEIGHT)));
+
+    let session = failing(&crate::keys::FAIL_WIDEN, id, || reopen(&engine, session));
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(0))
+    );
+    // SPV finishes the replay with the narrow pools.
+    store_checkpoint(&engine, &session, id, HEIGHT + 1);
+    assert_eq!(replay_record(&engine, &session, id), None);
+    let session = reopen(&engine, session);
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    replay_at(&engine, &session, id, std::slice::from_ref(&tx), 500);
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[(OutPoint::new(tx.txid(), 0), to)],
+        cj(),
+        VALUE,
+    );
+}
+
+/// Review r2 finding 2: keys attached to a watch-only wallet marked done,
+/// with a lookahead of 200, whose replay obligation cannot be stored, store
+/// no lookahead either: the done marker never stands beside the wider
+/// range. Attached again, with a start above the wallet's birth, the replay
+/// starts at the birth, the earlier, and finds a payment to receive index
+/// 150 in block 500.
+#[test]
+fn an_attach_stores_its_replay_before_its_lookahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = import_phrase(&engine, &session, ATTACH_PHRASE, 100).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    let to = bip44_address(&engine, &session, id, 150);
+    let tx = pays(4, &to);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
+    let attach = || {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(ATTACH_PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(800),
+                lookahead: Some(200),
+                ..Default::default()
+            },
+        ))
+    };
+
+    let refused = failing(&crate::keys::FAIL_WIDE_SCAN_IO, id, attach);
+
+    assert!(refused.is_err());
+    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+    assert_eq!(attach().unwrap(), id);
+    assert!(synced_height(&engine, &session, id) < 500);
+    assert_eq!(gap(&engine, &session, id, bip44()), 200);
+    replay_at(&engine, &session, id, std::slice::from_ref(&tx), 500);
+    assert_coins(
+        &engine,
+        &session,
+        id,
+        &[(OutPoint::new(tx.txid(), 0), to)],
+        bip44(),
+        VALUE,
+    );
+}
+
+/// Review r2 finding 2, CoinJoin Recovery: one whose replay obligation
+/// cannot be stored is refused before it stores its larger lookahead.
+#[test]
+fn a_recovery_scan_stores_its_replay_before_its_lookahead() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+
+    let recovered = failing(&crate::keys::FAIL_WIDE_SCAN_IO, id, || {
+        engine.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                session.coinjoin_recovery_scan(id),
+            )
+            .await
+        })
+    });
+
+    assert!(matches!(recovered, Ok(Err(_))), "refused at once");
+    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+}
+
+/// Review r2 finding 4: a birth height that cannot be stored leaves the
+/// wallet's birth in memory as it was.
+#[test]
+fn a_birth_height_that_cannot_be_stored_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    let before = birth_height(&engine, &session, id);
+
+    let set = failing(&crate::tools::FAIL_BIRTH_STORE, id, || {
+        engine.block_on(session.set_birth_height(id, before + 500))
+    });
+
+    assert!(set.is_err());
+    assert_eq!(birth_height(&engine, &session, id), before);
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, id), before);
+}
+
+/// Review r2 finding 5: a rescan from block 500 of a wallet whose stored
+/// lookahead cannot be applied, marked from 1,000, lowers its marker to 499
+/// though its CoinJoin pools widen: the rescan scans 500 to 1,000 with a
+/// narrow BIP44 pool.
+#[test]
+fn a_rescan_with_a_range_it_cannot_apply_marks_the_wallet_from_its_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    engine.block_on(session.store_lookahead(id, 200));
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    set_wide_scan(
+        &engine,
+        &session,
+        id,
+        Some(crate::keys::WideScan::From(HEIGHT)),
+    );
+    start_offline_spv(&engine, &session);
+
+    let rescanned = failing(&crate::keys::FAIL_RESTORE_READ, id, || {
+        engine.block_on(session.rescan(crate::RescanFrom::Height(500)))
+    });
+
+    rescanned.unwrap();
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(499))
+    );
+}
+
+/// Review r2 finding 5: a rescan refused because one runs changes no
+/// marker.
+#[test]
+fn a_refused_second_rescan_changes_no_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
+    start_offline_spv(&engine, &session);
+    engine
+        .block_on(session.rescan(crate::RescanFrom::Height(900)))
+        .unwrap();
+
+    let second = failing(&crate::keys::FAIL_WIDEN, id, || {
+        engine.block_on(session.rescan(crate::RescanFrom::Height(500)))
+    });
+
+    assert!(
+        matches!(second, Err(EngineError::RescanInProgress)),
+        "{second:?}"
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+}
+
+/// Review r2 finding 6: a seed import that cannot read the marker already
+/// stored for its wallet is refused, and registers nothing.
+#[test]
+fn an_import_that_cannot_read_the_previous_marker_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let secret = dw_vault::mnemonic::derive_secret(IMPORT_READ_PHRASE, b"", false).unwrap();
+    let id = WalletId(
+        dw_vault::mnemonic::wallet_id_for_seed(&secret.seed, dashcore::Network::Regtest).unwrap(),
+    );
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::From(5)));
+
+    let imported = failing(&crate::keys::FAIL_WIDE_SCAN_READ, id, || {
+        import_phrase(&engine, &session, IMPORT_READ_PHRASE, 0)
+    });
+
+    assert!(imported.is_err());
+    assert!(!session.vault().has_wallet_secret(&id.0));
+    assert!(
+        engine
+            .block_on(session.manager().unwrap().get_wallet(&id.0))
+            .is_none()
+    );
+}
+
+/// Review r2 finding 6: as above, for a watch-only import.
+#[test]
+fn a_watch_only_import_that_cannot_read_the_previous_marker_is_refused() {
+    use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[13; 64]).unwrap();
+    let path: DerivationPath = "m/44'/1'/0'".parse().unwrap();
+    let xpub = ExtendedPubKey::from_priv(&master.derive_priv(&path).unwrap());
+    let id = crate::multiwallet::watch_only_wallet_id(&xpub, dashcore::Network::Regtest);
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::From(5)));
+
+    let imported = failing(&crate::keys::FAIL_WIDE_SCAN_READ, id, || {
+        engine.block_on(
+            session.import_watch_only(xpub.to_string(), crate::WatchOnlyOptions::default()),
+        )
+    });
+
+    assert!(imported.is_err());
+    assert!(
+        engine
+            .block_on(session.manager().unwrap().get_wallet(&id.0))
+            .is_none()
+    );
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(5))
+    );
+}
+
+fn store_setting(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    key: &'static str,
+    value: &'static str,
+) {
+    let scope = id.to_string();
+    engine
+        .block_on(session.appdb_op(move |db| db.set_setting(&scope, key, Some(value))))
+        .unwrap();
+}
+
+/// Review r2 finding 6: a malformed stored lookahead is not "none stored":
+/// the wallet's pending marker stays.
+#[test]
+fn a_malformed_stored_lookahead_keeps_the_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_setting(
+        &engine,
+        &session,
+        id,
+        crate::keys::LOOKAHEAD_SETTING,
+        "two hundred",
+    );
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Birth));
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Birth)
+    );
+}
+
+/// Review r2 finding 6: a malformed stored legacy range is not "none
+/// stored" either.
+#[test]
+fn a_malformed_stored_range_keeps_the_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    store_setting(&engine, &session, id, crate::compat::ISSUED_SETTING, "12;x");
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Birth));
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Birth)
+    );
+}
+
+/// The upgrade rule: a wallet an older build scanned whose stored CoinJoin
+/// pool has an address marked used is replayed once from its birth.
+#[test]
+fn an_older_build_wallet_with_a_used_coinjoin_pool_row_is_replayed() {
+    let (_dir, engine, session, id) = engine_wallet();
+    store_checkpoint(&engine, &session, id, HEIGHT + 300);
+    set_wide_scan(&engine, &session, id, None);
+    let db_path = session.data_dir().join(crate::session::WALLET_DB_FILE);
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap()
+    );
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let marked = db
+        .execute(
+            "UPDATE core_address_pool SET used = 1 WHERE wallet_id = ?1 \
+             AND account_type = 'coinjoin' AND pool_type = 0 AND address_index = 3",
+            [&id.0[..]],
+        )
+        .unwrap();
+    assert_eq!(marked, 1, "the stored pool row");
+    drop(db);
+
+    let session = engine
+        .block_on(engine.open_network(DashNetwork::Regtest, offline()))
+        .unwrap();
+
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((0, HEIGHT + 300))
+    );
+}
+
+/// The upgrade rule: a wallet an older build scanned with a raised
+/// lookahead is replayed once from its birth, though its CoinJoin account
+/// shows no use.
+#[test]
+fn an_older_build_wallet_with_a_raised_lookahead_is_replayed() {
+    let (_dir, engine, session, id) = engine_wallet();
+    engine.block_on(session.store_lookahead(id, 200));
+    store_checkpoint(&engine, &session, id, HEIGHT + 300);
+    set_wide_scan(&engine, &session, id, None);
+
+    let session = reopen(&engine, session);
+
+    assert_eq!(synced_height(&engine, &session, id), 0);
+    assert_eq!(
+        replay_record(&engine, &session, id),
+        Some((0, HEIGHT + 300))
+    );
+}
+
+/// The upgrade rule's stored evidence, read from wallet.sqlite: generated
+/// CoinJoin pools and a spent BIP44 coin (with its funding transaction's
+/// row) are no use; a spent coin paying a CoinJoin address is, and so are a
+/// coin whose script no pool row owns and a transaction stored without a
+/// record or a coin.
+#[test]
+fn the_stored_coinjoin_use_counts_positive_evidence_only() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let other = created(&engine, &session);
+    let live = session.live().unwrap();
+    let db_path = session.data_dir().join(crate::session::WALLET_DB_FILE);
+    let used = |wallet: WalletId| {
+        crate::store::coinjoin_used(&db_path, &wallet.0, &live.persister).unwrap()
+    };
+    assert!(!used(id), "generated pools only");
+
+    let ordinary = bip44_address(&engine, &session, id, 2);
+    let paid = pays(5, &ordinary);
+    store_coins(
+        &session,
+        id,
+        Vec::new(),
+        vec![confirmed_coin(&paid, &ordinary)],
+    );
+    assert!(!used(id), "a spent BIP44 coin");
+
+    let mixed = coinjoin_addresses(&engine, &session, id, &[7]).remove(0);
+    let tx = pays(6, &mixed);
+    store_coins(&session, id, Vec::new(), vec![confirmed_coin(&tx, &mixed)]);
+    assert!(used(id), "a spent coin paying a CoinJoin address");
+
+    let foreign = bip44_address(&engine, &session, id, 3);
+    let tx = pays(7, &foreign);
+    store_coins(
+        &session,
+        other,
+        vec![confirmed_coin(&tx, &foreign)],
+        Vec::new(),
+    );
+    assert!(used(other), "a coin no pool row of the wallet owns");
+
+    let third = created(&engine, &session);
+    assert!(!used(third), "a new wallet");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    db.execute(
+        "INSERT INTO core_transactions (wallet_id, txid, height, finalized) \
+         VALUES (?1, ?2, 5, 0)",
+        rusqlite::params![&third.0[..], &[9u8; 32][..]],
+    )
+    .unwrap();
+    assert!(
+        used(third),
+        "a transaction stored without a record or a coin"
+    );
+}
+
+/// Review r2 finding 1, on a load: a wallet opened unloaded whose replay
+/// from 0 is unfinished, and whose store still reads 1,000, is marked from
+/// the replay's start before the load publishes it. A quit right after the
+/// publish leaves that mark.
+#[test]
+fn a_load_notes_an_unfinished_replays_start_before_it_publishes() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let _stays_on_the_list = created(&engine, &session);
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    engine
+        .block_on(session.set_load_on_startup(id, false))
+        .unwrap();
+    let session = reopen(&engine, session);
+    assert!(session.live().unwrap().store.is_unloaded(&id.0));
+    let live = session.live().unwrap();
+    engine
+        .block_on(live.replay.note_rewind(id, 0, HEIGHT, 0))
+        .unwrap();
+    *session.hub.on_published.lock().unwrap() = Some(Box::new(|_| true));
+
+    assert!(engine.block_on(session.load_wallet(id)).is_err());
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(0))
+    );
 }

@@ -757,7 +757,7 @@ impl NetworkSession {
         .await
     }
 
-    /// Sets the wallet's birth height in memory and in wallet.sqlite.
+    /// Sets the wallet's birth height in wallet.sqlite, then in memory.
     /// Returns its filter checkpoint.
     async fn store_birth_height(
         &self,
@@ -765,15 +765,16 @@ impl NetworkSession {
         height: u32,
     ) -> Result<u32, EngineError> {
         let live = self.live()?;
-        let synced = {
-            let wm = live.manager.wallet_manager_arc();
-            let mut wm = wm.write().await;
-            let info = wm
-                .get_wallet_info_mut(&wallet_id.0)
-                .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
-            info.core_wallet.metadata.birth_height = height;
-            info.core_wallet.synced_height()
-        };
+        let manager = &live.manager;
+        if manager.get_wallet(&wallet_id.0).await.is_none() {
+            return Err(EngineError::WalletNotFound(wallet_id.to_string()));
+        }
+        // Stored first: a failed write leaves memory as it was, so a retry
+        // cannot rewind against a birth that was never stored.
+        #[cfg(test)]
+        if crate::keys::fails_for(&FAIL_BIRTH_STORE, wallet_id) {
+            return Err(EngineError::Storage("test: birth height not stored".into()));
+        }
         let persister = Arc::clone(&live.persister);
         let network = self.network.core_network();
         tokio::task::spawn_blocking(move || {
@@ -793,7 +794,13 @@ impl NetworkSession {
         })
         .await?
         .map_err(|e| EngineError::Storage(format!("birth height: {e}")))?;
-        Ok(synced)
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm
+            .get_wallet_info_mut(&wallet_id.0)
+            .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
+        info.core_wallet.metadata.birth_height = height;
+        Ok(info.core_wallet.synced_height())
     }
 
     /// Lowers open wallet `id`'s birth height to `height` (stored and in
@@ -985,6 +992,11 @@ pub(crate) fn better_chainlock(
         _ => Some(new),
     }
 }
+
+/// Tests: wallets whose birth height cannot be stored.
+#[cfg(test)]
+pub(crate) static FAIL_BIRTH_STORE: std::sync::Mutex<Vec<[u8; 32]>> =
+    std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
 mod tests {
