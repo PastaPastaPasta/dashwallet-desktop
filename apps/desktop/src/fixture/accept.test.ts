@@ -116,7 +116,7 @@ async function replay(c: Case) {
         a.purpose === "platformOp" ? { kind: "platformOp", maxDuffs: 0, maxCredits: a.maxCredits } : { kind: "spend", maxDuffs: a.maxDuffs };
       actual = await settle(cmd.authorize(purpose, a.wallet === "own" ? W : VECTORS.otherWallet, credential));
     } else if ("beginFlow" in step) {
-      actual = await settle(cmd.beginFlow(W, step.beginFlow.flow, step.beginFlow.grants.map(ref)));
+      actual = await settle(cmd.beginFlow(W, step.beginFlow.flow, step.beginFlow.grants.map(ref), null));
     } else if ("endFlow" in step) {
       actual = await settle(cmd.endFlow(ref(step.endFlow)));
     } else if ("accept" in step) {
@@ -194,7 +194,7 @@ describe("fixture grants and leases", () => {
     expect(a).toMatchObject({ walletId: W, singleUse: true, purpose });
     expect(a.id).not.toBe(b.id);
     await cmd.revokeGrant(a.id);
-    await expect(cmd.beginFlow(W, "accept", [a.id])).rejects.toMatchObject({ code: "platform.grant_invalid" });
+    await expect(cmd.beginFlow(W, "accept", [a.id], null)).rejects.toMatchObject({ code: "platform.grant_invalid" });
   });
 
   it("begins a flow as a lease the leases list shows, and signals it", async () => {
@@ -202,7 +202,7 @@ describe("fixture grants and leases", () => {
     const seen: AppEvent[] = [];
     await listen<AppEvent>(cmd.ENGINE_EVENT, (e) => seen.push(e.payload));
     const g = await cmd.authorize({ kind: "platformOp", maxDuffs: 0, maxCredits: VECTORS.quote }, W, { kind: "passphrase", passphrase: "demo" });
-    const id = await cmd.beginFlow(W, "accept", [g.id]);
+    const id = await cmd.beginFlow(W, "accept", [g.id], null);
     const lease = (await cmd.leases()).find((l) => l.id === id.slice(6, 14));
     expect(lease).toMatchObject({ walletId: W, flow: "accept", state: { kind: "active" }, budgets: [{ purpose: "credits", ceiling: VECTORS.quote, spent: "0" }] });
     await cmd.endFlow(id);
