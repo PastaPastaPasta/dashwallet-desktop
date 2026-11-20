@@ -24,7 +24,6 @@ import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
 import {
   budgetNotice,
-  createdFrom,
   defaultFirstPayment,
   detailsProblems,
   feeGrantCap,
@@ -44,7 +43,7 @@ import { useGovernanceInfo, useGovernanceRefresh, useMyProposals, useUpcomingSup
 import { useAmountField } from "../pay/form";
 import { failureText } from "../pay/model";
 import { useNowSecs } from "./common";
-import { keepCreate } from "./keptCreate";
+import { checkKept, createHeldBack, dismissKept, keptCreate, readKeptAgain, settleCreate, startCreate } from "./keptCreate";
 import { CredentialField, useCredential } from "./credential";
 
 type Step = 1 | 2 | 3;
@@ -58,7 +57,7 @@ type FieldErrors = Partial<Record<ProposalFieldName, string>>;
 
 /** After a failed `create_proposal` (D34): reading Mine, the proposal it made anyway, or Mine
  *  unreadable. Pay stays off in all three. */
-type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "unknown"; known: ReadonlySet<string> };
+type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "unknown" };
 
 export function CreateProposalSheet({
   wallet,
@@ -187,15 +186,15 @@ export function CreateProposalSheet({
 
   /** Whether the failed call made the proposal anyway: Mine says, ignoring the proposals it held
    *  when Pay was pressed (D34). */
-  const checkMine = async (d: ProposalDraft, known: ReadonlySet<string>) => {
+  const checkMine = async () => {
     setAfter({ kind: "checking" });
-    try {
-      const made = createdFrom(await b.governanceMyProposals(wallet.walletId), d, known);
-      if (made) credential.setError(null); // the notice says what happened instead
-      setAfter(made ? { kind: "created", p: made } : null);
-    } catch {
-      setAfter({ kind: "unknown", known });
-    }
+    // Through the kept attempt, so a lock meanwhile leaves the page to finish the check.
+    await checkKept(wallet.walletId, () => b.governanceMyProposals(wallet.walletId));
+    if (!mounted.current) return;
+    const k = keptCreate(wallet.walletId);
+    const check = k?.kind === "unsure" ? k.check : null;
+    if (check?.kind === "found") credential.setError(null); // the notice says what happened instead
+    setAfter(check?.kind === "found" ? { kind: "created", p: check.p } : check?.kind === "failed" ? { kind: "unknown" } : check?.kind === "reading" ? { kind: "checking" } : null);
     void refresh();
   };
 
@@ -211,7 +210,6 @@ export function CreateProposalSheet({
     // The figures the review shows as Pay is pressed: the ones the user confirms.
     const confirmed = figures;
     if (busy || after || !draft || !draftKey || !confirmed || !credential.ready) return;
-    const known = new Set((mine.data ?? []).map((p) => p.hash));
     setBusy(true);
     setGeneral(null);
     try {
@@ -227,23 +225,30 @@ export function CreateProposalSheet({
       setFeeChanged(false);
       const grant = await credential.authorize({ kind: "spend", maxDuffs: feeGrantCap(confirmed) });
       if (!grant || shownKey.current !== draftKey) return;
+      // An earlier fee whose outcome is not known yet holds this one back, whatever the button said.
+      const heldBack = createHeldBack(keptCreate(wallet.walletId));
+      if (heldBack) {
+        void b.revokeGrant(grant.id).catch(() => null);
+        credential.setError(heldBack);
+        return;
+      }
       let created: MyProposal;
-      keepCreate(wallet.walletId, { kind: "paying" });
+      const attempt = startCreate(wallet.walletId, draft.name, mine.data ?? []);
       try {
         created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
       } catch (e) {
-        // A field refusal, or a call the lock stopped before the engine, paid nothing. Otherwise,
-        // if the sheet went (a lock), the page says the fee may have gone out once it is back.
+        // A field refusal, or a call the lock stopped before the engine, paid nothing. Otherwise the
+        // fee may have gone out: the attempt stays kept until Mine says, here or after a lock.
         const unpaid = refusedWhileLocked(e) || refuseFields(e);
-        keepCreate(wallet.walletId, mounted.current || unpaid ? null : { kind: "unsure" });
+        settleCreate(wallet.walletId, attempt, unpaid ? null : { kind: "unsure" });
         if (!mounted.current || unpaid) return;
         credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
         // `after` keeps Pay and Back off; the sheet may close while Mine is read.
         setBusy(false);
-        await checkMine(draft, known);
+        await checkMine();
         return;
       }
-      keepCreate(wallet.walletId, mounted.current ? null : { kind: "created", p: created });
+      settleCreate(wallet.walletId, attempt, mounted.current ? null : { kind: "created", p: created });
       void refresh();
       if (mounted.current) onCreated(created);
     } catch (e) {
@@ -436,7 +441,12 @@ export function CreateProposalSheet({
                 <p className="mg-flush">
                   <strong>{after.p.name} was made, and its fee may have gone out.</strong> Don&apos;t pay again: Mine shows it and sends it on from there.
                 </p>
-                <DashButton variant="filledBlue" size="small" data-testid="create-show-mine" onClick={() => onCreated(after.p)}>
+                <DashButton variant="filledBlue" size="small" data-testid="create-show-mine"
+                  onClick={() => {
+                    dismissKept(wallet.walletId);
+                    onCreated(after.p);
+                  }}
+                >
                   Show it in Mine
                 </DashButton>
               </div>
@@ -444,7 +454,11 @@ export function CreateProposalSheet({
             {after?.kind === "unknown" && (
               <div className="mg-notice mg-notice-warning" role="alert" data-testid="create-unknown">
                 <p className="mg-flush">Couldn&apos;t check whether the proposal was made, so Pay stays off: its fee may have gone out.</p>
-                <DashButton variant="filledBlue" size="small" data-testid="create-check-again" onClick={() => void checkMine(draft, after.known)}>
+                <DashButton variant="filledBlue" size="small" data-testid="create-check-again" onClick={() => {
+                    readKeptAgain(wallet.walletId);
+                    void checkMine();
+                  }}
+                >
                   Check again
                 </DashButton>
               </div>
