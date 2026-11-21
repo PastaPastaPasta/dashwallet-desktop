@@ -4,7 +4,7 @@
 
 import { Fragment, useLayoutEffect, useMemo, type ReactNode } from "react";
 import { ui, useUi } from "../app/ui";
-import { build, fill, flatten, own, pluralForm, pseudoCatalog, renderTag, type At, type KeyOf, type Message, type Params, type ParamNames, type TagNames } from "./core";
+import { acrossParagraphs, build, fill, flatten, own, pluralForm, pseudoCatalog, renderTag, type At, type KeyOf, type Message, type Params, type ParamNames, type TagNames } from "./core";
 import { en } from "./en";
 
 export type { Catalog } from "./core";
@@ -35,8 +35,26 @@ export const LANGUAGES: Language[] = [
     : []),
 ];
 
-const byTag = (tag: string) => LANGUAGES.find((l) => l.tag.toLowerCase() === tag.toLowerCase());
+/** The shipped language with this tag, compared case-insensitively. */
+export const byTag = (tag: string) => LANGUAGES.find((l) => l.tag.toLowerCase() === tag.toLowerCase());
 const primary = (tag: string) => tag.split("-")[0].toLowerCase();
+
+/** The script a tag is written in, given or implied (`zh-TW` is Hant), if the runtime knows it. */
+function script(tag: string): string | undefined {
+  try {
+    return new Intl.Locale(tag).maximize().script;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The same language in a script that does not conflict: `pt-PT` takes `pt`, `zh-Hans-CN` takes
+ * `zh-Hans`, `zh-Hant-TW` does not. */
+function sameLanguage(catalog: string, wanted: string): boolean {
+  if (primary(catalog) !== primary(wanted)) return false;
+  const [a, b] = [script(catalog), script(wanted)];
+  return a === undefined || b === undefined || a === b;
+}
 
 export const isLanguage = (tag: string) => byTag(tag) !== undefined;
 
@@ -63,11 +81,12 @@ export function systemRegionLocale(system: readonly string[] = systemLanguages()
 }
 
 /** The system's first language that a complete, real catalog exists for, by tag and then by
- * language alone ("pt-PT" takes "pt"); English otherwise. */
+ * language alone in a script that does not conflict ("pt-PT" takes "pt", "zh-Hant-TW" never takes
+ * "zh-Hans"); English otherwise. */
 export function systemLanguage(system: readonly string[], languages: Language[] = LANGUAGES): Language {
   const usable = languages.filter((l) => !l.pseudo && isComplete(l));
   for (const s of system) {
-    const hit = usable.find((l) => l.tag.toLowerCase() === s.toLowerCase()) ?? usable.find((l) => primary(l.tag) === primary(s));
+    const hit = usable.find((l) => l.tag.toLowerCase() === s.toLowerCase()) ?? usable.find((l) => sameLanguage(l.tag, s));
     if (hit) return hit;
   }
   return languages[0];
@@ -82,29 +101,41 @@ export function resolveLanguage(choice: string | null, system: readonly string[]
 export const currentLanguage = (): Language => resolveLanguage(ui.get().prefs.language);
 
 /** The locale numbers, dates and fiat are formatted with, for `base` (the system's, `undefined`,
- * or the fixture's): `base` while the language follows the system or is the system's own
- * (its regional formats stay), the chosen language's otherwise. */
+ * or the fixture's): `base` while the language follows the system or is the system's own in a
+ * script that does not conflict (its regional formats stay), the chosen language's otherwise. */
 export function formatLocale(base: string | undefined, choice: string | null = ui.get().prefs.language, system: readonly string[] = systemLanguages()): string | undefined {
   const chosen = choice === null ? undefined : byTag(choice);
   if (!chosen) return base;
   const own = base ?? system[0];
-  return own !== undefined && primary(own) === primary(chosen.tag) ? base : chosen.tag;
+  return own !== undefined && sameLanguage(chosen.tag, own) ? base : chosen.tag;
 }
 
 type Args<K extends Key> = [ParamNames<At<typeof en, K>>] extends [never] ? [] : [values: Params<At<typeof en, K>, string | number>];
 type RichArgs<K extends Key> = [values: Params<At<typeof en, K>, ReactNode> & Record<TagNames<At<typeof en, K>>, (children: ReactNode) => ReactNode>];
 
-function lookup(language: Language, key: string, values: Record<string, unknown>): string {
-  const message = language.messages.get(key) ?? english.get(key) ?? key;
-  return pluralForm(message, own(values, "count"), language.tag);
+/** The message for `key`, in its plural form chosen by the rules of the catalog that supplied it:
+ * English's forms by English's rules when the language lacks the key. `fallback` says English
+ * stood in for a right-to-left language, so the whole message is drawn left to right. */
+function lookup(language: Language, key: string, values: Record<string, unknown>): { text: string; fallback: boolean } {
+  const translated = language.messages.get(key);
+  if (translated !== undefined) return { text: pluralForm(translated, own(values, "count"), language.tag), fallback: false };
+  return { text: pluralForm(english.get(key) ?? key, own(values, "count"), "en"), fallback: language.dir === "rtl" };
 }
 
+/** Left-to-right isolate (U+2066 … U+2069). */
+const LRI = "\u2066";
+const PDI = "\u2069";
+
 function translate(language: Language, locale: string | undefined, key: string, values: Record<string, unknown> = {}): string {
-  return fill(lookup(language, key, values), values, { locale, isolate: language.dir === "rtl" });
+  const { text, fallback } = lookup(language, key, values);
+  const filled = fill(text, values, { locale, isolate: language.dir === "rtl" });
+  return fallback ? `${LRI}${acrossParagraphs(filled, LRI, PDI)}${PDI}` : filled;
 }
 
 function translateRich(language: Language, locale: string | undefined, key: string, values: Record<string, unknown>): ReactNode {
-  const parts = build<ReactNode>(lookup(language, key, values), values, { locale, isolate: language.dir === "rtl" }, (tag, children) => renderTag<ReactNode>(values, tag, children) as ReactNode);
+  const { text, fallback } = lookup(language, key, values);
+  const built = build<ReactNode>(text, values, { locale, isolate: language.dir === "rtl" }, (tag, children) => renderTag<ReactNode>(values, tag, children) as ReactNode, (node) => <bdi>{node}</bdi>);
+  const parts = fallback ? [LRI, ...built.map((p) => (typeof p === "string" ? acrossParagraphs(p, LRI, PDI) : p)), PDI] : built;
   return parts.map((p, i) => <Fragment key={i}>{p}</Fragment>);
 }
 

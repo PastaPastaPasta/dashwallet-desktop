@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { FIXTURE_PASSPHRASE } from "../src/fixture/scenarios";
 import { checkArea, PSEUDO, untranslated } from "./pseudo";
 
 // Localization (MP-14): the language picker in Settings ▸ General, and the first converted area (the
@@ -107,6 +108,58 @@ test("the untranslated-text check sees English that bypasses the catalog", async
   for (const text of ["Home", "Settings", "Display", "Up to date"]) expect(found).toContain(text);
   expect(await untranslated(page, [...SHELL, "page-settings"], "rtl")).toContain("Home");
 });
+
+for (const [saved, shown, expected] of [
+  ["EN", "English", "en"],
+  // A tag reserved for local use, which no build ships.
+  ["qaa-BR", "qaa-BR (not available, using System default)", "qaa-BR"],
+] as const) {
+  test(`a saved language ${saved} shows as its own row and choosing System default clears it`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-registered", "light", `&savedLang=${saved}`));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    const picker = page.getByTestId("settings-language");
+    await expect(picker).toHaveValue(expected);
+    await expect(picker.locator("option:checked")).toHaveText(shown);
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+    await picker.selectOption("");
+    await expect(picker).toHaveValue("");
+    expect(await page.evaluate(() => window.__dwFixture!.world.settings.ui.language)).toBe(null);
+    await expect(picker.locator("option", { hasText: "not available" })).toHaveCount(0);
+    // The cleared choice is what a relaunch reads, not the URL's seed.
+    await page.evaluate(() => window.__dwFixture!.relaunch());
+    await page.getByTestId("lock-field").fill(FIXTURE_PASSPHRASE);
+    await page.keyboard.press("Enter");
+    await page.getByTestId("toolbar").waitFor();
+    expect(await page.evaluate(() => window.__dwFixture!.world.settings.ui.language)).toBe(null);
+  });
+}
+
+/** The drawn left edges of the first two characters of `el`'s first text node. */
+const firstTwo = (el: Element) => {
+  const node = [...el.querySelectorAll("*"), el].map((e) => e.firstChild).find((n) => n?.nodeType === Node.TEXT_NODE && /\S/.test(n.textContent ?? ""))!;
+  const box = (i: number) => {
+    const r = document.createRange();
+    r.setStart(node, i);
+    r.setEnd(node, i + 1);
+    return r.getBoundingClientRect().left;
+  };
+  return [box(0), box(1)];
+};
+
+for (const mode of ["list", "table"] as const) {
+  test(`a debit keeps its sign before the digits in a right-to-left window, ${mode} view`, async ({ page }) => {
+    await page.goto(fixtureUrl("funded", "light", "&lang=ar-XB"));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "activity" }));
+    if (mode === "table") await page.getByTestId("tx-mode-table").click();
+    const debit = mode === "list" ? page.locator(".tx-row-amount .amount-number", { hasText: /^-/ }).first() : page.locator("td.num", { hasText: /^-/ }).first();
+    await expect(debit).toBeVisible();
+    // The drawn order, not the DOM's: the sign's box is left of the first digit's.
+    const [sign, digit] = await debit.evaluate(firstTwo);
+    expect(sign).toBeLessThan(digit);
+  });
+}
 
 test("a username keeps its direction in a right-to-left window", async ({ page }) => {
   await openSettings(page, "light", "ar-XB");
