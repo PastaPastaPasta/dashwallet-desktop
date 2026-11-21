@@ -47,6 +47,24 @@ pub enum TxActionRefusal {
     Coinbase,
     InMempool,
     NotSentByWallet,
+    /// The ChainLock exception (#170 case 14) lacks a coin the payment's
+    /// own spend claim, restored at the wallet's load, keeps out of the
+    /// wallet: a restart (which no longer restores it) and a rescan give
+    /// the evidence.
+    RescanFirst,
+}
+
+impl TxActionRefusal {
+    /// The refusal's message: what to do for [`Self::RescanFirst`], the
+    /// refusal's name otherwise.
+    pub fn message(&self) -> String {
+        match self {
+            Self::RescanFirst => "This payment can be abandoned after Dash Wallet restarts and \
+                rescans from the wallet's birth. Restart, then run Rescan, then Abandon again."
+                .into(),
+            other => format!("transaction action refused: {other:?}"),
+        }
+    }
 }
 
 /// The dash-qt details fields `TxDetail` lacks.
@@ -229,20 +247,24 @@ fn locked(e: &TxEntry) -> bool {
 }
 
 /// Whether the ChainLock exception cannot apply to `root`: key-wallet
-/// holds `root`'s own record in a block or InstantSend-locked (it refuses
-/// the abandon), or a transaction that descends from `root` is in a block
-/// or InstantSend-locked by any of the history (abandoned ones too),
-/// key-wallet's records and its locks.
+/// holds `root`'s own record in a block, InstantSend-locked or finalized
+/// (it refuses the abandon), or a transaction that descends from `root` is
+/// in a block, InstantSend-locked or finalized by any of the history
+/// (abandoned ones too), key-wallet's records, its locks and the txids it
+/// keeps finalized.
 fn override_blocked(txs: &HashMap<Txid, TxEntry>, core: &ManagedWalletInfo, root: Txid) -> bool {
     let settled = |c: &TransactionContext| {
         c.block_info().is_some() || matches!(c, TransactionContext::InstantSend(_))
     };
     let accounts = core.accounts.all_accounts();
-    if (accounts.iter()).any(|a| {
-        a.transactions()
-            .get(&root)
-            .is_some_and(|r| settled(&r.context))
-    }) {
+    let finalized = |t: &Txid| accounts.iter().any(|a| a.transaction_is_finalized(t));
+    if finalized(&root)
+        || (accounts.iter()).any(|a| {
+            a.transactions()
+                .get(&root)
+                .is_some_and(|r| settled(&r.context))
+        })
+    {
         return true;
     }
     let parents = |tx: &Transaction| -> Vec<Txid> {
@@ -251,7 +273,7 @@ fn override_blocked(txs: &HashMap<Txid, TxEntry>, core: &ManagedWalletInfo, root
     let mut known: HashMap<Txid, (Vec<Txid>, bool)> = HashMap::new();
     let mut add = |t: Txid, tx: &Transaction, settled: bool| {
         let (_, s) = known.entry(t).or_insert_with(|| (parents(tx), false));
-        *s |= settled || core.instant_send_locks().contains(&t);
+        *s |= settled || core.instant_send_locks().contains(&t) || finalized(&t);
     };
     for (t, e) in txs {
         add(*t, &e.tx, locked(e) || settled(&e.context));
@@ -507,6 +529,26 @@ impl NetworkSession {
             .filter_map(|t| self.hub.history.get(&wallet, t).map(|e| (*t, e.tx)))
             .collect();
 
+        let rows: Vec<(String, String)> = txs
+            .iter()
+            .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
+            .collect();
+        let scope = wallet.to_string();
+        let mut mark = Some(move |db: &AppDb| -> Result<(), dw_appdb::AppDbError> {
+            for (key, hex) in &rows {
+                db.set_setting(&scope, key, Some(hex))?;
+            }
+            Ok(())
+        });
+        // An override's mark goes first: an exit before the sweep leaves the
+        // payment locked, so it loads as it was and a second abandon ends it.
+        if overridden {
+            self.appdb_op(mark.take().expect("unused")).await?;
+        }
+        #[cfg(test)]
+        if (self.hub.quit_before_sweep).swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Internal("quit before the sweep".into()));
+        }
         let live = self.live()?;
         let persister = Arc::clone(&live.persister);
         let sweep = SweepBatch {
@@ -531,18 +573,9 @@ impl NetworkSession {
         .await?
         .map_err(|e| EngineError::Storage(format!("abandon: {e}")))?;
 
-        let rows: Vec<(String, String)> = txs
-            .iter()
-            .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
-            .collect();
-        let scope = wallet.to_string();
-        self.appdb_op(move |db| {
-            for (key, hex) in &rows {
-                db.set_setting(&scope, key, Some(hex))?;
-            }
-            Ok(())
-        })
-        .await?;
+        if let Some(mark) = mark {
+            self.appdb_op(mark).await?;
+        }
 
         self.hub.history.with_wallet(wallet, |h| {
             for t in &abandoned {
@@ -586,8 +619,9 @@ impl NetworkSession {
     /// below the ChainLock, and stays stored spent, claimed by that record;
     /// each other one must be a coin key-wallet holds unspent from a
     /// scanned block once `planned` is abandoned (`trial`), and is
-    /// released. `None` for a root without a lock, `InstantLocked` when the
-    /// evidence falls short.
+    /// released; `RescanFirst` when all that is missing is coins the spend
+    /// claims restored at the load for `planned` hold. `None` for a root
+    /// without a lock, `InstantLocked` when the evidence falls short.
     fn lock_override(
         &self,
         wallet: WalletId,
@@ -598,7 +632,8 @@ impl NetworkSession {
         trial: &ManagedWalletInfo,
     ) -> Result<Option<Vec<OutPoint>>, EngineError> {
         let refused = Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
-        let incomplete = self.hub.history.with_wallet(wallet, |h| h.load_incomplete);
+        let (incomplete, claimed) =
+            (self.hub.history).with_wallet(wallet, |h| (h.load_incomplete, h.claimed.clone()));
         self.hub.history.read(&wallet, |txs| {
             let Some(e) = txs.get(root) else {
                 return Ok(None);
@@ -641,16 +676,22 @@ impl NetworkSession {
                 .flat_map(|p| p.tx.input.iter().map(|i| i.previous_output))
                 .filter(|o| !planned.contains(&o.txid))
                 .collect();
-            let mut free = Vec::new();
+            let (mut free, mut claim_held) = (Vec::new(), false);
             for o in inputs {
                 match mined.get(&o) {
                     Some(true) => {}
                     Some(false) => return refused,
                     None if held.contains(&o) => free.push(o),
+                    None if claimed.get(&o).is_some_and(|t| planned.contains(t)) => {
+                        claim_held = true
+                    }
                     None => return refused,
                 }
             }
-            Ok(Some(free))
+            match claim_held {
+                true => Err(EngineError::TxActionRefused(TxActionRefusal::RescanFirst)),
+                false => Ok(Some(free)),
+            }
         })
     }
 

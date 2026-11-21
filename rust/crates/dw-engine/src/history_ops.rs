@@ -483,6 +483,10 @@ impl NetworkSession {
             .map(|(o, t)| (*o, Some(*t)))
             .collect();
         let held = core.restore_spent_outpoints(&restore);
+        (self.hub.history).with_wallet(wallet, |h| {
+            h.claimed
+                .extend(restore.iter().filter_map(|(o, t)| Some((*o, (*t)?))))
+        });
         if held.is_empty() {
             return;
         }

@@ -351,6 +351,27 @@ mod tests {
         );
     }
 
+    /// A refusal rides in data; the one a restart and a rescan clear says
+    /// so in its message, the others name the refusal.
+    #[test]
+    fn a_tx_action_refusal_rides_in_data_with_its_message() {
+        let e = |r| serde_json::to_value(AppError::from(EngineError::TxActionRefused(r))).unwrap();
+        let rescan = e(TxActionRefusal::RescanFirst);
+        assert_eq!(
+            rescan["data"],
+            serde_json::json!({ "kind": "txAction", "refusal": "rescanFirst" })
+        );
+        assert_eq!(
+            rescan["message"],
+            "This payment can be abandoned after Dash Wallet restarts and rescans from the \
+             wallet's birth. Restart, then run Rescan, then Abandon again."
+        );
+        assert_eq!(
+            e(TxActionRefusal::InstantLocked)["message"],
+            "transaction action refused: InstantLocked"
+        );
+    }
+
     /// Repair's refusal rides in data with its txid or status, and whether
     /// the same Repair may succeed later (E0-04 P2b).
     #[test]

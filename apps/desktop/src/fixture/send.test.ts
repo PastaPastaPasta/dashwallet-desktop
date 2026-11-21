@@ -271,6 +271,22 @@ describe("fixture send engine", () => {
     await expect(cmd.abandonTransaction(W, txid)).rejects.toMatchObject({ code: "tx_action_refused", data: { kind: "txAction", refusal: "alreadyAbandoned" } });
   });
 
+  it("refuses with the engine's message, and offers Abandon a restart and a rescan clear", async () => {
+    await expect(cmd.abandonTransaction(W, (await cmd.historyPage(W, { categories: [], text: null, sort: "newestFirst", cursor: null, limit: 1 })).rows[0].txid)).rejects.toMatchObject({
+      message: "transaction action refused: NotSentByWallet",
+      data: { kind: "txAction", refusal: "notSentByWallet" },
+    });
+    clearMocks();
+    installFixture({ scenario: "abandon-rescan-first" });
+    const txid = "5e".repeat(32);
+    expect(await cmd.txDetailExtras(W, txid)).toMatchObject({ canAbandon: true, canResend: false, abandoned: false });
+    await expect(cmd.abandonTransaction(W, txid)).rejects.toMatchObject({
+      code: "tx_action_refused",
+      message: "This payment can be abandoned after Dash Wallet restarts and rescans from the wallet's birth. Restart, then run Rescan, then Abandon again.",
+      data: { kind: "txAction", refusal: "rescanFirst" },
+    });
+  });
+
   it("labels a transaction", async () => {
     const [row] = (await cmd.historyPage(W, { categories: [], text: null, sort: "newestFirst", cursor: null, limit: 1 })).rows;
     await cmd.setTxLabel(W, row.txid, "  Lunch ");

@@ -49,6 +49,9 @@ pub enum TxActionRefusal {
     InMempool,
     /// The wallet did not fund it (resend only).
     NotSentByWallet,
+    /// Abandon can go through after a restart and a rescan from the
+    /// wallet's birth.
+    RescanFirst,
 }
 
 /// One row of a transaction notification (QT-031): one per dash-qt record,
@@ -136,6 +139,7 @@ impl From<dw_engine::TxActionRefusal> for TxActionRefusal {
             R::Coinbase => Self::Coinbase,
             R::InMempool => Self::InMempool,
             R::NotSentByWallet => Self::NotSentByWallet,
+            R::RescanFirst => Self::RescanFirst,
         }
     }
 }

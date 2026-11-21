@@ -562,6 +562,9 @@ pub(crate) struct SessionHub {
     pub(crate) unreadable_record: Mutex<(Option<dashcore::Txid>, Option<dashcore::Txid>)>,
     #[cfg(test)]
     pub(crate) pause_abandon: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: the next abandon quits before its sweep, as at an exit.
+    #[cfg(test)]
+    pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
     /// Tests: holds the next resume between its record read and its rewind.
     #[cfg(test)]
     pub(crate) pause_resume: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -690,6 +693,8 @@ impl SessionHub {
             unreadable_record: Mutex::default(),
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
+            #[cfg(test)]
+            quit_before_sweep: Default::default(),
             #[cfg(test)]
             pause_resume: Mutex::new(None),
             #[cfg(test)]
