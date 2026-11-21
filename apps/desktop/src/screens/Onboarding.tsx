@@ -341,7 +341,7 @@ function VerifyPhrase({ model }: { model: OnboardingModel }) {
       <ol className="verify-slots" onCopy={noCopy}>
         {model.verifyChallenge.map((position, i) => (
           <li key={position} className="verify-slot" data-testid="verify-slot" data-filled={i < model.verifiedCount}>
-            <span className="verify-slot-label">{t("onboarding.verify.word", { number: position + 1 })}</span>
+            <span className="verify-slot-label">{t("onboarding.verify.word", { number: String(position + 1) })}</span>
             <span className="verify-slot-word">{model.verifiedWords[i] ?? ""}</span>
           </li>
         ))}
