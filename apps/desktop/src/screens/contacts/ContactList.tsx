@@ -39,7 +39,11 @@ export function Row({
         <Avatar letters={letters} identity={identity} />
         <span className="contact-row-text tx-row-text">
           <span className="contact-row-name tx-row-title">{name}</span>
-          {sub && <span className="contact-row-username">{sub}</span>}
+          {sub && (
+            <span className="contact-row-username">
+              <bdi>{sub}</bdi>
+            </span>
+          )}
         </span>
         <span className="contact-row-trailing">{trailing}</span>
       </button>

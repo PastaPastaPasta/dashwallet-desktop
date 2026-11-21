@@ -111,7 +111,7 @@ export function AddContact({ ctx, intent, link }: { ctx: AddContext; intent: Add
       {linkState && link && (
         <div className="add-contact-candidate" data-testid="add-contact-link">
           <p className="contact-row-username" data-testid="add-contact-username">
-            @{link.username}
+            <bdi>@{link.username}</bdi>
           </p>
           {linkState.kind === "verifying" ? (
             <p role="status" data-testid="add-contact-checking">
@@ -222,7 +222,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
           </h3>
           {c.username && c.displayName && (
             <p className="contact-row-username" data-testid="add-contact-username">
-              @{c.username}
+              <bdi>@{c.username}</bdi>
             </p>
           )}
         </div>

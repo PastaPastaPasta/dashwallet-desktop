@@ -437,7 +437,7 @@ export class AddContactModel extends Model {
         if (seq !== this.#seq) return;
         if (hasCode(e, "invalid_argument")) continue;
         const { text: said, retry } = verifyError(e);
-        const text = source === "link" && said === AddText.scanUnverified ? AddText.linkUnverified : said;
+        const text = source === "link" && hasCode(e, "contact.scan_unverified") ? AddText.linkUnverified : said;
         this.#retry = retry ? { texts: texts.slice(i), source, image } : null;
         this.#refuse(source, text, retry);
         return;

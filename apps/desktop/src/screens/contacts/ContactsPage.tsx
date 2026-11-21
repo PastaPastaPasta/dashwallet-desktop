@@ -394,7 +394,7 @@ function EnableDashPay({ banner, actions, onDone }: { banner: EnableBanner; acti
         <span>
           {banner.fee === null
             ? t("contacts.enable.text")
-            : t.rich("contacts.enable.textWithFee", { fee: banner.fee.toLocaleString(), amount: (text) => <span data-testid="contacts-enable-fee">{text}</span> })}
+            : t.rich("contacts.enable.textWithFee", { fee: banner.fee, amount: (text) => <span data-testid="contacts-enable-fee">{text}</span> })}
         </span>
         <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contacts-enable-outcome" />
       </span>
