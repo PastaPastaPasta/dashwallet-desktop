@@ -218,7 +218,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
         <Avatar letters={initials(c.displayName || c.username || "")} size="pane" identity={c.identity} />
         <div className="contact-detail-names">
           <h3 className="add-contact-name" tabIndex={-1} ref={heading} data-testid="add-contact-name">
-            {name}
+            <bdi>{name}</bdi>
           </h3>
           {c.username && c.displayName && (
             <p className="contact-row-username" data-testid="add-contact-username">
