@@ -47,12 +47,19 @@ pub fn decode(image: &[u8]) -> Result<Vec<String>, DesktopError> {
             "{width}×{height} pixels; at most {MAX_PIXELS}"
         )));
     }
-    let luma = ImageReader::new(Cursor::new(image))
-        .with_guessed_format()
-        .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))?
-        .decode()
-        .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))?
-        .into_luma8();
+    let luma = catch_unwind(AssertUnwindSafe(|| {
+        #[cfg(test)]
+        if PANIC_IN_DECODE.get() {
+            panic!("test: the image decode panicked");
+        }
+        ImageReader::new(Cursor::new(image))
+            .with_guessed_format()
+            .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))?
+            .decode()
+            .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))
+            .map(|image| image.into_luma8())
+    }))
+    .map_err(|_| DesktopError::ImageUnreadable("its QR codes could not be read".into()))??;
 
     let (w, h) = (luma.width() as usize, luma.height() as usize);
     // rqrr asserts on some crafted images (#209): a refusal, not a crash.
@@ -77,6 +84,12 @@ pub fn decode(image: &[u8]) -> Result<Vec<String>, DesktopError> {
     }
     found.sort_by_key(|(corner, _)| *corner);
     Ok(found.into_iter().map(|(_, text)| text).collect())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: this thread's image decodes panic.
+    static PANIC_IN_DECODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -180,5 +193,16 @@ mod tests {
     fn an_image_rqrr_panics_on_is_refused() {
         let bmp = include_bytes!("../../../../testdata/qr/rqrr_geometry_panic.bmp");
         assert!(matches!(decode(bmp), Err(DesktopError::ImageUnreadable(_))));
+    }
+
+    /// A panic in the `image` decode, as in rqrr's, is a refusal.
+    #[test]
+    fn an_image_decode_that_panics_is_refused() {
+        let png = render(&["dash:first"], ImageFormat::Png);
+        PANIC_IN_DECODE.set(true);
+        let decoded = decode(&png);
+        PANIC_IN_DECODE.set(false);
+        assert!(matches!(decoded, Err(DesktopError::ImageUnreadable(_))));
+        assert_eq!(decode(&png).unwrap(), vec!["dash:first"]);
     }
 }
