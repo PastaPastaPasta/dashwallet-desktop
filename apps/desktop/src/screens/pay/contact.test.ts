@@ -9,6 +9,7 @@ import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo"
 import type { GrantPurposeSpec } from "../../api/generated/GrantPurposeSpec";
 import type { PreparedTxSummary } from "../../api/generated/PreparedTxSummary";
 import { AcceptFailed, acceptsToo, acceptUnderLease, blocks, noOwner, PAYMENT_LOCK_TEXT, payBanner, payeeOf, pickerGroups, resolveText, type AcceptApi, type BannerInput } from "./contact";
+import { DEFAULT_PREFS, ui } from "../../app/ui";
 import { broadcastFailure, confirmedOf, isContact, keepsPromise, sendErrorText, subtractsFee, unsignedKeepsPromise } from "./model";
 
 const ME = "8tvHgfq4BLx3bRBcxSs7ZsjaTnAZDSmLhNpAgXyNomeR";
@@ -119,6 +120,22 @@ describe("IOS-050 the banner (D6)", () => {
     const request = payBanner(input({ detail: detail({ relation: "pendingIncoming", channel: "notEstablished" }) }));
     expect(request).toMatchObject({ kind: "note", text: expect.stringContaining("Accept and pay") });
     expect(blocks(payBanner(input({ detail: detail({ relation: "pendingIncoming" }), hasKeys: false })))).toBe(true);
+  });
+
+  it("reads the Enable and broken-channel texts in the language in use", () => {
+    ui.set({ prefs: { ...DEFAULT_PREFS, language: "en-XA" } });
+    try {
+      const textOf = (b: ReturnType<typeof payBanner>) => (b && "text" in b ? b.text : "");
+      const enable = textOf(payBanner(input({ detail: detail({ relation: "pendingIncoming" }), hasKeys: false })));
+      const broken = textOf(payBanner(input({ detail: detail({ channel: "broken" }) })));
+      const refusal = sendErrorText(err("contact.channel_broken"), "test")?.text ?? "";
+      for (const text of [enable, broken, refusal]) expect(text).not.toMatch(/Enable DashPay first|Payments to this contact/);
+      expect(enable).toMatch(/^⟦.*⟧ ⟦.*⟧$/);
+      expect(broken).toMatch(/^⟦.*⟧$/);
+      expect(refusal).toBe(broken);
+    } finally {
+      ui.set({ prefs: DEFAULT_PREFS });
+    }
   });
 
   it("once this form accepted, pays without accepting again, before the re-read lands (D11)", () => {

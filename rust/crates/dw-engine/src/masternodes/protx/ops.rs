@@ -522,7 +522,7 @@ impl NetworkSession {
         if let Some(seam) = self.masternodes.protx_seam() {
             *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&seam.broadcaster));
         }
-        let prepared = draft.assembled(d.tx, d.summary, d.charge, d.fence, d.maybe_out);
+        let prepared = draft.assembled(d.tx, d.summary, d.charge, d.fence, d.maybe_out, None);
         let (w, id, now) = (wallet.to_string(), d.id.clone(), now_secs());
         let begun = self
             .appdb_op(move |db| db.begin_masternode_op_attempt(&w, &id, now))
