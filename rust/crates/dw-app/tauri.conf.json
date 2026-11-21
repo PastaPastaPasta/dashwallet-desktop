@@ -56,12 +56,21 @@
         "scan",
         "governance",
         "masternodes",
-        "rates"
+        "rates",
+        "updates"
       ]
     },
     "withGlobalTauri": false
   },
   "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVEMzIyQjk2M0I1MjdCMjEKUldRaGUxSTdsaXN5N1ZTQ3hDYjdsNjh4RG16TTIwa3JJT0Q2TDZsTnlid0VKQVp1elg0YUZFRlMK",
+      "endpoints": [],
+      "requireSignedVersion": true,
+      "windows": {
+        "installMode": "passive"
+      }
+    },
     "deep-link": {
       "desktop": {
         "schemes": [

@@ -59,6 +59,9 @@ pub struct UiSettings {
     /// `null` follows the system (MP-14). The renderer decides which tags it
     /// has a catalog for.
     pub language: Option<String>,
+    /// Settings ▸ About ▸ Check for updates automatically (PK-03): off until
+    /// the user turns it on; only a copy that can update itself checks.
+    pub check_updates_automatically: bool,
 }
 
 impl Default for UiSettings {
@@ -74,6 +77,7 @@ impl Default for UiSettings {
             masternodes_tab: MasternodesTab::MyMasternodes,
             pre_release_notice_dismissed: false,
             language: None,
+            check_updates_automatically: false,
         }
     }
 }
@@ -248,6 +252,7 @@ mod tests {
             masternodes_tab: MasternodesTab::Names,
             pre_release_notice_dismissed: true,
             language: Some("pt-BR".into()),
+            check_updates_automatically: true,
         };
         write(dir.path(), &s).unwrap();
         assert_eq!(read(dir.path()), s);
@@ -289,6 +294,14 @@ mod tests {
         };
         write(dir.path(), &s).unwrap();
         assert!(read(dir.path()).pre_release_notice_dismissed);
+    }
+
+    #[test]
+    fn automatic_update_checks_are_off_until_turned_on() {
+        let dir = root();
+        assert!(!UiSettings::default().check_updates_automatically);
+        std::fs::write(path(dir.path()), r#"{"unit":"duffs"}"#).unwrap();
+        assert!(!read(dir.path()).check_updates_automatically);
     }
 
     #[test]

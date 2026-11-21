@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # GitHub Actions (release.yml, `decide` job, read-only): what this run builds and whether it may publish.
-# Appends build=true|false and publish=true|false to $GITHUB_OUTPUT.
+# Appends build=, publish= and signing=true|false to $GITHUB_OUTPUT.
 #
 #   ci/github/release-decide.sh
 #
@@ -14,6 +14,8 @@
 #           read-only job; release-publish.sh repeats it. It is code of the pushed commit like the
 #           workflow itself, so it cannot stand against a tag whose workflow was edited: that needs an
 #           environment deployment policy or a tag ruleset (repository settings).
+# signing   publish, on a stable tag vX.Y.Z: the only run whose build jobs use the `release` environment
+#           and its updater signing key (docs/release/updater.md). Never rc, dry-run, main or a dispatch.
 # build     always, except a branch push or pull request that changes only documentation and files no
 #           release bundle is built from (docs, *.md, the Swift trees, the unrelated workflows). Main,
 #           tags and dispatch always build. A branch push is measured from its merge base with origin/main
@@ -60,8 +62,14 @@ if [[ "$ref" != refs/heads/main && "$ref" != refs/tags/* ]] && [[ -n "$base" ]] 
   fi
 fi
 
-echo "decide: kind=$kind publish=$publish build=$build"
+signing=false
+if [[ "$publish" == true && "$event" == push && "$ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  signing=true
+fi
+
+echo "decide: kind=$kind publish=$publish build=$build signing=$signing"
 {
   echo "publish=$publish"
   echo "build=$build"
+  echo "signing=$signing"
 } >> "${GITHUB_OUTPUT:?}"

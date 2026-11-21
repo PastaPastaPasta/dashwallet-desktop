@@ -1,0 +1,12 @@
+{
+  "bundle": {
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/PastaPastaPasta/dashwallet-desktop/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
