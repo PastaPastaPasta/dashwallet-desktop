@@ -37,23 +37,11 @@ fn dwcli(dir: &Path, args: &[&str], env: &[(&str, &str)], stdin: &[u8]) -> (Outp
     (out, start.elapsed())
 }
 
-/// A new wallet's bring-up has three seconds (`CREATED_HERE_BUDGET`). On a
-/// loaded machine it is cut off there, and `dashpay status` then says that
-/// the start-up is incomplete, which is as true as the answer it gives when
-/// the bring-up ended in time. These tests are not about which of the two a
-/// run reached, so the cut-off answer reads as the other one here.
-fn settled(mut line: Value) -> Value {
-    if line["result"] == json!({"kind": "startup_incomplete", "startup": "partial_no_identity"}) {
-        line["result"] = json!({"kind": "no_identity", "reason": "waiting_for_sync"});
-    }
-    line
-}
-
 fn lines(out: &Output) -> Vec<Value> {
     String::from_utf8(out.stdout.clone())
         .unwrap()
         .lines()
-        .map(|l| settled(serde_json::from_str(l).unwrap_or_else(|e| panic!("{l:?}: {e}"))))
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{l:?}: {e}")))
         .collect()
 }
 

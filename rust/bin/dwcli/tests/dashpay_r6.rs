@@ -90,22 +90,10 @@ fn dwcli(dir: &Path, args: &[&str], fault: Option<&str>, stdin: &[u8]) -> Run {
     }
 }
 
-/// A new wallet's bring-up has three seconds (`CREATED_HERE_BUDGET`). On a
-/// loaded machine it is cut off there, and `dashpay status` then says that
-/// the start-up is incomplete, which is as true as the answer it gives when
-/// the bring-up ended in time. These tests are not about which of the two a
-/// run reached, so the cut-off answer reads as the other one here.
-fn settled(mut line: Value) -> Value {
-    if line["result"] == json!({"kind": "startup_incomplete", "startup": "partial_no_identity"}) {
-        line["result"] = json!({"kind": "no_identity", "reason": "waiting_for_sync"});
-    }
-    line
-}
-
 fn lines(run: &Run) -> Vec<Value> {
     run.stdout
         .lines()
-        .map(|l| settled(serde_json::from_str(l).unwrap_or_else(|e| panic!("{l:?}: {e}"))))
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{l:?}: {e}")))
         .collect()
 }
 
@@ -137,6 +125,23 @@ fn assert_abandoned(run: &Run, step: &str) {
     assert!(!err.contains("health probe"), "{err}");
     assert!(!err.contains("dwcli: panic at"), "{err}");
     assert!(run.elapsed < BOUND, "{:?}", run.elapsed);
+}
+
+/// [`lines`] of a `--spv` run. With SPV running, `dashpay status` can find
+/// the wallet manager held by a writer; it then answers from its snapshot,
+/// which cannot prove that the new wallet has no identity, and reports the
+/// bring-up's own outcome. That answer reads as [`status_line`]'s here:
+/// these tests are about the teardown, not about which of the two a run
+/// reached.
+fn spv_lines(run: &Run) -> Vec<Value> {
+    let mut lines = lines(run);
+    for line in &mut lines {
+        if line["result"] == json!({"kind": "startup_incomplete", "startup": "partial_no_identity"})
+        {
+            line["result"] = json!({"kind": "no_identity", "reason": "waiting_for_sync"});
+        }
+    }
+    lines
 }
 
 /// The one-shot line `dashpay status` prints for the new, offline wallet.
@@ -199,7 +204,7 @@ fn a_refused_spv_stop_thread_abandons_the_engine_at_once() {
     ];
     let run = dwcli(dir.path(), &args, fault, b"");
     assert_abandoned(&run, "stopping SPV");
-    assert_eq!(lines(&run), [status_line()]);
+    assert_eq!(spv_lines(&run), [status_line()]);
 
     let args = [
         "--verbose-events",
@@ -215,7 +220,7 @@ fn a_refused_spv_stop_thread_abandons_the_engine_at_once() {
     let mut answer = status_line();
     answer["id"] = json!("r7-spv-stall");
     assert_eq!(
-        lines(&run),
+        spv_lines(&run),
         [answer, json!({"ok": true, "result": {"requests": 1}})]
     );
 }
