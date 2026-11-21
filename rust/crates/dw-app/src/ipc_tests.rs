@@ -57,7 +57,7 @@ impl Demo {
 
     /// Like [`Self::launched_in`], without waiting for the engine. A test that
     /// holds the build uses this so `run_iteration` can return first.
-    fn open_unready(edit: impl FnOnce(&mut LaunchOptions, &std::path::Path)) -> Self {
+    pub(crate) fn open_unready(edit: impl FnOnce(&mut LaunchOptions, &std::path::Path)) -> Self {
         Self::start(dw_testutil::private_tempdir(), edit, false)
     }
 

@@ -14,6 +14,9 @@ import type { LinkRoute } from "../api/generated/LinkRoute";
 import type { ShellCommand } from "../api/generated/ShellCommand";
 import type { ThemeName } from "../api/generated/ThemeName";
 import type { NetworkKind } from "../api/generated/NetworkKind";
+import type { UpdateAvailability } from "../api/generated/UpdateAvailability";
+import type { UpdatePhase } from "../api/generated/UpdatePhase";
+import { startingPhase, UPDATE_FAULTS, type UpdateFault } from "./updates";
 import { isErrorClass, sampleError, type ErrorClass } from "./errors";
 import { landSend, PENDING_HANDLERS, switchedWorld } from "./pending";
 import { HANDLERS, registrationRun, type Ctx } from "./handlers";
@@ -41,6 +44,13 @@ export interface FixtureOptions {
   /** The saved language (`lang=<tag>`, MP-14): a shipped one or a pseudo-locale (`en-XA` long,
    * `ar-XB` right to left). */
   language?: string;
+  /** This copy's update availability (`updates=<availability>`, PK-03); with `update=<version>`, the
+   * version the stable feed serves, `updatePhase=<kind>` the phase it starts in and
+   * `updateFault=<fault>` what goes wrong next. */
+  updates?: UpdateAvailability;
+  updateServes?: string;
+  updatePhase?: UpdatePhase["kind"];
+  updateFault?: UpdateFault;
 }
 
 export interface FixtureHandle {
@@ -90,6 +100,15 @@ const notImplemented = (call: string): AppError => ({
   data: { kind: "call", call },
 });
 
+const UPDATE_AVAILABILITIES: UpdateAvailability[] = ["available", "notInThisBuild", "flatpak", "packageManager", "notInstalled", "moveToApplications"];
+const UPDATE_PHASES: UpdatePhase["kind"][] = ["idle", "checking", "upToDate", "found", "downloaded", "downloading", "installing", "installed", "restartRequired"];
+
+function oneOf<T extends string>(p: URLSearchParams, name: string, allowed: readonly T[]): T | undefined {
+  const v = p.get(name);
+  if (v !== null && !allowed.includes(v as T)) throw new Error(`unknown ${name}=${v}`);
+  return (v ?? undefined) as T | undefined;
+}
+
 /** Where `relaunch` leaves the world for the next page load (one tab's session). */
 const RELAUNCH_KEY = "dw-fixture-relaunch";
 
@@ -105,6 +124,10 @@ function relaunchedWorld(): World | null {
 export function installFixture(opts: FixtureOptions): FixtureHandle {
   const world = relaunchedWorld() ?? switchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
   if (opts.language) world.settings.ui = { ...world.settings.ui, language: opts.language };
+  if (opts.updates) world.updates.availability = opts.updates;
+  if (opts.updateServes) world.updates.serves = opts.updateServes;
+  if (opts.updatePhase) world.updates.phase = startingPhase(opts.updatePhase, world.updates.serves ?? "0.0.0");
+  if (opts.updateFault) world.updates.fault = opts.updateFault;
   if (opts.network) {
     world.launch.network = { kind: opts.network, dirName: opts.network, unitName: opts.network === "mainnet" ? "DASH" : "tDASH" };
     world.pending.networkChoice = { chosen: opts.network === "testnet" ? "mainnet" : "testnet", saved: true };
@@ -180,7 +203,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   };
 }
 
-/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
+/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&updates=<availability>&update=<version>&updatePhase=<kind>&updateFault=<fault>&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
  * `error-<class>` scenario is `funded` with `list_wallets` failing with that class. Unknown
  * names throw, so a typo in a test URL fails loudly instead of showing the default. */
 export function fixtureOptionsFromUrl(search: string): FixtureOptions {
@@ -212,6 +235,10 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
   }
   const language = p.get("lang") ?? undefined;
   if (language !== undefined && !isLanguage(language)) throw new Error(`unknown language ${language}`);
+  const updates = oneOf(p, "updates", UPDATE_AVAILABILITIES);
+  const updateServes = p.get("update") ?? undefined;
+  const updatePhase = oneOf(p, "updatePhase", UPDATE_PHASES);
+  const updateFault = oneOf(p, "updateFault", UPDATE_FAULTS);
   const delay = Number(p.get("delay") ?? 0);
-  return { scenario, theme, network, failures, holds, language, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
+  return { scenario, theme, network, failures, holds, language, updates, updateServes, updatePhase, updateFault, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
 }
