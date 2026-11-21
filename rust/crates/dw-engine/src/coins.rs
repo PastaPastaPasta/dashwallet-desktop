@@ -793,6 +793,12 @@ fn funding_accounts_mut(
 }
 
 /// Reads every funds account of `info` (key-wallet state only).
+/// The height key-wallet has scanned the wallet to: the last block it
+/// processed for it, or its committed checkpoint when that is higher.
+pub(crate) fn scanned_height(info: &ManagedWalletInfo) -> u32 {
+    info.last_processed_height().max(info.synced_height())
+}
+
 pub(crate) fn read_coins(info: &ManagedWalletInfo) -> CoinSnapshot {
     let accounts = &info.accounts;
     let mut coins = Vec::new();
@@ -1003,17 +1009,15 @@ impl NetworkSession {
             wallet_id.0,
             "the fence of another wallet"
         );
-        let (mut snapshot, lock_inputs, unseen, block_spent) = {
+        let (mut snapshot, lock_inputs, unseen, scanned) = {
             let state = wallet.state().await;
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
-            let block_spent: HashSet<OutPoint> =
-                (state.core_wallet.observed_spent_outpoints().keys().copied()).collect();
             (
                 snapshot,
                 pending_lock_inputs(state.tracked_asset_locks.values()),
                 unseen,
-                block_spent,
+                scanned_height(&state.core_wallet),
             )
         };
         // Coins before the history: a ProRegTx that lands between the two
@@ -1077,12 +1081,20 @@ impl NetworkSession {
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
-        let spent = (self.hub.history).read(&wallet_id, crate::history::spent_outpoints);
         // key-wallet sweeps a payment it holds a record of when it loses, but
         // not one restored at load, whose change can be trusted (#86).
-        let lost = (self.hub.history).read(&wallet_id, |txs| {
-            crate::history::lost_unmined(txs, |o| block_spent.contains(o))
+        let relies = (snapshot.coins.iter())
+            .any(|c| c.utxo.is_trusted && !c.utxo.is_confirmed && !c.utxo.is_instantlocked);
+        let (spent, lost, known) = (self.hub.history).read_wallet(&wallet_id, |h| {
+            let lost = match relies {
+                true => crate::history::lost_unmined(&h.txs, &h.swept, &h.restored, scanned),
+                false => HashSet::new(),
+            };
+            (crate::history::spent_outpoints(&h.txs), lost, h.scanned)
         });
+        if known != scanned {
+            (self.hub.history).with_wallet(wallet_id, |h| h.scanned = scanned);
+        }
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             coin.utxo.is_trusted &= !lost.contains(&o.txid);

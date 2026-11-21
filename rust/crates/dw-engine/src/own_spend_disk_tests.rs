@@ -108,6 +108,33 @@ pub(super) fn prepare(
     Arc<crate::send::TxDraft>,
     Result<Arc<crate::send::PreparedTx>, crate::EngineError>,
 ) {
+    prepare_with(
+        engine,
+        session,
+        id,
+        source,
+        amount,
+        subtract_fee,
+        broadcaster,
+        |_| {},
+    )
+}
+
+/// [`prepare`], with `configure` applied to the draft before it is signed.
+#[allow(clippy::too_many_arguments)]
+fn prepare_with(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    source: CoinSource,
+    amount: u64,
+    subtract_fee: bool,
+    broadcaster: &Arc<Accept>,
+    configure: impl FnOnce(&crate::send::TxDraft),
+) -> (
+    Arc<crate::send::TxDraft>,
+    Result<Arc<crate::send::PreparedTx>, crate::EngineError>,
+) {
     let draft = session.new_tx_draft(id).unwrap();
     *draft.broadcaster.lock().unwrap() = Some(Arc::clone(broadcaster) as _);
     draft
@@ -120,6 +147,7 @@ pub(super) fn prepare(
         }])
         .unwrap();
     draft.set_source(source).unwrap();
+    configure(&draft);
     let grant = session
         .vault()
         .authorize(
@@ -757,30 +785,182 @@ fn change_of_an_unmined_own_payment_is_spendable_after_a_restart() {
 
 /// A payment restored at load whose coin another device then spends in a
 /// block, paying only someone else: the payment can never confirm, so
-/// automatic selection does not take its change.
+/// automatic selection does not take its change, nor after the block is
+/// ChainLocked and key-wallet forgets the spend, nor after a restart.
 #[test]
 fn change_of_a_restored_payment_a_block_beat_is_not_selected() {
     let (_dir, engine, session, id, paid) = single_coin_wallet();
-    let coin = OutPoint::new(paid.txid(), 0);
     let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
 
     let session = reopen(&engine, session);
     assert!(utxo(&engine, &session, id, change).is_trusted);
+    let winner = spent_elsewhere(&engine, &session, id, &paid);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
+
+    chain_lock(&engine, &session, TIP + 1);
+    let coin = OutPoint::new(paid.txid(), 0);
+    assert!(
+        !observed_spent(&engine, &session, id).contains(&coin),
+        "key-wallet forgot the spend"
+    );
+    assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
+
+    let session = reopen(&engine, session);
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
+    assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
+}
+
+/// key-wallet applies a ChainLock at `height`.
+fn chain_lock(engine: &Engine, session: &NetworkSession, height: u32) {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        wm.write().await.apply_chain_lock(dashcore::ChainLock {
+            block_height: height,
+            block_hash: dashcore::BlockHash::all_zeros(),
+            signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+        });
+    });
+}
+
+/// The outpoints key-wallet holds as spent by a block it scanned.
+fn observed_spent(engine: &Engine, session: &NetworkSession, id: WalletId) -> BTreeSet<OutPoint> {
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm.get_wallet_info(&id.0).unwrap();
+        info.core_wallet
+            .observed_spent_outpoints()
+            .keys()
+            .copied()
+            .collect()
+    })
+}
+
+/// Another device of the wallet spends `paid`'s output 0, paying only
+/// someone else.
+fn spent_elsewhere(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    paid: &Transaction,
+) -> Transaction {
     let owner =
         Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest).unwrap();
-    let winner = super::spend_of(coin, vec![(elsewhere(), COIN - 1_000)]);
-    let winner = super::signed_by_wallet(&engine, &session, id, &owner, winner);
-    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    let winner = super::spend_of(
+        OutPoint::new(paid.txid(), 0),
+        vec![(elsewhere(), COIN - 1_000)],
+    );
+    super::signed_by_wallet(engine, session, id, &owner, winner)
+}
+
+/// What automatic selection finds for a payment of `amount`: `None` when
+/// it is enough, else what it reports available.
+fn available(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    amount: u64,
+) -> Option<u64> {
     let (_draft, prepared) = prepare(
-        &engine,
-        &session,
+        engine,
+        session,
         id,
         CoinSource::Any,
-        COIN / 8,
+        amount,
         false,
         &Arc::new(Accept::default()),
     );
-    assert!(prepared.is_err(), "the lost change is not selected");
+    match prepared {
+        Ok(_) => None,
+        Err(crate::EngineError::Send(crate::send::SendFailure::AmountExceedsBalance {
+            available,
+        })) => Some(available),
+        Err(e) => panic!("{e:?}"),
+    }
+}
+
+/// A restored payment P and its restored child C, which spends P's change.
+/// After a restart a peer relays P, so key-wallet records it; then another
+/// device's spend of P's coin, paying only someone else, is InstantSend
+/// locked and key-wallet sweeps P. C can never confirm: automatic
+/// selection takes nothing of its change, before and after a peer relays C.
+#[test]
+fn change_of_a_restored_child_of_a_swept_payment_is_not_selected() {
+    let (_dir, engine, session, id, paid) = single_coin_wallet();
+    let (parent, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+    let (child, spent, child_change) = pay_stored(&engine, &session, id, CoinSource::Any);
+    assert_eq!(spent, vec![change]);
+
+    let session = reopen(&engine, session);
+    assert!(utxo(&engine, &session, id, child_change).is_trusted);
+    mempool(&engine, &session, id, &parent);
+    let winner = spent_elsewhere(&engine, &session, id, &paid);
+    instant_lock(&engine, &session, id, &winner);
+    assert!(
+        session.hub.history.get(&id, &parent.txid()).is_none(),
+        "key-wallet swept P"
+    );
+    assert_eq!(
+        available(&engine, &session, id, COIN / 8),
+        Some(0),
+        "C's change is not selected"
+    );
+    mempool(&engine, &session, id, &child);
+    assert_eq!(
+        available(&engine, &session, id, COIN / 8),
+        Some(0),
+        "nor after a peer relays C"
+    );
+}
+
+/// A restored payment beaten by another device's spend of its coin that
+/// pays the wallet too and is InstantSend-locked, not mined: the history
+/// holds the winner, and automatic selection takes only the winner's
+/// change, never the payment's.
+#[test]
+fn change_of_a_restored_payment_a_locked_spend_beat_is_not_selected() {
+    let (_dir, engine, session, id, paid) = single_coin_wallet();
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+
+    let session = reopen(&engine, session);
+    assert!(utxo(&engine, &session, id, change).is_trusted);
+    let winner = rival(&engine, &session, id, &paid, 0);
+    mempool(&engine, &session, id, &winner);
+    instant_lock(&engine, &session, id, &winner);
+    let won = change_of(&winner, &own_scripts(&engine, &session, id));
+    let won = winner.output[won.vout as usize].value;
+    assert_eq!(
+        available(&engine, &session, id, COIN * 6 / 10),
+        Some(won),
+        "only the winner's change"
+    );
+}
+
+/// A wallet load that cannot read every stored record trusts no change: a
+/// payment's change stays untrusted until a load reads everything.
+#[test]
+fn a_load_with_an_unreadable_record_trusts_no_change() {
+    let (_dir, engine, session, id, paid) = single_coin_wallet();
+    let other = funding(8, &[fresh_address(&engine, &session, id)], COIN);
+    mempool(&engine, &session, id, &other);
+    let coin = OutPoint::new(paid.txid(), 0);
+    let (payment, _, change) = pay_stored(&engine, &session, id, CoinSource::Outpoints(vec![coin]));
+    wait_stored(&session, id, &[other.txid(), payment.txid()]);
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    *session.hub.unreadable_record.lock().unwrap() = (Some(other.txid()), Some(other.txid()));
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
+
+    let session = reopen(&engine, session);
+    assert!(
+        utxo(&engine, &session, id, change).is_trusted,
+        "a clean load"
+    );
 }
 
 /// The change of a payment of a coin neither in a block nor InstantSend
@@ -813,5 +993,67 @@ fn change_of_a_payment_of_an_unconfirmed_coin_stays_untrusted_after_a_restart() 
         false,
         &Arc::new(Accept::default()),
     );
-    assert!(prepared.is_err(), "automatic selection takes no coin");
+    assert!(
+        matches!(
+            prepared,
+            Err(crate::EngineError::Send(
+                crate::send::SendFailure::AmountExceedsBalance { available: 0 }
+            ))
+        ),
+        "automatic selection takes no coin"
+    );
+}
+
+/// A payment whose change the user set to one of the wallet's CoinJoin
+/// addresses: key-wallet does not trust that output, and neither does the
+/// load after a restart.
+#[test]
+fn change_to_a_coinjoin_address_is_not_trusted_after_a_restart() {
+    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+    let (_dir, engine, session, id, _) = single_coin_wallet();
+    let manager = session.manager().unwrap();
+    let mix = engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm.get_wallet_info(&id.0).unwrap();
+        let account = info.core_wallet.accounts.coinjoin_accounts.get(&0).unwrap();
+        let key_wallet::managed_account::managed_account_type::ManagedAccountType::CoinJoin {
+            internal_addresses,
+            ..
+        } = account.managed_account_type()
+        else {
+            panic!("a CoinJoin account");
+        };
+        internal_addresses
+            .addresses
+            .values()
+            .next()
+            .unwrap()
+            .address
+            .clone()
+    });
+    let broadcaster = Arc::new(Accept::default());
+    let (draft, prepared) = prepare_with(
+        &engine,
+        &session,
+        id,
+        CoinSource::Any,
+        COIN / 4,
+        false,
+        &broadcaster,
+        |d| {
+            d.set_change(crate::send::ChangePolicy::Address(mix.to_string()))
+                .unwrap()
+        },
+    );
+    engine.block_on(draft.broadcast(prepared.unwrap())).unwrap();
+    let tx = broadcaster.0.lock().unwrap()[0].clone();
+    mempool(&engine, &session, id, &tx);
+    wait_stored(&session, id, &[tx.txid()]);
+    let vout = (tx.output.iter()).position(|o| o.script_pubkey == mix.script_pubkey());
+    let change = OutPoint::new(tx.txid(), vout.unwrap() as u32);
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
+
+    let session = reopen(&engine, session);
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
 }

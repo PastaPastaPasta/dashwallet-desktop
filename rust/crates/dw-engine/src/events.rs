@@ -1352,6 +1352,7 @@ impl SessionHub {
                 self.history.with_wallet(id, |h| {
                     for t in txids {
                         h.forget(t);
+                        h.swept.insert(*t);
                     }
                 });
                 self.pump.mark_history(id, Some(txids));

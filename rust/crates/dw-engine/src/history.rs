@@ -388,34 +388,57 @@ fn live_sends<'a>(
         })
 }
 
-/// The transactions out of a block that can no longer confirm: another one
-/// in a block or InstantSend-locked spends one of their inputs, a block
-/// spent one (`block_spent`), or they spend an output of one that cannot.
-/// Their change is not trusted (#86).
+/// The transactions out of a block whose change automatic selection must
+/// not trust (#86), and every unmined one spending an output of one: those
+/// key-wallet swept (`swept`); those another transaction beats, in a
+/// ChainLocked block, or in a block or InstantSend-locked when they are not
+/// InstantSend-locked themselves (key-wallet's order); and the payments
+/// whose change trust was restored at load (`restored`, each with the
+/// height scanned when it was sent) once the wallet is scanned past it
+/// (`height`) unless they are InstantSend-locked: a block spending a
+/// payment's coin spends the wallet's script, so the scan reaches it.
 pub(crate) fn lost_unmined(
     txs: &HashMap<Txid, TxEntry>,
-    block_spent: impl Fn(&OutPoint) -> bool,
+    swept: &HashSet<Txid>,
+    restored: &HashMap<Txid, u32>,
+    height: u32,
 ) -> HashSet<Txid> {
-    let unmined = || (txs.iter()).filter(|(_, e)| e.context.block_info().is_none());
-    let mut lost: HashSet<Txid> = unmined()
-        .filter(|(t, e)| {
-            beaten(txs, t, e) || (e.tx.input.iter()).any(|i| block_spent(&i.previous_output))
-        })
-        .map(|(t, _)| *t)
-        .collect();
-    loop {
-        let children: Vec<Txid> = unmined()
-            .filter(|(t, e)| {
-                !lost.contains(*t)
-                    && (e.tx.input.iter()).any(|i| lost.contains(&i.previous_output.txid))
-            })
-            .map(|(t, _)| *t)
-            .collect();
-        if children.is_empty() {
-            return lost;
+    let locked =
+        |e: &TxEntry| e.instant_locked || matches!(e.context, TransactionContext::InstantSend(_));
+    let mut winners: HashMap<OutPoint, Vec<(Txid, bool)>> = HashMap::new();
+    for (t, e) in txs.iter().filter(|(_, e)| settled(e)) {
+        let final_ = matches!(e.context, TransactionContext::InChainLockedBlock(_));
+        for i in &e.tx.input {
+            winners
+                .entry(i.previous_output)
+                .or_default()
+                .push((*t, final_));
         }
-        lost.extend(children);
     }
+    let mut todo: Vec<Txid> = (swept.iter())
+        .filter(|t| txs.get(*t).is_none_or(|e| e.context.block_info().is_none()))
+        .copied()
+        .collect();
+    let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
+    for (t, e) in txs.iter().filter(|(_, e)| e.context.block_info().is_none()) {
+        let beaten = (e.tx.input.iter()).any(|i| {
+            (winners.get(&i.previous_output).into_iter().flatten())
+                .any(|(w, final_)| w != t && (*final_ || !locked(e)))
+        });
+        if beaten || (!locked(e) && restored.get(t).is_some_and(|at| height > *at)) {
+            todo.push(*t);
+        }
+        for i in &e.tx.input {
+            children.entry(i.previous_output.txid).or_default().push(*t);
+        }
+    }
+    let mut lost = HashSet::new();
+    while let Some(t) = todo.pop() {
+        if lost.insert(t) {
+            todo.extend(children.get(&t).into_iter().flatten());
+        }
+    }
+    lost
 }
 
 /// The wallet's coins that the payments this app sent spend while they are
@@ -443,13 +466,21 @@ pub(crate) fn unmined_own_spends(
 /// `CWalletTx::IsTrusted`), which the store does not keep (#86): the app
 /// signed every input, and each spends an output paying the wallet
 /// (`owned`) of a transaction in a block, InstantSend-locked, or itself
-/// such a payment's change.
+/// such a payment's change. key-wallet trusts only an input it still holds,
+/// so a payment sharing an input with another transaction the history holds
+/// not abandoned gets no trust.
 pub(crate) fn trusted_change(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
     owned: impl Fn(&ScriptBuf) -> Option<AddressChain>,
 ) -> HashSet<OutPoint> {
+    let mut spent = HashSet::new();
+    let shared: HashSet<OutPoint> = (txs.values().filter(|e| !e.is_abandoned()))
+        .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .filter(|o| !spent.insert(*o))
+        .collect();
     let live: HashMap<Txid, &BTreeSet<OutPoint>> = live_sends(txs, sent)
+        .filter(|(_, _, e)| (e.tx.input.iter()).all(|i| !shared.contains(&i.previous_output)))
         .map(|(t, coins, _)| (t, coins))
         .collect();
     let mut memo = HashMap::new();
@@ -521,6 +552,16 @@ pub(crate) struct WalletHistory {
     /// Records only read from storage are not among them (platform-wallet
     /// rebuilds no records at load).
     pub session_held: HashSet<Txid>,
+    /// The transactions key-wallet swept this session: gone from `txs`,
+    /// they still make their unmined descendants lost ([`lost_unmined`]).
+    pub swept: HashSet<Txid>,
+    /// The payments whose change trust the load restored, each with the
+    /// height scanned when it was sent ([`lost_unmined`]).
+    pub restored: HashMap<Txid, u32>,
+    /// The height the wallet was scanned to at its last coin snapshot
+    /// ([`crate::coins::scanned_height`]): the height a payment whose coins
+    /// it read is marked sent at ([`crate::tx_actions::SENT_AT_PREFIX`]).
+    pub scanned: u32,
     /// A ProRegTx, or an output one names as its collateral, was merged
     /// since the masternode follower last locked this wallet's collaterals
     /// (MG-00 D9).
@@ -2680,7 +2721,7 @@ mod tests {
                 context,
             )
         };
-        let mined = add(funding(1, 6, in_block(10, 0)), &[]);
+        let mined = add(funding(1, 7, in_block(10, 0)), &[]);
         let mut locked = funding(2, 2, TransactionContext::Mempool);
         locked.instant_locked = true;
         let locked = add(locked, &[]);
@@ -2722,13 +2763,83 @@ mod tests {
         let winner = tx(vec![input(locked, 1)], vec![out(90, &hash_addr(9))]);
         add(entry(winner, in_block(11, 0)), &[]);
         let in_a_block = add(pay(&[coin(mined, 5)], in_block(11, 1)), &[coin(mined, 5)]);
+        let twin = |value| {
+            entry(
+                tx(vec![input(mined, 6)], vec![out(value, &change)]),
+                TransactionContext::Mempool,
+            )
+        };
+        let twin_a = add(twin(60), &[coin(mined, 6)]);
+        let twin_b = add(twin(70), &[coin(mined, 6)]);
 
         let trusted = trusted_change(&txs, &sent, owned);
         assert_eq!(
             trusted,
             HashSet::from([coin(first, 1), coin(second, 1)]),
             "none of {unowned}, {of_pending}, {partly_signed}, {abandoned}, {of_abandoned}, \
-             {unmarked}, {of_unknown}, {beaten}, {in_a_block}"
+             {unmarked}, {of_unknown}, {beaten}, {in_a_block}, {twin_a}, {twin_b}"
+        );
+    }
+
+    /// The guard's lost transactions: swept by key-wallet, beaten by a
+    /// transaction in a block or InstantSend-locked, or whose input a block
+    /// spent, and every unmined descendant of one. A swept transaction mined
+    /// since is not lost, and neither is a mined one's child.
+    #[test]
+    fn lost_unmined_follows_each_loss_to_its_descendants() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let mut txs = HashMap::new();
+        let mut add = |inputs: &[OutPoint], context| {
+            let e = entry(
+                tx(
+                    inputs.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(10, &hash_addr(5))],
+                ),
+                context,
+            );
+            let txid = e.tx.txid();
+            txs.insert(txid, e);
+            txid
+        };
+        let mempool = TransactionContext::Mempool;
+        let beaten = add(&[coin(1)], mempool.clone());
+        let lock = add(&[coin(1), coin(9)], mempool.clone());
+        let child = add(&[OutPoint::new(beaten, 0)], mempool.clone());
+        let grandchild = add(&[OutPoint::new(child, 0)], mempool.clone());
+        let stale = add(&[coin(2)], mempool.clone());
+        let fresh = add(&[coin(3)], mempool.clone());
+        let stale_locked = add(&[coin(4)], mempool.clone());
+        let swept = Txid::from_byte_array([7; 32]);
+        let of_swept = add(&[OutPoint::new(swept, 0)], mempool.clone());
+        let resurrected = add(&[coin(5)], in_block(12, 0));
+        let of_resurrected = add(&[OutPoint::new(resurrected, 0)], mempool.clone());
+        let mined = add(&[coin(6)], in_block(12, 1));
+        let of_mined = add(&[OutPoint::new(mined, 0)], mempool.clone());
+        let locked_loser = add(&[coin(8)], mempool.clone());
+        let of_locked_loser = add(&[OutPoint::new(locked_loser, 0)], mempool.clone());
+        let block_winner = add(&[coin(8), coin(10)], in_block(12, 2));
+        for t in [lock, stale_locked, locked_loser] {
+            txs.get_mut(&t).unwrap().instant_locked = true;
+        }
+        let restored = HashMap::from([(stale, 10), (fresh, 11), (stale_locked, 10)]);
+        let swept_set = HashSet::from([swept, resurrected]);
+
+        let lost = lost_unmined(&txs, &swept_set, &restored, 11);
+        let expected = HashSet::from([beaten, child, grandchild, stale, swept, of_swept]);
+        assert_eq!(
+            lost, expected,
+            "none of {lock}, {fresh}, {stale_locked}, {resurrected}, {of_resurrected}, \
+             {mined}, {of_mined}, {locked_loser}, {of_locked_loser}, {block_winner}"
+        );
+
+        txs.get_mut(&block_winner).unwrap().context =
+            TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 2));
+        let lost = lost_unmined(&txs, &swept_set, &restored, 11);
+        let mut expected = expected;
+        expected.extend([locked_loser, of_locked_loser]);
+        assert_eq!(
+            lost, expected,
+            "a ChainLocked block beats an InstantSend lock"
         );
     }
 }

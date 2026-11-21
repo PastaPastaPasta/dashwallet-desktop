@@ -2212,8 +2212,9 @@ impl Drop for PreparedTx {
 
 impl TxDraft {
     /// Marks `prepared` as a payment this app sent, naming the wallet's
-    /// coins it signed (`sent`), or removes the mark
-    /// ([`crate::tx_actions::SENT_PREFIX`]).
+    /// coins it signed and the height its coins were read at (`sent`), or
+    /// removes the mark ([`crate::tx_actions::SENT_PREFIX`],
+    /// [`crate::tx_actions::SENT_AT_PREFIX`]).
     async fn mark_sent(&self, prepared: &PreparedTx, sent: bool) -> Result<(), EngineError> {
         let (scope, key) = (
             self.wallet_id.to_string(),
@@ -2229,8 +2230,22 @@ impl TxDraft {
                 .collect::<Vec<_>>()
                 .join(",")
         });
+        let history = &self.session.hub.history;
+        let height = sent.then(|| {
+            history
+                .read_wallet(&self.wallet_id, |h| h.scanned)
+                .to_string()
+        });
+        let at = format!(
+            "{}{}",
+            crate::tx_actions::SENT_AT_PREFIX,
+            prepared.summary.txid
+        );
         self.session
-            .appdb_op(move |db| db.set_setting_durable(&scope, &key, coins.as_deref()))
+            .appdb_op(move |db| {
+                let writes = [(key.as_str(), coins.as_deref()), (&at, height.as_deref())];
+                db.set_settings_durable(&scope, &writes)
+            })
             .await
     }
 }

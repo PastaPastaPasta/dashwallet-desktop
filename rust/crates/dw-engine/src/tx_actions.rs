@@ -92,6 +92,13 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// abandoned or gone from the store.
 pub(crate) const SENT_PREFIX: &str = "sent:";
 
+/// Settings key prefix (wallet scope) of the height the wallet was scanned
+/// to ([`crate::coins::scanned_height`]) when a payment was marked
+/// [`SENT_PREFIX`], written and dropped with that mark: the change of the
+/// payment is trusted after a restart only while no later block was
+/// scanned (#86).
+pub(crate) const SENT_AT_PREFIX: &str = "sent_at:";
+
 /// The marks of `wallet` under `prefix` that `parse` reads from their txid
 /// and value, and whether every one was read (each failure is logged).
 fn load_marks<T>(
@@ -137,13 +144,23 @@ pub(crate) fn load_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, bool) {
 /// The payments this app sent, each with the wallet's coins it signed.
 pub(crate) type Sent = BTreeMap<Txid, BTreeSet<OutPoint>>;
 
+/// The heights of [`SENT_AT_PREFIX`]: an unreadable one is left out.
+pub(crate) fn load_sent_at(appdb: &AppDb, wallet: WalletId) -> BTreeMap<Txid, u32> {
+    let (marks, _) = load_marks(appdb, wallet, SENT_AT_PREFIX, |t, h| {
+        Some((t, h.parse().ok()?))
+    });
+    marks.into_iter().collect()
+}
+
 /// Drops the marks of the payments of `wallet` no longer out of a block
 /// in its history (`gone`): in a block, abandoned, or not stored.
 pub(crate) fn forget_sent(appdb: &AppDb, wallet: WalletId, gone: &[Txid]) {
     if gone.is_empty() {
         return;
     }
-    let keys: Vec<String> = gone.iter().map(|t| format!("{SENT_PREFIX}{t}")).collect();
+    let keys: Vec<String> = (gone.iter())
+        .flat_map(|t| [format!("{SENT_PREFIX}{t}"), format!("{SENT_AT_PREFIX}{t}")])
+        .collect();
     let writes: Vec<(&str, Option<&str>)> = keys.iter().map(|k| (k.as_str(), None)).collect();
     if let Err(e) = appdb.set_settings_durable(&wallet.to_string(), &writes) {
         tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments");

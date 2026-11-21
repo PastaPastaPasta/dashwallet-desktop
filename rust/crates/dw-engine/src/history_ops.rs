@@ -1,7 +1,7 @@
 //! Session operations over the history read model: loading persisted
 //! history at open, `history_page` and `tx_detail`.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -230,6 +230,8 @@ struct LoadedHistory {
     abandoned: Vec<(Txid, dashcore::Transaction)>,
     /// The payments this app sent (#88).
     sent: crate::tx_actions::Sent,
+    /// The heights scanned when they were sent.
+    sent_at: BTreeMap<Txid, u32>,
     /// Every stored record was listed and read, and so were the abandoned
     /// and sent marks: the spend claims and the pruning of marks need all
     /// three.
@@ -307,12 +309,14 @@ impl NetworkSession {
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
                     let (sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
+                    let sent_at = crate::tx_actions::load_sent_at(&appdb, wallet);
                     LoadedHistory {
                         wallet,
                         records,
                         seen,
                         abandoned,
                         sent,
+                        sent_at,
                         complete: clean && marks_read && sent_read,
                         stored: if clean {
                             (persisted.records.into_iter())
@@ -345,11 +349,12 @@ impl NetworkSession {
             seen,
             abandoned,
             sent,
+            sent_at,
             complete,
             stored,
         } in loaded
         {
-            sends.push((wallet, sent, complete));
+            sends.push((wallet, sent, sent_at, complete));
             let info = wm.get_wallet_info(&wallet.0);
             let in_memory: Vec<TransactionRecord> = info
                 .map(|info| {
@@ -400,8 +405,8 @@ impl NetworkSession {
             });
         }
         drop(wm);
-        for (wallet, sent, complete) in sends {
-            self.restore_unmined_spends(&live.manager, wallet, &sent, complete)
+        for (wallet, sent, sent_at, complete) in sends {
+            self.restore_unmined_spends(&live.manager, wallet, &sent, &sent_at, complete)
                 .await;
         }
         Ok(())
@@ -421,6 +426,7 @@ impl NetworkSession {
         manager: &Manager,
         wallet: WalletId,
         sent: &crate::tx_actions::Sent,
+        sent_at: &BTreeMap<Txid, u32>,
         complete: bool,
     ) {
         if !complete {
@@ -433,7 +439,8 @@ impl NetworkSession {
             (claims, crate::history::settled_sends(&h.txs, sent))
         });
         self.apply_spend_claims(manager, wallet, &claims).await;
-        self.restore_trusted_change(manager, wallet, sent).await;
+        self.restore_trusted_change(manager, wallet, sent, sent_at)
+            .await;
         if !settled.is_empty() {
             let forgotten = self
                 .appdb_op(move |db| {
@@ -449,14 +456,16 @@ impl NetworkSession {
 
     /// Marks trusted the change of the payments this app sent that
     /// key-wallet trusted when it recorded them
-    /// ([`crate::history::trusted_change`]): the store keeps no trust, and
-    /// automatic selection takes an unconfirmed coin only when it is
-    /// trusted (#86).
+    /// ([`crate::history::trusted_change`]) and that were sent at the height
+    /// scanned now ([`crate::coins::scanned_height`]): the store keeps no trust, and automatic selection
+    /// takes an unconfirmed coin only when it is trusted (#86). A CoinJoin
+    /// script is the wallet's but never change, as key-wallet counts it.
     async fn restore_trusted_change(
         &self,
         manager: &Manager,
         wallet: WalletId,
         sent: &crate::tx_actions::Sent,
+        sent_at: &BTreeMap<Txid, u32>,
     ) {
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
@@ -464,8 +473,28 @@ impl NetworkSession {
             return;
         };
         let owned = owned_scripts(info);
-        let change = self.hub.history.read(&wallet, |txs| {
-            crate::history::trusted_change(txs, sent, |s| owned.get(s).map(|o| o.chain))
+        let role = |s: &ScriptBuf| {
+            (owned.get(s)).map(|o| {
+                if o.coinjoin {
+                    AddressChain::Receiving
+                } else {
+                    o.chain
+                }
+            })
+        };
+        let height = crate::coins::scanned_height(&info.core_wallet);
+        let fresh = |t: &Txid| sent_at.get(t).is_some_and(|at| *at >= height);
+        let sent: crate::tx_actions::Sent = (sent.iter())
+            .filter(|(t, _)| fresh(t))
+            .map(|(t, c)| (*t, c.clone()))
+            .collect();
+        let change = self.hub.history.with_wallet(wallet, |h| {
+            let mut change = crate::history::trusted_change(&h.txs, &sent, role);
+            change.retain(|o| !h.session_held.contains(&o.txid));
+            h.restored = (change.iter())
+                .map(|o| (o.txid, sent_at[&o.txid]))
+                .collect();
+            change
         });
         let core = &mut info.core_wallet;
         let mut trusted = false;
