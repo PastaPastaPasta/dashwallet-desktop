@@ -387,26 +387,21 @@ impl NetworkSession {
         wallet: WalletId,
         checkpoint: u32,
     ) -> Result<Option<u32>, EngineError> {
-        let rewound = self
-            .rewind(manager, wallet, checkpoint, Rewind::Now)
-            .await?;
-        Ok(rewound.map(|(target, _)| target))
+        self.rewind(manager, wallet, checkpoint, Rewind::Now).await
     }
 
     /// Stores the record of a rewind of `wallet` to `checkpoint` that a
     /// change about to be stored makes (an abandon, Rebuild Index), before
     /// that change: [`Self::rewind_recorded`] lowers the checkpoint after it.
-    /// Returns what it stored, if it stored a record.
     pub(crate) async fn record_rewind(
         &self,
         manager: &crate::session::Manager,
         wallet: WalletId,
         checkpoint: u32,
-    ) -> Result<Option<crate::replay_record::Rewound>, EngineError> {
-        let rewound = self
-            .rewind(manager, wallet, checkpoint, Rewind::Ahead)
-            .await?;
-        Ok(rewound.and_then(|(_, stored)| stored))
+    ) -> Result<(), EngineError> {
+        self.rewind(manager, wallet, checkpoint, Rewind::Ahead)
+            .await
+            .map(drop)
     }
 
     async fn rewind(
@@ -415,7 +410,7 @@ impl NetworkSession {
         wallet: WalletId,
         checkpoint: u32,
         how: Rewind,
-    ) -> Result<Option<(u32, Option<crate::replay_record::Rewound>)>, EngineError> {
+    ) -> Result<Option<u32>, EngineError> {
         let replay = self.live()?.replay;
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
@@ -440,11 +435,11 @@ impl NetworkSession {
         };
         let current = info.core_wallet.synced_height();
         let lower = checkpoint < current;
-        let (target, stored) = self
+        let target = self
             .record_locked(&replay, wallet, info, checkpoint, how)
             .await?;
         if matches!(how, Rewind::Ahead) {
-            return Ok(Some((target, stored)));
+            return Ok(Some(target));
         }
         #[cfg(test)]
         if (replay.crash_after_write).swap(false, std::sync::atomic::Ordering::SeqCst) {
@@ -471,7 +466,7 @@ impl NetworkSession {
         if flipped {
             self.hub.pump.mark_balances(wallet);
         }
-        Ok(Some((target, stored)))
+        Ok(Some(target))
     }
 
     /// [`Self::record_rewind`], for a caller that holds the manager's
@@ -499,7 +494,7 @@ impl NetworkSession {
         info: &platform_wallet::PlatformWalletInfo,
         checkpoint: u32,
         how: Rewind,
-    ) -> Result<(u32, Option<crate::replay_record::Rewound>), EngineError> {
+    ) -> Result<u32, EngineError> {
         let current = info.core_wallet.synced_height();
         let birth = info.core_wallet.birth_height().saturating_sub(1);
         let target = match how {
@@ -513,13 +508,15 @@ impl NetworkSession {
             Rewind::Resume { target, .. } => target.max(current),
             Rewind::Now | Rewind::Ahead => {
                 if checkpoint >= current && replay.get(wallet).await?.is_none() {
-                    return Ok((current, None));
+                    return Ok(current);
                 }
                 current.max(self.hub.wallet_state(&wallet).map_or(0, |s| s.scan_target))
             }
         };
-        let rewound = (replay.note_rewind(wallet, checkpoint.min(current), target, birth)).await?;
-        Ok((rewound.1.target, Some(rewound)))
+        Ok(replay
+            .note_rewind(wallet, checkpoint.min(current), target, birth)
+            .await?
+            .target)
     }
 
     /// Resumes `wallet`'s stored replay as it is loaded, before
@@ -608,7 +605,7 @@ impl NetworkSession {
         }
         // A replay from below the birth is a rescan from there whose lower
         // birth was not stored: dash-spv would never certify the wallet.
-        if let Err((e, _)) =
+        if let Err(e) =
             (self.lower_birth_height(manager, wallet, record.reached.saturating_add(1))).await
         {
             tracing::warn!(error = %e, wallet = %wallet, "replay not resumed: its start below the birth height could not be stored; spends wait for a rescan");
@@ -626,7 +623,7 @@ impl NetworkSession {
         ))
         .await;
         match resumed {
-            Ok(Some((target, _))) => {
+            Ok(Some(target)) => {
                 self.pause_publish().await;
                 self.hub.publish_rescan(|rescan| {
                     if rescan.as_ref().is_some_and(RescanState::finished) {
@@ -771,44 +768,22 @@ impl NetworkSession {
     }
 
     /// Sets the wallet's birth height in wallet.sqlite, then in memory.
-    /// Returns its filter checkpoint; an error says whether the birth may
-    /// still be written (a transient error keeps it buffered).
+    /// Returns its filter checkpoint.
     async fn store_birth_height(
         &self,
         wallet_id: WalletId,
         height: u32,
-    ) -> Result<u32, (EngineError, bool)> {
-        let live = self.live().map_err(|e| (e, false))?;
+    ) -> Result<u32, EngineError> {
+        let live = self.live()?;
         let manager = &live.manager;
         if manager.get_wallet(&wallet_id.0).await.is_none() {
-            return Err((EngineError::WalletNotFound(wallet_id.to_string()), false));
+            return Err(EngineError::WalletNotFound(wallet_id.to_string()));
         }
         // Stored first: a failed write leaves memory as it was, so a retry
         // cannot rewind against a birth that was never stored.
         #[cfg(test)]
-        if let Some((_, height, from)) = {
-            let mut forks = FORK_ON_BIRTH_STORE.lock().unwrap();
-            (forks.iter().position(|f| f.0 == wallet_id.0)).map(|i| forks.remove(i))
-        } {
-            (live.replay).note(crate::replay_record::ReplayNote::Truncated {
-                wallet: wallet_id,
-                height,
-                from,
-            });
-        }
-        #[cfg(test)]
         if crate::keys::fails_for(&FAIL_BIRTH_STORE, wallet_id) {
-            return Err((
-                EngineError::Storage("test: birth height not stored".into()),
-                false,
-            ));
-        }
-        #[cfg(test)]
-        if crate::keys::fails_for(&BUFFER_BIRTH_STORE, wallet_id) {
-            return Err((
-                EngineError::Storage("test: birth height buffered".into()),
-                true,
-            ));
+            return Err(EngineError::Storage("test: birth height not stored".into()));
         }
         let persister = Arc::clone(&live.persister);
         let network = self.network.core_network();
@@ -827,18 +802,13 @@ impl NetworkSession {
             persister.store(wallet_id.0, changeset)?;
             persister.flush(wallet_id.0)
         })
-        .await
-        .map_err(|e| (EngineError::from(e), false))?
-        .map_err(|e| {
-            (
-                EngineError::Storage(format!("birth height: {e}")),
-                e.is_transient(),
-            )
-        })?;
+        .await?
+        .map_err(|e| EngineError::Storage(format!("birth height: {e}")))?;
         let wm = manager.wallet_manager_arc();
         let mut wm = wm.write().await;
-        let info = (wm.get_wallet_info_mut(&wallet_id.0))
-            .ok_or_else(|| (EngineError::WalletNotFound(wallet_id.to_string()), false))?;
+        let info = wm
+            .get_wallet_info_mut(&wallet_id.0)
+            .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
         info.core_wallet.metadata.birth_height = height;
         Ok(info.core_wallet.synced_height())
     }
@@ -847,13 +817,13 @@ impl NetworkSession {
     /// memory) when it is above it: dash-spv scans no block below the
     /// earliest birth, and a wallet whose checkpoint sits below its own
     /// birth is never certified again, so a rewind below the birth goes
-    /// after this. An error says whether the birth may still be written.
+    /// after this.
     pub(crate) async fn lower_birth_height(
         &self,
         manager: &crate::session::Manager,
         id: WalletId,
         height: u32,
-    ) -> Result<(), (EngineError, bool)> {
+    ) -> Result<(), EngineError> {
         let birth = {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
@@ -912,16 +882,9 @@ impl NetworkSession {
             // Its replay is stored before a lower birth is: a quit in
             // between leaves the rescan owed, not a birth below a checkpoint
             // that is trusted.
-            let rewound = (self.record_rewind(&manager, id, from.saturating_sub(1))).await?;
-            if let Err((e, may_land)) = self.lower_birth_height(&manager, id, from).await {
-                // A lower birth not stored, and not to be, owes no rescan.
-                if let (Some(rewound), Ok(live)) = (rewound.filter(|_| !may_land), self.live())
-                    && let Err(e) = live.replay.restore_rewound(id, rewound).await
-                {
-                    tracing::warn!(wallet_id = %id, error = %e, "could not put the replay record back");
-                }
-                return Err(e);
-            }
+            self.record_rewind(&manager, id, from.saturating_sub(1))
+                .await?;
+            self.lower_birth_height(&manager, id, from).await?;
             let target = (self.rewind_recorded(&manager, id, from.saturating_sub(1))).await?;
             match (target, state.wallets.get_mut(&id)) {
                 (Some(target), Some(w)) => w.resume_height = w.resume_height.min(target),
@@ -1012,26 +975,14 @@ impl NetworkSession {
                 let wm = wm.read().await;
                 (wm.get_wallet_info(&wallet_id.0)).map_or(0, |i| i.core_wallet.synced_height())
             };
-            let mut rewound = None;
             if checkpoint < synced {
                 if this.rescan_running() {
                     return Err(EngineError::RescanInProgress);
                 }
-                rewound = (this.record_rewind(&live.manager, wallet_id, checkpoint)).await?;
+                this.record_rewind(&live.manager, wallet_id, checkpoint)
+                    .await?;
             }
-            // A birth not stored, and not to be, owes no replay: the record
-            // goes back.
-            let synced = match this.store_birth_height(wallet_id, height).await {
-                Ok(synced) => synced,
-                Err((e, may_land)) => {
-                    if let Some(rewound) = rewound.filter(|_| !may_land)
-                        && let Err(e) = live.replay.restore_rewound(wallet_id, rewound).await
-                    {
-                        tracing::warn!(%wallet_id, error = %e, "could not put the replay record back");
-                    }
-                    return Err(e);
-                }
-            };
+            let synced = this.store_birth_height(wallet_id, height).await?;
             this.refresh_wallet_state(&live.manager, wallet_id).await;
             if checkpoint < synced {
                 this.start_rescan(vec![wallet_id], height, |_| height)
@@ -1077,17 +1028,6 @@ pub(crate) fn better_chainlock(
 /// Tests: wallets whose birth height cannot be stored.
 #[cfg(test)]
 pub(crate) static FAIL_BIRTH_STORE: std::sync::Mutex<Vec<[u8; 32]>> =
-    std::sync::Mutex::new(Vec::new());
-
-/// Tests: a fork of a wallet (id, height, from) noted as its next birth
-/// height is stored.
-#[cfg(test)]
-pub(crate) static FORK_ON_BIRTH_STORE: std::sync::Mutex<Vec<([u8; 32], u32, u32)>> =
-    std::sync::Mutex::new(Vec::new());
-
-/// Tests: wallets whose birth height a transient error keeps buffered.
-#[cfg(test)]
-pub(crate) static BUFFER_BIRTH_STORE: std::sync::Mutex<Vec<[u8; 32]>> =
     std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]

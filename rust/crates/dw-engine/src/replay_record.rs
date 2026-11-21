@@ -144,9 +144,6 @@ impl ReplayRecord {
     }
 }
 
-/// The record a rewind replaced, and the one it stored.
-pub(crate) type Rewound = (Option<ReplayRecord>, ReplayRecord);
-
 #[derive(Debug)]
 pub(crate) enum ReplayNote {
     /// The persister committed a store whose checkpoint is `height`.
@@ -516,14 +513,14 @@ impl ReplayRecords {
     /// Stores, durably, a rewind of `wallet` to `checkpoint` whose replay
     /// is done at `target`, merged with its record, whose hold is no lower
     /// than `floor` (the wallet's birth height less one). Returns the
-    /// record it replaced and the record.
+    /// record.
     pub(crate) async fn note_rewind(
         &self,
         wallet: WalletId,
         checkpoint: u32,
         target: u32,
         floor: u32,
-    ) -> Result<Rewound, EngineError> {
+    ) -> Result<ReplayRecord, EngineError> {
         let mut records = self.records.lock().await;
         let old = self.load(&mut records, wallet).await?;
         let record = self.with_forks(
@@ -533,21 +530,7 @@ impl ReplayRecords {
         if old != Some(record) {
             self.write(&mut records, wallet, Some(record)).await?;
         }
-        Ok((old, record))
-    }
-
-    /// Puts back the record a rewind replaced while it is still the one
-    /// the rewind stored: a fork or rewind since keeps its own.
-    pub(crate) async fn restore_rewound(
-        &self,
-        wallet: WalletId,
-        (old, record): Rewound,
-    ) -> Result<(), EngineError> {
-        let mut records = self.records.lock().await;
-        if self.load(&mut records, wallet).await? == Some(record) && old != Some(record) {
-            self.write(&mut records, wallet, old).await?;
-        }
-        Ok(())
+        Ok(record)
     }
 
     /// A read of checkpoint `live` below the highest seen, `target`: a

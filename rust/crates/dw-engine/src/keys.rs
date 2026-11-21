@@ -366,17 +366,18 @@ fn parse_lookahead(value: &str) -> Option<u32> {
 /// its DIP9 CoinJoin accounts to `gap` (DESIGN.md R2: Core-mixed funds sit on the
 /// BIP44 chains, dashj-mixed funds on the CoinJoin account; both need the
 /// restore gap). An account that fails doesn't stop the others; the first
-/// error is returned.
+/// error is returned. `keep_wider` (an attach) lowers no pool.
 pub(crate) async fn apply_lookahead(
     wallet: &platform_wallet::wallet::platform_wallet::PlatformWallet,
     gap: u32,
+    keep_wider: bool,
 ) -> Result<(), EngineError> {
     use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
     // Every one the wallet has: a watch-only wallet's is BIP44 account N.
-    // None is lowered: a pool already wider (a CoinJoin scan's) keeps it.
     let widest = |a: &key_wallet::managed_account::ManagedCoreFundsAccount| {
         let pools = a.managed_account_type().address_pools();
-        (pools.iter().map(|p| p.gap_limit)).fold(gap, u32::max)
+        let wider = pools.iter().map(|p| p.gap_limit).filter(|_| keep_wider);
+        wider.fold(gap, u32::max)
     };
     let accounts: Vec<(AccountTypePreference, u32, u32)> = {
         let state = wallet.state().await;
@@ -1074,7 +1075,7 @@ impl NetworkSession {
                 if let Some(gap) = lookahead {
                     let wallet = (manager.get_wallet(&wallet_id.0).await)
                         .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
-                    if let Err(e) = apply_lookahead(&wallet, gap).await {
+                    if let Err(e) = apply_lookahead(&wallet, gap, true).await {
                         raised = false;
                         tracing::warn!(%wallet_id, error = %e, "could not raise the attached keys' lookahead");
                     }
@@ -1149,7 +1150,10 @@ impl NetworkSession {
             if let Some((from, raised)) = attached {
                 // A stored range start-up left unapplied goes on before the
                 // replay, or the replay stays owed.
-                let (_, ranges) = self.apply_stored_ranges(&manager, wallet_id).await;
+                let ranges = match self.stored_issued(wallet_id).await {
+                    Ok(Some(issued)) => self.cover_issued(&manager, wallet_id, issued).await,
+                    stored => stored.map(drop),
+                };
                 if self.widen_published_wallet(&manager, wallet_id, from).await
                     && raised
                     && ranges.is_ok()
@@ -1261,7 +1265,7 @@ impl NetworkSession {
         };
         let mut raised = true;
         if let Some(gap) = lookahead
-            && let Err(e) = apply_lookahead(&wallet, gap).await
+            && let Err(e) = apply_lookahead(&wallet, gap, false).await
         {
             raised = false;
             tracing::warn!(%wallet_id, error = %e, "could not raise the restore lookahead");
@@ -1444,7 +1448,7 @@ impl NetworkSession {
         let lookahead = self.stored_lookahead(id).await;
         let raised = match &lookahead {
             Ok(Some(gap)) => match manager.get_wallet(&id.0).await {
-                Some(wallet) => apply_lookahead(&wallet, *gap).await,
+                Some(wallet) => apply_lookahead(&wallet, *gap, false).await,
                 None => Err(EngineError::WalletNotFound(id.to_string())),
             },
             Ok(None) => Ok(()),
@@ -1775,8 +1779,7 @@ impl NetworkSession {
         if synced <= published_at {
             return widened.is_ok();
         }
-        if let Err((e, _)) =
-            (self.lower_birth_height(manager, id, published_at.saturating_add(1))).await
+        if let Err(e) = (self.lower_birth_height(manager, id, published_at.saturating_add(1))).await
         {
             tracing::warn!(wallet_id = %id, error = %e, "could not lower the birth height to replay below it");
             return false;
@@ -1802,7 +1805,7 @@ impl NetworkSession {
     ) -> Result<(), EngineError> {
         let wallet = (manager.get_wallet(&id.0).await)
             .ok_or_else(|| EngineError::WalletNotFound(id.to_string()))?;
-        let raised = apply_lookahead(&wallet, gap).await;
+        let raised = apply_lookahead(&wallet, gap, false).await;
         // A partial raise still grew some pools, so the restore runs either way.
         let restored = self.restore_coins(manager, id).await;
         match (raised, restored) {

@@ -3703,30 +3703,6 @@ fn keys_attached_over_a_malformed_stored_lookahead_go_on() {
     );
 }
 
-/// F-C: a lower birth height whose birth cannot be stored takes back the
-/// replay it stored: a reopen keeps the old birth and holds nothing.
-#[test]
-fn a_lower_birth_height_that_cannot_be_stored_owes_no_replay() {
-    let dir = tempfile::tempdir().unwrap();
-    let (engine, session) = open_engine(dir.path().join("data"));
-    create_vault(&engine, &session);
-    let id = created(&engine, &session);
-    engine
-        .block_on(session.set_birth_height(id, HEIGHT))
-        .unwrap();
-    store_checkpoint(&engine, &session, id, HEIGHT + 100);
-
-    let set = failing(&crate::tools::FAIL_BIRTH_STORE, id, || {
-        engine.block_on(session.set_birth_height(id, 500))
-    });
-
-    assert!(set.is_err());
-    assert_eq!(replay_record(&engine, &session, id), None);
-    let session = reopen(&engine, session);
-    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
-    assert_eq!(replay_record(&engine, &session, id), None);
-}
-
 /// F-H: a marker that does not decode owes a replay from genesis, not from
 /// the birth.
 #[test]
@@ -3748,53 +3724,6 @@ fn an_undecodable_marker_is_owed_from_genesis() {
         wide_scan(&engine, &session, id),
         Some(crate::keys::WideScan::From(0))
     );
-}
-
-/// Round 4, 1: a fork noted while a lower birth height is stored keeps
-/// its record when the birth cannot be stored: the edit's record goes
-/// back only while it is still the one the edit stored.
-#[test]
-fn a_fork_during_a_refused_birth_edit_keeps_its_record() {
-    let dir = tempfile::tempdir().unwrap();
-    let (engine, session) = open_engine(dir.path().join("data"));
-    create_vault(&engine, &session);
-    let id = created(&engine, &session);
-    engine
-        .block_on(session.set_birth_height(id, HEIGHT))
-        .unwrap();
-    store_checkpoint(&engine, &session, id, HEIGHT + 100);
-    (crate::tools::FORK_ON_BIRTH_STORE.lock().unwrap()).push((id.0, HEIGHT + 50, HEIGHT + 100));
-
-    let set = failing(&crate::tools::FAIL_BIRTH_STORE, id, || {
-        engine.block_on(session.set_birth_height(id, 500))
-    });
-
-    assert!(set.is_err());
-    assert!(
-        replay_record(&engine, &session, id).is_some(),
-        "the fork's record stays"
-    );
-}
-
-/// Round 4, 4: a lower birth height a transient error keeps buffered may
-/// still be stored by a later flush: its replay stays owed.
-#[test]
-fn a_lower_birth_height_still_buffered_keeps_its_replay() {
-    let dir = tempfile::tempdir().unwrap();
-    let (engine, session) = open_engine(dir.path().join("data"));
-    create_vault(&engine, &session);
-    let id = created(&engine, &session);
-    engine
-        .block_on(session.set_birth_height(id, HEIGHT))
-        .unwrap();
-    store_checkpoint(&engine, &session, id, HEIGHT + 100);
-
-    let set = failing(&crate::tools::BUFFER_BIRTH_STORE, id, || {
-        engine.block_on(session.set_birth_height(id, 500))
-    });
-
-    assert!(set.is_err());
-    assert_eq!(replay_record(&engine, &session, id).map(|r| r.0), Some(499));
 }
 
 /// Round 4, 2: keys attached with a lookahead below the wallet's live
@@ -3935,28 +3864,6 @@ fn a_failed_restore_leaves_the_scan_of_a_wallet_it_attached_keys_to() {
     assert_eq!(wide_scan(&engine, &session, a), marker);
 }
 
-/// Round 4, 9: a rescan from below the birth whose lower birth cannot be
-/// stored takes back the replay it stored: a reopen keeps the birth and
-/// rescans nothing.
-#[test]
-fn a_rescan_below_the_birth_whose_birth_cannot_be_stored_owes_no_replay() {
-    let dir = tempfile::tempdir().unwrap();
-    let (engine, session) = open_spv_engine(dir.path().join("data"));
-    create_vault(&engine, &session);
-    let id = born_at_700(&engine, &session);
-    start_offline_spv(&engine, &session);
-    let before = replay_record(&engine, &session, id);
-
-    let rescanned = failing(&crate::tools::FAIL_BIRTH_STORE, id, || {
-        engine.block_on(session.rescan(crate::RescanFrom::Height(100)))
-    });
-
-    assert!(rescanned.is_err());
-    assert_eq!(replay_record(&engine, &session, id), before);
-    let session = reopen(&engine, session);
-    assert_eq!(birth_height(&engine, &session, id), 700);
-}
-
 /// Round 4, 7: keys attached with only a lookahead to a wallet whose stored
 /// legacy range start-up could not apply apply that range before the
 /// replay: its addresses are derived, and the wallet is marked done.
@@ -3998,4 +3905,29 @@ fn keys_attached_with_a_lookahead_apply_a_stored_range_start_up_left() {
         funds.managed_account_type().address_pools()[0].highest_generated
     });
     assert!(highest.is_some_and(|h| h >= 1001), "{highest:?}");
+}
+
+/// Round 5, B: a fresh import with a lookahead of 1 runs with 1, and so
+/// does a reopen of it, as on main: only an attach keeps a wider pool.
+#[test]
+fn a_fresh_import_and_a_reopen_with_a_lookahead_of_one_run_with_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+
+    let id = engine
+        .block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(HEIGHT),
+                lookahead: Some(1),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+
+    assert_eq!(gap(&engine, &session, id, bip44()), 1, "fresh import");
+    let session = reopen(&engine, session);
+    assert_eq!(gap(&engine, &session, id, bip44()), 1, "reopen");
 }

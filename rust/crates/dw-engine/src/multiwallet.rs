@@ -817,7 +817,7 @@ impl NetworkSession {
             this.hub.run_on_published(id);
             let mut raised = true;
             if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD
-                && let Err(e) = crate::keys::apply_lookahead(&wallet, lookahead).await
+                && let Err(e) = crate::keys::apply_lookahead(&wallet, lookahead, false).await
             {
                 raised = false;
                 tracing::warn!(wallet_id = %id, error = %e, "could not set the watch-only lookahead");
