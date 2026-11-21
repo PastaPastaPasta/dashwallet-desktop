@@ -3404,6 +3404,12 @@ pub(crate) async fn guarded_pass(
     manager: &Manager,
     force: bool,
 ) -> bool {
+    // Read before the pass's locks, so a silent network holds nothing.
+    let count = if force {
+        None
+    } else {
+        notes_count(session, manager).await
+    };
     // A spend's hold first, then the drain's lock (always in this order).
     let _spends = session.platform.shielded_spends.read().await;
     let _pass = session.platform.shielded_passes.read().await;
@@ -3424,7 +3430,11 @@ pub(crate) async fn guarded_pass(
             let _ = pause.resume.await;
         }
     }
-    if !force && let Some(count) = unchanged_pool(session, manager, &coordinator).await {
+    if let Some(count) = count
+        && unchanged_pool(session, manager, &coordinator, count)
+            .await
+            .is_some()
+    {
         tracing::debug!(
             count,
             "the shielded pool is unchanged; the periodic pass is skipped"
@@ -3457,24 +3467,17 @@ pub(crate) async fn guarded_pass(
     true
 }
 
-/// Platform's proved note count when a periodic pass would find nothing
-/// (#178): the count is within the local tree, every bound account has
-/// scanned the whole tree in this session, and no spend waits on a pass
-/// (stored, reserved, with an outcome or marked). `None` when any of it
-/// does not hold or cannot be read, so the pass runs.
+/// Whether a periodic pass would find nothing (#178): Platform's proved
+/// note `count` is within the local tree, every bound account has scanned
+/// the whole tree in this session, and no spend waits on a pass (stored,
+/// reserved, with an outcome or marked). `None` when any of it does not
+/// hold or cannot be read, so the pass runs.
 async fn unchanged_pool(
     session: &NetworkSession,
     manager: &Manager,
     coordinator: &NetworkShieldedCoordinator,
-) -> Option<u64> {
-    #[cfg(test)]
-    let injected = *session.platform.notes_count.lock().unwrap();
-    #[cfg(not(test))]
-    let injected = None;
-    let count = match injected {
-        Some(count) => count,
-        None => notes_count(manager).await,
-    }?;
+    count: u64,
+) -> Option<()> {
     let tree = coordinator.store().read().await.tree_size().ok()?;
     if count > tree {
         return None;
@@ -3505,17 +3508,30 @@ async fn unchanged_pool(
         .iter()
         .all(|&w| (store.pending_redrives_for_wallet(w)).is_ok_and(|r| r.is_empty()))
         && (subwallets.iter()).all(|&s| store.stale_pending_spends(s).is_ok_and(|r| r.is_empty()));
-    idle.then_some(count)
+    idle.then_some(())
 }
 
 /// The number of notes in Platform's shielded pool, proved; `None` when the
-/// read fails.
-async fn notes_count(manager: &Manager) -> Option<u64> {
+/// read fails (two tries of [`NOTES_COUNT_TIMEOUT`] at most).
+async fn notes_count(
+    #[cfg_attr(not(test), expect(unused_variables))] session: &NetworkSession,
+    manager: &Manager,
+) -> Option<u64> {
+    #[cfg(test)]
+    if let Some(count) = *session.platform.notes_count.lock().unwrap() {
+        return count;
+    }
     let sdk = manager.sdk_arc();
     if !sdk.prove() {
         return None;
     }
-    match ShieldedNotesCount::fetch(&sdk, NoParamQuery {}).await {
+    let settings = dash_sdk::RequestSettings {
+        timeout: Some(NOTES_COUNT_TIMEOUT),
+        retries: Some(1),
+        ban_failed_address: Some(false),
+        ..Default::default()
+    };
+    match ShieldedNotesCount::fetch_with_settings(&sdk, NoParamQuery {}, settings).await {
         Ok(count) => count.map(|c| c.0),
         Err(e) => {
             tracing::debug!(error = %e, "the shielded note count was not read");
@@ -3523,6 +3539,9 @@ async fn notes_count(manager: &Manager) -> Option<u64> {
         }
     }
 }
+
+/// How long one read of the note count waits for its node.
+const NOTES_COUNT_TIMEOUT: Duration = Duration::from_secs(5);
 
 // MARK: the Platform side's start
 
