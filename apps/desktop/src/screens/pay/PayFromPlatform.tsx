@@ -15,6 +15,7 @@ import { navigate, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { hasUnansweredOp } from "../../platform/move";
 import { canRetry, heldSend, retryAsks, sendAmount, sendCanRetry, sendErrorText, sendFor, sendRefusalText, settledBy, staleConfirm, SEND_COPY as C, type PlatformSendFlow, type Settled } from "../../platform/send";
@@ -69,7 +70,7 @@ function ConfirmRows({ q, credits }: { q: PlatformSendQuote; credits: (c: string
           {q.to}
         </Row>
         <Row label={C.rows.amount} testId="platform-send-confirm-amount">
-          {q.feeFromAmount ? `${credits(q.amountCredits)}, ${C.rows.everything}` : credits(q.amountCredits)}
+          {q.feeFromAmount ? C.rows.amountEverything(credits(q.amountCredits)) : credits(q.amountCredits)}
         </Row>
         <Row label={C.rows.fee} testId="platform-send-confirm-fee">
           {C.feeValue(credits(q.feeCredits))}
@@ -235,6 +236,7 @@ export function HeldPlatformSend({ walletId, network }: { walletId: string; netw
 /** The Platform half of the address form: shown below "Pay to" once it holds a Platform address.
  * `amount` is the form's own field, so what was typed before the address was recognised stays. */
 export function PayFromPlatform({ walletId, network, to, amount, onSent }: { walletId: string; network: NetworkInfo; to: string; amount: ReturnType<typeof useAmountField>; onSent: () => void }) {
+  const t = useT();
   const b = useBackend();
   const flow = useModel(sendFor(b, walletId));
   const { shown, credits } = useCredits(network);
@@ -325,7 +327,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
       <p className="placeholder-note" data-testid="platform-send-intro">
         {C.intro}
       </p>
-      <FormField label={`Amount (${shown.name})`} error={amount.error} hint={max ? C.max : balance.data ? C.from(credits(balance.data.credits)) : null}>
+      <FormField label={t("pay.form.amount", { unit: shown.name })} error={amount.error} hint={max ? C.max : balance.data ? C.from(credits(balance.data.credits)) : null}>
         {(p) => (
           <span className="amount-entry">
             <input
@@ -334,7 +336,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
               value={max ? "" : amount.text}
               inputMode="decimal"
               autoComplete="off"
-              placeholder={max ? "Max" : shown.placeholder}
+              placeholder={max ? t("pay.form.max") : shown.placeholder}
               onChange={(e) => {
                 setNotice(null);
                 setMax(false);
@@ -345,7 +347,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
                 setNotice(null);
                 setMax(!max);
               }}>
-              Max
+              {t("pay.form.max")}
             </DashButton>
           </span>
         )}
@@ -388,7 +390,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
             </span>
           ) : (
             <span className="field-hint" id="pay-reason" data-testid="pay-incomplete">
-              {asked === null ? "Enter an amount first." : C.quoting}
+              {asked === null ? t("pay.platform.enterAmount") : C.quoting}
             </span>
           )}
         </div>
@@ -406,7 +408,7 @@ export function PayFromPlatform({ walletId, network, to, amount, onSent }: { wal
             setConfirmed({ quote: q, amount: asked, seen: activity.data });
           }}
         >
-          Review
+          {t("pay.form.review")}
         </DashButton>
       </div>
       {sheet}

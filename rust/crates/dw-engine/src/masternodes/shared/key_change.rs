@@ -1160,7 +1160,7 @@ impl NetworkSession {
             let summary = self
                 .shared_summary(&fence, &tx, funded.fee, change.as_ref())
                 .await?;
-            self.deliver_shared(wallet, id, tx, summary, charge, fence, false)
+            self.deliver_shared(wallet, id, tx, summary, charge, fence, false, None)
                 .await
         }
         .await;
@@ -1200,7 +1200,7 @@ impl NetworkSession {
             let summary = self
                 .shared_summary(&fence, &tx, funded.fee, change.as_ref())
                 .await?;
-            self.deliver_shared(wallet, &k.row.id, tx, summary, charge, fence, true)
+            self.deliver_shared(wallet, &k.row.id, tx, summary, charge, fence, true, None)
                 .await
         }
         .await;

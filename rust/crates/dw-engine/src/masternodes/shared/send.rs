@@ -50,6 +50,7 @@ impl NetworkSession {
     /// abandoned, never discarded. `maybe_out`: a resend (MG-04 D7), whose
     /// row reads [`dw_appdb::RESEND_IN_PROGRESS`] from just before its
     /// hand-off until its outcome is written (MG-10 §4.4 change 4).
+    /// `own_inputs`: this wallet's inputs of a registration others fund too.
     #[expect(clippy::too_many_arguments, reason = "one hand-off")]
     pub(super) async fn deliver_shared(
         self: &Arc<Self>,
@@ -60,6 +61,7 @@ impl NetworkSession {
         charge: SpendCharge,
         fence: CoinFence,
         maybe_out: bool,
+        own_inputs: Option<Vec<OutPoint>>,
     ) -> Result<(), MasternodesError> {
         let draft = self.new_draft(wallet, HashSet::new(), false)?;
         if maybe_out {
@@ -71,8 +73,8 @@ impl NetworkSession {
                 return Err(MasternodesError::SharedSessionNotFound);
             }
         }
-        let outcome = self
-            .hand_off(&draft, tx, summary, charge, fence, maybe_out)
+        let (outcome, _) = self
+            .hand_off(&draft, tx, summary, charge, fence, maybe_out, own_inputs)
             .await;
         #[cfg(test)]
         super::super::protx::ops::crash_at(self, super::super::protx::ops::CrashPoint::HandedOff)?;
@@ -104,16 +106,19 @@ impl NetworkSession {
         first: bool,
     ) -> Result<Outcome, MasternodesError> {
         let txid = tx.txid().to_string();
-        let result = match self.new_draft(wallet, HashSet::new(), false) {
+        let (result, pending) = match self.new_draft(wallet, HashSet::new(), false) {
             Ok(draft) => {
-                self.hand_off(&draft, tx, summary, charge, fence, !first)
+                self.hand_off(&draft, tx, summary, charge, fence, !first, None)
                     .await
             }
-            Err(e) => Err(e),
+            Err(e) => (Err(e), false),
         };
         #[cfg(test)]
         super::super::protx::ops::crash_at(self, super::super::protx::ops::CrashPoint::HandedOff)?;
-        let outcome = attempt_outcome(&result);
+        let outcome = match attempt_outcome(&result) {
+            Outcome::MaybeSent if pending => Outcome::NotSent,
+            outcome => outcome,
+        };
         let code = result.as_ref().err().map(error_code);
         let logged = match outcome {
             Outcome::Sent => AbandonOutcome::Sent,
@@ -142,6 +147,9 @@ impl NetworkSession {
         Ok(outcome)
     }
 
+    /// The outcome, and whether nothing was handed off: the transaction
+    /// is still pending under its lease (its sent mark failed).
+    #[expect(clippy::too_many_arguments, reason = "one hand-off")]
     async fn hand_off(
         &self,
         draft: &Arc<TxDraft>,
@@ -150,17 +158,18 @@ impl NetworkSession {
         charge: SpendCharge,
         fence: CoinFence,
         maybe_out: bool,
-    ) -> Result<BroadcastOutcome, EngineError> {
+        own_inputs: Option<Vec<OutPoint>>,
+    ) -> (Result<BroadcastOutcome, EngineError>, bool) {
         #[cfg(test)]
         if let Some(seam) = self.masternodes.protx_seam() {
             *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&seam.broadcaster));
         }
-        let prepared = draft.assembled(tx, summary, charge, fence, maybe_out);
+        let prepared = draft.assembled(tx, summary, charge, fence, maybe_out, own_inputs);
         let outcome = draft.broadcast_inner(Arc::clone(&prepared)).await;
         if maybe_out {
             prepared.refund_unadmitted();
         }
-        outcome
+        (outcome, prepared.pending())
     }
 
     /// The summary a hand-off shows, read under `fence`: this wallet's
@@ -242,7 +251,8 @@ impl NetworkSession {
             let summary = self
                 .shared_summary(&fence, &tx, rec.fee.unwrap_or(0), change.as_ref())
                 .await?;
-            self.deliver_shared(wallet, &l.row.id, tx, summary, charge, fence, false)
+            let own = Some(rec.outpoints());
+            self.deliver_shared(wallet, &l.row.id, tx, summary, charge, fence, false, own)
                 .await
         }
         .await;
@@ -279,7 +289,8 @@ impl NetworkSession {
             let summary = self
                 .shared_summary(&fence, &tx, fee, change.as_ref())
                 .await?;
-            self.deliver_shared(wallet, &l.row.id, tx, summary, charge, fence, true)
+            let own = Some(rec.outpoints());
+            self.deliver_shared(wallet, &l.row.id, tx, summary, charge, fence, true, own)
                 .await
         }
         .await;

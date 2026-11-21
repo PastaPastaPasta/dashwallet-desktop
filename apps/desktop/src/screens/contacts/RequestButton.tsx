@@ -3,6 +3,7 @@
 
 import { DashButton } from "../../components/basics";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
+import { useT } from "../../i18n";
 import { Outcome } from "../tools/common";
 
 type Size = "small" | "medium";
@@ -24,17 +25,19 @@ export function SendRequestButton({
   testId: string;
   onDone: (o: ActionOutcome | null) => void;
 }) {
+  const t = useT();
   return (
     <DashButton variant="filledBlue" size={size} data-testid={testId} disabled={!actions || actions.busy} onClick={() => void actions?.send(contact, name, scan).then(onDone)}>
-      {actions?.isRunning("send", contact) ? "Sending…" : "Send Contact Request"}
+      {actions?.isRunning("send", contact) ? t("contacts.request.sending") : t("contacts.request.send")}
     </DashButton>
   );
 }
 
 export function EnableButton({ actions, size, testId, onDone }: { actions: ContactActions | null; size?: Size; testId: string; onDone: (o: ActionOutcome | null) => void }) {
+  const t = useT();
   return (
     <DashButton variant="tintedBlue" size={size} data-testid={testId} disabled={!actions || actions.busy} onClick={() => void actions?.enable().then(onDone)}>
-      {actions?.isRunning("enable", null) ? "Enabling…" : "Enable"}
+      {actions?.isRunning("enable", null) ? t("contacts.enable.busy") : t("contacts.enable.button")}
     </DashButton>
   );
 }
