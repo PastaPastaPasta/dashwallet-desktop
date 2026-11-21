@@ -1,69 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
-import { seriousAxeViolations } from "./axe";
-import { artifactPath, fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { fixtureUrl, fontsReady, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { checkArea, PSEUDO, untranslated } from "./pseudo";
 
-// Localization (MP-14): the language picker in Settings ▸ General, and the converted area (the shell,
-// the lock screen and Settings ▸ General) under the two pseudo-locales: `en-XA` brackets, accents and
-// lengthens every catalog string, so text that bypasses the catalog stays plain ASCII and a cut-off
-// string loses its bracket; `ar-XB` turns the window right to left.
-
-const SIZES = [
-  { width: 1280, height: 820 },
-  // The window's minimum (dw-app tauri.conf.json).
-  { width: 920, height: 600 },
-];
-
-/** Text that is data, not copy: the fixture's username, its avatar initial and wallet name, units and paths. */
-const DATA = [/^@[\w.-]+$/, /^\p{Lu}$/u, /^Main$/, /^(t?DASH|mDASH|μDASH|duffs)$/, /^\/[\w./-]+$/];
-
-/** The visible text in `areas` that bypasses the catalog: plain Latin text that is no catalog
- * string's and is not data. */
-async function untranslated(page: Page, areas: string[], kind: "long" | "rtl"): Promise<string[]> {
-  const found = await page.evaluate(
-    ({ areas, kind }) => {
-      const out: string[] = [];
-      for (const testId of areas) {
-        const root = document.querySelector(`[data-testid="${testId}"]`);
-        if (!root) continue;
-        const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-        for (let n = walk.nextNode(); n; n = walk.nextNode()) {
-          const el = n.parentElement!;
-          const text = n.textContent!.trim();
-          if (!text || !/[A-Za-z]/.test(text)) continue;
-          if (el.closest("option") && !(el.closest("option") as HTMLOptionElement).selected) continue;
-          if (!el.checkVisibility({ visibilityProperty: true, opacityProperty: false })) continue;
-          const catalog = kind === "long" ? /[⟦⟧]/.test(text) : text.includes("‮");
-          if (!catalog) out.push(text);
-        }
-      }
-      return out;
-    },
-    { areas, kind },
-  );
-  return found.filter((text) => !DATA.some((re) => re.test(text)));
-}
-
-/** What scrolls sideways or sticks out of the window or its pane. */
-function overflow(page: Page) {
-  return page.evaluate(() => {
-    const found: string[] = [];
-    const doc = document.scrollingElement!;
-    if (doc.scrollWidth > doc.clientWidth) found.push(`document ${doc.scrollWidth} > ${doc.clientWidth}`);
-    const name = (el: Element) => `${el.tagName.toLowerCase()}${el.getAttribute("data-testid") ? `[${el.getAttribute("data-testid")}]` : ""}.${[...el.classList].join(".")}`;
-    for (const el of document.querySelectorAll<HTMLElement>("body *")) {
-      const x = getComputedStyle(el).overflowX;
-      if ((x === "auto" || x === "scroll") && el.scrollWidth > el.clientWidth + 1) found.push(`${name(el)} scrolls ${el.scrollWidth} > ${el.clientWidth}`);
-    }
-    for (const area of document.querySelectorAll('[data-testid="toolbar"], [data-testid="sidebar"], [data-testid="status-bar"], main.page, [data-testid="lock-column"]')) {
-      const box = area.getBoundingClientRect();
-      for (const el of area.querySelectorAll("*")) {
-        const b = el.getBoundingClientRect();
-        if (b.width > 0 && (b.right > box.right + 1 || b.left < box.left - 1)) found.push(`${name(el)} ${Math.round(b.left)}..${Math.round(b.right)} outside ${name(area)} ${Math.round(box.left)}..${Math.round(box.right)}`);
-      }
-    }
-    return found;
-  });
-}
+// Localization (MP-14): the language picker in Settings ▸ General, and the first converted area (the
+// shell, the lock screen and Settings ▸ General) under the two pseudo-locales (./pseudo.ts). Each
+// later area has its own `i18n-<area>.spec.ts`.
 
 async function openSettings(page: Page, theme: Theme, lang: string | null) {
   await page.goto(fixtureUrl("dashpay-registered", theme, lang ? `&lang=${lang}` : ""));
@@ -136,42 +77,26 @@ for (const theme of THEMES) {
     });
   }
 
-  for (const [lang, kind] of [
-    ["en-XA", "long"],
-    ["ar-XB", "rtl"],
-  ] as const) {
+  for (const pseudo of PSEUDO) {
+    const [lang] = pseudo;
     test(`the shell and Settings ▸ General show only catalog text under ${lang}, fit, and pass axe, ${theme}`, async ({ page }, info) => {
       test.setTimeout(120_000);
       const errors = trackPageErrors(page);
-      for (const size of SIZES) {
-        await page.setViewportSize(size);
-        await openSettings(page, theme, lang);
-        await expect(page.locator("html")).toHaveAttribute("dir", kind === "rtl" ? "rtl" : "ltr");
-        expect(await untranslated(page, [...SHELL, "page-settings"], kind), `${lang} at ${size.width}`).toEqual([]);
-        expect(await overflow(page), `${lang} at ${size.width}`).toEqual([]);
-        if (size.width === 1280) {
-          await page.screenshot({ path: artifactPath(info, `i18n-settings-${lang}-${theme}.png`) });
-          expect(await seriousAxeViolations(page)).toEqual([]);
-        }
-      }
+      await checkArea(page, info, theme, pseudo, { name: "settings", roots: [...SHELL, "page-settings"], open: (lang) => openSettings(page, theme, lang) });
       expect(errors).toEqual([]);
     });
 
     test(`the lock screen shows only catalog text under ${lang}, fits, and passes axe, ${theme}`, async ({ page }, info) => {
       test.setTimeout(120_000);
-      for (const size of SIZES) {
-        await page.setViewportSize(size);
-        await page.goto(fixtureUrl("funded", theme, `&lang=${lang}`));
-        await page.getByTestId("toolbar-lock").click();
-        await expect(page.getByTestId("lock-screen")).toBeVisible();
-        await fontsReady(page);
-        expect(await untranslated(page, ["lock-screen"], kind), `${lang} at ${size.width}`).toEqual([]);
-        expect(await overflow(page), `${lang} at ${size.width}`).toEqual([]);
-        if (size.width === 1280) {
-          await page.screenshot({ path: artifactPath(info, `i18n-lock-${lang}-${theme}.png`) });
-          expect(await seriousAxeViolations(page)).toEqual([]);
-        }
-      }
+      await checkArea(page, info, theme, pseudo, {
+        name: "lock",
+        roots: ["lock-screen"],
+        open: async (lang) => {
+          await page.goto(fixtureUrl("funded", theme, `&lang=${lang}`));
+          await page.getByTestId("toolbar-lock").click();
+          await expect(page.getByTestId("lock-screen")).toBeVisible();
+        },
+      });
     });
   }
 }

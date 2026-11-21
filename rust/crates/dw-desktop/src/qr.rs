@@ -4,6 +4,7 @@
 //! with `parse_payment_uri` like any typed URI.
 
 use std::io::Cursor;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use image::{ImageFormat, ImageReader};
 
@@ -16,7 +17,10 @@ pub const MAX_PIXELS: u64 = 40_000_000;
 
 /// Every QR code in `image`, in reading order (top to bottom, then left to
 /// right by each code's top-left corner). Codes that are found but do not
-/// decode are skipped; `NoQrCode` when none decodes.
+/// decode are skipped; `NoQrCode` when none decodes. An image that makes
+/// the image decoder or rqrr panic is `ImageUnreadable`. Keep it off
+/// `dw-engine` threads, whose panic hook poisons the engine even for a
+/// panic caught here.
 pub fn decode(image: &[u8]) -> Result<Vec<String>, DesktopError> {
     if image.len() > MAX_IMAGE_BYTES {
         return Err(DesktopError::ImageUnreadable(format!(
@@ -36,40 +40,63 @@ pub fn decode(image: &[u8]) -> Result<Vec<String>, DesktopError> {
         }
         None => return Err(DesktopError::ImageUnreadable("unknown image format".into())),
     }
-    let (width, height) = reader
-        .into_dimensions()
-        .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))?;
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err(DesktopError::ImageUnreadable(format!(
-            "{width}×{height} pixels; at most {MAX_PIXELS}"
-        )));
-    }
-    let luma = ImageReader::new(Cursor::new(image))
-        .with_guessed_format()
-        .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))?
-        .decode()
-        .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))?
-        .into_luma8();
+    let luma = catch_unwind(AssertUnwindSafe(|| {
+        #[cfg(test)]
+        if PANIC_IN_PROBE.get() {
+            panic!("test: the image probe panicked");
+        }
+        let (width, height) = reader
+            .into_dimensions()
+            .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))?;
+        if u64::from(width) * u64::from(height) > MAX_PIXELS {
+            return Err(DesktopError::ImageUnreadable(format!(
+                "{width}×{height} pixels; at most {MAX_PIXELS}"
+            )));
+        }
+        #[cfg(test)]
+        if PANIC_IN_DECODE.get() {
+            panic!("test: the image decode panicked");
+        }
+        ImageReader::new(Cursor::new(image))
+            .with_guessed_format()
+            .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))?
+            .decode()
+            .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))
+            .map(|image| image.into_luma8())
+    }))
+    .map_err(|_| DesktopError::ImageUnreadable("its QR codes could not be read".into()))??;
 
     let (w, h) = (luma.width() as usize, luma.height() as usize);
-    let mut prepared = rqrr::PreparedImage::prepare_from_greyscale(w, h, |x, y| {
-        luma.get_pixel(x as u32, y as u32)[0]
-    });
-    let mut found: Vec<((i32, i32), String)> = prepared
-        .detect_grids()
-        .into_iter()
-        .filter_map(|grid| {
-            let corner = grid.bounds[0];
-            grid.decode()
-                .ok()
-                .map(|(_, text)| ((corner.y, corner.x), text))
-        })
-        .collect();
+    // rqrr asserts on some crafted images (#209): a refusal, not a crash.
+    let mut found: Vec<((i32, i32), String)> = catch_unwind(AssertUnwindSafe(|| {
+        let mut prepared = rqrr::PreparedImage::prepare_from_greyscale(w, h, |x, y| {
+            luma.get_pixel(x as u32, y as u32)[0]
+        });
+        prepared
+            .detect_grids()
+            .into_iter()
+            .filter_map(|grid| {
+                let corner = grid.bounds[0];
+                grid.decode()
+                    .ok()
+                    .map(|(_, text)| ((corner.y, corner.x), text))
+            })
+            .collect()
+    }))
+    .map_err(|_| DesktopError::ImageUnreadable("its QR codes could not be read".into()))?;
     if found.is_empty() {
         return Err(DesktopError::NoQrCode);
     }
     found.sort_by_key(|(corner, _)| *corner);
     Ok(found.into_iter().map(|(_, text)| text).collect())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: this thread's image decodes panic.
+    static PANIC_IN_DECODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tests: this thread's image dimension probes panic.
+    static PANIC_IN_PROBE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -165,5 +192,35 @@ mod tests {
             decode(&vec![0u8; MAX_IMAGE_BYTES + 1]),
             Err(DesktopError::ImageUnreadable(_))
         ));
+    }
+
+    /// #209: a BMP the nightly fuzzer found, on which rqrr 0.9.3 panics
+    /// (geometry.rs, "x <= i32::MAX"), is refused, not a crash.
+    #[test]
+    fn an_image_rqrr_panics_on_is_refused() {
+        let bmp = include_bytes!("../../../../testdata/qr/rqrr_geometry_panic.bmp");
+        assert!(matches!(decode(bmp), Err(DesktopError::ImageUnreadable(_))));
+    }
+
+    /// A panic in the `image` decode, as in rqrr's, is a refusal.
+    #[test]
+    fn an_image_decode_that_panics_is_refused() {
+        let png = render(&["dash:first"], ImageFormat::Png);
+        PANIC_IN_DECODE.set(true);
+        let decoded = decode(&png);
+        PANIC_IN_DECODE.set(false);
+        assert!(matches!(decoded, Err(DesktopError::ImageUnreadable(_))));
+        assert_eq!(decode(&png).unwrap(), vec!["dash:first"]);
+    }
+
+    /// A panic while the decoder reads the image's dimensions is a refusal.
+    #[test]
+    fn an_image_probe_that_panics_is_refused() {
+        let png = render(&["dash:first"], ImageFormat::Png);
+        PANIC_IN_PROBE.set(true);
+        let decoded = decode(&png);
+        PANIC_IN_PROBE.set(false);
+        assert!(matches!(decoded, Err(DesktopError::ImageUnreadable(_))));
+        assert_eq!(decode(&png).unwrap(), vec!["dash:first"]);
     }
 }

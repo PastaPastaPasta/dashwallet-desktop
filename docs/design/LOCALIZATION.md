@@ -6,7 +6,8 @@ works, how a screen is converted, and what stays English.
 
 ## The pieces
 
-- `apps/desktop/src/i18n/en.ts`: the English catalog, keys grouped by screen area.
+- `apps/desktop/src/i18n/en.ts`: the English catalog, composed of one file per screen area under
+  `apps/desktop/src/i18n/catalog/` (`catalog/pay.ts` holds the `pay.*` keys).
 - `apps/desktop/src/i18n/index.tsx`: the languages this build ships (`LANGUAGES`), the language in use,
   `t`, `useT` and `<html lang dir>`.
 - `apps/desktop/src/i18n/core.ts`: placeholders, plurals, rich text and the pseudo-locales.
@@ -44,7 +45,7 @@ prices and dates use the display locale.
 
 ## Adding a string
 
-Put the English text in `en.ts` under the screen area's group, and read it in the component with `useT`:
+Put the English text in the screen area's file under `i18n/catalog/`, and read it in the component with `useT`:
 
 ```tsx
 const t = useT();
@@ -77,17 +78,17 @@ key shows English. A test checks that each translation uses only English's place
 ## Converting a screen area
 
 1. Wait until the area's open pull requests have merged.
-2. Move every user-visible string of the area's components into `en.ts`: JSX text, `title`,
+2. Move every user-visible string of the area's components into the area's `i18n/catalog/<area>.ts`: JSX text, `title`,
    `aria-label`, `placeholder`, `alt`, and the copy props of our components (`label`, `text`, `why`,
    `confirm`, …), plus the text modules they render. Keep the English text exactly as it was unless the
    pull request says why it changes.
-3. Add the area's directories or files to `CONVERTED` in `converted.test.ts`. The test fails for any JSX
+3. Add the area's directories or files to its list in `AREAS` in `converted.test.ts`. The test fails for any JSX
    text or text-attribute literal left in them; a literal that must stay goes in `ALLOWED` with a reason.
 4. Check the area under the pseudo-locales in the fixture build: `?lang=en-XA` brackets, accents and
    lengthens every catalog string by 40%, so text that bypasses the catalog stays plain ASCII and a
    cut-off string loses its closing bracket; `?lang=ar-XB` turns the window right to left. Use logical CSS
    (`margin-inline-start`, `text-align: start`, `inset-inline-end`), never left and right.
-5. Extend `e2e/i18n.spec.ts` to the area: no untranslated text visible under either pseudo-locale, no
+5. Add `e2e/i18n-<area>.spec.ts`, calling `checkArea` from `e2e/pseudo.ts` for each state the area shows: no untranslated text visible under either pseudo-locale, no
    sideways overflow at 1280×820 and at the 920×600 minimum, axe clean, light and dark.
 
 An area is done when its paths are in `CONVERTED`, the e2e checks pass for it, and its screenshots under
