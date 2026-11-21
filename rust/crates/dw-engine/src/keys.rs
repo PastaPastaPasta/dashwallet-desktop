@@ -1165,7 +1165,11 @@ impl NetworkSession {
                 }
                 // The replay it started holds spends: it shows as a rescan,
                 // unless SPV reached its target meanwhile.
-                if let Ok(Some(r)) = self.live()?.replay.get(wallet_id).await
+                let record = self.live()?.replay.get(wallet_id).await;
+                if let Err(e) = &record {
+                    tracing::warn!(%wallet_id, error = %e, "could not read the attach's replay to show it");
+                }
+                if let Ok(Some(r)) = record
                     && !r.cancelled
                 {
                     #[cfg(test)]

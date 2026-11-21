@@ -4016,6 +4016,9 @@ fn keys_attached_to_a_synced_wallet_show_their_replay() {
     let synced = synced_height(&engine, &session, id);
     let progress = session.rescan_progress().unwrap();
     assert_eq!(progress.map(|p| p.from_height), Some(synced + 1));
+    // The replay's own target, with no network tip known.
+    let progress = session.rescan_progress().unwrap();
+    assert_eq!(progress.and_then(|p| p.target_height), Some(HEIGHT + 100));
     let guard = engine.block_on(session.replay_guard(id, 0));
     assert!(
         matches!(guard, Err(EngineError::RescanInProgress)),

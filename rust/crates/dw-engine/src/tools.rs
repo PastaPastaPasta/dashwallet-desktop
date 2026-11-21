@@ -268,7 +268,6 @@ impl NetworkSession {
     /// cleared here. In-memory read.
     pub fn rescan_progress(&self) -> Result<Option<RescanProgress>, EngineError> {
         let _op = self.try_enter()?;
-        let target = self.hub.tracker().tip_height();
         let mut guard = self.hub.rescan();
         if guard.as_ref().is_some_and(RescanState::finished) {
             *guard = None;
@@ -276,7 +275,12 @@ impl NetworkSession {
         Ok(guard.as_ref().map(|r| RescanProgress {
             from_height: r.from_height,
             current_height: r.current_height(),
-            target_height: target,
+            // Done once its wallets are back at their checkpoints, not at
+            // the network's tip.
+            target_height: (r.wallets.values())
+                .filter(|w| w.reached.unwrap_or(0) < w.resume_height)
+                .map(|w| w.resume_height)
+                .max(),
             started_at: r.started_at,
         }))
     }
