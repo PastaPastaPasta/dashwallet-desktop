@@ -1,0 +1,46 @@
+import type { Tree } from "../core";
+
+export const shell = {
+  experimental: "Experimental",
+  sidebar: {
+    label: "Main",
+    waiting: { one: "{count} waiting", other: "{count} waiting" },
+  },
+  toolbar: {
+    wallet: "Wallet",
+    notifications: "Notifications",
+    notificationsUnread: { one: "Notifications, {count} unread", other: "Notifications, {count} unread" },
+    showBalance: "Show balance",
+    hideBalance: "Hide balance",
+    lockWallet: "Lock wallet",
+    myProfile: "My profile",
+    myProfileNamed: "My profile, @{name}",
+    usernameNotLoaded: "Username not loaded",
+    noUsername: "No username",
+    updating: "Updating…",
+    contestPending: "@{name} · Pending",
+    registeringName: "@{name} · Registering",
+    registering: "Registering…",
+  },
+  status: {
+    connecting: "Connecting…",
+    notSyncing: "Not syncing",
+    upToDate: "Up to date",
+    synchronizing: "Synchronizing with network…",
+    syncProgress: "Sync progress",
+    hd: "HD",
+    peers: { one: "{count} peer", other: "{count} peers" },
+    offline: "Offline",
+    synced: "Synced",
+    syncing: "Syncing",
+    unlockFully: "Unlock fully",
+    lock: {
+      noVault: "No keys",
+      noKeys: "Watch-only",
+      unencrypted: "Not encrypted",
+      locked: "Locked",
+      unlockedMixingOnly: "Unlocked for mixing only",
+      unlocked: "Unlocked",
+    },
+  },
+} as const satisfies Tree;
