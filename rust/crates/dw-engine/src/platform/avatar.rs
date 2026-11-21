@@ -498,6 +498,9 @@ pub(super) struct Pipeline {
     url_locks: Locks<String>,
     fetches: Semaphore,
     decodes: Arc<Semaphore>,
+    /// Held by each store call's blocking task: the close waits for those a
+    /// revoked read left running (issue #190).
+    calls: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl Pipeline {
@@ -513,6 +516,7 @@ impl Pipeline {
             url_locks: Mutex::default(),
             fetches: Semaphore::new(FETCHES),
             decodes: Arc::new(Semaphore::new(DECODES)),
+            calls: Arc::default(),
         }
     }
 
@@ -520,18 +524,23 @@ impl Pipeline {
         keyed_lock(&self.url_locks, &url_sha.to_owned())
     }
 
-    async fn blocking<T: Send + 'static>(
+    pub(super) async fn blocking<T: Send + 'static>(
         &self,
         f: impl FnOnce(&AvatarStore) -> T + Send + 'static,
     ) -> Result<T, AvatarError> {
         let store = Arc::clone(&self.store);
-        tokio::task::spawn_blocking(move || f(&store))
-            .await
-            .map_err(|e| {
-                AvatarError::from(PlatformError::Internal {
-                    detail: format!("avatar store task: {e}"),
-                })
+        let call = Arc::clone(&self.calls).read_owned().await;
+        tokio::task::spawn_blocking(move || {
+            let done = f(&store);
+            drop((store, call));
+            done
+        })
+        .await
+        .map_err(|e| {
+            AvatarError::from(PlatformError::Internal {
+                detail: format!("avatar store task: {e}"),
             })
+        })
     }
 
     /// Runs `work` (a decode) on a blocking thread, at most [`DECODES`] at
@@ -801,8 +810,12 @@ impl AvatarRuntime {
 
     /// Drops the session's pipeline, and with it its hold on the app
     /// database (at close): a retained session handle keeps no database.
-    pub(crate) fn close(&self) {
-        guard(&self.pipeline).take();
+    /// Returns once its store calls in flight have ended.
+    pub(crate) async fn close(&self) {
+        let pipeline = guard(&self.pipeline).take();
+        if let Some(pipeline) = pipeline {
+            let _idle = pipeline.calls.write().await;
+        }
     }
 
     /// Keeps `candidate` and returns its id, dropping expired ones and the
