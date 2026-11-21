@@ -35,8 +35,9 @@ export function useLayeredSheet(): boolean {
 const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, summary, [tabindex]:not([tabindex="-1"])';
 
 function focusStart(panel: HTMLElement | null) {
-  // A disabled field takes no focus: the first control that can does.
-  (panel?.querySelector<HTMLElement>("[data-autofocus]:not(:disabled)") ?? panel?.querySelector<HTMLElement>(FOCUSABLE))?.focus();
+  // A disabled field takes no focus: the first control that can does, else the dialog itself, so a
+  // screen reader says its title (a payment being sent has nothing to press).
+  (panel?.querySelector<HTMLElement>("[data-autofocus]:not(:disabled)") ?? panel?.querySelector<HTMLElement>(FOCUSABLE) ?? panel)?.focus();
 }
 
 export function Sheet({
@@ -114,6 +115,7 @@ export function Sheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby={`${testId}-title`}
+        tabIndex={-1}
         data-testid={testId}
         onKeyDown={onKeyDown}
       >

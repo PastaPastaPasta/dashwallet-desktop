@@ -32,7 +32,8 @@ export const ForgotText = {
     `These wallets are watch-only until you import their recovery phrases again: ${names.join(", ")}.`,
 };
 
-type Api = Pick<Backend, "lockStatus" | "listWallets" | "checkMnemonic" | "recoverWithMnemonic">;
+/** `listWallets`: the wallets' ids and names, all a locked window may read of them. */
+type Api = Pick<Backend, "lockStatus" | "checkMnemonic" | "recoverWithMnemonic"> & { listWallets(): Promise<{ walletId: string; name: string }[]> };
 
 /** A wallet's name, or its id's first digits when the window has no summary for it. */
 const nameOf = (walletId: string, names: Map<string, string>) => names.get(walletId) ?? `Wallet ${walletId.slice(0, 8)}`;

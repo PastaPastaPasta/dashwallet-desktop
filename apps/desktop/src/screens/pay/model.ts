@@ -445,10 +445,16 @@ export function unsignedKeepsPromise(c: Confirmed, a: PsbtAnalysis): boolean {
 export type Outcome =
   /** `note`: what else went through (an accepted contact request, DP3-06 D12). */
   | { kind: "sent"; txid: string; amount: number; fee: number; note?: string }
-  /** The transaction may have reached the network. `retry`: the engine still holds it, so Try
-   * again repeats the broadcast. */
-  | { kind: "unknown"; text: string; retry: boolean; draft: number; prepared: number; amount: number; fee: number; note?: string }
+  /** The transaction `txid` may have reached the network. `retry`: the engine still holds it, so
+   * Try again repeats the broadcast. */
+  | { kind: "unknown"; text: string; retry: boolean; txid: string; draft: number; prepared: number; amount: number; fee: number; note?: string }
   | { kind: "failed"; text: string };
+
+/** A signed payment handed to the broadcast, its outcome not yet known. */
+export type Sending = { amount: number; fee: number; note?: string };
+
+/** A first broadcast the window refused because the vault locked: it never reached the engine. */
+export const LOCKED_BEFORE_SEND = "The wallet locked before the payment was sent. Nothing was sent.";
 
 /** The engine's codes for a first broadcast that released the transaction (E0-13 D8, `released`
  * in send.rs): nothing was sent and its handle is gone. */
@@ -466,7 +472,7 @@ const CONTACT_HELD = ["contact.payment_locked", "storage"] as const;
 export function broadcastFailure(
   e: unknown,
   chain: Chain,
-  held: { draft: number; prepared: number; amount: number; fee: number; note?: string },
+  held: { txid: string; draft: number; prepared: number; amount: number; fee: number; note?: string },
   first: boolean,
   unit: Unit = "DASH",
   contact = false,

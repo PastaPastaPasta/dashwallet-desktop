@@ -426,8 +426,8 @@ fn outputs(tx: &Transaction) -> BTreeSet<OutPoint> {
 }
 
 /// The wallet's payment, InstantSend-locked: the lock is stored apart from
-/// its record, which still says mempool. After a restart, Abandon and
-/// Remove Unconfirmed both refuse it, and the coins it spent stay spent.
+/// its record, which loads as locked. After a restart, Abandon and Remove
+/// Unconfirmed both refuse it, and the coins it spent stay spent.
 #[test]
 fn a_payment_locked_apart_from_its_record_is_not_abandoned_after_a_restart() {
     use platform_wallet::changeset::PlatformWalletPersistence;
@@ -456,9 +456,9 @@ fn a_payment_locked_apart_from_its_record_is_not_abandoned_after_a_restart() {
     assert!(
         matches!(
             record.context,
-            key_wallet::transaction_checking::TransactionContext::Mempool
+            key_wallet::transaction_checking::TransactionContext::InstantSend(_)
         ),
-        "the record says mempool: {:?}",
+        "the record loads as locked: {:?}",
         record.context
     );
     let spent: BTreeSet<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();

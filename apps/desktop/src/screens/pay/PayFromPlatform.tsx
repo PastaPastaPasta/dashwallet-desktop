@@ -200,14 +200,44 @@ function SendSheet({
   );
 }
 
+function useCredits(network: NetworkInfo) {
+  const shown = useDisplay(network);
+  const discreet = useUi((s) => s.discreet);
+  return { shown, credits: (c: string) => (discreet ? shown.masked() : `${shown.full(creditsToDuffs(c))} ${shown.name}`) };
+}
+
+/** The wallet's send when the form holds no Platform address to show it under (a lock took the page
+ * down while it ran, and the form came back empty): its sheet, until it is closed. */
+export function HeldPlatformSend({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const b = useBackend();
+  const flow = useModel(sendFor(b, walletId));
+  const { credits } = useCredits(network);
+  const activity = usePlatformActivity(walletId);
+  const [confirmed, setConfirmed] = useState<Confirmed | null>(null);
+  if (confirmed === null && !flow.running && flow.step === "confirm") return <GrantSheet grants={flow.grants} />;
+  const retry = async () => {
+    const got = await flow.retry("");
+    if (got) setConfirmed({ ...got, seen: activity.data });
+  };
+  const close = () => {
+    setConfirmed(null);
+    flow.reset();
+  };
+  const settled = flow.step === "done" ? settledBy(flow.outcome, activity.data) : null;
+  return (
+    <>
+      <SendSheet flow={flow} confirmed={confirmed} credits={credits} settled={settled} activity={activity.data} onClose={close} onRetry={() => void retry()} />
+      <GrantSheet grants={flow.grants} />
+    </>
+  );
+}
+
 /** The Platform half of the address form: shown below "Pay to" once it holds a Platform address.
  * `amount` is the form's own field, so what was typed before the address was recognised stays. */
 export function PayFromPlatform({ walletId, network, to, amount, onSent }: { walletId: string; network: NetworkInfo; to: string; amount: ReturnType<typeof useAmountField>; onSent: () => void }) {
   const b = useBackend();
   const flow = useModel(sendFor(b, walletId));
-  const shown = useDisplay(network);
-  const discreet = useUi((s) => s.discreet);
-  const credits = (c: string) => (discreet ? shown.masked() : `${shown.full(creditsToDuffs(c))} ${shown.name}`);
+  const { shown, credits } = useCredits(network);
   const [max, setMax] = useState(false);
   const [confirmed, setConfirmed] = useState<Confirmed | null>(null);
   const balance = usePlatformAddresses(walletId);

@@ -2147,6 +2147,12 @@ impl PreparedTx {
         *self.phase() == Phase::Released
     }
 
+    /// Not handed off yet. Means nothing left only for a leased hand-off:
+    /// an unleased first broadcast can end `Pending` after a library error.
+    pub(crate) fn pending(&self) -> bool {
+        *self.phase() == Phase::Pending
+    }
+
     /// Refunds a charge no admission took (a resend the fence ran as
     /// `Resend`, MG-04 D7); a no-op once one did.
     pub(crate) fn refund_unadmitted(&self) {
@@ -2243,12 +2249,19 @@ impl TxDraft {
         );
         self.session
             .appdb_op(move |db| {
+                #[cfg(all(test, debug_assertions))]
+                db.fault_point(SENT_MARK_FAULT, dw_appdb::fault::Stage::Before)?;
                 let writes = [(key.as_str(), coins.as_deref()), (&at, height.as_deref())];
                 db.set_settings_durable(&scope, &writes)
             })
             .await
     }
 }
+
+/// A test's fault point on the sent mark's write, failing it before the
+/// hand-off.
+#[cfg(all(test, debug_assertions))]
+pub(crate) const SENT_MARK_FAULT: &str = "send.sent_mark";
 
 impl NetworkSession {
     /// Stores the payment's messages and adds its recipients to the address

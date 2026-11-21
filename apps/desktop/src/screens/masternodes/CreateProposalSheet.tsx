@@ -9,6 +9,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
+import { lockGeneration, refusedWhileLocked, walletGateClosed } from "../../api/lockGate";
 import type { MyProposal } from "../../api/generated/MyProposal";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { ProposalDraft } from "../../api/generated/ProposalDraft";
@@ -32,6 +33,7 @@ import {
   fieldText,
   GovText,
   governanceErrorText,
+  inProgressRefusal,
   lastPaymentText,
   MAX_PAYMENTS,
   sameFee,
@@ -54,20 +56,29 @@ const STEPS: { n: Step; title: string; heading: string }[] = [
 
 type FieldErrors = Partial<Record<ProposalFieldName, string>>;
 
-/** After a failed `create_proposal` (D34): reading Mine, the proposal it made anyway, or Mine
- *  unreadable. Pay stays off in all three. */
-type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "unknown"; known: ReadonlySet<string> };
+/** After a failed `create_proposal` (D34): reading Mine, the proposal it made anyway, Mine
+ *  unreadable, or a refusal: the proposal of that name already in progress, or one
+ *  whose payment is under way. Pay stays off in all five. */
+type AfterFailure =
+  | { kind: "checking" }
+  | { kind: "created"; p: MyProposal }
+  | { kind: "unknown"; known: ReadonlySet<string> }
+  | { kind: "existing"; p: MyProposal }
+  | { kind: "underway" };
 
 export function CreateProposalSheet({
   wallet,
   network,
   onClose,
   onCreated,
+  onShowMine,
 }: {
   wallet: WalletSummary;
   network: NetworkInfo;
   onClose: () => void;
   onCreated: (p: MyProposal) => void;
+  /** A refused draft's way to the proposal already in progress: Mine, with no result to announce. */
+  onShowMine: () => void;
 }) {
   const b = useBackend();
   const shown = useDisplay(network);
@@ -100,6 +111,8 @@ export function CreateProposalSheet({
   const [feeChanged, setFeeChanged] = useState(false);
   const mine = useMyProposals(wallet.walletId);
   const [after, setAfter] = useState<AfterFailure | null>(null);
+  /** The engine refused the draft before anything was paid. */
+  const refused = after?.kind === "existing" || after?.kind === "underway";
 
   const choice = useMemo(() => defaultFirstPayment(superblocks.data ?? [], now), [superblocks.data, now]);
   // The default, and again when the chosen superblock passes (the list re-reads on the tip).
@@ -183,17 +196,42 @@ export function CreateProposalSheet({
     }
   };
 
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   /** Whether the failed call made the proposal anyway: Mine says, ignoring the proposals it held
    *  when Pay was pressed (D34). */
   const checkMine = async (d: ProposalDraft, known: ReadonlySet<string>) => {
     setAfter({ kind: "checking" });
+    let next: AfterFailure | null;
     try {
       const made = createdFrom(await b.governanceMyProposals(wallet.walletId), d, known);
-      if (made) credential.setError(null); // the notice says what happened instead
-      setAfter(made ? { kind: "created", p: made } : null);
+      if (made && mounted.current) credential.setError(null); // the notice says what happened instead
+      next = made ? { kind: "created", p: made } : null;
     } catch {
-      setAfter({ kind: "unknown", known });
+      next = { kind: "unknown", known };
     }
+    if (mounted.current) setAfter(next);
+    void refresh();
+  };
+
+  /** The engine refused the draft: a proposal of its name is in progress. Mine's row of it, or
+   *  "under way" when the refusal names none or Mine can't be read. */
+  const showExisting = async (hash: string | null) => {
+    setAfter({ kind: "checking" });
+    let next: AfterFailure;
+    try {
+      const p = hash === null ? undefined : (await b.governanceMyProposals(wallet.walletId)).find((m) => m.hash === hash);
+      next = p ? { kind: "existing", p } : { kind: "underway" };
+    } catch {
+      next = { kind: "underway" };
+    }
+    if (mounted.current) setAfter(next);
     void refresh();
   };
 
@@ -202,10 +240,14 @@ export function CreateProposalSheet({
     const confirmed = figures;
     if (busy || after || !draft || !draftKey || !confirmed || !credential.ready) return;
     const known = new Set((mine.data ?? []).map((p) => p.hash));
+    // Once the sheet closes or a lock comes, nothing this press started may pay.
+    const gen = lockGeneration();
+    const departed = () => !mounted.current || walletGateClosed() || lockGeneration() !== gen;
     setBusy(true);
     setGeneral(null);
     try {
       const r = await preview.refetch();
+      if (departed()) return;
       if (r.isError || !r.data) return; // the preview's effect says why
       if (shownKey.current !== draftKey) return; // the draft moved on (D33): its own review
       if (!sameFee(r.data, confirmed)) {
@@ -216,14 +258,27 @@ export function CreateProposalSheet({
       }
       setFeeChanged(false);
       const grant = await credential.authorize({ kind: "spend", maxDuffs: feeGrantCap(confirmed) });
-      if (!grant || shownKey.current !== draftKey) return;
+      if (!grant) return;
+      if (departed() || shownKey.current !== draftKey) {
+        void b.revokeGrant(grant.id).catch(() => null);
+        return;
+      }
       let created: MyProposal;
       try {
         created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
       } catch (e) {
-        if (refuseFields(e)) return;
+        // A call the lock stopped before the engine paid nothing; a sheet that has gone shows and
+        // reads nothing more.
+        if (refusedWhileLocked(e) || !mounted.current || refuseFields(e)) return;
+        const existing = inProgressRefusal(e);
+        if (existing !== undefined) {
+          setBusy(false);
+          await showExisting(existing);
+          return;
+        }
         credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
         // `after` keeps Pay and Back off; the sheet may close while Mine is read.
+        // (A refusal, above, keeps Pay off and leaves Back on.)
         setBusy(false);
         await checkMine(draft, known);
         return;
@@ -231,9 +286,9 @@ export function CreateProposalSheet({
       void refresh();
       onCreated(created);
     } catch (e) {
-      credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
+      if (mounted.current) credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 
@@ -425,6 +480,23 @@ export function CreateProposalSheet({
                 </DashButton>
               </div>
             )}
+            {after?.kind === "existing" && (
+              <div className="mg-notice mg-notice-warning" role="alert" data-testid="create-in-progress">
+                <p className="mg-flush">
+                  <strong>{after.p.name} is already in progress in this wallet, so Pay stays off.</strong> Nothing was paid just now. Mine shows it
+                  and sends it on from there; for another proposal, go back and use another name.
+                </p>
+                <DashButton variant="filledBlue" size="small" data-testid="create-show-existing" onClick={onShowMine}>
+                  Show it in Mine
+                </DashButton>
+              </div>
+            )}
+            {after?.kind === "underway" && (
+              <p className="mg-notice mg-notice-warning" role="alert" data-testid="create-underway">
+                A payment for a proposal named {draft.name} is already under way, so Pay stays off. Nothing was paid just now. Mine shows it once
+                it&apos;s saved; for another proposal, go back and use another name.
+              </p>
+            )}
             {after?.kind === "unknown" && (
               <div className="mg-notice mg-notice-warning" role="alert" data-testid="create-unknown">
                 <p className="mg-flush">Couldn&apos;t check whether the proposal was made, so Pay stays off: its fee may have gone out.</p>
@@ -470,7 +542,17 @@ export function CreateProposalSheet({
           </span>
           <span className="mg-actions">
             {step > 1 ? (
-              <DashButton variant="tintedGray" size="medium" data-testid="create-back" disabled={busy || after !== null} onClick={() => setStep((s) => (s - 1) as Step)}>
+              <DashButton
+                variant="tintedGray"
+                size="medium"
+                data-testid="create-back"
+                disabled={busy || (after !== null && !refused)}
+                onClick={() => {
+                  // A refusal paid nothing: the user may go back and rename, and Pay comes back.
+                  if (refused) setAfter(null);
+                  setStep((s) => (s - 1) as Step);
+                }}
+              >
                 Back
               </DashButton>
             ) : (

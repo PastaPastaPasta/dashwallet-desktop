@@ -34,7 +34,8 @@ const SHOTS = process.env.DW_ROUTE_SHOTS;
 async function open(page: Page, scenario: string, theme: "light" | "dark" = "light") {
   const errors = trackPageErrors(page);
   await page.goto(fixtureUrl(scenario, theme));
-  await page.getByTestId("toolbar").waitFor();
+  // A locked window shows the lock screen in place of the shell.
+  await page.locator("[data-testid=toolbar], [data-testid=lock-screen]").first().waitFor();
   return errors;
 }
 
