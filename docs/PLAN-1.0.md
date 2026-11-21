@@ -38,7 +38,7 @@ owner updates the State column as items land and reports against it daily.
     as a refusal (#197, two items of #188), **the pin of the rust-dashcore and platform forks for #45,
     #46, #47 and #120 (#159), which is therefore in 0.3**, item 1 of #173 (#198), the renderer part
     of #133 (#137), and the Swift bindings check on pull requests (#199, item 7 of #186;
-    it adds about nine minutes to "Rust tests (Linux)"). From #159 on, the wallet's data is one-way for this release: the first start writes
+    it added about nine minutes to "Rust tests (Linux)" on its first run). From #159 on, the wallet's data is one-way for this release: the first start writes
     two storage migrations, after a copy to `backups/auto`. #159 merged with three known limits, ruled
     by the release owner and listed in #177 (items 9, 10 and 11); the fixes for 9 and 10 are being
     written in the rust-dashcore fork and re-pin in their own pull request, aimed at 11-22 18:00 UTC.
@@ -47,13 +47,13 @@ owner updates the State column as items land and reports against it daily.
   - `main` was red again on 11-21 from 03:17 to 04:12 UTC, in the macOS job of the run at #181: one
     `dwcli` test pins a status line that depends on timing when SPV runs. The status read met a
     writer on the wallet manager and gave its other correct answer (#202). The abandonment checks of
-    the test's one-shot run passed before that assertion; its session half did not run. The macOS job
-    of the next run, at #137, passed. The fix is to that test only (#203, in a pull request). Merges
+    the test's one-shot run passed before that assertion; its session half did not run. The next macOS
+    job to run, at #137, passed. The fix is to that test only (#203, in a pull request). Merges
     are not held for it: #199 merged at 04:07 UTC.
+  - Merged at 04:46 UTC: #190 (#192). The holder is found and fixed (the session hub's sweep-news hook
+    kept the app database), the Windows skip is removed, and the test passes on Windows in a run of
+    the merge head. What it leaves is in #200, for 1.0.x.
   - In a pull request:
-    - #190 (#192): the holder is found and fixed (the session hub's sweep-news hook kept the app
-      database), the Windows skip is removed, and the test passes on Windows in a run of the branch. It
-      took `main` in after #198 and merges when its checks and a second Windows run are green.
     - #68, #69 and the engine part of #74 (#121). The review of 11-21 found eight more cases; the
       release owner ruled seven into a third fix round, which is written and in its gates. One of them
       (Repair refusing a stuck funding whose locks hold coins of both kinds, with no way out for the
@@ -379,11 +379,11 @@ No longer on this list: partner credentials and Explore database access (lane L 
 - **Review and CI throughput.** A full CI run takes about 90 minutes on macOS. With 12 lanes active the runners
   queue; engine-only and renderer-only pull requests should not wait on each other's jobs.
 - **The RC must-fix list grew on 11-20.** It holds 24 cases: 22 left by the four funds fixes (#170
-  eleven, #172 six, #173 two, #177 three), #178 in lane C, and #190 (fixed in #192, in a pull request). Of #170's, case 14 is written, eight add up
+  eleven, #172 six, #173 two, #177 three), #178 in lane C, and #190 (fixed in #192, merged 11-21). Of #170's, case 14 is written, eight add up
   to about 15.5 to 23.5 working days by its table (12.5 to 19 without case 6, which is expected in
   1.0.x), case 16 is not sized and case 17 is closed at load by #159; #172's and #173's eight add up to 7 to 11.75, with the
   first-start message not sized; #177's three add up to 3.5; #178 is not sized. Fourteen of the 22 are
-  promised, and #190 is fixed in a pull request. Case 16 has no term yet. The tables above say which cases are promised, which are
+  promised, and #190 is fixed and merged. Case 16 has no term yet. The tables above say which cases are promised, which are
   attempted and when each is decided.
 - **Security review on new code.** H-01 runs 11-27 → 11-29 over code written the same fortnight. Its
   findings land before the release candidate or the affected feature ships disabled.
