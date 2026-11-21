@@ -625,24 +625,7 @@ impl NetworkSession {
         match resumed {
             Ok(Some(target)) => {
                 self.pause_publish().await;
-                self.hub.publish_rescan(|rescan| {
-                    if rescan.as_ref().is_some_and(RescanState::finished) {
-                        *rescan = None;
-                    }
-                    let state = rescan.get_or_insert_with(|| RescanState {
-                        from_height: record.reached.saturating_add(1),
-                        started_at: unix_now(),
-                        wallets: BTreeMap::new(),
-                    });
-                    state.from_height = state.from_height.min(record.reached.saturating_add(1));
-                    state.wallets.insert(
-                        wallet,
-                        WalletRescan {
-                            resume_height: target,
-                            reached: None,
-                        },
-                    );
-                });
+                self.publish_replay(wallet, record.reached, target);
             }
             Ok(None) => {
                 tracing::warn!(wallet = %wallet, "replay not resumed: the wallet is not loaded");
@@ -653,6 +636,30 @@ impl NetworkSession {
                 hold(false).await;
             }
         }
+    }
+
+    /// Shows `wallet`'s replay from above `reached` to `target` as a
+    /// rescan: spends wait for it, so it reports progress and can be
+    /// cancelled.
+    pub(crate) fn publish_replay(&self, wallet: WalletId, reached: u32, target: u32) {
+        self.hub.publish_rescan(|rescan| {
+            if rescan.as_ref().is_some_and(RescanState::finished) {
+                *rescan = None;
+            }
+            let state = rescan.get_or_insert_with(|| RescanState {
+                from_height: reached.saturating_add(1),
+                started_at: unix_now(),
+                wallets: BTreeMap::new(),
+            });
+            state.from_height = state.from_height.min(reached.saturating_add(1));
+            state.wallets.insert(
+                wallet,
+                WalletRescan {
+                    resume_height: target,
+                    reached: None,
+                },
+            );
+        });
     }
 
     /// Tests: holds a rescan's publication while a pause is set.

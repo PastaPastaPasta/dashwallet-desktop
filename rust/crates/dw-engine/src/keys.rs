@@ -1157,6 +1157,12 @@ impl NetworkSession {
                 {
                     self.set_wide_scan(wallet_id, Some(WideScan::Done)).await;
                 }
+                // The replay it started holds spends: it shows as a rescan.
+                if let Ok(Some(r)) = self.live()?.replay.get(wallet_id).await
+                    && !r.cancelled
+                {
+                    self.publish_replay(wallet_id, r.reached, r.target);
+                }
                 self.refresh_wallet_state(&manager, wallet_id).await;
             }
             // Keys attached: watch-only becomes false; hosts reload.
