@@ -94,9 +94,11 @@ export interface Fill {
   isolate: boolean;
 }
 
-/** Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan, Mandaic and their presentation forms, and the
- * right-to-left marks and overrides. */
-const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u200F\u202B\u202E\u2067]|\uD802[\uDC00-\uDFFF]|\uD803[\uDC00-\uDE7F]|\uD83A[\uDC00-\uDFFF]|\uD83B[\uDC00-\uDEFF]/;
+/** Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan, Mandaic, the right-to-left scripts of the
+ * supplementary planes and their presentation forms, the right-to-left mark, and every bidi
+ * embedding, override and isolate control, so a value carrying an unterminated one cannot reorder
+ * the rest of the sentence. */
+const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFE\u200F\u202A-\u202E\u2066-\u2069]|\uD802[\uDC00-\uDFFF]|\uD803[\uDC00-\uDFFF]|\uD83A[\uDC00-\uDFFF]|\uD83B[\uDC00-\uDEFF]/;
 
 export const hasRtl = (text: string) => RTL.test(text);
 

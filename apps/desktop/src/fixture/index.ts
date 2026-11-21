@@ -237,6 +237,7 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
   }
   const saved = p.get("savedLang");
   if (saved !== null && !isLanguageTag(saved)) throw new Error(`bad savedLang=${saved}: not a language tag`);
+  if (saved !== null && p.has("lang")) throw new Error("give lang= or savedLang=, not both");
   const language = saved ?? p.get("lang") ?? undefined;
   if (saved === null && language !== undefined && !isLanguage(language)) throw new Error(`unknown language ${language}`);
   const updates = oneOf(p, "updates", UPDATE_AVAILABILITIES);

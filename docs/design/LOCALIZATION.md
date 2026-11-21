@@ -79,14 +79,14 @@ const t = useT();
 - A text module that is read outside a component (`NetworkText`, `LockText`) reads `t` in a getter or a
   function, so it is read in the language of the render that reads it. A table becomes
   `messageTable(prefix, keys)`.
-- In a right-to-left language each placeholder value that is text or a number is a bidi isolate
-  (U+2068 … U+2069), and an element given to `t.rich` is wrapped in `<bdi>`, so a username or address
-  keeps its own direction. In a left-to-right language a value with right-to-left letters (an Arabic
-  or Hebrew username) is isolated too; other values are left as they are, so English text is
-  unchanged. The isolate characters stay in `aria-label` and `title` values; screen readers ignore
-  them, and a test comparing an exact accessible name under `ar-XB` includes them. Text that is only
-  data outside a message (a wallet name, `@username`) goes in `<bdi>`. An amount (`AmountText`) is a
-  left-to-right isolate, so a debit reads "-1.25" in a right-to-left window.
+- In a right-to-left language each placeholder value that is text or a number is a bidi isolate (U+2068 …
+  U+2069), and an element given to `t.rich` is wrapped in `<bdi>`, so a username or address keeps its own
+  direction. In a left-to-right language a text value with right-to-left letters or a bidi control (an
+  Arabic or Hebrew username) is isolated too (an element given to `t.rich` is not); other values are left
+  as they are, so English text is unchanged. The isolate characters stay in `aria-label` and `title`
+  values; screen readers ignore them, and a test comparing an exact accessible name under `ar-XB` includes
+  them. Text that is only data outside a message (a wallet name, `@username`) goes in `<bdi>`. An amount
+  (`AmountText`) is a left-to-right isolate, so a debit reads "-1.25" in a right-to-left window.
 
 `Catalog<typeof en>` types every other language: a key English does not have fails `tsc`, and a missing
 key shows English. A test checks that each translation uses only English's placeholders and tags.

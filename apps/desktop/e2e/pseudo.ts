@@ -53,10 +53,10 @@ export async function untranslated(page: Page, areas: string[], kind: PseudoKind
   return found.filter((text) => ![...DATA, ...data].some((re) => re.test(text)));
 }
 
-/** What scrolls sideways or sticks out of the window or its pane. */
 /** The panes whose descendants must stay inside them: the shell, the page and the lock column. */
 export const PANES = ['[data-testid="toolbar"]', '[data-testid="sidebar"]', '[data-testid="status-bar"]', "main.page", '[data-testid="lock-column"]'];
 
+/** What scrolls sideways or sticks out of the window or its pane. */
 export function overflow(page: Page, panes: string[] = PANES) {
   return page.evaluate((panes) => {
     const found: string[] = [];

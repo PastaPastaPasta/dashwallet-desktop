@@ -206,6 +206,11 @@ describe("bidi isolation", () => {
     expect(t("network.confirmTitle", { network: "Testnet" })).toBe("Switch to Testnet?");
     expect(t("network.confirmTitle", { network: "@سارة" })).toBe("Switch to \u2068@سارة\u2069?");
     expect(t("network.confirmTitle", { network: "@שרה" })).toBe("Switch to \u2068@שרה\u2069?");
+    // An unterminated override in a name cannot reorder the rest of the sentence.
+    expect(t("network.confirmTitle", { network: "@x\u202Dy" })).toBe("Switch to \u2068@x\u202Dy\u2069?");
+    // Sogdian, past the first supplementary right-to-left block.
+    expect(t("network.confirmTitle", { network: "\u{10F30}" })).toBe("Switch to \u2068\u{10F30}\u2069?");
+    expect(t("network.confirmTitle", { network: "a\uFEFFb" })).toBe("Switch to a\uFEFFb?");
   });
 
   it("isolates an element placeholder of rich text in a right-to-left language only", () => {
