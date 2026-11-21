@@ -268,7 +268,17 @@ impl NetworkSession {
             });
             return;
         }
-        if !self.platform.mark_running() || !self.platform.enabled {
+        #[cfg(test)]
+        {
+            let pause = guard(&self.platform.pause_before_running).take();
+            if let Some(pause) = pause {
+                pause.reached.store(true, Ordering::SeqCst);
+                pause.release.notified().await;
+            }
+        }
+        let marked = self.platform.mark_running();
+        self.emit_spv_running();
+        if !marked || !self.platform.enabled {
             return;
         }
         self.apply_cadence(&manager);

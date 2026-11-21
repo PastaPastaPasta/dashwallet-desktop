@@ -244,6 +244,10 @@ pub(crate) struct PlatformRuntime {
     /// starting the library call (`runtime_tests.rs`).
     #[cfg(test)]
     pub(super) pause_after_keys: Mutex<Option<Arc<TestPause>>>,
+    /// Tests: holds the next supervisor between starting SPV and marking it
+    /// running (`runtime_tests.rs`).
+    #[cfg(test)]
+    pub(super) pause_before_running: Mutex<Option<Arc<TestPause>>>,
     /// The queued-account drains asked of the supervisor (#84).
     contact_drains: Mutex<ContactDrains>,
     /// Tests: how many contact-crypto drains ran (`bringup.rs`).
@@ -519,6 +523,8 @@ impl PlatformRuntime {
             identity_net: Mutex::new(None),
             #[cfg(test)]
             pause_after_keys: Mutex::new(None),
+            #[cfg(test)]
+            pause_before_running: Mutex::new(None),
             contact_drains: Mutex::default(),
             #[cfg(test)]
             contact_drains_run: AtomicU64::new(0),
