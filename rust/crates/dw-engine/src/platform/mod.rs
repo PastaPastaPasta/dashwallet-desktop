@@ -35,6 +35,8 @@ mod errors;
 mod flows;
 #[cfg(feature = "fuzzing")]
 pub mod fuzzing;
+#[cfg(test)]
+mod h03_kill9_dashpay_tests;
 mod identity;
 mod identity_reads;
 mod identity_writes;
