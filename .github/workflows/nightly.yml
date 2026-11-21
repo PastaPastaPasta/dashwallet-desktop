@@ -337,11 +337,11 @@ jobs:
           # A rerun of an older night must not open, update or close the issue of a newer one.
           # A first attempt always reports: a newer run can only be queued behind it.
           if [ "$ATTEMPT" -gt 1 ]; then
-            latest=$(gh api "repos/$GH_REPO/actions/workflows/nightly.yml/runs?event=schedule&per_page=1" \
-              --jq '.workflow_runs[0].id') || {
+            if ! latest=$(gh api "repos/$GH_REPO/actions/workflows/nightly.yml/runs?event=schedule&per_page=1" \
+              --jq '.workflow_runs[0].id') || [[ ! $latest =~ ^[0-9]+$ ]]; then
               echo "the latest scheduled run could not be read: the issue is left as it is" >&2
               exit 1
-            }
+            fi
             if [ "$latest" != "$RUN" ]; then
               echo "run $latest is newer: nothing reported for this rerun"
               exit 0
