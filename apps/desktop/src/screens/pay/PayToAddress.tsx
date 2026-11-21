@@ -12,6 +12,7 @@ import { useDebounced } from "../../app/useDebounced";
 import { DashButton } from "../../components/basics";
 import { AddressBookPicker } from "../tools/AddressBook";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
 import { HeldPlatformSend, PayFromPlatform } from "./PayFromPlatform";
@@ -33,6 +34,7 @@ export function PayToAddress({
   walletId: string;
   network: NetworkInfo;
 }) {
+  const t = useT();
   const b = useBackend();
   const shown = useDisplay(network);
   const locked = useLockStatus().data?.state === "locked";
@@ -119,7 +121,7 @@ export function PayToAddress({
       <form
         className="pay-form"
         data-testid="pay-address-form"
-        aria-label="Pay to an address"
+        aria-label={t("pay.toAddress.form")}
         onSubmit={(e) => {
           e.preventDefault();
           review("review");
@@ -127,11 +129,11 @@ export function PayToAddress({
       >
         {prefill?.username && (
           <p className="placeholder-note" data-testid="pay-username">
-            The link names the payee @{prefill.username}. The name is not verified.
+            {t("pay.toAddress.linkUsername", { username: `@${prefill.username}` })}
           </p>
         )}
         <section className="pay-card card-l1">
-          <FormField label="Pay to" error={addrError ?? fieldError("address")}>
+          <FormField label={t("pay.toAddress.payTo")} error={addrError ?? fieldError("address")}>
             {(p) => (
               <span className="amount-entry">
                 <input
@@ -141,11 +143,11 @@ export function PayToAddress({
                   value={address}
                   autoComplete="off"
                   spellCheck={false}
-                  placeholder="Dash address"
+                  placeholder={t("pay.toAddress.placeholder")}
                   onChange={(e) => setAddress(e.target.value)}
                 />
                 <DashButton variant="tintedBlue" size="small" data-testid="pay-address-book" onClick={() => setPicking(true)}>
-                  Address Book…
+                  {t("pay.toAddress.addressBook")}
                 </DashButton>
               </span>
             )}
@@ -164,10 +166,10 @@ export function PayToAddress({
             subtractFee={subtractFee}
             onSubtractFee={setSubtractFee}
           />
-          <FormField label="Label" hint="Saved to your address book with the address.">
+          <FormField label={t("pay.toAddress.label")} hint={t("pay.toAddress.labelHint")}>
             {(p) => <input {...p} data-testid="pay-label" value={label} autoComplete="off" onChange={(e) => setLabel(e.target.value)} />}
           </FormField>
-          <FormField label="Message" hint="Kept with the transaction in this wallet; not sent to the payee.">
+          <FormField label={t("pay.toAddress.message")} hint={t("pay.toAddress.messageHint")}>
             {(p) => <input {...p} data-testid="pay-message" value={message} autoComplete="off" onChange={(e) => setMessage(e.target.value)} />}
           </FormField>
             </>
@@ -183,7 +185,7 @@ export function PayToAddress({
               buttonRef={psbtButton}
               summaryRef={psbtSummary}
             />
-            <PayFooter reviewLabel={watchOnly ? "Review PSBT" : "Review"} problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
+            <PayFooter reviewLabel={watchOnly ? t("pay.toAddress.reviewPsbt") : t("pay.form.review")} problem={generalError} offer={offer === null || !settled ? null : { amount: offer, accept: () => setSubtractFee(true) }} fee={estimate.data && spec ? estimate.data.fee : null} shown={shown} ready={ready} incomplete={!spec} reviewRef={reviewButton} />
           </>
         )}
       </form>

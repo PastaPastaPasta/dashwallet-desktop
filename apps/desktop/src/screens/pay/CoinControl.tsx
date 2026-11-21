@@ -13,32 +13,35 @@ import { CoinSummary, CoinTable } from "../../components/coins";
 import { LoadingState } from "../../components/history";
 import { full } from "../../format/amount";
 import { useDisplay } from "../../format/display";
+import { t as tr, useT } from "../../i18n";
 import { DEFAULT_TARGET_BLOCKS, feeMode, outpointOf, type Advanced, type CoinChoice } from "./model";
 
 /** Dash's target block interval: 2.5 minutes. */
 const BLOCK_MINUTES = 2.5;
 
-const COIN_CHOICES: { id: CoinChoice; title: string }[] = [
-  { id: "any", title: "Any available funds" },
-  { id: "mixed", title: "Fully mixed funds only (CoinJoin)" },
-  { id: "selected", title: "Selected coins" },
-];
+const COIN_CHOICES: { id: CoinChoice; readonly title: string }[] = (["any", "mixed", "selected"] as const).map((id) => ({
+  id,
+  get title() {
+    return tr(`pay.coins.choice.${id}`);
+  },
+}));
 
 function targetTitle(blocks: number): string {
   const minutes = blocks * BLOCK_MINUTES;
-  const time = minutes < 60 ? `${minutes} minutes` : `${+(minutes / 60).toFixed(1)} hours`;
-  return `${time} (${blocks} ${blocks === 1 ? "block" : "blocks"})`;
+  const time = minutes < 60 ? tr("pay.coins.minutes", { minutes }) : tr("pay.coins.hours", { hours: +(minutes / 60).toFixed(1) });
+  return tr("pay.coins.target", { time, blocks: String(blocks), word: tr("pay.coins.blocks", { count: blocks }) });
 }
 
 /** Why a typed custom rate cannot be used, or `null` when it can. */
 function rateProblem(rate: number | null | undefined, policy: FeePolicy, unit: string): string | null {
-  if (rate === null || rate === undefined) return "Enter a fee rate in DASH per kB.";
-  if (rate < policy.minRelayPerKb) return `The fee rate must be at least ${full(policy.minRelayPerKb, false)} ${unit}/kB (the minimum relay fee).`;
-  if (rate > policy.maxCustomPerKb) return `The fee rate must be at most ${full(policy.maxCustomPerKb, false)} ${unit}/kB.`;
+  if (rate === null || rate === undefined) return tr("pay.coins.rateMissing");
+  if (rate < policy.minRelayPerKb) return tr("pay.coins.rateMin", { rate: full(policy.minRelayPerKb, false), unit });
+  if (rate > policy.maxCustomPerKb) return tr("pay.coins.rateMax", { rate: full(policy.maxCustomPerKb, false), unit });
   return null;
 }
 
 function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
+  const t = useT();
   const b = useBackend();
   const utxos = useUtxos(walletId, true);
   const selected = new Set(advanced.selected);
@@ -51,9 +54,9 @@ function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
   const toggle = (key: string, on: boolean) =>
     onChange({ ...advanced, selected: on ? [...advanced.selected, key] : advanced.selected.filter((k) => k !== key) });
   const shown = useDisplay(network);
-  if (utxos.isPending) return <LoadingState testId="coins-loading" text="Loading coins" />;
-  if (utxos.isError) return <p className="form-problem">Could not load the coins: {errorMessage(utxos.error)}</p>;
-  if (utxos.data.length === 0) return <p className="placeholder-note">This wallet has no coins yet.</p>;
+  if (utxos.isPending) return <LoadingState testId="coins-loading" text={t("pay.coins.loading")} />;
+  if (utxos.isError) return <p className="form-problem">{t("pay.coins.loadFailed", { error: errorMessage(utxos.error) })}</p>;
+  if (utxos.data.length === 0) return <p className="placeholder-note">{t("pay.coins.none")}</p>;
   const s = summary.data;
   return (
     <>
@@ -61,7 +64,7 @@ function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
       {s && <CoinSummary summary={s} shown={shown} />}
       {s?.insufficientFunds && (
         <p className="form-problem" data-testid="coin-insufficient">
-          Insufficient funds! The selected coins do not cover the amount and the fee.
+          {t("pay.coins.insufficient")}
         </p>
       )}
     </>
@@ -69,6 +72,7 @@ function Coins({ walletId, network, advanced, onChange, payAmount }: Props) {
 }
 
 function Fee({ advanced, onChange, network }: Props) {
+  const t = useT();
   const b = useBackend();
   const policy = useFeePolicy();
   const [text, setText] = useState("");
@@ -89,7 +93,7 @@ function Fee({ advanced, onChange, network }: Props) {
   const targets = p?.targets ?? [{ targetBlocks: DEFAULT_TARGET_BLOCKS, duffsPerKb: 0 }];
   return (
     <fieldset className="radio-group" data-testid="fee-choice">
-      <legend>Transaction fee</legend>
+      <legend>{t("pay.coins.fee")}</legend>
       <label className="radio-row">
         <input
           type="radio"
@@ -97,11 +101,11 @@ function Fee({ advanced, onChange, network }: Props) {
           checked={advanced.fee.kind === "recommended"}
           onChange={() => onChange({ ...advanced, fee: { kind: "recommended", targetBlocks: DEFAULT_TARGET_BLOCKS } })}
         />
-        Recommended
+        {t("pay.coins.recommended")}
       </label>
       {advanced.fee.kind === "recommended" && (
         <label className="inline-field">
-          Confirmation time target
+          {t("pay.coins.targetLabel")}
           <select
             data-testid="fee-target"
             value={advanced.fee.targetBlocks}
@@ -123,12 +127,12 @@ function Fee({ advanced, onChange, network }: Props) {
           checked={advanced.fee.kind === "custom"}
           onChange={() => onChange({ ...advanced, fee: { kind: "custom", duffsPerKb: good } })}
         />
-        Custom
+        {t("pay.coins.custom")}
       </label>
       {advanced.fee.kind === "custom" && (
         <span className="inline-field-column">
           <label className="inline-field" htmlFor={`${id}-rate`}>
-            Fee rate ({network.unitName}/kB)
+            {t("pay.coins.rate", { unit: network.unitName })}
           </label>
           <input
             id={`${id}-rate`}
@@ -152,6 +156,7 @@ function Fee({ advanced, onChange, network }: Props) {
 }
 
 function Change({ advanced, onChange }: Props) {
+  const t = useT();
   const id = useId();
   const custom = advanced.changeAddress !== null;
   return (
@@ -163,18 +168,18 @@ function Change({ advanced, onChange }: Props) {
           checked={custom}
           onChange={(e) => onChange({ ...advanced, changeAddress: e.target.checked ? "" : null })}
         />
-        Custom change address
+        {t("pay.coins.customChange")}
       </label>
       {custom && (
         <span className="inline-field-column">
           <label className="sr-only" htmlFor={id}>
-            Change address
+            {t("pay.coins.changeAddress")}
           </label>
           <input
             id={id}
             data-testid="change-address"
             value={advanced.changeAddress ?? ""}
-            placeholder="Dash address for the change"
+            placeholder={t("pay.coins.changePlaceholder")}
             spellCheck={false}
             onChange={(e) => onChange({ ...advanced, changeAddress: e.target.value })}
           />
@@ -194,6 +199,7 @@ interface Props {
 }
 
 export function CoinControl(props: Props) {
+  const t = useT();
   const { advanced, onChange } = props;
   const id = useId();
   // Open from the start when the form came with coins (Coin Selection, U-05 D19); after that the
@@ -201,10 +207,10 @@ export function CoinControl(props: Props) {
   const [startOpen] = useState(advanced.selected.length > 0);
   return (
     <details className="disclosure card-l1 coin-control" data-testid="pay-advanced" open={startOpen || undefined}>
-      <summary>Advanced: coins, fee and change</summary>
+      <summary>{t("pay.coins.summary")}</summary>
       <div className="coin-control-body">
         <fieldset className="radio-group" data-testid="coin-choice">
-          <legend>Pay with</legend>
+          <legend>{t("pay.coins.payWith")}</legend>
           {COIN_CHOICES.map((c) => (
             <label key={c.id} className="radio-row">
               <input
