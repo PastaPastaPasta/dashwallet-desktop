@@ -54,7 +54,8 @@ export function VisuallyHidden({ children }: { children: ReactNode }) {
 /**
  * `[sign][number]` then the Dash glyph (DASH/tDASH) or a space and the unit name. The view
  * never formats numbers; callers pass the formatted string. The unit name is always spoken
- * and copied, so testnet units stay visible to assistive technology (UX-SPEC §5.1).
+ * and copied, so testnet units stay visible to assistive technology (UX-SPEC §5.1). The amount
+ * is a left-to-right isolate, so a right-to-left window keeps its sign before the digits.
  */
 export function AmountText({
   text,
@@ -77,7 +78,7 @@ export function AmountText({
   testId?: string;
 }) {
   return (
-    <span className={`amount ${className ?? ""}`} title={title} data-testid={testId}>
+    <span className={`amount ${className ?? ""}`} dir="ltr" title={title} data-testid={testId}>
       <span className="amount-number">
         {text}
         {minor && <span className="amount-minor">{minor}</span>}
