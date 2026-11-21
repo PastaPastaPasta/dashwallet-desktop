@@ -2608,13 +2608,18 @@ impl NetworkSession {
     /// event names (`TransactionsSwept::winner_block`), so a row that
     /// outlives a fork names the replaced block and is no evidence
     /// ([`sweep_out_state`]); a truncation deletes the rows above it
-    /// ([`delete_beaten_above`]), which is cleanup only.
+    /// ([`delete_beaten_above`]), which is cleanup only. The hub outlives
+    /// the close, so the hook holds no app database (issue #190).
     pub(crate) fn attach_sweep_news(self: &Arc<Self>) {
         let Ok(live) = self.live() else {
             return;
         };
-        let appdb = Arc::clone(&live.appdb);
+        let appdb = Arc::downgrade(&live.appdb);
         self.hub.attach_sweep_news(Box::new(move |wallet_id, news| {
+            // Closed: there is nothing to write and nothing to try again.
+            let Some(appdb) = appdb.upgrade() else {
+                return Some(false);
+            };
             let scope = dw_appdb::local_scope(&wallet_id.to_string());
             let written = match news {
                 SweepNews::Truncated { height } => delete_beaten_above(&appdb, &scope, height),
