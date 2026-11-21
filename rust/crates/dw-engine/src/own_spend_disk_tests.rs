@@ -736,6 +736,66 @@ fn a_wallet_opened_later_keeps_a_locked_payments_claims_until_a_chainlock() {
     assert!(loaded.contains(&a), "and stays after its history loads");
 }
 
+/// Another device's spend of B that pays only someone else, in a block a
+/// wallet opened later sees before its claims are set: the history never
+/// holds it, only key-wallet's note of the spent coin. A plain block does
+/// not override the payment's lock, so it keeps claiming A; a ChainLocked
+/// one does, and the funding block scanned again credits A.
+#[test]
+fn a_block_seen_before_the_claims_beats_a_locked_payment_only_once_chainlocked() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let session = reopen(&engine, session);
+    let owner =
+        Address::from_script(&paid.output[1].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let winner = super::spend_of(b, vec![(elsewhere(), COIN - 1_000)]);
+    let winner = super::signed_by_wallet(&engine, &session, id, &owner, winner);
+    let winner_block = super::block_with(vec![winner.clone()]).block_hash();
+
+    let credited = |chainlocked: bool| {
+        engine.block_on(session.unload_wallet(id)).unwrap();
+        let pause = Arc::new(crate::coins::TestPause::default());
+        *session.hub.pause_claims.lock().unwrap() = Some(Arc::clone(&pause));
+        let load = {
+            let s = Arc::clone(&session);
+            session.rt.spawn(async move { s.load_wallet(id).await })
+        };
+        eventually("the load's pause", || {
+            pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        let winner = winner.clone();
+        super::deliver(&engine, &session, id, move |wm| {
+            Box::pin(async move {
+                use platform_wallet::key_wallet_manager::WalletInterface;
+                let block = super::block_with(vec![winner]);
+                let ids = BTreeSet::from([id.0]);
+                (wm.process_block_for_wallets(&block, block.block_hash(), TIP + 1, &ids)).await;
+            })
+        });
+        if chainlocked {
+            chain_lock(&engine, &session, id, TIP + 1, winner_block);
+        }
+        pause.release.notify_one();
+        engine.block_on(load).unwrap().unwrap();
+        mined(&engine, &session, id, TIP, vec![paid.clone()]);
+        held(&engine, &session, id).contains(&a)
+    };
+    assert!(!credited(false), "a plain block: A stays claimed");
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+    assert!(credited(true), "ChainLocked: A is credited");
+}
+
 /// Unloads wallet `id` and opens it again; `paid`'s block is processed for
 /// it once it is registered, before its history loads. The coins it holds
 /// then, and once the load is done.

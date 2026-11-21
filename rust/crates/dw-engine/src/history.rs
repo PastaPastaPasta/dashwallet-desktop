@@ -380,11 +380,9 @@ pub(crate) fn unmined_own_spends(
     sent: &crate::tx_actions::Sent,
     chainlock: Option<u32>,
 ) -> Vec<(OutPoint, Txid)> {
-    let locked =
-        |e: &TxEntry| e.instant_locked || matches!(e.context, TransactionContext::InstantSend(_));
-    let beats = |winner: &TxEntry, payment: &TxEntry| match locked(payment) {
+    let beats = |winner: &TxEntry, payment: &TxEntry| match instant_locked(payment) {
         true => chain_locked(&winner.context, chainlock),
-        false => winner.context.block_info().is_some() || locked(winner),
+        false => winner.context.block_info().is_some() || instant_locked(winner),
     };
     let beaten = |t: &Txid, e: &TxEntry| {
         let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
@@ -403,6 +401,22 @@ pub(crate) fn unmined_own_spends(
                 .filter(|o| coins.contains(o))
                 .map(move |o| (o, *t))
         })
+        .collect()
+}
+
+/// Whether the history knows an InstantSend lock of `e`: its flag or its
+/// context.
+fn instant_locked(e: &TxEntry) -> bool {
+    e.instant_locked || matches!(e.context, TransactionContext::InstantSend(_))
+}
+
+/// The payments of `claims` the history holds InstantSend-locked.
+pub(crate) fn locked_claimants(
+    txs: &HashMap<Txid, TxEntry>,
+    claims: &[(OutPoint, Txid)],
+) -> HashSet<Txid> {
+    (claims.iter().map(|c| c.1))
+        .filter(|t| txs.get(t).is_some_and(instant_locked))
         .collect()
 }
 

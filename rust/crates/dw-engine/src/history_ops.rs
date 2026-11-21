@@ -434,12 +434,14 @@ impl NetworkSession {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
             return;
         }
-        let (claims, settled) = self.hub.history.with_wallet(wallet, |h| {
+        let (claims, locked, settled) = self.hub.history.with_wallet(wallet, |h| {
             let mut claims = crate::history::unmined_own_spends(&h.txs, sent, chainlock);
             claims.retain(|(_, spender)| !h.session_held.contains(spender));
-            (claims, crate::history::settled_sends(&h.txs, sent))
+            let locked = crate::history::locked_claimants(&h.txs, &claims);
+            (claims, locked, crate::history::settled_sends(&h.txs, sent))
         });
-        self.apply_spend_claims(manager, wallet, &claims).await;
+        self.apply_spend_claims(manager, wallet, &claims, &locked)
+            .await;
         if !settled.is_empty() {
             let forgotten = self
                 .appdb_op(move |db| {
@@ -464,6 +466,7 @@ impl NetworkSession {
         manager: &Manager,
         wallet: WalletId,
         claims: &[(OutPoint, Txid)],
+        locked: &HashSet<Txid>,
     ) {
         if claims.is_empty() {
             return;
@@ -478,10 +481,16 @@ impl NetworkSession {
         };
         let core = &mut info.core_wallet;
         // A block this process saw spend a claimed coin mined the payment or
-        // beat it: either way it claims nothing.
+        // beat it: either way it claims nothing. Only a block the ChainLock
+        // covers beats an InstantSend-locked one.
         let observed = core.observed_spent_outpoints();
+        let chainlock = (core.metadata.last_applied_chain_lock.as_ref()).map(|c| c.block_height);
         let beaten: BTreeSet<Txid> = (claims.iter())
-            .filter(|(o, _)| observed.contains_key(o))
+            .filter(|(o, t)| {
+                observed
+                    .get(o)
+                    .is_some_and(|h| !locked.contains(t) || chainlock.is_some_and(|cl| cl >= *h))
+            })
             .map(|(_, t)| *t)
             .collect();
         let restore: Vec<(OutPoint, Option<Txid>)> = (claims.iter())
@@ -603,7 +612,9 @@ impl NetworkSession {
             history.set_instant_locked(t);
         }
         let claims = crate::history::unmined_own_spends(&history.txs, &sent, chainlock);
-        self.apply_spend_claims(manager, wallet, &claims).await;
+        let locked = crate::history::locked_claimants(&history.txs, &claims);
+        self.apply_spend_claims(manager, wallet, &claims, &locked)
+            .await;
     }
 
     /// Transaction and address labels of a wallet (dw-appdb).
