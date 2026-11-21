@@ -54,6 +54,9 @@ const ALLOWED: Record<string, string[]> = {};
 /** Attributes whose value a user reads or hears. Props of our components that carry copy too. */
 const TEXT_ATTRIBUTES = new Set(["title", "aria-label", "aria-description", "aria-placeholder", "aria-roledescription", "placeholder", "alt", "label", "text", "why", "confirm", "message", "submitLabel"]);
 
+/** Functions whose arguments a user reads: a toast's text. */
+const TEXT_CALLS = new Set(["showToast"]);
+
 const src = resolve(import.meta.dirname, "..");
 const LETTER = /\p{L}/u;
 
@@ -88,12 +91,19 @@ export function hardCoded(file: string, source: string): string[] {
     else if (e.type === "ConditionalExpression") {
       literals(e.consequent as Node);
       literals(e.alternate as Node);
-    } else if (e.type === "LogicalExpression") literals(e.right as Node);
+    } else if (e.type === "LogicalExpression" || (e.type === "BinaryExpression" && e.operator === "+")) {
+      literals(e.left as Node);
+      literals(e.right as Node);
+    }
   };
   const children = (nodes: Node[]) => {
     for (const c of nodes) if (c.type === "JSXExpressionContainer") literals(c.expression as Node);
   };
   new Visitor({
+    CallExpression: (n) => {
+      const callee = n.callee as unknown as Node;
+      if (callee.type === "Identifier" && TEXT_CALLS.has(callee.name as string)) for (const a of n.arguments as unknown as Node[]) literals(a);
+    },
     JSXText: (n) => add(n.start, n.value),
     JSXElement: (n) => children(n.children as unknown as Node[]),
     JSXFragment: (n) => children(n.children as unknown as Node[]),
@@ -129,10 +139,12 @@ describe("converted screens", () => {
         "    Some text {on && \"Yes\"} {`Count ${1}`} {t('ok')} {'…'}",
         '    <input placeholder="Type here" />',
         '    <Card why={"Because"} id="raw-id" />',
+        '    <p title={"Copy " + name}>{name ?? "Nobody"}{"Left" || name}</p>',
         "  </div>",
         ");",
+        'showToast("Copied"); other("not-copy");',
       ].join("\n"),
     );
-    expect(found).toEqual(["2: Hello", "2: Shown", "2: Hidden", "3: Some text", "3: Yes", "3: Count", "4: Type here", "5: Because"]);
+    expect(found).toEqual(["2: Hello", "2: Shown", "2: Hidden", "3: Some text", "3: Yes", "3: Count", "4: Type here", "5: Because", "6: Copy", "6: Nobody", "6: Left", "9: Copied"]);
   });
 });

@@ -334,7 +334,9 @@ export function TxTable({
                 <td className="tx-table-party" title={row.address ?? undefined}>
                   {rowParty(row)}
                 </td>
-                <td className="num">{ctx.display.full(shown.duffs, shown.signed)}</td>
+                <td className="num">
+                  <bdi dir="ltr">{ctx.display.full(shown.duffs, shown.signed)}</bdi>
+                </td>
                 {value && (
                   <td className={`num${ctx.fiat.stale ? " is-stale" : ""}`} title={ctx.fiat.staleTitle} data-testid={`table-${rowTestId(row)}-fiat`}>
                     {ctx.fiat.text(shown.duffs)}
