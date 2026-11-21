@@ -55,7 +55,6 @@ const BY_CODE: Partial<Record<ErrorCode, string>> = Object.defineProperty(messag
   get: () => t("lock.wrongPassphrase"),
 });
 
-
 export function failureText(e: unknown): string {
   if (!isAppError(e)) return t("onboarding.error.generic");
   if (e.code === "vault.throttled") return tryAgainIn(retryAfterSecs(e));

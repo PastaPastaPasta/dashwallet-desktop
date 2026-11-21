@@ -44,8 +44,7 @@ async function verifyPhrase(page: Page, theme: Theme, lang: string) {
   await page.getByTestId("onboarding-verifyPhrase").waitFor();
   const words = CREATED_12.split(" ");
   const labels = await page.getByTestId("verify-slot").locator(".verify-slot-label").allTextContents();
-  const latin = (l: string) => l.replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x660));
-  return labels.map((l) => words[Number(latin(l).match(/\d+/)![0]) - 1]);
+  return labels.map((l) => words[Number(l.match(/[0-9]+/)![0]) - 1]);
 }
 
 async function restore(page: Page, theme: Theme, lang: string) {
