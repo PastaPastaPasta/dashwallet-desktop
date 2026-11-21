@@ -705,10 +705,9 @@ fn the_facade_lease_handle_begins_ends_and_checks_its_grants() {
     ));
 }
 
-/// The signing window caps the grants a lease composes, not only each
-/// `authorize`: two credential-free grants, each within the sealed limit
-/// but from two windows, do not make one "Accept and pay" above it. A
-/// passphrase grant is not counted.
+/// Two credential-free grants issued under a higher limit do not make one
+/// "Accept and pay" above a lower one: lowering the limit ends the window
+/// and its grants. In a new window, a passphrase grant is not counted.
 #[test]
 fn a_lease_does_not_compose_window_grants_past_the_spend_limit() {
     const PART: u64 = 6_000_000;
@@ -728,10 +727,17 @@ fn a_lease_does_not_compose_window_grants_past_the_spend_limit() {
         }))
         .unwrap();
     assert_eq!(
-        f.lease(FlowKind::AcceptAndPay, &[platform.clone(), spend])
+        f.lease(FlowKind::AcceptAndPay, &[platform, spend])
             .unwrap_err(),
         LeaseError::Invalid
     );
+    f.engine
+        .block_on(
+            f.session
+                .vault_op(|v| v.unlock(PASS, UnlockScope::Full).map(drop)),
+        )
+        .unwrap();
+    let platform = f.platform_op(0, PART * 1_000);
     let typed = f.grant(
         GrantPurpose::Spend { max_duffs: PART },
         Credential::Passphrase(PASS),
@@ -782,7 +788,8 @@ fn a_lease_racing_window_grants_stays_within_the_limit() {
                 None,
                 Credential::Passphrase(PASS),
             )?;
-            v.set_quick_unlock_spend_limit(&change.id, LIMIT).map(drop)
+            v.set_quick_unlock_spend_limit(&change.id, LIMIT)?;
+            v.unlock(PASS, UnlockScope::Full).map(drop)
         }))
         .unwrap();
     let grants = [

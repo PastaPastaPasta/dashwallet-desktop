@@ -121,6 +121,27 @@ describe("fixture governance", () => {
     expect((await cmd.governanceMyProposals(W)).map((p) => p.name)).toEqual([d.name, "dash-docs-refresh"]);
   });
 
+  it("refuses a draft named as a proposal in progress, as the engine does (issue #148)", async () => {
+    const d = await draft();
+    const pay = async () => (await cmd.authorize({ kind: "spend", maxDuffs: PROPOSAL_FEE + FEE_NETWORK }, W, PASS)).id;
+    const created = await cmd.governanceCreateProposal(W, d, await pay());
+    await expect(cmd.governanceCreateProposal(W, { ...d, url: `${d.url}-again` }, await pay())).rejects.toMatchObject({
+      code: "governance.proposal_in_progress",
+      data: { kind: "proposalHash", hash: created.hash },
+    });
+    expect((await cmd.governanceMyProposals(W)).filter((p) => p.name === d.name)).toHaveLength(1);
+    await expect(cmd.governanceCreateProposal(W, { ...d, name: d.name.toUpperCase() }, await pay())).rejects.toMatchObject({
+      code: "governance.proposal_in_progress",
+      data: { kind: "proposalHash", hash: created.hash },
+    });
+    expect((await cmd.governanceMyProposals(W)).filter((p) => p.name.toLowerCase() === d.name)).toHaveLength(1);
+    const f = install("governance");
+    f.world.governance.creating = [d.name];
+    await expect(cmd.governanceCreateProposal(W, d, await pay())).rejects.toMatchObject({ code: "governance.proposal_in_progress", data: null });
+    expect((await cmd.governanceMyProposals(W)).some((p) => p.name === d.name)).toBe(false);
+    await expect(cmd.governanceCreateProposal(W, { ...d, name: "desktop-wallet-docs-2" }, await pay())).resolves.toMatchObject({ name: "desktop-wallet-docs-2" });
+  });
+
   it("submits per MG-06 D24 and refuses past submitting", async () => {
     install("governance-mine");
     const mine = await cmd.governanceMyProposals(W);

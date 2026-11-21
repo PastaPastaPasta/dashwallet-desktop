@@ -1,6 +1,6 @@
 # MG governance engine contract (`dw-engine` facade)
 
-Contract-Version: 8
+Contract-Version: 9
 
 Status: **draft**, 2026-10-16 (ROADMAP MG-02). Milestone 1.1, masternodes and governance (UX-SPEC §4.25, MG-00).
 Code: `rust/crates/dw-engine/src/governance/` (§0). Design: [`MG-02-governance.md`](../design/MG-02-governance.md);
@@ -105,7 +105,7 @@ height, its estimate and `cutoff_soon` (at most two days away, MG-06 D13).
 | Call | Kind | Semantics | Errors |
 |---|---|---|---|
 | `preview_proposal(wallet: WalletId, draft: ProposalDraft)` | async | The review step: `ProposalPreview` with the proposal's data JSON and hex, epochs, its hash as if created now (the created object is stamped with its own creation time, so its hash differs; MG-06 D3), the 1 DASH fee and the fee transaction's estimated network fee. Reserves, signs and saves nothing. `governance.not_synced{phase}` before a tip is known; `governance.invalid_proposal{fields}` with every failing field (MG-06 D11); `invalid_argument` for a malformed coin. **Implemented.** | `GovernanceError` |
-| `create_proposal(wallet: WalletId, draft: ProposalDraft, grant: String)` | async | Validates as `preview_proposal`, then pays the fee under a `proposal` lease begun from `grant` (a `Spend` grant of `wallet` whose cap covers 1 DASH plus the network fee; MG-06 D10) and ended when the call returns. The fee is one `OP_RETURN <hash>` output of 1 DASH and P2PKH change (D1). The proposal and its signed fee are saved before the fee is broadcast (D4, MG-00 D18). Returns `MyProposal`. A save that fails broadcasts nothing; a hand-off that definitely did not send deletes the proposal and returns the send error; one that may have sent keeps it (`fee_unsent`). `governance.submit_refused{in_flight}` while the same proposal (the same draft in the same second) is being created. The wallet submits it on its own once the fee has a confirmation (D6). The lease's errors are `GovernanceError::Platform`; the draft's are `GovernanceError::Engine` (`send` with `grant_exceeded`, `insufficient_funds` and the rest of m1's send failures). **Implemented.** | `GovernanceError` |
+| `create_proposal(wallet: WalletId, draft: ProposalDraft, grant: String)` | async | Validates as `preview_proposal`, then pays the fee under a `proposal` lease begun from `grant` (a `Spend` grant of `wallet` whose cap covers 1 DASH plus the network fee; MG-06 D10) and ended when the call returns. The fee is one `OP_RETURN <hash>` output of 1 DASH and P2PKH change (D1). The proposal and its signed fee are saved before the fee is broadcast (D4, MG-00 D18). Returns `MyProposal`. A save that fails broadcasts nothing; a hand-off that definitely did not send deletes the proposal and returns the send error; one that may have sent keeps it (`fee_unsent`). `governance.proposal_in_progress{hash}` before anything is leased, reserved or saved, for a draft whose name (as the object's data stores it, without regard to ASCII case) is that of one of the wallet's own proposals in progress (any state but `fee_failed` and `expired`, so a `public` one until it expires; MG-06 D26), and with no hash while another call for that wallet and name has not yet saved its row or failed. `governance.submit_refused{in_flight}` for the same proposal (the same draft in the same second) being created at once, which the name's mark now refuses first. The wallet submits it on its own once the fee has a confirmation (D6). The lease's errors are `GovernanceError::Platform`; the draft's are `GovernanceError::Engine` (`send` with `grant_exceeded`, `insufficient_funds` and the rest of m1's send failures). **Implemented.** | `GovernanceError` |
 | `my_proposals(wallet: WalletId)` | sync | The wallet's own proposals, newest first, each a `MyProposal` with its derived state and `last_error`, the failure of its fee's last hand-off if it failed, reported while the wallet has not seen the fee (MG-06 D10). Works with sync off. **Implemented.** | `GovernanceError` |
 | `submit_proposal(wallet: WalletId, hash: String)` | async | The [Submit] action: a `fee_unsent` or `fee_paid{0}` proposal's saved fee is broadcast again (no grant, MG-06 D10), its coins claimed first and the hand-off recorded before it; a `no_peer_accepted` one is looked for by a new sync run at once (D7). Returns the `MyProposal` after. `invalid_argument` for a malformed hash; `governance.proposal_not_found{hash}` for a hash that is not the wallet's; `governance.submit_refused{reason}` for a `public`, `expired` or `fee_failed` proposal, and `in_flight` while a create or another [Submit] hands its fee off; `send.outpoint_unavailable` for a fee coin another payment or an asset lock holds, that was locked after the fee was built (coin control, dust, a masternode's, MG-04 D47), or that the wallet reads spent by another transaction; a resend's broadcast failure as `send.broadcast_unknown` (kept as `last_error`); `governance.sync_disabled` while sync is off (except for a resend). **Implemented.** | `GovernanceError` |
 
@@ -129,7 +129,7 @@ Generated by `mg_governance_contract.rs` from the facade's source files; `DW_BLE
 `Contract-Version` is raised.
 
 <!-- BEGIN GENERATED: governance-surface -->
-<!-- surface-sha256: 7ff58ba738cb410bea0a752897d06f6d88710cebc24b73d25386fda3589799bc version: 8 -->
+<!-- surface-sha256: 3d085b62cfe2259e59c67ccc4934614b0d84973a5c9b2a07901d2b645283b6b8 version: 9 -->
 
 ```rust
 // src/governance/contested.rs
@@ -150,6 +150,7 @@ pub enum GovernanceError {
     ListUnavailable,
     InvalidProposal { fields: Vec<ProposalField> },
     SubmitRefused { reason: SubmitRefusal },
+    ProposalInProgress { hash: Option<String> },
     ContestNotFound { label: String },
     ContestClosed { label: String },
     NotAContender { identity: String },
@@ -553,7 +554,7 @@ impl Governance {
 
 | Error enum | Codes |
 |---|---|
-| `GovernanceError` | `governance.sync_disabled`, `governance.not_synced`, `governance.proposal_not_found`, `governance.vote_rejected`, `governance.no_peers`, `governance.list_unavailable`, `governance.invalid_proposal`, `governance.submit_refused`, `governance.contest_not_found`, `governance.contest_closed`, `governance.not_a_contender`, `governance.not_implemented` |
+| `GovernanceError` | `governance.sync_disabled`, `governance.not_synced`, `governance.proposal_not_found`, `governance.vote_rejected`, `governance.no_peers`, `governance.list_unavailable`, `governance.invalid_proposal`, `governance.submit_refused`, `governance.proposal_in_progress`, `governance.contest_not_found`, `governance.contest_closed`, `governance.not_a_contender`, `governance.not_implemented` |
 
 - `governance.sync_disabled`: a call that needs the sync task while it is off (`resync`, `relay_vote`).
 - `governance.not_synced{phase}`: no run reached `synced` yet (or no tip, for the clock); `phase` is the current one.
@@ -572,6 +573,9 @@ impl Governance {
   (MG-06 D11).
 - `governance.submit_refused{reason}`: `submit_proposal` on a proposal past submitting; `reason` is `public`,
   `expired` or `fee_failed`, or `in_flight` while its fee is being handed off (MG-06 D10).
+- `governance.proposal_in_progress{hash}`: `create_proposal` of a draft whose name is that of one of the wallet's own
+  proposals in progress; `hash` is that proposal's, absent while the other call for the name has saved nothing yet
+  (MG-06 D26).
 - `governance.contest_not_found{label}`: no DPNS poll for the label: no contender and no stored result (MG-07).
 - `governance.contest_closed{label}`: the poll resolved (a winner, locked, or no winner), or its voting ended (MG-07
   D8).

@@ -704,6 +704,19 @@
       }
     },
     {
+      "code": "governance.proposal_in_progress",
+      "message": "a proposal of this name is in progress (5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d)",
+      "data": {
+        "kind": "proposalHash",
+        "hash": "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d"
+      }
+    },
+    {
+      "code": "governance.proposal_in_progress",
+      "message": "a proposal of this name is in progress (its create call is still out)",
+      "data": null
+    },
+    {
       "code": "governance.contest_not_found",
       "message": "no contest for a11ce",
       "data": {

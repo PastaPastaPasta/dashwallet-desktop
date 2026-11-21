@@ -25,6 +25,10 @@ codes! {
         /// `submit_proposal` on a proposal past submitting: `data` gives the
         /// reason (`public`, `expired`, `fee_failed`, `in_flight`).
         SubmitRefused = "governance.submit_refused",
+        /// `create_proposal` of a draft whose name is that of one of the
+        /// wallet's proposals in progress: `data` gives its hash, none while
+        /// another call for the name has saved nothing yet (MG-06 D26).
+        ProposalInProgress = "governance.proposal_in_progress",
         /// No full node to talk to.
         NoPeers = "governance.no_peers",
         /// The call needs the masternode list and SPV has none yet.
@@ -75,6 +79,10 @@ impl From<GovernanceError> for AppError {
                 Some(ErrorData::Reason {
                     reason: reason.as_str().into(),
                 }),
+            ),
+            G::ProposalInProgress { hash } => (
+                GovernanceCode::ProposalInProgress,
+                hash.map(|hash| ErrorData::ProposalHash { hash }),
             ),
             G::NoPeers => (GovernanceCode::NoPeers, None),
             G::ListUnavailable => (GovernanceCode::ListUnavailable, None),
@@ -127,6 +135,7 @@ mod tests {
             GovernanceError::SubmitRefused {
                 reason: SubmitRefusal::Public,
             },
+            GovernanceError::ProposalInProgress { hash: None },
             GovernanceError::ContestNotFound { label: s() },
             GovernanceError::ContestClosed { label: s() },
             GovernanceError::NotAContender { identity: s() },
@@ -192,6 +201,16 @@ mod tests {
                 reason: SubmitRefusal::FeeFailed
             }),
             serde_json::json!({ "kind": "reason", "reason": "fee_failed" })
+        );
+        assert_eq!(
+            data(GovernanceError::ProposalInProgress {
+                hash: Some("ab".repeat(32))
+            }),
+            serde_json::json!({ "kind": "proposalHash", "hash": "ab".repeat(32) })
+        );
+        assert_eq!(
+            data(GovernanceError::ProposalInProgress { hash: None }),
+            serde_json::Value::Null
         );
         assert_eq!(
             data(GovernanceError::NotImplemented {
