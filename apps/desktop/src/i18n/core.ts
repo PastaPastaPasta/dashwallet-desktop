@@ -88,7 +88,7 @@ export function tokenize(message: string): Token[] {
 /** How placeholders are filled: numbers formatted for `locale`; with `isolate` (a right-to-left
  * language) each value is a bidi isolate (U+2068 … U+2069), so a name or an address keeps its own
  * direction inside the sentence. In a left-to-right language only a value with right-to-left
- * letters is isolated, so English text stays as it was. */
+ * letters or a bidi control is isolated, so English text stays as it was. */
 export interface Fill {
   locale: string | undefined;
   isolate: boolean;
@@ -111,7 +111,19 @@ export function fill(message: string, values: Values, how: Fill): string {
 
 export function show(value: unknown, { locale, isolate }: Fill): string {
   const text = typeof value === "number" ? new Intl.NumberFormat(locale).format(value) : String(value ?? "");
-  return isolate || hasRtl(text) ? `\u2068${text}\u2069` : text;
+  return isolate || hasRtl(text) ? `\u2068${balanced(text)}\u2069` : text;
+}
+
+/** `text` with its isolates paired, so a stray U+2069 cannot close the isolate around it and an
+ * unclosed U+2066–U+2068 cannot carry on past it. */
+function balanced(text: string): string {
+  let open = 0;
+  let unopened = 0;
+  for (const c of text) {
+    if (c >= "\u2066" && c <= "\u2068") open++;
+    else if (c === "\u2069") open > 0 ? open-- : unopened++;
+  }
+  return "\u2068".repeat(unopened) + text + "\u2069".repeat(open);
 }
 
 /** Wraps a tag's children with the renderer given for it: an own property of `values` that is a

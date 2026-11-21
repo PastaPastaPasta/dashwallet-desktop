@@ -216,6 +216,9 @@ describe("bidi isolation", () => {
     expect(t("network.confirmTitle", { network: "@שרה" })).toBe("Switch to \u2068@שרה\u2069?");
     // An unterminated override in a name cannot reorder the rest of the sentence.
     expect(t("network.confirmTitle", { network: "@x\u202Dy" })).toBe("Switch to \u2068@x\u202Dy\u2069?");
+    // A stray isolate end cannot close the isolate around the value, nor an unclosed start outlive it.
+    expect(t("network.confirmTitle", { network: "x\u2069\u202Ey" })).toBe("Switch to \u2068\u2068x\u2069\u202Ey\u2069?");
+    expect(t("network.confirmTitle", { network: "x\u2067y" })).toBe("Switch to \u2068x\u2067y\u2069\u2069?");
     // Sogdian, past the first supplementary right-to-left block.
     expect(t("network.confirmTitle", { network: "\u{10F30}" })).toBe("Switch to \u2068\u{10F30}\u2069?");
     expect(t("network.confirmTitle", { network: "a\uFEFFb" })).toBe("Switch to a\uFEFFb?");
@@ -227,6 +230,7 @@ describe("bidi isolation", () => {
     expect(text(t.rich("network.confirmTitle", { network: name }))).toBe("\u202eSwitch to \u202c[bdi:[b:@سارة]]\u202e?\u202c");
     choose(null);
     expect(text(t.rich("network.confirmTitle", { network: name }))).toBe("Switch to [bdi:[b:@سارة]]?");
+    expect(text(t.rich("network.confirmTitle", { network: createElement("b", null, "@alice") }))).toBe("Switch to [bdi:[b:@alice]]?");
   });
 
   it("draws an English fallback left to right as a whole in a right-to-left language", () => {
