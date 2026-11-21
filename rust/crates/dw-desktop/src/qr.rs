@@ -17,9 +17,10 @@ pub const MAX_PIXELS: u64 = 40_000_000;
 
 /// Every QR code in `image`, in reading order (top to bottom, then left to
 /// right by each code's top-left corner). Codes that are found but do not
-/// decode are skipped; `NoQrCode` when none decodes. An image rqrr panics
-/// on is `ImageUnreadable`. Keep it off `dw-engine` threads, whose panic
-/// hook poisons the engine even for a panic caught here.
+/// decode are skipped; `NoQrCode` when none decodes. An image that makes
+/// the image decoder or rqrr panic is `ImageUnreadable`. Keep it off
+/// `dw-engine` threads, whose panic hook poisons the engine even for a
+/// panic caught here.
 pub fn decode(image: &[u8]) -> Result<Vec<String>, DesktopError> {
     if image.len() > MAX_IMAGE_BYTES {
         return Err(DesktopError::ImageUnreadable(format!(
