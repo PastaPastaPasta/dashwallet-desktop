@@ -165,6 +165,9 @@ pub(crate) struct PlatformRuntime {
     /// Told when the next shielded pass waits for its locks.
     #[cfg(test)]
     pub(crate) spends_queued: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Told when the next shielded pass, its locks taken, is admitted.
+    #[cfg(test)]
+    pub(crate) admitting: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     /// How many shielded passes reached the library's pass.
     #[cfg(test)]
     pub(crate) passes_run: std::sync::atomic::AtomicUsize,
@@ -511,6 +514,8 @@ impl PlatformRuntime {
             probe_block: Mutex::new(None),
             #[cfg(test)]
             spends_queued: Mutex::new(None),
+            #[cfg(test)]
+            admitting: Mutex::new(None),
             #[cfg(test)]
             passes_run: Default::default(),
             #[cfg(test)]

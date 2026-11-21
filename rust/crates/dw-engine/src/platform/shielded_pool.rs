@@ -3460,7 +3460,7 @@ pub(crate) async fn periodic_pass(
 }
 
 /// [`guarded_pass`]'s pass, held back unless it still `runs` once its locks
-/// are taken; a periodic one's proved note `count`, with the time it was
+/// are taken and again as the library's pass starts; a periodic one's proved note `count`, with the time it was
 /// proved at, may skip it.
 async fn pass(
     session: &Arc<NetworkSession>,
@@ -3478,6 +3478,10 @@ async fn pass(
     let _pass = session.platform.shielded_passes.read().await;
     if !runs(session) {
         return false;
+    }
+    #[cfg(test)]
+    if let Some(admitting) = session.platform.admitting.lock().unwrap().take() {
+        let _ = admitting.send(());
     }
     let coordinator = match admit_pass(session, manager).await {
         Ok(coordinator) => coordinator,
@@ -3507,6 +3511,11 @@ async fn pass(
         );
         (session.platform.shielded_checked_at).fetch_max(proved_at, Ordering::AcqRel);
         return true;
+    }
+    // Again with no await until `sync_now` takes its slot: a stop moves the
+    // epoch before its quiesce, which waits for a pass in the slot.
+    if !runs(session) {
+        return false;
     }
     #[cfg(test)]
     session.platform.passes_run.fetch_add(1, Ordering::SeqCst);

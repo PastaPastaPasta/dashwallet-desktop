@@ -2193,4 +2193,34 @@ mod idle_tests {
         assert!(!engine.block_on(pass).unwrap(), "no pass after the stop");
         assert_eq!(session.platform.passes_run.load(Ordering::SeqCst), before);
     }
+
+    /// A pass admitted while its loops ran, but which waited on the shielded
+    /// store behind another pass's scan until after an SPV stop and its
+    /// quiesce, starts nothing.
+    #[test]
+    fn a_pass_queued_behind_a_scan_starts_nothing_after_a_stop() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, _) = first_launch(&engine);
+        let epoch = loops_started(&session);
+        *session.platform.notes_count.lock().unwrap() = Some(None);
+        let manager = session.manager().unwrap();
+        let coordinator = engine.block_on(manager.shielded_coordinator()).unwrap();
+        let (admitting_tx, admitting) = tokio::sync::oneshot::channel();
+        *session.platform.admitting.lock().unwrap() = Some(admitting_tx);
+        let scan = engine.block_on(coordinator.store().write());
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let runs = move |s: &NetworkSession| s.platform.loops_run(epoch);
+        let pass = pool::periodic_pass(Arc::clone(&session), Arc::clone(&manager), runs);
+        let pass = session.rt.spawn(pass);
+        engine
+            .block_on(async { tokio::time::timeout(Duration::from_secs(60), admitting).await })
+            .expect("the pass is admitted")
+            .unwrap();
+        engine.block_on(session.platform.deactivate(false));
+        assert!(engine.block_on(manager.shielded_sync().quiesce()));
+        drop(scan);
+        assert!(!engine.block_on(pass).unwrap(), "no pass after the stop");
+        assert_eq!(session.platform.passes_run.load(Ordering::SeqCst), before);
+    }
 }
