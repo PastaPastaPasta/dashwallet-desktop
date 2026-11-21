@@ -268,7 +268,6 @@ impl NetworkSession {
     /// cleared here. In-memory read.
     pub fn rescan_progress(&self) -> Result<Option<RescanProgress>, EngineError> {
         let _op = self.try_enter()?;
-        let target = self.hub.tracker().tip_height();
         let mut guard = self.hub.rescan();
         if guard.as_ref().is_some_and(RescanState::finished) {
             *guard = None;
@@ -276,7 +275,12 @@ impl NetworkSession {
         Ok(guard.as_ref().map(|r| RescanProgress {
             from_height: r.from_height,
             current_height: r.current_height(),
-            target_height: target,
+            // Done once its wallets are back at their checkpoints, not at
+            // the network's tip.
+            target_height: (r.wallets.values())
+                .filter(|w| w.reached.unwrap_or(0) < w.resume_height)
+                .map(|w| w.resume_height)
+                .max(),
             started_at: r.started_at,
         }))
     }
@@ -521,7 +525,8 @@ impl NetworkSession {
 
     /// Resumes `wallet`'s stored replay as it is loaded, before
     /// SPV scans it: the checkpoint goes back to the record's start and
-    /// spends wait for the record's target. A cancelled replay is not
+    /// spends wait for the record's target; a record from below the birth
+    /// height lowers the birth to its start first. A cancelled replay is not
     /// resumed: its hold comes back, no lower than a rescan from the birth
     /// height rewinds to. A record that cannot be read, or a failed resume,
     /// holds spends until such a rescan; the record stays. The record is
@@ -602,6 +607,15 @@ impl NetworkSession {
             hold(true).await;
             return;
         }
+        // A replay from below the birth is a rescan from there whose lower
+        // birth was not stored: dash-spv would never certify the wallet.
+        if let Err(e) =
+            (self.lower_birth_height(manager, wallet, record.reached.saturating_add(1))).await
+        {
+            tracing::warn!(error = %e, wallet = %wallet, "replay not resumed: its start below the birth height could not be stored; spends wait for a rescan");
+            hold(false).await;
+            return;
+        }
         let resumed = (self.rewind(
             manager,
             wallet,
@@ -615,24 +629,7 @@ impl NetworkSession {
         match resumed {
             Ok(Some(target)) => {
                 self.pause_publish().await;
-                self.hub.publish_rescan(|rescan| {
-                    if rescan.as_ref().is_some_and(RescanState::finished) {
-                        *rescan = None;
-                    }
-                    let state = rescan.get_or_insert_with(|| RescanState {
-                        from_height: record.reached.saturating_add(1),
-                        started_at: unix_now(),
-                        wallets: BTreeMap::new(),
-                    });
-                    state.from_height = state.from_height.min(record.reached.saturating_add(1));
-                    state.wallets.insert(
-                        wallet,
-                        WalletRescan {
-                            resume_height: target,
-                            reached: None,
-                        },
-                    );
-                });
+                self.publish_replay(wallet, record.reached, target);
             }
             Ok(None) => {
                 tracing::warn!(wallet = %wallet, "replay not resumed: the wallet is not loaded");
@@ -643,6 +640,30 @@ impl NetworkSession {
                 hold(false).await;
             }
         }
+    }
+
+    /// Shows `wallet`'s replay from above `reached` to `target` as a
+    /// rescan: spends wait for it, so it reports progress and can be
+    /// cancelled.
+    pub(crate) fn publish_replay(&self, wallet: WalletId, reached: u32, target: u32) {
+        self.hub.publish_rescan(|rescan| {
+            if rescan.as_ref().is_some_and(RescanState::finished) {
+                *rescan = None;
+            }
+            let state = rescan.get_or_insert_with(|| RescanState {
+                from_height: reached.saturating_add(1),
+                started_at: unix_now(),
+                wallets: BTreeMap::new(),
+            });
+            state.from_height = state.from_height.min(reached.saturating_add(1));
+            state.wallets.insert(
+                wallet,
+                WalletRescan {
+                    resume_height: target,
+                    reached: None,
+                },
+            );
+        });
     }
 
     /// Tests: holds a rescan's publication while a pause is set.
@@ -757,7 +778,7 @@ impl NetworkSession {
         .await
     }
 
-    /// Sets the wallet's birth height in memory and in wallet.sqlite.
+    /// Sets the wallet's birth height in wallet.sqlite, then in memory.
     /// Returns its filter checkpoint.
     async fn store_birth_height(
         &self,
@@ -765,15 +786,16 @@ impl NetworkSession {
         height: u32,
     ) -> Result<u32, EngineError> {
         let live = self.live()?;
-        let synced = {
-            let wm = live.manager.wallet_manager_arc();
-            let mut wm = wm.write().await;
-            let info = wm
-                .get_wallet_info_mut(&wallet_id.0)
-                .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
-            info.core_wallet.metadata.birth_height = height;
-            info.core_wallet.synced_height()
-        };
+        let manager = &live.manager;
+        if manager.get_wallet(&wallet_id.0).await.is_none() {
+            return Err(EngineError::WalletNotFound(wallet_id.to_string()));
+        }
+        // Stored first: a failed write leaves memory as it was, so a retry
+        // cannot rewind against a birth that was never stored.
+        #[cfg(test)]
+        if crate::keys::fails_for(&FAIL_BIRTH_STORE, wallet_id) {
+            return Err(EngineError::Storage("test: birth height not stored".into()));
+        }
         let persister = Arc::clone(&live.persister);
         let network = self.network.core_network();
         tokio::task::spawn_blocking(move || {
@@ -793,7 +815,36 @@ impl NetworkSession {
         })
         .await?
         .map_err(|e| EngineError::Storage(format!("birth height: {e}")))?;
-        Ok(synced)
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        let info = wm
+            .get_wallet_info_mut(&wallet_id.0)
+            .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
+        info.core_wallet.metadata.birth_height = height;
+        Ok(info.core_wallet.synced_height())
+    }
+
+    /// Lowers open wallet `id`'s birth height to `height` (stored and in
+    /// memory) when it is above it: dash-spv scans no block below the
+    /// earliest birth, and a wallet whose checkpoint sits below its own
+    /// birth is never certified again, so a rewind below the birth goes
+    /// after this.
+    pub(crate) async fn lower_birth_height(
+        &self,
+        manager: &crate::session::Manager,
+        id: WalletId,
+        height: u32,
+    ) -> Result<(), EngineError> {
+        let birth = {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            (wm.get_wallet_info(&id.0)).map(|info| info.core_wallet.birth_height())
+        };
+        if birth.is_some_and(|birth| height < birth) {
+            self.store_birth_height(id, height).await?;
+            self.refresh_wallet_state(manager, id).await;
+        }
+        Ok(())
     }
 
     /// Rewinds the filter checkpoint of `wallets` to just below `start(id)`
@@ -839,11 +890,12 @@ impl NetworkSession {
         }
         for id in wallets {
             let from = start(&id);
-            let birth = self.hub.wallet_state(&id).map_or(0, |w| w.birth_height);
-            if from < birth {
-                self.store_birth_height(id, from).await?;
-                self.refresh_wallet_state(&manager, id).await;
-            }
+            // Its replay is stored before a lower birth is: a quit in
+            // between leaves the rescan owed, not a birth below a checkpoint
+            // that is trusted.
+            self.record_rewind(&manager, id, from.saturating_sub(1))
+                .await?;
+            self.lower_birth_height(&manager, id, from).await?;
             let target = (self.rewind_recorded(&manager, id, from.saturating_sub(1))).await?;
             match (target, state.wallets.get_mut(&id)) {
                 (Some(target), Some(w)) => w.resume_height = w.resume_height.min(target),
@@ -908,8 +960,9 @@ impl NetworkSession {
 
     /// IOS-113 "edit birth height": stores `height` as the wallet's birth
     /// height (wallet.sqlite and memory). Lower than the filter checkpoint:
-    /// a rescan of this wallet from `height` is scheduled. Above the known
-    /// tip: `HeightOutOfRange`.
+    /// a rescan of this wallet from `height` is stored first, then
+    /// scheduled; `RescanInProgress` while one runs. Above the known tip:
+    /// `HeightOutOfRange`.
     pub async fn set_birth_height(
         self: &Arc<Self>,
         wallet_id: WalletId,
@@ -924,9 +977,25 @@ impl NetworkSession {
             if this.known_tip().is_some_and(|tip| height > tip) {
                 return Err(EngineError::HeightOutOfRange(height));
             }
+            // A lower birth than the checkpoint owes a rescan from it: no
+            // second rescan is started, and the replay is stored before the
+            // birth, so a quit in between leaves it owed.
+            let checkpoint = height.saturating_sub(1);
+            let synced = {
+                let wm = live.manager.wallet_manager_arc();
+                let wm = wm.read().await;
+                (wm.get_wallet_info(&wallet_id.0)).map_or(0, |i| i.core_wallet.synced_height())
+            };
+            if checkpoint < synced {
+                if this.rescan_running() {
+                    return Err(EngineError::RescanInProgress);
+                }
+                this.record_rewind(&live.manager, wallet_id, checkpoint)
+                    .await?;
+            }
             let synced = this.store_birth_height(wallet_id, height).await?;
             this.refresh_wallet_state(&live.manager, wallet_id).await;
-            if height.saturating_sub(1) < synced {
+            if checkpoint < synced {
                 this.start_rescan(vec![wallet_id], height, |_| height)
                     .await?;
             }
@@ -966,6 +1035,11 @@ pub(crate) fn better_chainlock(
         _ => Some(new),
     }
 }
+
+/// Tests: wallets whose birth height cannot be stored.
+#[cfg(test)]
+pub(crate) static FAIL_BIRTH_STORE: std::sync::Mutex<Vec<[u8; 32]>> =
+    std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
 mod tests {
