@@ -513,6 +513,17 @@ impl Fake {
         let (session, wallet) = (self.session(), self.wallet);
         let entry = AssetLockEntry::from(&lock);
         let outpoint = lock.out_point;
+        let core = (lock.status == AssetLockStatus::InstantSendLocked).then(|| {
+            let mut core = platform_wallet::changeset::CoreChangeSet::default();
+            core.instant_locks_for_non_final_records.insert(
+                outpoint.txid,
+                dashcore::InstantLock {
+                    txid: outpoint.txid,
+                    ..Default::default()
+                },
+            );
+            core
+        });
         let w = session.wallet(&wallet).await.unwrap();
         w.state_mut()
             .await
@@ -523,6 +534,7 @@ impl Fake {
                 asset_locks: [(outpoint, entry)].into(),
                 removed: Default::default(),
             }),
+            core,
             ..Default::default()
         };
         (session.live().unwrap().store)
