@@ -43,7 +43,7 @@
 //!   pays the fee; the self-spend links the denominations it spends (one per
 //!   lock at most) and turns them into one ordinary coin.
 //! - A step with locks of both kinds, which only an older build leaves:
-//!   the live inputs of its locks, no user-locked one and no other coin.
+//!   the live inputs of its locks.
 //!   The one transaction links the mixed coins to the unmixed ones;
 //!   refusing would hold them for good. A repair with only denominations
 //!   left is refused.
@@ -94,7 +94,7 @@ use super::ArtifactId;
 use super::mode_b::StuckFundingRefusal;
 use crate::coinjoin::CoinJoinFailure;
 use crate::platform::flows::is_funding_step;
-use crate::send::{BroadcastOutcome, CoinSource, Recipient, SendFailure, TxDraft};
+use crate::send::{BroadcastOutcome, CoinSource, Recipient, TxDraft};
 use crate::{EngineError, NetworkSession, WalletId};
 
 impl From<StuckFundingRefusal> for EngineError {
@@ -187,17 +187,21 @@ impl NetworkSession {
                     .filter(|c| c.coinjoin_account && recorded.contains(&c.utxo.outpoint))
                     .collect()
             } else {
+                let mut coins =
+                    funding_repair_coins(spendable.filter(|c| c.send_account).collect(), &rows)?;
                 // A coin that stopped main's all-coin draft (locked, or
-                // reserved other than as a lock's input) stops this one.
-                let stops = |c: &&crate::coins::WalletCoin| {
-                    c.send_account
-                        && c.utxo.is_spendable(snapshot.height)
-                        && (c.user_locked || (c.reserved && !c.lock_input))
-                };
-                if let Some(c) = snapshot.coins.iter().find(stops) {
-                    return Err(SendFailure::OutpointUnavailable(c.utxo.outpoint).into());
-                }
-                funding_repair_coins(spendable.filter(|c| c.send_account).collect(), &rows)?
+                // reserved other than as a lock's input) is in this one,
+                // so its prepare refuses it as main's did.
+                let stops: Vec<_> = (snapshot.coins.iter())
+                    .filter(|c| {
+                        c.send_account
+                            && c.utxo.is_spendable(snapshot.height)
+                            && (c.user_locked || (c.reserved && !c.lock_input))
+                            && !coins.iter().any(|p| p.utxo.outpoint == c.utxo.outpoint)
+                    })
+                    .collect();
+                coins.extend(stops);
+                coins
             };
             if coins.is_empty() {
                 return Err(EngineError::InvalidArgument(

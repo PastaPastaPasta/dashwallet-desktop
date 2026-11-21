@@ -3974,9 +3974,9 @@ fn keys_attached_with_a_lookahead_apply_a_stored_range_start_up_left() {
         crate::compat::ISSUED_SETTING,
         "1001,2",
     );
-    let session = failing(&crate::keys::FAIL_RESTORE_READ, id, || {
-        reopen(&engine, session)
-    });
+    let data = session.data_dir().to_path_buf();
+    (crate::keys::FAIL_RANGES_IN.lock().unwrap()).push(data);
+    let session = reopen(&engine, session);
 
     let attached = engine.block_on(session.import_wallet(
         zeroize::Zeroizing::new(PHRASE.to_vec()),

@@ -141,6 +141,11 @@ pub(crate) static FAIL_LOOKAHEAD_WRITE: std::sync::Mutex<Vec<[u8; 32]>> =
 pub(crate) static FAIL_COINJOIN_USE_READ: std::sync::Mutex<Vec<[u8; 32]>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Tests: data dirs whose next stored-range apply fails.
+#[cfg(test)]
+pub(crate) static FAIL_RANGES_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// Tests: wallets whose stored range and lookahead cannot be read.
 #[cfg(test)]
 pub(crate) static FAIL_RESTORE_READ: std::sync::Mutex<Vec<[u8; 32]>> =
@@ -1421,6 +1426,13 @@ impl NetworkSession {
         manager: &crate::session::Manager,
         id: WalletId,
     ) -> (bool, Result<(), EngineError>) {
+        #[cfg(test)]
+        if take_test_failure(&FAIL_RANGES_IN, self.data_dir()) {
+            return (
+                true,
+                Err(EngineError::Internal("test: ranges not applied".into())),
+            );
+        }
         let covered = match self.stored_issued(id).await {
             Ok(Some(issued)) => self.cover_issued(manager, id, issued).await,
             Ok(None) => Ok(()),

@@ -4448,13 +4448,11 @@ fn repair_refuses_while_an_unrelated_coin_is_locked_as_main_did() {
         .block_on(f.session.lock_outpoints(f.wallet, vec![locked]))
         .unwrap();
 
-    match f
-        .engine
+    let draft = (f.engine)
         .block_on(f.session.stuck_funding_draft(f.wallet, STEP))
-    {
-        Err(EngineError::Send(crate::send::SendFailure::OutpointUnavailable(o))) => {
-            assert_eq!(o, locked)
-        }
-        other => panic!("{other:?}"),
-    }
+        .unwrap();
+    assert_eq!(
+        send_failure(f.engine.block_on(draft.estimate())),
+        crate::send::SendFailure::OutpointUnavailable(locked)
+    );
 }
