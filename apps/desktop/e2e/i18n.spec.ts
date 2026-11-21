@@ -108,6 +108,45 @@ test("the untranslated-text check sees English that bypasses the catalog", async
   expect(await untranslated(page, [...SHELL, "page-settings"], "rtl")).toContain("Home");
 });
 
+for (const [saved, shown, expected] of [
+  ["EN", "English", "en"],
+  ["pt-BR", "pt-BR (not available, using System default)", "pt-BR"],
+] as const) {
+  test(`a saved language ${saved} shows as its own row and choosing System default clears it`, async ({ page }) => {
+    await page.goto(fixtureUrl("dashpay-registered", "light", `&savedLang=${saved}`));
+    await page.getByTestId("toolbar").waitFor();
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    const picker = page.getByTestId("settings-language");
+    await expect(picker).toHaveValue(expected);
+    await expect(picker.locator("option:checked")).toHaveText(shown);
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+    await picker.selectOption("");
+    await expect(picker).toHaveValue("");
+    expect(await page.evaluate(() => window.__dwFixture!.world.settings.ui.language)).toBe(null);
+    await expect(picker.locator("option", { hasText: "not available" })).toHaveCount(0);
+  });
+}
+
+test("a debit keeps its sign before the digits in a right-to-left window", async ({ page }) => {
+  await page.goto(fixtureUrl("funded", "light", "&lang=ar-XB"));
+  await page.getByTestId("toolbar").waitFor();
+  await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "activity" }));
+  const debit = page.locator(".tx-row-amount .amount-number", { hasText: /^-/ }).first();
+  await expect(debit).toBeVisible();
+  // The drawn order, not the DOM's: the sign's box is left of the first digit's.
+  const [sign, digit] = await debit.evaluate((el) => {
+    const node = el.firstChild!;
+    const box = (i: number) => {
+      const r = document.createRange();
+      r.setStart(node, i);
+      r.setEnd(node, i + 1);
+      return r.getBoundingClientRect().left;
+    };
+    return [box(0), box(1)];
+  });
+  expect(sign).toBeLessThan(digit);
+});
+
 test("a username keeps its direction in a right-to-left window", async ({ page }) => {
   await openSettings(page, "light", "ar-XB");
   const chip = page.getByTestId("toolbar-chip").locator("bdi");

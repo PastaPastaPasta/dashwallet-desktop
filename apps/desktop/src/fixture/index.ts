@@ -25,6 +25,7 @@ import { buildWorld, DEFAULT_SCENARIO, FIXTURE_WALLET_ID, isScenario, type Scena
 import { receivePayment, type PaymentSource } from "./send";
 import { FIXTURE_NOW } from "./wallet";
 import { isLanguage } from "../i18n";
+import { isLanguageTag } from "./settings";
 
 /** Present in every fixture build and in no production build (scripts/check-bundle.mjs). */
 export const FIXTURE_SENTINEL = "dw-fixture-backend:U-07";
@@ -42,7 +43,8 @@ export interface FixtureOptions {
    * out when the screen shows. `release(command)` lets it answer. A relaunch holds them again. */
   holds?: CommandName[];
   /** The saved language (`lang=<tag>`, MP-14): a shipped one or a pseudo-locale (`en-XA` long,
-   * `ar-XB` right to left). */
+   * `ar-XB` right to left). `savedLang=<tag>` saves any well-formed tag as a hand-edited or older
+   * settings file may hold it (`EN`, `pt-BR`), shipped or not. */
   language?: string;
   /** This copy's update availability (`updates=<availability>`, PK-03); with `update=<version>`, the
    * version the stable feed serves, `updatePhase=<kind>` the phase it starts in and
@@ -203,7 +205,7 @@ export function installFixture(opts: FixtureOptions): FixtureHandle {
   };
 }
 
-/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&updates=<availability>&update=<version>&updatePhase=<kind>&updateFault=<fault>&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
+/** `?scenario=<name>&theme=light|dark&network=mainnet|testnet|regtest&lang=<tag>&savedLang=<tag>&updates=<availability>&update=<version>&updatePhase=<kind>&updateFault=<fault>&fail=<command>:<class>&hold=<command>&delay=<ms>`. `fail` and `hold` repeat; an
  * `error-<class>` scenario is `funded` with `list_wallets` failing with that class. Unknown
  * names throw, so a typo in a test URL fails loudly instead of showing the default. */
 export function fixtureOptionsFromUrl(search: string): FixtureOptions {
@@ -233,8 +235,10 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
     if (!Object.hasOwn(COMMANDS, c)) throw new Error(`bad hold=${c}: not a command`);
     holds.push(c as CommandName);
   }
-  const language = p.get("lang") ?? undefined;
-  if (language !== undefined && !isLanguage(language)) throw new Error(`unknown language ${language}`);
+  const saved = p.get("savedLang");
+  if (saved !== null && !isLanguageTag(saved)) throw new Error(`bad savedLang=${saved}: not a language tag`);
+  const language = saved ?? p.get("lang") ?? undefined;
+  if (saved === null && language !== undefined && !isLanguage(language)) throw new Error(`unknown language ${language}`);
   const updates = oneOf(p, "updates", UPDATE_AVAILABILITIES);
   const updateServes = p.get("update") ?? undefined;
   const updatePhase = oneOf(p, "updatePhase", UPDATE_PHASES);

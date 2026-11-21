@@ -35,8 +35,26 @@ export const LANGUAGES: Language[] = [
     : []),
 ];
 
-const byTag = (tag: string) => LANGUAGES.find((l) => l.tag.toLowerCase() === tag.toLowerCase());
+/** The shipped language with this tag, compared case-insensitively. */
+export const byTag = (tag: string) => LANGUAGES.find((l) => l.tag.toLowerCase() === tag.toLowerCase());
 const primary = (tag: string) => tag.split("-")[0].toLowerCase();
+
+/** The script a tag is written in, given or implied (`zh-TW` is Hant), if the runtime knows it. */
+function script(tag: string): string | undefined {
+  try {
+    return new Intl.Locale(tag).maximize().script;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The same language in a script that does not conflict: `pt-PT` takes `pt`, `zh-Hans-CN` takes
+ * `zh-Hans`, `zh-Hant-TW` does not. */
+function sameLanguage(catalog: string, wanted: string): boolean {
+  if (primary(catalog) !== primary(wanted)) return false;
+  const [a, b] = [script(catalog), script(wanted)];
+  return a === undefined || b === undefined || a === b;
+}
 
 export const isLanguage = (tag: string) => byTag(tag) !== undefined;
 
@@ -63,11 +81,12 @@ export function systemRegionLocale(system: readonly string[] = systemLanguages()
 }
 
 /** The system's first language that a complete, real catalog exists for, by tag and then by
- * language alone ("pt-PT" takes "pt"); English otherwise. */
+ * language alone in a script that does not conflict ("pt-PT" takes "pt", "zh-Hant-TW" never takes
+ * "zh-Hans"); English otherwise. */
 export function systemLanguage(system: readonly string[], languages: Language[] = LANGUAGES): Language {
   const usable = languages.filter((l) => !l.pseudo && isComplete(l));
   for (const s of system) {
-    const hit = usable.find((l) => l.tag.toLowerCase() === s.toLowerCase()) ?? usable.find((l) => primary(l.tag) === primary(s));
+    const hit = usable.find((l) => l.tag.toLowerCase() === s.toLowerCase()) ?? usable.find((l) => sameLanguage(l.tag, s));
     if (hit) return hit;
   }
   return languages[0];
@@ -94,9 +113,12 @@ export function formatLocale(base: string | undefined, choice: string | null = u
 type Args<K extends Key> = [ParamNames<At<typeof en, K>>] extends [never] ? [] : [values: Params<At<typeof en, K>, string | number>];
 type RichArgs<K extends Key> = [values: Params<At<typeof en, K>, ReactNode> & Record<TagNames<At<typeof en, K>>, (children: ReactNode) => ReactNode>];
 
+/** The message for `key`, in its plural form chosen by the rules of the catalog that supplied it:
+ * English's forms by English's rules when the language lacks the key. */
 function lookup(language: Language, key: string, values: Record<string, unknown>): string {
-  const message = language.messages.get(key) ?? english.get(key) ?? key;
-  return pluralForm(message, own(values, "count"), language.tag);
+  const translated = language.messages.get(key);
+  const [message, rules] = translated !== undefined ? [translated, language.tag] : [english.get(key) ?? key, "en"];
+  return pluralForm(message, own(values, "count"), rules);
 }
 
 function translate(language: Language, locale: string | undefined, key: string, values: Record<string, unknown> = {}): string {
@@ -104,7 +126,7 @@ function translate(language: Language, locale: string | undefined, key: string, 
 }
 
 function translateRich(language: Language, locale: string | undefined, key: string, values: Record<string, unknown>): ReactNode {
-  const parts = build<ReactNode>(lookup(language, key, values), values, { locale, isolate: language.dir === "rtl" }, (tag, children) => renderTag<ReactNode>(values, tag, children) as ReactNode);
+  const parts = build<ReactNode>(lookup(language, key, values), values, { locale, isolate: language.dir === "rtl" }, (tag, children) => renderTag<ReactNode>(values, tag, children) as ReactNode, (node) => <bdi>{node}</bdi>);
   return parts.map((p, i) => <Fragment key={i}>{p}</Fragment>);
 }
 

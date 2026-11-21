@@ -87,11 +87,18 @@ export function tokenize(message: string): Token[] {
 
 /** How placeholders are filled: numbers formatted for `locale`; with `isolate` (a right-to-left
  * language) each value is a bidi isolate (U+2068 … U+2069), so a name or an address keeps its own
- * direction inside the sentence. */
+ * direction inside the sentence. In a left-to-right language only a value with right-to-left
+ * letters is isolated, so English text stays as it was. */
 export interface Fill {
   locale: string | undefined;
   isolate: boolean;
 }
+
+/** Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan, Mandaic and their presentation forms, and the
+ * right-to-left marks and overrides. */
+const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF\u200F\u202B\u202E\u2067]|\uD802[\uDC00-\uDFFF]|\uD803[\uDC00-\uDE7F]|\uD83A[\uDC00-\uDFFF]|\uD83B[\uDC00-\uDEFF]/;
+
+export const hasRtl = (text: string) => RTL.test(text);
 
 /** `message` with its placeholders filled. Tags are dropped, their text kept. */
 export function fill(message: string, values: Values, how: Fill): string {
@@ -102,7 +109,7 @@ export function fill(message: string, values: Values, how: Fill): string {
 
 export function show(value: unknown, { locale, isolate }: Fill): string {
   const text = typeof value === "number" ? new Intl.NumberFormat(locale).format(value) : String(value ?? "");
-  return isolate ? `\u2068${text}\u2069` : text;
+  return isolate || hasRtl(text) ? `\u2068${text}\u2069` : text;
 }
 
 /** Wraps a tag's children with the renderer given for it: an own property of `values` that is a
@@ -114,15 +121,17 @@ export function renderTag<N>(values: Values, tag: string, children: (N | string)
 }
 
 /** A rich-text message as a tree: text, filled placeholders, and each tag's children handed to
- * its renderer. Generic over the node type so it stays free of React. */
-export function build<N>(message: string, values: Values, how: Fill, wrap: (tag: string, children: (N | string)[]) => N): (N | string)[] {
+ * its renderer. An element given for a placeholder goes through `isolateNode` when `how.isolate`
+ * is on, so it keeps its own direction as a text value does. Generic over the node type so it
+ * stays free of React. */
+export function build<N>(message: string, values: Values, how: Fill, wrap: (tag: string, children: (N | string)[]) => N, isolateNode: (node: N) => N = (n) => n): (N | string)[] {
   const stack: { tag: string; children: (N | string)[] }[] = [{ tag: "", children: [] }];
   for (const t of tokenize(message)) {
     const top = stack[stack.length - 1];
     if (t.kind === "text") top.children.push(t.text);
     else if (t.kind === "param") {
       const v = own(values, t.name);
-      top.children.push(typeof v === "string" || typeof v === "number" || v === undefined || v === null ? show(v, how) : (v as N));
+      top.children.push(typeof v === "string" || typeof v === "number" || v === undefined || v === null ? show(v, how) : how.isolate ? isolateNode(v as N) : (v as N));
     } else if (t.kind === "open") stack.push({ tag: t.tag, children: [] });
     else if (stack.length > 1 && top.tag === t.tag) {
       stack.pop();

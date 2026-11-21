@@ -22,6 +22,8 @@ export const settings = {
     subtractFee: "Subtract the fee from the amount by default",
     language: "Language",
     languageSystem: "System default ({language})",
+    /** A saved language this build does not ship; the app follows the system instead. */
+    languageUnavailable: "{tag} (not available, using System default)",
     languageHint: "The language of Dash Wallet's own screens. Messages that come from the network stay in English.",
     showMasternodes: "Show Masternodes",
     showMasternodesHint: "Shows Masternodes in the sidebar: to read and vote on proposals and to vote on usernames. It is off until you turn it on.",
