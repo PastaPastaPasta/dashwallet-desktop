@@ -37,6 +37,7 @@ use crate::history::{
 };
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
+use key_wallet::transaction_checking::{TransactionContext, WalletTransactionChecker};
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 
 /// Why `abandon_transaction` / `resend_transaction` refused.
@@ -196,7 +197,9 @@ fn coin_key(outpoint: &OutPoint) -> Vec<u8> {
 }
 
 /// The coins of `outpoints` wallet.sqlite holds a row for, spent or not,
-/// read over a read-only connection.
+/// read over a read-only connection. A sweep placeholder (a held claim
+/// with no funding data, which every later credit of the coin leaves
+/// spent) counts as no row: the abandon's release deletes it.
 pub(crate) fn stored_coins(
     db_path: &Path,
     wallet: WalletId,
@@ -211,8 +214,10 @@ pub(crate) fn stored_coins(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    let mut stmt =
-        conn.prepare("SELECT 1 FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2")?;
+    let mut stmt = conn.prepare(
+        "SELECT 1 FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2 \
+         AND is_sweep_placeholder = 0",
+    )?;
     let mut stored = BTreeSet::new();
     for o in outpoints {
         let row = stmt
@@ -430,8 +435,8 @@ impl NetworkSession {
         let (abandoned, checkpoint, released) = {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
-            let info = wm
-                .get_wallet_info_mut(&wallet.0)
+            let (keys, info) = wm
+                .get_wallet_mut_and_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
             let mut trial = info.core_wallet.clone();
             let planned = abandon_with(&mut trial, root, &descendants);
@@ -453,6 +458,13 @@ impl NetworkSession {
             }
             let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
             if !abandoned.is_empty() {
+                for (tx, context) in
+                    self.funding_in_batch(wallet, &abandoned, &stored, &info.core_wallet)
+                {
+                    (info.core_wallet)
+                        .check_core_transaction(&tx, context, keys, true, false)
+                        .await;
+                }
                 info.core_wallet.update_balance();
             }
             let released = self.released(wallet, &abandoned, &stored, &info.core_wallet);
@@ -581,7 +593,9 @@ impl NetworkSession {
     /// that wallet.sqlite holds no row for (`stored`), or that key-wallet
     /// (`core`, after the abandon) holds unspent. A stored coin stays
     /// stored spent: a spend key-wallet never recorded may have taken it,
-    /// and the abandon's rescan stores it unspent again if it is free.
+    /// and the abandon's rescan, or the processing again of a block of the
+    /// batch under way ([`Self::funding_in_batch`]), stores it unspent
+    /// again if it is free.
     fn released(
         &self,
         wallet: WalletId,
@@ -593,6 +607,37 @@ impl NetworkSession {
         let held: HashSet<OutPoint> = core.utxos().into_iter().map(|u| u.outpoint).collect();
         (self.inputs_of(wallet, abandoned).into_iter())
             .filter(|o| !observed.contains_key(o) && (!stored.contains(o) || held.contains(o)))
+            .collect()
+    }
+
+    /// The funding transactions, with their block context, of the coins of
+    /// `abandoned` that wallet.sqlite holds, that no processed block spent
+    /// and that key-wallet (`core`, after the abandon) does not hold, whose
+    /// block is above the wallet's checkpoint and whose record key-wallet
+    /// holds: the scan processed that block in a filter batch not committed
+    /// yet, and no replay comes back to it, so the abandon processes the
+    /// transaction again for them. One key-wallet holds no record of is
+    /// still to be processed by the scan, which credits them then.
+    fn funding_in_batch(
+        &self,
+        wallet: WalletId,
+        abandoned: &BTreeSet<Txid>,
+        stored: &BTreeSet<OutPoint>,
+        core: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    ) -> Vec<(Transaction, TransactionContext)> {
+        let observed = core.observed_spent_outpoints();
+        let held: HashSet<OutPoint> = core.utxos().into_iter().map(|u| u.outpoint).collect();
+        let synced = core.synced_height();
+        let parents: BTreeSet<Txid> = (self.inputs_of(wallet, abandoned).into_iter())
+            .filter(|o| stored.contains(o) && !observed.contains_key(o) && !held.contains(o))
+            .map(|o| o.txid)
+            .collect();
+        let accounts = core.accounts.all_accounts();
+        (parents.iter())
+            .filter(|t| accounts.iter().any(|a| a.transactions().contains_key(*t)))
+            .filter_map(|t| self.hub.history.get(&wallet, t))
+            .filter(|e| e.context.block_info().is_some_and(|b| b.height() > synced))
+            .map(|e| (e.tx, e.context))
             .collect()
     }
 

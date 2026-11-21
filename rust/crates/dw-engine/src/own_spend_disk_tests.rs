@@ -943,3 +943,319 @@ fn the_abandon_finds_each_stored_coin_by_its_key() {
         stored
     );
 }
+
+/// The scan processes the block at `height`, holding `txs`, in a filter
+/// batch that has not committed yet: the wallet's checkpoint stays where it
+/// was.
+fn processed(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    height: u32,
+    txs: Vec<Transaction>,
+) {
+    super::deliver(engine, session, id, move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            let block = super::block_with(txs);
+            wm.process_block_for_wallets(
+                &block,
+                block.block_hash(),
+                height,
+                &BTreeSet::from([id.0]),
+            )
+            .await;
+        })
+    });
+}
+
+/// The filter batch commits: the wallet's checkpoint moves to `height`.
+fn committed(engine: &Engine, session: &NetworkSession, id: WalletId, height: u32) {
+    super::deliver(engine, session, id, move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            wm.update_wallet_synced_height(&id.0, height);
+        })
+    });
+}
+
+/// A restored payment of A, abandoned after the catch-up processed A's
+/// funding block but before its filter batch committed: no replay comes
+/// back to that block, so A is back at once, once the batch commits, and
+/// after a restart.
+#[test]
+fn abandoning_mid_batch_frees_a_coin_whose_block_the_batch_processed() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    processed(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(synced(&engine, &session, id) < TIP, "the batch is open");
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "the payment claims A"
+    );
+    abandon(&engine, &session, id, payment.txid());
+    let want = outputs(&paid);
+    assert_holds(&engine, &session, id, &want, "abandoned mid-batch");
+    committed(&engine, &session, id, TIP);
+    assert_holds(&engine, &session, id, &want, "the batch committed");
+    assert!(spendable(&engine, &session, id, a), "A is offered");
+
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &want, "then a restart");
+}
+
+/// As above, with another device's spend W of A, paying only someone
+/// else, in a later block of the same batch: A ends up spent, in the
+/// session and after a restart, so freeing A mid-batch offers no coin W
+/// took.
+#[test]
+fn a_coin_freed_mid_batch_that_a_later_block_of_the_batch_spends_ends_up_spent() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    let owner =
+        Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let winner = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(a, vec![(elsewhere(), COIN - 1_000)]),
+    );
+    processed(&engine, &session, id, TIP, vec![paid.clone()]);
+    abandon(&engine, &session, id, payment.txid());
+    processed(&engine, &session, id, TIP + 1, vec![winner]);
+    committed(&engine, &session, id, TIP + 1);
+    let mut want = outputs(&paid);
+    want.remove(&a);
+    assert_holds(&engine, &session, id, &want, "the batch committed");
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &want, "then a restart");
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+}
+
+/// A restored payment's coin A whose row in wallet.sqlite is a held sweep
+/// placeholder (spent, no funding data), which every later credit of A
+/// leaves spent. Abandoning the payment deletes it as no row, so the
+/// replay's credit of A is stored and loads after a restart.
+#[test]
+fn abandoning_a_payment_drops_the_sweep_placeholder_of_its_coin() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let db = session.data_dir().join(crate::session::WALLET_DB_FILE);
+    drop(session);
+    assert!(
+        engine
+            .block_on(engine.close_network(crate::DashNetwork::Regtest))
+            .unwrap()
+    );
+    let key: Vec<u8> = (std::iter::once(32))
+        .chain(a.txid.to_byte_array())
+        .chain([a.vout as u8])
+        .collect();
+    let placed = rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute(
+            "UPDATE core_utxos SET value = 0, script = X'', is_sweep_placeholder = 1, \
+             spent = 1, spent_in_txid = ?3 WHERE wallet_id = ?1 AND outpoint = ?2",
+            rusqlite::params![&id.0[..], key, payment.txid().to_byte_array().to_vec()],
+        )
+        .unwrap();
+    assert_eq!(placed, 1);
+    let session = super::open(&engine);
+
+    abandon(&engine, &session, id, payment.txid());
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let want = outputs(&paid);
+    assert_holds(&engine, &session, id, &want, "replayed");
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &want, "then a restart");
+}
+
+/// Whether wallet.sqlite holds `outpoint` of `id` spent (`Some(true)`),
+/// unspent, or not at all.
+fn stored_spent(session: &NetworkSession, id: WalletId, outpoint: OutPoint) -> Option<bool> {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    use rusqlite::OptionalExtension;
+    session.live().unwrap().persister.flush(id.0).unwrap();
+    assert!(outpoint.vout < 251);
+    let key: Vec<u8> = (std::iter::once(32))
+        .chain(outpoint.txid.to_byte_array())
+        .chain([outpoint.vout as u8])
+        .collect();
+    let conn = rusqlite::Connection::open_with_flags(
+        session.data_dir().join(crate::session::WALLET_DB_FILE),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    conn.query_row(
+        "SELECT spent FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
+        rusqlite::params![&id.0[..], key],
+        |r| r.get::<_, bool>(0),
+    )
+    .optional()
+    .unwrap()
+}
+
+/// The guard above with W's block ChainLocked before the batch commits:
+/// A stays stored spent, and is neither held nor offered after a restart.
+#[test]
+fn a_coin_freed_mid_batch_that_a_chainlocked_block_of_the_batch_spends_stays_stored_spent() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    let owner =
+        Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let winner = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(a, vec![(elsewhere(), COIN - 1_000)]),
+    );
+    processed(&engine, &session, id, TIP, vec![paid.clone()]);
+    abandon(&engine, &session, id, payment.txid());
+    let hash = super::block_with(vec![winner.clone()]).block_hash();
+    processed(&engine, &session, id, TIP + 1, vec![winner]);
+    super::deliver(&engine, &session, id, move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            wm.apply_chain_lock(dashcore::ChainLock {
+                block_height: TIP + 1,
+                block_hash: hash,
+                signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+            });
+        })
+    });
+    committed(&engine, &session, id, TIP + 1);
+    mined(&engine, &session, id, TIP + 2, vec![foreign()]);
+    eventually("A is stored spent", || {
+        stored_spent(&session, id, a) == Some(true)
+    });
+    let mut want = outputs(&paid);
+    want.remove(&a);
+    assert_holds(&engine, &session, id, &want, "the batch committed");
+
+    let session = reopen(&engine, session);
+    assert_eq!(
+        stored_spent(&session, id, a),
+        Some(true),
+        "A is stored spent"
+    );
+    assert_holds(&engine, &session, id, &want, "then a restart");
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+}
+
+/// The mid-batch abandon processes A's funding transaction again after the
+/// batch already did, and the batch then commits past it: A counts once
+/// (one coin, one history row for its transaction, the balance of the
+/// coins alone), no balance the engine sends counts it twice, no new
+/// transaction is announced for it, and a restart loads the same.
+#[test]
+fn processing_a_coins_funding_again_mid_batch_counts_it_once() {
+    let (_dir, engine, session, id, recorder) = super::engine_wallet_recorded();
+    mined(&engine, &session, id, FUNDED_AT, vec![foreign()]);
+    let to: Vec<Address> = (0..COINS)
+        .map(|_| fresh_address(&engine, &session, id))
+        .collect();
+    let paid = funding(7, &to, COIN);
+    mempool(&engine, &session, id, &paid);
+    super::instant_lock(&engine, &session, id, &paid);
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    processed(&engine, &session, id, TIP, vec![paid.clone()]);
+    let rows_of = |session: &Arc<NetworkSession>, t: Txid| {
+        (super::rows(&engine, session, id).iter())
+            .filter(|r| r.0 == t.to_string())
+            .count()
+    };
+    let paid_rows = rows_of(&session, paid.txid());
+    assert!(paid_rows > 0);
+    let from = recorder.len();
+    abandon(&engine, &session, id, payment.txid());
+    committed(&engine, &session, id, TIP);
+    let want = outputs(&paid);
+    let b = assert_holds(&engine, &session, id, &want, "the batch committed");
+    assert_eq!(b.total, 12 * COIN);
+    assert_eq!(rows_of(&session, paid.txid()), paid_rows);
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let events = recorder.0.lock().unwrap()[from..].to_vec();
+    for e in &events {
+        match e {
+            crate::EngineEvent::Balances {
+                wallet_id,
+                balances: Some(b),
+                ..
+            } if *wallet_id == id => {
+                assert!(b.total <= 12 * COIN, "a balance counts A twice: {b:?}")
+            }
+            crate::EngineEvent::NewTransactions { txids, .. } => {
+                assert!(!txids.contains(&paid.txid()), "announced again: {e:?}")
+            }
+            _ => {}
+        }
+    }
+
+    let session = reopen(&engine, session);
+    let b = assert_holds(&engine, &session, id, &want, "then a restart");
+    assert_eq!(b.total, 12 * COIN);
+    assert_eq!(rows_of(&session, paid.txid()), paid_rows);
+}
