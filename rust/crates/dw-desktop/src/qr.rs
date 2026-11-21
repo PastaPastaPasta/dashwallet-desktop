@@ -40,15 +40,19 @@ pub fn decode(image: &[u8]) -> Result<Vec<String>, DesktopError> {
         }
         None => return Err(DesktopError::ImageUnreadable("unknown image format".into())),
     }
-    let (width, height) = reader
-        .into_dimensions()
-        .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))?;
-    if u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err(DesktopError::ImageUnreadable(format!(
-            "{width}×{height} pixels; at most {MAX_PIXELS}"
-        )));
-    }
     let luma = catch_unwind(AssertUnwindSafe(|| {
+        #[cfg(test)]
+        if PANIC_IN_PROBE.get() {
+            panic!("test: the image probe panicked");
+        }
+        let (width, height) = reader
+            .into_dimensions()
+            .map_err(|e| DesktopError::ImageUnreadable(e.to_string()))?;
+        if u64::from(width) * u64::from(height) > MAX_PIXELS {
+            return Err(DesktopError::ImageUnreadable(format!(
+                "{width}×{height} pixels; at most {MAX_PIXELS}"
+            )));
+        }
         #[cfg(test)]
         if PANIC_IN_DECODE.get() {
             panic!("test: the image decode panicked");
@@ -91,6 +95,8 @@ pub fn decode(image: &[u8]) -> Result<Vec<String>, DesktopError> {
 thread_local! {
     /// Tests: this thread's image decodes panic.
     static PANIC_IN_DECODE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tests: this thread's image dimension probes panic.
+    static PANIC_IN_PROBE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(test)]
@@ -203,6 +209,17 @@ mod tests {
         PANIC_IN_DECODE.set(true);
         let decoded = decode(&png);
         PANIC_IN_DECODE.set(false);
+        assert!(matches!(decoded, Err(DesktopError::ImageUnreadable(_))));
+        assert_eq!(decode(&png).unwrap(), vec!["dash:first"]);
+    }
+
+    /// A panic while the decoder reads the image's dimensions is a refusal.
+    #[test]
+    fn an_image_probe_that_panics_is_refused() {
+        let png = render(&["dash:first"], ImageFormat::Png);
+        PANIC_IN_PROBE.set(true);
+        let decoded = decode(&png);
+        PANIC_IN_PROBE.set(false);
         assert!(matches!(decoded, Err(DesktopError::ImageUnreadable(_))));
         assert_eq!(decode(&png).unwrap(), vec!["dash:first"]);
     }
