@@ -733,6 +733,7 @@ fn error_codes_match_the_contract() {
             GovernanceError::SubmitRefused {
                 reason: SubmitRefusal::Public,
             },
+            GovernanceError::ProposalInProgress { hash: None },
             GovernanceError::ContestNotFound {
                 label: String::new(),
             },

@@ -137,6 +137,9 @@ pub(crate) struct GovernanceRuntime {
     pub(super) proposal_tick: tokio::sync::Mutex<()>,
     /// The wallet's own proposals whose fee is being handed off.
     pub(super) in_flight: InFlight,
+    /// The names a create holds from its check until its row is saved or
+    /// it fails (MG-06 D26).
+    pub(super) creating: InFlight<(WalletId, String)>,
     /// The proposal fee's broadcast, faked (tests).
     #[cfg(test)]
     pub(super) fee_broadcaster: Mutex<Option<Arc<dyn crate::send::TestBroadcaster>>>,
@@ -210,6 +213,7 @@ impl GovernanceRuntime {
             paces: Default::default(),
             proposal_tick: Default::default(),
             in_flight: Default::default(),
+            creating: Default::default(),
             #[cfg(test)]
             fee_broadcaster: Mutex::default(),
             #[cfg(test)]
@@ -533,30 +537,37 @@ async fn sync_loop(session: Weak<NetworkSession>, mut stop: watch::Receiver<bool
 
 /// The wallet's own proposals whose fee is being handed to the network:
 /// a create's from the save until its outcome is recorded, a [Submit]'s
-/// for the whole call (review r1 M-1).
-#[derive(Debug, Default)]
-pub(super) struct InFlight(std::sync::Mutex<HashSet<(WalletId, [u8; 32])>>);
+/// for the whole call (review r1 M-1). Keyed by name, the names a create
+/// holds until its row is saved (MG-06 D26).
+#[derive(Debug)]
+pub(super) struct InFlight<K = (WalletId, [u8; 32])>(std::sync::Mutex<HashSet<K>>);
 
-impl InFlight {
-    fn set(&self) -> std::sync::MutexGuard<'_, HashSet<(WalletId, [u8; 32])>> {
+impl<K> Default for InFlight<K> {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(HashSet::new()))
+    }
+}
+
+impl<K: Eq + std::hash::Hash + Clone> InFlight<K> {
+    fn set(&self) -> std::sync::MutexGuard<'_, HashSet<K>> {
         self.0.lock().unwrap_or_else(|p| p.into_inner())
     }
 
     /// Marks `key` in flight until the mark drops; `None` while it is.
-    pub(super) fn begin(&self, key: (WalletId, [u8; 32])) -> Option<Flight<'_>> {
-        let marked = self.set().insert(key);
+    pub(super) fn begin(&self, key: K) -> Option<Flight<'_, K>> {
+        let marked = self.set().insert(key.clone());
         // Built only when marked: a mark dropped here would unmark it.
         marked.then(|| Flight { set: self, key })
     }
 }
 
-/// One proposal's in-flight mark ([`InFlight::begin`]).
-pub(super) struct Flight<'a> {
-    set: &'a InFlight,
-    key: (WalletId, [u8; 32]),
+/// One in-flight mark ([`InFlight::begin`]).
+pub(super) struct Flight<'a, K: Eq + std::hash::Hash + Clone = (WalletId, [u8; 32])> {
+    set: &'a InFlight<K>,
+    key: K,
 }
 
-impl Drop for Flight<'_> {
+impl<K: Eq + std::hash::Hash + Clone> Drop for Flight<'_, K> {
     fn drop(&mut self) {
         self.set.set().remove(&self.key);
     }
