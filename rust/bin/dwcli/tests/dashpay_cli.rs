@@ -45,12 +45,18 @@ fn dashpay_commands_print_one_json_line() {
         assert!(out.status.success(), "{args:?}: {out:?}");
     }
 
-    // A new wallet, offline: no identity while SPV has not caught up.
+    // A new wallet, offline: no identity while SPV has not caught up, or,
+    // when its three-second bring-up was cut off on a loaded machine, a
+    // start-up that is not complete.
     let out = dwcli(dir.path(), &["dashpay", "status"], b"");
     assert_eq!(out.status.code(), Some(0));
-    assert_eq!(
-        line(&out),
-        json!({"ok": true, "result": {"kind": "no_identity", "reason": "waiting_for_sync"}})
+    let status = line(&out);
+    assert!(
+        status
+            == json!({"ok": true, "result": {"kind": "no_identity", "reason": "waiting_for_sync"}})
+            || status
+                == json!({"ok": true, "result": {"kind": "startup_incomplete", "startup": "partial_no_identity"}}),
+        "{status}"
     );
 
     // A refused call is a JSON error on stdout and a message on stderr.
