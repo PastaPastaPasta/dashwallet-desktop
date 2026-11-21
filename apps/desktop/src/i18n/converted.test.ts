@@ -29,7 +29,7 @@ const AREAS: Record<string, string[]> = {
 
   receive: [],
 
-  pay: [],
+  pay: ["screens/pay"],
 
   contacts: ["screens/contacts"],
 
