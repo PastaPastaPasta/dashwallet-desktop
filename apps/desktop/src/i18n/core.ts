@@ -30,7 +30,7 @@ export type At<T, K extends string> = K extends `${infer H}.${infer R}` ? (H ext
 
 type Placeholders<S> = S extends `${string}{${infer P}}${infer R}` ? P | Placeholders<R> : never;
 type Tags<S> = S extends `${string}<${infer T}>${infer R}` ? (T extends `/${string}` ? Tags<R> : T | Tags<R>) : never;
-type Texts<M> = M extends string ? M : M extends Plural ? NonNullable<M[keyof Plural]> : never;
+type Texts<M> = M extends string ? M : M extends Plural ? NonNullable<M[keyof M & keyof Plural]> : never;
 
 /** The named placeholders a message takes; a plural also takes `count`. */
 export type ParamNames<M> = Placeholders<Texts<M>> | (M extends Plural ? "count" : never);

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { DEFAULT_PREFS, ui } from "../app/ui";
-import { build, fill, flatten, pluralForm, pseudoCatalog, renderTag, tokenize, type Catalog } from "./core";
+import { build, fill, flatten, pluralForm, pseudoCatalog, renderTag, tokenize, type Catalog, type Params } from "./core";
 import { en } from "./en";
 import { formatLocale, isComplete, LANGUAGES, resolveLanguage, systemLanguage, t, type Language } from "./index";
 
@@ -101,6 +101,13 @@ describe("t", () => {
     expect(t("shell.status.peers", { count: "1" })).toBe("1 peers");
     // @ts-expect-error: no placeholder named `who`
     t("network.confirmTitle", { who: "x" });
+    // A plural takes its other placeholders as well as `count`.
+    const words = { one: "{name} has {count} word", other: "{name} has {count} words" } as const;
+    const both: Params<typeof words, string> = { name: "Main", count: 2 };
+    // @ts-expect-error: and still requires them
+    const missing: Params<typeof words, string> = { count: 2 };
+    expect(fill(pluralForm(words, 1, "en"), { ...both, count: 1 }, { locale: "en", isolate: false })).toBe("Main has 1 word");
+    expect(missing).toBeDefined();
     const ok: Catalog<typeof en> = { shell: { status: { synced: "Synkd", peers: { one: "a", other: "b" } } } };
     // @ts-expect-error: a key English does not have fails tsc
     const extra: Catalog<typeof en> = { shell: { status: { syncd: "Synkd" } } };
