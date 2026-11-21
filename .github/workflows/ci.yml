@@ -238,6 +238,13 @@ jobs:
           cd ..
           git add -N apps/desktop/src/api/generated docs/design/E0-13-facade-coverage.md
           git diff --exit-code -- apps/desktop/src/api/generated docs/design/E0-13-facade-coverage.md
+      # The Swift bindings are generated from dw-ffi and committed too. The Swift jobs check them, but
+      # those run only after a merge: a pull request that changed an exported item's doc comment
+      # and not the Swift file left main red twice (#189, #193). The workspace build above
+      # compiled dw-ffi's dependencies, so this adds dw-ffi's libraries, the generator and a diff.
+      - name: The committed Swift bindings match dw-ffi
+        if: ${{ !cancelled() }}
+        run: ../scripts/build-core.sh --check-bindings
       - name: Disk use
         if: ${{ !cancelled() }}
         run: df -h / && du -sh target
