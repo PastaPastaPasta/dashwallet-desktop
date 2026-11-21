@@ -234,14 +234,6 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// A cached thumbnail: in memory as the engine's encoder made it, or read
-/// from disk, which the caller checks is a PNG of its size (D10) as a
-/// decode.
-pub(super) enum Thumbnail {
-    Encoded(Vec<u8>),
-    Read(Vec<u8>),
-}
-
 impl AvatarStore {
     pub(super) fn new(dir: Option<ThumbDir>, db: Arc<AppDb>) -> Self {
         Self {
@@ -259,19 +251,19 @@ impl AvatarStore {
             .flatten()
     }
 
-    /// The thumbnail `row` names at `size`, if it is still held.
-    pub(super) fn thumbnail(&self, row: &AvatarRow, size: AvatarSize) -> Option<Thumbnail> {
+    /// The thumbnail `row` names at `size`, if it is still on disk and is
+    /// a PNG of that size (D10).
+    pub(super) fn thumbnail(&self, row: &AvatarRow, size: AvatarSize) -> Option<Vec<u8>> {
         let stem = row.file.as_deref().filter(|s| valid_stem(s))?;
         let Some(dir) = &self.dir else {
             let memory = lock(&self.memory);
             let (_, pair) = memory.iter().find(|(s, _)| s == stem)?;
-            let png = pair[usize::from(size == AvatarSize::Large)].clone();
-            return Some(Thumbnail::Encoded(png));
+            return Some(pair[usize::from(size == AvatarSize::Large)].clone());
         };
-        (dir.read(&file_name(stem, size)))
+        let png = (dir.read(&file_name(stem, size)))
             .inspect_err(|e| tracing::warn!(error = %e, "avatar thumbnail unreadable"))
-            .ok()?
-            .map(Thumbnail::Read)
+            .ok()??;
+        super::avatar_image::is_thumbnail(&png, size.px()).then_some(png)
     }
 
     /// Records a fetch that decoded: the thumbnails written (to the

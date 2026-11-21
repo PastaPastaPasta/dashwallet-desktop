@@ -1659,6 +1659,12 @@ fn poisonable_engine(tmp: &Path) -> crate::Engine {
     .unwrap()
 }
 
+/// `body` as a task on the engine's runtime, as `on_wallet` runs a read,
+/// so a decode left on the read's thread runs on a `dw-engine` thread.
+async fn on_an_engine_worker(body: impl Future<Output = ()> + Send + 'static) {
+    tokio::spawn(body).await.unwrap();
+}
+
 /// #211: an avatar decode that panics on the engine's runtime is refused
 /// and leaves the engine unpoisoned, and the next read decodes.
 #[test]
@@ -1669,7 +1675,7 @@ fn an_avatar_decode_that_panics_leaves_the_engine_unpoisoned() {
     }
     let tmp = dw_testutil::private_tempdir();
     let engine = poisonable_engine(tmp.path());
-    engine.block_on(async {
+    engine.block_on(on_an_engine_worker(async {
         let rig = Rig::new().await;
         let bytes = png(300, 200);
         rig.server.route("/me.png", Route::ok(bytes.clone()));
@@ -1682,110 +1688,6 @@ fn an_avatar_decode_that_panics_leaves_the_engine_unpoisoned() {
         rig.server.route("/next.png", Route::ok(bytes.clone()));
         let profile = profile_for(&rig.server.url("good.test", "/next.png"), &bytes);
         assert!(rig.read(&profile).await.unwrap().is_some());
-    });
-    assert!(!crate::engine_poisoned());
-}
-
-/// #211: a cached thumbnail whose check panics is fetched again, and the
-/// engine is left unpoisoned: the check is a decode, off its threads.
-#[test]
-fn a_thumbnail_check_that_panics_leaves_the_engine_unpoisoned() {
-    let name = "platform::avatar_tests::a_thumbnail_check_that_panics_leaves_the_engine_unpoisoned";
-    if !in_child(name, "DW_THUMBNAIL_PANIC_CHILD") {
-        return;
-    }
-    let tmp = dw_testutil::private_tempdir();
-    let engine = poisonable_engine(tmp.path());
-    engine.block_on(async {
-        let rig = Rig::new().await;
-        let bytes = png(300, 200);
-        rig.server.route("/me.png", Route::ok(bytes.clone()));
-        let profile = profile_for(&rig.server.url("good.test", "/me.png"), &bytes);
-        assert!(rig.read(&profile).await.unwrap().is_some());
-        avatar_image::PANIC_IN_THUMBNAIL.store(true, std::sync::atomic::Ordering::SeqCst);
-        assert!(rig.read(&profile).await.unwrap().is_some());
-        avatar_image::PANIC_IN_THUMBNAIL.store(false, std::sync::atomic::Ordering::SeqCst);
-        assert_eq!(rig.server.hits().len(), 2, "fetched again");
-        assert!(!crate::engine_poisoned());
-        assert!(rig.read(&profile).await.unwrap().is_some());
-    });
-    assert!(!crate::engine_poisoned());
-}
-
-/// A decode worker that cannot start is no verdict on the picture: the
-/// cached avatar is neither fetched again nor replaced, a fresh fetch
-/// records nothing, and both show once workers start again.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_decode_worker_that_cannot_start_changes_nothing_cached() {
-    use std::sync::atomic::Ordering::SeqCst;
-    let rig = Rig::new().await;
-    let (a, b) = (png(40, 40), png(41, 41));
-    rig.server.route("/a.png", Route::ok(a.clone()));
-    rig.server.route("/b.png", Route::ok(b.clone()));
-    let cached = profile_for(&rig.server.url("good.test", "/a.png"), &a);
-    let fresh = profile_for(&rig.server.url("good.test", "/b.png"), &b);
-    let thumb = rig.read(&cached).await.unwrap().unwrap();
-    let row = |p: &Profile| {
-        let key = Target::parse(p.avatar_url.as_deref().unwrap())
-            .unwrap()
-            .url_sha;
-        rig.db.avatar_row(&key).unwrap()
-    };
-    let before = row(&cached);
-    let transient = |read: Result<Option<Vec<u8>>, AvatarError>| {
-        matches!(
-            read,
-            Err(AvatarError::Platform(PlatformError::Internal { .. }))
-        )
-    };
-    rig.pipeline.no_workers.store(true, SeqCst);
-    assert!(transient(rig.read(&cached).await));
-    assert!(transient(rig.read(&fresh).await));
-    rig.pipeline.no_workers.store(false, SeqCst);
-    assert_eq!(row(&cached), before, "the cached row was replaced");
-    assert_eq!(row(&fresh), None, "a failure was recorded");
-    assert_eq!(rig.read(&cached).await.unwrap().unwrap(), thumb);
-    assert!(rig.read(&fresh).await.unwrap().is_some());
-    assert_eq!(rig.server.hits(), vec!["/a.png", "/b.png", "/b.png"]);
-}
-
-/// An off does not wait for a contact's cached thumbnail check queued
-/// behind busy decodes: the read is dropped where it waits, before either
-/// permit is freed.
-#[tokio::test(flavor = "multi_thread")]
-async fn an_off_drops_a_contact_read_waiting_for_a_decode() {
-    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
-    let rig = Rig::new().await;
-    let bytes = png(42, 42);
-    rig.server.route("/q.png", Route::ok(bytes.clone()));
-    let profile = profile_for(&rig.server.url("good.test", "/q.png"), &bytes);
-    assert!(rig.read(&profile).await.unwrap().is_some());
-    let busy = rig.pipeline.decodes().acquire_many_owned(2).await.unwrap();
-    let (at_row, reached) = tokio::sync::oneshot::channel();
-    let at_row = Mutex::new(Some(at_row));
-    rig.pictures.set_hook(Box::new(move |point| {
-        if point == "row"
-            && let Some(at_row) = at_row.lock().unwrap().take()
-        {
-            let _ = at_row.send(());
-        }
-        None
     }));
-    let ended = AtomicBool::new(false);
-    let read = async {
-        let read = rig.read(&profile).await;
-        ended.store(true, SeqCst);
-        read
-    };
-    let off = async {
-        reached.await.unwrap();
-        let turn = rig.pictures.begin_transition().await;
-        let off = turn.apply(false, async { Ok::<_, ()>(()) });
-        let off = tokio::time::timeout(Duration::from_secs(10), off).await;
-        off.expect("the off waited for the decode").unwrap();
-        assert!(ended.load(SeqCst), "the read still runs");
-        drop(busy);
-    };
-    let (read, ()) = tokio::join!(read, off);
-    assert_eq!(read, Ok(None));
+    assert!(!crate::engine_poisoned());
 }
