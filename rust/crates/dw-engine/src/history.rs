@@ -467,6 +467,8 @@ pub(crate) struct WalletHistory {
     /// Records only read from storage are not among them (platform-wallet
     /// rebuilds no records at load).
     pub session_held: HashSet<Txid>,
+    /// The last load of the history missed a stored record or mark.
+    pub load_incomplete: bool,
     /// A ProRegTx, or an output one names as its collateral, was merged
     /// since the masternode follower last locked this wallet's collaterals
     /// (MG-00 D9).

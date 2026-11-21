@@ -380,6 +380,7 @@ impl NetworkSession {
             let seen: HashMap<String, u64> = seen.into_iter().collect();
             self.hub.history.with_wallet(wallet, |h| {
                 h.set_loaded_coins(loaded_coins);
+                h.load_incomplete = !complete;
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
                 }
