@@ -28,6 +28,7 @@ pub(crate) mod contest_watch;
 mod contest_watch_tests;
 pub(crate) mod core_max;
 mod credit_costs;
+mod credit_transfer;
 mod credits;
 mod dashpay;
 mod errors;
@@ -125,8 +126,8 @@ pub use contacts::{
 };
 pub use credits::{
     CoreMax, CostTable, CreditLevel, FundAmount, PendingTopUp, StuckTopUpFunding, TopUpOutcome,
-    TopUpQuote, TopUpState, WithdrawAmount, WithdrawOutcome, WithdrawQuote, Withdrawal,
-    WithdrawalStatus,
+    TopUpQuote, TopUpState, WithdrawAmount, WithdrawOutcome, WithdrawQuote,
+    WithdrawToPlatformOutcome, WithdrawToPlatformQuote, Withdrawal, WithdrawalStatus,
 };
 pub use dashpay::{BearerSecret, DashPay};
 pub use errors::{
@@ -167,7 +168,7 @@ pub use profile::{
 pub use registration::{
     FaucetLockKey, FinishReport, InitialProfile, RegistrationFailure, RegistrationFunding,
     RegistrationInvitation, RegistrationPhase, RegistrationQuote, RegistrationRequest,
-    RegistrationStatus, RegistrationWait,
+    RegistrationStatus, RegistrationWait, ShieldedCheck, ShieldedCheckState, ShieldedReadiness,
 };
 pub use shielded::{
     MixedShieldQuote, PendingShield, SHIELDED_ACTIVATION_VERSION, ShieldOutcome, ShieldQuote,

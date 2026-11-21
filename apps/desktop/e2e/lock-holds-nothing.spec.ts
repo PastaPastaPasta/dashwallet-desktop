@@ -518,6 +518,35 @@ for (const gone of ["left", "locked and unlocked", "locked"] as const) {
   });
 }
 
+// A refusal (the name in progress) or a failure that answers once the sheet has gone: the sheet
+// reads nothing more and sets nothing; its page is not there to show it.
+for (const answer of ["refused", "failed"] as const) {
+  test(`a fee call ${answer} after the sheet was left reads and shows nothing more`, async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await page.clock.setFixedTime(FIXTURE_NOW);
+    await page.goto(fixtureUrl("governance", "light"));
+    await page.getByTestId("toolbar").waitFor();
+    if (answer === "refused") {
+      await fillProposal(page, "desktop-translations");
+      await page.getByTestId("create-pay").click();
+      await expect(page.getByTestId("create-sheet")).toHaveCount(0);
+    } else {
+      await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "none"));
+    }
+    await fillProposal(page, "desktop-translations");
+    const release = await page.evaluateHandle(() => window.__dwFixture!.hold("governance_create_proposal"));
+    const n = (await calls(page)).length;
+    await page.getByTestId("create-pay").click();
+    await expect.poll(() => since(page, n)).toContain("governance_create_proposal");
+    await leavePage(page);
+    const m = (await calls(page)).length;
+    await release.evaluate((r) => r());
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 500)));
+    expect(await since(page, m)).not.toContain("governance_my_proposals");
+    expect(errors).toEqual([]);
+  });
+}
+
 test("lost events while in use show the lock screen while the status read never answers, then the same page", async ({ page }) => {
   test.setTimeout(60_000);
   const errors = trackPageErrors(page);

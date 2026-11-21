@@ -217,6 +217,8 @@ import type { WatchOnlyOptions } from "./WatchOnlyOptions";
 import type { WithdrawAmount } from "./WithdrawAmount";
 import type { WithdrawOutcome } from "./WithdrawOutcome";
 import type { WithdrawQuote } from "./WithdrawQuote";
+import type { WithdrawToPlatformOutcome } from "./WithdrawToPlatformOutcome";
+import type { WithdrawToPlatformQuote } from "./WithdrawToPlatformQuote";
 import type { Withdrawal } from "./Withdrawal";
 
 export type { AppError, AppEvent, ErrorCode, ShellEvent };
@@ -1800,6 +1802,21 @@ export function creditsWithdraw(walletId: string, identity: string, to: string, 
 }
 
 /**
+ * What moving credits to the wallet's own Platform address takes.
+ */
+export function creditsWithdrawToPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawToPlatformQuote> {
+  return invoke<WithdrawToPlatformQuote>("credits_withdraw_to_platform_quote", { walletId, identity, amount });
+}
+
+/**
+ * Moves credits to `to`, one of the wallet's own Platform addresses,
+ * under `grant`.
+ */
+export function creditsWithdrawToPlatform(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawToPlatformOutcome> {
+  return invoke<WithdrawToPlatformOutcome>("credits_withdraw_to_platform", { walletId, identity, to, amount, grant });
+}
+
+/**
  * The identity's recent withdrawals on Platform, the most recently
  * updated first (at most 20).
  */
@@ -3095,6 +3112,8 @@ export type CommandArgs = {
   credits_resolve_top_up: { walletId: string; txid: string };
   credits_withdraw_quote: { walletId: string; identity: string; amount: WithdrawAmount };
   credits_withdraw: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
+  credits_withdraw_to_platform_quote: { walletId: string; identity: string; amount: WithdrawAmount };
+  credits_withdraw_to_platform: { walletId: string; identity: string; to: string; amount: WithdrawAmount; grant: string };
   credits_withdrawals: { walletId: string; identity: string };
   platform_addresses: { walletId: string };
   platform_activity: { walletId: string };
@@ -3425,6 +3444,8 @@ export type CommandResults = {
   credits_resolve_top_up: null;
   credits_withdraw_quote: WithdrawQuote;
   credits_withdraw: WithdrawOutcome;
+  credits_withdraw_to_platform_quote: WithdrawToPlatformQuote;
+  credits_withdraw_to_platform: WithdrawToPlatformOutcome;
   credits_withdrawals: Array<Withdrawal>;
   platform_addresses: PlatformAddressBalance;
   platform_activity: Array<PlatformActivity>;
@@ -3757,6 +3778,8 @@ export const COMMANDS: Record<CommandName, string> = {
   credits_resolve_top_up: "identity",
   credits_withdraw_quote: "identity",
   credits_withdraw: "identity",
+  credits_withdraw_to_platform_quote: "identity",
+  credits_withdraw_to_platform: "identity",
   credits_withdrawals: "identity",
   platform_addresses: "identity",
   platform_activity: "identity",
@@ -3954,6 +3977,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "outpoint_not_found",
   "stuck_funding",
   "shielded_spend_unresolved",
+  "last_startup_wallet",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",
@@ -4094,6 +4118,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "registration.funding_cancelled",
   "registration.not_synced",
   "registration.funding_unknown_recent",
+  "registration.shielded_not_ready",
+  "registration.quote_changed",
   "name.invalid",
   "name.taken",
   "name.contest_open",
@@ -4156,6 +4182,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "governance.vote_rejected",
   "governance.invalid_proposal",
   "governance.submit_refused",
+  "governance.proposal_in_progress",
   "governance.no_peers",
   "governance.list_unavailable",
   "governance.contest_not_found",

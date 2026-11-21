@@ -1538,6 +1538,12 @@ impl TxDraft {
             Some(_) => Some(prepared.attempts.lock().await),
             None => None,
         };
+        // The evidence a later process restores this payment's spend
+        // claims from (#88), stored before it can leave; again for a send
+        // recovered with its outcome unknown, which may be its first.
+        if matches!(*prepared.phase(), Phase::Pending | Phase::Unknown) {
+            self.mark_sent(&prepared, true).await?;
+        }
         // A contact payment's first broadcast is under way until its
         // outcome settled the contact (`settle_contact`).
         let (first, _in_flight) = {
@@ -1575,7 +1581,13 @@ impl TxDraft {
             Phase::Sent => self.session.spends.release(&self.wallet_id, prepared.owner),
             // Never sent: release key-wallet's reservation (owner-guarded, a
             // no-op where platform-wallet already did) and the engine's.
-            Phase::Released => prepared.release(&self.session).await,
+            Phase::Released => {
+                prepared.release(&self.session).await;
+                if let Err(e) = self.mark_sent(&prepared, false).await {
+                    tracing::warn!(error = %e, txid = %prepared.summary.txid,
+                        "could not drop the sent mark of a payment never sent");
+                }
+            }
             Phase::Pending | Phase::Unknown | Phase::Broadcasting => {}
         }
         let dispatched = matches!(
@@ -2135,6 +2147,12 @@ impl PreparedTx {
         *self.phase() == Phase::Released
     }
 
+    /// Not handed off yet. Means nothing left only for a leased hand-off:
+    /// an unleased first broadcast can end `Pending` after a library error.
+    pub(crate) fn pending(&self) -> bool {
+        *self.phase() == Phase::Pending
+    }
+
     /// Refunds a charge no admission took (a resend the fence ran as
     /// `Resend`, MG-04 D7); a no-op once one did.
     pub(crate) fn refund_unadmitted(&self) {
@@ -2197,6 +2215,40 @@ impl Drop for PreparedTx {
         });
     }
 }
+
+impl TxDraft {
+    /// Marks `prepared` as a payment this app sent, naming the wallet's
+    /// coins it signed (`sent`), or removes the mark
+    /// ([`crate::tx_actions::SENT_PREFIX`]).
+    async fn mark_sent(&self, prepared: &PreparedTx, sent: bool) -> Result<(), EngineError> {
+        let (scope, key) = (
+            self.wallet_id.to_string(),
+            format!(
+                "{}{}",
+                crate::tx_actions::SENT_PREFIX,
+                prepared.summary.txid
+            ),
+        );
+        let coins = sent.then(|| {
+            (prepared.summary.inputs.iter())
+                .map(|i| i.outpoint.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        });
+        self.session
+            .appdb_op(move |db| {
+                #[cfg(all(test, debug_assertions))]
+                db.fault_point(SENT_MARK_FAULT, dw_appdb::fault::Stage::Before)?;
+                db.set_setting_durable(&scope, &key, coins.as_deref())
+            })
+            .await
+    }
+}
+
+/// A test's fault point on the sent mark's write, failing it before the
+/// hand-off.
+#[cfg(all(test, debug_assertions))]
+pub(crate) const SENT_MARK_FAULT: &str = "send.sent_mark";
 
 impl NetworkSession {
     /// Stores the payment's messages and adds its recipients to the address

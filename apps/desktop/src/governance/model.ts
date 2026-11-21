@@ -512,11 +512,21 @@ export function governanceErrorText(e: unknown): string | null {
       return "Some details of the proposal aren't valid.";
     case "governance.submit_refused":
       return REFUSAL[e.data?.kind === "reason" ? e.data.reason : ""] ?? "This proposal can't be submitted now.";
+    case "governance.proposal_in_progress":
+      return "A proposal with this name is already in progress, and its fee may have gone out. Don't pay again: Mine shows it.";
     case "governance.not_implemented":
       return "This isn't available yet.";
     default:
       return null;
   }
+}
+
+/** `governance.proposal_in_progress` (a draft named as one of the wallet's proposals in progress): the
+ *  hash of the proposal it names, `null` when it names none (that create call is still out), and
+ *  `undefined` for any other error. */
+export function inProgressRefusal(e: unknown): string | null | undefined {
+  if (!isAppError(e) || e.code !== "governance.proposal_in_progress") return undefined;
+  return e.data?.kind === "proposalHash" ? e.data.hash : null;
 }
 
 // ---------------------------------------------------------------- the fee (D29, D33, D34)

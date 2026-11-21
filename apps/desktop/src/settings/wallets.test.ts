@@ -117,6 +117,30 @@ describe("wallets list", () => {
     expect(model.rows[1]).toMatchObject({ loaded: true, loadOnStartup: false });
   });
 
+  it("#113 the last wallet on the startup list cannot be unticked", async () => {
+    const model = new WalletsModel(b);
+    await model.load();
+    expect(model.rows.map((r) => model.canUntickStartup(r))).toEqual([true, true]);
+    await model.setStartup(B, false);
+    expect(model.rows.map((r) => model.canUntickStartup(r))).toEqual([false, true]);
+    // A refusal from the backend (another window, the CLI) is said, and nothing changes.
+    expect(await model.setStartup(A, false)).toBe(false);
+    expect(model.error).toBe(WalletsText.oneOpensAtStart);
+    expect(failureText(appError("last_startup_wallet"))).toBe(WalletsText.oneOpensAtStart);
+    expect(model.rows.map((r) => r.loadOnStartup)).toEqual([true, false]);
+  });
+
+  it("#113 closing the last wallet on the startup list hands it to the open one", async () => {
+    const model = new WalletsModel(b);
+    await model.load();
+    await model.setStartup(B, false);
+    expect(await model.close(A)).toBe(true);
+    expect(model.rows.map((r) => [r.loaded, r.loadOnStartup])).toEqual([
+      [false, false],
+      [true, true],
+    ]);
+  });
+
   it("IOS110_listFallsBackToLoadedWalletsWhileLoadStatesAreNotImplemented", async () => {
     fixture.fail("wallet_load_states", "call");
     const model = new WalletsModel(b);
@@ -150,6 +174,15 @@ describe("remove wallet", () => {
     expect(model.step).toBe("done");
     expect((await b.walletLoadStates()).map((w) => w.walletId)).toEqual([A]);
     expect(fixture.world.lock.walletsWithSecrets).toEqual([A]);
+  });
+
+  it("#113 removing the only wallet on the startup list ticks the one shown next", async () => {
+    await b.setLoadOnStartup(B, false);
+    const model = new RemoveWalletModel(b, A);
+    await model.load();
+    await model.remove(PASS);
+    expect(model.step).toBe("done");
+    expect((await b.walletLoadStates()).map((w) => [w.walletId, w.loadOnStartup])).toEqual([[B, true]]);
   });
 
   it("IOS110_aClosedSheetRemovesNothing", async () => {

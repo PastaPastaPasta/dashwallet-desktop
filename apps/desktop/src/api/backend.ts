@@ -185,6 +185,8 @@ import type { WithdrawAmount } from "./generated/WithdrawAmount";
 import type { Withdrawal } from "./generated/Withdrawal";
 import type { WithdrawOutcome } from "./generated/WithdrawOutcome";
 import type { WithdrawQuote } from "./generated/WithdrawQuote";
+import type { WithdrawToPlatformOutcome } from "./generated/WithdrawToPlatformOutcome";
+import type { WithdrawToPlatformQuote } from "./generated/WithdrawToPlatformQuote";
 import type { DashPayEventPage } from "./generated/DashPayEventPage";
 import type { GrantAction } from "./generated/GrantAction";
 import type { GrantRequest } from "./generated/GrantRequest";
@@ -573,6 +575,10 @@ export interface Backend {
   creditsWithdrawQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawQuote>;
   /** Withdraws to a Dash address under the quote's `platformOp` grant. */
   creditsWithdraw(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawOutcome>;
+  /** C-routes D-C6: moving credits to the wallet's own Platform address; `all` keeps the fee in reserve. */
+  creditsWithdrawToPlatformQuote(walletId: string, identity: string, amount: WithdrawAmount): Promise<WithdrawToPlatformQuote>;
+  /** Moves credits to `to`, one of the wallet's own Platform addresses, under the quote's `platformOp` grant. */
+  creditsWithdrawToPlatform(walletId: string, identity: string, to: string, amount: WithdrawAmount, grant: string): Promise<WithdrawToPlatformOutcome>;
   /** The identity's withdrawals on Platform, newest first. */
   creditsWithdrawals(walletId: string, identity: string): Promise<Withdrawal[]>;
   addressBook(walletId: string, purpose: AddressPurposeName | null): Promise<AddressBookEntry[]>;

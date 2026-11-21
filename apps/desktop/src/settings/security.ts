@@ -28,7 +28,7 @@ export const SecurityText = {
   signingWindowHint:
     "For 5 minutes after you unlock, payments can add up to the spending limit without asking again. A total over the limit still asks. Locking, sleep and quitting end it.",
   spendLimit: "Spending limit",
-  spendLimitHint: "The total payments can add up to during those 5 minutes. The same limit applies to Touch ID when it is available.",
+  spendLimitHint: "The total payments can add up to during those 5 minutes. Touch ID, when available, checks each payment against this limit on its own, not a running total.",
   encryptFirst: "Encrypt the wallet first.",
   autohideBalance: "Hide balances when the app starts",
   lockedAutomatically: "Locked automatically.",
