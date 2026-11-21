@@ -79,6 +79,7 @@ type State = { name: string; roots: string[]; open: (page: Page, theme: Theme, l
 const ONBOARDING = ["onboarding"];
 const FORGOT = ["forgot-passphrase"];
 const RECOVERY = ["recovery-phrase"];
+const panesOf = (roots: string[]) => [...roots.map((id) => `[data-testid="${id}"]`), ...(roots.some((id) => id === "onboarding" || id === "pre-release-notice") ? [".onboarding-panel"] : [])];
 
 const STATES: State[] = [
   {
@@ -227,6 +228,6 @@ for (const theme of THEMES)
       test(`${state.name} shows only catalog text under ${pseudo[0]}, fits, and passes axe, ${theme}`, async ({ page }, info) => {
         test.setTimeout(120_000);
         const errors = trackPageErrors(page);
-        await checkArea(page, info, theme, pseudo, { name: state.name, roots: state.roots, data: [...SHARED, ...DATA, WORDS], open: (lang) => state.open(page, theme, lang) });
+        await checkArea(page, info, theme, pseudo, { name: state.name, roots: state.roots, panes: panesOf(state.roots), data: [...SHARED, ...DATA, WORDS], open: (lang) => state.open(page, theme, lang) });
         expect(errors).toEqual([]);
       });
