@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import { DEFAULT_PREFS, ui } from "../app/ui";
-import { build, fill, flatten, pluralForm, pseudoCatalog, renderTag, tokenize, type Catalog } from "./core";
+import { build, fill, flatten, pluralForm, pseudoCatalog, renderTag, tokenize, type Catalog, type Params } from "./core";
 import { en } from "./en";
 import { formatLocale, isComplete, LANGUAGES, resolveLanguage, systemLanguage, t, type Language } from "./index";
 
@@ -48,12 +48,26 @@ describe("t", () => {
     }
   });
 
+  it("picks the plural form of an English fallback by English's rules, and formats the number in the language's locale", () => {
+    const ru: Language = { tag: "ru-x-dwtest", name: "Русский", dir: "ltr", messages: new Map([["shell.status.synced", "Синхронизировано"]]) };
+    LANGUAGES.push(ru);
+    try {
+      choose("ru-x-dwtest");
+      // Russian puts 21 in `one`; the English text it falls back to does not.
+      expect(t("shell.status.peers", { count: 21 })).toBe("21 peers");
+      expect(t("shell.status.peers", { count: 1 })).toBe("1 peer");
+      expect(t("shell.status.peers", { count: 1234 })).toBe(`${new Intl.NumberFormat("ru").format(1234)} peers`);
+    } finally {
+      LANGUAGES.pop();
+    }
+  });
+
   it("renders rich text: tags through their renderers, placeholders as elements, no concatenation", () => {
     const parts = build<string>("Read <b>the {doc}</b> and <link>open {n}</link>.", { doc: "terms", n: 2 }, { locale: "en", isolate: false }, (tag, c) => `[${tag}:${c.join("")}]`);
     expect(parts.join("")).toBe("Read [b:the terms] and [link:open 2].");
     expect(build<string>("<b>unclosed", {}, { locale: "en", isolate: false }, (tag, c) => `[${tag}:${c.join("")}]`).join("")).toBe("[b:unclosed]");
     const node = t.rich("settings.privacy.usernameInRequestsHint", { wallet: createElement("strong", null, "Main") });
-    expect(text(node)).toContain("payment requests of “[strong:Main]” show");
+    expect(text(node)).toContain("payment requests of “[bdi:[strong:Main]]” show");
     expect(tokenize("a {b} <c>d</c>")).toEqual([
       { kind: "text", text: "a " },
       { kind: "param", name: "b" },
@@ -87,15 +101,24 @@ describe("t", () => {
     expect(t("shell.status.peers", { count: "1" })).toBe("1 peers");
     // @ts-expect-error: no placeholder named `who`
     t("network.confirmTitle", { who: "x" });
+    // A plural takes its other placeholders as well as `count`.
+    const words = { one: "{name} has {count} word", other: "{name} has {count} words" } as const;
+    const both: Params<typeof words, string> = { name: "Main", count: 2 };
+    // @ts-expect-error: and still requires them
+    const missing: Params<typeof words, string> = { count: 2 };
+    expect(fill(pluralForm(words, 1, "en"), { ...both, count: 1 }, { locale: "en", isolate: false })).toBe("Main has 1 word");
+    expect(missing).toBeDefined();
     const ok: Catalog<typeof en> = { shell: { status: { synced: "Synkd", peers: { one: "a", other: "b" } } } };
     // @ts-expect-error: a key English does not have fails tsc
     const extra: Catalog<typeof en> = { shell: { status: { syncd: "Synkd" } } };
-    expect([ok, extra]).toHaveLength(2);
+    // @ts-expect-error: nor does an area that has no English messages yet
+    const empty: Catalog<typeof en> = { pay: { rogue: "x" } };
+    expect([ok, extra, empty]).toHaveLength(3);
   });
 });
 
 describe("the language in use", () => {
-  const real = LANGUAGES.filter((l) => !l.pseudo);
+  const real = [LANGUAGES[0]];
   const es: Language = { tag: "es", name: "Español", dir: "ltr", messages: new Map(flatten(en)) };
   const ptPartial: Language = { tag: "pt-BR", name: "Português (Brasil)", dir: "ltr", messages: new Map([["routes.home", "Início"]]) };
 
@@ -107,15 +130,25 @@ describe("the language in use", () => {
     expect(systemLanguage([], shipped).tag).toBe("en");
   });
 
+  it("matches a language alone only in a script that does not conflict", () => {
+    const hans: Language = { tag: "zh-Hans", name: "简体中文", dir: "ltr", messages: new Map(flatten(en)) };
+    const shipped = [...real, hans];
+    expect(systemLanguage(["zh-Hans-CN", "en"], shipped).tag).toBe("zh-Hans");
+    expect(systemLanguage(["zh-CN"], shipped).tag).toBe("zh-Hans");
+    expect(systemLanguage(["zh-Hant-TW", "en"], shipped).tag).toBe("en");
+    expect(systemLanguage(["zh-TW", "zh-Hans"], shipped).tag).toBe("zh-Hans");
+    expect(systemLanguage(["pt-PT"], [...real, { ...es, tag: "pt" }]).tag).toBe("pt");
+  });
+
   it("never takes a pseudo-locale from the system", () => {
-    expect(systemLanguage(["en-XA", "ar-XB", "ar"]).tag).toBe("en");
+    expect(systemLanguage(["en-XA", "ar-XB"]).tag).toBe("en");
   });
 
   it("takes a saved choice the build ships, and follows the system for one it does not", () => {
     expect(resolveLanguage("en-XA", ["en"]).tag).toBe("en-XA");
     expect(resolveLanguage("ar-xb", ["en"]).dir).toBe("rtl");
-    expect(resolveLanguage("tlh", ["en-GB"]).tag).toBe("en");
-    expect(resolveLanguage(null, ["fr-FR"]).tag).toBe("en");
+    expect(resolveLanguage("qaa", ["en-GB"]).tag).toBe("en");
+    expect(resolveLanguage(null, ["qaa-FR"]).tag).toBe("en");
   });
 
   it("formats with the base locale unless another language is chosen", () => {
@@ -125,7 +158,15 @@ describe("the language in use", () => {
     expect(formatLocale(undefined, "en", ["en-GB"])).toBe(undefined);
     expect(formatLocale(undefined, "en", ["de-DE"])).toBe("en");
     expect(formatLocale("en-US", "ar-XB", ["en-US"])).toBe("ar-XB");
-    expect(formatLocale("en-US", "tlh", ["en-US"])).toBe("en-US");
+    expect(formatLocale("en-US", "qaa", ["en-US"])).toBe("en-US");
+    // A chosen language in another script than the system's formats in its own.
+    LANGUAGES.push({ tag: "zh-Hans-x-dwtest", name: "简体中文", dir: "ltr", messages: new Map() });
+    try {
+      expect(formatLocale("zh-TW", "zh-Hans-x-dwtest", ["zh-TW"])).toBe("zh-Hans-x-dwtest");
+      expect(formatLocale("zh-CN", "zh-Hans-x-dwtest", ["zh-CN"])).toBe("zh-CN");
+    } finally {
+      LANGUAGES.pop();
+    }
   });
 });
 
@@ -135,7 +176,10 @@ describe("pseudo-locales", () => {
   const rtl = pseudoCatalog(messages, "rtl");
 
   it("cover every key, so they count as complete", () => {
-    for (const l of LANGUAGES) expect(isComplete(l)).toBe(true);
+    // Only the generated ones: a real translation may lag English and falls back to it per key.
+    const pseudo = LANGUAGES.filter((l) => l.pseudo);
+    expect(pseudo.map((l) => l.tag)).toEqual(["en-XA", "ar-XB"]);
+    for (const l of pseudo) expect(isComplete(l)).toBe(true);
   });
 
   it("bracket, accent and lengthen every message, leaving placeholders and tags", () => {
@@ -162,6 +206,52 @@ describe("pseudo-locales", () => {
     choose("ar-XB");
     expect(t.language.dir).toBe("rtl");
     expect(t("network.confirmTitle", { network: "@alice" })).toBe("\u202eSwitch to \u202c\u2068@alice\u2069\u202e?\u202c");
+  });
+});
+
+describe("bidi isolation", () => {
+  it("isolates a right-to-left value inside a left-to-right sentence, and leaves left-to-right values as they are", () => {
+    expect(t("network.confirmTitle", { network: "Testnet" })).toBe("Switch to Testnet?");
+    expect(t("network.confirmTitle", { network: "@سارة" })).toBe("Switch to \u2068@سارة\u2069?");
+    expect(t("network.confirmTitle", { network: "@שרה" })).toBe("Switch to \u2068@שרה\u2069?");
+    // An unterminated override in a name cannot reorder the rest of the sentence.
+    expect(t("network.confirmTitle", { network: "@x\u202Dy" })).toBe("Switch to \u2068@x\u202Dy\u2069?");
+    // A stray isolate end cannot close the isolate around the value, nor an unclosed start outlive it.
+    expect(t("network.confirmTitle", { network: "x\u2069\u202Ey" })).toBe("Switch to \u2068\u2068x\u2069\u202Ey\u2069?");
+    expect(t("network.confirmTitle", { network: "x\u2067y" })).toBe("Switch to \u2068x\u2067y\u2069\u2069?");
+    // An isolate cannot span a paragraph separator, so each paragraph of a value is isolated alone.
+    expect(t("network.confirmTitle", { network: "x\u2029\u202Ey" })).toBe("Switch to \u2068x\u2069\u2029\u2068\u202Ey\u2069?");
+    expect(t("network.confirmTitle", { network: "\u2067x\r\ny" })).toBe("Switch to \u2068\u2067x\u2069\u2069\r\n\u2068y\u2069?");
+    for (const sep of ["\n", "\r", "\x1C", "\x1D", "\x1E", "\x85"])
+      expect(t("network.confirmTitle", { network: `x${sep}\u202Ey` }), JSON.stringify(sep)).toBe(`Switch to \u2068x\u2069${sep}\u2068\u202Ey\u2069?`);
+    // Sogdian, past the first supplementary right-to-left block.
+    expect(t("network.confirmTitle", { network: "\u{10F30}" })).toBe("Switch to \u2068\u{10F30}\u2069?");
+    expect(t("network.confirmTitle", { network: "a\uFEFFb" })).toBe("Switch to a\uFEFFb?");
+  });
+
+  it("isolates an element placeholder of rich text in every language", () => {
+    const name = createElement("b", null, "@سارة");
+    choose("ar-XB");
+    expect(text(t.rich("network.confirmTitle", { network: name }))).toBe("\u202eSwitch to \u202c[bdi:[b:@سارة]]\u202e?\u202c");
+    choose(null);
+    expect(text(t.rich("network.confirmTitle", { network: name }))).toBe("Switch to [bdi:[b:@سارة]]?");
+    expect(text(t.rich("network.confirmTitle", { network: createElement("b", null, "@alice") }))).toBe("Switch to [bdi:[b:@alice]]?");
+  });
+
+  it("draws an English fallback left to right as a whole in a right-to-left language", () => {
+    const ar: Language = { tag: "ar-x-dwtest", name: "العربية", dir: "rtl", messages: new Map([["shell.status.synced", "متزامن"]]) };
+    LANGUAGES.push(ar);
+    try {
+      choose("ar-x-dwtest");
+      expect(t("shell.status.synced")).toBe("متزامن");
+      expect(t("shell.status.peers", { count: 21 })).toBe(`\u2066\u2068${new Intl.NumberFormat("ar").format(21)}\u2069 peers\u2069`);
+      expect(text(t.rich("network.confirmTitle", { network: "x" }))).toBe("\u2066Switch to \u2068x\u2069?\u2069");
+      // The left-to-right isolate cannot span a paragraph separator either, so it ends and starts again at one.
+      expect(t("network.confirmTitle", { network: "x\u2029y" })).toBe("\u2066Switch to \u2068x\u2069\u2069\u2029\u2066\u2068y\u2069?\u2069");
+      expect(text(t.rich("network.confirmTitle", { network: "x\u2029y" }))).toBe("\u2066Switch to \u2068x\u2069\u2069\u2029\u2066\u2068y\u2069?\u2069");
+    } finally {
+      LANGUAGES.pop();
+    }
   });
 });
 
