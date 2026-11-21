@@ -5,6 +5,7 @@ and the relay's txid check."""
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import resource
 import shutil
@@ -799,6 +800,62 @@ def test_the_failure_notice_goes_out_before_any_run_left_a_directory(tmp_path):
     run.mkdir(parents=True)
     subprocess.run(notify, env=env, check=True, timeout=60)
     assert (tmp_path / "sent").read_text().endswith(f"artifacts: {run}")
+
+
+def test_a_green_run_tells_the_notifier_so(tmp_path):
+    """The nightly unit's ExecStartPost= passes --green, and the notifier gets result=success."""
+    notifier = tmp_path / "notify"
+    notifier.write_text('#!/bin/sh\nprintf %s "$1" > "$(dirname "$0")/sent"\n')
+    notifier.chmod(0o700)
+    env = {**os.environ, "DW_DP_NOTIFY": str(notifier), "DW_DP_STATE": str(tmp_path / "state")}
+    notify = ["bash", str(REPO / "regtest/scripts/dashpay-nightly-notify.sh"), "--green", "dw-x.service"]
+    subprocess.run(notify, env=env, check=True, timeout=60)
+    assert (tmp_path / "sent").read_text() == "dw-x.service: result=success"
+
+
+def test_the_issue_notifier_opens_updates_and_closes_one_issue(tmp_path):
+    """A red night opens the issue or comments on it, without the host's path; a green one closes it."""
+    if shutil.which("jq") is None:
+        pytest.skip("jq is not installed")
+    for name in ("dashpay-nightly-issue.sh", "nightly-issue.sh"):
+        source = REPO / ("ci/github" if name == "nightly-issue.sh" else "regtest/scripts") / name
+        shutil.copy(source, tmp_path / name)
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "gh").write_text(
+        '#!/bin/sh\nprintf \'%s\\n\' "$GH_REPO $*" >> "$CALLS"\n'
+        '[ "$1 $2" = "issue list" ] && cat "$OPEN"\nexit 0\n'
+    )
+    (fake / "gh").chmod(0o700)
+    calls, opened = tmp_path / "calls", tmp_path / "open.json"
+    env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}", "CALLS": str(calls), "OPEN": str(opened)}
+    env["DW_DP_ISSUE_REPO"] = "owner/name"
+    title = "Nightly failure: DashPay suites on testnet"
+
+    def notify(notice):
+        calls.write_text("")
+        subprocess.run(["bash", str(tmp_path / "dashpay-nightly-issue.sh"), notice], env=env, check=True, timeout=60)
+        listed, *rest = calls.read_text().splitlines()
+        assert listed == "owner/name issue list --state open --label nightly-failure --limit 100 --json number,title"
+        return rest
+
+    red = f"dw.service: result=exit-code exit=1; artifacts: {tmp_path}/state/nightly/20261120-021500"
+    opened.write_text(json.dumps([{"number": 3, "title": "Nightly failure: GitHub Actions"}]))
+    (create,) = notify(red)
+    assert create.startswith(f"owner/name issue create --title {title} --label nightly-failure --body ")
+    assert create.endswith("result=exit-code exit=1; artifacts: nightly/20261120-021500 on the nightly's host")
+    assert str(tmp_path) not in create
+    for odd in (f"{red}/7 x\ndw.service: result=success", "dw.service: result=success\n", "anything: result=success x"):
+        (made,) = notify(odd)
+        assert made.startswith("owner/name issue create ") and "7 x" not in made
+    assert notify("dw.service: result=success") == []
+    (never_ran,) = notify("dw.service: result=success exit=0; artifacts: none yet")
+    assert never_ran.startswith("owner/name issue create ")
+    opened.write_text(json.dumps([{"number": 3, "title": "Nightly failure: GitHub Actions"}, {"number": 7, "title": title}]))
+    (comment,) = notify(red)
+    assert comment.startswith("owner/name issue comment 7 --body ") and str(tmp_path) not in comment
+    (close,) = notify("dw.service: result=success")
+    assert close.startswith("owner/name issue close 7 --comment ") and close.endswith("dw.service: result=success")
 
 
 @pytest.mark.parametrize("where", ["outside", "in the state root", "in the checkout"])

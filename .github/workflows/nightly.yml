@@ -307,6 +307,57 @@ jobs:
             .fuzz/logs/
           if-no-files-found: warn
 
+  # While a scheduled run is red, one open issue labelled nightly-failure names its failed jobs;
+  # the next green run closes it. A cancelled job counts as red: a job that runs out of time may
+  # be reported so. crossui-linux is non-blocking and is left out.
+  report:
+    name: Report the nightly's result
+    if: ${{ always() && github.event_name == 'schedule' }}
+    needs: [regtest, shielded, release-check, fuzz]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: ci/github
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          RUN: ${{ github.run_id }}
+          ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # A rerun of an older night must not open, update or close the issue of a newer one.
+          # A first attempt always reports: a newer run can only be queued behind it.
+          if [ "$ATTEMPT" -gt 1 ]; then
+            if ! latest=$(gh api "repos/$GH_REPO/actions/workflows/nightly.yml/runs?event=schedule&per_page=1" \
+              --jq '.workflow_runs[0].id') || [[ ! $latest =~ ^[0-9]+$ ]]; then
+              echo "the latest scheduled run could not be read: the issue is left as it is" >&2
+              exit 1
+            fi
+            if [ "$latest" != "$RUN" ]; then
+              echo "run $latest is newer: nothing reported for this rerun"
+              exit 0
+            fi
+          fi
+          what="The nightly run of $(date -u +%F) at ${GITHUB_SHA:0:8}"
+          case " $RESULTS " in
+            *" failure "* | *" cancelled "*)
+              failed=$(gh api "repos/$GH_REPO/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" \
+                --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | select(.name | startswith("SwiftCrossUI") | not) | "- [\(.name)](\(.html_url))"') ||
+                failed="(the failed jobs could not be listed)"
+              ci/github/nightly-issue.sh failed "GitHub Actions" "$what failed: $RUN_URL"$'\n\n'"$failed"
+              ;;
+            *) ci/github/nightly-issue.sh green "GitHub Actions" "$what passed: $RUN_URL" ;;
+          esac
+
   # Non-blocking: on the runner the demo fails 4 AT-SPI checks, two of them known-intermittent
   # (docs/ci.md, "Known gaps"). A red X here does not turn the nightly red; the regtest job does.
   crossui-linux:
