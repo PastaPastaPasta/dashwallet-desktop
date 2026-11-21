@@ -268,7 +268,6 @@ impl NetworkSession {
     /// cleared here. In-memory read.
     pub fn rescan_progress(&self) -> Result<Option<RescanProgress>, EngineError> {
         let _op = self.try_enter()?;
-        let target = self.hub.tracker().tip_height();
         let mut guard = self.hub.rescan();
         if guard.as_ref().is_some_and(RescanState::finished) {
             *guard = None;
@@ -276,7 +275,12 @@ impl NetworkSession {
         Ok(guard.as_ref().map(|r| RescanProgress {
             from_height: r.from_height,
             current_height: r.current_height(),
-            target_height: target,
+            // Done once its wallets are back at their checkpoints, not at
+            // the network's tip.
+            target_height: (r.wallets.values())
+                .filter(|w| w.reached.unwrap_or(0) < w.resume_height)
+                .map(|w| w.resume_height)
+                .max(),
             started_at: r.started_at,
         }))
     }
@@ -625,24 +629,7 @@ impl NetworkSession {
         match resumed {
             Ok(Some(target)) => {
                 self.pause_publish().await;
-                self.hub.publish_rescan(|rescan| {
-                    if rescan.as_ref().is_some_and(RescanState::finished) {
-                        *rescan = None;
-                    }
-                    let state = rescan.get_or_insert_with(|| RescanState {
-                        from_height: record.reached.saturating_add(1),
-                        started_at: unix_now(),
-                        wallets: BTreeMap::new(),
-                    });
-                    state.from_height = state.from_height.min(record.reached.saturating_add(1));
-                    state.wallets.insert(
-                        wallet,
-                        WalletRescan {
-                            resume_height: target,
-                            reached: None,
-                        },
-                    );
-                });
+                self.publish_replay(wallet, record.reached, target);
             }
             Ok(None) => {
                 tracing::warn!(wallet = %wallet, "replay not resumed: the wallet is not loaded");
@@ -653,6 +640,30 @@ impl NetworkSession {
                 hold(false).await;
             }
         }
+    }
+
+    /// Shows `wallet`'s replay from above `reached` to `target` as a
+    /// rescan: spends wait for it, so it reports progress and can be
+    /// cancelled.
+    pub(crate) fn publish_replay(&self, wallet: WalletId, reached: u32, target: u32) {
+        self.hub.publish_rescan(|rescan| {
+            if rescan.as_ref().is_some_and(RescanState::finished) {
+                *rescan = None;
+            }
+            let state = rescan.get_or_insert_with(|| RescanState {
+                from_height: reached.saturating_add(1),
+                started_at: unix_now(),
+                wallets: BTreeMap::new(),
+            });
+            state.from_height = state.from_height.min(reached.saturating_add(1));
+            state.wallets.insert(
+                wallet,
+                WalletRescan {
+                    resume_height: target,
+                    reached: None,
+                },
+            );
+        });
     }
 
     /// Tests: holds a rescan's publication while a pause is set.
