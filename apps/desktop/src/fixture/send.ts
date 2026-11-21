@@ -89,6 +89,9 @@ export interface SendWorld {
   /** What `resolve_contact_payment_lock` finds for a lock whose payment the fixture did not hand
    * over itself (a scenario's lock); one it handed over is `sent`. */
   lockEvidence: LockResolutionName | null;
+  /** InstantSend-locked payments a ChainLocked spend beat: Abandon is offered, and refused until
+   * the wallet restarts and rescans (the engine's `rescanFirst`). */
+  rescanFirst: string[];
 }
 
 export const newSendWorld = (): SendWorld => ({
@@ -100,6 +103,7 @@ export const newSendWorld = (): SendWorld => ({
   announced: {},
   contactIndex: {},
   lockEvidence: null,
+  rescanFirst: [],
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -397,7 +401,12 @@ function rowOf(wallet: FixtureWallet, txid: string): TxRow {
   return row;
 }
 
-const refused = (refusal: TxActionRefusalName) => fail("tx_action_refused", `refused: ${refusal}`, { kind: "txAction", refusal });
+/** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`). */
+const refusalMessage = (refusal: TxActionRefusalName) =>
+  refusal === "rescanFirst"
+    ? "This payment can be abandoned after Dash Wallet restarts and rescans from the wallet's birth. Restart, then run Rescan, then Abandon again."
+    : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
+const refused = (refusal: TxActionRefusalName) => fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal });
 
 // ---------------------------------------------------------------- the handlers
 
@@ -802,7 +811,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         maturesIn: row.status.maturesIn,
         inMempool: null,
         abandoned: row.status.kind === "abandoned",
-        canAbandon: refusal === null,
+        canAbandon: refusal === null || world.send.rescanFirst.includes(txid),
         canResend: refusal === null,
         dustLockedOutputs: [],
         lastAnnouncedAt: world.send.announced[txid] ?? null,
@@ -812,6 +821,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     abandon_transaction: ({ walletId, txid }, ctx) => {
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
+      if (ctx.world.send.rescanFirst.includes(txid)) throw refused("rescanFirst");
       const refusal = txActionRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
