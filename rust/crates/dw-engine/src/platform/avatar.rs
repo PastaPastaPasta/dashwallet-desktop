@@ -548,8 +548,9 @@ impl Pipeline {
         })
     }
 
-    /// Runs `work` (a decode) on a blocking thread, at most [`DECODES`] at
-    /// once; a panic is `avatar.unsupported`.
+    /// Runs `work` (a decode) on a thread of its own, at most [`DECODES`] at
+    /// once; a panic is `avatar.unsupported`. Not an engine thread: their
+    /// panic hook poisons the engine even for a panic the decode catches.
     async fn decoding<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> Result<T, AvatarError> + Send + 'static,
@@ -558,12 +559,16 @@ impl Pipeline {
         // while the decode still runs.
         let permit = (Arc::clone(&self.decodes).acquire_owned().await)
             .map_err(|_| AvatarError::Unsupported)?;
-        tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            work()
-        })
-        .await
-        .unwrap_or(Err(AvatarError::Unsupported))
+        let (sent, received) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name("dw-avatar-decode".into())
+            .stack_size(crate::engine::ENGINE_THREAD_STACK_SIZE)
+            .spawn(move || {
+                let _permit = permit;
+                let _ = sent.send(work());
+            })
+            .map_err(|_| AvatarError::Unsupported)?;
+        received.await.unwrap_or(Err(AvatarError::Unsupported))
     }
 
     /// Fetches and ingests `target` (with the fingerprint for a candidate),

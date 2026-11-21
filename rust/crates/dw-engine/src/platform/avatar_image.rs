@@ -211,6 +211,10 @@ pub(super) fn ingest(
     fingerprint: bool,
 ) -> Result<Ingested, AvatarError> {
     guarded(|| {
+        #[cfg(test)]
+        if PANIC_IN_INGEST.load(std::sync::atomic::Ordering::SeqCst) {
+            panic!("test: the avatar decode panicked");
+        }
         let (mut image, orientation) = decode_unoriented(bytes)?;
         let dhash = fingerprint.then(|| mobile_dhash(&image));
         image.apply_orientation(orientation);
@@ -242,6 +246,11 @@ pub(super) fn ingest_file(
     let ingested = ingest(&upload, None, true)?;
     Ok((upload, ingested))
 }
+
+/// Tests: every ingest panics inside its guard.
+#[cfg(test)]
+pub(super) static PANIC_IN_INGEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn guarded<T>(body: impl FnOnce() -> Result<T, AvatarError>) -> Result<T, AvatarError> {
     catch_unwind(AssertUnwindSafe(body)).unwrap_or(Err(AvatarError::Unsupported))

@@ -1562,3 +1562,56 @@ async fn the_close_waits_for_a_store_call_left_running() {
         "the closed pipeline still holds the app database"
     );
 }
+
+/// #211: an avatar decode that panics on the engine's runtime is refused
+/// and leaves the engine unpoisoned, and the next read decodes. In a child
+/// process: the poison flag is process-wide and never cleared.
+#[test]
+fn an_avatar_decode_that_panics_leaves_the_engine_unpoisoned() {
+    const CHILD: &str = "DW_AVATAR_PANIC_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name =
+            "platform::avatar_tests::an_avatar_decode_that_panics_leaves_the_engine_unpoisoned";
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return;
+    }
+    struct NoEvents;
+    impl crate::EventSink for NoEvents {
+        fn emit(&self, _event: crate::EngineEvent) {}
+    }
+    let tmp = dw_testutil::private_tempdir();
+    let engine = crate::Engine::new(
+        crate::EngineConfig {
+            data_root: tmp.path().join("data"),
+            worker_threads: Some(2),
+            vault: dw_vault::VaultConfig::default(),
+        },
+        Arc::new(NoEvents),
+    )
+    .unwrap();
+    engine.block_on(async {
+        let rig = Rig::new().await;
+        let bytes = png(300, 200);
+        rig.server.route("/me.png", Route::ok(bytes.clone()));
+        let profile = profile_for(&rig.server.url("good.test", "/me.png"), &bytes);
+        avatar_image::PANIC_IN_INGEST.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(rig.read(&profile).await, Err(AvatarError::Unsupported));
+        avatar_image::PANIC_IN_INGEST.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(!crate::engine_poisoned());
+        let bytes = png(200, 100);
+        rig.server.route("/next.png", Route::ok(bytes.clone()));
+        let profile = profile_for(&rig.server.url("good.test", "/next.png"), &bytes);
+        assert!(rig.read(&profile).await.unwrap().is_some());
+    });
+    assert!(!crate::engine_poisoned());
+}
