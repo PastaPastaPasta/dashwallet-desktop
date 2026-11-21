@@ -887,7 +887,8 @@ fn available(
 /// After a restart a peer relays P, so key-wallet records it; then another
 /// device's spend of P's coin, paying only someone else, is InstantSend
 /// locked and key-wallet sweeps P. C can never confirm: automatic
-/// selection takes nothing of its change, before and after a peer relays C.
+/// selection takes nothing of its change, before and after a peer relays C,
+/// a relay key-wallet ignores as a spend of a swept transaction.
 #[test]
 fn change_of_a_restored_child_of_a_swept_payment_is_not_selected() {
     let (_dir, engine, session, id, paid) = single_coin_wallet();
@@ -909,7 +910,13 @@ fn change_of_a_restored_child_of_a_swept_payment_is_not_selected() {
         Some(0),
         "C's change is not selected"
     );
-    mempool(&engine, &session, id, &child);
+    super::deliver(&engine, &session, id, move |wm| {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        Box::pin(async move {
+            let result = wm.process_mempool_transaction(&child, None).await;
+            assert!(!result.is_relevant, "the relay of C is ignored");
+        })
+    });
     assert_eq!(
         available(&engine, &session, id, COIN / 8),
         Some(0),
