@@ -87,7 +87,10 @@ export function hardCoded(file: string, source: string): string[] {
   const literals = (e: Node | null | undefined) => {
     if (!e) return;
     if (e.type === "Literal" && typeof e.value === "string") add(e.start, e.value);
-    else if (e.type === "TemplateLiteral") for (const q of e.quasis as { start: number; value: { cooked: string } }[]) add(q.start, q.value.cooked);
+    else if (e.type === "TemplateLiteral") {
+      for (const q of e.quasis as { start: number; value: { cooked: string } }[]) add(q.start, q.value.cooked);
+      for (const expression of e.expressions as Node[]) literals(expression);
+    }
     else if (e.type === "ConditionalExpression") {
       literals(e.consequent as Node);
       literals(e.alternate as Node);
@@ -140,11 +143,12 @@ describe("converted screens", () => {
         '    <input placeholder="Type here" />',
         '    <Card why={"Because"} id="raw-id" />',
         '    <p title={"Copy " + name}>{name ?? "Nobody"}{"Left" || name}</p>',
+        '    <i title={`${label ?? "Unnamed wallet"}`} />',
         "  </div>",
         ");",
         'showToast("Copied"); other("not-copy");',
       ].join("\n"),
     );
-    expect(found).toEqual(["2: Hello", "2: Shown", "2: Hidden", "3: Some text", "3: Yes", "3: Count", "4: Type here", "5: Because", "6: Copy", "6: Nobody", "6: Left", "9: Copied"]);
+    expect(found).toEqual(["2: Hello", "2: Shown", "2: Hidden", "3: Some text", "3: Yes", "3: Count", "4: Type here", "5: Because", "6: Copy", "6: Nobody", "6: Left", "7: Unnamed wallet", "10: Copied"]);
   });
 });
