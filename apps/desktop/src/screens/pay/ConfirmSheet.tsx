@@ -25,9 +25,10 @@ import { Sheet } from "../../components/sheet";
 import { FiatLine, useFiat } from "../../fiat/rates";
 import { useDisplay } from "../../format/display";
 import { feeWarningText, payFeeWarning } from "../../format/feeWarning";
+import { messageTable, t as tr, useT } from "../../i18n";
 import { Avatar } from "../contacts/Avatar";
 import { useActionToast } from "../contacts/afterAction";
-import { AcceptFailed, acceptFailedText, acceptUnderLease, acceptedText, WATCH_ONLY, type Payee } from "./contact";
+import { AcceptFailed, acceptFailedText, acceptUnderLease, acceptedText, type Payee } from "./contact";
 import {
   acceptAndPayValue,
   authRefusal,
@@ -44,16 +45,11 @@ import {
   type Confirmed,
   type Outcome,
   type Sending,
-  LOCKED_BEFORE_SEND,
 } from "./model";
 import type { PayAttempt } from "./form";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
-const USING: Record<Advanced["coins"], string> = {
-  any: "Any available funds",
-  mixed: "Fully mixed funds only",
-  selected: "Selected coins",
-};
+const USING: Readonly<Record<Advanced["coins"], string>> = messageTable("pay.confirm.using", ["any", "mixed", "selected"]);
 
 /** The contact a payment pays (DP3-06): who it is, and whether Send accepts their request too. */
 export interface ConfirmContact {
@@ -65,7 +61,7 @@ export interface ConfirmContact {
 }
 
 function coinsText(coins: Advanced): string {
-  return coins.coins === "selected" ? `${coins.selected.length} selected ${coins.selected.length === 1 ? "coin" : "coins"}` : USING[coins.coins];
+  return coins.coins === "selected" ? tr("pay.confirm.selectedCoins", { count: coins.selected.length }) : USING[coins.coins];
 }
 
 export function ConfirmSheet({
@@ -98,6 +94,7 @@ export function ConfirmSheet({
   /** Send was pressed: the payment's own handle for what follows, kept past the sheet. */
   onSend: (sending: Sending) => PayAttempt;
 }) {
+  const t = useT();
   const b = useBackend();
   const shown = useDisplay(network);
   const { chain, amountUnit } = shown;
@@ -199,7 +196,7 @@ export function ConfirmSheet({
   const sendOnce = async () => {
     if (!actions.send || busy || !policyKnown || !waitKnown || retryAt !== null) return;
     if (prompt === "passphrase" && passphrase === "") {
-      setError("Enter your passphrase to send this payment.");
+      setError(t("pay.confirm.needPassphrase"));
       return;
     }
     setBusy(true);
@@ -213,7 +210,7 @@ export function ConfirmSheet({
       if (refusal.kind === "needsPassphrase") {
         attempt.release();
         setAskAnyway(true);
-        setError("Enter your passphrase to send this payment.");
+        setError(t("pay.confirm.needPassphrase"));
       } else if (refusal.kind === "wrongPassphrase") {
         attempt.release();
         setError(refusal.text);
@@ -270,7 +267,7 @@ export function ConfirmSheet({
     if (!keepsPromise(confirmed, prepared.summary)) {
       await draft.abandon(d, prepared.handle);
       endLease();
-      notSent("The payment changed. Review it again.");
+      notSent(t("pay.error.changed"));
       return;
     }
     // An accept that went through is said with whatever outcome the payment gets, a retry's too.
@@ -285,7 +282,7 @@ export function ConfirmSheet({
       // hand-off, or the window locked before it was asked (then it is abandoned here); nothing
       // else is abandoned after a broadcast.
       const never = refusedWhileLocked(e);
-      const o = never ? ({ kind: "failed", text: LOCKED_BEFORE_SEND } as const) : broadcastFailure(e, chain, { txid: prepared.summary.txid, draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
+      const o = never ? ({ kind: "failed", text: t("pay.error.lockedBeforeSend") } as const) : broadcastFailure(e, chain, { txid: prepared.summary.txid, draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
       if (o.kind === "failed") {
         if (toContact || never) await draft.abandon(d, prepared.handle);
         notSent(o.text);
@@ -324,7 +321,7 @@ export function ConfirmSheet({
     const analysis = await b.analyzePsbt(walletId, psbt).catch(() => null);
     if (!mounted.current) return;
     if (analysis === null || !unsignedKeepsPromise(confirmed, analysis)) {
-      onOutcome({ kind: "failed", text: "The payment changed. Review it again." });
+      onOutcome({ kind: "failed", text: t("pay.error.changed") });
       return;
     }
     const copied = await navigator.clipboard.writeText(psbt).then(
@@ -336,7 +333,7 @@ export function ConfirmSheet({
   };
 
   return (
-    <Sheet title={actions.unsignedFirst ? "Unsigned transaction" : "Confirm payment"} width="small" testId="pay-confirm" returnFocus={returnFocus} onClose={() => !busy && onCancel()}>
+    <Sheet title={actions.unsignedFirst ? t("pay.confirm.titleUnsigned") : t("pay.confirm.title")} width="small" testId="pay-confirm" returnFocus={returnFocus} onClose={() => !busy && onCancel()}>
       <form
         className="confirm"
         onSubmit={(e) => {
@@ -349,15 +346,15 @@ export function ConfirmSheet({
           {value(total, "pay-confirm-fiat")}
           <p className="confirm-question">
             {contact?.acceptsToo
-              ? `Accept ${contact.payee.name}'s contact request and send this payment?`
+              ? t("pay.confirm.acceptQuestion", { name: contact.payee.name })
               : actions.unsignedFirst
-              ? "Check the payment below. Nothing is signed or sent: this creates an unsigned transaction (PSBT) to copy or save, then sign in the wallet that holds the keys, for example an offline Dash Core wallet."
-              : "Do you want to send this payment?"}
+              ? t("pay.confirm.unsignedQuestion")
+              : t("pay.confirm.question")}
           </p>
         </div>
         <dl className="detail-list card-l1" data-testid="pay-confirm-facts">
           {isContact(recipient) ? (
-            <DetailRow label="Pay to" testId="pay-confirm-contact">
+            <DetailRow label={t("pay.confirm.payTo")} testId="pay-confirm-contact">
               {contact && (
                 <span className="pay-payee">
                   <Avatar letters={contact.payee.letters} identity={contact.payee.contact} />
@@ -369,33 +366,33 @@ export function ConfirmSheet({
               )}
             </DetailRow>
           ) : (
-            <DetailRow label="Pay to" testId="pay-confirm-address">
+            <DetailRow label={t("pay.confirm.payTo")} testId="pay-confirm-address">
               {recipient.label && <span className="confirm-label">{recipient.label}</span>}
               <span className="address-full">{recipient.address}</span>
             </DetailRow>
           )}
           {contact?.acceptsToo && (
-            <DetailRow label="Contact request" testId="pay-confirm-accept">
-              Accepted with this payment
+            <DetailRow label={t("pay.confirm.contactRequest")} testId="pay-confirm-accept">
+              {t("pay.confirm.acceptedWith")}
             </DetailRow>
           )}
-          {isContact(recipient) && recipient.note && <DetailRow label="Note">{recipient.note}</DetailRow>}
-          <DetailRow label="Amount" testId="pay-confirm-amount">
+          {isContact(recipient) && recipient.note && <DetailRow label={t("pay.confirm.note")}>{recipient.note}</DetailRow>}
+          <DetailRow label={t("pay.confirm.amount")} testId="pay-confirm-amount">
             <AmountText text={shown.full(estimate.totalSent)} unitName={unit} glyph={false} />
             {value(estimate.totalSent, "pay-confirm-amount-fiat")}
           </DetailRow>
-          <DetailRow label="Network fee" testId="pay-confirm-fee">
+          <DetailRow label={t("pay.confirm.networkFee")} testId="pay-confirm-fee">
             <AmountText text={shown.full(estimate.fee)} unitName={unit} glyph={false} />
             {value(estimate.fee, "pay-confirm-fee-fiat")}
           </DetailRow>
-          <DetailRow label="Using">{coinsText(coins)}</DetailRow>
+          <DetailRow label={t("pay.confirm.usingLabel")}>{coinsText(coins)}</DetailRow>
           {changeAddress !== null && (
-            <DetailRow label="Change to" testId="pay-confirm-change">
+            <DetailRow label={t("pay.confirm.changeTo")} testId="pay-confirm-change">
               <span className="address-full">{changeAddress}</span>
               <AmountText text={shown.full(estimate.change ?? 0)} unitName={unit} glyph={false} />
             </DetailRow>
           )}
-          <DetailRow label="Total" testId="pay-confirm-total">
+          <DetailRow label={t("pay.confirm.total")} testId="pay-confirm-total">
             <AmountText text={shown.full(total)} unitName={unit} glyph={false} />
             {value(total, "pay-confirm-total-fiat")}
           </DetailRow>
@@ -405,14 +402,14 @@ export function ConfirmSheet({
             {feeWarningText(feeWarn)}
           </p>
         )}
-        {subtractsFee(recipient) && <p className="placeholder-note">The fee is subtracted from the amount: the payee receives the amount above.</p>}
-        {changeAddress !== null && <p className="placeholder-note">The total includes the change: the custom change address may not belong to this wallet.</p>}
+        {subtractsFee(recipient) && <p className="placeholder-note">{t("pay.confirm.subtractNote")}</p>}
+        {changeAddress !== null && <p className="placeholder-note">{t("pay.confirm.changeNote")}</p>}
         {!policyKnown ? (
-          <LoadingState testId="pay-confirm-policy" text="Checking the payment settings" />
+          <LoadingState testId="pay-confirm-policy" text={t("pay.confirm.checkingPolicy")} />
         ) : (
           prompt === "passphrase" && (
             <div className="form-field">
-              <label htmlFor={fieldId}>Passphrase</label>
+              <label htmlFor={fieldId}>{t("pay.confirm.passphrase")}</label>
               <input
                 ref={field}
                 id={fieldId}
@@ -436,27 +433,27 @@ export function ConfirmSheet({
         {/* Outside the alert: a screen reader announces the refusal once, not every second. */}
         {waitSecs > 0 && (
           <p id={`${fieldId}-wait`} className="form-problem" data-testid="pay-confirm-wait">
-            {error ? "" : "Too many attempts. "}Try again in {waitSecs} s.
+            {error ? t("pay.confirm.waitAfterError", { secs: String(waitSecs) }) : t("pay.confirm.wait", { secs: String(waitSecs) })}
           </p>
         )}
         {walletUnknown && !unsigned && (
           <p className="placeholder-note" role="status" data-testid="pay-confirm-wallet-unknown">
-            This wallet could not be read, so it cannot send now.{contact ? "" : " Create Unsigned still works."}
+            {contact ? t("pay.confirm.walletUnknown") : t("pay.confirm.walletUnknownUnsigned")}
           </p>
         )}
         {contact && (
           <span className="sr-only" role="status" data-testid="pay-confirm-watch-only-status">
-            {watchOnlyKnown === true ? WATCH_ONLY : ""}
+            {watchOnlyKnown === true ? t("pay.contact.watchOnly") : ""}
           </span>
         )}
         {contact && watchOnlyKnown === true && (
           <p className="placeholder-note" aria-hidden="true" data-testid="pay-confirm-watch-only">
-            {WATCH_ONLY}
+            {t("pay.contact.watchOnly")}
           </p>
         )}
         <div className="sheet-actions sheet-actions-fit">
           <DashButton key="cancel" ref={cancel} variant="tintedGray" size="large" data-testid="pay-confirm-cancel" disabled={busy} onClick={onCancel}>
-            Cancel
+            {t("common.cancel")}
           </DashButton>
           {!contact && (
             <DashButton
@@ -467,12 +464,12 @@ export function ConfirmSheet({
               disabled={busy}
               onClick={() => void createUnsigned()}
             >
-              Create Unsigned
+              {t("pay.confirm.createUnsigned")}
             </DashButton>
           )}
           {actions.send && (
-            <DashButton key="send" type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null} why={busy ? null : retryAt !== null ? "Wait a moment before trying again." : "Checking the network’s requirements…"}>
-              {busy ? "Sending…" : contact?.acceptsToo ? "Accept and pay" : "Send"}
+            <DashButton key="send" type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null} why={busy ? null : retryAt !== null ? t("pay.confirm.waitMoment") : t("pay.confirm.checkingNetwork")}>
+              {busy ? t("pay.confirm.sending") : contact?.acceptsToo ? t("pay.confirm.acceptAndPay") : t("pay.confirm.send")}
             </DashButton>
           )}
         </div>

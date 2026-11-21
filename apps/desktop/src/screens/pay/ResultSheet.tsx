@@ -9,14 +9,11 @@ import { CopyValue, DetailRow } from "../../components/detail";
 import type { UsedIcon } from "../../components/icons";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
+import { messageTable, useT } from "../../i18n";
 import { broadcastFailure, type Outcome, type Sending } from "./model";
 import type { DraftApi } from "./useDraft";
 
-const TITLE: Record<Outcome["kind"], string> = {
-  sent: "Payment sent",
-  unknown: "Payment status unknown",
-  failed: "Payment not sent",
-};
+const TITLE: Readonly<Record<Outcome["kind"], string>> = messageTable("pay.result.title", ["sent", "unknown", "failed"]);
 
 const ICON: Record<Outcome["kind"], UsedIcon> = {
   sent: "txDetailSent",
@@ -44,6 +41,7 @@ export function ResultSheet({
   /** `show`: open the transaction in Activity. */
   onDone: (show: boolean) => void;
 }) {
+  const t = useT();
   const [running, setRunning] = useState(false);
   const busy = running || retrying;
   // Finished retries, for a harness that must not miss a fast one's busy state (DP3-06 Sol r1 #1).
@@ -92,7 +90,7 @@ export function ResultSheet({
             )}
             {outcome.kind === "unknown" && (
               <p className="result-text" role="alert" data-testid="pay-result-text">
-                {outcome.text} Check Activity before you pay again.
+                {t("pay.result.unknownText", { text: outcome.text })}
               </p>
             )}
           </>
@@ -100,11 +98,11 @@ export function ResultSheet({
       </div>
       {outcome.kind !== "failed" && (
         <dl className="detail-list card-l1" data-testid="pay-result-facts">
-          <DetailRow label="Network fee">
+          <DetailRow label={t("pay.result.networkFee")}>
             <AmountText text={shown.full(outcome.fee)} unitName={unit} glyph={false} />
           </DetailRow>
-          <DetailRow label="Transaction ID" testId="pay-result-txid">
-            <CopyValue value={outcome.txid} label="transaction ID" mono />
+          <DetailRow label={t("pay.result.txid")} testId="pay-result-txid">
+            <CopyValue value={outcome.txid} label={t("pay.result.txidCopy")} mono />
           </DetailRow>
         </dl>
       )}
@@ -112,28 +110,28 @@ export function ResultSheet({
         {outcome.kind === "sent" && (
           <>
             <DashButton variant="tintedBlue" size="large" data-testid="pay-result-show" onClick={() => onDone(true)}>
-              Show in Activity
+              {t("pay.result.show")}
             </DashButton>
             <DashButton variant="filledBlue" size="large" data-testid="pay-result-close" data-autofocus onClick={() => onDone(false)}>
-              Close
+              {t("pay.result.close")}
             </DashButton>
           </>
         )}
         {outcome.kind === "unknown" && (
           <>
             <DashButton ref={closeButton} variant="tintedGray" size="large" data-testid="pay-result-close" disabled={busy} onClick={() => onDone(false)}>
-              Close
+              {t("pay.result.close")}
             </DashButton>
             {outcome.retry && (
               <DashButton ref={retryButton} variant="filledBlue" size="large" data-testid="pay-result-retry" data-autofocus disabled={busy} onClick={() => void retry()}>
-                {busy ? "Sending…" : "Try again"}
+                {busy ? t("pay.result.sending") : t("pay.result.retry")}
               </DashButton>
             )}
           </>
         )}
         {outcome.kind === "failed" && (
           <DashButton variant="filledBlue" size="large" data-testid="pay-result-back" data-autofocus onClick={() => onDone(false)}>
-            Back to payment
+            {t("pay.result.back")}
           </DashButton>
         )}
       </div>
@@ -144,13 +142,14 @@ export function ResultSheet({
 /** A payment whose broadcast is still running when its form comes back (after an unlock): held up
  * until the result replaces it, so nothing behind it looks unsent. */
 export function SendingSheet({ sending, network }: { sending: Sending; network: NetworkInfo }) {
+  const t = useT();
   const shown = useDisplay(network);
   return (
-    <Sheet title="Sending payment" width="small" testId="pay-sending" closable={false} onClose={() => undefined}>
+    <Sheet title={t("pay.result.sendingTitle")} width="small" testId="pay-sending" closable={false} onClose={() => undefined}>
       <div className="result" role="status">
         <span className="spinner" aria-hidden="true" />
         <AmountText className="result-amount" text={shown.full(sending.amount)} unitName={shown.name} glyphFactor={0.8} />
-        <p className="result-text">The payment is being sent. Its result shows here.</p>
+        <p className="result-text">{t("pay.result.sendingText")}</p>
       </div>
     </Sheet>
   );

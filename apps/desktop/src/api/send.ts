@@ -6,6 +6,7 @@
 
 import { closeDraft } from "./generated/commands";
 import { en } from "../i18n/en";
+import { t } from "../i18n";
 
 /** DEC-67's copy for a signature already released (E0-04 §16.10). */
 export const SIGNED_BEFORE_LOCK = en.lock.report.signedBeforeLock;
@@ -13,5 +14,5 @@ export const SIGNED_BEFORE_LOCK = en.lock.report.signedBeforeLock;
 /** Closes a draft; `warning` is the copy to show when a broadcast of it is still running. */
 export async function closeSendDraft(draft: number, broadcastInFlight: boolean): Promise<{ closed: boolean; warning: string | null }> {
   const closed = await closeDraft(draft);
-  return { closed, warning: broadcastInFlight ? SIGNED_BEFORE_LOCK : null };
+  return { closed, warning: broadcastInFlight ? t("lock.report.signedBeforeLock") : null };
 }
