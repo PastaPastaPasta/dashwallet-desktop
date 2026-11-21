@@ -109,7 +109,8 @@ def test_rescan_from_height_finds_a_missed_payment(root, regtest_node, funded_mi
     rows = history(cli)
     assert [r[0] for r in rows] == [txid], rows
     assert int(rows[0][3]) == duffs(Decimal("1.25"))
-    assert f"total={duffs(Decimal('1.25'))}" in cli.line(f"wallet {cli.wallet}", out)
+    line = cli.line(f"wallet {cli.wallet}", out)
+    assert f"total={duffs(Decimal('1.25'))} catching_up=false" in line, line
 
 
 def _send_in_background(cli: Dwcli, height: int, *args: str) -> tuple[subprocess.Popen, list[str]]:
