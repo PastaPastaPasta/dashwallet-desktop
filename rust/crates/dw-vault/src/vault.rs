@@ -362,7 +362,11 @@ fn put_policy(
     payload: PolicyPayload,
 ) -> Result<u64, VaultError> {
     let mut manifest = verify_manifest(next, dek, high_water)?;
-    manifest.generation = manifest.generation.max(floor.unwrap_or(0)) + 1;
+    manifest.generation = manifest
+        .generation
+        .max(floor.unwrap_or(0))
+        .checked_add(1)
+        .ok_or_else(|| VaultError::Storage("the policy commitment cannot be read".into()))?;
     manifest.policy = Some(manifest.generation);
     next.manifest = seal_manifest(dek, &next.vault_id, &next.network, &manifest)?;
     next.quick_unlock = Some(seal_policy(
@@ -376,6 +380,9 @@ fn put_policy(
     )?);
     Ok(manifest.generation)
 }
+
+/// The floor while the commitment cannot be read: no policy passes it.
+const UNREAD: u64 = u64::MAX;
 
 fn raise(floor: &mut Option<u64>, generation: u64) {
     *floor = Some(floor.unwrap_or(0).max(generation));
@@ -922,10 +929,10 @@ impl Vault {
     /// file and the high-water mark are published together, so no reader
     /// checks the old file against the new mark. The policy generation is
     /// committed first ([`Self::commit_policy`]); a failed commit writes
-    /// nothing. With `end_window`, the signing window ends in the same
-    /// step, so no window grant issued under the old policy signs under the
-    /// new one; it ends when the commit or the write fails too, since the
-    /// user asked for less.
+    /// nothing, except for a lower policy (`end_window`), which is written
+    /// anyway, as without a store. With `end_window`, the signing window
+    /// ends in the same step, so no window grant issued under the old policy
+    /// signs under the new one; it ends when the write fails too.
     fn persist_at(
         &self,
         _writer: &WriteGuard<'_>,
@@ -933,17 +940,21 @@ impl Vault {
         generation: u64,
         end_window: bool,
     ) -> Result<(), VaultError> {
-        let committed = self.commit_policy(&next.vault_id, generation);
-        let written = match &committed {
-            Ok(_) => file::write(&self.shared.dir, &next),
-            Err(e) => Err(e.clone()),
+        let committed = match self.commit_policy(&next.vault_id, generation) {
+            Err(e) if !end_window => return Err(e),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not commit a lower spending limit; writing it anyway");
+                None
+            }
+            Ok(stored) => stored,
         };
+        let written = file::write(&self.shared.dir, &next);
         let mut inner = self.inner();
+        if let Some(stored) = committed {
+            raise(&mut inner.policy_floor, stored);
+        }
         if end_window {
             clear_signing_window(&mut inner);
-        }
-        if let Ok(true) = committed {
-            raise(&mut inner.policy_floor, generation);
         }
         written?;
         inner.file = Some(next);
@@ -955,15 +966,25 @@ impl Vault {
     /// seals it is written: a crash between the two leaves the commitment
     /// ahead, so the file's policy counts as withdrawn (limit 0) until the
     /// limit is set again, and an older, higher limit never counts.
-    /// `Ok(false)` without a host store.
-    fn commit_policy(&self, vault_id: &[u8], generation: u64) -> Result<bool, VaultError> {
+    /// Returns what the store holds afterwards; `None` without a store.
+    fn commit_policy(&self, vault_id: &[u8], generation: u64) -> Result<Option<u64>, VaultError> {
         let Some(store) = self.inner().commitments.clone() else {
-            return Ok(false);
+            return Ok(None);
         };
         store
             .commit(vault_id, generation)
-            .map_err(VaultError::Storage)?;
-        Ok(true)
+            .map(Some)
+            .map_err(VaultError::Storage)
+    }
+
+    /// The floor read from `store` for the vault in memory; [`UNREAD`]
+    /// when the read fails, until a later one succeeds.
+    fn read_floor(&self, store: &dyn PolicyCommitments) -> Option<u64> {
+        let id = self.vault_id()?;
+        store.committed(&id).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "could not read the policy commitment; the spending limit is 0 until it is read");
+            Some(UNREAD)
+        })
     }
 
     /// The host's store for policy commitments, kept outside the vault
@@ -972,11 +993,13 @@ impl Vault {
     /// recovery, or a passphrase check that re-sealed the passphrase time)
     /// has it recorded at the next passphrase check; a new limit is
     /// committed before it is written. A recovery keeps the replaced
-    /// vault's commitment and a destroy drops it. Without a store the vault
-    /// has only its file's own check.
+    /// vault's commitment and a destroy drops it. A commitment that cannot
+    /// be read counts every policy as withdrawn (limit 0) and is read again
+    /// at each passphrase check. Without a store the vault has only its
+    /// file's own check.
     pub fn attach_policy_commitments(&self, store: Arc<dyn PolicyCommitments>) {
         let _writer = self.writer();
-        let floor = self.vault_id().and_then(|id| store.committed(&id));
+        let floor = self.read_floor(&*store);
         let mut inner = self.inner();
         inner.policy_floor = floor;
         inner.commitments = Some(store);
@@ -1404,6 +1427,15 @@ impl Vault {
         );
 
         let now = self.now();
+        let unread = {
+            let inner = self.inner();
+            let unread = inner.policy_floor == Some(UNREAD);
+            inner.commitments.clone().filter(|_| unread)
+        };
+        if let Some(store) = unread {
+            let floor = self.read_floor(&*store);
+            self.inner().policy_floor = floor;
+        }
         let (had_failures, policy, record) = {
             let mut inner = self.inner();
             let f = inner.file.as_ref().ok_or(VaultError::NoVault)?;
@@ -1411,7 +1443,7 @@ impl Vault {
             let had_failures = f.throttle != Throttle::default();
             // With slot B enrolled the passphrase time is enforced from the
             // file, so it is persisted (sealed) on every successful check.
-            let policy = if f.slot_b.is_some() {
+            let policy = if f.slot_b.is_some() && inner.policy_floor != Some(UNREAD) {
                 Some(open_policy(f, &dek, inner.policy_floor)?.unwrap_or_default())
             } else {
                 None
@@ -1428,7 +1460,7 @@ impl Vault {
         };
         if let Some((named, store, vault_id)) = record {
             match store.commit(&vault_id, named) {
-                Ok(()) => raise(&mut self.inner().policy_floor, named),
+                Ok(stored) => raise(&mut self.inner().policy_floor, stored),
                 Err(e) => tracing::warn!(error = %e, "could not record the policy commitment"),
             }
         }
@@ -3716,6 +3748,75 @@ mod tests {
                 .map(drop),
             Err(VaultError::GrantInvalid)
         );
+    }
+
+    #[derive(Default)]
+    struct Rows(Mutex<std::collections::HashMap<Vec<u8>, u64>>);
+
+    impl PolicyCommitments for Rows {
+        fn committed(&self, vault_id: &[u8]) -> Result<Option<u64>, String> {
+            Ok(self.0.lock().unwrap().get(vault_id).copied())
+        }
+
+        fn commit(&self, vault_id: &[u8], generation: u64) -> Result<u64, String> {
+            let mut rows = self.0.lock().unwrap();
+            let row = rows.entry(vault_id.to_vec()).or_default();
+            *row = (*row).max(generation);
+            Ok(*row)
+        }
+
+        fn forget(&self, vault_id: &[u8]) -> Result<(), String> {
+            self.0.lock().unwrap().remove(vault_id);
+            Ok(())
+        }
+    }
+
+    fn set_limit(v: &Vault, pw: &[u8], limit: u64) -> Result<(), VaultError> {
+        let change = v
+            .authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(pw),
+            )
+            .unwrap();
+        v.set_quick_unlock_spend_limit(&change.id, limit).map(drop)
+    }
+
+    /// A higher limit whose write failed after the file reached the disk
+    /// was committed; the lowering after it is sealed above that, so the
+    /// higher file put back counts as 0.
+    #[test]
+    fn a_higher_limit_whose_write_failed_cannot_be_put_back_after_a_lowering() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw: &[u8] = b"correct horse";
+        let os = Arc::new(crate::MemoryOsStore::new());
+        let rows = Arc::new(Rows::default());
+        let v = vault_with_wallet_in(dir.path(), &os, Some(pw), 3);
+        v.attach_policy_commitments(rows.clone());
+        crate::fault::arm(&dir.path().join("vault"), crate::fault::Fault::DirSync);
+        assert!(set_limit(&v, pw, 500_000_000).is_err());
+        let higher = std::fs::read(dir.path().join("vault").join("vault.dwv")).unwrap();
+        set_limit(&v, pw, 0).unwrap();
+        drop(v);
+        std::fs::write(dir.path().join("vault").join("vault.dwv"), higher).unwrap();
+        let v = open_in(dir.path(), &os);
+        v.attach_policy_commitments(rows);
+        v.unlock(pw, UnlockScope::Full).unwrap();
+        assert_eq!(v.quick_unlock_policy().spend_limit_duffs, 0);
+    }
+
+    /// With a store, a lower limit whose write fails after its commitment
+    /// leaves limit 0 in memory, and the window ends.
+    #[test]
+    fn a_failed_write_of_a_lower_limit_with_a_store_leaves_limit_0() {
+        let dir = tempfile::tempdir().unwrap();
+        let pw: &[u8] = b"correct horse";
+        let v = vault_with_wallet(dir.path(), Some(pw), 3);
+        v.attach_policy_commitments(Arc::new(Rows::default()));
+        crate::fault::arm(&dir.path().join("vault"), crate::fault::Fault::DirSync);
+        assert!(set_limit(&v, pw, 10_000_000).is_err());
+        assert_eq!(v.quick_unlock_policy().spend_limit_duffs, 0);
+        assert!(!v.signing_window_open());
     }
 
     /// A clock whose monotonic reading jumps (with the wall clock) at a

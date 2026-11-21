@@ -360,7 +360,7 @@ impl NetworkSession {
             let (vault, db) = (vault.clone(), Arc::clone(&appdb));
             tokio::task::spawn_blocking(move || {
                 vault.attach_policy_commitments(Arc::new(crate::keys::PolicyCommitmentStore(
-                    Arc::clone(&db),
+                    Arc::downgrade(&db),
                 )));
                 crate::keys::sync_signing_window(&vault, &db)
             })
