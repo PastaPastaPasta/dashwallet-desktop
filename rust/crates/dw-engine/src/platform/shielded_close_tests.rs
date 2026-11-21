@@ -1796,10 +1796,12 @@ mod idle_tests {
         *session.platform.notes_count.lock().unwrap() = Some(count);
         let (s, m) = (Arc::clone(session), session.manager().unwrap());
         let before = session.platform.passes_run.load(Ordering::SeqCst);
-        assert!(
-            engine.block_on(async move { pool::guarded_pass(&s, &m, force).await }),
-            "the pass was admitted"
-        );
+        let ran = if force {
+            engine.block_on(async move { pool::guarded_pass(&s, &m, true).await })
+        } else {
+            engine.block_on(pool::periodic_pass(s, m, |_| true))
+        };
+        assert!(ran, "the pass was admitted");
         session.platform.passes_run.load(Ordering::SeqCst) > before
     }
 
@@ -1870,7 +1872,7 @@ mod idle_tests {
         *session.platform.notes_count.lock().unwrap() = None;
         let (s, m) = (Arc::clone(&session), session.manager().unwrap());
         let before = session.platform.passes_run.load(Ordering::SeqCst);
-        assert!(engine.block_on(async move { pool::guarded_pass(&s, &m, false).await }));
+        assert!(engine.block_on(pool::periodic_pass(s, m, |_| true)));
         assert_eq!(
             session.platform.passes_run.load(Ordering::SeqCst),
             before + 1,
@@ -2026,5 +2028,112 @@ mod idle_tests {
         assert!(periodic(&engine, &session, Some(1)), "the mark is retried");
         scanned(&engine, &session, wallet, 0, 1);
         assert!(!periodic(&engine, &session, Some(1)));
+    }
+
+    /// A periodic pass with Platform's count `count`, started on the engine
+    /// and held from its count read's return until the sender is used.
+    fn stalled(
+        engine: &Engine,
+        session: &Arc<NetworkSession>,
+        count: Option<u64>,
+        runs: impl Fn(&NetworkSession) -> bool + Send + 'static,
+    ) -> (
+        tokio::task::JoinHandle<bool>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        *session.platform.notes_count.lock().unwrap() = Some(count);
+        let (reached_tx, reached) = tokio::sync::oneshot::channel();
+        let (resume, resume_rx) = tokio::sync::oneshot::channel();
+        *session.platform.probe_pause.lock().unwrap() = Some(pool::PassPause {
+            reached: reached_tx,
+            resume: resume_rx,
+        });
+        let pass = pool::periodic_pass(Arc::clone(session), session.manager().unwrap(), runs);
+        let pass = session.rt.spawn(pass);
+        engine
+            .block_on(async { tokio::time::timeout(Duration::from_secs(60), reached).await })
+            .expect("the count read returned")
+            .unwrap();
+        (pass, resume)
+    }
+
+    /// The loops start as `start_loops` marks them, under a new supervisor:
+    /// its epoch.
+    fn loops_started(session: &NetworkSession) -> u64 {
+        let epoch = session.platform.recovery.names_runs.arm();
+        session.platform.loops_on.store(true, Ordering::Release);
+        epoch
+    }
+
+    /// A count read that returns after the close held nothing of the session
+    /// meanwhile: the network reopens at once, and the read, released, starts
+    /// no pass.
+    #[test]
+    fn a_count_read_stalled_past_the_close_holds_nothing() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, _) = first_launch(&engine);
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let (pass, resume) = stalled(&engine, &session, None, |_| true);
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        let reopened = engine.block_on(engine.open_network(DashNetwork::Regtest, options()));
+        assert!(reopened.is_ok(), "the reopen: {:?}", reopened.err());
+        resume.send(()).unwrap();
+        assert!(!engine.block_on(pass).unwrap(), "no pass after the close");
+        assert_eq!(session.platform.passes_run.load(Ordering::SeqCst), before);
+    }
+
+    /// A count read that returns after an SPV stop starts no pass, so no scan
+    /// and no spend's re-send, and none after a start since either: that is
+    /// another run of the loops.
+    #[test]
+    fn a_count_read_stalled_past_a_stop_starts_no_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, _) = first_launch(&engine);
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        for restart in [false, true] {
+            let epoch = loops_started(&session);
+            let runs = move |s: &NetworkSession| s.platform.loops_run(epoch);
+            let (pass, resume) = stalled(&engine, &session, None, runs);
+            engine.block_on(session.platform.deactivate(false));
+            if restart {
+                loops_started(&session);
+            }
+            resume.send(()).unwrap();
+            assert!(!engine.block_on(pass).unwrap(), "restart {restart}");
+            assert_eq!(session.platform.passes_run.load(Ordering::SeqCst), before);
+        }
+    }
+
+    /// While its loops run, a count read that returns late still runs the
+    /// pass, and an unchanged count still skips it.
+    #[test]
+    fn a_late_count_read_on_running_loops_runs_or_skips_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        let epoch = loops_started(&session);
+        let runs = move |s: &NetworkSession| s.platform.loops_run(epoch);
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let (pass, resume) = stalled(&engine, &session, None, runs);
+        resume.send(()).unwrap();
+        assert!(engine.block_on(pass).unwrap());
+        assert_eq!(
+            session.platform.passes_run.load(Ordering::SeqCst),
+            before + 1,
+            "the read failed: the pass runs"
+        );
+        scanned(&engine, &session, wallet, 1, 1);
+        let (pass, resume) = stalled(&engine, &session, Some(1), runs);
+        resume.send(()).unwrap();
+        assert!(engine.block_on(pass).unwrap());
+        assert_eq!(
+            session.platform.passes_run.load(Ordering::SeqCst),
+            before + 1,
+            "unchanged: skipped"
+        );
     }
 }

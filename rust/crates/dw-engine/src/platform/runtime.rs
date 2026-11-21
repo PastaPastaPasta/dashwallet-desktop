@@ -154,6 +154,10 @@ pub(crate) struct PlatformRuntime {
     /// (`Some(None)`: the read fails); the network's while `None`.
     #[cfg(test)]
     pub(crate) notes_count: Mutex<Option<Option<u64>>>,
+    /// A test's pause of the next periodic pass after its count read, while
+    /// it holds nothing of the session (`shielded_pool::periodic_pass`).
+    #[cfg(test)]
+    pub(crate) probe_pause: Mutex<Option<super::shielded_pool::PassPause>>,
     /// How many shielded passes reached the library's pass.
     #[cfg(test)]
     pub(crate) passes_run: std::sync::atomic::AtomicUsize,
@@ -495,6 +499,8 @@ impl PlatformRuntime {
             #[cfg(test)]
             notes_count: Mutex::new(None),
             #[cfg(test)]
+            probe_pause: Mutex::new(None),
+            #[cfg(test)]
             passes_run: Default::default(),
             #[cfg(test)]
             crash_before_ack: AtomicBool::new(false),
@@ -657,6 +663,12 @@ impl PlatformRuntime {
     /// otherwise hide this lock from a bring-up that holds keys.
     pub(crate) fn note_lock(&self) {
         self.lock.send_modify(|view| view.locks += 1);
+    }
+
+    /// Whether the loops the supervisor of `epoch` started still run: no
+    /// stop or close since (`NamesRuns::runs`).
+    pub(super) fn loops_run(&self, epoch: u64) -> bool {
+        self.loops_on.load(Ordering::Acquire) && self.recovery.names_runs.runs(epoch)
     }
 
     /// Marks SPV started; `false` when a stop or close took the supervisor

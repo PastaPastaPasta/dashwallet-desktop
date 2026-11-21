@@ -3396,25 +3396,70 @@ async fn hold_passes(
 
 /// One shielded sync pass, the only way the engine runs one: after
 /// [`admit_pass`], started only while the session is open (the facade's
-/// calls in [`on_pool`], the supervisor's `kick_shielded_pass`), and
+/// calls in [`on_pool`], the supervisor's [`periodic_pass`]), and
 /// holding the session's pass lock from the admission to its end, so a
 /// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
 /// before the lock outlives it. Its tail reads the library's spend
-/// outcomes into the journal ([`consume_dispositions`]). A periodic pass
-/// reads Platform's note count before its locks and admission, and skips
-/// the library's pass while [`pool_is_idle`]. `false` when it was held back.
+/// outcomes into the journal ([`consume_dispositions`]). `false` when it
+/// was held back.
 pub(crate) async fn guarded_pass(
     session: &Arc<NetworkSession>,
     manager: &Manager,
     force: bool,
 ) -> bool {
-    // Read before the pass's locks, so a silent network holds nothing.
-    let checked_at = crate::events::unix_now();
-    let count = if force {
-        None
-    } else {
-        notes_count(session, manager).await
+    pass(session, manager, force, None).await
+}
+
+/// The supervisor's periodic pass (#178): Platform's note count is read
+/// first, holding only the SDK, so neither a close nor a stop waits for it.
+/// Then, if the session is open and `runs` says the loops that kicked it
+/// still do, [`guarded_pass`]'s pass, which skips the library's pass while
+/// [`pool_is_idle`]. `false` when it did not run or was held back.
+pub(crate) async fn periodic_pass(
+    session: Arc<NetworkSession>,
+    manager: Arc<Manager>,
+    runs: impl Fn(&NetworkSession) -> bool,
+) -> bool {
+    #[cfg(test)]
+    let (injected, pause) = (
+        *session.platform.notes_count.lock().unwrap(),
+        session.platform.probe_pause.lock().unwrap().take(),
+    );
+    let sdk = manager.sdk_arc();
+    let (weak_session, weak_manager) = (Arc::downgrade(&session), Arc::downgrade(&manager));
+    drop((session, manager));
+    let probe = notes_count(&sdk);
+    #[cfg(test)]
+    let probe = async move {
+        match injected {
+            Some(count) => count.map(|c| (c, crate::events::unix_now())),
+            None => probe.await,
+        }
     };
+    let count = (tokio::time::timeout(NOTES_COUNT_BUDGET, probe).await).unwrap_or(None);
+    drop(sdk);
+    #[cfg(test)]
+    if let Some(pause) = pause {
+        let _ = pause.reached.send(());
+        let _ = pause.resume.await;
+    }
+    let (Some(session), Some(manager)) = (weak_session.upgrade(), weak_manager.upgrade()) else {
+        return false;
+    };
+    if !runs(&session) || session.enter().await.is_err() {
+        return false;
+    }
+    pass(&session, &manager, false, count).await
+}
+
+/// [`guarded_pass`]'s pass; a periodic one's proved note `count`, with the
+/// time it was proved at, may skip it.
+async fn pass(
+    session: &Arc<NetworkSession>,
+    manager: &Manager,
+    force: bool,
+    count: Option<(u64, u64)>,
+) -> bool {
     // A spend's hold first, then the drain's lock (always in this order).
     let _spends = session.platform.shielded_spends.read().await;
     let _pass = session.platform.shielded_passes.read().await;
@@ -3435,7 +3480,7 @@ pub(crate) async fn guarded_pass(
             let _ = pause.resume.await;
         }
     }
-    if let Some(count) = count
+    if let Some((count, proved_at)) = count
         && pool_is_idle(session, manager, &coordinator, count)
             .await
             .is_some()
@@ -3444,7 +3489,7 @@ pub(crate) async fn guarded_pass(
             count,
             "the shielded pool is unchanged; the periodic pass is skipped"
         );
-        (session.platform.shielded_checked_at).store(checked_at, Ordering::Release);
+        (session.platform.shielded_checked_at).fetch_max(proved_at, Ordering::AcqRel);
         return true;
     }
     #[cfg(test)]
@@ -3524,17 +3569,12 @@ async fn pool_is_idle(
     idle.then_some(())
 }
 
-/// The number of notes in Platform's shielded pool, proved; `None` when the
-/// read fails (two tries of [`NOTES_COUNT_TIMEOUT`] at most).
-async fn notes_count(
-    #[cfg_attr(not(test), expect(unused_variables))] session: &NetworkSession,
-    manager: &Manager,
-) -> Option<u64> {
-    #[cfg(test)]
-    if let Some(count) = *session.platform.notes_count.lock().unwrap() {
-        return count;
-    }
-    let sdk = manager.sdk_arc();
+/// The proved number of notes in Platform's shielded pool, and the proof's
+/// time (Unix seconds, no later than now); `None` if the read fails.
+/// [`NOTES_COUNT_TIMEOUT`] bounds each transport attempt, not the proof's
+/// verification, which can wait for a quorum: [`periodic_pass`] bounds it
+/// all with [`NOTES_COUNT_BUDGET`].
+async fn notes_count(sdk: &dash_sdk::Sdk) -> Option<(u64, u64)> {
     if !sdk.prove() {
         return None;
     }
@@ -3544,8 +3584,11 @@ async fn notes_count(
         ban_failed_address: Some(false),
         ..Default::default()
     };
-    match ShieldedNotesCount::fetch_with_settings(&sdk, NoParamQuery {}, settings).await {
-        Ok(count) => count.map(|c| c.0),
+    match ShieldedNotesCount::fetch_with_metadata(sdk, NoParamQuery {}, Some(settings)).await {
+        Ok((count, metadata)) => {
+            let proved_at = (metadata.time_ms / 1000).min(crate::events::unix_now());
+            count.map(|c| (c.0, proved_at))
+        }
         Err(e) => {
             tracing::debug!(error = %e, "the shielded note count was not read");
             None
@@ -3553,8 +3596,13 @@ async fn notes_count(
     }
 }
 
-/// How long one read of the note count waits for its node.
+/// How long one transport attempt of the note count's read waits.
 const NOTES_COUNT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a periodic pass waits for the note count, its two attempts and
+/// the proof's verification included, before it runs as if the read failed:
+/// a sixth of the 60 s pass interval, so a stalled read never meets the next.
+const NOTES_COUNT_BUDGET: Duration = Duration::from_secs(10);
 
 // MARK: the Platform side's start
 
