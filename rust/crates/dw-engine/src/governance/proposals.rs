@@ -32,6 +32,7 @@ use super::records::{
     MyProposal, MyProposalState, ProposalDraft, ProposalField, ProposalPreview, SubmitRefusal,
     SubmitWait,
 };
+use super::sync::Flight;
 use super::voting::parse_outpoint;
 use super::{Governance, GovernanceError};
 use crate::events::unix_now;
@@ -407,7 +408,8 @@ impl Governance {
     /// Creates `draft`: pays its fee from `wallet` under a "Proposal" lease
     /// begun from `grant` (a `Spend` grant of `wallet`), saving the proposal
     /// and its signed fee before the fee is broadcast (MG-06 §2.1). The
-    /// wallet submits it once the fee confirms.
+    /// wallet submits it once the fee confirms. A draft named as one of the
+    /// wallet's proposals in progress pays nothing (MG-06 D26).
     pub async fn create_proposal(
         &self,
         wallet: WalletId,
@@ -415,19 +417,33 @@ impl Governance {
         grant: String,
     ) -> Result<MyProposal, GovernanceError> {
         let (object, coins) = self.build(&draft, now())?;
-        {
+        let rt = self.runtime()?;
+        let data = proposal::parse_proposal(&object.data).unwrap_or_default();
+        let name = data.name.unwrap_or_default();
+        let named = {
             // Not held across the payment: its prepare and broadcast each
             // enter on their own, and the gate is not reentrant.
             let _op = self.session.enter().await?;
             self.session.require_wallet(&wallet)?;
-        }
+            // Until this call's row is saved, a second call for the name
+            // finds no row: the mark refuses it.
+            let Some(named) = rt.creating.begin((wallet, name.to_ascii_lowercase())) else {
+                return Err(GovernanceError::ProposalInProgress { hash: None });
+            };
+            if let Some(hash) = self.in_progress_named(wallet, &name)? {
+                return Err(GovernanceError::ProposalInProgress {
+                    hash: Some(display_hex(&hash)),
+                });
+            }
+            named
+        };
         let fee_draft = self.fee_draft(wallet, &object, coins)?;
         let lease = (self.session)
             .begin_lease(wallet, FlowKind::Proposal, &[grant])
             .await
             .map_err(PlatformError::from)?;
         let paid = self
-            .pay_fee(wallet, object, &fee_draft, lease_string(&lease.id))
+            .pay_fee(wallet, object, &fee_draft, lease_string(&lease.id), named)
             .await;
         lease.end();
         let hash = paid?;
@@ -435,15 +451,50 @@ impl Governance {
         self.my_proposal(wallet, &hash)
     }
 
+    /// The hash of `wallet`'s own proposal named `name` (as its data
+    /// stores it, without regard to ASCII case) that is in progress: not
+    /// past its end, public or not, and not `fee_failed` (MG-06 D26). A
+    /// row that does not decode is skipped.
+    fn in_progress_named(
+        &self,
+        wallet: WalletId,
+        name: &str,
+    ) -> Result<Option<[u8; 32]>, GovernanceError> {
+        let appdb = self.session.live()?.appdb;
+        let rows = appdb
+            .proposals(Some(&wallet.to_string()))
+            .map_err(EngineError::from)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| match Saved::decode(row) {
+                Ok(saved) => Some(saved),
+                Err(e) => {
+                    tracing::warn!(error = %e, "skipping a proposal row");
+                    None
+                }
+            })
+            .filter(|saved| {
+                let stored = saved.data.name.as_deref();
+                stored.is_some_and(|stored| stored.eq_ignore_ascii_case(name))
+            })
+            .find(|saved| {
+                let facts = self.facts(saved, false);
+                !facts.expired && !matches!(derive_state(facts), MyProposalState::FeeFailed)
+            })
+            .map(|saved| saved.row.hash))
+    }
+
     /// Signs the fee, saves the proposal, then broadcasts the fee. Returns
     /// the proposal's hash once saved and the fee handed off, or out with
-    /// its outcome unknown.
+    /// its outcome unknown. `named` is the create's mark on its name,
+    /// dropped once the row is saved.
     async fn pay_fee(
         &self,
         wallet: WalletId,
         mut object: GovernanceObject,
         fee_draft: &Arc<TxDraft>,
         lease: String,
+        named: Flight<'_, (WalletId, String)>,
     ) -> Result<[u8; 32], GovernanceError> {
         // Before anything is reserved: its failure leaves nothing held.
         let rt = self.runtime()?;
@@ -493,6 +544,7 @@ impl Governance {
                 .await;
             return Err(e.into());
         }
+        drop(named);
         let sent = fee_draft.broadcast(prepared).await;
         let wallet_id = wallet.to_string();
         let outcome = attempt_outcome(&sent);
