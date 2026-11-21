@@ -23,14 +23,18 @@ export const SIZES = [
 export const DATA = [/^@[\w.-]+$/, /^\p{Lu}$/u, /^Main$/, /^(t?DASH|mDASH|μDASH|duffs)$/, /^\/[\w./-]+$/];
 
 /** The visible text in `areas` that bypasses the catalog: plain Latin text that is no catalog
- * string's and is not data. */
+ * string's and is not data. A root that is not on the page is reported, so a check never passes
+ * by scanning nothing. */
 export async function untranslated(page: Page, areas: string[], kind: PseudoKind, data: RegExp[] = []): Promise<string[]> {
   const found = await page.evaluate(
     ({ areas, kind }) => {
       const out: string[] = [];
       for (const testId of areas) {
         const root = document.querySelector(`[data-testid="${testId}"]`);
-        if (!root) continue;
+        if (!root) {
+          out.push(`missing root [data-testid="${testId}"]`);
+          continue;
+        }
         const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         for (let n = walk.nextNode(); n; n = walk.nextNode()) {
           const el = n.parentElement!;
@@ -50,8 +54,11 @@ export async function untranslated(page: Page, areas: string[], kind: PseudoKind
 }
 
 /** What scrolls sideways or sticks out of the window or its pane. */
-export function overflow(page: Page) {
-  return page.evaluate(() => {
+/** The panes whose descendants must stay inside them: the shell, the page and the lock column. */
+export const PANES = ['[data-testid="toolbar"]', '[data-testid="sidebar"]', '[data-testid="status-bar"]', "main.page", '[data-testid="lock-column"]'];
+
+export function overflow(page: Page, panes: string[] = PANES) {
+  return page.evaluate((panes) => {
     const found: string[] = [];
     const doc = document.scrollingElement!;
     if (doc.scrollWidth > doc.clientWidth) found.push(`document ${doc.scrollWidth} > ${doc.clientWidth}`);
@@ -60,7 +67,7 @@ export function overflow(page: Page) {
       const x = getComputedStyle(el).overflowX;
       if ((x === "auto" || x === "scroll") && el.scrollWidth > el.clientWidth + 1) found.push(`${name(el)} scrolls ${el.scrollWidth} > ${el.clientWidth}`);
     }
-    for (const area of document.querySelectorAll('[data-testid="toolbar"], [data-testid="sidebar"], [data-testid="status-bar"], main.page, [data-testid="lock-column"]')) {
+    for (const area of document.querySelectorAll(panes.join(", "))) {
       const box = area.getBoundingClientRect();
       for (const el of area.querySelectorAll("*")) {
         const b = el.getBoundingClientRect();
@@ -68,7 +75,7 @@ export function overflow(page: Page) {
       }
     }
     return found;
-  });
+  }, panes);
 }
 
 export interface AreaCheck {
@@ -80,6 +87,9 @@ export interface AreaCheck {
   name: string;
   /** Text in these roots that is data, not copy. */
   data?: RegExp[];
+  /** Selectors of further panes (a sheet, a dialog) whose descendants must stay inside them, on top
+   * of `PANES`. */
+  panes?: string[];
 }
 
 /** Runs `check.open` at both window sizes under `lang`, and fails on text that bypasses the catalog,
@@ -92,7 +102,7 @@ export async function checkArea(page: Page, info: TestInfo, theme: Theme, [lang,
     await expect(page.locator("html")).toHaveAttribute("dir", kind === "rtl" ? "rtl" : "ltr");
     await fontsReady(page);
     expect(await untranslated(page, check.roots, kind, check.data), `${lang} at ${size.width}`).toEqual([]);
-    expect(await overflow(page), `${lang} at ${size.width}`).toEqual([]);
+    expect(await overflow(page, [...PANES, ...(check.panes ?? [])]), `${lang} at ${size.width}`).toEqual([]);
     if (size.width === 1280) {
       await page.screenshot({ path: artifactPath(info, `i18n-${check.name}-${lang}-${theme}.png`) });
       expect(await seriousAxeViolations(page)).toEqual([]);

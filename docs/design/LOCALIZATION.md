@@ -134,14 +134,16 @@ catalog messages are now formatted for the locale, so a peer count of 1234 reads
   on either side of `??`, `||`, `&&` or a `+` concatenation, and on a literal handed to `showToast`.
   It does not see text built elsewhere and passed in: a helper's return value (`title={helper()}`), an
   imported constant, or an error-code mapping in a `.ts` module.
-- `e2e/i18n.spec.ts` walks the visible text nodes under the toolbar, sidebar, status bar and the page
+- `e2e/pseudo.ts` (`checkArea`, used by `e2e/i18n.spec.ts` and each area's spec) fails on a root that
+  is not on the page, and walks the visible text nodes under the toolbar, sidebar, status bar and the page
   or lock screen, and fails on plain Latin text that carries neither pseudo-locale's mark. A node with a
   mark anywhere passes whole, so English interpolated into a translated sentence is not caught, and a
   clipped string still has its closing bracket in the DOM. Accessible names, placeholders, unselected
-  options, a root that is not on the page (it is skipped) and states the spec does not open (the
+  options and states the spec does not open (the
   unlock sheet, error and copy states) are not checked.
 - The overflow check runs at 1280×820 and 920×600 and fails on sideways scrolling and on an element
-  that sticks out of the toolbar, sidebar, status bar, page or lock column.
+  that sticks out of the toolbar, sidebar, status bar, page or lock column, or a pane an
+  area's spec adds (a sheet, a dialog).
 - axe runs at 1280×820 only, for Settings ▸ General and the lock screen under both pseudo-locales,
   light and dark, and fails on serious and critical violations of the WCAG 2.0/2.1 A and AA and
   best-practice rules.
