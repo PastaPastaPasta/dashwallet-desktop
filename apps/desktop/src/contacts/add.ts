@@ -10,17 +10,19 @@ import type { EligibilityName } from "../api/generated/EligibilityName";
 import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import type { UserHit } from "../api/generated/UserHit";
 import type { UserRelation } from "../api/generated/UserRelation";
+import { messageTable, t } from "../i18n";
 import { Model } from "../onboarding/model";
 import { bytesToBase64, fileErrorText } from "../app/files";
 import type { ContactsOwner } from "./model";
 
 export type AddTab = "search" | "scan" | "myQr";
 
-export const ADD_TABS: { id: AddTab; title: string }[] = [
-  { id: "search", title: "Search" },
-  { id: "scan", title: "Scan" },
-  { id: "myQr", title: "My QR" },
-];
+export const ADD_TABS: { id: AddTab; readonly title: string }[] = (["search", "scan", "myQr"] as const).map((id) => ({
+  id,
+  get title() {
+    return t(`contacts.addContact.tabs.${id}`);
+  },
+}));
 
 /** Where a candidate came from (the card says it). */
 export type CandidateSource = "search" | "scan" | "link";
@@ -106,18 +108,18 @@ export interface CardLine {
   next: CardNext;
 }
 
-const ELIGIBILITY: Record<Exclude<EligibilityName, "ok">, CardLine> = {
-  isSelf: { text: "This is you.", next: null },
-  alreadyContact: { text: "Already in your contacts.", next: "showContact" },
-  pendingOutgoing: { text: "Contact request sent.", next: "showRequest" },
-  pendingIncoming: { text: "They sent you a contact request.", next: "showRequest" },
-  noDashPayKeys: { text: "Enable DashPay to send contact requests.", next: "enable" },
-  contactCannotReceive: { text: "This user cannot receive contact requests yet.", next: null },
+const ELIGIBILITY: Record<Exclude<EligibilityName, "ok">, CardNext> = {
+  isSelf: null,
+  alreadyContact: "showContact",
+  pendingOutgoing: "showRequest",
+  pendingIncoming: "showRequest",
+  noDashPayKeys: "enable",
+  contactCannotReceive: null,
 };
 
 /** The line for an eligibility answer (D4). */
 export function eligibilityLine(e: EligibilityName): CardLine {
-  return e === "ok" ? { text: null, next: "send" } : ELIGIBILITY[e];
+  return e === "ok" ? { text: null, next: "send" } : { text: t(`contacts.eligibility.${e}`), next: ELIGIBILITY[e] };
 }
 
 /** The card's line without a main identity (D13, BL-153's status): Join where the wallet can,
@@ -125,13 +127,13 @@ export function eligibilityLine(e: EligibilityName): CardLine {
 export function ownerLine(owner: Exclude<ContactsOwner, { kind: "identity" }>): CardLine | undefined {
   switch (owner.kind) {
     case "join":
-      if (owner.reason === "watchOnly") return { text: "A watch-only wallet cannot send contact requests.", next: null };
-      if (owner.reason === "waitingForSync") return { text: "You can send contact requests once the wallet has synced.", next: null };
-      return { text: "Join DashPay to send contact requests.", next: "join" };
+      if (owner.reason === "watchOnly") return { text: t("contacts.owner.watchOnly"), next: null };
+      if (owner.reason === "waitingForSync") return { text: t("contacts.owner.waitingForSync"), next: null };
+      return { text: t("contacts.owner.join"), next: "join" };
     case "registering":
-      return { text: "You can send contact requests once your username is registered.", next: null };
+      return { text: t("contacts.owner.registering"), next: null };
     case "error":
-      return { text: "Could not read DashPay's state.", next: null };
+      return { text: t("contacts.owner.error"), next: null };
     case "starting":
       return undefined;
   }
@@ -144,10 +146,10 @@ export const answersAtOnce = (relation: UserRelation) => relation === "isSelf" |
 /** The card's line (D4): oneself and an ignored sender answer at once (`answersAtOnce`); else the
  * eligibility read, `undefined` while it runs (the card says "Checking…"). */
 export function cardLine(relation: UserRelation, eligibility: { data: EligibilityName | undefined; failed: boolean }): CardLine | undefined {
-  if (relation === "isSelf") return ELIGIBILITY.isSelf;
-  if (relation === "ignored") return { text: "You ignored their contact request.", next: "showHidden" };
+  if (relation === "isSelf") return eligibilityLine("isSelf");
+  if (relation === "ignored") return { text: t("contacts.eligibility.ignored"), next: "showHidden" };
   if (eligibility.data !== undefined) return eligibilityLine(eligibility.data);
-  if (eligibility.failed) return { text: "Could not check this user.", next: "retry" };
+  if (eligibility.failed) return { text: t("contacts.eligibility.failed"), next: "retry" };
   return undefined;
 }
 
@@ -164,8 +166,7 @@ const claimExpired = (claim: Candidate["claim"], now: number) => claim !== null 
 export function claimNote(claim: Candidate["claim"], now: number): string | null {
   if (!claim || claimExpired(claim, now)) return null;
   const left = claim.expiresAt - Math.floor(now / 1000);
-  const when = left < 3600 ? `It expires in ${Math.max(1, Math.round(left / 60))} min.` : `It expires in ${Math.round(left / 3600)} h.`;
-  return `This code asks them to accept you automatically. They confirm it when your request arrives. ${when}`;
+  return left < 3600 ? t("contacts.claim.minutes", { count: Math.max(1, Math.round(left / 60)) }) : t("contacts.claim.hours", { count: Math.round(left / 3600) });
 }
 
 /** The note's re-read interval (ms) while a claim is open (D36). */
@@ -189,7 +190,7 @@ export function watchClaim(claim: NonNullable<Candidate["claim"]>, now: () => nu
 
 /** The card's line with a claim (D36): an expired one replaces Send, which could no longer carry it. */
 export function claimLine(line: CardLine | undefined, claim: Candidate["claim"], now: number): CardLine | undefined {
-  return line?.next === "send" && claimExpired(claim, now) ? { text: SCAN_EXPIRED, next: null } : line;
+  return line?.next === "send" && claimExpired(claim, now) ? { text: AddText.scanExpired, next: null } : line;
 }
 
 /** The text of a `dashpay://user` link (D13), in `DashPayUserLink::to_uri`'s form. */
@@ -203,27 +204,36 @@ export function userLinkText(identity: string, username: string): string {
   return `dashpay://user?id=${encodeURIComponent(identity)}&username=${encodeURIComponent(username)}`;
 }
 
-export const SCAN_UNVERIFIED = "This QR code couldn't be verified on the Dash network.";
-const LINK_UNVERIFIED = "This link couldn't be verified on the Dash network.";
-export const SCAN_EXPIRED = "This QR code has expired. Ask for a new one.";
-export const NOT_A_CODE = "This is not a DashPay contact code.";
-export const NO_CODE_IN_IMAGE = "There is no DashPay contact code in this image.";
-const PLATFORM_DOWN = "Could not reach Dash Platform.";
+/** The scan and image refusals and the Scan tab's lines, read in the language in use. */
+export const AddText = messageTable("contacts.scan", [
+  "scanUnverified",
+  "linkUnverified",
+  "scanExpired",
+  "notACode",
+  "noCodeInImage",
+  "platformDown",
+  "imageTooLarge",
+  "fileUnreadable",
+  "imageUnreadable",
+  "noQrCode",
+  "screenUnavailable",
+  "screenCapture",
+  "screenShortcut",
+  "reading",
+  "capturing",
+  "verifying",
+]);
 
 const isNetwork = (e: unknown) => hasCode(e, "platform.unavailable") || hasCode(e, "platform.timeout");
 
 /** A verification refusal (D6); `retry` after a network failure. */
 export function verifyError(e: unknown): { text: string; retry: boolean } {
-  if (hasCode(e, "contact.scan_unverified")) return { text: SCAN_UNVERIFIED, retry: false };
-  if (hasCode(e, "contact.scan_expired")) return { text: SCAN_EXPIRED, retry: false };
-  if (hasCode(e, "invalid_argument")) return { text: NOT_A_CODE, retry: false };
-  if (isNetwork(e)) return { text: PLATFORM_DOWN, retry: true };
+  if (hasCode(e, "contact.scan_unverified")) return { text: AddText.scanUnverified, retry: false };
+  if (hasCode(e, "contact.scan_expired")) return { text: AddText.scanExpired, retry: false };
+  if (hasCode(e, "invalid_argument")) return { text: AddText.notACode, retry: false };
+  if (isNetwork(e)) return { text: AddText.platformDown, retry: true };
   return { text: message(e), retry: false };
 }
-
-const IMAGE_TOO_LARGE = "The image is too large.";
-/** `fileErrorText`'s `app.file_read`: a dropped file the webview could not read (D35). */
-const FILE_UNREADABLE = "The file could not be read.";
 
 /** A dropped or pasted file's refusal, said as its message. */
 class Refused extends Error {}
@@ -231,16 +241,12 @@ class Refused extends Error {}
 /** An image refusal (D9): the decoder's, the screen capture's, the file's (U-05, D35). */
 export function imageError(e: unknown): string {
   if (e instanceof Refused) return e.message;
-  if (hasCode(e, "app.image_unreadable")) return "This image could not be read. Use a PNG, JPEG or BMP file.";
-  if (hasCode(e, "app.no_qr_code")) return "No QR code was found in this image.";
-  if (hasCode(e, "app.screen_capture_unavailable")) return SCREEN_UNAVAILABLE;
-  if (hasCode(e, "app.screen_capture")) return "The screen could not be captured. Try again.";
+  if (hasCode(e, "app.image_unreadable")) return AddText.imageUnreadable;
+  if (hasCode(e, "app.no_qr_code")) return AddText.noQrCode;
+  if (hasCode(e, "app.screen_capture_unavailable")) return AddText.screenUnavailable;
+  if (hasCode(e, "app.screen_capture")) return AddText.screenCapture;
   return fileErrorText(e);
 }
-
-export const SCREEN_UNAVAILABLE = "This desktop has no screen capture. Take a screenshot, then open or paste it here.";
-/** macOS's way to a region (D10, F1). */
-export const SCREEN_SHORTCUT = "Press Control-Shift-Command-4 to copy a region of the screen, then paste it here.";
 
 const message = (e: unknown) => (isAppError(e) || e instanceof Error ? e.message : String(e));
 
@@ -278,9 +284,9 @@ export type ScanState =
 
 /** The Scan tab's progress line, if any. */
 export function scanStatus(scan: ScanState): string | null {
-  if (scan.kind === "reading") return "Reading the image…";
-  if (scan.kind === "capturing") return "Select a region of the screen…";
-  if (scan.kind === "verifying" && scan.source === "scan") return "Checking the code on the Dash network…";
+  if (scan.kind === "reading") return AddText.reading;
+  if (scan.kind === "capturing") return AddText.capturing;
+  if (scan.kind === "verifying" && scan.source === "scan") return AddText.verifying;
   return null;
 }
 
@@ -336,14 +342,14 @@ export class AddContactModel extends Model {
   imageFile(file: Pick<Blob, "size" | "arrayBuffer">): Promise<void> {
     if (file.size > MAX_IMAGE_BYTES) {
       this.#begin();
-      this.#refuse("scan", IMAGE_TOO_LARGE);
+      this.#refuse("scan", AddText.imageTooLarge);
       return Promise.resolve();
     }
     return this.#image("reading", async () => {
       const buffer = await file.arrayBuffer().catch(() => {
-        throw new Refused(FILE_UNREADABLE);
+        throw new Refused(AddText.fileUnreadable);
       });
-      if (buffer.byteLength > MAX_IMAGE_BYTES) throw new Refused(IMAGE_TOO_LARGE);
+      if (buffer.byteLength > MAX_IMAGE_BYTES) throw new Refused(AddText.imageTooLarge);
       return this.api.scanQrImage(bytesToBase64(new Uint8Array(buffer)));
     });
   }
@@ -431,12 +437,12 @@ export class AddContactModel extends Model {
         if (seq !== this.#seq) return;
         if (hasCode(e, "invalid_argument")) continue;
         const { text: said, retry } = verifyError(e);
-        const text = source === "link" && said === SCAN_UNVERIFIED ? LINK_UNVERIFIED : said;
+        const text = source === "link" && said === AddText.scanUnverified ? AddText.linkUnverified : said;
         this.#retry = retry ? { texts: texts.slice(i), source, image } : null;
         this.#refuse(source, text, retry);
         return;
       }
     }
-    this.#refuse(source, image ? NO_CODE_IN_IMAGE : NOT_A_CODE);
+    this.#refuse(source, image ? AddText.noCodeInImage : AddText.notACode);
   }
 }

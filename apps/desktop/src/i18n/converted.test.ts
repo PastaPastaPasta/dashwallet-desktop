@@ -31,7 +31,7 @@ const AREAS: Record<string, string[]> = {
 
   pay: [],
 
-  contacts: [],
+  contacts: ["screens/contacts"],
 
   dashpay: [],
 

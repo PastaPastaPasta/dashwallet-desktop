@@ -29,6 +29,7 @@ import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import { listedNow } from "../../contacts/add";
 import { selectionAnnouncement, type EnableBanner } from "../../contacts/pane";
 import { useContactActions, useContactList, useContactsOwner, useEnableBanner, useNetworkSearch, usePendingSetup } from "../../contacts/queries";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet, Outcome } from "../tools/common";
 import { ContactGroups, NetworkResults } from "./ContactList";
@@ -42,6 +43,7 @@ const openAdd = (addContact: AddContactIntent) => ui.set({ addContact, contact: 
 
 export function ContactsPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const backend = useBackend();
+  const t = useT();
   const addOpen = useUi((s) => s.addContact?.walletId === walletId);
   // A `dashpay://user` link shows the same Add contact section, though the button stays enabled.
   const linkOpen = useUi((s) => s.contactPrefill !== null);
@@ -56,7 +58,7 @@ export function ContactsPage({ walletId, network }: { walletId: string; network:
     <main className="page page-contacts" data-testid="page-contacts">
       <div className="page-column">
         <header className="top-intro top-intro-row">
-          <h1 className="top-intro-title">Contacts</h1>
+          <h1 className="top-intro-title">{t("contacts.title")}</h1>
           {owner.kind === "identity" && !emptyCard && <HeaderAdd walletId={walletId} addOpen={addOpen} linkOpen={linkOpen} />}
         </header>
         {owner.kind === "identity" ? (
@@ -71,6 +73,7 @@ export function ContactsPage({ walletId, network }: { walletId: string; network:
 
 /** The header's Add contact. The page hides it only while the empty card shows the same action. */
 function HeaderAdd({ walletId, addOpen, linkOpen }: { walletId: string; addOpen: boolean; linkOpen: boolean }) {
+  const t = useT();
   return (
     <DashButton
       variant="filledBlue"
@@ -78,56 +81,51 @@ function HeaderAdd({ walletId, addOpen, linkOpen }: { walletId: string; addOpen:
       data-testid="contacts-add"
       disabled={addOpen}
       aria-expanded={addOpen || linkOpen}
-      why="Add a New Contact is already open."
+      why={t("contacts.addOpen")}
       whyId="add-contact-title"
       onClick={() => openAdd({ walletId, query: "", hit: null })}>
-      Add contact
+      {t("contacts.add")}
     </DashButton>
   );
 }
-
-const JOIN_MESSAGES = {
-  watchOnly: "A watch-only wallet cannot join DashPay.",
-  waitingForSync: "You can join DashPay once the wallet has synced.",
-  none: "Create a username to add contacts and pay them by name.",
-};
 
 /** Why the page lists no one (D2): no identity yet, one being registered, DashPay starting, or
  * its status unreadable. */
 function NoContacts({ walletId, owner, retry }: { walletId: string; owner: Exclude<ContactsOwner, { kind: "identity" }>; retry: () => void }) {
   const prefill = useUi((s) => s.contactPrefill);
+  const t = useT();
   let body;
   switch (owner.kind) {
     case "starting":
-      body = <LoadingState testId="contacts-starting" text="Starting DashPay…" />;
+      body = <LoadingState testId="contacts-starting" text={t("contacts.starting")} />;
       break;
     case "error":
       body = (
         <EmptyState
           testId="contacts-status-error"
-          title="Could not read DashPay's state"
+          title={t("contacts.statusError")}
           action={
             <DashButton variant="plainBlue" onClick={retry}>
-              Try again
+              {t("contacts.tryAgain")}
             </DashButton>
           }
         />
       );
       break;
     case "registering":
-      body = <EmptyState testId="contacts-registering" title="Your username is being registered" message="Your contacts show here once Dash Platform confirms it." />;
+      body = <EmptyState testId="contacts-registering" title={t("contacts.registeringTitle")} message={t("contacts.registeringMessage")} />;
       break;
     case "join":
       body = (
         <EmptyState
           testId="contacts-join"
           art={EMPTY.join.art}
-          title="Join DashPay"
-          message={JOIN_MESSAGES[owner.reason ?? "none"]}
+          title={t("contacts.joinDashPay")}
+          message={t(`contacts.join.${owner.reason ?? "none"}`)}
           action={
             owner.reason === null && (
               <DashButton variant="filledBlue" data-testid="contacts-join-button" onClick={() => navigate("joinDashPay")}>
-                Join DashPay
+                {t("contacts.joinDashPay")}
               </DashButton>
             )
           }
@@ -151,6 +149,7 @@ function NoContacts({ walletId, owner, retry }: { walletId: string; owner: Exclu
 }
 
 function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: string; identity: string; network: NetworkInfo; onEmptyCard: (shown: boolean) => void }) {
+  const t = useT();
   const [search, setSearch] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
   const [hiddenOpen, setHiddenOpen] = useState(false);
@@ -225,28 +224,28 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
   };
 
   let body;
-  if (display.kind === "arriving" && list.isPending) body = <LoadingState testId="contacts-loading" text="Loading contacts…" />;
+  if (display.kind === "arriving" && list.isPending) body = <LoadingState testId="contacts-loading" text={t("contacts.loading")} />;
   else if (display.kind === "failed")
     body = (
       <EmptyState
         testId="contacts-error"
-        title="Could not load your contacts"
+        title={t("contacts.loadFailed")}
         message={errorMessage(list.error)}
         action={
           <DashButton variant="plainBlue" onClick={() => void list.refetch()}>
-            Try again
+            {t("contacts.tryAgain")}
           </DashButton>
         }
       />
     );
-  else if (display.kind === "arriving") body = <LoadingState testId="contacts-updating" text="Updating contacts…" />;
+  else if (display.kind === "arriving") body = <LoadingState testId="contacts-updating" text={t("contacts.updating")} />;
   else if (display.kind === "search")
     body = (
       <EmptyState
         testId="contacts-no-match"
         art="search"
-        title={`There are no contacts that match “${text}”`}
-        message="Try another name."
+        title={t("contacts.noMatch", { text })}
+        message={t("contacts.noMatchHint")}
         action={
           <DashButton
             variant="filledBlue"
@@ -256,7 +255,7 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
               focusWhenIdle(searchRef);
             }}
           >
-            Clear search
+            {t("contacts.clearSearch")}
           </DashButton>
         }
       />
@@ -280,7 +279,7 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
       <>
         {updating && (
           <p className="contacts-updating" role="status" data-testid="contacts-updating-line">
-            Updating contacts…
+            {t("contacts.updating")}
           </p>
         )}
         <ContactGroups
@@ -306,8 +305,8 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
             ref={searchRef}
             type="search"
             value={search}
-            placeholder="Search contacts or a username"
-            aria-label="Search contacts or a username"
+            placeholder={t("contacts.search")}
+            aria-label={t("contacts.search")}
             onChange={(e) => setSearch(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape" && search !== "") {
@@ -318,7 +317,7 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
           />
         </label>
         <label className="filter-select">
-          <span>Sort by</span>
+          <span>{t("contacts.sortBy")}</span>
           <select data-testid="contacts-sort" value={sort} onChange={(e) => ui.set({ contactSort: e.target.value as ContactSortName })}>
             {SORTS.map((s) => (
               <option key={s.id} value={s.id}>
@@ -334,7 +333,7 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
           <span>{hint.text}</span>
           {hint.kind === "unlock" && (
             <DashButton variant="tintedBlue" size="small" data-testid="contacts-setup-unlock" onClick={() => ui.set({ dialog: "unlock" })}>
-              Unlock
+              {t("contacts.unlock")}
             </DashButton>
           )}
         </div>
@@ -386,25 +385,21 @@ function ContactsView({ walletId, identity, network, onEmptyCard }: { walletId: 
  * requests nor pay contacts until it adds them. Success removes the banner, so a toast says it. */
 function EnableDashPay({ banner, actions, onDone }: { banner: EnableBanner; actions: ContactActions; onDone: (o: ActionOutcome | null) => void }) {
   useModel(actions);
+  const t = useT();
   const outcome = actions.outcome?.kind === "enable" && !actions.outcome.ok ? actions.outcome : null;
   return (
     <div className="contacts-hint contacts-enable card-l1" data-testid="contacts-enable-banner">
       <span className="contacts-enable-text">
-        <strong>Enable DashPay</strong>
+        <strong>{t("contacts.enable.title")}</strong>
         <span>
-          Add the keys DashPay needs to accept contact requests and pay contacts
-          {banner.fee !== null && (
-            <>
-              {" "}
-              (a fee of about <span data-testid="contacts-enable-fee">{banner.fee.toLocaleString()}</span> duffs in credits)
-            </>
-          )}
-          .
+          {banner.fee === null
+            ? t("contacts.enable.text")
+            : t.rich("contacts.enable.textWithFee", { fee: banner.fee.toLocaleString(), amount: (text) => <span data-testid="contacts-enable-fee">{text}</span> })}
         </span>
         <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contacts-enable-outcome" />
       </span>
       <DashButton variant="tintedBlue" size="small" data-testid="contacts-enable" disabled={actions.busy} onClick={() => void actions.enable().then(onDone)}>
-        {actions.isRunning("enable", null) ? "Enabling…" : "Enable"}
+        {actions.isRunning("enable", null) ? t("contacts.enable.busy") : t("contacts.enable.button")}
       </DashButton>
     </div>
   );

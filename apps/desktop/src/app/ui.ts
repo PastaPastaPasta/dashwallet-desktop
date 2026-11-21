@@ -215,7 +215,8 @@ export function openPayForm(patch: Pick<Partial<UiState>, "payPrefill" | "payCoi
 }
 
 export function useUi<T>(select: (s: UiState) => T): T {
-  return useSyncExternalStore(ui.subscribe, () => select(ui.get()));
+  const read = () => select(ui.get());
+  return useSyncExternalStore(ui.subscribe, read, read);
 }
 
 /** Marks a view that shows or takes a recovery phrase as open: the window is then kept out of
