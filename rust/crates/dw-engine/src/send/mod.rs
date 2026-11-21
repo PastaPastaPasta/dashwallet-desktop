@@ -1364,6 +1364,7 @@ impl TxDraft {
                 attempts: tokio::sync::Mutex::new(()),
                 lease: lease.map(|l| (l, artifact)),
                 contact,
+                own_inputs: None,
             }));
         }
 
@@ -1431,6 +1432,7 @@ impl TxDraft {
             attempts: tokio::sync::Mutex::new(()),
             lease: lease.map(|l| (l, artifact)),
             contact,
+            own_inputs: None,
         }))
     }
 
@@ -1441,7 +1443,7 @@ impl TxDraft {
     /// to the txid. `maybe_out`: saved bytes that may already be on the
     /// network (MG-04 D7), handled as after a `BroadcastUnknown`: every
     /// outcome but acceptance is `BroadcastUnknown`, and nothing releases
-    /// the inputs.
+    /// the inputs. `own_inputs`: see [`PreparedTx`]'s field.
     pub(crate) fn assembled(
         self: &Arc<Self>,
         tx: Transaction,
@@ -1449,6 +1451,7 @@ impl TxDraft {
         charge: SpendCharge,
         fence: CoinFence,
         maybe_out: bool,
+        own_inputs: Option<Vec<OutPoint>>,
     ) -> Arc<PreparedTx> {
         let owner = SpendOwner::Tx(tx.txid());
         self.session.spends.reserve(
@@ -1478,6 +1481,7 @@ impl TxDraft {
             attempts: tokio::sync::Mutex::new(()),
             lease: Some((lease, artifact)),
             contact: None,
+            own_inputs,
         })
     }
 
@@ -2113,6 +2117,11 @@ pub struct PreparedTx {
     lease: Option<(Lease, ArtifactId)>,
     /// A contact payment: its pair and the reserved address it pays.
     contact: Option<(Pair, Address)>,
+    /// The wallet's inputs where the transaction spends other parties' too
+    /// (a shared registration): the only coins its sent mark names, since a
+    /// mark restores a claim on each coin it names at load (#170 case 17).
+    /// `None`: every input is the wallet's.
+    own_inputs: Option<Vec<OutPoint>>,
 }
 
 impl std::fmt::Debug for PreparedTx {
@@ -2230,8 +2239,9 @@ impl TxDraft {
             ),
         );
         let coins = sent.then(|| {
-            (prepared.summary.inputs.iter())
-                .map(|i| i.outpoint.to_string())
+            let all = || prepared.summary.inputs.iter().map(|i| i.outpoint).collect();
+            (prepared.own_inputs.clone().unwrap_or_else(all).iter())
+                .map(OutPoint::to_string)
                 .collect::<Vec<_>>()
                 .join(",")
         });
