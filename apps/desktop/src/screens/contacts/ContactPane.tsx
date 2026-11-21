@@ -68,7 +68,11 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
           <h2 id="contact-detail-name" className="add-contact-title">
             {shownName(c)}
           </h2>
-          {sub && <p className="contact-row-username">{sub}</p>}
+          {sub && (
+            <p className="contact-row-username">
+              <bdi>{sub}</bdi>
+            </p>
+          )}
           {chips.length > 0 && (
             <p className="contact-detail-chips">
               <RowChips chips={chips} />
