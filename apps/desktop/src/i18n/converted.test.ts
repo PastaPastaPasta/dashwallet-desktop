@@ -8,18 +8,45 @@ import { join, relative, resolve } from "node:path";
 import { parseSync, Visitor } from "vite";
 import { describe, expect, it } from "vitest";
 
-/** Paths under src/ whose `.tsx` files take their text from the catalog. */
-export const CONVERTED = [
-  "components/shell.tsx",
-  "components/networkPicker.tsx",
-  "screens/LockScreen.tsx",
-  "screens/settings/General.tsx",
-  "screens/settings/LocalCurrency.tsx",
-  "screens/settings/Privacy.tsx",
-  "screens/settings/SettingsPage.tsx",
-  "screens/settings/Updates.tsx",
-  "screens/settings/parts.tsx",
-];
+/** Paths under src/ whose `.tsx` files take their text from the catalog, by screen area. Each area's
+ * pull request fills its own list. */
+const AREAS: Record<string, string[]> = {
+  shell: ["components/shell.tsx", "components/networkPicker.tsx"],
+
+  lock: ["screens/LockScreen.tsx"],
+
+  settings: ["screens/settings/General.tsx", "screens/settings/LocalCurrency.tsx", "screens/settings/Privacy.tsx", "screens/settings/SettingsPage.tsx", "screens/settings/Updates.tsx", "screens/settings/parts.tsx"],
+
+  components: [],
+
+  app: [],
+
+  onboarding: [],
+
+  home: [],
+
+  activity: [],
+
+  receive: [],
+
+  pay: [],
+
+  contacts: [],
+
+  dashpay: [],
+
+  coinjoin: [],
+
+  notifications: [],
+
+  masternodes: [],
+
+  tools: [],
+
+  transfer: [],
+};
+
+export const CONVERTED = Object.values(AREAS).flat();
 
 /** Text that may stay literal: `file: [text, …]`. Keep it short and say why. */
 const ALLOWED: Record<string, string[]> = {};
