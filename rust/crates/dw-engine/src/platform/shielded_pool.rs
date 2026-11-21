@@ -2515,11 +2515,14 @@ impl ShieldedLib for PwShielded {
         guarded_pass(&self.pw.session, &self.manager, true).await
     }
 
+    /// `last_sync_at`: the last pass's end, or a later skip's proof that
+    /// the pool is unchanged ([`guarded_pass`]).
     fn sync_state(&self) -> SyncState {
         let sync = self.manager.shielded_sync();
+        let checked = (self.pw.session.platform.shielded_checked_at).load(Ordering::Acquire);
         SyncState {
             syncing: sync.is_syncing(),
-            last_sync_at: sync.last_sync_unix_seconds(),
+            last_sync_at: (sync.last_sync_unix_seconds()).max((checked != 0).then_some(checked)),
         }
     }
 
@@ -3397,8 +3400,9 @@ async fn hold_passes(
 /// holding the session's pass lock from the admission to its end, so a
 /// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
 /// before the lock outlives it. Its tail reads the library's spend
-/// outcomes into the journal ([`consume_dispositions`]). `false` when it
-/// was held back.
+/// outcomes into the journal ([`consume_dispositions`]). A periodic pass
+/// reads Platform's note count before its locks and admission, and skips
+/// the library's pass while [`pool_is_idle`]. `false` when it was held back.
 pub(crate) async fn guarded_pass(
     session: &Arc<NetworkSession>,
     manager: &Manager,
@@ -3431,7 +3435,7 @@ pub(crate) async fn guarded_pass(
         }
     }
     if let Some(count) = count
-        && unchanged_pool(session, manager, &coordinator, count)
+        && pool_is_idle(session, manager, &coordinator, count)
             .await
             .is_some()
     {
@@ -3439,6 +3443,7 @@ pub(crate) async fn guarded_pass(
             count,
             "the shielded pool is unchanged; the periodic pass is skipped"
         );
+        (session.platform.shielded_checked_at).store(crate::events::unix_now(), Ordering::Release);
         return true;
     }
     #[cfg(test)]
@@ -3468,18 +3473,19 @@ pub(crate) async fn guarded_pass(
 }
 
 /// Whether a periodic pass would find nothing (#178): Platform's proved
-/// note `count` is within the local tree, every bound account has scanned
-/// the whole tree in this session, and no spend waits on a pass (stored,
-/// reserved, with an outcome or marked). `None` when any of it does not
-/// hold or cannot be read, so the pass runs.
-async fn unchanged_pool(
+/// note `count` is the local tree's size, every bound account has scanned
+/// the whole tree in this session and its rest clock's first scan is
+/// marked, and no spend waits on a pass (stored, reserved, with an outcome
+/// or marked). `None` when any of it does not hold or cannot be read, so
+/// the pass runs.
+async fn pool_is_idle(
     session: &NetworkSession,
     manager: &Manager,
     coordinator: &NetworkShieldedCoordinator,
     count: u64,
 ) -> Option<()> {
     let tree = coordinator.store().read().await.tree_size().ok()?;
-    if count > tree {
+    if count != tree {
         return None;
     }
     let wallets = pass_wallets(manager, coordinator).await;
@@ -3487,10 +3493,16 @@ async fn unchanged_pool(
         let scanned = match coordinator.local_balance_snapshot(wallet).await.ok()? {
             ShieldedLocalBalanceState::Unbound => true,
             ShieldedLocalBalanceState::RestoreIncomplete => false,
-            ShieldedLocalBalanceState::Ready(snapshot) => snapshot.accounts.values().all(|a| {
-                a.source == ShieldedBalanceSource::ScannedThisSession
-                    && a.last_scanned_index >= Some(tree)
-            }),
+            ShieldedLocalBalanceState::Ready(snapshot) => {
+                let appdb = session.live().ok()?.appdb;
+                let clock =
+                    tokio::task::spawn_blocking(move || read_rest_clock(&appdb, WalletId(wallet)));
+                clock.await.ok()?.ok()?.scanned
+                    && snapshot.accounts.values().all(|a| {
+                        a.source == ShieldedBalanceSource::ScannedThisSession
+                            && a.last_scanned_index >= Some(tree)
+                    })
+            }
         };
         let settled = coordinator
             .spend_dispositions(wallet)

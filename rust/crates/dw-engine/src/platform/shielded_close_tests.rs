@@ -1743,9 +1743,24 @@ mod idle_tests {
 
     use super::*;
 
+    /// [`scanned_unrested`], with the rest clock's first scan marked as the
+    /// pass's `observe_rest` does.
+    fn scanned(
+        engine: &Engine,
+        session: &Arc<NetworkSession>,
+        wallet: WalletId,
+        notes: u8,
+        watermark: u64,
+    ) {
+        scanned_unrested(engine, session, wallet, notes, watermark);
+        let now = crate::events::unix_now();
+        let appdb = session.live().unwrap().appdb;
+        pool::write_rest_clock(&appdb, wallet, &[], (now, now), true).unwrap();
+    }
+
     /// Appends `notes` commitments to the shielded tree and sets `wallet`'s
     /// watermark to `watermark`, as a completed scan of this session does.
-    fn scanned(
+    fn scanned_unrested(
         engine: &Engine,
         session: &Arc<NetworkSession>,
         wallet: WalletId,
@@ -1788,8 +1803,8 @@ mod idle_tests {
     }
 
     /// After a completed scan, an idle periodic pass with the count unchanged
-    /// fetches no notes, and with a lower count (a lagging node) neither; one
-    /// more note on Platform runs it.
+    /// fetches no notes; one more note on Platform runs it, and so does a
+    /// lower count (a node behind the tree, or a reset Platform).
     #[test]
     fn an_unchanged_count_skips_the_periodic_scan_and_a_new_note_runs_it() {
         let dir = dw_testutil::private_tempdir();
@@ -1798,8 +1813,8 @@ mod idle_tests {
         scanned(&engine, &session, wallet, 3, 3);
         assert!(!periodic(&engine, &session, Some(3)), "unchanged: no fetch");
         assert!(
-            !periodic(&engine, &session, Some(2)),
-            "a lagging node's count"
+            periodic(&engine, &session, Some(2)),
+            "a count below the tree"
         );
         assert!(
             periodic(&engine, &session, Some(4)),
@@ -1968,6 +1983,41 @@ mod idle_tests {
             periodic(&engine, &session, Some(1)),
             "not scanned this session"
         );
+        scanned(&engine, &session, wallet, 0, 1);
+        assert!(!periodic(&engine, &session, Some(1)));
+    }
+
+    /// A skip proves the pool unchanged, so the "Last checked" the status
+    /// gives moves to it.
+    #[test]
+    fn an_idle_skip_moves_last_checked() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        let before = crate::events::unix_now();
+        assert!(!periodic(&engine, &session, Some(1)));
+        let state = engine
+            .block_on(on_pool(&session, wallet, |_, lib| async move {
+                Ok(pool::ShieldedLib::sync_state(&lib))
+            }))
+            .unwrap();
+        assert!(
+            state.last_sync_at.is_some_and(|at| at >= before),
+            "{state:?}"
+        );
+    }
+
+    /// A first scan whose rest-clock mark was not written (a failed
+    /// `observe_rest`) keeps the periodic pass running, so the next one
+    /// writes it.
+    #[test]
+    fn an_unmarked_rest_clock_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned_unrested(&engine, &session, wallet, 1, 1);
+        assert!(periodic(&engine, &session, Some(1)), "the mark is retried");
         scanned(&engine, &session, wallet, 0, 1);
         assert!(!periodic(&engine, &session, Some(1)));
     }

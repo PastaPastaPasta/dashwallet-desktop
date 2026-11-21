@@ -143,6 +143,9 @@ pub(crate) struct PlatformRuntime {
     /// Shuts the dispatch hook from the close's start and during each drain
     /// of `shielded_passes`.
     pub(crate) hook_fence: Arc<super::shielded_pool::HookFence>,
+    /// Unix seconds a periodic pass last proved the shielded pool unchanged
+    /// and skipped its scan; `0` before one did.
+    pub(crate) shielded_checked_at: AtomicU64,
     /// A test's pause of the next shielded pass, after its admission and
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
@@ -486,6 +489,7 @@ impl PlatformRuntime {
             loops_on: Arc::new(AtomicBool::new(false)),
             shielded_passes: Arc::default(),
             hook_fence: Arc::default(),
+            shielded_checked_at: AtomicU64::new(0),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
             #[cfg(test)]
