@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dash_spv::EventHandler;
 use dash_spv::network::NetworkEvent;
-use dash_spv::sync::SyncProgress;
+use dash_spv::sync::{SyncEvent, SyncProgress};
 use dashcore::Txid;
 use key_wallet::account::AccountType;
 use key_wallet::transaction_checking::TransactionContext;
@@ -1141,9 +1141,10 @@ impl SessionHub {
             release.wait();
         }
         self.note_sweep_news(id, crate::coinjoin::SweepNews::Truncated { height });
-        let changed = self
-            .history
-            .with_wallet(id, |h| h.truncate(found.removed, found.unconfirmed));
+        let changed = self.history.with_wallet(id, |h| {
+            h.end_restored_above(height);
+            h.truncate(found.removed, found.unconfirmed)
+        });
         // A reader of the wallet's checkpoint hears it go down, as it hears
         // every advance.
         let rescan_moved = self
@@ -1532,6 +1533,12 @@ impl EventHandler for SessionHub {
 
     fn on_wallet_event(&self, event: &WalletEvent) {
         self.apply_wallet_event(event);
+    }
+
+    fn on_sync_event(&self, event: &SyncEvent) {
+        if let SyncEvent::InstantLockReceived { instant_lock, .. } = event {
+            (self.history).note_instant_lock(instant_lock.txid, &instant_lock.inputs);
+        }
     }
 
     fn on_error(&self, error: &str) {

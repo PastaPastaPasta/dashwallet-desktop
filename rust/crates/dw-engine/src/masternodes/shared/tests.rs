@@ -2384,6 +2384,23 @@ fn test_QT_126_a_refused_hand_off_is_resent_at_its_debit() {
     assert_eq!(f.row(0, &id).last_error, None);
 }
 
+/// #86: a shared registration holds inputs this wallet did not sign, so
+/// its sent mark carries no height and a restart restores no trust in its
+/// change.
+#[test]
+fn test_a_shared_registration_is_marked_without_a_height() {
+    let f = fx(3, true);
+    let id = three_approved(&f);
+    f.both_signed(&id);
+    f.send(0, &id, 400 * COIN + FEE).unwrap();
+    let txid = f.net.sent()[0].txid();
+    let live = f.session.live().unwrap();
+    let (sent, _) = crate::tx_actions::load_sent(&live.appdb, f.wallets[0]);
+    assert!(sent.contains_key(&txid), "marked as sent");
+    let heights = crate::tx_actions::load_sent_at(&live.appdb, f.wallets[0]);
+    assert!(!heights.contains_key(&txid));
+}
+
 /// QT-091, D72: a registration whose hand-off outcome is unknown keeps its
 /// pending spend, so the coordinator abandons that transaction first.
 #[test]

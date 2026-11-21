@@ -1345,6 +1345,7 @@ impl TxDraft {
             session
                 .spends
                 .reserve(wallet_id, owner, tx.input.iter().map(|i| i.previous_output));
+            let scanned = Some(session.hub.history.read_wallet(&wallet_id, |h| h.scanned));
             drop(fence);
             let artifact = ArtifactId::from_txid(&tx.txid());
             if let Some(charge) = charge {
@@ -1360,6 +1361,7 @@ impl TxDraft {
                 signed: Mutex::new(None),
                 mixed: Some(tx),
                 coinjoin_send: r.fully_mixed_only && r.data.is_none(),
+                scanned,
                 phase: Mutex::new(Phase::Pending),
                 attempts: tokio::sync::Mutex::new(()),
                 lease: lease.map(|l| (l, artifact)),
@@ -1408,6 +1410,7 @@ impl TxDraft {
         session
             .spends
             .reserve(wallet_id, owner, tx.input.iter().map(|i| i.previous_output));
+        let scanned = Some(session.hub.history.read_wallet(&wallet_id, |h| h.scanned));
         drop(fence);
         let artifact = ArtifactId::from_txid(&signed.transaction().txid());
         if let Some(charge) = charge {
@@ -1427,6 +1430,7 @@ impl TxDraft {
             signed: Mutex::new(Some(Arc::new(signed))),
             mixed: None,
             coinjoin_send: false,
+            scanned,
             phase: Mutex::new(Phase::Pending),
             attempts: tokio::sync::Mutex::new(()),
             lease: lease.map(|l| (l, artifact)),
@@ -1470,6 +1474,7 @@ impl TxDraft {
             signed: Mutex::new(None),
             mixed: Some(tx),
             coinjoin_send: false,
+            scanned: None,
             phase: Mutex::new(if maybe_out {
                 Phase::Unknown
             } else {
@@ -2104,6 +2109,10 @@ pub struct PreparedTx {
     /// key-wallet reservation, only the engine's pending spends.
     mixed: Option<Transaction>,
     coinjoin_send: bool,
+    /// The height its coins were read at, which its sent mark keeps: none
+    /// for one the engine assembled, which can hold inputs this wallet did
+    /// not sign or bytes recovered without their coin read.
+    scanned: Option<u32>,
     phase: Mutex<Phase>,
     /// A contact payment's broadcasts, one at a time through the contact's
     /// settlement: a repeat waits for the attempt before it (DP3-01 D24).
@@ -2236,12 +2245,7 @@ impl TxDraft {
                 .collect::<Vec<_>>()
                 .join(",")
         });
-        let history = &self.session.hub.history;
-        let height = sent.then(|| {
-            history
-                .read_wallet(&self.wallet_id, |h| h.scanned)
-                .to_string()
-        });
+        let height = (prepared.scanned.filter(|_| sent)).map(|h| h.to_string());
         let at = format!(
             "{}{}",
             crate::tx_actions::SENT_AT_PREFIX,

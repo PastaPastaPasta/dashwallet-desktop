@@ -394,9 +394,10 @@ fn live_sends<'a>(
 /// ChainLocked block, or in a block or InstantSend-locked when they are not
 /// InstantSend-locked themselves (key-wallet's order); and the payments
 /// whose change trust was restored at load (`restored`, each with the
-/// height scanned when it was sent) once the wallet is scanned past it
-/// (`height`) unless they are InstantSend-locked: a block spending a
-/// payment's coin spends the wallet's script, so the scan reaches it.
+/// height scanned when it was sent) once the wallet is scanned, or its
+/// headers stored, past it (`height`) unless they are InstantSend-locked: a
+/// block spending a payment's coin spends the wallet's script, so the scan
+/// reaches it.
 pub(crate) fn lost_unmined(
     txs: &HashMap<Txid, TxEntry>,
     swept: &HashSet<Txid>,
@@ -416,7 +417,10 @@ pub(crate) fn lost_unmined(
         }
     }
     let mut todo: Vec<Txid> = (swept.iter())
-        .filter(|t| txs.get(*t).is_none_or(|e| e.context.block_info().is_none()))
+        .filter(|t| {
+            txs.get(*t)
+                .is_none_or(|e| e.context.block_info().is_none() && !locked(e))
+        })
         .copied()
         .collect();
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
@@ -461,17 +465,18 @@ pub(crate) fn unmined_own_spends(
         .collect()
 }
 
-/// The change outputs of the payments of [`live_sends`] that key-wallet
-/// trusts when it records them (`Utxo::is_trusted`, Dash Core's
-/// `CWalletTx::IsTrusted`), which the store does not keep (#86): the app
-/// signed every input, and each spends an output paying the wallet
-/// (`owned`) of a transaction in a block, InstantSend-locked, or itself
-/// such a payment's change. key-wallet trusts only an input it still holds,
-/// so a payment sharing an input with another transaction the history holds
-/// not abandoned gets no trust.
+/// The change outputs of the payments of [`live_sends`] whose trust
+/// (`Utxo::is_trusted`, Dash Core's `CWalletTx::IsTrusted`) the store does
+/// not keep (#86) and a restart can give back: the app signed every input,
+/// and each spends an output paying the wallet (`owned`) of a transaction no
+/// block can undo ([`final_funding`], `chainlock` the best ChainLock
+/// height), or itself such a payment's change. key-wallet trusts only an
+/// input it still holds, so a payment sharing an input with another
+/// transaction the history holds not abandoned gets no trust.
 pub(crate) fn trusted_change(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
+    chainlock: Option<u32>,
     owned: impl Fn(&ScriptBuf) -> Option<AddressChain>,
 ) -> HashSet<OutPoint> {
     let mut spent = HashSet::new();
@@ -486,7 +491,7 @@ pub(crate) fn trusted_change(
     let mut memo = HashMap::new();
     let mut change = HashSet::new();
     for t in live.keys() {
-        if trusted_send(*t, txs, &live, &owned, &mut memo) {
+        if trusted_send(*t, txs, &live, chainlock, &owned, &mut memo) {
             change.extend(
                 (txs[t].tx.output.iter().zip(0u32..))
                     .filter(|(o, _)| owned(&o.script_pubkey) == Some(AddressChain::Change))
@@ -497,10 +502,23 @@ pub(crate) fn trusted_change(
     change
 }
 
+/// Not a coinbase (the store reloads its outputs as mature), and in a
+/// ChainLocked block or InstantSend-locked: a reorganization replaces a
+/// block nothing locks.
+fn final_funding(e: &TxEntry, chainlock: Option<u32>) -> bool {
+    let block = e.context.block_info().map(|b| b.height());
+    !e.tx.is_coin_base()
+        && (matches!(e.context, TransactionContext::InChainLockedBlock(_))
+            || block.is_some_and(|h| chainlock.is_some_and(|cl| h <= cl))
+            || e.instant_locked
+            || matches!(e.context, TransactionContext::InstantSend(_)))
+}
+
 fn trusted_send(
     t: Txid,
     txs: &HashMap<Txid, TxEntry>,
     live: &HashMap<Txid, &BTreeSet<OutPoint>>,
+    chainlock: Option<u32>,
     owned: &impl Fn(&ScriptBuf) -> Option<AddressChain>,
     memo: &mut HashMap<Txid, bool>,
 ) -> bool {
@@ -521,9 +539,9 @@ fn trusted_send(
                 (funding.tx.output.get(o.vout as usize)).and_then(|out| owned(&out.script_pubkey));
             coins.contains(&o)
                 && chain.is_some()
-                && (settled(funding)
+                && (final_funding(funding, chainlock)
                     || (chain == Some(AddressChain::Change)
-                        && trusted_send(o.txid, txs, live, owned, memo)))
+                        && trusted_send(o.txid, txs, live, chainlock, owned, memo)))
         });
     memo.insert(t, trusted);
     trusted
@@ -552,8 +570,10 @@ pub(crate) struct WalletHistory {
     /// Records only read from storage are not among them (platform-wallet
     /// rebuilds no records at load).
     pub session_held: HashSet<Txid>,
-    /// The transactions key-wallet swept this session: gone from `txs`,
-    /// they still make their unmined descendants lost ([`lost_unmined`]).
+    /// The transactions key-wallet swept this session, and the restored
+    /// payments a reorganization disconnected: gone from `txs` or not, they
+    /// make their unmined descendants lost ([`lost_unmined`]) until they
+    /// are mined or InstantSend-locked.
     pub swept: HashSet<Txid>,
     /// The payments whose change trust the load restored, each with the
     /// height scanned when it was sent ([`lost_unmined`]).
@@ -727,6 +747,19 @@ impl WalletHistory {
         changed
     }
 
+    /// Ends the restored trust of the payments sent at a height a
+    /// reorganization disconnected (above `height`, the last block it
+    /// keeps): they count as swept.
+    pub fn end_restored_above(&mut self, height: u32) {
+        let swept = &mut self.swept;
+        self.restored.retain(|t, at| {
+            if *at > height {
+                swept.insert(*t);
+            }
+            *at <= height
+        });
+    }
+
     /// Upgrades a transaction in a block to ChainLocked.
     pub fn set_chain_locked(&mut self, txid: &Txid) -> bool {
         match self.txs.get_mut(txid) {
@@ -760,6 +793,25 @@ impl HistoryStore {
             self.collateral_wake.notify_one();
         }
         r
+    }
+
+    /// An InstantSend lock of `txid` on `inputs`: a restored payment
+    /// spending one of them as another transaction can never confirm, so it
+    /// counts as swept (#86). The lock reaches the engine whether or not the
+    /// transaction is the wallet's.
+    pub fn note_instant_lock(&self, txid: Txid, inputs: &[OutPoint]) {
+        let mut map = self.wallets.write().unwrap_or_else(|p| p.into_inner());
+        for h in map.values_mut() {
+            let beaten: Vec<Txid> = (h.restored.keys())
+                .filter(|t| **t != txid)
+                .filter(|t| {
+                    (h.txs.get(*t).into_iter().flat_map(|e| &e.tx.input))
+                        .any(|i| inputs.contains(&i.previous_output))
+                })
+                .copied()
+                .collect();
+            h.swept.extend(beaten);
+        }
     }
 
     /// The wallets with a ProRegTx, or a coin one names, merged since the
@@ -2691,9 +2743,10 @@ mod tests {
     }
 
     /// #86: after a restart the change of a live payment this app sent is
-    /// trusted as key-wallet trusted it: every input signed by the app and
-    /// paying the wallet, from a transaction in a block, InstantSend-locked,
-    /// or itself trusted change. Not otherwise.
+    /// trusted when every input is signed by the app and pays the wallet,
+    /// from a transaction no block can undo (ChainLocked, by its context or
+    /// the best ChainLock, or InstantSend-locked), not a coinbase, or itself
+    /// trusted change. Not otherwise: not of a plain block's.
     #[test]
     fn trusted_change_is_the_change_of_live_sends_of_final_coins() {
         let (receive, change) = (hash_addr(1), hash_addr(5));
@@ -2771,13 +2824,32 @@ mod tests {
         };
         let twin_a = add(twin(60), &[coin(mined, 6)]);
         let twin_b = add(twin(70), &[coin(mined, 6)]);
+        let chainlocked =
+            TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
+        let locked_block = add(funding(4, 1, chainlocked.clone()), &[]);
+        let of_locked_block = add(
+            pay(&[coin(locked_block, 0)], mempool.clone()),
+            &[coin(locked_block, 0)],
+        );
+        let plain = add(funding(5, 1, in_block(11, 0)), &[]);
+        let of_plain = add(pay(&[coin(plain, 0)], mempool.clone()), &[coin(plain, 0)]);
+        let coinbase = tx(
+            vec![input(Txid::all_zeros(), u32::MAX)],
+            vec![out(100, &receive)],
+        );
+        let coinbase = add(entry(coinbase, chainlocked), &[]);
+        let of_coinbase = add(
+            pay(&[coin(coinbase, 0)], mempool.clone()),
+            &[coin(coinbase, 0)],
+        );
 
-        let trusted = trusted_change(&txs, &sent, owned);
+        let trusted = trusted_change(&txs, &sent, Some(10), owned);
         assert_eq!(
             trusted,
-            HashSet::from([coin(first, 1), coin(second, 1)]),
+            HashSet::from([coin(first, 1), coin(second, 1), coin(of_locked_block, 1)]),
             "none of {unowned}, {of_pending}, {partly_signed}, {abandoned}, {of_abandoned}, \
-             {unmarked}, {of_unknown}, {beaten}, {in_a_block}, {twin_a}, {twin_b}"
+             {unmarked}, {of_unknown}, {beaten}, {in_a_block}, {twin_a}, {twin_b}, {of_plain}, \
+             {of_coinbase}"
         );
     }
 
@@ -2818,18 +2890,21 @@ mod tests {
         let locked_loser = add(&[coin(8)], mempool.clone());
         let of_locked_loser = add(&[OutPoint::new(locked_loser, 0)], mempool.clone());
         let block_winner = add(&[coin(8), coin(10)], in_block(12, 2));
-        for t in [lock, stale_locked, locked_loser] {
+        let relocked = add(&[coin(11)], mempool.clone());
+        let of_relocked = add(&[OutPoint::new(relocked, 0)], mempool.clone());
+        for t in [lock, stale_locked, locked_loser, relocked] {
             txs.get_mut(&t).unwrap().instant_locked = true;
         }
         let restored = HashMap::from([(stale, 10), (fresh, 11), (stale_locked, 10)]);
-        let swept_set = HashSet::from([swept, resurrected]);
+        let swept_set = HashSet::from([swept, resurrected, relocked]);
 
         let lost = lost_unmined(&txs, &swept_set, &restored, 11);
         let expected = HashSet::from([beaten, child, grandchild, stale, swept, of_swept]);
         assert_eq!(
             lost, expected,
             "none of {lock}, {fresh}, {stale_locked}, {resurrected}, {of_resurrected}, \
-             {mined}, {of_mined}, {locked_loser}, {of_locked_loser}, {block_winner}"
+             {mined}, {of_mined}, {locked_loser}, {of_locked_loser}, {block_winner}, \
+             {relocked}, {of_relocked}"
         );
 
         txs.get_mut(&block_winner).unwrap().context =
@@ -2841,5 +2916,22 @@ mod tests {
             lost, expected,
             "a ChainLocked block beats an InstantSend lock"
         );
+    }
+
+    /// A reorganization that disconnects the block a restored payment was
+    /// sent at ends its restored trust: it counts as swept.
+    #[test]
+    fn a_reorganization_below_a_restored_payment_ends_its_trust() {
+        let (kept, ended) = (
+            Txid::from_byte_array([1; 32]),
+            Txid::from_byte_array([2; 32]),
+        );
+        let mut h = WalletHistory {
+            restored: HashMap::from([(kept, 11), (ended, 12)]),
+            ..WalletHistory::default()
+        };
+        h.end_restored_above(11);
+        assert_eq!(h.restored, HashMap::from([(kept, 11)]));
+        assert_eq!(h.swept, HashSet::from([ended]));
     }
 }

@@ -1009,15 +1009,22 @@ impl NetworkSession {
             wallet_id.0,
             "the fence of another wallet"
         );
-        let (mut snapshot, lock_inputs, unseen, scanned) = {
+        let (mut snapshot, lock_inputs, unseen, scanned, dismissed) = {
             let state = wallet.state().await;
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
+            let dismissed: HashSet<Txid> = (self.hub.history).read_wallet(&wallet_id, |h| {
+                (h.txs.keys().chain(&h.swept))
+                    .filter(|t| h.swept.contains(*t) || state.core_wallet.is_dismissed(t))
+                    .copied()
+                    .collect()
+            });
             (
                 snapshot,
                 pending_lock_inputs(state.tracked_asset_locks.values()),
                 unseen,
                 scanned_height(&state.core_wallet),
+                dismissed,
             )
         };
         // Coins before the history: a ProRegTx that lands between the two
@@ -1083,11 +1090,14 @@ impl NetworkSession {
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
         // key-wallet sweeps a payment it holds a record of when it loses, but
         // not one restored at load, whose change can be trusted (#86).
+        // Headers are stored before the scan commits, and until dash-spv
+        // reports them nothing says no block followed a restored payment.
         let relies = (snapshot.coins.iter())
             .any(|c| c.utxo.is_trusted && !c.utxo.is_confirmed && !c.utxo.is_instantlocked);
+        let heard = (self.hub.tracker().tip_height()).map_or(u32::MAX, |t| t.max(scanned));
         let (spent, lost, known) = (self.hub.history).read_wallet(&wallet_id, |h| {
             let lost = match relies {
-                true => crate::history::lost_unmined(&h.txs, &h.swept, &h.restored, scanned),
+                true => crate::history::lost_unmined(&h.txs, &dismissed, &h.restored, heard),
                 false => HashSet::new(),
             };
             (crate::history::spent_outpoints(&h.txs), lost, h.scanned)

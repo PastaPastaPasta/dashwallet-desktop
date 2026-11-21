@@ -144,12 +144,12 @@ pub(crate) fn load_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, bool) {
 /// The payments this app sent, each with the wallet's coins it signed.
 pub(crate) type Sent = BTreeMap<Txid, BTreeSet<OutPoint>>;
 
-/// The heights of [`SENT_AT_PREFIX`]: an unreadable one is left out.
+/// The heights of [`SENT_AT_PREFIX`], none when one is unreadable.
 pub(crate) fn load_sent_at(appdb: &AppDb, wallet: WalletId) -> BTreeMap<Txid, u32> {
-    let (marks, _) = load_marks(appdb, wallet, SENT_AT_PREFIX, |t, h| {
+    let (marks, read) = load_marks(appdb, wallet, SENT_AT_PREFIX, |t, h| {
         Some((t, h.parse().ok()?))
     });
-    marks.into_iter().collect()
+    (marks.into_iter()).filter(|_| read).collect()
 }
 
 /// Drops the marks of the payments of `wallet` no longer out of a block

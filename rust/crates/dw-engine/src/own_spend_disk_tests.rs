@@ -720,6 +720,19 @@ fn single_coin_wallet() -> (
     WalletId,
     Transaction,
 ) {
+    let (dir, engine, session, id, paid) = single_coin_wallet_unlocked();
+    chain_lock(&engine, &session, id, TIP);
+    (dir, engine, session, id, paid)
+}
+
+/// A wallet holding one coin, in a block no ChainLock covers.
+fn single_coin_wallet_unlocked() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+) {
     let (dir, engine, session, id) = engine_wallet();
     let to = fresh_address(&engine, &session, id);
     let paid = funding(7, std::slice::from_ref(&to), COIN);
@@ -747,6 +760,15 @@ fn pay_stored(
     (tx, spent, change)
 }
 
+/// Restarts the session, and dash-spv then reports the headers it stored:
+/// up to the height the wallet was scanned to.
+fn restart(engine: &Engine, session: Arc<NetworkSession>, id: WalletId) -> Arc<NetworkSession> {
+    let session = reopen(engine, session);
+    let height = synced(engine, &session, id);
+    session.hub.tracker().set_tip_height(height);
+    session
+}
+
 fn buckets(b: &WalletBalances) -> (u64, u64, u64) {
     (b.confirmed, b.unconfirmed, b.total)
 }
@@ -763,14 +785,14 @@ fn change_of_an_unmined_own_payment_is_spendable_after_a_restart() {
     assert!(utxo(&engine, &session, id, change).is_trusted);
     let before = buckets(&balances(&session, id));
 
-    let session = reopen(&engine, session);
+    let session = restart(&engine, session, id);
     let after = assert_holds(&engine, &session, id, &BTreeSet::from([change]), "restart");
     let (_, spent, second_change) = pay_stored(&engine, &session, id, CoinSource::Any);
     assert_eq!(spent, vec![change], "the second payment spends the change");
     assert_eq!(buckets(&after), before, "as before the restart");
     let before = buckets(&balances(&session, id));
 
-    let session = reopen(&engine, session);
+    let session = restart(&engine, session, id);
     let after = assert_holds(
         &engine,
         &session,
@@ -792,13 +814,13 @@ fn change_of_a_restored_payment_a_block_beat_is_not_selected() {
     let (_dir, engine, session, id, paid) = single_coin_wallet();
     let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
 
-    let session = reopen(&engine, session);
+    let session = restart(&engine, session, id);
     assert!(utxo(&engine, &session, id, change).is_trusted);
     let winner = spent_elsewhere(&engine, &session, id, &paid);
     mined(&engine, &session, id, TIP + 1, vec![winner]);
     assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
 
-    chain_lock(&engine, &session, TIP + 1);
+    chain_lock(&engine, &session, id, TIP + 1);
     let coin = OutPoint::new(paid.txid(), 0);
     assert!(
         !observed_spent(&engine, &session, id).contains(&coin),
@@ -806,22 +828,22 @@ fn change_of_a_restored_payment_a_block_beat_is_not_selected() {
     );
     assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
 
-    let session = reopen(&engine, session);
+    let session = restart(&engine, session, id);
     assert!(!utxo(&engine, &session, id, change).is_trusted);
     assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
 }
 
-/// key-wallet applies a ChainLock at `height`.
-fn chain_lock(engine: &Engine, session: &NetworkSession, height: u32) {
-    use platform_wallet::key_wallet_manager::WalletInterface;
-    let manager = session.manager().unwrap();
-    engine.block_on(async move {
-        let wm = manager.wallet_manager_arc();
-        wm.write().await.apply_chain_lock(dashcore::ChainLock {
-            block_height: height,
-            block_hash: dashcore::BlockHash::all_zeros(),
-            signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
-        });
+/// key-wallet applies a ChainLock at `height`, and the store keeps it.
+fn chain_lock(engine: &Engine, session: &NetworkSession, id: WalletId, height: u32) {
+    super::deliver(engine, session, id, move |wm| {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        Box::pin(async move {
+            wm.apply_chain_lock(dashcore::ChainLock {
+                block_height: height,
+                block_hash: dashcore::BlockHash::all_zeros(),
+                signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+            });
+        })
     });
 }
 
@@ -896,7 +918,7 @@ fn change_of_a_restored_child_of_a_swept_payment_is_not_selected() {
     let (child, spent, child_change) = pay_stored(&engine, &session, id, CoinSource::Any);
     assert_eq!(spent, vec![change]);
 
-    let session = reopen(&engine, session);
+    let session = restart(&engine, session, id);
     assert!(utxo(&engine, &session, id, child_change).is_trusted);
     mempool(&engine, &session, id, &parent);
     let winner = spent_elsewhere(&engine, &session, id, &paid);
@@ -933,7 +955,7 @@ fn change_of_a_restored_payment_a_locked_spend_beat_is_not_selected() {
     let (_dir, engine, session, id, paid) = single_coin_wallet();
     let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
 
-    let session = reopen(&engine, session);
+    let session = restart(&engine, session, id);
     assert!(utxo(&engine, &session, id, change).is_trusted);
     let winner = rival(&engine, &session, id, &paid, 0);
     mempool(&engine, &session, id, &winner);
@@ -963,7 +985,7 @@ fn a_load_with_an_unreadable_record_trusts_no_change() {
     engine.block_on(session.load_wallet(id)).unwrap();
     assert!(!utxo(&engine, &session, id, change).is_trusted);
 
-    let session = reopen(&engine, session);
+    let session = restart(&engine, session, id);
     assert!(
         utxo(&engine, &session, id, change).is_trusted,
         "a clean load"
@@ -987,7 +1009,7 @@ fn change_of_a_payment_of_an_unconfirmed_coin_stays_untrusted_after_a_restart() 
     let before = buckets(&balances(&session, id));
     assert_eq!(before.0, 0, "nothing is confirmed: {before:?}");
 
-    let session = reopen(&engine, session);
+    let session = restart(&engine, session, id);
     let after = assert_holds(&engine, &session, id, &BTreeSet::from([change]), "restart");
     assert_eq!(buckets(&after), before, "as before the restart");
     assert!(!utxo(&engine, &session, id, change).is_trusted);
@@ -1061,6 +1083,157 @@ fn change_to_a_coinjoin_address_is_not_trusted_after_a_restart() {
     let change = OutPoint::new(tx.txid(), vout.unwrap() as u32);
     assert!(!utxo(&engine, &session, id, change).is_trusted);
 
-    let session = reopen(&engine, session);
+    let session = restart(&engine, session, id);
     assert!(!utxo(&engine, &session, id, change).is_trusted);
+}
+
+/// A payment of a coin in a block no ChainLock covers: key-wallet trusts
+/// its change in the session that sent it, but a reorganization can replace
+/// that block, so a restart does not, and automatic selection takes none
+/// of it.
+#[test]
+fn change_of_a_payment_of_a_coin_in_a_plain_block_is_not_trusted_after_a_restart() {
+    let (_dir, engine, session, id, _) = single_coin_wallet_unlocked();
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+    assert!(utxo(&engine, &session, id, change).is_trusted);
+
+    let session = restart(&engine, session, id);
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
+    assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
+}
+
+/// The change of a restored payment is selected only once dash-spv reports
+/// its stored headers and none is above the payment's height: a block a
+/// header announces may spend the payment's coin before the scan reaches
+/// it.
+#[test]
+fn change_of_a_restored_payment_is_selected_only_while_no_later_header_is_stored() {
+    let (_dir, engine, session, id, _) = single_coin_wallet();
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+
+    let session = reopen(&engine, session);
+    assert!(utxo(&engine, &session, id, change).is_trusted);
+    assert_eq!(
+        available(&engine, &session, id, COIN / 8),
+        Some(0),
+        "no header reported"
+    );
+    session.hub.tracker().set_tip_height(TIP);
+    assert_eq!(available(&engine, &session, id, COIN / 8), None);
+    session.hub.tracker().set_tip_height(TIP + 1);
+    assert_eq!(
+        available(&engine, &session, id, COIN / 8),
+        Some(0),
+        "a later header is stored"
+    );
+}
+
+/// A payment's mark keeps the height its coins were read at, not one a
+/// later coin read saw.
+#[test]
+fn a_payment_is_marked_with_the_height_its_coins_were_read_at() {
+    let (_dir, engine, session, id, _) = single_coin_wallet();
+    let broadcaster = Arc::new(Accept::default());
+    let (draft, prepared) = prepare(
+        &engine,
+        &session,
+        id,
+        CoinSource::Any,
+        COIN / 4,
+        false,
+        &broadcaster,
+    );
+    let prepared = prepared.unwrap();
+    let txid: Txid = prepared.summary().txid.parse().unwrap();
+    mined(&engine, &session, id, TIP + 1, vec![foreign()]);
+    assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
+
+    engine.block_on(draft.broadcast(prepared)).unwrap();
+    let marks = crate::tx_actions::load_sent_at(&session.live().unwrap().appdb, id);
+    assert_eq!(marks.get(&txid), Some(&TIP));
+}
+
+/// A load that cannot read one payment's height trusts no payment's
+/// change.
+#[test]
+fn a_load_with_an_unreadable_height_trusts_no_change() {
+    let (_dir, engine, session, id, _) = single_coin_wallet();
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+    let key = format!("{}{}", crate::tx_actions::SENT_AT_PREFIX, Txid::all_zeros());
+    (session.live().unwrap().appdb)
+        .set_setting(&id.to_string(), &key, Some("unreadable"))
+        .unwrap();
+
+    let session = restart(&engine, session, id);
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
+}
+
+/// A payment sent at a height no ChainLock covered when the app closed: a
+/// fork can replace the block at that height, so a restart restores no
+/// trust, though the payment's coin is ChainLocked.
+#[test]
+fn change_of_a_payment_sent_above_the_best_chainlock_is_not_trusted_after_a_restart() {
+    let (_dir, engine, session, id, _) = single_coin_wallet_unlocked();
+    chain_lock(&engine, &session, id, FUNDED_AT);
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+
+    let session = restart(&engine, session, id);
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
+}
+
+/// [`change_of_a_restored_child_of_a_swept_payment_is_not_selected`] with
+/// the coins read before the hub hears the sweep: key-wallet already holds
+/// P dismissed, so C's change is not selected.
+#[test]
+fn change_of_a_restored_child_is_not_selected_before_the_sweep_is_heard() {
+    let (_dir, engine, session, id, paid) = single_coin_wallet();
+    let (parent, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+    let (_, spent, child_change) = pay_stored(&engine, &session, id, CoinSource::Any);
+    assert_eq!(spent, vec![change]);
+
+    let session = restart(&engine, session, id);
+    assert!(utxo(&engine, &session, id, child_change).is_trusted);
+    mempool(&engine, &session, id, &parent);
+    let winner = spent_elsewhere(&engine, &session, id, &paid);
+    let manager = session.manager().unwrap();
+    engine.block_on(async move {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let lock = InstantLock {
+            txid: winner.txid(),
+            ..InstantLock::default()
+        };
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        wm.process_mempool_instant_send_lock(&winner, lock).await;
+    });
+    assert!(
+        session.hub.history.get(&id, &parent.txid()).is_some(),
+        "the hub has not heard the sweep"
+    );
+    assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
+}
+
+/// A winner that leaves the wallet no record: another spend of a restored
+/// payment's coin, paying only someone else, InstantSend-locked. Its lock
+/// names the coin, so the payment's change is not selected.
+#[test]
+fn change_of_a_restored_payment_a_lock_on_its_coin_beat_is_not_selected() {
+    use dash_spv::EventHandler;
+    let (_dir, engine, session, id, paid) = single_coin_wallet();
+    pay_stored(&engine, &session, id, CoinSource::Any);
+
+    let session = restart(&engine, session, id);
+    assert_eq!(available(&engine, &session, id, COIN / 8), None);
+    let winner = spent_elsewhere(&engine, &session, id, &paid);
+    session
+        .hub
+        .on_sync_event(&dash_spv::sync::SyncEvent::InstantLockReceived {
+            instant_lock: InstantLock {
+                txid: winner.txid(),
+                inputs: vec![OutPoint::new(paid.txid(), 0)],
+                ..InstantLock::default()
+            },
+            validated: true,
+        });
+    assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
 }

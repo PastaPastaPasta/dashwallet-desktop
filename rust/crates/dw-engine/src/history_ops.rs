@@ -482,14 +482,19 @@ impl NetworkSession {
                 }
             })
         };
+        let chainlock = self.chainlock_height(info);
         let height = crate::coins::scanned_height(&info.core_wallet);
-        let fresh = |t: &Txid| sent_at.get(t).is_some_and(|at| *at >= height);
+        let fresh = |at: &u32| *at >= height && chainlock.is_some_and(|cl| cl >= *at);
         let sent: crate::tx_actions::Sent = (sent.iter())
-            .filter(|(t, _)| fresh(t))
+            .filter(|(t, _)| sent_at.get(*t).is_some_and(fresh))
             .map(|(t, c)| (*t, c.clone()))
             .collect();
+        if sent.is_empty() {
+            self.hub.history.with_wallet(wallet, |h| h.restored.clear());
+            return;
+        }
         let change = self.hub.history.with_wallet(wallet, |h| {
-            let mut change = crate::history::trusted_change(&h.txs, &sent, role);
+            let mut change = crate::history::trusted_change(&h.txs, &sent, chainlock, role);
             change.retain(|o| !h.session_held.contains(&o.txid));
             h.restored = (change.iter())
                 .map(|o| (o.txid, sent_at[&o.txid]))
@@ -716,12 +721,15 @@ impl NetworkSession {
                 .last_processed_height
                 .max(meta.synced_height)
                 .max(self.hub.wallet_state(wallet).map_or(0, |s| s.tip())),
-            chainlock_height: meta
-                .last_applied_chain_lock
-                .as_ref()
-                .map(|c| c.block_height)
-                .max(self.hub.tracker().chainlock_height()),
+            chainlock_height: self.chainlock_height(info),
         }
+    }
+
+    /// The best ChainLock height: the wallet's stored one or dash-spv's.
+    fn chainlock_height(&self, info: &PlatformWalletInfo) -> Option<u32> {
+        (info.core_wallet.metadata.last_applied_chain_lock.as_ref())
+            .map(|c| c.block_height)
+            .max(self.hub.tracker().chainlock_height())
     }
 
     /// Runs `f` with the wallet's chain view. `WalletNotFound` for an
