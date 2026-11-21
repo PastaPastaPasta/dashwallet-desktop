@@ -549,8 +549,9 @@ impl Pipeline {
     }
 
     /// Runs `work` (a decode) on a thread of its own, at most [`DECODES`] at
-    /// once; a panic is `avatar.unsupported`. Not an engine thread: their
-    /// panic hook poisons the engine even for a panic the decode catches.
+    /// once; a panic is `avatar.unsupported`. Every image decode runs here,
+    /// never on a `dw-engine` thread: the engine's panic hook poisons it
+    /// even for a panic the decode catches.
     async fn decoding<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> Result<T, AvatarError> + Send + 'static,
@@ -671,7 +672,13 @@ impl Pipeline {
             let verified = row.status == "ok"
                 && avatar_image::matches(row.content_sha.as_deref().unwrap_or(""), profile);
             if verified {
-                if let Some(png) = self.blocking(move |s| s.thumbnail(&row, size)).await? {
+                let png = self.blocking(move |s| s.thumbnail(&row, size)).await?;
+                if let Some(png) = png
+                    && let Ok(Some(png)) = (self.decoding(move || {
+                        Ok(avatar_image::is_thumbnail(&png, size.px()).then_some(png))
+                    }))
+                    .await
+                {
                     ticket.at("thumbnail").await;
                     return Ok(Some(png));
                 }

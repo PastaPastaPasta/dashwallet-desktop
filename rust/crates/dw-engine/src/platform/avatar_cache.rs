@@ -251,8 +251,8 @@ impl AvatarStore {
             .flatten()
     }
 
-    /// The thumbnail `row` names at `size`, if it is still on disk and is
-    /// a PNG of that size (D10).
+    /// The thumbnail `row` names at `size`, if it is still on disk. The
+    /// caller checks it is a PNG of that size (D10), as a decode.
     pub(super) fn thumbnail(&self, row: &AvatarRow, size: AvatarSize) -> Option<Vec<u8>> {
         let stem = row.file.as_deref().filter(|s| valid_stem(s))?;
         let Some(dir) = &self.dir else {
@@ -260,10 +260,9 @@ impl AvatarStore {
             let (_, pair) = memory.iter().find(|(s, _)| s == stem)?;
             return Some(pair[usize::from(size == AvatarSize::Large)].clone());
         };
-        let png = (dir.read(&file_name(stem, size)))
+        (dir.read(&file_name(stem, size)))
             .inspect_err(|e| tracing::warn!(error = %e, "avatar thumbnail unreadable"))
-            .ok()??;
-        super::avatar_image::is_thumbnail(&png, size.px()).then_some(png)
+            .ok()?
     }
 
     /// Records a fetch that decoded: the thumbnails written (to the
