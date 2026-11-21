@@ -404,7 +404,7 @@ function rowOf(wallet: FixtureWallet, txid: string): TxRow {
 /** The engine's message for `refusal` (dw-engine `TxActionRefusal::message`). */
 const refusalMessage = (refusal: TxActionRefusalName) =>
   refusal === "rescanFirst"
-    ? "This payment can be abandoned after Dash Wallet restarts and rescans from the wallet's birth. Restart, then run Rescan, then Abandon again."
+    ? "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
     : `transaction action refused: ${refusal[0].toUpperCase()}${refusal.slice(1)}`;
 const refused = (refusal: TxActionRefusalName) => fail("tx_action_refused", refusalMessage(refusal), { kind: "txAction", refusal });
 

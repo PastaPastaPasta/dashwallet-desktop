@@ -190,7 +190,7 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       {confirming ? (
         <>
           <p className="tx-actions-question">
-            Abandon this transaction? Dash Wallet stops counting it. Coins it spent come back only if nothing else spent them; if it reaches the network anyway, it counts again.
+            Abandon this transaction? Dash Wallet stops counting it. Coins it spent come back only if nothing else spent them; if the wallet later sees it confirmed, it counts again.
           </p>
           <span className="tx-actions-row">
             <DashButton variant="tintedGray" size="small" disabled={busy} onClick={() => setConfirming(false)}>

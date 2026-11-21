@@ -38,7 +38,7 @@ extension L10n {
             case .inMempool: "The network still has this transaction."
             case .notSentByWallet: "This transaction was not sent by this wallet."
             case .rescanFirst:
-                "This payment can be abandoned after Dash Wallet restarts and rescans from the wallet's birth. Restart, then run Rescan, then Abandon again."
+                "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
             }
         }
 

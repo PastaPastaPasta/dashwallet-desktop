@@ -59,9 +59,10 @@ impl TxActionRefusal {
     /// refusal's name otherwise.
     pub fn message(&self) -> String {
         match self {
-            Self::RescanFirst => "This payment can be abandoned after Dash Wallet restarts and \
-                rescans from the wallet's birth. Restart, then run Rescan, then Abandon again."
-                .into(),
+            Self::RescanFirst => {
+                "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again."
+                    .into()
+            }
             other => format!("transaction action refused: {other:?}"),
         }
     }

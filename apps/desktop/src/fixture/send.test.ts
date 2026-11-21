@@ -282,7 +282,7 @@ describe("fixture send engine", () => {
     expect(await cmd.txDetailExtras(W, txid)).toMatchObject({ canAbandon: true, canResend: false, abandoned: false });
     await expect(cmd.abandonTransaction(W, txid)).rejects.toMatchObject({
       code: "tx_action_refused",
-      message: "This payment can be abandoned after Dash Wallet restarts and rescans from the wallet's birth. Restart, then run Rescan, then Abandon again.",
+      message: "Restart Dash Wallet, run Rescan from the wallet's birth, then try Abandon again.",
       data: { kind: "txAction", refusal: "rescanFirst" },
     });
   });
