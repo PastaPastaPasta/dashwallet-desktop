@@ -90,7 +90,9 @@ describe("t", () => {
     const ok: Catalog<typeof en> = { shell: { status: { synced: "Synkd", peers: { one: "a", other: "b" } } } };
     // @ts-expect-error: a key English does not have fails tsc
     const extra: Catalog<typeof en> = { shell: { status: { syncd: "Synkd" } } };
-    expect([ok, extra]).toHaveLength(2);
+    // @ts-expect-error: nor does an area that has no English messages yet
+    const empty: Catalog<typeof en> = { pay: { rogue: "x" } };
+    expect([ok, extra, empty]).toHaveLength(3);
   });
 });
 

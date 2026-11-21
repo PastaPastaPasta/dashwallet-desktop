@@ -17,6 +17,7 @@ import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import { avatarLetters, channelTitle, relationTitle, rowChips, shownName, subtitle } from "../../contacts/model";
 import { ACTIVITY_FILTERS, activityRow, detailsChanged, detailsForm, detailsOf, paneActions, type DetailsForm } from "../../contacts/pane";
 import { useContactActivity, useContactDetail } from "../../contacts/queries";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { detailDate } from "../../format/tx";
 import { Outcome } from "../tools/common";
@@ -35,34 +36,26 @@ export interface PaneContext {
 }
 
 export function ContactPane({ adding, selected, pane }: { adding: ReactNode; selected: ContactSummaryInfo | null; pane: PaneContext | null }) {
+  const t = useT();
   let slot;
   if (adding) slot = adding;
   else if (selected && pane) slot = <Selected key={selected.contact} contact={selected} pane={pane} />;
   else
     slot = (
       <p className="placeholder card-l1" data-testid="contact-pane-empty">
-        Select a contact to see the details.
+        {t("contacts.pane.empty")}
       </p>
     );
   return (
-    <aside className="contacts-pane" aria-label="Contact" data-testid="contacts-pane">
+    <aside className="contacts-pane" aria-label={t("contacts.pane.label")} data-testid="contacts-pane">
       {slot}
     </aside>
   );
 }
 
-/** When the row's time was: a contact's start, else its request's. */
-const SINCE: Record<ContactSummaryInfo["relation"], string> = {
-  contact: "Contact since",
-  pendingOutgoing: "Request sent",
-  pendingIncoming: "Request received",
-  ignored: "Request received",
-  stranger: "Since",
-  isSelf: "Since",
-};
-
 /** The selected contact: its row's facts at once, then what its detail adds (DP2-09 D1). */
 function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: PaneContext }) {
+  const t = useT();
   const sub = subtitle(c);
   const chips = rowChips(c);
   // Only a contact has private details (DP2-09 D7).
@@ -75,7 +68,11 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
           <h2 id="contact-detail-name" className="add-contact-title">
             {shownName(c)}
           </h2>
-          {sub && <p className="contact-row-username">{sub}</p>}
+          {sub && (
+            <p className="contact-row-username">
+              <bdi>{sub}</bdi>
+            </p>
+          )}
           {chips.length > 0 && (
             <p className="contact-detail-chips">
               <RowChips chips={chips} />
@@ -84,21 +81,22 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
         </div>
       </header>
       <dl className="about-list contact-detail-facts">
-        <dt>Identity</dt>
+        <dt>{t("contacts.pane.identity")}</dt>
         <dd data-testid="contact-detail-identity">
-          <CopyValue value={c.contact} label="Copy identity" mono />
+          <CopyValue value={c.contact} label={t("contacts.pane.copyIdentity")} mono />
         </dd>
-        <dt>Relation</dt>
+        <dt>{t("contacts.pane.relation")}</dt>
         <dd data-testid="contact-detail-relation">{relationTitle(c.relation)}</dd>
         {c.relation === "contact" && (
           <>
-            <dt>Payments</dt>
+            <dt>{t("contacts.pane.payments")}</dt>
             <dd data-testid="contact-detail-channel">{channelTitle(c.channel)}</dd>
           </>
         )}
         {c.since !== null && (
           <>
-            <dt>{SINCE[c.relation]}</dt>
+            {/* When the row's time was: a contact's start, else its request's. */}
+            <dt>{t(`contacts.pane.since.${c.relation}`)}</dt>
             <dd>{detailDate(new Date(c.since * 1000))}</dd>
           </>
         )}
@@ -109,7 +107,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
           {detail.data && <PrivateDetails walletId={pane.walletId} contact={c} detail={detail.data} actions={pane.actions} />}
           {detail.isError && (
             <p className="form-problem" role="alert">
-              Could not read this contact: {errorMessage(detail.error)}
+              {t("contacts.pane.unreadable", { error: errorMessage(detail.error) })}
             </p>
           )}
           <Activity contact={c.contact} pane={pane} />
@@ -122,6 +120,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
 /** The relation's actions (D2) and the last outcome for this contact (D4). Pay and "Accept and
  * pay" open Pay ▸ To a contact on it (DP3-06 D15); `locked`: a payment to it may have been sent. */
 function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo; pane: PaneContext; locked: boolean }) {
+  const t = useT();
   const actions = useModel(pane.actions);
   const offer = paneActions(c, pane.hasKeys);
   const busy = actions.busy;
@@ -150,34 +149,34 @@ function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo
             disabled={busy || offer.acceptBlocked !== null}
             onClick={() => void actions.accept(c.contact, shownName(c)).then(done)}
           >
-            {actions.isRunning("accept", c.contact) ? "Accepting…" : "Accept"}
+            {actions.isRunning("accept", c.contact) ? t("contacts.request.accepting") : t("contacts.request.accept")}
           </DashButton>
           <DashButton key="acceptPay" variant="tintedBlue" data-testid="contact-accept-pay" disabled={busy || offer.acceptBlocked !== null} onClick={pay}>
-            Accept and pay
+            {t("contacts.pane.acceptPay")}
           </DashButton>
           <DashButton key="ignore" variant="tintedGray" data-testid="contact-ignore" disabled={busy} onClick={() => void actions.ignore(c.contact).then(done)}>
-            {actions.isRunning("ignore", c.contact) ? "Ignoring…" : "Ignore"}
+            {actions.isRunning("ignore", c.contact) ? t("contacts.request.ignoring") : t("contacts.request.ignore")}
           </DashButton>
         </>
       );
       break;
     case "sent":
-      note = "Contact request sent. You become contacts once they accept it.";
+      note = t("contacts.pane.sentNote");
       break;
     case "contact":
       // A lock resolves on the Pay tab, so Pay leads there even on a broken channel.
-      note = locked ? "A payment to this contact may have been sent. Pay shows it and checks it again." : (offer.payBlocked ?? offer.payNote);
+      note = locked ? t("contacts.pane.lockedNote") : (offer.payBlocked ?? offer.payNote);
       buttons = (
         <DashButton key="pay" variant="filledBlue" data-testid="contact-pay" disabled={offer.payBlocked !== null && !locked} onClick={pay}>
-          Pay
+          {t("contacts.pane.pay")}
         </DashButton>
       );
       break;
     case "ignored":
-      note = "You ignored this contact request.";
+      note = t("contacts.pane.ignoredNote");
       buttons = (
         <DashButton key="unignore" variant="tintedBlue" data-testid="contact-unignore" disabled={busy} onClick={() => void actions.unignore(c.contact).then(done)}>
-          {actions.isRunning("unignore", c.contact) ? "Unignoring…" : "Unignore"}
+          {actions.isRunning("unignore", c.contact) ? t("contacts.pane.unignoring") : t("contacts.pane.unignore")}
         </DashButton>
       );
       break;
@@ -200,6 +199,7 @@ function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo
  * value being saved. */
 function PrivateDetails({ walletId, contact: c, detail, actions }: { walletId: string; contact: ContactSummaryInfo; detail: ContactDetailInfo; actions: ContactActions }) {
   useModel(actions);
+  const t = useT();
   const id = useId();
   const saved = detailsForm(detail.privateDetails);
   const [base, setBase] = useState(saved);
@@ -224,7 +224,7 @@ function PrivateDetails({ walletId, contact: c, detail, actions }: { walletId: s
   return (
     <section className="contact-pane-section" aria-labelledby={`${id}-title`} data-testid="contact-private">
       <h3 id={`${id}-title`} className="contact-pane-heading">
-        Only visible to you
+        {t("contacts.details.title")}
       </h3>
       <form
         className="contact-details-form"
@@ -234,11 +234,11 @@ function PrivateDetails({ walletId, contact: c, detail, actions }: { walletId: s
         }}
       >
         <label className="form-field">
-          Alias
+          {t("contacts.details.alias")}
           <input data-testid="contact-alias" value={form.alias} disabled={busy} onChange={(e) => setText({ ...text, alias: e.target.value })} />
         </label>
         <label className="form-field">
-          Note
+          {t("contacts.details.note")}
           <textarea className="contact-note" data-testid="contact-note" rows={3} value={form.note} disabled={busy} onChange={(e) => setText({ ...text, note: e.target.value })} />
         </label>
         <label className="check-row contact-hide">
@@ -257,11 +257,11 @@ function PrivateDetails({ walletId, contact: c, detail, actions }: { walletId: s
               });
             }}
           />
-          Hide this contact
+          {t("contacts.details.hide")}
         </label>
         <span className="add-contact-actions">
           <DashButton variant="tintedBlue" type="submit" data-testid="contact-details-save" disabled={busy || !detailsChanged(form, detail.privateDetails)}>
-            {saving ? "Saving…" : "Save"}
+            {saving ? t("contacts.details.saving") : t("contacts.details.save")}
           </DashButton>
         </span>
         <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-details-outcome" />
@@ -272,6 +272,7 @@ function PrivateDetails({ walletId, contact: c, detail, actions }: { walletId: s
 
 /** The payments with the contact (D8): All / Sent / Received, newest first, a page at a time. */
 function Activity({ contact, pane }: { contact: string; pane: PaneContext }) {
+  const t = useT();
   const id = useId();
   const [filter, setFilter] = useState<ActivityFilterName>("all");
   const activity = useContactActivity(pane.walletId, pane.identity, contact, filter);
@@ -280,28 +281,28 @@ function Activity({ contact, pane }: { contact: string; pane: PaneContext }) {
   return (
     <section className="contact-pane-section" aria-labelledby={`${id}-title`} data-testid="contact-activity">
       <h3 id={`${id}-title`} className="contact-pane-heading">
-        Activity
+        {t("contacts.activity.title")}
       </h3>
-      <div className="segmented" role="group" aria-label="Show payments" data-testid="contact-activity-filter">
+      <div className="segmented" role="group" aria-label={t("contacts.activity.filter")} data-testid="contact-activity-filter">
         {ACTIVITY_FILTERS.map((f) => (
           <button key={f.id} type="button" className="segment" aria-pressed={filter === f.id} onClick={() => setFilter(f.id)}>
             {f.title}
           </button>
         ))}
       </div>
-      {activity.isPending && <p className="placeholder-note">Loading payments…</p>}
+      {activity.isPending && <p className="placeholder-note">{t("contacts.activity.loading")}</p>}
       {activity.isError && (
         <p className="form-problem" role="alert">
-          Could not load the payments: {errorMessage(activity.error)}{" "}
+          {t("contacts.activity.failed", { error: errorMessage(activity.error) })}{" "}
           <DashButton variant="plainBlue" size="small" onClick={() => void activity.refetch()}>
-            Try again
+            {t("contacts.tryAgain")}
           </DashButton>
         </p>
       )}
       {activity.isSuccess && items.length === 0 && (
         <p className="placeholder-note contact-activity-empty" data-testid="contact-activity-empty">
           <EmptyArt id="activity" size={40} />
-          <span>No payments with this contact yet.</span>
+          <span>{t("contacts.activity.empty")}</span>
         </p>
       )}
       {items.length > 0 && (
@@ -315,7 +316,7 @@ function Activity({ contact, pane }: { contact: string; pane: PaneContext }) {
                   <Icon id={item.direction === "sent" ? "txSent" : "txReceived"} size={30} className="tx-row-icon" />
                   <span className="tx-row-text">
                     <span className="tx-row-title">{row.title}</span>
-                    <span className="tx-row-subtitle">{row.pending ? "Pending" : when ? detailDate(when, ctx.locale) : ""}</span>
+                    <span className="tx-row-subtitle">{row.pending ? t("contacts.activity.pending") : when ? detailDate(when, ctx.locale) : ""}</span>
                   </span>
                   <span className="tx-row-trailing">
                     <AmountText className="tx-row-amount" text={ctx.display.compact(row.signed, true)} unitName={ctx.display.name} />
@@ -334,7 +335,7 @@ function Activity({ contact, pane }: { contact: string; pane: PaneContext }) {
           disabled={activity.isFetchingNextPage}
           onClick={() => void activity.fetchNextPage()}
         >
-          {activity.isFetchingNextPage ? "Loading…" : "Show more"}
+          {activity.isFetchingNextPage ? t("contacts.activity.loadingMore") : t("contacts.activity.more")}
         </DashButton>
       )}
     </section>
