@@ -11,6 +11,7 @@ import type { ProposalDraft } from "../api/generated/ProposalDraft";
 import { FEE_NETWORK, MN_A, MN_B, MN_C, PROPOSAL_FEE } from "./governance";
 import { installFixture } from "./index";
 import { FIXTURE_PASSPHRASE, FIXTURE_WALLET_ID as W, type ScenarioName } from "./scenarios";
+import { FIXTURE_NOW } from "./wallet";
 
 const PASS = { kind: "passphrase", passphrase: FIXTURE_PASSPHRASE } as const;
 const COIN = 100_000_000;
@@ -119,6 +120,45 @@ describe("fixture governance", () => {
     expect(created).toMatchObject({ hash: preview.hash, state: { kind: "feePaid", confirmations: 0 } });
     // Newest first, before the scenario's own confirming one.
     expect((await cmd.governanceMyProposals(W)).map((p) => p.name)).toEqual([d.name, "dash-docs-refresh"]);
+  });
+
+  it("refuses a draft named as a proposal in progress, as the engine does (issue #148)", async () => {
+    const d = await draft();
+    const pay = async () => (await cmd.authorize({ kind: "spend", maxDuffs: PROPOSAL_FEE + FEE_NETWORK }, W, PASS)).id;
+    const created = await cmd.governanceCreateProposal(W, d, await pay());
+    await expect(cmd.governanceCreateProposal(W, { ...d, url: `${d.url}-again` }, await pay())).rejects.toMatchObject({
+      code: "governance.proposal_in_progress",
+      data: { kind: "proposalHash", hash: created.hash },
+    });
+    expect((await cmd.governanceMyProposals(W)).filter((p) => p.name === d.name)).toHaveLength(1);
+    await expect(cmd.governanceCreateProposal(W, { ...d, name: d.name.toUpperCase() }, await pay())).rejects.toMatchObject({
+      code: "governance.proposal_in_progress",
+      data: { kind: "proposalHash", hash: created.hash },
+    });
+    expect((await cmd.governanceMyProposals(W)).filter((p) => p.name.toLowerCase() === d.name)).toHaveLength(1);
+    const f = install("governance");
+    f.world.governance.creating = [d.name];
+    await expect(cmd.governanceCreateProposal(W, d, await pay())).rejects.toMatchObject({ code: "governance.proposal_in_progress", data: null });
+    expect((await cmd.governanceMyProposals(W)).some((p) => p.name === d.name)).toBe(false);
+    await expect(cmd.governanceCreateProposal(W, { ...d, name: "desktop-wallet-docs-2" }, await pay())).resolves.toMatchObject({ name: "desktop-wallet-docs-2" });
+  });
+
+  it("frees the name of a public proposal past its end, as the engine does (issue #188)", async () => {
+    const f = install("governance");
+    const d = await draft();
+    const pay = async () => (await cmd.authorize({ kind: "spend", maxDuffs: PROPOSAL_FEE + FEE_NETWORK }, W, PASS)).id;
+    const created = await cmd.governanceCreateProposal(W, d, await pay());
+    const row = f.world.governance.mine[W].find((p) => p.hash === created.hash)!;
+    row.state = { kind: "public", status: "passing" };
+    // Another schedule, so the fixture's same-draft check is not what refuses or admits it.
+    const again = { ...d, paymentCount: 3 };
+    await expect(cmd.governanceCreateProposal(W, again, await pay())).rejects.toMatchObject({
+      code: "governance.proposal_in_progress",
+      data: { kind: "proposalHash", hash: created.hash },
+    });
+    row.endEpoch = Math.floor(FIXTURE_NOW.getTime() / 1000);
+    await expect(cmd.governanceCreateProposal(W, again, await pay())).resolves.toMatchObject({ name: d.name });
+    expect((await cmd.governanceMyProposals(W)).filter((p) => p.name === d.name)).toHaveLength(2);
   });
 
   it("submits per MG-06 D24 and refuses past submitting", async () => {

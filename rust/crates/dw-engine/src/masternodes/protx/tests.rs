@@ -746,6 +746,95 @@ fn mg04_maybe_sent_stays_sent_and_is_never_discarded() {
     assert_eq!(f.rows().len(), 1);
 }
 
+impl Fx {
+    /// Fails the next sent-mark write, before the hand-off.
+    fn fail_sent_mark(&self) {
+        let path = self.session.data_dir().join(dw_appdb::APP_DB_FILE);
+        let stage = dw_appdb::fault::Stage::Before;
+        dw_appdb::fault::arm(&path, crate::send::SENT_MARK_FAULT, stage);
+    }
+
+    fn reserved(&self) -> HashSet<OutPoint> {
+        let nobody = SpendOwner::Tx(Txid::from_byte_array([0xee; 32]));
+        self.session.spends.held_by_others(&self.wallet, nobody)
+    }
+}
+
+/// A sent mark that can't be written stops the first hand-off before
+/// anything leaves: the row reads `not_sent`, can be discarded, and holds
+/// no reservation.
+#[test]
+fn mg10_a_failed_sent_mark_on_a_first_hand_off_is_not_sent() {
+    let f = fx(Library::Accept);
+    let funding = f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    f.fail_sent_mark();
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    assert!(f.lib.sent().is_empty(), "nothing handed off");
+    assert_eq!(op.state, ProTxOperationState::NotSent);
+    assert_eq!(op.sent_at, None);
+    assert!(op.last_error.is_some());
+    assert!(
+        f.reserved().is_empty(),
+        "the hand-off's reservation released"
+    );
+
+    f.engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id))
+        .unwrap();
+    assert!(f.rows().is_empty());
+    assert!(!f.locked().contains(&funding));
+    assert!(f.locked().is_empty());
+}
+
+/// The same failure on a resend of a row that may be out keeps it as it
+/// was: `sent`, `sent_at` unchanged, never discarded.
+#[test]
+fn mg10_a_failed_sent_mark_on_a_resend_keeps_the_row_sent() {
+    let f = fx(Library::Unconfirmed);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    assert_eq!(op.state, ProTxOperationState::Sent);
+    let locked = f.locked();
+    *f.lib.mode.lock().unwrap() = Library::Accept;
+    f.fail_sent_mark();
+    let again = f
+        .engine
+        .block_on(
+            f.mn()
+                .resend_operation(f.wallet, op.id.clone(), f.grant(op.fee)),
+        )
+        .unwrap();
+    assert_eq!(f.lib.sent().len(), 1, "nothing handed off");
+    assert_eq!(again.state, ProTxOperationState::Sent);
+    assert_eq!(again.sent_at, op.sent_at);
+    assert_eq!(f.locked(), locked);
+    let refused = f
+        .engine
+        .block_on(f.mn().discard_operation(f.wallet, op.id))
+        .unwrap_err();
+    assert_eq!(refused.code(), "masternodes.operation_state");
+}
+
+/// Control: the sent mark written, a hand-off without a verdict stays
+/// `sent`.
+#[test]
+fn mg10_a_written_sent_mark_then_an_unknown_hand_off_stays_sent() {
+    let f = fx(Library::Unconfirmed);
+    f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    assert_eq!(f.lib.sent().len(), 1);
+    assert_eq!(op.state, ProTxOperationState::Sent);
+    assert!(op.sent_at.is_some());
+    assert_eq!(op.last_error.as_deref(), Some("send.broadcast_unknown"));
+    assert!(!f.reserved().is_empty(), "kept while it may be out");
+}
+
 #[test]
 fn mg04_a_resend_reserves_its_inputs_against_other_owners() {
     let f = fx(Library::NoPeers);
