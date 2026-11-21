@@ -208,6 +208,33 @@ pub(crate) static FAIL_STORED_WALLET_DELETE_IN: std::sync::Mutex<Vec<PathBuf>> =
 /// The legacy address range a bundle's `settings_kv` rows of `id` carry,
 /// checked before anything is registered.
 fn bundled_issued(tables: &[TableRows], id: WalletId) -> Result<Option<(u32, u32)>, EngineError> {
+    bundled_setting(tables, id, crate::compat::ISSUED_SETTING)
+        .map(|v| {
+            v.and_then(crate::compat::parse_issued)
+                .ok_or_else(|| BackupFailure::Corrupt("legacy address range".into()).into())
+        })
+        .transpose()
+}
+
+/// The lookahead a bundle's `settings_kv` rows of `id` carry, if any;
+/// `Corrupt` for one that is present but not a valid lookahead.
+fn bundled_lookahead(tables: &[TableRows], id: WalletId) -> Result<Option<u32>, EngineError> {
+    bundled_setting(tables, id, crate::keys::LOOKAHEAD_SETTING)
+        .map(|v| {
+            v.and_then(|v| v.parse::<u32>().ok())
+                .filter(|g| (1..=crate::MAX_LOOKAHEAD).contains(g))
+                .ok_or_else(|| BackupFailure::Corrupt("lookahead".into()).into())
+        })
+        .transpose()
+}
+
+/// The value of `key` in a bundle's `settings_kv` rows of `id`: `Some(None)`
+/// when the row holds no text.
+fn bundled_setting<'a>(
+    tables: &'a [TableRows],
+    id: WalletId,
+    key: &str,
+) -> Option<Option<&'a str>> {
     let scope = id.to_string();
     for t in tables.iter().filter(|t| t.table == "settings_kv") {
         let col = |name: &str| t.columns.iter().position(|c| c == name);
@@ -219,15 +246,12 @@ fn bundled_issued(tables: &[TableRows], id: WalletId) -> Result<Option<(u32, u32
                 Some(SqlValue::Text(t)) => Some(t.as_str()),
                 _ => None,
             };
-            if text(s) == Some(scope.as_str()) && text(k) == Some(crate::compat::ISSUED_SETTING) {
-                return text(v)
-                    .and_then(crate::compat::parse_issued)
-                    .map(Some)
-                    .ok_or_else(|| BackupFailure::Corrupt("legacy address range".into()).into());
+            if text(s) == Some(scope.as_str()) && text(k) == Some(key) {
+                return Some(text(v));
             }
         }
     }
-    Ok(None)
+    None
 }
 
 /// A wallet a restore registered: its id, whether it is new, and the
@@ -701,12 +725,14 @@ impl NetworkSession {
                 })
             })
             .collect::<Result<Vec<_>, EngineError>>()?;
-        // A legacy wallet's range is applied before it is announced, as
-        // its file import does; its rows land after registration.
+        // A legacy wallet's range and lookahead are applied before it is
+        // announced, as its file import does; its rows land after
+        // registration.
         let state = crate::compat::ImportedState {
             issued: bundled_issued(&tables, id)?,
             ..Default::default()
         };
+        let lookahead = bundled_lookahead(&tables, id)?;
         let existed = self.manager()?.get_wallet(&id.0).await.is_some();
         // A wallet already there gets back, if the restore fails later, the
         // settings it writes: its range and the bundle's rows (its salt).
@@ -725,7 +751,9 @@ impl NetworkSession {
             birth_height: Some(payload.birth_height.unwrap_or(0)),
             core_compat: false,
             name: payload.name.clone(),
-            lookahead: None,
+            // A wallet there before gets it with its rows, as on main: an
+            // attach would rewind it before the restore commits.
+            lookahead: lookahead.filter(|_| !existed),
         };
         match self
             .import_secret_locked(
