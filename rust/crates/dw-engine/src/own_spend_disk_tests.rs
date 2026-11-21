@@ -654,9 +654,11 @@ fn a_coin_stored_unspent_stays_so_whatever_a_later_verdict_says() {
 }
 
 /// A payment of A and B, InstantSend-locked, then beaten on B by another
-/// device's spend mined after a restart (a ChainLock outranks the lock).
-/// After the next restart the funding block scanned again credits A: the
-/// beaten payment no longer claims it.
+/// device's spend mined after a restart. A plain block does not override
+/// the lock (#170 case 11, key-wallet's finality order): after the next
+/// restart the payment still claims A and B, so the funding block scanned
+/// again credits neither and coin control cannot offer them. Once that
+/// block is ChainLocked, the next restart frees A.
 #[test]
 fn a_locked_payment_a_mined_spend_beat_frees_its_other_coin_after_a_restart() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
@@ -679,6 +681,113 @@ fn a_locked_payment_a_mined_spend_beat_frees_its_other_coin_after_a_restart() {
     wait_stored(&session, id, &[winner.txid()]);
 
     let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let held_now = held(&engine, &session, id);
+    assert!(!held_now.contains(&a), "a plain block: A stays claimed");
+    assert!(!held_now.contains(&b), "B stays claimed");
+    let total: u64 = coins(&engine, &session, id).iter().map(|c| c.1).sum();
+    assert_eq!(balances(&session, id).total, total);
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+    assert!(!spendable(&engine, &session, id, b), "B is not offered");
+
+    let winner_block = super::block_with(vec![winner.clone()]).block_hash();
+    chain_lock(&engine, &session, id, TIP + 1, winner_block);
+    let session = reopen(&engine, session);
     mined(&engine, &session, id, TIP, vec![paid]);
-    assert!(held(&engine, &session, id).contains(&a), "A is credited");
+    assert!(
+        held(&engine, &session, id).contains(&a),
+        "ChainLocked: A is credited"
+    );
+}
+
+/// The same payment and winner in a wallet opened later in the session:
+/// the claims restored as it is registered follow the same order. The
+/// funding block processed before its history loads credits A only once
+/// the winner's block is ChainLocked.
+#[test]
+fn a_wallet_opened_later_keeps_a_locked_payments_claims_until_a_chainlock() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, 1);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    wait_stored(&session, id, &[winner.txid()]);
+    let session = reopen(&engine, session);
+
+    let (registered, loaded) = opened_later(&engine, &session, id, &paid);
+    assert!(!registered.contains(&a), "a plain block: A stays claimed");
+    assert!(!loaded.contains(&a), "and after its history loads");
+
+    let winner_block = super::block_with(vec![winner]).block_hash();
+    chain_lock(&engine, &session, id, TIP + 1, winner_block);
+    let (registered, loaded) = opened_later(&engine, &session, id, &paid);
+    assert!(registered.contains(&a), "ChainLocked: A is credited");
+    assert!(loaded.contains(&a), "and stays after its history loads");
+}
+
+/// Unloads wallet `id` and opens it again; `paid`'s block is processed for
+/// it once it is registered, before its history loads. The coins it holds
+/// then, and once the load is done.
+fn opened_later(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    paid: &Transaction,
+) -> (BTreeSet<OutPoint>, BTreeSet<OutPoint>) {
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_load.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let s = Arc::clone(session);
+        session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the load's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    mined(engine, session, id, TIP, vec![paid.clone()]);
+    let registered = held(engine, session, id);
+    pause.release.notify_one();
+    engine.block_on(load).unwrap().unwrap();
+    (registered, held(engine, session, id))
+}
+
+/// The wallet's ChainLock of block `hash` at `height`, as dash-spv
+/// applies it; waits for the store to hold it.
+fn chain_lock(
+    engine: &Engine,
+    session: &NetworkSession,
+    id: WalletId,
+    height: u32,
+    hash: dashcore::BlockHash,
+) {
+    super::deliver(engine, session, id, move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            wm.apply_chain_lock(dashcore::ChainLock {
+                block_height: height,
+                block_hash: hash,
+                signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+            });
+        })
+    });
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let store = Arc::clone(&session.live().unwrap().store);
+    eventually("the store holds the ChainLock", || {
+        let stored = store.load().unwrap();
+        stored.wallets.get(&id.0).is_some_and(|w| {
+            (w.wallet_info.metadata.last_applied_chain_lock.as_ref())
+                .is_some_and(|cl| cl.block_height >= height)
+        })
+    });
 }

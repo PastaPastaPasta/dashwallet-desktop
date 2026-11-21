@@ -123,6 +123,12 @@ impl RecordFault {
     }
 }
 
+/// Height of the ChainLock key-wallet applied to the wallet: the only one
+/// its finality order lets beat an InstantSend lock.
+fn applied_chainlock(info: &PlatformWalletInfo) -> Option<u32> {
+    (info.core_wallet.metadata.last_applied_chain_lock.as_ref()).map(|c| c.block_height)
+}
+
 /// One wallet's stored transactions: those whose record is stored, and the
 /// recordless ones (height-only rows, kept for their coins).
 #[derive(Default, Clone)]
@@ -349,8 +355,8 @@ impl NetworkSession {
             stored,
         } in loaded
         {
-            sends.push((wallet, sent, complete));
             let info = wm.get_wallet_info(&wallet.0);
+            sends.push((wallet, sent, complete, info.and_then(applied_chainlock)));
             let in_memory: Vec<TransactionRecord> = info
                 .map(|info| {
                     info.core_wallet
@@ -400,8 +406,8 @@ impl NetworkSession {
             });
         }
         drop(wm);
-        for (wallet, sent, complete) in sends {
-            self.restore_unmined_spends(&live.manager, wallet, &sent, complete)
+        for (wallet, sent, complete, chainlock) in sends {
+            self.restore_unmined_spends(&live.manager, wallet, &sent, complete, chainlock)
                 .await;
         }
         Ok(())
@@ -422,13 +428,14 @@ impl NetworkSession {
         wallet: WalletId,
         sent: &crate::tx_actions::Sent,
         complete: bool,
+        chainlock: Option<u32>,
     ) {
         if !complete {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
             return;
         }
         let (claims, settled) = self.hub.history.with_wallet(wallet, |h| {
-            let mut claims = crate::history::unmined_own_spends(&h.txs, sent);
+            let mut claims = crate::history::unmined_own_spends(&h.txs, sent, chainlock);
             claims.retain(|(_, spender)| !h.session_held.contains(spender));
             (claims, crate::history::settled_sends(&h.txs, sent))
         });
@@ -581,17 +588,21 @@ impl NetworkSession {
         wallet: WalletId,
         (mut history, sent): StoredSpends,
     ) {
-        let locks: Vec<Txid> = {
+        let (locks, chainlock): (Vec<Txid>, _) = {
             let wm = manager.wallet_manager_arc();
             let wm = wm.read().await;
-            (wm.get_wallet_info(&wallet.0).into_iter())
-                .flat_map(|i| i.core_wallet.instant_send_locks().iter().copied())
-                .collect()
+            let info = wm.get_wallet_info(&wallet.0);
+            (
+                (info.into_iter())
+                    .flat_map(|i| i.core_wallet.instant_send_locks().iter().copied())
+                    .collect(),
+                info.and_then(applied_chainlock),
+            )
         };
         for t in &locks {
             history.set_instant_locked(t);
         }
-        let claims = crate::history::unmined_own_spends(&history.txs, &sent);
+        let claims = crate::history::unmined_own_spends(&history.txs, &sent, chainlock);
         self.apply_spend_claims(manager, wallet, &claims).await;
     }
 

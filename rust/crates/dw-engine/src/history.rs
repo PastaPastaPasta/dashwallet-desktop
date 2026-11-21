@@ -319,6 +319,14 @@ fn merge_context(old: &TransactionContext, new: &TransactionContext) -> Transact
     }
 }
 
+/// A ChainLock covers the block `context` names: the record says so, or the
+/// block is at or below the best ChainLock (key-wallet's own rule).
+pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Option<u32>) -> bool {
+    let height = context.block_info().map(|b| b.height());
+    matches!(context, TransactionContext::InChainLockedBlock(_))
+        || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
+}
+
 /// The outpoints the wallet's transactions spend by Dash Core's
 /// `CWallet::IsSpent` (v24.0.0-rc.6 8d195f18 wallet/wallet.cpp:755-770): the
 /// spender is in a block, or out of one (depth 0, :4072-4082) and not
@@ -362,23 +370,27 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
 /// and not abandoned, each with its payment: key-wallet's spent-output
 /// claims (`restore_spent_outpoints`), which it rebuilds from no stored
 /// record (#88). A coin is claimed only when the app signed it for that
-/// payment and the payment's transaction spends it. A payment that a
-/// transaction in a block or InstantSend-locked beats on any input claims
-/// nothing: its coins are the winner's or free.
+/// payment and the payment's transaction spends it. A payment that another
+/// transaction beats on any input claims nothing: its coins are the
+/// winner's or free. Key-wallet's finality order decides the beat: a block
+/// or an InstantSend lock beats a payment without a lock, and only a block
+/// `chainlock` covers beats an InstantSend-locked one.
 pub(crate) fn unmined_own_spends(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
+    chainlock: Option<u32>,
 ) -> Vec<(OutPoint, Txid)> {
-    let settled = |e: &TxEntry| {
-        e.context.block_info().is_some()
-            || e.instant_locked
-            || matches!(e.context, TransactionContext::InstantSend(_))
+    let locked =
+        |e: &TxEntry| e.instant_locked || matches!(e.context, TransactionContext::InstantSend(_));
+    let beats = |winner: &TxEntry, payment: &TxEntry| match locked(payment) {
+        true => chain_locked(&winner.context, chainlock),
+        false => winner.context.block_info().is_some() || locked(winner),
     };
     let beaten = |t: &Txid, e: &TxEntry| {
         let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
         (txs.iter()).any(|(w, we)| {
             w != t
-                && settled(we)
+                && beats(we, e)
                 && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
         })
     };
@@ -836,9 +848,7 @@ pub(crate) fn status_of(
     all_from_me: bool,
 ) -> (TxStatus, bool) {
     let depth = depth(&entry.context, view.tip);
-    let height = entry.context.block_info().map(|b| b.height());
-    let chain_locked = matches!(entry.context, TransactionContext::InChainLockedBlock(_))
-        || matches!((height, view.chainlock_height), (Some(h), Some(cl)) if cl >= h);
+    let chain_locked = chain_locked(&entry.context, view.chainlock_height);
     let instant_locked =
         entry.instant_locked || matches!(entry.context, TransactionContext::InstantSend(_));
     let mut matures_in = None;
@@ -2532,7 +2542,7 @@ mod tests {
         let unstored = Txid::from_byte_array([9; 32]);
         sent.insert(unstored, [coin(9)].into());
 
-        let mut claims = unmined_own_spends(&txs, &sent);
+        let mut claims = unmined_own_spends(&txs, &sent, None);
         claims.sort();
         let mut want = vec![(coin(1), live), (coin(2), live), (coin(5), relocked)];
         want.sort();
@@ -2543,5 +2553,59 @@ mod tests {
         let mut want = vec![mined, abandoned, unstored];
         want.sort();
         assert_eq!(settled, want);
+    }
+
+    /// #170 case 11: only a ChainLock beats an InstantSend lock
+    /// (key-wallet's finality order). A locked payment beaten on an input
+    /// by a plain block or another lock keeps its claims; a block the
+    /// wallet's ChainLock covers, by height or by the record's context,
+    /// beats it. A payment without a lock loses to any block or lock.
+    #[test]
+    fn only_a_chainlock_beats_a_locked_payments_claims() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let spend = |n: u8, coins: &[OutPoint], context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(n.into(), &hash_addr(9))],
+                ),
+                context,
+            )
+        };
+        let locked = || TransactionContext::InstantSend(dashcore::InstantLock::default());
+        let chainlocked =
+            TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
+        let claims = |payment: TxEntry, winner: TxEntry, chainlock: Option<u32>| {
+            let txid = payment.tx.txid();
+            let sent = crate::tx_actions::Sent::from([(txid, [coin(1), coin(2)].into())]);
+            let txs = HashMap::from([(txid, payment), (winner.tx.txid(), winner)]);
+            let mut got = unmined_own_spends(&txs, &sent, chainlock);
+            got.sort();
+            got.into_iter().map(|(o, _)| o).collect::<Vec<_>>()
+        };
+        let all = vec![coin(1), coin(2)];
+        let payment = || spend(1, &[coin(1), coin(2)], locked());
+        let mut flagged = spend(1, &[coin(1), coin(2)], TransactionContext::Mempool);
+        flagged.instant_locked = true;
+        let plain = || spend(2, &[coin(2)], in_block(12, 0));
+
+        assert_eq!(claims(payment(), plain(), None), all, "a plain block");
+        assert_eq!(claims(payment(), plain(), Some(11)), all, "below it");
+        assert_eq!(claims(flagged.clone(), plain(), None), all, "lock flag");
+        assert_eq!(
+            claims(payment(), spend(2, &[coin(2)], locked()), Some(12)),
+            all
+        );
+        assert!(claims(payment(), plain(), Some(12)).is_empty());
+        assert!(claims(flagged, plain(), Some(13)).is_empty());
+        assert!(claims(payment(), spend(2, &[coin(2)], chainlocked), None).is_empty());
+
+        let unlocked = || spend(1, &[coin(1), coin(2)], TransactionContext::Mempool);
+        assert!(claims(unlocked(), plain(), None).is_empty());
+        assert!(claims(unlocked(), spend(2, &[coin(2)], locked()), None).is_empty());
+        assert_eq!(
+            claims(unlocked(), spend(2, &[coin(3)], in_block(12, 0)), None),
+            all
+        );
     }
 }
