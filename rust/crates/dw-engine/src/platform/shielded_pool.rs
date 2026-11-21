@@ -2516,7 +2516,7 @@ impl ShieldedLib for PwShielded {
     }
 
     /// `last_sync_at`: the last pass's end, or a later skip's proof that
-    /// the pool is unchanged ([`guarded_pass`]).
+    /// the pool is unchanged ([`periodic_pass`]).
     fn sync_state(&self) -> SyncState {
         let sync = self.manager.shielded_sync();
         let checked = (self.pw.session.platform.shielded_checked_at).load(Ordering::Acquire);
@@ -3407,37 +3407,43 @@ pub(crate) async fn guarded_pass(
     manager: &Manager,
     force: bool,
 ) -> bool {
-    pass(session, manager, force, None).await
+    pass(session, manager, force, None, &|_| true).await
 }
 
 /// The supervisor's periodic pass (#178): Platform's note count is read
-/// first, holding only the SDK, so neither a close nor a stop waits for it.
-/// Then, if the session is open and `runs` says the loops that kicked it
-/// still do, [`guarded_pass`]'s pass, which skips the library's pass while
+/// first, by a task holding only the SDK, so neither a close nor a stop
+/// waits for it. Then, while the session is open and `runs` says the loops
+/// that kicked it still do (checked again under the pass's locks),
+/// [`guarded_pass`]'s pass, which skips the library's pass while
 /// [`pool_is_idle`]. `false` when it did not run or was held back.
 pub(crate) async fn periodic_pass(
     session: Arc<NetworkSession>,
     manager: Arc<Manager>,
-    runs: impl Fn(&NetworkSession) -> bool,
+    runs: impl Fn(&NetworkSession) -> bool + Sync,
 ) -> bool {
     #[cfg(test)]
-    let (injected, pause) = (
+    let (injected, pause, block) = (
         *session.platform.notes_count.lock().unwrap(),
         session.platform.probe_pause.lock().unwrap().take(),
+        session.platform.probe_block.lock().unwrap().take(),
     );
     let sdk = manager.sdk_arc();
     let (weak_session, weak_manager) = (Arc::downgrade(&session), Arc::downgrade(&manager));
     drop((session, manager));
-    let probe = notes_count(&sdk);
-    #[cfg(test)]
-    let probe = async move {
-        match injected {
-            Some(count) => count.map(|c| (c, crate::events::unix_now())),
-            None => probe.await,
+    // Its own task: verification can block its thread past any timer.
+    let probe = tokio::spawn(async move {
+        #[cfg(test)]
+        if let Some(block) = block {
+            tokio::task::block_in_place(|| block.recv().ok());
         }
-    };
-    let count = (tokio::time::timeout(NOTES_COUNT_BUDGET, probe).await).unwrap_or(None);
-    drop(sdk);
+        #[cfg(test)]
+        if let Some(count) = injected {
+            return count.map(|c| (c, crate::events::unix_now()));
+        }
+        notes_count(&sdk).await
+    });
+    let count = tokio::time::timeout(NOTES_COUNT_BUDGET, probe).await;
+    let count = count.ok().and_then(Result::ok).flatten();
     #[cfg(test)]
     if let Some(pause) = pause {
         let _ = pause.reached.send(());
@@ -3449,20 +3455,30 @@ pub(crate) async fn periodic_pass(
     if !runs(&session) || session.enter().await.is_err() {
         return false;
     }
-    pass(&session, &manager, false, count).await
+    let runs = |s: &NetworkSession| runs(s) && s.try_enter().is_ok();
+    pass(&session, &manager, false, count, &runs).await
 }
 
-/// [`guarded_pass`]'s pass; a periodic one's proved note `count`, with the
-/// time it was proved at, may skip it.
+/// [`guarded_pass`]'s pass, held back unless it still `runs` once its locks
+/// are taken; a periodic one's proved note `count`, with the time it was
+/// proved at, may skip it.
 async fn pass(
     session: &Arc<NetworkSession>,
     manager: &Manager,
     force: bool,
     count: Option<(u64, u64)>,
+    runs: &(dyn Fn(&NetworkSession) -> bool + Sync),
 ) -> bool {
+    #[cfg(test)]
+    if let Some(queued) = session.platform.spends_queued.lock().unwrap().take() {
+        let _ = queued.send(());
+    }
     // A spend's hold first, then the drain's lock (always in this order).
     let _spends = session.platform.shielded_spends.read().await;
     let _pass = session.platform.shielded_passes.read().await;
+    if !runs(session) {
+        return false;
+    }
     let coordinator = match admit_pass(session, manager).await {
         Ok(coordinator) => coordinator,
         Err(held) => {
@@ -3572,8 +3588,8 @@ async fn pool_is_idle(
 /// The proved number of notes in Platform's shielded pool, and the proof's
 /// time (Unix seconds, no later than now); `None` if the read fails.
 /// [`NOTES_COUNT_TIMEOUT`] bounds each transport attempt, not the proof's
-/// verification, which can wait for a quorum: [`periodic_pass`] bounds it
-/// all with [`NOTES_COUNT_BUDGET`].
+/// verification, which can block for a quorum: [`periodic_pass`] gives up on
+/// it all after [`NOTES_COUNT_BUDGET`].
 async fn notes_count(sdk: &dash_sdk::Sdk) -> Option<(u64, u64)> {
     if !sdk.prove() {
         return None;
@@ -3600,8 +3616,9 @@ async fn notes_count(sdk: &dash_sdk::Sdk) -> Option<(u64, u64)> {
 const NOTES_COUNT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long a periodic pass waits for the note count, its two attempts and
-/// the proof's verification included, before it runs as if the read failed:
-/// a sixth of the 60 s pass interval, so a stalled read never meets the next.
+/// the proof's verification included, before it runs as if the read failed
+/// and ignores a later answer: a sixth of the 60 s pass interval. The read's
+/// task, holding only the SDK, may block on past it for a quorum.
 const NOTES_COUNT_BUDGET: Duration = Duration::from_secs(10);
 
 // MARK: the Platform side's start

@@ -158,6 +158,13 @@ pub(crate) struct PlatformRuntime {
     /// it holds nothing of the session (`shielded_pool::periodic_pass`).
     #[cfg(test)]
     pub(crate) probe_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's block of the next count read's thread until a send or drop,
+    /// as a quorum wait's `block_in_place` does.
+    #[cfg(test)]
+    pub(crate) probe_block: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// Told when the next shielded pass waits for its locks.
+    #[cfg(test)]
+    pub(crate) spends_queued: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     /// How many shielded passes reached the library's pass.
     #[cfg(test)]
     pub(crate) passes_run: std::sync::atomic::AtomicUsize,
@@ -500,6 +507,10 @@ impl PlatformRuntime {
             notes_count: Mutex::new(None),
             #[cfg(test)]
             probe_pause: Mutex::new(None),
+            #[cfg(test)]
+            probe_block: Mutex::new(None),
+            #[cfg(test)]
+            spends_queued: Mutex::new(None),
             #[cfg(test)]
             passes_run: Default::default(),
             #[cfg(test)]

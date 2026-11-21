@@ -2036,7 +2036,7 @@ mod idle_tests {
         engine: &Engine,
         session: &Arc<NetworkSession>,
         count: Option<u64>,
-        runs: impl Fn(&NetworkSession) -> bool + Send + 'static,
+        runs: impl Fn(&NetworkSession) -> bool + Send + Sync + 'static,
     ) -> (
         tokio::task::JoinHandle<bool>,
         tokio::sync::oneshot::Sender<()>,
@@ -2065,15 +2065,17 @@ mod idle_tests {
         epoch
     }
 
-    /// A count read that returns after the close held nothing of the session
-    /// meanwhile: the network reopens at once, and the read, released, starts
-    /// no pass.
+    /// A count read stalled past the close, its task blocked with the SDK,
+    /// holds nothing of the session: the network reopens at once, and the
+    /// pass, released, starts nothing.
     #[test]
     fn a_count_read_stalled_past_the_close_holds_nothing() {
         let dir = dw_testutil::private_tempdir();
         let engine = engine_at(dir.path());
         let (session, _) = first_launch(&engine);
         let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let (_unblock, block) = std::sync::mpsc::channel();
+        *session.platform.probe_block.lock().unwrap() = Some(block);
         let (pass, resume) = stalled(&engine, &session, None, |_| true);
         engine
             .block_on(engine.close_network(DashNetwork::Regtest))
@@ -2135,5 +2137,60 @@ mod idle_tests {
             before + 1,
             "unchanged: skipped"
         );
+    }
+
+    /// A count read whose verification blocks its thread past the budget is a
+    /// failed read: the pass runs without waiting for it, and nothing is
+    /// stamped.
+    #[test]
+    fn a_count_read_blocked_past_the_budget_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        *session.platform.notes_count.lock().unwrap() = Some(Some(1));
+        let (unblock, block) = std::sync::mpsc::channel();
+        *session.platform.probe_block.lock().unwrap() = Some(block);
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let pass = pool::periodic_pass(Arc::clone(&session), session.manager().unwrap(), |_| true);
+        let pass = session.rt.spawn(pass);
+        let ran =
+            engine.block_on(async { tokio::time::timeout(Duration::from_secs(60), pass).await });
+        assert!(ran.expect("the pass waited for the blocked read").unwrap());
+        assert_eq!(
+            session.platform.passes_run.load(Ordering::SeqCst),
+            before + 1
+        );
+        assert_eq!(
+            session.platform.shielded_checked_at.load(Ordering::SeqCst),
+            0
+        );
+        drop(unblock);
+    }
+
+    /// A pass whose read returned while its loops ran, but which waited for
+    /// its locks behind a spend until after an SPV stop, starts nothing.
+    #[test]
+    fn a_pass_queued_behind_a_spend_starts_nothing_after_a_stop() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, _) = first_launch(&engine);
+        let epoch = loops_started(&session);
+        *session.platform.notes_count.lock().unwrap() = Some(None);
+        let (queued_tx, queued) = tokio::sync::oneshot::channel();
+        *session.platform.spends_queued.lock().unwrap() = Some(queued_tx);
+        let spend = engine.block_on(session.platform.shielded_spends.write());
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        let runs = move |s: &NetworkSession| s.platform.loops_run(epoch);
+        let pass = pool::periodic_pass(Arc::clone(&session), session.manager().unwrap(), runs);
+        let pass = session.rt.spawn(pass);
+        engine
+            .block_on(async { tokio::time::timeout(Duration::from_secs(60), queued).await })
+            .expect("the pass waits for its locks")
+            .unwrap();
+        engine.block_on(session.platform.deactivate(false));
+        drop(spend);
+        assert!(!engine.block_on(pass).unwrap(), "no pass after the stop");
+        assert_eq!(session.platform.passes_run.load(Ordering::SeqCst), before);
     }
 }
