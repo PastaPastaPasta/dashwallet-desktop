@@ -117,6 +117,14 @@ export function show(value: unknown, { locale, isolate }: Fill): string {
 /** A bidi paragraph separator: an isolate cannot span one. */
 const PARAGRAPH = /(\r\n|[\n\r\x1C-\x1E\x85\u2029])/;
 
+/** `text` with `close` before and `open` after each paragraph separator, so an isolate opened
+ * around it is closed at the end of each paragraph and opened again in the next. */
+export const acrossParagraphs = (text: string, open: string, close: string) =>
+  text
+    .split(PARAGRAPH)
+    .map((part, i) => (i % 2 ? `${close}${part}${open}` : part))
+    .join("");
+
 /** `text` with each of its paragraphs isolated on its own, so no control in a later paragraph can
  * reach the text after it. */
 function isolated(text: string): string {

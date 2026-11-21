@@ -222,6 +222,8 @@ describe("bidi isolation", () => {
     // An isolate cannot span a paragraph separator, so each paragraph of a value is isolated alone.
     expect(t("network.confirmTitle", { network: "x\u2029\u202Ey" })).toBe("Switch to \u2068x\u2069\u2029\u2068\u202Ey\u2069?");
     expect(t("network.confirmTitle", { network: "\u2067x\r\ny" })).toBe("Switch to \u2068\u2067x\u2069\u2069\r\n\u2068y\u2069?");
+    for (const sep of ["\n", "\r", "\x1C", "\x1D", "\x1E", "\x85"])
+      expect(t("network.confirmTitle", { network: `x${sep}\u202Ey` }), JSON.stringify(sep)).toBe(`Switch to \u2068x\u2069${sep}\u2068\u202Ey\u2069?`);
     // Sogdian, past the first supplementary right-to-left block.
     expect(t("network.confirmTitle", { network: "\u{10F30}" })).toBe("Switch to \u2068\u{10F30}\u2069?");
     expect(t("network.confirmTitle", { network: "a\uFEFFb" })).toBe("Switch to a\uFEFFb?");
@@ -244,6 +246,9 @@ describe("bidi isolation", () => {
       expect(t("shell.status.synced")).toBe("متزامن");
       expect(t("shell.status.peers", { count: 21 })).toBe(`\u2066\u2068${new Intl.NumberFormat("ar").format(21)}\u2069 peers\u2069`);
       expect(text(t.rich("network.confirmTitle", { network: "x" }))).toBe("\u2066Switch to \u2068x\u2069?\u2069");
+      // The left-to-right isolate cannot span a paragraph separator either, so it ends and starts again at one.
+      expect(t("network.confirmTitle", { network: "x\u2029y" })).toBe("\u2066Switch to \u2068x\u2069\u2069\u2029\u2066\u2068y\u2069?\u2069");
+      expect(text(t.rich("network.confirmTitle", { network: "x\u2029y" }))).toBe("\u2066Switch to \u2068x\u2069\u2069\u2029\u2066\u2068y\u2069?\u2069");
     } finally {
       LANGUAGES.pop();
     }

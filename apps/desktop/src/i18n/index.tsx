@@ -4,7 +4,7 @@
 
 import { Fragment, useLayoutEffect, useMemo, type ReactNode } from "react";
 import { ui, useUi } from "../app/ui";
-import { build, fill, flatten, own, pluralForm, pseudoCatalog, renderTag, type At, type KeyOf, type Message, type Params, type ParamNames, type TagNames } from "./core";
+import { acrossParagraphs, build, fill, flatten, own, pluralForm, pseudoCatalog, renderTag, type At, type KeyOf, type Message, type Params, type ParamNames, type TagNames } from "./core";
 import { en } from "./en";
 
 export type { Catalog } from "./core";
@@ -129,13 +129,13 @@ const PDI = "\u2069";
 function translate(language: Language, locale: string | undefined, key: string, values: Record<string, unknown> = {}): string {
   const { text, fallback } = lookup(language, key, values);
   const filled = fill(text, values, { locale, isolate: language.dir === "rtl" });
-  return fallback ? `${LRI}${filled}${PDI}` : filled;
+  return fallback ? `${LRI}${acrossParagraphs(filled, LRI, PDI)}${PDI}` : filled;
 }
 
 function translateRich(language: Language, locale: string | undefined, key: string, values: Record<string, unknown>): ReactNode {
   const { text, fallback } = lookup(language, key, values);
   const built = build<ReactNode>(text, values, { locale, isolate: language.dir === "rtl" }, (tag, children) => renderTag<ReactNode>(values, tag, children) as ReactNode, (node) => <bdi>{node}</bdi>);
-  const parts = fallback ? [LRI, ...built, PDI] : built;
+  const parts = fallback ? [LRI, ...built.map((p) => (typeof p === "string" ? acrossParagraphs(p, LRI, PDI) : p)), PDI] : built;
   return parts.map((p, i) => <Fragment key={i}>{p}</Fragment>);
 }
 
