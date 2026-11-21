@@ -44,7 +44,7 @@ import { scanHandlers } from "./scan";
 import { coinjoinHandlers, haltAll } from "./coinjoin";
 import { governanceHandlers } from "./governance";
 import { masternodesHandlers } from "./masternodes";
-import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers } from "./registration";
+import { advance, checkUsername, claimPlan, costs, failRun, fundable, invitationOf, NAME_CREDITS, registrationHandlers, shieldedOff } from "./registration";
 import { intake, routeLink, stashRoute } from "./links";
 import { normalizePhrase } from "../onboarding/words";
 import { sendHandlers, type Pair, type SendDeps } from "./send";
@@ -1066,9 +1066,11 @@ export const HANDLERS: Handlers = {
         remainingCredits: String(BigInt(held * 1000) - plan.credits),
         availableDuffs: 0,
         grant: { maxDuffs: 0, maxCredits: String(plan.credits) },
+        readiness: null,
       };
     }
     if (funding.kind === "faucetAssetLock") throw fail("platform.feature_off", "faucet", { kind: "feature", feature: "faucet" });
+    if (funding.kind === "shielded") throw shieldedOff();
     const { contested, lockDuffs, feeDuffs, totalDuffs, credits } = costs(label);
     return {
       contested,
@@ -1079,6 +1081,7 @@ export const HANDLERS: Handlers = {
       availableDuffs: funding.kind === "coreBalance" ? fundable(wallet(world, walletId)) : 0,
       // D30: one duff past the total for a lock, the identity step's proof authority (registration.rs).
       grant: { maxDuffs: funding.kind === "coreBalance" ? totalDuffs + 1 : totalDuffs, maxCredits: String(credits) },
+      readiness: null,
     };
   },
   search_users: ({ walletId, prefix, limit }, { world }) => {

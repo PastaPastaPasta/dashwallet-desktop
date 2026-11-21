@@ -387,7 +387,9 @@ pub struct ShieldedActivity {
     /// rows a scan restored (the pool's proofs carry no note height).
     pub block_height: Option<u64>,
     pub status: ShieldedActivityStatus,
-    /// Unix seconds when this device recorded it; `None` for restored rows.
+    /// Unix seconds when this device recorded it; `None` for every row a
+    /// scan derived (another wallet's payment, or a shield from another
+    /// device), restored or not.
     pub created_at: Option<u64>,
 }
 

@@ -572,6 +572,7 @@ fn grant_purpose_reads_the_caps_and_leaves_the_grant() {
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     let w = wallet(1);
     let op = GrantPurpose::PlatformOp {
         max_duffs: 0,
@@ -615,6 +616,7 @@ fn grants_are_bound_to_their_wallet() {
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
     v.store_wallet_secret(&wallet(2), &secret(2)).unwrap();
 
@@ -700,6 +702,7 @@ fn reveal_wipe_and_credential_change_need_the_passphrase_when_encrypted() {
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
     assert_eq!(v.lock_state(), LockState::Unlocked);
     let w = Some(&wallet(1));
@@ -763,6 +766,7 @@ async fn lock_invalidates_grants_tokens_and_signers() {
     let fx = Fixture::new();
     let v = fx.open();
     v.create(Some(PASS)).unwrap();
+    allow_window(&v);
     v.store_wallet_secret(&wallet(1), &secret(1)).unwrap();
     let w = Some(&wallet(1));
 
