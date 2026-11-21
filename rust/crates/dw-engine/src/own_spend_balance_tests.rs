@@ -1091,10 +1091,11 @@ fn a_load_with_an_unreadable_record_claims_nothing_until_a_clean_load() {
     assert_holds(&engine, &session, id, &clean, "a clean load");
 }
 
-/// An abandoned payment relayed again by a peer: its record is stored
-/// again while its sent mark stands (the abandon sweeps the record, not the
-/// mark). A load whose abandoned marks cannot be read claims nothing: its
-/// coin stays held and stored unspent, and its sent mark stays.
+/// An abandoned payment relayed again unlocked by a peer is ignored. Its
+/// record can still be stored again while its sent mark stands (the abandon
+/// sweeps the record, not the mark), as a relay after a restart stores it.
+/// A load whose abandoned marks cannot be read claims nothing: its coin
+/// stays held and stored unspent, and its sent mark stays.
 #[test]
 fn a_load_with_an_unreadable_abandoned_mark_claims_nothing() {
     use platform_wallet::changeset::PlatformWalletPersistence;
@@ -1110,6 +1111,10 @@ fn a_load_with_an_unreadable_abandoned_mark_claims_nothing() {
     );
     mempool(&engine, &session, id, &payment);
     wait_stored(&session, id, &[payment.txid()]);
+    let record = (session.live().unwrap().persister)
+        .get_core_tx_record(id.0, &payment.txid())
+        .unwrap()
+        .unwrap();
     abandon(&engine, &session, id, payment.txid());
     let persister = Arc::clone(&session.live().unwrap().persister);
     persister.flush(id.0).unwrap();
@@ -1119,7 +1124,35 @@ fn a_load_with_an_unreadable_abandoned_mark_claims_nothing() {
     );
     drop(persister);
     assert!(sent_marks(&session, id).contains(&payment.txid()));
-    mempool(&engine, &session, id, &payment);
+    let relayed = payment.clone();
+    super::deliver(&engine, &session, id, move |wm| {
+        Box::pin(async move {
+            let result = wm.process_mempool_transaction(&relayed, None).await;
+            assert!(
+                !result.is_relevant,
+                "the relay of the abandoned payment is ignored"
+            );
+        })
+    });
+    assert!(
+        (session.live().unwrap().persister)
+            .get_core_tx_record(id.0, &payment.txid())
+            .unwrap()
+            .is_none(),
+        "the ignored relay stores nothing"
+    );
+    assert!(
+        (session.hub.history.get(&id, &payment.txid())).is_none_or(|e| e.is_abandoned()),
+        "the ignored relay is not live in the history"
+    );
+    store_raw(
+        &session,
+        id,
+        platform_wallet::changeset::CoreChangeSet {
+            records: vec![record],
+            ..Default::default()
+        },
+    );
     wait_stored(&session, id, &[payment.txid()]);
     eventually("A stored unspent", || stored_unspent(&session, id, a));
     let (scope, key) = (id.to_string(), format!("abandoned:{}", payment.txid()));

@@ -508,7 +508,13 @@ fn a_conflicting_spend_seen_mid_sync_is_dropped_when_its_rival_is_mined() {
     mined(&engine, &session, id, BIRTH - 20, vec![funding.clone()]);
     let coin = OutPoint::new(funding.txid(), 0);
     let next = receive_address(&engine, &session, id);
-    let loser = spend_of(coin, vec![(next.script_pubkey(), PAID - 1_000)]);
+    let loser = signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &to,
+        spend_of(coin, vec![(next.script_pubkey(), PAID - 1_000)]),
+    );
     mempool(&engine, &session, id, &loser);
     assert!(balances(&session, id).catching_up);
     assert_eq!(rows(&engine, &session, id).len(), 2);
