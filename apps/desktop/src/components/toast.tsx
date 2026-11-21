@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import { useUi } from "../app/ui";
+import { t } from "../i18n";
 import { motion } from "../styles/tokens.generated";
 
 /** `text` is what the toast says; a toast with `discreetText` names an amount, and says that
@@ -54,10 +55,10 @@ export function holdWalletToasts(hold: boolean) {
 export async function copyWithToast(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
-    showToast("Copied", motion.toastCopiedDuration);
+    showToast(t("components.copy.copied"), motion.toastCopiedDuration);
     return true;
   } catch {
-    showToast("Could not copy");
+    showToast(t("components.copy.failed"));
     return false;
   }
 }

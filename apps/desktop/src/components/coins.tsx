@@ -9,6 +9,7 @@ import type { Display } from "../format/display";
 import { shortAddress } from "../format/tx";
 import { notSelectable, outpointKey } from "../screens/pay/model";
 import { COLUMN_TITLE, coinLabel, type CoinColumn, type CoinGroup, type CoinSort } from "../tools/coins";
+import { t as tNow, useT } from "../i18n";
 import { AmountText } from "./basics";
 
 /** Coin Selection's view of the table. */
@@ -36,14 +37,15 @@ const DETAIL_COLUMNS: CoinColumn[] = ["amount", "label", "address", "rounds", "d
 const NUMERIC = new Set<CoinColumn>(["amount", "rounds", "confirmations"]);
 
 function status(u: Utxo): string {
-  return notSelectable(u) ?? (u.coinjoinRounds !== null ? `Mixed, ${u.coinjoinRounds} rounds` : u.isChange ? "Change" : "");
+  return notSelectable(u) ?? (u.coinjoinRounds !== null ? tNow("components.coins.mixed", { rounds: u.coinjoinRounds }) : u.isChange ? tNow("components.coins.change") : "");
 }
 
 const coinDate = (u: Utxo) => (u.timestamp === null ? "—" : new Date(u.timestamp * 1000).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }));
 
 function SortHeader({ column, unit, detail }: { column: CoinColumn; unit: string; detail: CoinTableDetail }) {
+  const t = useT();
   const current = detail.sort.column === column;
-  const title = column === "amount" ? `${COLUMN_TITLE.amount} (${unit})` : COLUMN_TITLE[column];
+  const title = column === "amount" ? t("components.coins.amount", { unit }) : COLUMN_TITLE[column];
   return (
     <th scope="col" className={NUMERIC.has(column) ? "num" : undefined} aria-sort={current ? (detail.sort.ascending ? "ascending" : "descending") : undefined}>
       <button type="button" className="sort-header" data-testid={`coin-sort-${column}`} onClick={() => detail.onSort(column)}>
@@ -55,6 +57,7 @@ function SortHeader({ column, unit, detail }: { column: CoinColumn; unit: string
 }
 
 function CoinRow({ u, shown, selected, onToggle, detail }: Omit<Props, "coins"> & { u: Utxo }) {
+  const t = useT();
   const key = outpointKey(u.outpoint);
   const why = notSelectable(u);
   const party = u.label || shortAddress(u.address);
@@ -64,7 +67,7 @@ function CoinRow({ u, shown, selected, onToggle, detail }: Omit<Props, "coins"> 
       <td>
         <input
           type="checkbox"
-          aria-label={`Use ${shown.compact(u.amount)} ${shown.name} at ${party}`}
+          aria-label={t("components.coins.use", { amount: shown.compact(u.amount), unit: shown.name, party })}
           checked={on}
           disabled={why !== null && !on}
           onChange={(e) => onToggle(key, e.target.checked)}
@@ -91,6 +94,7 @@ function CoinRow({ u, shown, selected, onToggle, detail }: Omit<Props, "coins"> 
 }
 
 function GroupRow({ g, shown, selected, detail }: { g: CoinGroup; shown: Display; selected: ReadonlySet<string>; detail: CoinTableDetail }) {
+  const t = useT();
   const selectable = g.coins.filter((u) => notSelectable(u) === null);
   const all = selectable.length > 0 && selectable.every((u) => selected.has(outpointKey(u.outpoint)));
   return (
@@ -98,7 +102,7 @@ function GroupRow({ g, shown, selected, detail }: { g: CoinGroup; shown: Display
       <td>
         <input
           type="checkbox"
-          aria-label={`Use every coin at ${shortAddress(g.address)}`}
+          aria-label={t("components.coins.useAll", { address: shortAddress(g.address) })}
           checked={all}
           disabled={selectable.length === 0}
           onChange={() => detail.onToggleGroup(g)}
@@ -109,42 +113,43 @@ function GroupRow({ g, shown, selected, detail }: { g: CoinGroup; shown: Display
       <td className="mono" title={g.address}>
         {shortAddress(g.address)}
       </td>
-      <td colSpan={5}>{g.coins.length === 1 ? "1 coin" : `${g.coins.length} coins`}</td>
+      <td colSpan={5}>{t("components.coins.count", { count: g.coins.length })}</td>
     </tr>
   );
 }
 
 export function CoinTable({ coins, shown, selected, onToggle, detail }: Props) {
+  const t = useT();
   const unit = shown.name;
   const row = (u: Utxo) => <CoinRow key={outpointKey(u.outpoint)} u={u} shown={shown} selected={selected} onToggle={onToggle} detail={detail} />;
   return (
     <table className={detail ? "data-table coin-table coin-table-detail" : "data-table coin-table"} data-testid="coin-table">
-      <caption className="sr-only">Coins of this wallet</caption>
+      <caption className="sr-only">{t("components.coins.caption")}</caption>
       <thead>
         <tr>
           <th scope="col">
-            <span className="sr-only">Select</span>
+            <span className="sr-only">{t("components.coins.select")}</span>
           </th>
           {detail ? (
             <>
               {DETAIL_COLUMNS.map((c) => (
                 <SortHeader key={c} column={c} unit={unit} detail={detail} />
               ))}
-              <th scope="col">Status</th>
+              <th scope="col">{t("components.coins.status")}</th>
               <th scope="col">
-                <span className="sr-only">Actions</span>
+                <span className="sr-only">{t("components.coins.actions")}</span>
               </th>
             </>
           ) : (
             <>
               <th scope="col" className="num">
-                Amount ({unit})
+                {t("components.coins.amount", { unit })}
               </th>
-              <th scope="col">Address / Label</th>
+              <th scope="col">{t("components.coins.party")}</th>
               <th scope="col" className="num">
-                Confirmations
+                {t("components.coins.confirmations")}
               </th>
-              <th scope="col">Status</th>
+              <th scope="col">{t("components.coins.status")}</th>
             </>
           )}
         </tr>
@@ -160,31 +165,32 @@ export function CoinTable({ coins, shown, selected, onToggle, detail }: Props) {
 
 /** dash-qt's coin control summary; estimates carry "≈". */
 export function CoinSummary({ summary: s, shown }: { summary: CoinSelectionSummary; shown: Display }) {
+  const t = useT();
   const amount = (duffs: number) => <AmountText text={shown.full(duffs)} unitName={shown.name} glyph={false} />;
   return (
     <dl className="coin-summary" data-testid="coin-summary" aria-live="polite">
       <div>
-        <dt>Quantity</dt>
+        <dt>{t("components.coins.quantity")}</dt>
         <dd>{s.quantity}</dd>
       </div>
       <div>
-        <dt>Amount</dt>
+        <dt>{t("components.coins.summaryAmount")}</dt>
         <dd>{amount(s.amount)}</dd>
       </div>
       <div>
-        <dt>Fee</dt>
+        <dt>{t("components.coins.fee")}</dt>
         <dd>≈ {amount(s.fee)}</dd>
       </div>
       <div>
-        <dt>After fee</dt>
+        <dt>{t("components.coins.afterFee")}</dt>
         <dd>≈ {amount(s.afterFee)}</dd>
       </div>
       <div>
-        <dt>Bytes</dt>
+        <dt>{t("components.coins.bytes")}</dt>
         <dd>≈ {s.bytes}</dd>
       </div>
       <div>
-        <dt>Change</dt>
+        <dt>{t("components.coins.summaryChange")}</dt>
         <dd>≈ {amount(s.change)}</dd>
       </div>
     </dl>
