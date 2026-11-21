@@ -2130,16 +2130,29 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * abandoned with it. SPV cannot prove the transaction is in no mempool,
      * so it may still confirm; the engine then shows it confirmed again.
      * The spent coins return through a rescan of their funding blocks.
+     * An InstantSend-locked transaction is refused (`InstantLocked`)
+     * unless a transaction in a block of the SPV header chain, at or below
+     * the wallet's ChainLock whose block that chain holds, spends one of
+     * its inputs, nothing descending from it is in a block or locked, and
+     * the scan has passed the ChainLock. Then it is abandoned: inputs a
+     * recorded block of that chain spends stay spent, and only inputs the
+     * wallet holds unspent from a scanned block are released.
+     * `RescanFirst` when an input its own spend claim, restored at load,
+     * still holds: a restart and a rescan give that evidence.
      * Emits `HistoryChanged` and `Balances`.
      */
     func abandonTransaction(walletId: String, txid: String) async throws 
     
     /**
      * iOS "Remove unconfirmed" / bulk drop (IOS-034): abandons every
-     * unconfirmed, non-InstantSend-locked, not yet abandoned transaction of
-     * `wallet_id` (all wallets when `None`), then rescans from the lowest
-     * funding height of the coins they spent. Needs a running SPV client.
-     * Returns how many transactions were dropped.
+     * unconfirmed, not yet abandoned transaction of `wallet_id` (all
+     * wallets when `None`) that `abandon_transaction` would: not
+     * InstantSend-locked, unless under its ChainLock exception, which
+     * releases only the inputs proven unspent. Then it rescans from the
+     * lowest funding height of the coins they spent; one rescan holds back
+     * further exceptions until it ends, so a second run takes the next.
+     * Needs a running SPV client. Returns how many transactions were
+     * dropped.
      */
     func dropUnconfirmed(walletId: String?) async throws  -> UInt32
     
@@ -3719,6 +3732,15 @@ open func warnings()throws  -> [EngineWarning]  {
      * abandoned with it. SPV cannot prove the transaction is in no mempool,
      * so it may still confirm; the engine then shows it confirmed again.
      * The spent coins return through a rescan of their funding blocks.
+     * An InstantSend-locked transaction is refused (`InstantLocked`)
+     * unless a transaction in a block of the SPV header chain, at or below
+     * the wallet's ChainLock whose block that chain holds, spends one of
+     * its inputs, nothing descending from it is in a block or locked, and
+     * the scan has passed the ChainLock. Then it is abandoned: inputs a
+     * recorded block of that chain spends stay spent, and only inputs the
+     * wallet holds unspent from a scanned block are released.
+     * `RescanFirst` when an input its own spend claim, restored at load,
+     * still holds: a restart and a rescan give that evidence.
      * Emits `HistoryChanged` and `Balances`.
      */
 open func abandonTransaction(walletId: String, txid: String)async throws   {
@@ -3739,10 +3761,14 @@ open func abandonTransaction(walletId: String, txid: String)async throws   {
     
     /**
      * iOS "Remove unconfirmed" / bulk drop (IOS-034): abandons every
-     * unconfirmed, non-InstantSend-locked, not yet abandoned transaction of
-     * `wallet_id` (all wallets when `None`), then rescans from the lowest
-     * funding height of the coins they spent. Needs a running SPV client.
-     * Returns how many transactions were dropped.
+     * unconfirmed, not yet abandoned transaction of `wallet_id` (all
+     * wallets when `None`) that `abandon_transaction` would: not
+     * InstantSend-locked, unless under its ChainLock exception, which
+     * releases only the inputs proven unspent. Then it rescans from the
+     * lowest funding height of the coins they spent; one rescan holds back
+     * further exceptions until it ends, so a second run takes the next.
+     * Needs a running SPV client. Returns how many transactions were
+     * dropped.
      */
 open func dropUnconfirmed(walletId: String?)async throws  -> UInt32  {
     return
@@ -24323,10 +24349,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_warnings() != 33150) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 19253) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 53063) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_drop_unconfirmed() != 29646) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_drop_unconfirmed() != 8564) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_export_history_csv() != 61293) {

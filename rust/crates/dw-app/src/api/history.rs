@@ -156,7 +156,12 @@ commands! {
     /// dash-qt "Abandon transaction": marks it abandoned, releases its
     /// inputs and excludes it from balances. SPV cannot prove it is in no
     /// mempool, so it may still confirm; the history then shows it
-    /// confirmed again.
+    /// confirmed again. An InstantSend-locked transaction is refused unless
+    /// a ChainLocked block on the SPV header chain spends one of its inputs
+    /// (and nothing settled descends from it, with the scan past the
+    /// ChainLock); then only inputs proven unspent are released, and
+    /// `rescanFirst` asks for a restart and a rescan when its own restored
+    /// claim still holds one.
     #[facade("NetworkSession::abandon_transaction")]
     fn abandon_transaction(state, wallet_id: String, txid: String) -> () {
         let id = parse_wallet_id(&wallet_id)?;
@@ -176,10 +181,12 @@ commands! {
         Ok(session.resend_transaction(id, txid).await?)
     }
 
-    /// "Remove unconfirmed": abandons every unconfirmed, not
-    /// InstantSend-locked transaction of the wallet (every wallet when
-    /// `walletId` is `null`) and rescans from the lowest funding height.
-    /// Needs a running SPV client. Returns how many were dropped.
+    /// "Remove unconfirmed": abandons every unconfirmed transaction of the
+    /// wallet (every wallet when `walletId` is `null`) that Abandon would,
+    /// InstantSend-locked ones only under its ChainLock exception, and
+    /// rescans from the lowest funding height; that rescan holds back the
+    /// next exception, which a later run takes. Needs a running SPV client.
+    /// Returns how many were dropped.
     #[facade("NetworkSession::drop_unconfirmed")]
     fn drop_unconfirmed(state, wallet_id: Option<String>) -> u32 {
         let id = wallet_id.as_deref().map(parse_wallet_id).transpose()?;

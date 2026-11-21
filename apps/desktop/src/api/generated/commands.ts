@@ -995,7 +995,12 @@ export function txDetailExtras(walletId: string, txid: string): Promise<TxDetail
  * dash-qt "Abandon transaction": marks it abandoned, releases its
  * inputs and excludes it from balances. SPV cannot prove it is in no
  * mempool, so it may still confirm; the history then shows it
- * confirmed again.
+ * confirmed again. An InstantSend-locked transaction is refused unless
+ * a ChainLocked block on the SPV header chain spends one of its inputs
+ * (and nothing settled descends from it, with the scan past the
+ * ChainLock); then only inputs proven unspent are released, and
+ * `rescanFirst` asks for a restart and a rescan when its own restored
+ * claim still holds one.
  */
 export function abandonTransaction(walletId: string, txid: string): Promise<null> {
   return invoke<null>("abandon_transaction", { walletId, txid });
@@ -1011,10 +1016,12 @@ export function resendTransaction(walletId: string, txid: string): Promise<null>
 }
 
 /**
- * "Remove unconfirmed": abandons every unconfirmed, not
- * InstantSend-locked transaction of the wallet (every wallet when
- * `walletId` is `null`) and rescans from the lowest funding height.
- * Needs a running SPV client. Returns how many were dropped.
+ * "Remove unconfirmed": abandons every unconfirmed transaction of the
+ * wallet (every wallet when `walletId` is `null`) that Abandon would,
+ * InstantSend-locked ones only under its ChainLock exception, and
+ * rescans from the lowest funding height; that rescan holds back the
+ * next exception, which a later run takes. Needs a running SPV client.
+ * Returns how many were dropped.
  */
 export function dropUnconfirmed(walletId: string | null): Promise<number> {
   return invoke<number>("drop_unconfirmed", { walletId });

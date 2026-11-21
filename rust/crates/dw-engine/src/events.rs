@@ -572,6 +572,9 @@ pub(crate) struct SessionHub {
     /// Tests: the next abandon quits before its sweep, as at an exit.
     #[cfg(test)]
     pub(crate) quit_before_sweep: std::sync::atomic::AtomicBool,
+    /// Tests: the coins the last abandon's sweep released.
+    #[cfg(test)]
+    pub(crate) last_release: Mutex<Option<Vec<dashcore::OutPoint>>>,
     /// Tests: holds the next resume between its record read and its rewind.
     #[cfg(test)]
     pub(crate) pause_resume: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -716,6 +719,8 @@ impl SessionHub {
             pause_abandon: Mutex::new(None),
             #[cfg(test)]
             quit_before_sweep: Default::default(),
+            #[cfg(test)]
+            last_release: Mutex::new(None),
             #[cfg(test)]
             pause_resume: Mutex::new(None),
             #[cfg(test)]

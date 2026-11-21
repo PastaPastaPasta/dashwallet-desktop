@@ -272,9 +272,10 @@ describe("fixture send engine", () => {
   });
 
   it("refuses with the engine's message, and offers Abandon a restart and a rescan clear", async () => {
-    await expect(cmd.abandonTransaction(W, (await cmd.historyPage(W, { categories: [], text: null, sort: "newestFirst", cursor: null, limit: 1 })).rows[0].txid)).rejects.toMatchObject({
-      message: "transaction action refused: NotSentByWallet",
-      data: { kind: "txAction", refusal: "notSentByWallet" },
+    const gone = fixture.world.wallets[0].rows.find((r) => r.status.kind === "abandoned")!;
+    await expect(cmd.abandonTransaction(W, gone.txid)).rejects.toMatchObject({
+      message: "transaction action refused: AlreadyAbandoned",
+      data: { kind: "txAction", refusal: "alreadyAbandoned" },
     });
     clearMocks();
     installFixture({ scenario: "abandon-rescan-first" });

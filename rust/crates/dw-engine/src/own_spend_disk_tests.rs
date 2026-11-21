@@ -946,6 +946,11 @@ fn abandoning_a_locked_payment_a_chainlocked_spend_beat_frees_a_and_drops_its_ch
     engine
         .block_on(session.abandon_transaction(id, payment.txid()))
         .unwrap();
+    let released = session.hub.last_release.lock().unwrap().take().unwrap();
+    assert!(
+        released.contains(&a) && !released.contains(&b),
+        "the sweep releases A, never B: {released:?}"
+    );
     assert!(abandoned(&engine, &session, id, payment.txid()));
     assert!(
         !held(&engine, &session, id).contains(&change),
@@ -1650,27 +1655,16 @@ fn a_locked_payment_a_chainlock_beat_in_its_own_session_is_not_offered() {
     assert!(!abandoned(&engine, &session, id, payment.txid()));
 }
 
-/// The abandon of a locked payment a ChainLock beat stops after its
-/// abandoned mark is stored and before its sweep, as at an exit. The next
-/// open shows the payment InstantSend-locked, as before the abandon, its
-/// change counted, and replays from the rewind the abandon stored; once
-/// the replay is done a second abandon ends it, after a restart too.
+/// The abandon of a locked payment a ChainLock beat, with its unlocked
+/// child, stops after the payment's abandoned mark is stored and before
+/// its sweep, as at an exit. The next open shows the payment
+/// InstantSend-locked and the child live, its output counted, and replays
+/// from the rewind the abandon stored; once the replay is done a second
+/// abandon of the payment takes both, after a restart too.
 #[test]
 fn an_override_abandon_cut_before_its_sweep_ends_with_the_next() {
-    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
-    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
-    let payment = send(
-        &engine,
-        &session,
-        id,
-        CoinSource::Outpoints(vec![a, b]),
-        COIN * 3 / 2,
-        false,
-    );
-    mempool(&engine, &session, id, &payment);
-    instant_lock(&engine, &session, id, &payment);
-    wait_stored(&session, id, &[payment.txid()]);
-    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    let (_dir, engine, session, id, paid, payment, child) = payment_and_child(false);
+    let child_change = change_of(&child, &own_scripts(&engine, &session, id));
 
     let session = reopen(&engine, session);
     let winner = rival(&engine, &session, id, &paid, 1);
@@ -1690,15 +1684,16 @@ fn an_override_abandon_cut_before_its_sweep_ends_with_the_next() {
     );
 
     let session = reopen(&engine, session);
-    let extras = engine
-        .block_on(session.tx_detail_extras(id, payment.txid()))
-        .unwrap();
-    assert!(!extras.abandoned, "shown abandoned");
+    assert!(
+        !abandoned(&engine, &session, id, payment.txid()),
+        "the payment"
+    );
     let row = (super::rows(&engine, &session, id).into_iter())
         .find(|r| r.0 == payment.txid().to_string())
         .unwrap();
     assert!(row.2, "shown InstantSend-locked: {row:?}");
-    assert!(held(&engine, &session, id).contains(&change));
+    assert!(!abandoned(&engine, &session, id, child.txid()), "the child");
+    assert!(held(&engine, &session, id).contains(&child_change));
     headers(&session, &[(TIP + 1, won)]);
     start_spv(&engine, &session);
     let state = "the cut abandon's replay";
@@ -1708,12 +1703,22 @@ fn an_override_abandon_cut_before_its_sweep_ends_with_the_next() {
     engine
         .block_on(session.abandon_transaction(id, payment.txid()))
         .unwrap();
-    assert!(abandoned(&engine, &session, id, payment.txid()));
-    assert!(!held(&engine, &session, id).contains(&change));
-
-    let session = reopen(&engine, session);
-    assert!(abandoned(&engine, &session, id, payment.txid()));
-    assert!(!held(&engine, &session, id).contains(&change));
+    let mut session = session;
+    for state in ["the retry", "a restart after it"] {
+        if state != "the retry" {
+            session = reopen(&engine, session);
+        }
+        assert!(abandoned(&engine, &session, id, payment.txid()), "{state}");
+        assert!(abandoned(&engine, &session, id, child.txid()), "{state}");
+        assert!(
+            !held(&engine, &session, id).contains(&child_change),
+            "{state}: the child's output is counted"
+        );
+        assert!(
+            !spendable(&engine, &session, id, child_change),
+            "{state}: the child's output is offered"
+        );
+    }
 }
 
 /// #170 case 14 as it most often comes: the payment InstantSend-locked, a
@@ -1774,6 +1779,53 @@ fn a_locked_payment_beaten_after_a_restart_is_abandoned_only_after_the_next() {
         .block_on(session.abandon_transaction(id, payment.txid()))
         .unwrap();
     assert!(abandoned(&engine, &session, id, payment.txid()));
+}
+
+/// A payment of A and B, InstantSend-locked, and its unlocked child that
+/// spends its change and another coin D of the wallet; after a restart
+/// another device's spend of B is mined and ChainLocked, and after the
+/// next the funding block is scanned again. That load restores the child's
+/// claim on D, as every later one would: a restart and a rescan would not
+/// help, so Abandon refuses as InstantSend-locked, not with `RescanFirst`.
+#[test]
+fn a_locked_payment_a_chainlock_beat_under_a_child_claiming_its_own_coin_is_refused_as_locked() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b, d) = (
+        OutPoint::new(paid.txid(), 0),
+        OutPoint::new(paid.txid(), 1),
+        OutPoint::new(paid.txid(), 2),
+    );
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change, d]),
+        COIN,
+        false,
+    );
+    mempool(&engine, &session, id, &child);
+    wait_stored(&session, id, &[payment.txid(), child.txid()]);
+
+    let session = reopen(&engine, session);
+    let (session, _) = beaten_on_b(&engine, session, id, &paid);
+    assert!(held(&engine, &session, id).contains(&a), "A is credited");
+    assert!(
+        !held(&engine, &session, id).contains(&d),
+        "the child claims D"
+    );
+    refused(&engine, &session, id, payment.txid(), "the child claims D");
+    assert!(!abandoned(&engine, &session, id, payment.txid()));
 }
 
 /// A payment of B with two outputs to the wallet, not InstantSend-locked,

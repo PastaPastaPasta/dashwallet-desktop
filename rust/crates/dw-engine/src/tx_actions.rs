@@ -530,21 +530,13 @@ impl NetworkSession {
             .filter_map(|t| self.hub.history.get(&wallet, t).map(|e| (*t, e.tx)))
             .collect();
 
-        let rows: Vec<(String, String)> = txs
-            .iter()
-            .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
-            .collect();
-        let scope = wallet.to_string();
-        let mut mark = Some(move |db: &AppDb| -> Result<(), dw_appdb::AppDbError> {
-            for (key, hex) in &rows {
-                db.set_setting(&scope, key, Some(hex))?;
-            }
-            Ok(())
-        });
-        // An override's mark goes first: an exit before the sweep leaves the
-        // payment locked, so it loads as it was and a second abandon ends it.
-        if overridden {
-            self.appdb_op(mark.take().expect("unused")).await?;
+        // An override's root mark goes first: an exit before the sweep leaves
+        // the root locked, so it loads as it was, and its descendants unmarked,
+        // so a second abandon walks them again.
+        if let Some((t, tx)) = txs.iter().find(|(t, _)| overridden && *t == root) {
+            let (key, hex) = (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx));
+            let scope = wallet.to_string();
+            (self.appdb_op(move |db| db.set_setting(&scope, &key, Some(&hex)))).await?;
         }
         #[cfg(test)]
         if (self.hub.quit_before_sweep).swap(false, std::sync::atomic::Ordering::SeqCst) {
@@ -552,6 +544,10 @@ impl NetworkSession {
         }
         let live = self.live()?;
         let persister = Arc::clone(&live.persister);
+        #[cfg(test)]
+        {
+            *self.hub.last_release.lock().unwrap() = Some(released.clone());
+        }
         let sweep = SweepBatch {
             txids: abandoned.iter().copied().collect(),
             // An input not released (a block spent it) stays stored spent,
@@ -574,9 +570,18 @@ impl NetworkSession {
         .await?
         .map_err(|e| EngineError::Storage(format!("abandon: {e}")))?;
 
-        if let Some(mark) = mark {
-            self.appdb_op(mark).await?;
-        }
+        let rows: Vec<(String, String)> = txs
+            .iter()
+            .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
+            .collect();
+        let scope = wallet.to_string();
+        self.appdb_op(move |db| {
+            for (key, hex) in &rows {
+                db.set_setting(&scope, key, Some(hex))?;
+            }
+            Ok(())
+        })
+        .await?;
 
         self.hub.history.with_wallet(wallet, |h| {
             for t in &abandoned {
@@ -620,8 +625,9 @@ impl NetworkSession {
     /// below the ChainLock, and stays stored spent, claimed by that record;
     /// each other one must be a coin key-wallet holds unspent from a
     /// scanned block once `planned` is abandoned (`trial`), and is
-    /// released; `RescanFirst` when all that is missing is coins the spend
-    /// claims restored at the load for `planned` hold. `None` for a root
+    /// released; `RescanFirst` when all that is missing is coins the root's
+    /// own spend claim, restored at the load, holds (a descendant's comes
+    /// back at the next load). `None` for a root
     /// without a lock, `InstantLocked` when the evidence falls short.
     fn lock_override(
         &self,
@@ -683,9 +689,7 @@ impl NetworkSession {
                     Some(true) => {}
                     Some(false) => return refused,
                     None if held.contains(&o) => free.push(o),
-                    None if claimed.get(&o).is_some_and(|t| planned.contains(t)) => {
-                        claim_held = true
-                    }
+                    None if claimed.get(&o) == Some(root) => claim_held = true,
                     None => return refused,
                 }
             }
