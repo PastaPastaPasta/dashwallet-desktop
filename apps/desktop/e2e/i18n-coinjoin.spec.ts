@@ -149,6 +149,7 @@ for (const theme of THEMES)
         await checkArea(page, info, theme, pseudo, {
           name: `coinjoin-${name}`,
           roots: state.roots,
+          panes: state.roots.filter((id) => id.endsWith("-sheet")).map((id) => `[data-testid="${id}"]`),
           data: [...AMOUNTS, ...(state.data ?? [])],
           open: (lang) => state.open(page, theme, lang),
         });
