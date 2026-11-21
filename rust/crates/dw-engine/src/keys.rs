@@ -78,6 +78,8 @@ pub const MAX_LOOKAHEAD: u32 = key_wallet::gap_limit::MAX_GAP_LIMIT;
 /// dw-appdb setting (wallet scope) holding a raised lookahead, applied again
 /// whenever the session opens (key-wallet keeps the gap limit in memory).
 pub(crate) const LOOKAHEAD_SETTING: &str = "bip44.lookahead";
+/// The lookahead key-wallet gives a wallet none is stored for.
+pub(crate) const DEFAULT_LOOKAHEAD: u32 = key_wallet::gap_limit::DEFAULT_EXTERNAL_GAP_LIMIT;
 /// dw-appdb setting (local wallet scope) saying whether the wallet's history
 /// is known to have been scanned with [`COINJOIN_SCAN_GAP`] and its raised
 /// lookahead ([`WideScan`]). Absent on a wallet an older build scanned.
@@ -99,7 +101,7 @@ impl WideScan {
         match value {
             "done" => Self::Done,
             "birth" => Self::Birth,
-            height => height.parse().map_or(Self::Birth, Self::From),
+            height => Self::From(height.parse().unwrap_or(0)),
         }
     }
 
@@ -291,6 +293,11 @@ pub(crate) fn mnemonic_error(e: MnemonicError) -> EngineError {
         }
         MnemonicError::Entropy(detail) => EngineError::Internal(format!("entropy: {detail}")),
     }
+}
+
+/// A stored lookahead row's gap, when it is one key-wallet supports.
+fn parse_lookahead(value: &str) -> Option<u32> {
+    (value.parse().ok()).filter(|g| (1..=MAX_LOOKAHEAD).contains(g))
 }
 
 /// Raises the receive/change lookahead of the wallet's BIP44 accounts and of
@@ -972,42 +979,54 @@ impl NetworkSession {
         // import's lookahead, so a crash after either replays with it. It is
         // replayed once the keys are attached, with the birth lowered to that
         // start if it is below.
+        // A refused attach puts back the lookahead row and the marker it
+        // replaced, in that order: an exit in between leaves a replay owed.
+        let mut undo = (None, None);
         let attached = if registered && (state.issued.is_some() || lookahead.is_some()) {
-            // The wallet keeps the larger of its own lookahead and the import's.
-            let stored = match lookahead {
-                Some(_) => self.stored_lookahead(wallet_id).await?,
+            // The wallet keeps the larger of its own lookahead (the default
+            // when none is stored, or none that parses) and the import's.
+            let previous_gap = match lookahead {
+                Some(_) => Some(self.lookahead_row(wallet_id).await?),
                 None => None,
             };
-            let lookahead = lookahead.map(|gap| stored.map_or(gap, |s| s.max(gap)));
+            let stored = previous_gap
+                .clone()
+                .flatten()
+                .and_then(|v| parse_lookahead(&v));
+            let lookahead = lookahead.map(|gap| gap.max(stored.unwrap_or(DEFAULT_LOOKAHEAD)));
             let birth = birth_checkpoint(&manager, wallet_id).await;
             let from = birth_height.map_or(birth, |h| h.saturating_sub(1).min(birth));
             let (from, replaced) = self.note_narrow_below(&manager, wallet_id, from).await?;
-            self.cover_imported_range(&manager, wallet_id, &state)
-                .await?;
-            let mut raised = true;
-            if let Some(gap) = lookahead {
-                let wallet = (manager.get_wallet(&wallet_id.0).await)
-                    .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
-                if let Err(e) = apply_lookahead(&wallet, gap).await {
-                    raised = false;
-                    tracing::warn!(%wallet_id, error = %e, "could not raise the attached keys' lookahead");
+            undo = (previous_gap, replaced);
+            let applied = async {
+                self.cover_imported_range(&manager, wallet_id, &state)
+                    .await?;
+                let mut raised = true;
+                if let Some(gap) = lookahead {
+                    let wallet = (manager.get_wallet(&wallet_id.0).await)
+                        .ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
+                    if let Err(e) = apply_lookahead(&wallet, gap).await {
+                        raised = false;
+                        tracing::warn!(%wallet_id, error = %e, "could not raise the attached keys' lookahead");
+                    }
+                    self.write_lookahead(wallet_id, gap).await?;
                 }
-                self.write_lookahead(wallet_id, gap).await?;
+                Ok::<_, EngineError>(raised)
             }
-            Some((from, replaced, raised))
+            .await;
+            match applied {
+                Ok(raised) => Some((from, raised)),
+                Err(e) => {
+                    self.undo_attach(wallet_id, undo.0, undo.1).await;
+                    return Err(e);
+                }
+            }
         } else {
             if registered {
                 self.cover_imported_range(&manager, wallet_id, &state)
                     .await?;
             }
             None
-        };
-        // A failed attach puts the previous marker back only when nothing of
-        // it can remain: no lookahead written and none of Core's rows stored.
-        let unmark_attached = || async move {
-            if let (Some((_, Some(previous), _)), None) = (attached, lookahead) {
-                self.set_wide_scan(wallet_id, previous).await;
-            }
         };
         // A Dash Core file's range, coin locks and salt are stored, all or
         // none, before the wallet is registered or its seed is stored, so
@@ -1016,7 +1035,7 @@ impl NetworkSession {
         let prior = match self.write_imported_state(wallet_id, &state).await {
             Ok(prior) => prior,
             Err(e) => {
-                unmark_attached().await;
+                self.undo_attach(wallet_id, undo.0.clone(), undo.1).await;
                 if readmitted || !had_secret {
                     self.record_removed_again(held, wallet_id).await;
                 }
@@ -1042,8 +1061,13 @@ impl NetworkSession {
                 Ok(existed) => existed,
                 Err(e) => {
                     if registered {
-                        if let Some(prior) = prior {
-                            self.restore_imported_state(prior).await;
+                        // Core's rows left stored keep the replay owed.
+                        let restored = match prior {
+                            Some(prior) => self.restore_imported_state(prior).await,
+                            None => true,
+                        };
+                        if restored {
+                            self.undo_attach(wallet_id, undo.0, undo.1).await;
                         }
                     } else {
                         self.record_removed_again(held, wallet_id).await;
@@ -1053,7 +1077,7 @@ impl NetworkSession {
             }
         };
         if registered {
-            if let Some((from, _, raised)) = attached {
+            if let Some((from, raised)) = attached {
                 if self.widen_published_wallet(&manager, wallet_id, from).await && raised {
                     self.set_wide_scan(wallet_id, Some(WideScan::Done)).await;
                 }
@@ -1080,8 +1104,10 @@ impl NetworkSession {
         let pending = async {
             let previous = self.wide_scan(wallet_id).await?;
             self.mark_pending(wallet_id, WideScan::Birth).await?;
-            if let Some(gap) = lookahead {
-                self.write_lookahead(wallet_id, gap).await?;
+            // A row an earlier attempt left does not narrow this one.
+            match lookahead {
+                Some(gap) => self.write_lookahead(wallet_id, gap).await?,
+                None => self.set_lookahead_row(wallet_id, None).await?,
             }
             Ok::<_, EngineError>(previous)
         }
@@ -1238,23 +1264,55 @@ impl NetworkSession {
     /// Wallet `id`'s stored lookahead, if one is stored; `Err` when it cannot
     /// be read or is malformed (its range is then not known to be applied).
     pub(crate) async fn stored_lookahead(&self, id: WalletId) -> Result<Option<u32>, EngineError> {
+        (self.lookahead_row(id).await?)
+            .map(|v| {
+                parse_lookahead(&v).ok_or_else(|| {
+                    EngineError::Storage(format!("malformed stored lookahead {v:?}"))
+                })
+            })
+            .transpose()
+    }
+
+    /// Wallet `id`'s lookahead row as stored; `Err` when it cannot be read.
+    pub(crate) async fn lookahead_row(&self, id: WalletId) -> Result<Option<String>, EngineError> {
         #[cfg(test)]
         if fails_for(&FAIL_RESTORE_READ, id) {
             return Err(EngineError::Storage("test: lookahead not read".into()));
         }
         let key = id.to_string();
-        let value = self
-            .appdb_op(move |db| db.setting(&key, LOOKAHEAD_SETTING))
-            .await?;
-        value
-            .map(|v| {
-                (v.parse::<u32>().ok())
-                    .filter(|g| (1..=MAX_LOOKAHEAD).contains(g))
-                    .ok_or_else(|| {
-                        EngineError::Storage(format!("malformed stored lookahead {v:?}"))
-                    })
-            })
-            .transpose()
+        self.appdb_op(move |db| db.setting(&key, LOOKAHEAD_SETTING))
+            .await
+    }
+
+    /// Stores wallet `id`'s lookahead row `value` as read, or deletes it,
+    /// durable when it returns `Ok`.
+    pub(crate) async fn set_lookahead_row(
+        &self,
+        id: WalletId,
+        value: Option<String>,
+    ) -> Result<(), EngineError> {
+        let key = id.to_string();
+        self.appdb_op(move |db| db.set_setting_durable(&key, LOOKAHEAD_SETTING, value.as_deref()))
+            .await
+    }
+
+    /// Puts back what a refused attach replaced: the lookahead row, then
+    /// the marker. Failures are logged.
+    async fn undo_attach(
+        &self,
+        id: WalletId,
+        gap: Option<Option<String>>,
+        marker: Option<Option<WideScan>>,
+    ) {
+        if let Some(gap) = gap
+            && let Err(e) = self.set_lookahead_row(id, gap).await
+        {
+            tracing::warn!(wallet_id = %id, error = %e, "could not put the lookahead back");
+            return;
+        }
+        if let Some(marker) = marker {
+            self.set_wide_scan(id, marker).await;
+        }
     }
 
     /// [`Self::restore_loaded_wallet`] for every wallet (session open):

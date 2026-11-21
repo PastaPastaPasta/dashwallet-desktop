@@ -42,10 +42,10 @@
 //!   coin. One input conflicts with a lock, and the smallest denomination
 //!   pays the fee; the self-spend links the denominations it spends (one per
 //!   lock at most) and turns them into one ordinary coin.
-//! - A step with locks of both kinds is refused: this build repairs a step
-//!   with one transaction, and one spending both kinds would link the mixed
-//!   coins to the unmixed ones. So is a repair with only denominations
-//!   left.
+//! - A step with locks of both kinds, which only an older build leaves:
+//!   every live input of its locks, as main repairs it. The one transaction
+//!   links the mixed coins to the unmixed ones; refusing would hold them
+//!   for good. A repair with only denominations left is refused.
 //!
 //! The inputs of
 //! tracked `Built`/`Broadcast` locks are reserved for every other build
@@ -276,9 +276,9 @@ impl NetworkSession {
 /// The funding accounts' coins (`send`, spendable) a self-spend takes for
 /// the step's locks `rows` (module doc, "Which coins"): every coin but the
 /// counted denominations while a lock spends an unmixed coin, else one
-/// denomination of each lock not already conflicted. A lock none of whose
-/// inputs is left is refused, and so is a step whose locks would need both
-/// kinds.
+/// denomination of each lock not already conflicted, or every live input
+/// of a step whose locks are of both kinds. A lock none of whose inputs is
+/// left is refused.
 fn funding_repair_coins<'a>(
     send: Vec<&'a crate::coins::WalletCoin>,
     rows: &[(dashcore::Txid, Vec<OutPoint>)],
@@ -311,13 +311,13 @@ fn funding_repair_coins<'a>(
         }
         return Ok(unmixed);
     }
+    // Locks of both kinds (an older build's): every live input of the
+    // step's locks, as main repairs it, linking the mixed coins to the others.
     if unmixed_lock {
-        return Err(EngineError::InvalidArgument(
-            "this build cannot repair this funding: one of its stuck locks spent only mixed coins \
-             and another unmixed ones, and the one transaction a repair sends would link the \
-             mixed coins to the others"
-                .into(),
-        ));
+        let inputs: HashSet<&OutPoint> = rows.iter().flat_map(|(_, i)| i).collect();
+        return Ok((send.into_iter())
+            .filter(|c| inputs.contains(&c.utxo.outpoint) && !c.user_locked)
+            .collect());
     }
     Ok(send
         .into_iter()
@@ -425,13 +425,28 @@ mod tests {
         );
     }
 
+    /// F-D: an older build's locks of both kinds are repaired as main
+    /// repairs them, through every live input of the step's locks, in
+    /// either row order.
     #[test]
-    fn locks_of_both_kinds_are_refused() {
-        let refused = picked(&wallet(), &[row(1, &[1]), row(2, &[4])]);
-        assert!(
-            matches!(&refused, Err(EngineError::InvalidArgument(m)) if m.contains("cannot repair")),
-            "{refused:?}"
-        );
+    fn locks_of_both_kinds_take_their_inputs() {
+        for rows in [
+            [row(1, &[1, 4]), row(2, &[4])],
+            [row(2, &[4]), row(1, &[1, 4])],
+            [row(1, &[1]), row(2, &[4])],
+            [row(2, &[4]), row(1, &[1])],
+        ] {
+            assert_eq!(picked(&wallet(), &rows).unwrap(), [1, 4], "{rows:?}");
+        }
+    }
+
+    /// F-D: the fallback takes no spent and no user-locked input.
+    #[test]
+    fn locks_of_both_kinds_take_no_spent_or_user_locked_input() {
+        let mut coins = wallet();
+        coins[0].user_locked = true;
+        let rows = [row(1, &[1, 2, 9]), row(2, &[4])];
+        assert_eq!(picked(&coins, &rows).unwrap(), [2, 4]);
     }
 
     #[test]

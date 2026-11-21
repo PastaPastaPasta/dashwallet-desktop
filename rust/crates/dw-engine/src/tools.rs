@@ -975,14 +975,27 @@ impl NetworkSession {
                 let wm = wm.read().await;
                 (wm.get_wallet_info(&wallet_id.0)).map_or(0, |i| i.core_wallet.synced_height())
             };
+            let mut previous = None;
             if checkpoint < synced {
                 if this.rescan_running() {
                     return Err(EngineError::RescanInProgress);
                 }
+                previous = Some(live.replay.get(wallet_id).await?);
                 this.record_rewind(&live.manager, wallet_id, checkpoint)
                     .await?;
             }
-            let synced = this.store_birth_height(wallet_id, height).await?;
+            // A birth not stored owes no replay: the record goes back.
+            let synced = match this.store_birth_height(wallet_id, height).await {
+                Ok(synced) => synced,
+                Err(e) => {
+                    if let Some(previous) = previous
+                        && let Err(e) = live.replay.restore(wallet_id, previous).await
+                    {
+                        tracing::warn!(%wallet_id, error = %e, "could not put the replay record back");
+                    }
+                    return Err(e);
+                }
+            };
             this.refresh_wallet_state(&live.manager, wallet_id).await;
             if checkpoint < synced {
                 this.start_rescan(vec![wallet_id], height, |_| height)

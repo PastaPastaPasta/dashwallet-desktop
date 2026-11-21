@@ -3563,3 +3563,189 @@ fn a_load_notes_an_unfinished_replays_start_before_it_publishes() {
         Some(crate::keys::WideScan::From(0))
     );
 }
+
+/// PHRASE's wallet id, as an import derives it.
+fn phrase_id() -> WalletId {
+    let secret = dw_vault::mnemonic::derive_secret(PHRASE, b"", false).unwrap();
+    WalletId(
+        dw_vault::mnemonic::wallet_id_for_seed(&secret.seed, dashcore::Network::Regtest).unwrap(),
+    )
+}
+
+/// F-B: keys attached while the vault is unlocked for mixing only are
+/// refused, and the marker and lookahead they replaced are back: a reopen
+/// neither lowers the birth nor replays.
+#[test]
+fn an_attach_the_vault_refuses_leaves_nothing_behind() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    engine
+        .block_on(session.vault_op(|v| v.create(Some(b"pw"))))
+        .unwrap();
+    let id = import_phrase(&engine, &session, PHRASE, HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+    set_wide_scan(&engine, &session, id, Some(crate::keys::WideScan::Done));
+    session.vault().lock();
+    (session.vault())
+        .unlock(b"pw", dw_vault::UnlockScope::MixingOnly)
+        .unwrap();
+
+    let refused = engine.block_on(session.import_wallet(
+        zeroize::Zeroizing::new(PHRASE.to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(0),
+            lookahead: Some(200),
+            ..Default::default()
+        },
+    ));
+
+    assert!(refused.is_err());
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+    assert_eq!(engine.block_on(session.stored_lookahead(id)).unwrap(), None);
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
+/// F-A: a seed import with the default lookahead deletes a row an earlier
+/// attempt left before registration: the next load scans with the default.
+#[test]
+fn an_import_with_the_default_lookahead_drops_a_row_left_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = phrase_id();
+    store_setting(&engine, &session, id, crate::keys::LOOKAHEAD_SETTING, "1");
+
+    assert_eq!(import_from_genesis(&engine, &session), id);
+
+    let session = reopen(&engine, session);
+    assert_eq!(gap(&engine, &session, id, bip44()), 30);
+}
+
+/// F-A: as a seed import, a watch-only import with the default lookahead
+/// deletes a row an earlier attempt left.
+#[test]
+fn a_watch_only_import_with_the_default_lookahead_drops_a_row_left_before_it() {
+    use key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let master = ExtendedPrivKey::new_master(dashcore::Network::Regtest, &[15; 64]).unwrap();
+    let path: DerivationPath = "m/44'/1'/0'".parse().unwrap();
+    let xpub = ExtendedPubKey::from_priv(&master.derive_priv(&path).unwrap());
+    let id = crate::multiwallet::watch_only_wallet_id(&xpub, dashcore::Network::Regtest);
+    store_setting(&engine, &session, id, crate::keys::LOOKAHEAD_SETTING, "1");
+
+    let imported = engine
+        .block_on(session.import_watch_only(xpub.to_string(), crate::WatchOnlyOptions::default()));
+
+    assert_eq!(imported.unwrap(), id);
+    let session = reopen(&engine, session);
+    assert_eq!(gap(&engine, &session, id, bip44()), 30);
+}
+
+/// F-G: keys attached with a lookahead below the default, none stored,
+/// keep the default.
+#[test]
+fn keys_attached_with_a_lookahead_below_the_default_keep_the_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = import_phrase(&engine, &session, PHRASE, HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+
+    let attached = engine.block_on(session.import_wallet(
+        zeroize::Zeroizing::new(PHRASE.to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(HEIGHT),
+            lookahead: Some(1),
+            ..Default::default()
+        },
+    ));
+
+    assert_eq!(attached.unwrap(), id);
+    let session = reopen(&engine, session);
+    assert_eq!(gap(&engine, &session, id, bip44()), 30);
+}
+
+/// F-F: keys attached to a wallet whose stored lookahead does not parse
+/// read it as none and go on.
+#[test]
+fn keys_attached_over_a_malformed_stored_lookahead_go_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = import_phrase(&engine, &session, PHRASE, HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_setting(&engine, &session, id, crate::keys::LOOKAHEAD_SETTING, "x");
+
+    let attached = engine.block_on(session.import_wallet(
+        zeroize::Zeroizing::new(PHRASE.to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(HEIGHT),
+            lookahead: Some(200),
+            ..Default::default()
+        },
+    ));
+
+    assert_eq!(attached.unwrap(), id);
+    assert_eq!(
+        engine.block_on(session.stored_lookahead(id)).unwrap(),
+        Some(200)
+    );
+}
+
+/// F-C: a lower birth height whose birth cannot be stored takes back the
+/// replay it stored: a reopen keeps the old birth and holds nothing.
+#[test]
+fn a_lower_birth_height_that_cannot_be_stored_owes_no_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    engine
+        .block_on(session.set_birth_height(id, HEIGHT))
+        .unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+
+    let set = failing(&crate::tools::FAIL_BIRTH_STORE, id, || {
+        engine.block_on(session.set_birth_height(id, 500))
+    });
+
+    assert!(set.is_err());
+    assert_eq!(replay_record(&engine, &session, id), None);
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, id), HEIGHT);
+    assert_eq!(replay_record(&engine, &session, id), None);
+}
+
+/// F-H: a marker that does not decode owes a replay from genesis, not from
+/// the birth.
+#[test]
+fn an_undecodable_marker_is_owed_from_genesis() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    let scope = dw_appdb::local_scope(&id.to_string());
+    engine
+        .block_on(
+            session.appdb_op(move |db| {
+                db.set_setting(&scope, crate::keys::WIDE_SCAN_SETTING, Some("x"))
+            }),
+        )
+        .unwrap();
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::From(0))
+    );
+}

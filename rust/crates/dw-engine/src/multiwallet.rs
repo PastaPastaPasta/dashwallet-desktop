@@ -751,13 +751,11 @@ impl NetworkSession {
             let pending = async {
                 let previous = this.wide_scan(id).await?;
                 this.mark_pending(id, crate::keys::WideScan::Birth).await?;
-                let mut previous_gap = None;
-                if lookahead != WATCH_ONLY_DEFAULT_LOOKAHEAD {
-                    let key = id.to_string();
-                    let gap = this
-                        .appdb_op(move |db| db.setting(&key, crate::keys::LOOKAHEAD_SETTING))
-                        .await?;
-                    previous_gap = Some(gap);
+                // A row an earlier attempt left does not narrow this one.
+                let previous_gap = this.lookahead_row(id).await?;
+                if lookahead == WATCH_ONLY_DEFAULT_LOOKAHEAD {
+                    this.set_lookahead_row(id, None).await?;
+                } else {
                     this.write_lookahead(id, lookahead).await?;
                 }
                 Ok::<_, EngineError>((previous, previous_gap))
@@ -790,14 +788,8 @@ impl NetworkSession {
                     // Not registered: removed again, as a failed seed import,
                     // with the lookahead as it was.
                     this.set_wide_scan(id, previous).await;
-                    if let Some(gap) = previous_gap {
-                        let key = id.to_string();
-                        let restored = this.appdb_op(move |db| {
-                            db.set_setting_durable(&key, crate::keys::LOOKAHEAD_SETTING, gap.as_deref())
-                        });
-                        if let Err(e) = restored.await {
-                            tracing::warn!(wallet_id = %id, error = %e, "could not put the lookahead back");
-                        }
+                    if let Err(e) = this.set_lookahead_row(id, previous_gap).await {
+                        tracing::warn!(wallet_id = %id, error = %e, "could not put the lookahead back");
                     }
                     if readmitted {
                         this.record_removed_again(&held, id).await;
