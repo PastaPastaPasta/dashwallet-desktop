@@ -7,6 +7,7 @@ import { hasCode, type Backend } from "../api/backend";
 import type { CoinSelectionSummary } from "../api/generated/CoinSelectionSummary";
 import type { Utxo } from "../api/generated/Utxo";
 import { format, type Unit } from "../format/amount";
+import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { DEFAULT_TARGET_BLOCKS, notSelectable, outpointKey, outpointOf } from "../screens/pay/model";
 
@@ -26,12 +27,20 @@ export const COLUMN_TITLE: Record<CoinColumn, string> = {
 export const CoinText = {
   change: "(change)",
   noLabel: "(no label)",
-  locked: (n: number) => `(${n} locked)`,
-  showAll: "Show all coins",
-  hideCoinJoin: "Hide CoinJoin coins",
-  unselected: "Some coins were unselected because they were spent.",
-  tolerance: (duffs: number) => `Can vary +/- ${duffs} duffs per input.`,
-  unavailable: "The summary is not available yet.",
+  locked: (n: number) => t("tools.coins.locked", { count: n }),
+  get showAll() {
+    return t("tools.coins.showAll");
+  },
+  get hideCoinJoin() {
+    return t("tools.coins.hideCoinJoin");
+  },
+  get unselected() {
+    return t("tools.coins.unselected");
+  },
+  tolerance: (duffs: number) => t("tools.coins.tolerance", { duffs: String(duffs) }),
+  get unavailable() {
+    return t("tools.coins.unavailable");
+  },
 };
 
 export const coinLabel = (u: Utxo) => (u.isChange ? CoinText.change : u.label || CoinText.noLabel);

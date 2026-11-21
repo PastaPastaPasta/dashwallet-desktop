@@ -6,23 +6,40 @@
 import { hasCode, isAppError, type Backend } from "../api/backend";
 import type { AddressBookEntry } from "../api/generated/AddressBookEntry";
 import type { AddressPurposeName } from "../api/generated/AddressPurposeName";
+import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 
 export const AddressBookText = {
-  sendingHeader: "These are your Dash addresses for sending payments. Always check the amount and the receiving address before sending coins.",
-  receivingHeader:
-    "These are your Dash addresses for receiving payments. Use the 'Create new receiving address' button in the receive tab to create new addresses.",
-  searchPlaceholder: "Enter address or label to search",
-  noLabel: "(no label)",
-  newSending: "New sending address",
-  editSending: "Edit sending address",
-  editReceiving: "Edit receiving address",
-  receivingNotDeletable: "Receiving addresses cannot be deleted.",
-  entryNotFound: "This address is not in the address book.",
-  invalidAddress: (a: string) => `The entered address "${a}" is not a valid Dash address.`,
-  existsAsReceiving: (a: string, label: string) =>
-    `Address "${a}" already exists as a receiving address with label "${label}" and so cannot be added as a sending address.`,
-  alreadyInBook: (a: string, label: string) => `The entered address "${a}" is already in the address book with label "${label}".`,
+  get sendingHeader() {
+    return t("tools.addressBook.sendingHeader");
+  },
+  get receivingHeader() {
+    return t("tools.addressBook.receivingHeader");
+  },
+  get searchPlaceholder() {
+    return t("tools.addressBook.searchPlaceholder");
+  },
+  get noLabel() {
+    return t("tools.addressBook.noLabel");
+  },
+  get newSending() {
+    return t("tools.addressBook.newSending");
+  },
+  get editSending() {
+    return t("tools.addressBook.editSending");
+  },
+  get editReceiving() {
+    return t("tools.addressBook.editReceiving");
+  },
+  get receivingNotDeletable() {
+    return t("tools.addressBook.receivingNotDeletable");
+  },
+  get entryNotFound() {
+    return t("tools.addressBook.entryNotFound");
+  },
+  invalidAddress: (a: string) => t("tools.addressBook.invalidAddress", { address: a }),
+  existsAsReceiving: (a: string, label: string) => t("tools.addressBook.existsAsReceiving", { address: a, label }),
+  alreadyInBook: (a: string, label: string) => t("tools.addressBook.alreadyInBook", { address: a, label }),
 };
 
 /** dash-qt's wildcard filter: `*` any run, `?` one character, case-insensitive, anywhere in the

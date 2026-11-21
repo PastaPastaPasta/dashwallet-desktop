@@ -17,13 +17,14 @@ import { addressBookEmpty, type AddressBookStep } from "../../components/emptySt
 import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import { QrCode } from "../../components/qr";
 import { Sheet } from "../../components/sheet";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { AddressBookModel, AddressBookText } from "../../tools/addressBook";
 import { Outcome, RowMenu } from "./common";
 
-const PURPOSES: { id: AddressPurposeName; title: string }[] = [
-  { id: "send", title: "Sending addresses" },
-  { id: "receive", title: "Receiving addresses" },
+const PURPOSES: { id: AddressPurposeName; key: "sending" | "receiving" }[] = [
+  { id: "send", key: "sending" },
+  { id: "receive", key: "receiving" },
 ];
 
 function AddressBookEmpty({ model, actions }: { model: AddressBookModel; actions: Partial<Record<AddressBookStep, () => void>> }) {
@@ -60,6 +61,7 @@ function AddressList({
   /** Steps this list may take. The picker omits any that would leave the sheet. */
   emptyActions: Partial<Record<AddressBookStep, () => void>>;
 }) {
+  const t = useT();
   const id = useId();
   const searchRef = useRef<HTMLInputElement>(null);
   const entries = model.entries;
@@ -73,7 +75,7 @@ function AddressList({
   return (
     <>
       <label className="sr-only" htmlFor={`${id}-search`}>
-        Search
+        {t("tools.addressBook.search")}
       </label>
       <input
         ref={searchRef}
@@ -86,27 +88,29 @@ function AddressList({
         onChange={(e) => model.setSearch(e.target.value)}
       />
       {model.all === null ? (
-        !model.error && <LoadingState testId="address-book-loading" text="Reading the address book" />
+        !model.error && <LoadingState testId="address-book-loading" text={t("tools.addressBook.loading")} />
       ) : entries.length === 0 ? (
         <AddressBookEmpty model={model} actions={steps} />
       ) : (
         <div className="table-card">
           <table className="data-table address-book-table" data-testid="address-book-table">
-            <caption className="sr-only">{model.purpose === "send" ? "Sending addresses" : "Receiving addresses"}</caption>
+            <caption className="sr-only">{model.purpose === "send" ? t("tools.addressBook.sending") : t("tools.addressBook.receiving")}</caption>
             <thead>
               <tr>
-                <th scope="col">Label</th>
-                <th scope="col">Address</th>
+                <th scope="col">{t("tools.addressBook.columns.label")}</th>
+                <th scope="col">{t("tools.addressBook.columns.address")}</th>
                 <th scope="col">
-                  <span className="sr-only">Actions</span>
+                  <span className="sr-only">{t("tools.addressBook.columns.actions")}</span>
                 </th>
               </tr>
             </thead>
             <tbody>
               {entries.map((e) => (
                 <tr key={e.address} data-testid={`address-book-entry-${e.address}`} onDoubleClick={onOpen && (() => onOpen(e))}>
-                  <td>{model.labelText(e)}</td>
-                  <td className="mono address-cell">{e.address}</td>
+                  <td>{e.label ? <bdi>{e.label}</bdi> : model.labelText(e)}</td>
+                  <td className="mono address-cell">
+                    <bdi>{e.address}</bdi>
+                  </td>
                   <td className="row-actions">{actions(e)}</td>
                 </tr>
               ))}
@@ -119,11 +123,12 @@ function AddressList({
 }
 
 function PurposeSwitch({ model }: { model: AddressBookModel }) {
+  const t = useT();
   return (
-    <div className="segmented" role="group" aria-label="Address list" data-testid="address-book-purpose">
+    <div className="segmented" role="group" aria-label={t("tools.addressBook.listLabel")} data-testid="address-book-purpose">
       {PURPOSES.map((p) => (
         <button key={p.id} type="button" className="segment" aria-pressed={model.purpose === p.id} data-testid={`address-book-${p.id}`} onClick={() => model.setPurpose(p.id)}>
-          {p.title}
+          {t(`tools.addressBook.${p.key}`)}
         </button>
       ))}
     </div>
@@ -132,6 +137,7 @@ function PurposeSwitch({ model }: { model: AddressBookModel }) {
 
 /** New (an address and a label) or Edit (the label; the address read-only, D14). */
 function EntrySheet({ model, entry, onClose }: { model: AddressBookModel; entry: AddressBookEntry | null; onClose: () => void }) {
+  const t = useT();
   const [address, setAddress] = useState(entry?.address ?? "");
   const [label, setLabel] = useState(entry?.label ?? "");
   const [busy, setBusy] = useState(false);
@@ -148,11 +154,11 @@ function EntrySheet({ model, entry, onClose }: { model: AddressBookModel; entry:
         }}
       >
         <div className="form-field">
-          <label htmlFor={`${id}-label`}>Label</label>
+          <label htmlFor={`${id}-label`}>{t("tools.addressBook.columns.label")}</label>
           <input id={`${id}-label`} data-testid="address-book-label" value={label} autoComplete="off" autoFocus onChange={(e) => setLabel(e.target.value)} />
         </div>
         <div className="form-field">
-          <label htmlFor={`${id}-address`}>Address</label>
+          <label htmlFor={`${id}-address`}>{t("tools.addressBook.columns.address")}</label>
           <input
             id={`${id}-address`}
             className="mono"
@@ -173,10 +179,10 @@ function EntrySheet({ model, entry, onClose }: { model: AddressBookModel; entry:
         )}
         <div className="sheet-actions">
           <DashButton variant="tintedGray" size="large" data-testid="address-book-cancel" onClick={onClose}>
-            Cancel
+            {t("common.cancel")}
           </DashButton>
           <DashButton type="submit" variant="filledBlue" size="large" data-testid="address-book-save" disabled={busy || address.trim() === ""}>
-            OK
+            {t("tools.addressBook.ok")}
           </DashButton>
         </div>
       </form>
@@ -185,6 +191,7 @@ function EntrySheet({ model, entry, onClose }: { model: AddressBookModel; entry:
 }
 
 function QrSheet({ entry, onClose }: { entry: AddressBookEntry; onClose: () => void }) {
+  const t = useT();
   const b = useBackend();
   const uri = useQuery({
     queryKey: ["paymentUri", entry.address, entry.label] as const,
@@ -194,14 +201,15 @@ function QrSheet({ entry, onClose }: { entry: AddressBookEntry; onClose: () => v
   return (
     <Sheet title={entry.label || AddressBookText.noLabel} width="small" testId="address-book-qr" onClose={onClose}>
       <div className="tool-qr">
-        {qr.data ? <QrCode matrix={qr.data} size={240} label={`QR code of ${entry.address}`} testId="address-book-qr-code" /> : <LoadingState testId="address-book-qr-loading" text="Drawing the QR code" />}
-        <CopyValue value={uri.data ?? entry.address} label="payment link" mono />
+        {qr.data ? <QrCode matrix={qr.data} size={240} label={t("tools.addressBook.qrLabel", { address: entry.address })} testId="address-book-qr-code" /> : <LoadingState testId="address-book-qr-loading" text={t("tools.addressBook.qrLoading")} />}
+        <CopyValue value={uri.data ?? entry.address} label={t("tools.addressBook.paymentLink")} mono />
       </div>
     </Sheet>
   );
 }
 
 export function AddressBookTab({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const t = useT();
   const b = useBackend();
   const [model] = useState(() => new AddressBookModel(b, walletId, network.dirName));
   useModel(model);
@@ -213,10 +221,10 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
   const exportCsv = async () => {
     setSaved(null);
     try {
-      const path = await saveText(b, "csv", model.purpose === "send" ? "Sending addresses.csv" : "Receiving addresses.csv", model.exportCsv());
-      if (path !== null) setSaved({ ok: true, text: `Exported to ${path}.` });
+      const path = await saveText(b, "csv", model.purpose === "send" ? t("tools.addressBook.exportFilenameSending") : t("tools.addressBook.exportFilenameReceiving"), model.exportCsv());
+      if (path !== null) setSaved({ ok: true, text: t("tools.addressBook.exported", { path }) });
     } catch (e) {
-      setSaved({ ok: false, text: `There was an error trying to save the address list. ${fileErrorText(e)}` });
+      setSaved({ ok: false, text: t("tools.addressBook.exportFailed", { error: fileErrorText(e) }) });
     }
   };
 
@@ -231,11 +239,11 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
         <PurposeSwitch model={model} />
         {model.canCreate && (model.all === null || model.search !== "" || model.all.some((e) => e.purpose === model.purpose)) && (
           <DashButton variant="tintedBlue" size="small" data-testid="address-book-new" onClick={() => edit(null)}>
-            New
+            {t("tools.addressBook.new")}
           </DashButton>
         )}
         <DashButton variant="tintedGray" size="small" data-testid="address-book-export" disabled={model.entries.length === 0} onClick={() => void exportCsv()}>
-          Export…
+          {t("tools.addressBook.export")}
         </DashButton>
       </div>
       <p className="placeholder-note" data-testid="address-book-header">
@@ -252,23 +260,23 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
         actions={(e) => (
           <span className="tool-row-actions">
             <RowMenu
-              label="Copy"
-              name={`Copy ${model.labelText(e)}`}
+              label={t("tools.addressBook.copy")}
+              name={t("tools.addressBook.copyEntry", { label: model.labelText(e) })}
               items={[
-                { title: "Copy address", copy: e.address },
-                { title: "Copy label", copy: e.label },
+                { id: "copy-address", title: t("tools.addressBook.copyAddress"), copy: e.address },
+                { id: "copy-label", title: t("tools.addressBook.copyLabel"), copy: e.label },
               ]}
               testId={`address-book-copy-${e.address}`}
             />
-            <DashButton variant="plainBlue" size="small" data-testid={`address-book-qr-${e.address}`} aria-label={`Show the QR code of ${model.labelText(e)}`} onClick={() => model.showQr(e)}>
-              QR
+            <DashButton variant="plainBlue" size="small" data-testid={`address-book-qr-${e.address}`} aria-label={t("tools.addressBook.showQr", { label: model.labelText(e) })} onClick={() => model.showQr(e)}>
+              {t("tools.addressBook.qr")}
             </DashButton>
-            <DashButton variant="plainBlue" size="small" data-testid={`address-book-edit-${e.address}`} aria-label={`Edit ${model.labelText(e)}`} onClick={() => edit(e)}>
-              Edit
+            <DashButton variant="plainBlue" size="small" data-testid={`address-book-edit-${e.address}`} aria-label={t("tools.addressBook.editEntry", { label: model.labelText(e) })} onClick={() => edit(e)}>
+              {t("tools.addressBook.edit")}
             </DashButton>
             {model.canDelete && (
-              <DashButton variant="plainRed" size="small" data-testid={`address-book-delete-${e.address}`} aria-label={`Delete ${model.labelText(e)}`} onClick={() => void model.delete(e.address)}>
-                Delete
+              <DashButton variant="plainRed" size="small" data-testid={`address-book-delete-${e.address}`} aria-label={t("tools.addressBook.deleteEntry", { label: model.labelText(e) })} onClick={() => void model.delete(e.address)}>
+                {t("tools.addressBook.delete")}
               </DashButton>
             )}
           </span>
@@ -294,6 +302,7 @@ export function AddressBookPicker({
   onChoose: (address: string, label: string) => void;
   onClose: () => void;
 }) {
+  const t = useT();
   const b = useBackend();
   const [model] = useState(() => new AddressBookModel(b, walletId, network.dirName, purpose, true));
   useModel(model);
@@ -302,7 +311,7 @@ export function AddressBookPicker({
     if (model.chosen) onChoose(model.chosen.address, model.chosen.label);
   }, [model.chosen, onChoose]);
   return (
-    <Sheet title={purpose === "send" ? "Choose the address to send coins to" : "Choose the address to sign with"} width="medium" testId="address-book-picker" onClose={onClose}>
+    <Sheet title={purpose === "send" ? t("tools.addressBook.chooseSend") : t("tools.addressBook.chooseSign")} width="medium" testId="address-book-picker" onClose={onClose}>
       <div className="tool-stack">
         <p className="placeholder-note">{model.header}</p>
         {model.error && <Outcome ok={false} text={model.error} testId="address-book-problem" />}
@@ -311,8 +320,8 @@ export function AddressBookPicker({
           emptyActions={{}}
           onOpen={(e) => model.choose(e)}
           actions={(e) => (
-            <DashButton variant="tintedBlue" size="small" data-testid={`address-book-choose-${e.address}`} aria-label={`Choose ${model.labelText(e)}`} onClick={() => model.choose(e)}>
-              Choose
+            <DashButton variant="tintedBlue" size="small" data-testid={`address-book-choose-${e.address}`} aria-label={t("tools.addressBook.chooseEntry", { label: model.labelText(e) })} onClick={() => model.choose(e)}>
+              {t("tools.addressBook.choose")}
             </DashButton>
           )}
         />
