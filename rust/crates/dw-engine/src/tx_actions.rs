@@ -34,6 +34,8 @@ use crate::history::{
 };
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
+use key_wallet::transaction_checking::TransactionContext;
+use key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 
 /// Why `abandon_transaction` / `resend_transaction` refused.
@@ -177,7 +179,8 @@ struct Facts {
     depth: u32,
     chain_locked: bool,
     instant_locked: bool,
-    /// Another transaction in a ChainLocked block spends one of its inputs.
+    /// [`chainlock_beaten`]: a block under the wallet's ChainLock spends
+    /// one of its inputs.
     chainlock_beaten: bool,
     coinbase: bool,
     abandoned: bool,
@@ -209,8 +212,56 @@ fn abandon_with(
     abandoned
 }
 
-/// `active`: the SPV header chain's block hashes [`chainlock_beaten`] reads.
-fn facts(entry: &TxEntry, view: &ChainView<'_>, active: &HashMap<u32, BlockHash>) -> Facts {
+/// What [`chainlock_beaten`] reads: the height of the wallet's ChainLock
+/// when the SPV header chain holds its block, and that chain's block hash
+/// at each height it has of those asked.
+#[derive(Default)]
+struct ChainProof {
+    chainlock: Option<u32>,
+    active: HashMap<u32, BlockHash>,
+}
+
+fn locked(e: &TxEntry) -> bool {
+    e.instant_locked || matches!(e.context, TransactionContext::InstantSend(_))
+}
+
+/// Whether a transaction that descends from `root` is in a block or
+/// InstantSend-locked, by the history (abandoned ones too) or by
+/// key-wallet's records and locks.
+fn settled_descendant(txs: &HashMap<Txid, TxEntry>, core: &ManagedWalletInfo, root: Txid) -> bool {
+    let settled = |c: &TransactionContext| {
+        c.block_info().is_some() || matches!(c, TransactionContext::InstantSend(_))
+    };
+    let parents = |tx: &Transaction| -> Vec<Txid> {
+        tx.input.iter().map(|i| i.previous_output.txid).collect()
+    };
+    let mut known: Vec<(Txid, Vec<Txid>, bool)> = (txs.iter())
+        .map(|(t, e)| (*t, parents(&e.tx), locked(e) || settled(&e.context)))
+        .collect();
+    for account in core.accounts.all_accounts() {
+        known.extend(
+            (account.transactions().iter())
+                .map(|(t, r)| (*t, parents(&r.transaction), settled(&r.context))),
+        );
+    }
+    let mut found = BTreeSet::from([root]);
+    loop {
+        let before = found.len();
+        for (t, parents, settled) in &known {
+            if !found.contains(t) && parents.iter().any(|p| found.contains(p)) {
+                if *settled || core.instant_send_locks().contains(t) {
+                    return true;
+                }
+                found.insert(*t);
+            }
+        }
+        if found.len() == before {
+            return false;
+        }
+    }
+}
+
+fn facts(entry: &TxEntry, view: &ChainView<'_>, proof: &ChainProof) -> Facts {
     let (credit, debit, from_me) = amounts(entry, view);
     let all_from_me = from_me > 0 && from_me == entry.tx.input.len();
     let (status, _) = status_of(entry, view, all_from_me);
@@ -224,8 +275,8 @@ fn facts(entry: &TxEntry, view: &ChainView<'_>, active: &HashMap<u32, BlockHash>
             && chainlock_beaten(
                 view.history,
                 &entry.tx.txid(),
-                view.chainlock_height,
-                active,
+                proof.chainlock,
+                &proof.active,
             ),
         coinbase: entry.tx.is_coin_base(),
         abandoned: entry.is_abandoned(),
@@ -280,21 +331,14 @@ impl NetworkSession {
         wallet: WalletId,
         txid: Txid,
     ) -> Result<(TxEntry, Facts), EngineError> {
-        let active = self.rival_headers(wallet).await;
+        let proof = self.chain_proof(manager, wallet).await;
         self.with_view(manager, wallet, |view| {
             view.history
                 .get(&txid)
-                .map(|entry| (entry.clone(), facts(entry, view, &active)))
+                .map(|entry| (entry.clone(), facts(entry, view, &proof)))
         })
         .await?
         .ok_or_else(|| EngineError::TxNotFound(txid.to_string()))
-    }
-
-    /// The SPV header chain's block hash at each height [`rival_heights`]
-    /// names in `wallet`'s history (only headers the store has).
-    async fn rival_headers(&self, wallet: WalletId) -> HashMap<u32, BlockHash> {
-        let heights = self.hub.history.read(&wallet, rival_heights);
-        self.hub.header_hashes(heights).await
     }
 
     /// dash-qt detail fields and action enablement for one transaction.
@@ -374,15 +418,19 @@ impl NetworkSession {
     }
 
     /// Abandons `root` and its recorded descendants (checks done by the
-    /// caller). Returns the abandoned txids. One whose InstantSend lock a
-    /// ChainLocked spend of one of its inputs overrode loses that lock in
-    /// the history too, as the store's sweep drops it.
+    /// caller). Returns the abandoned txids. An InstantSend-locked root goes
+    /// only by [`Self::lock_override`], and loses its lock in the history
+    /// too, as the store's sweep drops it.
     pub(crate) async fn abandon_inner(
         &self,
         manager: &Manager,
         wallet: WalletId,
         root: Txid,
     ) -> Result<BTreeSet<Txid>, EngineError> {
+        // Planned on a copy under the lock that applies it, so the replay
+        // record stored before it covers what is abandoned.
+        let descendants = self.unmined_descendants(wallet, root);
+        let proof = self.chain_proof(manager, wallet).await;
         #[cfg(test)]
         let pause = self.hub.pause_abandon.lock().unwrap().take();
         #[cfg(test)]
@@ -392,23 +440,7 @@ impl NetworkSession {
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             pause.release.notified().await;
         }
-        // Planned on a copy under the lock that applies it, so the replay
-        // record stored before it covers what is abandoned.
-        let descendants = self.unmined_descendants(wallet, root);
-        let locked = |e: &TxEntry| {
-            e.instant_locked
-                || matches!(
-                    e.context,
-                    key_wallet::transaction_checking::TransactionContext::InstantSend(_)
-                )
-        };
-        if (self.hub.history).read(&wallet, |txs| {
-            (descendants.iter()).any(|t| txs.get(t).is_some_and(locked))
-        }) {
-            return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
-        }
-        let active = self.rival_headers(wallet).await;
-        let (abandoned, checkpoint, released, beaten) = {
+        let (abandoned, checkpoint, released, overridden) = {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let info = wm
@@ -419,16 +451,11 @@ impl NetworkSession {
             // key-wallet holds no record of a payment restored at load, so
             // it cannot see the InstantSend lock rehydrated for it.
             let locks = info.core_wallet.instant_send_locks();
-            let chainlock = self.chainlock_height(&info.core_wallet);
-            let beaten: BTreeSet<Txid> = self.hub.history.read(&wallet, |txs| {
-                (planned.iter().chain([&root]))
-                    .filter(|t| chainlock_beaten(txs, t, chainlock, &active))
-                    .copied()
-                    .collect()
-            });
+            let overridden =
+                self.lock_override(wallet, &root, &planned, &proof, &info.core_wallet, &trial)?;
             if planned
                 .iter()
-                .any(|t| locks.contains(t) && !beaten.contains(t))
+                .any(|t| locks.contains(t) && !(overridden.is_some() && *t == root))
             {
                 return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
             }
@@ -440,26 +467,19 @@ impl NetworkSession {
             if !abandoned.is_empty() {
                 info.core_wallet.update_balance();
             }
-            let mut released = self.released(
-                wallet,
-                &abandoned,
-                info.core_wallet.observed_spent_outpoints(),
-            );
-            // The ChainLocked winner proves one input spent, not the others
-            // free: only a coin key-wallet holds unspent is released, the
-            // rest stay stored spent until the rescan credits them.
-            if !beaten.is_empty() {
-                let held: HashSet<OutPoint> = (info.core_wallet.utxos().iter())
-                    .map(|u| u.outpoint)
-                    .collect();
-                released.retain(|o| held.contains(o));
-            }
-            (abandoned, checkpoint, released, beaten)
+            let released = overridden.clone().unwrap_or_else(|| {
+                self.released(
+                    wallet,
+                    &abandoned,
+                    info.core_wallet.observed_spent_outpoints(),
+                )
+            });
+            (abandoned, checkpoint, released, overridden.is_some())
         };
         // key-wallet refuses (returns nothing) when it holds the root as
         // settled; its own record of an InstantSend lock is that.
         if abandoned.is_empty() {
-            return Err(EngineError::TxActionRefused(match beaten.contains(&root) {
+            return Err(EngineError::TxActionRefused(match overridden {
                 true => TxActionRefusal::InstantLocked,
                 false => TxActionRefusal::Confirmed,
             }));
@@ -473,8 +493,8 @@ impl NetworkSession {
         let persister = Arc::clone(&live.persister);
         let sweep = SweepBatch {
             txids: abandoned.iter().copied().collect(),
-            // An input not released (a block spent it, or a ChainLocked
-            // winner beat the root) stays stored spent, attributed to it.
+            // An input not released (a block spent it) stays stored spent,
+            // attributed to the root.
             superseded_by: root,
             winner_mined_height: None,
             released_outpoints: released.clone(),
@@ -510,8 +530,7 @@ impl NetworkSession {
             for t in &abandoned {
                 if let Some(e) = h.txs.get_mut(t) {
                     e.abandoned = true;
-                    if beaten.contains(t) {
-                        use key_wallet::transaction_checking::TransactionContext;
+                    if overridden && *t == root {
                         e.instant_locked = false;
                         if matches!(e.context, TransactionContext::InstantSend(_)) {
                             e.context = TransactionContext::Mempool;
@@ -539,14 +558,97 @@ impl NetworkSession {
         Ok(abandoned)
     }
 
+    /// The ChainLock exception (#170 case 14) for `root`, whose abandon
+    /// plans `planned`, when it is InstantSend-locked: a transaction
+    /// in a block of `proof`'s ChainLocked chain spends one of its inputs,
+    /// nothing settled descends from it, and each input of `planned` that a
+    /// recorded block does not spend is a coin key-wallet holds unspent once
+    /// `planned` is abandoned (`trial`). Those are the coins it releases;
+    /// the rest stay stored spent, claimed by their spender's record.
+    /// `None` for a root without a lock, `InstantLocked` when the evidence
+    /// falls short.
+    fn lock_override(
+        &self,
+        wallet: WalletId,
+        root: &Txid,
+        planned: &BTreeSet<Txid>,
+        proof: &ChainProof,
+        core: &ManagedWalletInfo,
+        trial: &ManagedWalletInfo,
+    ) -> Result<Option<Vec<OutPoint>>, EngineError> {
+        let refused = Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
+        self.hub.history.read(&wallet, |txs| {
+            let Some(e) = txs.get(root) else {
+                return Ok(None);
+            };
+            if !locked(e) && !core.instant_send_locks().contains(root) {
+                return Ok(None);
+            }
+            if !chainlock_beaten(txs, root, proof.chainlock, &proof.active)
+                || settled_descendant(txs, core, *root)
+            {
+                return refused;
+            }
+            let mined: HashSet<OutPoint> = (txs.values())
+                .filter(|w| w.context.block_info().is_some())
+                .flat_map(|w| w.tx.input.iter().map(|i| i.previous_output))
+                .collect();
+            let held: HashSet<OutPoint> = trial.utxos().iter().map(|u| u.outpoint).collect();
+            let free: BTreeSet<OutPoint> = (planned.iter())
+                .filter_map(|t| txs.get(t))
+                .flat_map(|p| p.tx.input.iter().map(|i| i.previous_output))
+                .filter(|o| !planned.contains(&o.txid) && !mined.contains(o))
+                .collect();
+            match free.iter().all(|o| held.contains(o)) {
+                true => Ok(Some(free.into_iter().collect())),
+                false => refused,
+            }
+        })
+    }
+
+    /// What [`chainlock_beaten`] reads for `wallet`: the SPV header chain's
+    /// block hash at each height [`rival_heights`] names, and the height of
+    /// the wallet's ChainLock when that chain holds its block before and
+    /// after those are read (a Rebuild Index keeps the ChainLock but not
+    /// the headers).
+    async fn chain_proof(&self, manager: &Manager, wallet: WalletId) -> ChainProof {
+        let chainlock = {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            (wm.get_wallet_info(&wallet.0))
+                .and_then(|i| i.core_wallet.metadata.last_applied_chain_lock.clone())
+        };
+        let Some(cl) = chainlock else {
+            return ChainProof::default();
+        };
+        let holds = || async { self.hub.header_hash(cl.block_height).await == Some(cl.block_hash) };
+        if !holds().await {
+            return ChainProof::default();
+        }
+        let heights = self.hub.history.read(&wallet, rival_heights);
+        let active = self.hub.header_hashes(heights).await;
+        ChainProof {
+            chainlock: holds().await.then_some(cl.block_height),
+            active,
+        }
+    }
+
     /// The history's transactions out of a block that descend from `root`,
-    /// unless abandoned: the descendants key-wallet holds no record of (a
-    /// payment restored as a claimant at load, #88), every child of an
-    /// output followed. A locked one refuses the abandon.
+    /// unless abandoned or InstantSend-locked: the descendants key-wallet
+    /// holds no record of (a payment restored as a claimant at load, #88),
+    /// every child of an output followed.
     fn unmined_descendants(&self, wallet: WalletId, root: Txid) -> Vec<Txid> {
         self.hub.history.read(&wallet, |txs| {
             let live: Vec<(&Txid, &TxEntry)> = (txs.iter())
-                .filter(|(_, e)| e.context.block_info().is_none() && !e.abandoned)
+                .filter(|(_, e)| {
+                    e.context.block_info().is_none()
+                        && !e.abandoned
+                        && !e.instant_locked
+                        && !matches!(
+                            e.context,
+                            key_wallet::transaction_checking::TransactionContext::InstantSend(_)
+                        )
+                })
                 .collect();
             let mut found = BTreeSet::from([root]);
             let mut order = Vec::new();
@@ -724,12 +826,12 @@ impl NetworkSession {
             };
             let mut dropped = 0u32;
             for id in wallets {
-                let active = this.rival_headers(id).await;
+                let proof = this.chain_proof(&manager, id).await;
                 let candidates: Vec<Txid> = this
                     .with_view(&manager, id, |view| {
                         view.history
                             .iter()
-                            .filter(|(_, e)| facts(e, view, &active).abandon_refusal().is_none())
+                            .filter(|(_, e)| facts(e, view, &proof).abandon_refusal().is_none())
                             .map(|(t, _)| *t)
                             .collect()
                     })
@@ -987,7 +1089,7 @@ mod tests {
             payees: &payees,
         };
         assert_eq!(
-            facts(&entry, &view, &HashMap::new()).abandon_refusal(),
+            facts(&entry, &view, &ChainProof::default()).abandon_refusal(),
             Some(TxActionRefusal::InstantLocked)
         );
     }

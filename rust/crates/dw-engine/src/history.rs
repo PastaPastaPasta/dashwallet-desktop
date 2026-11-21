@@ -327,27 +327,30 @@ pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Optio
         || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
 }
 
-/// Whether another transaction in a ChainLocked block of the active chain
-/// spends one of `txid`'s inputs: a ChainLock outranks an InstantSend lock
-/// (DIP-10, as key-wallet's conflict sweep orders them), so `txid` can
-/// never confirm. `active` is the block hash the SPV header chain holds at
-/// each height it has: a record of a block a fork replaced comes back from
-/// wallet.sqlite after a restart, and an unknown header proves nothing.
+/// Whether another transaction in a block of the SPV header chain at or
+/// below `chainlock` spends one of `txid`'s inputs: a ChainLock outranks an
+/// InstantSend lock (DIP-10, as key-wallet's conflict sweep orders them),
+/// so `txid` can never confirm. `chainlock` is the height of the wallet's
+/// ChainLock when that chain holds its block, `active` the chain's block
+/// hash at each height it has: a record's ChainLocked context can come
+/// from its height alone, a record of a block a fork replaced comes back
+/// from wallet.sqlite after a restart, and an unknown header proves
+/// nothing.
 pub(crate) fn chainlock_beaten(
     txs: &HashMap<Txid, TxEntry>,
     txid: &Txid,
-    chainlock_height: Option<u32>,
+    chainlock: Option<u32>,
     active: &HashMap<u32, dashcore::BlockHash>,
 ) -> bool {
-    let Some(e) = txs.get(txid) else {
+    let (Some(chainlock), Some(e)) = (chainlock, txs.get(txid)) else {
         return false;
     };
     let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
     (txs.iter()).any(|(w, we)| {
         w != txid
-            && chain_locked(&we.context, chainlock_height)
-            && (we.context.block_info())
-                .is_some_and(|b| active.get(&b.height()) == Some(&b.block_hash()))
+            && (we.context.block_info()).is_some_and(|b| {
+                b.height() <= chainlock && active.get(&b.height()) == Some(&b.block_hash())
+            })
             && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
     })
 }
@@ -2590,9 +2593,10 @@ mod tests {
         assert_eq!(settled, want);
     }
 
-    /// #170 case 14: only another transaction in a ChainLocked block that
-    /// spends one of a payment's inputs overrides its InstantSend lock; a
-    /// plain block above the best ChainLock or another lock does not.
+    /// #170 case 14: only another transaction that spends one of a
+    /// payment's inputs in a block of the header chain at or below the
+    /// wallet's ChainLock overrides its InstantSend lock; a block above it,
+    /// a record's own ChainLocked context or another lock does not.
     #[test]
     fn only_a_chainlocked_spend_of_an_input_beats_a_payment() {
         let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
@@ -2616,7 +2620,11 @@ mod tests {
         let beaten = |winner, chainlock| beaten_on(winner, chainlock, &active);
         let chainlocked =
             TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
-        assert!(beaten(spend(2, &[coin(2)], chainlocked.clone()), None));
+        assert!(beaten(spend(2, &[coin(2)], chainlocked.clone()), Some(12)));
+        assert!(
+            !beaten(spend(2, &[coin(2)], chainlocked.clone()), None),
+            "a ChainLocked context alone"
+        );
         assert!(beaten(spend(2, &[coin(2)], in_block(12, 0)), Some(12)));
         assert!(!beaten(spend(2, &[coin(2)], in_block(12, 0)), Some(11)));
         assert!(!beaten(spend(2, &[coin(2)], in_block(12, 0)), None));
