@@ -35,7 +35,7 @@ const PEOPLE = [
   /^(heidi|Grace Hopper|Bob Builder|Carol|dave|Erin|Frank|Ivan|Judy \(work\)|Mallory|mallory|Marta|mateo|Maxine|Mayumi)$/,
   /^\p{Lu}{2}$/u,
   /^[1-9A-HJ-NP-Za-km-z]{32,}$/,
-  /^\S+ \S+,? \d{4} at \d{1,2}:\d{2}( \S+)?$/u,
+  /^\S+ \S+,? \p{Nd}{4} at \p{Nd}{1,2}:\p{Nd}{2}( \S+)?$/u,
 ];
 
 /** Still English, from components/emptyStates.ts: the empty list's card. */
