@@ -252,11 +252,16 @@ impl NetworkSession {
             .into_iter()
             .map(WalletId)
             .collect();
-        self.load_history_for(ids).await
+        self.load_history_with(ids, true).await
     }
 
-    /// [`Self::load_history`] for some wallets (a wallet just loaded).
+    /// [`Self::load_history`] for some wallets (a wallet just loaded): no
+    /// trust is restored once dash-spv may have reported a lock (#86).
     pub(crate) async fn load_history_for(&self, ids: Vec<WalletId>) -> Result<(), EngineError> {
+        self.load_history_with(ids, false).await
+    }
+
+    async fn load_history_with(&self, ids: Vec<WalletId>, trust: bool) -> Result<(), EngineError> {
         #[cfg(test)]
         let fail = (self.hub.fail_history_read).swap(false, std::sync::atomic::Ordering::SeqCst);
         #[cfg(not(test))]
@@ -406,6 +411,7 @@ impl NetworkSession {
         }
         drop(wm);
         for (wallet, sent, sent_at, complete) in sends {
+            let sent_at: BTreeMap<_, _> = (sent_at.into_iter()).filter(|_| trust).collect();
             self.restore_unmined_spends(&live.manager, wallet, &sent, &sent_at, complete)
                 .await;
         }
@@ -472,16 +478,6 @@ impl NetworkSession {
         let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
             return;
         };
-        let owned = owned_scripts(info);
-        let role = |s: &ScriptBuf| {
-            (owned.get(s)).map(|o| {
-                if o.coinjoin {
-                    AddressChain::Receiving
-                } else {
-                    o.chain
-                }
-            })
-        };
         let chainlock = self.chainlock_height(info);
         let height = crate::coins::scanned_height(&info.core_wallet);
         let fresh = |at: &u32| *at >= height && chainlock.is_some_and(|cl| cl >= *at);
@@ -493,8 +489,18 @@ impl NetworkSession {
             self.hub.history.with_wallet(wallet, |h| h.restored.clear());
             return;
         }
+        let owned = owned_scripts(info);
+        let role = |s: &ScriptBuf| {
+            (owned.get(s)).map(|o| {
+                if o.coinjoin {
+                    AddressChain::Receiving
+                } else {
+                    o.chain
+                }
+            })
+        };
         let change = self.hub.history.with_wallet(wallet, |h| {
-            let mut change = crate::history::trusted_change(&h.txs, &sent, chainlock, role);
+            let mut change = crate::history::trusted_change(&h.txs, &sent, role);
             change.retain(|o| !h.session_held.contains(&o.txid));
             h.restored = (change.iter())
                 .map(|o| (o.txid, sent_at[&o.txid]))
@@ -726,7 +732,7 @@ impl NetworkSession {
     }
 
     /// The best ChainLock height: the wallet's stored one or dash-spv's.
-    fn chainlock_height(&self, info: &PlatformWalletInfo) -> Option<u32> {
+    pub(crate) fn chainlock_height(&self, info: &PlatformWalletInfo) -> Option<u32> {
         (info.core_wallet.metadata.last_applied_chain_lock.as_ref())
             .map(|c| c.block_height)
             .max(self.hub.tracker().chainlock_height())

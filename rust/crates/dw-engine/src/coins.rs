@@ -1009,7 +1009,7 @@ impl NetworkSession {
             wallet_id.0,
             "the fence of another wallet"
         );
-        let (mut snapshot, lock_inputs, unseen, scanned, dismissed) = {
+        let (mut snapshot, lock_inputs, unseen, scanned, dismissed, chainlock) = {
             let state = wallet.state().await;
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
@@ -1025,6 +1025,7 @@ impl NetworkSession {
                 unseen,
                 scanned_height(&state.core_wallet),
                 dismissed,
+                self.chainlock_height(&state),
             )
         };
         // Coins before the history: a ProRegTx that lands between the two
@@ -1090,24 +1091,34 @@ impl NetworkSession {
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
         // key-wallet sweeps a payment it holds a record of when it loses, but
         // not one restored at load, whose change can be trusted (#86).
-        // Headers are stored before the scan commits, and until dash-spv
-        // reports them nothing says no block followed a restored payment.
+        // Headers are stored before the scan commits: until dash-spv has
+        // caught up at or above the best ChainLock, nothing says no block
+        // followed a restored payment.
         let relies = (snapshot.coins.iter())
             .any(|c| c.utxo.is_trusted && !c.utxo.is_confirmed && !c.utxo.is_instantlocked);
-        let heard = (self.hub.tracker().tip_height()).map_or(u32::MAX, |t| t.max(scanned));
-        let (spent, lost, known) = (self.hub.history).read_wallet(&wallet_id, |h| {
+        let heard = {
+            let tracker = self.hub.tracker();
+            match tracker.tip_height() {
+                Some(t) if tracker.caught_up() && chainlock.is_some_and(|cl| t >= cl) => {
+                    t.max(scanned)
+                }
+                _ => u32::MAX,
+            }
+        };
+        let (spent, lost, lost_coins, known) = (self.hub.history).read_wallet(&wallet_id, |h| {
             let lost = match relies {
                 true => crate::history::lost_unmined(&h.txs, &dismissed, &h.restored, heard),
                 false => HashSet::new(),
             };
-            (crate::history::spent_outpoints(&h.txs), lost, h.scanned)
+            let spent = crate::history::spent_outpoints(&h.txs);
+            (spent, lost, h.lock_spent.clone(), h.scanned)
         });
         if known != scanned {
             (self.hub.history).with_wallet(wallet_id, |h| h.scanned = scanned);
         }
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
-            coin.utxo.is_trusted &= !lost.contains(&o.txid);
+            coin.utxo.is_trusted &= !lost.contains(&o.txid) && !lost_coins.contains(&o);
             let lock = locked.get(&lock_key(&o));
             coin.user_locked = lock.is_some();
             coin.dust_locked = lock == Some(&LockReason::Dust);

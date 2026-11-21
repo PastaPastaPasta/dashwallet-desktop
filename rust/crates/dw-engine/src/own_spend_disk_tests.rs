@@ -720,7 +720,7 @@ fn single_coin_wallet() -> (
     WalletId,
     Transaction,
 ) {
-    let (dir, engine, session, id, paid) = single_coin_wallet_unlocked();
+    let (dir, engine, session, id, paid) = coin_wallet(true);
     chain_lock(&engine, &session, id, TIP);
     (dir, engine, session, id, paid)
 }
@@ -733,9 +733,27 @@ fn single_coin_wallet_unlocked() -> (
     WalletId,
     Transaction,
 ) {
+    coin_wallet(false)
+}
+
+/// A wallet holding one coin, InstantSend-locked before its block when
+/// `locked`.
+fn coin_wallet(
+    locked: bool,
+) -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+) {
     let (dir, engine, session, id) = engine_wallet();
     let to = fresh_address(&engine, &session, id);
     let paid = funding(7, std::slice::from_ref(&to), COIN);
+    if locked {
+        mempool(&engine, &session, id, &paid);
+        instant_lock(&engine, &session, id, &paid);
+    }
     mined(&engine, &session, id, FUNDED_AT, vec![paid.clone()]);
     mined(&engine, &session, id, TIP, vec![foreign()]);
     let b = balances(&session, id);
@@ -1118,6 +1136,18 @@ fn change_of_a_restored_payment_is_selected_only_while_no_later_header_is_stored
         Some(0),
         "no header reported"
     );
+    session.hub.tracker().set_headers_syncing(TIP, TIP + 1);
+    assert_eq!(
+        available(&engine, &session, id, COIN / 8),
+        Some(0),
+        "headers still syncing"
+    );
+    session.hub.tracker().set_tip_height(TIP - 1);
+    assert_eq!(
+        available(&engine, &session, id, COIN / 8),
+        Some(0),
+        "the header tip is below the ChainLock"
+    );
     session.hub.tracker().set_tip_height(TIP);
     assert_eq!(available(&engine, &session, id, COIN / 8), None);
     session.hub.tracker().set_tip_height(TIP + 1);
@@ -1173,7 +1203,7 @@ fn a_load_with_an_unreadable_height_trusts_no_change() {
 /// trust, though the payment's coin is ChainLocked.
 #[test]
 fn change_of_a_payment_sent_above_the_best_chainlock_is_not_trusted_after_a_restart() {
-    let (_dir, engine, session, id, _) = single_coin_wallet_unlocked();
+    let (_dir, engine, session, id, _) = coin_wallet(true);
     chain_lock(&engine, &session, id, FUNDED_AT);
     let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
 
@@ -1225,12 +1255,87 @@ fn change_of_a_restored_payment_a_lock_on_its_coin_beat_is_not_selected() {
     let session = restart(&engine, session, id);
     assert_eq!(available(&engine, &session, id, COIN / 8), None);
     let winner = spent_elsewhere(&engine, &session, id, &paid);
+    let lock = |validated| dash_spv::sync::SyncEvent::InstantLockReceived {
+        instant_lock: InstantLock {
+            txid: winner.txid(),
+            inputs: vec![OutPoint::new(paid.txid(), 0)],
+            ..InstantLock::default()
+        },
+        validated,
+    };
+    session.hub.on_sync_event(&lock(false));
+    assert_eq!(
+        available(&engine, &session, id, COIN / 8),
+        None,
+        "an unverified lock"
+    );
+    session.hub.on_sync_event(&lock(true));
+    assert_eq!(available(&engine, &session, id, COIN / 8), Some(0));
+}
+
+/// A payment of a coin in a plain block that a ChainLock at or above its
+/// height reached later: the ChainLock may be another block's, so a
+/// restart restores no trust.
+#[test]
+fn change_of_a_payment_of_a_coin_a_later_chainlock_reached_is_not_trusted_after_a_restart() {
+    let (_dir, engine, session, id, _) = single_coin_wallet_unlocked();
+    chain_lock(&engine, &session, id, TIP);
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+
+    let session = restart(&engine, session, id);
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
+}
+
+/// A coin whose block was scanned after a ChainLock covered it is recorded
+/// ChainLocked, and the store keeps that: its payment's change is trusted
+/// after a restart.
+#[test]
+fn change_of_a_payment_of_a_coin_recorded_chainlocked_is_trusted_after_a_restart() {
+    let (_dir, engine, session, id) = engine_wallet();
+    chain_lock(&engine, &session, id, TIP);
+    let to = fresh_address(&engine, &session, id);
+    let paid = funding(7, std::slice::from_ref(&to), COIN);
+    mined(&engine, &session, id, FUNDED_AT, vec![paid]);
+    mined(&engine, &session, id, TIP, vec![foreign()]);
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+
+    let session = restart(&engine, session, id);
+    assert!(utxo(&engine, &session, id, change).is_trusted);
+}
+
+/// A wallet loaded after the session opened (Open Wallet) gets no restored
+/// trust: dash-spv may have reported locks before it was loaded.
+#[test]
+fn a_wallet_loaded_in_a_running_session_trusts_no_change() {
+    let (_dir, engine, session, id, _) = single_coin_wallet();
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert!(!utxo(&engine, &session, id, change).is_trusted);
+    let session = restart(&engine, session, id);
+    assert!(
+        utxo(&engine, &session, id, change).is_trusted,
+        "at a session open"
+    );
+}
+
+/// A verified lock naming a restored payment's change as an input, before
+/// the transaction spending it arrives: that change is not selected.
+#[test]
+fn change_a_lock_spends_is_not_selected() {
+    use dash_spv::EventHandler;
+    let (_dir, engine, session, id, _) = single_coin_wallet();
+    let (_, _, change) = pay_stored(&engine, &session, id, CoinSource::Any);
+
+    let session = restart(&engine, session, id);
+    assert_eq!(available(&engine, &session, id, COIN / 8), None);
     session
         .hub
         .on_sync_event(&dash_spv::sync::SyncEvent::InstantLockReceived {
             instant_lock: InstantLock {
-                txid: winner.txid(),
-                inputs: vec![OutPoint::new(paid.txid(), 0)],
+                txid: Txid::all_zeros(),
+                inputs: vec![change],
                 ..InstantLock::default()
             },
             validated: true,

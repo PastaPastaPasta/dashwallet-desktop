@@ -1536,7 +1536,11 @@ impl EventHandler for SessionHub {
     }
 
     fn on_sync_event(&self, event: &SyncEvent) {
-        if let SyncEvent::InstantLockReceived { instant_lock, .. } = event {
+        if let SyncEvent::InstantLockReceived {
+            instant_lock,
+            validated: true,
+        } = event
+        {
             (self.history).note_instant_lock(instant_lock.txid, &instant_lock.inputs);
         }
     }
