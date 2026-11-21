@@ -455,7 +455,6 @@ export type Outcome =
 export type Sending = { amount: number; fee: number; note?: string };
 
 /** A first broadcast the window refused because the vault locked: it never reached the engine. */
-export const LOCKED_BEFORE_SEND = en.pay.error.lockedBeforeSend;
 
 /** The engine's codes for a first broadcast that released the transaction (E0-13 D8, `released`
  * in send.rs): nothing was sent and its handle is gone. */

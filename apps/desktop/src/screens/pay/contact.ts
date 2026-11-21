@@ -44,7 +44,6 @@ export interface NoOwner {
   next: "join" | "retry" | null;
 }
 
-export const WATCH_ONLY = en.pay.contact.watchOnly;
 
 export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "starting" }>): NoOwner {
   switch (owner.kind) {

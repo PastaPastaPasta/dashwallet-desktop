@@ -10,7 +10,7 @@ import { PAYEE } from "./wallet";
 const PLATFORM_PAYEE = "tdash1kq7r3m9x2v5c8n4z6w0e2t4y6u8p0s2a4d6f8h";
 
 /** Data in Pay's states: addresses (whole or shortened), transaction ids, amounts with their unit, and the fixture's labels. */
-const ADDRESSES = [/^[Xy][1-9A-HJ-NP-Za-km-z]{25,34}$/, /^[Xy][1-9A-HJ-NP-Za-km-z]+…[1-9A-HJ-NP-Za-km-z]+$/, /^tdash1[0-9a-z]+$/, /^[0-9a-f]{64}$/, /^[\d.,]+ t?DASH$/, /^Payroll$/];
+const ADDRESSES = [/^[Xy][1-9A-HJ-NP-Za-km-z]{25,34}$/, /^[Xy][1-9A-HJ-NP-Za-km-z]+…[1-9A-HJ-NP-Za-km-z]+$/, /^tdash1[0-9a-z]+$/, /^[0-9a-f]{64}$/, /^[\p{Nd}.,]+ t?DASH$/u, /^Payroll$/];
 
 /** The fixture's contacts. */
 const CONTACTS = [/^(Carol|Grace Hopper|Bob Builder|Dave|dave|Erin|heidi)$/, /^\p{L}{1,2}$/u];
@@ -19,7 +19,7 @@ const CONTACTS = [/^(Carol|Grace Hopper|Bob Builder|Dave|dave|Erin|heidi)$/, /^\
 const PAY_NOTE = [/^Payments with this contact are still being set up\. The payment finishes the setup\.$/];
 
 /** Still English: the coin table and its summary come from components/coins.tsx. */
-const COIN_TABLE = [/^Amount \($/, /^\)$/, /^Select$/, /^Coins of this wallet$/, /^Address \/ Label$/, /^Confirmations$/, /^Status$/, /^(Quantity|Amount|Fee|After fee|Bytes|Change|Dust)$/, /^Mixed, \d+ rounds$/];
+const COIN_TABLE = [/^Amount \($/, /^\)$/, /^Select$/, /^Coins of this wallet$/, /^Address \/ Label$/, /^Confirmations$/, /^Status$/, /^(Quantity|Amount|Fee|After fee|Bytes|Change|Dust)$/, /^Mixed, \p{Nd}+ rounds$/u];
 
 const world = (page: Page, fn: string) => page.evaluate(`(${fn})(window.__dwFixture.world)`);
 

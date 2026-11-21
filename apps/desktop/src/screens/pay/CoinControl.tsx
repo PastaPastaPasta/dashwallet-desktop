@@ -28,7 +28,7 @@ const COIN_CHOICES: { id: CoinChoice; readonly title: string }[] = (["any", "mix
 
 function targetTitle(blocks: number): string {
   const minutes = blocks * BLOCK_MINUTES;
-  const time = minutes < 60 ? tr("pay.coins.minutes", { minutes }) : tr("pay.coins.hours", { hours: +(minutes / 60).toFixed(1) });
+  const time = minutes < 60 ? tr("pay.coins.minutes", { minutes: String(minutes) }) : tr("pay.coins.hours", { hours: String(+(minutes / 60).toFixed(1)) });
   return tr("pay.coins.target", { time, blocks: String(blocks), word: tr("pay.coins.blocks", { count: blocks }) });
 }
 
