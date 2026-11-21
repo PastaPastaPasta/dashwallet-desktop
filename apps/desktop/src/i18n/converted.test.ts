@@ -35,7 +35,7 @@ const AREAS: Record<string, string[]> = {
 
   dashpay: [],
 
-  coinjoin: [],
+  coinjoin: ["screens/coinjoin"],
 
   notifications: [],
 

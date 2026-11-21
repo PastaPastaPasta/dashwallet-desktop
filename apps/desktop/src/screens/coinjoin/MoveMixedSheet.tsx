@@ -20,6 +20,7 @@ import {
   type MoveMixedFlow,
 } from "../../coinjoin/move";
 import { useCoinJoinAmount, useMaskedAmount } from "../../coinjoin/queries";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 
@@ -35,6 +36,7 @@ function Row({ label, value, testId, total }: { label: string; value: string; te
 }
 
 export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network: NetworkInfo }) {
+  useT();
   useModel(flow);
   const plain = useCoinJoinAmount(network);
   const masked = useMaskedAmount(network);

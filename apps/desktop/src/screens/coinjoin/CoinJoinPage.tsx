@@ -13,6 +13,7 @@ import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
 import { CoinJoinText, LEVELS, levelOf, lockLine, poolMessageText, POOL_STATE_TEXT, settingsFailureText } from "../../coinjoin/model";
 import { useCoinJoinAmount, useCoinJoinSettings, useCoinJoinView, useMaskedAmount, useSaveCoinJoinSettings } from "../../coinjoin/queries";
+import { useT } from "../../i18n";
 import { failureText, useModel } from "../../onboarding/model";
 import { AUTO_LOCK_CHOICES, SecurityText } from "../../settings/security";
 import { Page } from "../Routes";
@@ -22,6 +23,7 @@ import { MoveMixedSheet } from "./MoveMixedSheet";
 const autoLockText = (secs: number) => AUTO_LOCK_CHOICES.find((c) => c.secs === secs)?.label ?? SecurityText.autoLockSeconds(secs);
 
 export function CoinJoinPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const t = useT();
   const { view, status, retry } = useCoinJoinView(walletId, network);
   const act = useViewAction(walletId, network, retry);
   const lock = useLockStatus();
@@ -37,7 +39,7 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
         <div className="coinjoin-card-body">
           <div className="coinjoin-card-live">
             <h2 className="coinjoin-status-title" id={`${id}-title`} data-testid="coinjoin-status-title">
-              {view.state === "loading" ? "Loading…" : view.title}
+              {view.state === "loading" ? t("coinjoin.loading") : view.title}
               {view.busy && <span className="spinner coinjoin-spinner" aria-hidden="true" />}
             </h2>
             <ViewFacts view={view} testId="coinjoin-status" />
@@ -61,7 +63,7 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
         )}
         {act.sheet}
       </section>
-      <section className="coinjoin-notes card-l1" data-testid="coinjoin-notes" aria-label="While mixing">
+      <section className="coinjoin-notes card-l1" data-testid="coinjoin-notes" aria-label={t("coinjoin.whileMixing")}>
         <p>{CoinJoinText.keepOpen}</p>
         {lockText && <p data-testid="coinjoin-lock-line">{lockText}</p>}
         {autoLockSecs !== null && <p data-testid="coinjoin-auto-lock">{CoinJoinText.autoLock(autoLockText(autoLockSecs))}</p>}
@@ -70,7 +72,7 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
       {status && <MoveMixedCard walletId={walletId} network={network} status={status} />}
       {status && <SessionDetails status={status} network={network} />}
       <DashButton variant="plainBlue" data-testid="coinjoin-open-settings" onClick={() => navigate("settings", { settingsTab: "coinjoin" })}>
-        CoinJoin settings
+        {t("coinjoin.settingsButton")}
       </DashButton>
     </Page>
   );
@@ -79,6 +81,7 @@ export function CoinJoinPage({ walletId, network }: { walletId: string; network:
 /** "Move mixed coins" (IOS-057) to the wallet, or into Shielded where the network has it: the sheet
  * reads the plan and asks for the grant. */
 function MoveMixedCard({ walletId, network, status }: { walletId: string; network: NetworkInfo; status: CoinJoinStatus }) {
+  useT();
   const b = useBackend();
   const flow = moveMixedFor(b, walletId);
   useModel(flow);
@@ -116,6 +119,7 @@ function MoveMixedCard({ walletId, network, status }: { walletId: string; networ
 /** Intermediate or Advanced (D2): writes the network's `rounds`; any other value shows as Custom,
  * set on Settings ▸ CoinJoin. */
 function LevelCard({ mixing }: { mixing: boolean }) {
+  useT();
   const settings = useCoinJoinSettings();
   const save = useSaveCoinJoinSettings();
   /** The level as clicked, until the engine has answered (U-04 D36). */
@@ -194,6 +198,7 @@ function LevelCard({ mixing }: { mixing: boolean }) {
 
 /** dash-qt's panel, its progress tooltip and the advanced view's session table (QT-042, QT-047). */
 function SessionDetails({ status, network }: { status: CoinJoinStatus; network: NetworkInfo }) {
+  const t = useT();
   const amount = useCoinJoinAmount(network);
   const masked = useMaskedAmount(network);
   const shown = (duffs: number) => masked ?? amount(duffs);
@@ -230,19 +235,19 @@ function SessionDetails({ status, network }: { status: CoinJoinStatus; network: 
             <caption className="sr-only">{CoinJoinText.sessions}</caption>
             <thead>
               <tr>
-                <th scope="col">Masternode</th>
-                <th scope="col">Denomination</th>
-                <th scope="col">State</th>
+                <th scope="col">{t("coinjoin.sessionColumns.masternode")}</th>
+                <th scope="col">{t("coinjoin.sessionColumns.denomination")}</th>
+                <th scope="col">{t("coinjoin.sessionColumns.state")}</th>
                 <th scope="col" className="num">
-                  Entries
+                  {t("coinjoin.sessionColumns.entries")}
                 </th>
-                <th scope="col">Last message</th>
+                <th scope="col">{t("coinjoin.sessionColumns.lastMessage")}</th>
               </tr>
             </thead>
             <tbody>
               {status.sessions.map((s, i) => (
                 <tr key={s.proTxHash ?? i}>
-                  <td className="mono">{s.service ?? "—"}</td>
+                  <td className="mono">{s.service ? <bdi>{s.service}</bdi> : "—"}</td>
                   <td>{s.denomination === null ? "—" : shown(s.denomination)}</td>
                   <td>{POOL_STATE_TEXT[s.state]}</td>
                   <td className="num">{s.entries}</td>

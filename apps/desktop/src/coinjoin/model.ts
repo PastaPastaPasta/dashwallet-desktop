@@ -14,159 +14,261 @@ import type { CoinJoinSettings } from "../api/generated/CoinJoinSettings";
 import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
 import type { CoinJoinStatusCode } from "../api/generated/CoinJoinStatusCode";
 import type { LockStateName } from "../api/generated/LockStateName";
+import { messageTable, t } from "../i18n";
+import { en } from "../i18n/en";
 import { failureText } from "../onboarding/model";
 
 export const CoinJoinText = {
-  subtitle: "Mixing your Dash coins will make your transactions more private",
-  start: "Start Mixing",
-  stop: "Stop Mixing",
-  retry: "Try again",
-  openSettings: "Open Settings",
-  dismiss: "Dismiss",
-  notStarted: "Not Started",
-  starting: "Starting…",
-  nextStep: "Waiting for the next mixing step",
-  mixing: "Mixing",
-  paused: "Paused",
-  stopping: "Stopping…",
-  fullyMixed: "Fully Mixed",
-  stopped: "Mixing stopped",
-  readFailed: "Could not read the mixing status",
-  disabledTitle: "CoinJoin is turned off",
-  disabledLine: "Turn it on in Settings ▸ CoinJoin.",
-  watchOnly: "Watch-only wallets cannot mix.",
-  stoppedLocked: "Mixing stopped because the wallet was locked.",
-  stoppedSession: "The network session closed.",
-  stoppedWallet: "The wallet was closed.",
-  minimumBalance: (amount: string) => `CoinJoin requires at least ${amount} to use.`,
-  mixedOf: (mixed: string, of: string) => `${mixed} of ${of}`,
-  levelTitle: "Select mixing level",
-  levelSubtitle: "You can change or stop the mixing level at any time",
-  levelLive: "A new level applies from the next mixing session.",
-  custom: (rounds: number) => `Custom: ${rounds} rounds`,
-  customHint: "Set in Settings ▸ CoinJoin.",
-  stopTitle: "Are you sure you want to stop mixing?",
-  stopMessage: "Coins mixed so far stay mixed. Open sessions end and their coins are released.",
-  keepOpen: "Mixing runs while Dash Wallet is open and the wallet is unlocked, at least for mixing. Quitting Dash Wallet or locking the wallet stops it; start it again here.",
-  mixingOnly: "Unlocked for mixing only: mixing runs, sending stays locked.",
-  mixingOnlyHow: "To mix while sending stays locked, lock the wallet and unlock it with “For mixing only”.",
-  autoLock: (after: string) => `Auto lock is on (${after}): when it locks the wallet, mixing stops.`,
-  persists:
-    "These settings are kept for this network and apply to every wallet. Mixing itself is not kept: it stops when Dash Wallet quits, the wallet closes or the wallet locks.",
-  vaultLocked: "Unlock the wallet, at least for mixing, and try again.",
-  disabled: "CoinJoin is turned off in Settings ▸ CoinJoin.",
-  moveRunning: "A move of your mixed coins is running. Start mixing once it ends.",
+  get subtitle() {
+    return t("coinjoin.subtitle");
+  },
+  get start() {
+    return t("coinjoin.start");
+  },
+  get stop() {
+    return t("coinjoin.stop");
+  },
+  get retry() {
+    return t("coinjoin.retry");
+  },
+  get openSettings() {
+    return t("coinjoin.openSettings");
+  },
+  get dismiss() {
+    return t("coinjoin.dismiss");
+  },
+  get notStarted() {
+    return t("coinjoin.notStarted");
+  },
+  get starting() {
+    return t("coinjoin.starting");
+  },
+  get nextStep() {
+    return t("coinjoin.nextStep");
+  },
+  get mixing() {
+    return t("coinjoin.mixing");
+  },
+  get paused() {
+    return t("coinjoin.paused");
+  },
+  get stopping() {
+    return t("coinjoin.stopping");
+  },
+  get fullyMixed() {
+    return t("coinjoin.fullyMixed");
+  },
+  get stopped() {
+    return t("coinjoin.stopped");
+  },
+  get readFailed() {
+    return t("coinjoin.readFailed");
+  },
+  get disabledTitle() {
+    return t("coinjoin.disabledTitle");
+  },
+  get disabledLine() {
+    return t("coinjoin.disabledLine");
+  },
+  get watchOnly() {
+    return t("coinjoin.watchOnly");
+  },
+  get stoppedLocked() {
+    return t("coinjoin.stoppedLocked");
+  },
+  get stoppedSession() {
+    return t("coinjoin.stoppedSession");
+  },
+  get stoppedWallet() {
+    return t("coinjoin.stoppedWallet");
+  },
+  minimumBalance: (amount: string) => t("coinjoin.minimumBalance", { amount }),
+  mixedOf: (mixed: string, of: string) => t("coinjoin.mixedOf", { mixed, of }),
+  get levelTitle() {
+    return t("coinjoin.levelTitle");
+  },
+  get levelSubtitle() {
+    return t("coinjoin.levelSubtitle");
+  },
+  get levelLive() {
+    return t("coinjoin.levelLive");
+  },
+  custom: (rounds: number) => t("coinjoin.custom", { rounds }),
+  get customHint() {
+    return t("coinjoin.customHint");
+  },
+  get stopTitle() {
+    return t("coinjoin.stopTitle");
+  },
+  get stopMessage() {
+    return t("coinjoin.stopMessage");
+  },
+  get keepOpen() {
+    return t("coinjoin.keepOpen");
+  },
+  get mixingOnly() {
+    return t("coinjoin.mixingOnly");
+  },
+  get mixingOnlyHow() {
+    return t("coinjoin.mixingOnlyHow");
+  },
+  autoLock: (after: string) => t("coinjoin.autoLock", { after }),
+  get persists() {
+    return t("coinjoin.persists");
+  },
+  get vaultLocked() {
+    return t("coinjoin.vaultLocked");
+  },
+  get disabled() {
+    return t("coinjoin.disabled");
+  },
+  get moveRunning() {
+    return t("coinjoin.moveRunning");
+  },
   // dash-qt's Options ▸ CoinJoin (QT-046, `optionsdialog.ui`).
-  enableFeatures: "Enable CoinJoin features",
-  enableFeaturesTip: "Turning this off stops mixing in every wallet.",
-  mixingRounds: "Mixing rounds",
-  mixingRoundsTip:
-    "This setting determines the amount of individual masternodes that an input will be mixed through. More rounds of mixing gives a higher degree of privacy, but also costs more in fees.",
-  targetBalance: "Target balance (DASH)",
-  targetBalanceTip: "This amount acts as a threshold to turn off mixing once it's reached.",
-  multiSession: "Enable multi-session",
-  multiSessionTip: "Whether to use experimental mode with multiple mixing sessions per block. Note: You must use this feature carefully.",
-  parallelSessions: "Parallel sessions",
-  parallelSessionsTip: "Use this many separate masternodes in parallel to mix funds.",
-  inputsPerDenomination: "Inputs per denomination",
-  inputsPerDenominationTip: "How many inputs of each denominated amount are created. Lower these numbers if you want fewer smaller denominations.",
-  denomsTarget: "Target",
-  denomsMaximum: "Maximum",
-  restoreDefaults: "Restore defaults…",
-  restoreTitle: "Restore the CoinJoin defaults?",
-  restoreMessage: "Every value on this tab goes back to Dash Core's default. Mixing that runs keeps running.",
-  saved: "Saved.",
-  notSaved: (why: string) => `The settings were not saved: ${why}`,
+  get enableFeatures() {
+    return t("coinjoin.enableFeatures");
+  },
+  get enableFeaturesTip() {
+    return t("coinjoin.enableFeaturesTip");
+  },
+  get mixingRounds() {
+    return t("coinjoin.mixingRounds");
+  },
+  get mixingRoundsTip() {
+    return t("coinjoin.mixingRoundsTip");
+  },
+  get targetBalance() {
+    return t("coinjoin.targetBalance");
+  },
+  get targetBalanceTip() {
+    return t("coinjoin.targetBalanceTip");
+  },
+  get multiSession() {
+    return t("coinjoin.multiSession");
+  },
+  get multiSessionTip() {
+    return t("coinjoin.multiSessionTip");
+  },
+  get parallelSessions() {
+    return t("coinjoin.parallelSessions");
+  },
+  get parallelSessionsTip() {
+    return t("coinjoin.parallelSessionsTip");
+  },
+  get inputsPerDenomination() {
+    return t("coinjoin.inputsPerDenomination");
+  },
+  get inputsPerDenominationTip() {
+    return t("coinjoin.inputsPerDenominationTip");
+  },
+  get denomsTarget() {
+    return t("coinjoin.denomsTarget");
+  },
+  get denomsMaximum() {
+    return t("coinjoin.denomsMaximum");
+  },
+  get restoreDefaults() {
+    return t("coinjoin.restoreDefaults");
+  },
+  get restoreTitle() {
+    return t("coinjoin.restoreTitle");
+  },
+  get restoreMessage() {
+    return t("coinjoin.restoreMessage");
+  },
+  get saved() {
+    return t("coinjoin.saved");
+  },
+  notSaved: (why: string) => t("coinjoin.notSaved", { why }),
   // QT-042's tooltip and the panel's rows, for Session details.
-  details: "Session details",
-  overallProgress: "Overall progress",
-  denominated: "Denominated",
-  partiallyMixed: "Partially mixed",
-  mixed: "Mixed",
-  averageRounds: (average: string, rounds: number) => `Denominated inputs have ${average} of ${rounds} rounds on average`,
-  amountAndRounds: "Amount and Rounds",
-  roundsOf: (n: number) => (n === 1 ? `${n} Round` : `${n} Rounds`),
-  notEnoughInputs: "Not enough compatible inputs to mix the target amount.",
-  queueSize: "Queue size",
-  sessions: "Sessions",
-  noSessions: "No open sessions",
-  submittedDenominations: "Submitted Denom",
-} as const;
+  get details() {
+    return t("coinjoin.details");
+  },
+  get overallProgress() {
+    return t("coinjoin.overallProgress");
+  },
+  get denominated() {
+    return t("coinjoin.denominated");
+  },
+  get partiallyMixed() {
+    return t("coinjoin.partiallyMixed");
+  },
+  get mixed() {
+    return t("coinjoin.mixed");
+  },
+  averageRounds: (average: string, rounds: number) => t("coinjoin.averageRounds", { average, rounds }),
+  get amountAndRounds() {
+    return t("coinjoin.amountAndRounds");
+  },
+  roundsOf: (n: number) => t("coinjoin.roundsOf", { count: n }),
+  get notEnoughInputs() {
+    return t("coinjoin.notEnoughInputs");
+  },
+  get queueSize() {
+    return t("coinjoin.queueSize");
+  },
+  get sessions() {
+    return t("coinjoin.sessions");
+  },
+  get noSessions() {
+    return t("coinjoin.noSessions");
+  },
+  get submittedDenominations() {
+    return t("coinjoin.submittedDenominations");
+  },
+};
 
 /** Core's session status line (`strAutoDenomResult` / `GetStatus`, research 02 §9.4). */
 export function statusLine(code: CoinJoinStatusCode): string {
   switch (code.kind) {
     case "idle":
-      return "CoinJoin is idle.";
+      return t("coinjoin.status.idle");
     case "syncInProgress":
-      return "Can't mix while sync in progress.";
+      return t("coinjoin.status.syncInProgress");
     case "walletLocked":
-      return "Wallet is locked.";
+      return t("coinjoin.status.walletLocked");
     case "mixingInProgress":
-      return "Mixing in progress…";
+      return t("coinjoin.status.mixingInProgress");
     case "noMasternodes":
-      return "No Masternodes detected.";
+      return t("coinjoin.status.noMasternodes");
     case "notEnoughFunds":
-      return "Not enough funds to mix.";
+      return t("coinjoin.status.notEnoughFunds");
     case "unconfirmedDenominated":
-      return "Found unconfirmed denominated outputs, will wait till they confirm to continue.";
+      return t("coinjoin.status.unconfirmedDenominated");
     case "noCompatibleMasternode":
-      return "No compatible Masternode found.";
+      return t("coinjoin.status.noCompatibleMasternode");
     case "noCompatibleInputs":
-      return "Can't mix: no compatible inputs found!";
+      return t("coinjoin.status.noCompatibleInputs");
     case "tryingToConnect":
-      return "Trying to connect…";
+      return t("coinjoin.status.tryingToConnect");
     case "noQueueToJoin":
-      return "Failed to find mixing queue to join";
+      return t("coinjoin.status.noQueueToJoin");
     case "noRandomMasternode":
-      return "Can't find random Masternode.";
+      return t("coinjoin.status.noRandomMasternode");
     case "failedToStartQueue":
-      return "Failed to start a new mixing queue";
+      return t("coinjoin.status.failedToStartQueue");
     case "waitingInQueue":
-      return "Submitted to masternode, waiting in queue .";
+      return t("coinjoin.status.waitingInQueue");
     case "signing":
-      return "Found enough users, signing…";
+      return t("coinjoin.status.signing");
     case "masternode":
-      return `Masternode: ${poolMessageText(code.message)}`;
+      return t("coinjoin.status.masternode", { message: poolMessageText(code.message) });
   }
 }
 
 /** Core `CoinJoin::GetMessageByID`. */
-const POOL_MESSAGES: Record<CoinJoinPoolMessage, string> = {
-  alreadyHave: "Already have that input.",
-  denom: "No matching denominations found for mixing.",
-  entriesFull: "Entries are full.",
-  existingTx: "Not compatible with existing transactions.",
-  fees: "Transaction fees are too high.",
-  invalidCollateral: "Collateral not valid.",
-  invalidInput: "Input is not valid.",
-  invalidScript: "Invalid script detected.",
-  invalidTx: "Transaction not valid.",
-  maximum: "Entry exceeds maximum size.",
-  mnList: "Not in the Masternode list.",
-  mode: "Incompatible mode.",
-  queueFull: "Masternode queue is full.",
-  recent: "Last queue was created too recently.",
-  session: "Session not complete!",
-  missingTx: "Missing input transaction information.",
-  version: "Incompatible version.",
-  noError: "No errors detected.",
-  success: "Transaction created successfully.",
-  entriesAdded: "Your entries added successfully.",
-  sizeMismatch: "Inputs vs outputs size mismatch.",
-  nonStandardPubkey: "Unknown response.",
-  notAMasternode: "Unknown response.",
-};
+const POOL_MESSAGES: Readonly<Record<CoinJoinPoolMessage, string>> = messageTable(
+  "coinjoin.poolMessage",
+  Object.keys(en.coinjoin.poolMessage satisfies Record<CoinJoinPoolMessage, string>) as CoinJoinPoolMessage[],
+);
 
 export const poolMessageText = (m: CoinJoinPoolMessage) => POOL_MESSAGES[m];
 
-export const POOL_STATE_TEXT: Record<CoinJoinPoolState, string> = {
-  idle: "Idle",
-  queue: "Queued",
-  acceptingEntries: "Accepting entries",
-  signing: "Signing",
-  error: "Error",
-};
+export const POOL_STATE_TEXT: Readonly<Record<CoinJoinPoolState, string>> = messageTable(
+  "coinjoin.poolState",
+  Object.keys(en.coinjoin.poolState satisfies Record<CoinJoinPoolState, string>) as CoinJoinPoolState[],
+);
 
 /** D4: a running mixer that cannot move until sync, masternodes, funds or confirmations do. */
 const WAITING = new Set<CoinJoinStatusCode["kind"]>([
@@ -267,14 +369,20 @@ export const sameMarks = (a: MixerMarks, b: MixerMarks) => a.total === b.total &
 /** Whether a step moved anything since `marks`: a total read only since then does not count. */
 const movedSince = (marks: MixerMarks, now: MixerMarks) => !sameBalances(marks.balances, now.balances) || (marks.total !== undefined && marks.total !== now.total);
 
-const ACTION_LABEL: Record<ViewActionKind, string> = {
-  start: CoinJoinText.start,
-  stop: CoinJoinText.stop,
-  retry: CoinJoinText.retry,
-  settings: CoinJoinText.openSettings,
+const actionLabel = (kind: ViewActionKind): string => {
+  switch (kind) {
+    case "start":
+      return CoinJoinText.start;
+    case "stop":
+      return CoinJoinText.stop;
+    case "retry":
+      return CoinJoinText.retry;
+    case "settings":
+      return CoinJoinText.openSettings;
+  }
 };
 
-const action = (kind: ViewActionKind, disabled = false): ViewAction => ({ kind, disabled, label: ACTION_LABEL[kind] });
+const action = (kind: ViewActionKind, disabled = false): ViewAction => ({ kind, disabled, label: actionLabel(kind) });
 
 /** S1–S14: the first row that matches wins. */
 export function coinjoinView({ status, readFailed, readError, amount, masked, total, start, now }: ViewInputs): CoinJoinView {
@@ -340,7 +448,7 @@ export function coinjoinView({ status, readFailed, readError, amount, masked, to
  * A running mixer's status line moves up to once a second: it is shown, not announced. */
 export function announcement(view: CoinJoinView): string {
   const running = view.onHome && !view.dismissable;
-  return running || !view.line ? view.title : `${view.title}. ${view.line}`;
+  return running || !view.line ? view.title : t("coinjoin.announcement", { title: view.title, line: view.line });
 }
 
 /** What a refused settings write says (D11): the engine's `invalid_argument` names the field. */
@@ -357,7 +465,7 @@ export function actionFailureText(e: unknown, amount: (duffs: number) => string)
   if (hasCode(e, "coinjoin.move_running")) return CoinJoinText.moveRunning;
   if (hasCode(e, "coinjoin.insufficient_funds")) {
     const min = e.data?.kind === "limit" ? e.data.duffs : null;
-    return CoinJoinText.minimumBalance(min === null ? "the minimum balance" : amount(min));
+    return min === null ? t("coinjoin.minimumBalanceUnknown") : CoinJoinText.minimumBalance(amount(min));
   }
   return failureText(e);
 }
@@ -389,17 +497,29 @@ export interface Level {
 export const LEVELS: Level[] = [
   {
     id: "intermediate",
-    title: "Intermediate",
+    get title() {
+      return t("coinjoin.level.intermediate.title");
+    },
     rounds: 4,
-    description: "Advanced users who have a very high level of technical expertise can determine your transaction history",
-    time: "up to 30 minutes",
+    get description() {
+      return t("coinjoin.level.intermediate.description");
+    },
+    get time() {
+      return t("coinjoin.level.intermediate.time");
+    },
   },
   {
     id: "advanced",
-    title: "Advanced",
+    get title() {
+      return t("coinjoin.level.advanced.title");
+    },
     rounds: 8,
-    description: "It would be very difficult for advanced users with any level of technical expertise to determine your transaction history",
-    time: "Multiple hours",
+    get description() {
+      return t("coinjoin.level.advanced.description");
+    },
+    get time() {
+      return t("coinjoin.level.advanced.time");
+    },
   },
 ];
 
@@ -427,15 +547,20 @@ export const formOf = (s: CoinJoinSettings): SettingsForm => ({
   denomsHardCap: String(s.denomsHardCap),
 });
 
-const LABELS: Record<FormField, string> = {
-  rounds: CoinJoinText.mixingRounds,
-  targetAmountDash: "Target balance",
-  maxSessions: CoinJoinText.parallelSessions,
-  denomsGoal: `${CoinJoinText.inputsPerDenomination}: ${CoinJoinText.denomsTarget}`,
-  denomsHardCap: `${CoinJoinText.inputsPerDenomination}: ${CoinJoinText.denomsMaximum}`,
+const fieldOutOfRangeText = (field: FormField, min: number, max: number): string => {
+  switch (field) {
+    case "rounds":
+      return t("coinjoin.settingsCheck.rounds", { min, max });
+    case "targetAmountDash":
+      return t("coinjoin.settingsCheck.targetAmountDash", { min, max });
+    case "maxSessions":
+      return t("coinjoin.settingsCheck.maxSessions", { min, max });
+    case "denomsGoal":
+      return t("coinjoin.settingsCheck.denomsGoal", { min, max });
+    case "denomsHardCap":
+      return t("coinjoin.settingsCheck.denomsHardCap", { min, max });
+  }
 };
-
-const fmt = (n: number) => n.toLocaleString("en-US");
 
 /** The form as settings over `current`, checked against the engine's ranges; else the first
  * field that is wrong and why. */
@@ -459,9 +584,9 @@ export function checkSettings(
     const [min, max] = ranges[field];
     const n = /^\d+$/.test(text) ? Number(text) : NaN;
     if (!Number.isSafeInteger(n) || n < min || n > max)
-      return { field, text: `${LABELS[field]} must be a whole number from ${fmt(min)} to ${fmt(max)}.` };
+      return { field, text: fieldOutOfRangeText(field, min, max) };
     values[field] = n;
   }
-  if (values.denomsGoal > values.denomsHardCap) return { field: "denomsGoal", text: "The target number of inputs cannot be above the maximum." };
+  if (values.denomsGoal > values.denomsHardCap) return { field: "denomsGoal", text: t("coinjoin.settingsCheck.denomsGoalAboveMax") };
   return { ok: { ...current, ...values } };
 }
