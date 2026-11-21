@@ -56,7 +56,7 @@ const STEPS: { n: Step; title: string; heading: string }[] = [
 type FieldErrors = Partial<Record<ProposalFieldName, string>>;
 
 /** After a failed `create_proposal` (D34): reading Mine, the proposal it made anyway, Mine
- *  unreadable, or a refusal (issue #148): the proposal of that name already in progress, or one
+ *  unreadable, or a refusal: the proposal of that name already in progress, or one
  *  whose payment is under way. Pay stays off in all five. */
 type AfterFailure =
   | { kind: "checking" }
@@ -110,7 +110,7 @@ export function CreateProposalSheet({
   const [feeChanged, setFeeChanged] = useState(false);
   const mine = useMyProposals(wallet.walletId);
   const [after, setAfter] = useState<AfterFailure | null>(null);
-  /** The engine refused the draft before anything was paid (issue #148). */
+  /** The engine refused the draft before anything was paid. */
   const refused = after?.kind === "existing" || after?.kind === "underway";
 
   const choice = useMemo(() => defaultFirstPayment(superblocks.data ?? [], now), [superblocks.data, now]);
