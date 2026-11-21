@@ -1539,8 +1539,23 @@ impl AppDb {
         value: u64,
         keep_existing: bool,
     ) -> Result<String> {
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
+        Self::raise_in(&self.conn(), scope, key, value, keep_existing)
+    }
+
+    /// [`Self::raise_setting`] without `keep_existing`, returning once the
+    /// write is durable.
+    pub fn raise_setting_durable(&self, scope: &str, key: &str, value: u64) -> Result<String> {
+        self.durably(|conn| Self::raise_in(conn, scope, key, value, false))
+    }
+
+    fn raise_in(
+        conn: &Connection,
+        scope: &str,
+        key: &str,
+        value: u64,
+        keep_existing: bool,
+    ) -> Result<String> {
+        let tx = conn.unchecked_transaction()?;
         let stored = tx.query_row(
             "INSERT INTO settings_kv (scope, key, value) VALUES (?1, ?2, ?3)
              ON CONFLICT (scope, key) DO UPDATE SET value = CASE

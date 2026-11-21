@@ -213,6 +213,10 @@ export function MasternodesPage({ wallet, network }: { wallet: WalletSummary; ne
             setFilter("mine");
             showToast(createdToast(p));
           }}
+          onShowMine={() => {
+            setSheet(null);
+            setFilter("mine");
+          }}
         />
       )}
       {voteOn && <VoteSheet row={voteOn} wallet={wallet} network={network} onClose={() => setVoteOn(null)} />}

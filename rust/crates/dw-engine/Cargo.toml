@@ -94,6 +94,8 @@ md-5 = "0.10"
 rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
 
 [dev-dependencies]
+# `test-utils`: signs a test's own spend of a held coin, as a send does.
+key-wallet = { workspace = true, features = ["test-utils"] }
 dw-appdb = { workspace = true, features = ["test-mutations", "durability-sim", "fault-inject"] }
 # Cheap Argon2id parameters for test vaults (debug builds only, never mainnet/testnet).
 dw-vault = { workspace = true, features = ["insecure-test-kdf", "fault-inject"] }
