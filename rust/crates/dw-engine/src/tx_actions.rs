@@ -14,12 +14,12 @@
 //! without proof; the host warns that the transaction may still confirm
 //! (DESIGN-opus §1.14). If it does, the history shows it confirmed again.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use dashcore::consensus::encode::{deserialize, serialize_hex};
-use dashcore::{OutPoint, Transaction, Txid};
+use dashcore::{BlockHash, OutPoint, Transaction, Txid};
 use dw_appdb::{AppDb, LockReason};
 use dw_units::{Chain, Unit};
 use platform_wallet::changeset::changeset::SweepBatch;
@@ -30,7 +30,7 @@ use platform_wallet::changeset::{
 use crate::csv_export::{TX_TYPE_COUNT, write_csv};
 use crate::history::{
     ChainView, HistoryFilter, HistorySort, Labels, TxEntry, TxType, amounts, chainlock_beaten,
-    depth_of, filtered, records_of, status_of,
+    depth_of, filtered, records_of, rival_heights, status_of,
 };
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
@@ -209,7 +209,8 @@ fn abandon_with(
     abandoned
 }
 
-fn facts(entry: &TxEntry, view: &ChainView<'_>) -> Facts {
+/// `active`: the SPV header chain's block hashes [`chainlock_beaten`] reads.
+fn facts(entry: &TxEntry, view: &ChainView<'_>, active: &HashMap<u32, BlockHash>) -> Facts {
     let (credit, debit, from_me) = amounts(entry, view);
     let all_from_me = from_me > 0 && from_me == entry.tx.input.len();
     let (status, _) = status_of(entry, view, all_from_me);
@@ -220,7 +221,12 @@ fn facts(entry: &TxEntry, view: &ChainView<'_>) -> Facts {
         instant_locked: status.instant_locked,
         chainlock_beaten: status.instant_locked
             && depth == 0
-            && chainlock_beaten(view.history, &entry.tx.txid(), view.chainlock_height),
+            && chainlock_beaten(
+                view.history,
+                &entry.tx.txid(),
+                view.chainlock_height,
+                active,
+            ),
         coinbase: entry.tx.is_coin_base(),
         abandoned: entry.is_abandoned(),
         from_me,
@@ -274,13 +280,21 @@ impl NetworkSession {
         wallet: WalletId,
         txid: Txid,
     ) -> Result<(TxEntry, Facts), EngineError> {
+        let active = self.rival_headers(wallet).await;
         self.with_view(manager, wallet, |view| {
             view.history
                 .get(&txid)
-                .map(|entry| (entry.clone(), facts(entry, view)))
+                .map(|entry| (entry.clone(), facts(entry, view, &active)))
         })
         .await?
         .ok_or_else(|| EngineError::TxNotFound(txid.to_string()))
+    }
+
+    /// The SPV header chain's block hash at each height [`rival_heights`]
+    /// names in `wallet`'s history (only headers the store has).
+    async fn rival_headers(&self, wallet: WalletId) -> HashMap<u32, BlockHash> {
+        let heights = self.hub.history.read(&wallet, rival_heights);
+        self.hub.header_hashes(heights).await
     }
 
     /// dash-qt detail fields and action enablement for one transaction.
@@ -381,6 +395,19 @@ impl NetworkSession {
         // Planned on a copy under the lock that applies it, so the replay
         // record stored before it covers what is abandoned.
         let descendants = self.unmined_descendants(wallet, root);
+        let locked = |e: &TxEntry| {
+            e.instant_locked
+                || matches!(
+                    e.context,
+                    key_wallet::transaction_checking::TransactionContext::InstantSend(_)
+                )
+        };
+        if (self.hub.history).read(&wallet, |txs| {
+            (descendants.iter()).any(|t| txs.get(t).is_some_and(locked))
+        }) {
+            return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
+        }
+        let active = self.rival_headers(wallet).await;
         let (abandoned, checkpoint, released, beaten) = {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
@@ -394,8 +421,8 @@ impl NetworkSession {
             let locks = info.core_wallet.instant_send_locks();
             let chainlock = self.chainlock_height(&info.core_wallet);
             let beaten: BTreeSet<Txid> = self.hub.history.read(&wallet, |txs| {
-                (planned.iter())
-                    .filter(|t| chainlock_beaten(txs, t, chainlock))
+                (planned.iter().chain([&root]))
+                    .filter(|t| chainlock_beaten(txs, t, chainlock, &active))
                     .copied()
                     .collect()
             });
@@ -413,17 +440,29 @@ impl NetworkSession {
             if !abandoned.is_empty() {
                 info.core_wallet.update_balance();
             }
-            let released = self.released(
+            let mut released = self.released(
                 wallet,
                 &abandoned,
                 info.core_wallet.observed_spent_outpoints(),
             );
+            // The ChainLocked winner proves one input spent, not the others
+            // free: only a coin key-wallet holds unspent is released, the
+            // rest stay stored spent until the rescan credits them.
+            if !beaten.is_empty() {
+                let held: HashSet<OutPoint> = (info.core_wallet.utxos().iter())
+                    .map(|u| u.outpoint)
+                    .collect();
+                released.retain(|o| held.contains(o));
+            }
             (abandoned, checkpoint, released, beaten)
         };
         // key-wallet refuses (returns nothing) when it holds the root as
-        // settled.
+        // settled; its own record of an InstantSend lock is that.
         if abandoned.is_empty() {
-            return Err(EngineError::TxActionRefused(TxActionRefusal::Confirmed));
+            return Err(EngineError::TxActionRefused(match beaten.contains(&root) {
+                true => TxActionRefusal::InstantLocked,
+                false => TxActionRefusal::Confirmed,
+            }));
         }
         let txs: Vec<(Txid, Transaction)> = abandoned
             .iter()
@@ -434,8 +473,8 @@ impl NetworkSession {
         let persister = Arc::clone(&live.persister);
         let sweep = SweepBatch {
             txids: abandoned.iter().copied().collect(),
-            // An input not released (a block spent it) stays stored spent,
-            // attributed to the root.
+            // An input not released (a block spent it, or a ChainLocked
+            // winner beat the root) stays stored spent, attributed to it.
             superseded_by: root,
             winner_mined_height: None,
             released_outpoints: released.clone(),
@@ -501,21 +540,13 @@ impl NetworkSession {
     }
 
     /// The history's transactions out of a block that descend from `root`,
-    /// unless abandoned or InstantSend-locked: the descendants key-wallet
-    /// holds no record of (a payment restored as a claimant at load, #88),
-    /// every child of an output followed.
+    /// unless abandoned: the descendants key-wallet holds no record of (a
+    /// payment restored as a claimant at load, #88), every child of an
+    /// output followed. A locked one refuses the abandon.
     fn unmined_descendants(&self, wallet: WalletId, root: Txid) -> Vec<Txid> {
         self.hub.history.read(&wallet, |txs| {
             let live: Vec<(&Txid, &TxEntry)> = (txs.iter())
-                .filter(|(_, e)| {
-                    e.context.block_info().is_none()
-                        && !e.abandoned
-                        && !e.instant_locked
-                        && !matches!(
-                            e.context,
-                            key_wallet::transaction_checking::TransactionContext::InstantSend(_)
-                        )
-                })
+                .filter(|(_, e)| e.context.block_info().is_none() && !e.abandoned)
                 .collect();
             let mut found = BTreeSet::from([root]);
             let mut order = Vec::new();
@@ -536,28 +567,18 @@ impl NetworkSession {
     }
 
     /// The coins abandoning `abandoned` releases: their inputs that none of
-    /// them created and no processed block spent (`observed`, or a
-    /// transaction the history holds in a block): key-wallet keeps the
-    /// claim on a coin a block spent, and prunes what it observed once the
-    /// block is ChainLocked.
+    /// them created and no processed block spent (`observed`): key-wallet
+    /// keeps the claim on a coin a block spent.
     fn released(
         &self,
         wallet: WalletId,
         abandoned: &BTreeSet<Txid>,
         observed: &BTreeMap<OutPoint, u32>,
     ) -> Vec<OutPoint> {
-        let mined: HashSet<OutPoint> = self.hub.history.read(&wallet, |txs| {
-            (txs.values())
-                .filter(|e| e.context.block_info().is_some())
-                .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
-                .collect()
-        });
         (abandoned.iter())
             .filter_map(|t| self.hub.history.get(&wallet, t))
             .flat_map(|e| e.tx.input.into_iter().map(|i| i.previous_output))
-            .filter(|o| {
-                !abandoned.contains(&o.txid) && !observed.contains_key(o) && !mined.contains(o)
-            })
+            .filter(|o| !abandoned.contains(&o.txid) && !observed.contains_key(o))
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
@@ -671,11 +692,13 @@ impl NetworkSession {
         .await
     }
 
-    /// iOS "remove unconfirmed" (IOS-034): abandons every unconfirmed,
-    /// non-InstantSend, non-abandoned transaction of `wallet` (all loaded
-    /// wallets for `None`) and rescans from the lowest funding height of the
-    /// coins they spent. Needs a running SPV client for the rescan. Returns
-    /// how many transactions were dropped (descendants included).
+    /// iOS "remove unconfirmed" (IOS-034): abandons every transaction of
+    /// `wallet` (all loaded wallets for `None`) that Abandon would: out of a
+    /// block, not abandoned, and not InstantSend-locked unless a ChainLocked
+    /// spend of one of its inputs beat it; and rescans from the lowest
+    /// funding height of the coins they spent. Needs a running SPV client
+    /// for the rescan. Returns how many transactions were dropped
+    /// (descendants included).
     pub async fn drop_unconfirmed(
         self: &Arc<Self>,
         wallet: Option<WalletId>,
@@ -701,11 +724,12 @@ impl NetworkSession {
             };
             let mut dropped = 0u32;
             for id in wallets {
+                let active = this.rival_headers(id).await;
                 let candidates: Vec<Txid> = this
                     .with_view(&manager, id, |view| {
                         view.history
                             .iter()
-                            .filter(|(_, e)| facts(e, view).abandon_refusal().is_none())
+                            .filter(|(_, e)| facts(e, view, &active).abandon_refusal().is_none())
                             .map(|(t, _)| *t)
                             .collect()
                     })
@@ -963,7 +987,7 @@ mod tests {
             payees: &payees,
         };
         assert_eq!(
-            facts(&entry, &view).abandon_refusal(),
+            facts(&entry, &view, &HashMap::new()).abandon_refusal(),
             Some(TxActionRefusal::InstantLocked)
         );
     }

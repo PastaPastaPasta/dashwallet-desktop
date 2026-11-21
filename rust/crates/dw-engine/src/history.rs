@@ -14,7 +14,7 @@
 //! transactions, and `Other` for mixed debit transactions.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -327,13 +327,17 @@ pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Optio
         || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
 }
 
-/// Whether another transaction in a ChainLocked block spends one of
-/// `txid`'s inputs: a ChainLock outranks an InstantSend lock (DIP-10, as
-/// key-wallet's conflict sweep orders them), so `txid` can never confirm.
+/// Whether another transaction in a ChainLocked block of the active chain
+/// spends one of `txid`'s inputs: a ChainLock outranks an InstantSend lock
+/// (DIP-10, as key-wallet's conflict sweep orders them), so `txid` can
+/// never confirm. `active` is the block hash the SPV header chain holds at
+/// each height it has: a record of a block a fork replaced comes back from
+/// wallet.sqlite after a restart, and an unknown header proves nothing.
 pub(crate) fn chainlock_beaten(
     txs: &HashMap<Txid, TxEntry>,
     txid: &Txid,
     chainlock_height: Option<u32>,
+    active: &HashMap<u32, dashcore::BlockHash>,
 ) -> bool {
     let Some(e) = txs.get(txid) else {
         return false;
@@ -342,8 +346,24 @@ pub(crate) fn chainlock_beaten(
     (txs.iter()).any(|(w, we)| {
         w != txid
             && chain_locked(&we.context, chainlock_height)
+            && (we.context.block_info())
+                .is_some_and(|b| active.get(&b.height()) == Some(&b.block_hash()))
             && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
     })
+}
+
+/// Heights of the blocks holding a transaction that spends an input of a
+/// transaction out of a block: the headers [`chainlock_beaten`] reads.
+pub(crate) fn rival_heights(txs: &HashMap<Txid, TxEntry>) -> BTreeSet<u32> {
+    let unmined: HashSet<OutPoint> = (txs.values())
+        .filter(|e| e.context.block_info().is_none())
+        .flat_map(|e| e.tx.input.iter().map(|i| i.previous_output))
+        .collect();
+    (txs.values())
+        .filter_map(|e| Some((e, e.context.block_info()?.height())))
+        .filter(|(e, _)| (e.tx.input.iter()).any(|i| unmined.contains(&i.previous_output)))
+        .map(|(_, h)| h)
+        .collect()
 }
 
 /// The outpoints the wallet's transactions spend by Dash Core's
@@ -2588,10 +2608,12 @@ mod tests {
         let locked = || TransactionContext::InstantSend(dashcore::InstantLock::default());
         let payment = spend(1, &[coin(1), coin(2)], locked());
         let txid = payment.tx.txid();
-        let beaten = |winner: TxEntry, chainlock: Option<u32>| {
+        let active = HashMap::from([(12, BlockHash::all_zeros())]);
+        let beaten_on = |winner: TxEntry, chainlock: Option<u32>, active| {
             let txs = HashMap::from([(txid, payment.clone()), (winner.tx.txid(), winner)]);
-            chainlock_beaten(&txs, &txid, chainlock)
+            chainlock_beaten(&txs, &txid, chainlock, active)
         };
+        let beaten = |winner, chainlock| beaten_on(winner, chainlock, &active);
         let chainlocked =
             TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
         assert!(beaten(spend(2, &[coin(2)], chainlocked.clone()), None));
@@ -2599,12 +2621,27 @@ mod tests {
         assert!(!beaten(spend(2, &[coin(2)], in_block(12, 0)), Some(11)));
         assert!(!beaten(spend(2, &[coin(2)], in_block(12, 0)), None));
         assert!(!beaten(spend(2, &[coin(2)], locked()), Some(12)));
-        assert!(!beaten(spend(2, &[coin(3)], chainlocked), Some(12)));
+        assert!(!beaten(spend(2, &[coin(3)], chainlocked.clone()), Some(12)));
+        let forked = HashMap::from([(12, BlockHash::from_byte_array([1; 32]))]);
+        let winner = || spend(2, &[coin(2)], chainlocked.clone());
+        assert!(
+            !beaten_on(winner(), Some(12), &forked),
+            "a fork replaced it"
+        );
+        assert!(!beaten_on(winner(), Some(12), &HashMap::new()), "no header");
         let alone = HashMap::from([(txid, payment.clone())]);
-        assert!(!chainlock_beaten(&alone, &txid, Some(12)));
+        assert!(!chainlock_beaten(&alone, &txid, Some(12), &active));
         let mut mined = payment.clone();
         mined.context = in_block(12, 0);
         let alone = HashMap::from([(txid, mined)]);
-        assert!(!chainlock_beaten(&alone, &txid, Some(12)), "not by itself");
+        assert!(
+            !chainlock_beaten(&alone, &txid, Some(12), &active),
+            "not by itself"
+        );
+        let txs = HashMap::from([(txid, payment.clone()), (winner().tx.txid(), winner())]);
+        assert_eq!(rival_heights(&txs), BTreeSet::from([12]));
+        let unrelated = spend(3, &[coin(3)], in_block(7, 0));
+        let txs = HashMap::from([(txid, payment.clone()), (unrelated.tx.txid(), unrelated)]);
+        assert!(rival_heights(&txs).is_empty());
     }
 }
