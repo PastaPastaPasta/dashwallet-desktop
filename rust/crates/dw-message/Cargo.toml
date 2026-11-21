@@ -9,12 +9,12 @@ description = "Dash Core signmessage / verifymessage (\"DarkCoin Signed Message:
 
 [dependencies]
 # Same git source and revision that the platform pin (rust/Cargo.toml) pins.
-dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "570d686cbb4aac032d2903c6d4e1332a7067e4b5", default-features = false, features = ["secp-recovery"] }
+dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "25013d7adefee17c80565f7abfe691928e03f8bb", default-features = false, features = ["secp-recovery"] }
 dw-uri = { path = "../dw-uri" }
 zeroize = "1.8"
 
 [dev-dependencies]
 # For cross-checking against rust-dashcore's own message-signing helpers.
-dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "570d686cbb4aac032d2903c6d4e1332a7067e4b5", default-features = false, features = ["secp-recovery", "base64"] }
+dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "25013d7adefee17c80565f7abfe691928e03f8bb", default-features = false, features = ["secp-recovery", "base64"] }
 serde_json = "1"
 proptest = "1"
