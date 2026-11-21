@@ -33,26 +33,26 @@ owner updates the State column as items land and reports against it daily.
     the first 40 lines of its diff; #193 set them, and #191 skipped the test on Windows. Product merges
     were held until `main`'s Swift and Windows jobs were green again, at 01:14 UTC on 11-21. The run of
     `main` at #193 finished green in every job.
-  - Merged on 11-21 by 03:15 UTC: the two checksum lines (#193, at 00:12 UTC), item 6 of #173 (#185), the fix for case 18 of #170 (#195, the release
+  - Merged on 11-21 by 04:10 UTC: the two checksum lines (#193, at 00:12 UTC), item 6 of #173 (#185), the fix for case 18 of #170 (#195, the release
     owner's masternode lane), #148 (#187), the nightly-failure issue (#181), a refused proposal reading
     as a refusal (#197, two items of #188), **the pin of the rust-dashcore and platform forks for #45,
-    #46, #47 and #120 (#159), which is therefore in 0.3**, item 1 of #173 (#198), and the renderer part
-    of #133 (#137). From #159 on, the wallet's data is one-way for this release: the first start writes
+    #46, #47 and #120 (#159), which is therefore in 0.3**, item 1 of #173 (#198), the renderer part
+    of #133 (#137), and the Swift bindings check on pull requests (#199, item 7 of #186;
+    it adds about nine minutes to "Rust tests (Linux)"). From #159 on, the wallet's data is one-way for this release: the first start writes
     two storage migrations, after a copy to `backups/auto`. #159 merged with three known limits, ruled
     by the release owner and listed in #177 (items 9, 10 and 11); the fixes for 9 and 10 are being
     written in the rust-dashcore fork and re-pin in their own pull request, aimed at 11-22 18:00 UTC.
     The first run of `main` that holds the last four of these merges had not finished at the time of
     writing.
-  - `main` is red again since 11-21 03:17 UTC, in the macOS job of the run at #181: one `dwcli` test
-    pins a status line that depends on the three-second budget of a new wallet's DashPay bring-up, and
-    the runner was slower than that (#202). What the test is there to prove held in that run. The fix
-    is to the tests only. Merges wait for a green macOS job on `main`.
+  - `main` was red again on 11-21 from 03:17 to 04:12 UTC, in the macOS job of the run at #181: one
+    `dwcli` test pins a status line that depends on the three-second budget of a new wallet's DashPay
+    bring-up, and the runner was slower than that (#202). What the test is there to prove held in that
+    run. The macOS job of the next run, at #137, passed. The fix is to the tests only (#203, in a pull
+    request). Merges were not held for it after 04:10 UTC: #199 merged at 04:07 UTC.
   - In a pull request:
     - #190 (#192): the holder is found and fixed (the session hub's sweep-news hook kept the app
       database), the Windows skip is removed, and the test passes on Windows in a run of the branch. It
       took `main` in after #198 and merges when its checks and a second Windows run are green.
-    - The Swift bindings check on pull requests (#199, item 7 of #186), reviewed. It adds about nine
-      minutes to "Rust tests (Linux)" on its first run.
     - #68, #69 and the engine part of #74 (#121). The review of 11-21 found eight more cases; the
       release owner ruled seven into a third fix round, which is written and in its gates. One of them
       (Repair refusing a stuck funding whose locks hold coins of both kinds, with no way out for the
