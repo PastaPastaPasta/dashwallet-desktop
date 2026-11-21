@@ -111,7 +111,8 @@ test("the untranslated-text check sees English that bypasses the catalog", async
 
 for (const [saved, shown, expected] of [
   ["EN", "English", "en"],
-  ["pt-BR", "pt-BR (not available, using System default)", "pt-BR"],
+  // A tag reserved for local use, which no build ships.
+  ["qaa-BR", "qaa-BR (not available, using System default)", "qaa-BR"],
 ] as const) {
   test(`a saved language ${saved} shows as its own row and choosing System default clears it`, async ({ page }) => {
     await page.goto(fixtureUrl("dashpay-registered", "light", `&savedLang=${saved}`));

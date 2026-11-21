@@ -82,7 +82,8 @@ const t = useT();
   `messageTable(prefix, keys)`.
 - In a right-to-left language each placeholder value that is text or a number is a bidi isolate (U+2068 …
   U+2069); in a left-to-right language only a text value with right-to-left letters or a bidi control is
-  (an Arabic or Hebrew username), so English text is unchanged. An element given to `t.rich` is wrapped in
+  (an Arabic or Hebrew username), so English text is unchanged. A value's own isolate controls are
+  paired, and each of its paragraphs is isolated on its own, so nothing in it reaches the text after it. An element given to `t.rich` is wrapped in
   `<bdi>` in every language. A message a right-to-left catalog lacks falls back to English and is drawn
   left to right as a whole (U+2066 … U+2069). The isolate characters stay in `aria-label` and `title`
   values; screen readers ignore them, and a test comparing an exact accessible name under `ar-XB` includes

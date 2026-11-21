@@ -49,10 +49,10 @@ describe("t", () => {
   });
 
   it("picks the plural form of an English fallback by English's rules, and formats the number in the language's locale", () => {
-    const ru: Language = { tag: "ru", name: "Русский", dir: "ltr", messages: new Map([["shell.status.synced", "Синхронизировано"]]) };
+    const ru: Language = { tag: "ru-x-dwtest", name: "Русский", dir: "ltr", messages: new Map([["shell.status.synced", "Синхронизировано"]]) };
     LANGUAGES.push(ru);
     try {
-      choose("ru");
+      choose("ru-x-dwtest");
       // Russian puts 21 in `one`; the English text it falls back to does not.
       expect(t("shell.status.peers", { count: 21 })).toBe("21 peers");
       expect(t("shell.status.peers", { count: 1 })).toBe("1 peer");
@@ -118,7 +118,7 @@ describe("t", () => {
 });
 
 describe("the language in use", () => {
-  const real = LANGUAGES.filter((l) => !l.pseudo);
+  const real = [LANGUAGES[0]];
   const es: Language = { tag: "es", name: "Español", dir: "ltr", messages: new Map(flatten(en)) };
   const ptPartial: Language = { tag: "pt-BR", name: "Português (Brasil)", dir: "ltr", messages: new Map([["routes.home", "Início"]]) };
 
@@ -141,14 +141,14 @@ describe("the language in use", () => {
   });
 
   it("never takes a pseudo-locale from the system", () => {
-    expect(systemLanguage(["en-XA", "ar-XB", "ar"]).tag).toBe("en");
+    expect(systemLanguage(["en-XA", "ar-XB"]).tag).toBe("en");
   });
 
   it("takes a saved choice the build ships, and follows the system for one it does not", () => {
     expect(resolveLanguage("en-XA", ["en"]).tag).toBe("en-XA");
     expect(resolveLanguage("ar-xb", ["en"]).dir).toBe("rtl");
-    expect(resolveLanguage("tlh", ["en-GB"]).tag).toBe("en");
-    expect(resolveLanguage(null, ["fr-FR"]).tag).toBe("en");
+    expect(resolveLanguage("qaa", ["en-GB"]).tag).toBe("en");
+    expect(resolveLanguage(null, ["qaa-FR"]).tag).toBe("en");
   });
 
   it("formats with the base locale unless another language is chosen", () => {
@@ -158,12 +158,12 @@ describe("the language in use", () => {
     expect(formatLocale(undefined, "en", ["en-GB"])).toBe(undefined);
     expect(formatLocale(undefined, "en", ["de-DE"])).toBe("en");
     expect(formatLocale("en-US", "ar-XB", ["en-US"])).toBe("ar-XB");
-    expect(formatLocale("en-US", "tlh", ["en-US"])).toBe("en-US");
+    expect(formatLocale("en-US", "qaa", ["en-US"])).toBe("en-US");
     // A chosen language in another script than the system's formats in its own.
-    LANGUAGES.push({ tag: "zh-Hans", name: "简体中文", dir: "ltr", messages: new Map() });
+    LANGUAGES.push({ tag: "zh-Hans-x-dwtest", name: "简体中文", dir: "ltr", messages: new Map() });
     try {
-      expect(formatLocale("zh-TW", "zh-Hans", ["zh-TW"])).toBe("zh-Hans");
-      expect(formatLocale("zh-CN", "zh-Hans", ["zh-CN"])).toBe("zh-CN");
+      expect(formatLocale("zh-TW", "zh-Hans-x-dwtest", ["zh-TW"])).toBe("zh-Hans-x-dwtest");
+      expect(formatLocale("zh-CN", "zh-Hans-x-dwtest", ["zh-CN"])).toBe("zh-CN");
     } finally {
       LANGUAGES.pop();
     }
@@ -219,6 +219,9 @@ describe("bidi isolation", () => {
     // A stray isolate end cannot close the isolate around the value, nor an unclosed start outlive it.
     expect(t("network.confirmTitle", { network: "x\u2069\u202Ey" })).toBe("Switch to \u2068\u2068x\u2069\u202Ey\u2069?");
     expect(t("network.confirmTitle", { network: "x\u2067y" })).toBe("Switch to \u2068x\u2067y\u2069\u2069?");
+    // An isolate cannot span a paragraph separator, so each paragraph of a value is isolated alone.
+    expect(t("network.confirmTitle", { network: "x\u2029\u202Ey" })).toBe("Switch to \u2068x\u2069\u2029\u2068\u202Ey\u2069?");
+    expect(t("network.confirmTitle", { network: "\u2067x\r\ny" })).toBe("Switch to \u2068\u2067x\u2069\u2069\r\n\u2068y\u2069?");
     // Sogdian, past the first supplementary right-to-left block.
     expect(t("network.confirmTitle", { network: "\u{10F30}" })).toBe("Switch to \u2068\u{10F30}\u2069?");
     expect(t("network.confirmTitle", { network: "a\uFEFFb" })).toBe("Switch to a\uFEFFb?");
@@ -234,10 +237,10 @@ describe("bidi isolation", () => {
   });
 
   it("draws an English fallback left to right as a whole in a right-to-left language", () => {
-    const ar: Language = { tag: "ar", name: "العربية", dir: "rtl", messages: new Map([["shell.status.synced", "متزامن"]]) };
+    const ar: Language = { tag: "ar-x-dwtest", name: "العربية", dir: "rtl", messages: new Map([["shell.status.synced", "متزامن"]]) };
     LANGUAGES.push(ar);
     try {
-      choose("ar");
+      choose("ar-x-dwtest");
       expect(t("shell.status.synced")).toBe("متزامن");
       expect(t("shell.status.peers", { count: 21 })).toBe(`\u2066\u2068${new Intl.NumberFormat("ar").format(21)}\u2069 peers\u2069`);
       expect(text(t.rich("network.confirmTitle", { network: "x" }))).toBe("\u2066Switch to \u2068x\u2069?\u2069");

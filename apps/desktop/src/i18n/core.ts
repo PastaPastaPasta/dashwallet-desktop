@@ -111,7 +111,19 @@ export function fill(message: string, values: Values, how: Fill): string {
 
 export function show(value: unknown, { locale, isolate }: Fill): string {
   const text = typeof value === "number" ? new Intl.NumberFormat(locale).format(value) : String(value ?? "");
-  return isolate || hasRtl(text) ? `\u2068${balanced(text)}\u2069` : text;
+  return isolate || hasRtl(text) ? isolated(text) : text;
+}
+
+/** A bidi paragraph separator: an isolate cannot span one. */
+const PARAGRAPH = /(\r\n|[\n\r\x1C-\x1E\x85\u2029])/;
+
+/** `text` with each of its paragraphs isolated on its own, so no control in a later paragraph can
+ * reach the text after it. */
+function isolated(text: string): string {
+  return text
+    .split(PARAGRAPH)
+    .map((part, i) => (i % 2 ? part : `\u2068${balanced(part)}\u2069`))
+    .join("");
 }
 
 /** `text` with its isolates paired, so a stray U+2069 cannot close the isolate around it and an
