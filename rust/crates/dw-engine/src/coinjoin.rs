@@ -2594,7 +2594,10 @@ impl NetworkSession {
         };
         let appdb = Arc::downgrade(&live.appdb);
         self.hub.attach_sweep_news(Box::new(move |wallet_id, news| {
-            let appdb = appdb.upgrade()?;
+            // Closed: there is nothing to write and nothing to try again.
+            let Some(appdb) = appdb.upgrade() else {
+                return Some(false);
+            };
             let scope = dw_appdb::local_scope(&wallet_id.to_string());
             let written = match news {
                 SweepNews::Truncated { height } => delete_beaten_above(&appdb, &scope, height),

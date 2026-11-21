@@ -171,8 +171,14 @@ pub(crate) const PERSISTER_RELEASE: Duration = Duration::from_secs(3);
 /// Waits, within [`PERSISTER_RELEASE`], for the persister's last reference
 /// to go; `false` when one is still held.
 async fn persister_released(persister: &Weak<SqlitePersister>) -> bool {
+    released(persister).await
+}
+
+/// Waits, within [`PERSISTER_RELEASE`], for the last reference to `held`
+/// to go; `false` when one is still held.
+async fn released<T>(held: &Weak<T>) -> bool {
     let deadline = tokio::time::Instant::now() + PERSISTER_RELEASE;
-    while persister.strong_count() > 0 {
+    while held.strong_count() > 0 {
         if tokio::time::Instant::now() >= deadline {
             return false;
         }
@@ -1204,10 +1210,13 @@ impl NetworkSession {
                 "the wallet database is still held after the close; reopening it in this process is refused until it is released"
             );
         }
-        if !holds_database && appdb.strong_count() > 0 {
+        // A write the pump or the store's tap left on a blocking thread
+        // (first-seen times, an unread count) still holds the app database
+        // for as long as it runs; the close waits for those too.
+        if !holds_database && !released(&appdb).await {
             tracing::warn!(
                 network = %self.network,
-                "the app database is still held after the close; its file cannot be replaced on Windows until it is released"
+                "the app database is still held after the close: a reopen in this process is not alone on it, and on Windows its file cannot be replaced until it is released"
             );
         }
         // Per network, so the last to close (§8.5).
