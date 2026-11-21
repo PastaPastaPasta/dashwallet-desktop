@@ -175,13 +175,13 @@ test("DP5-01 a link delivered while the launch offer is still reading wins: no d
 
 test("DP5-01 a link delivered while locked at launch wins at unlock: its claim screen stays usable", async ({ page }) => {
   const errors = trackPageErrors(page);
-  // An existing wallet launched by an invitation link: the vault is locked, the claim screen
-  // opens behind the lock screen, and the unlock's offer finds the invitation saved.
+  // An existing wallet launched by an invitation link: the vault is locked, the link puts the
+  // claim screen on the route for the unlock, and the unlock's offer finds the invitation saved.
   await page.goto(fixtureUrl("locked", "light"));
   await page.getByTestId("lock-screen").waitFor();
   await deliver(page, [INVITATION]);
   await expect.poll(() => world(page, (w) => w.stash.length)).toBe(1);
-  await expect(page.getByTestId("page-joinDashPay")).toBeAttached();
+  await expect(page.getByTestId("page-joinDashPay")).toHaveCount(0);
   await page.getByTestId("lock-field").fill("demo");
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("claim")).toBeVisible();

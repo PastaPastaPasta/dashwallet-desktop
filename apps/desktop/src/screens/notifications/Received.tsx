@@ -3,9 +3,9 @@
 
 import { useEffect, useId, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
-import { useLockStatus } from "../../api/queries";
+import { useWalletGateClosed } from "../../api/lockGate";
 import { useUi } from "../../app/ui";
-import { dismissPrivateToast, showToast } from "../../components/toast";
+import { showToast } from "../../components/toast";
 import { useDisplay, type Display } from "../../format/display";
 import { detailDate } from "../../format/tx";
 import { exposedNow, markReceivedRead, onReceived, useReceived, type ReceivedPayment } from "../../payments/received";
@@ -16,15 +16,12 @@ export function receivedText(duffs: number, shown: Display, discreet: boolean): 
 }
 
 /** The toast for every payment that arrives, wherever the window is (one per batch, its total). It holds
- * both texts, so Discreet mode masks it while it is up; locking takes it down, and none comes while locked. */
+ * both texts, so Discreet mode masks it while it is up; locking takes it down (App), and none comes while locked. */
 export function ReceivedToaster({ network }: { network: NetworkInfo }) {
   const shown = useDisplay(network);
-  const locked = useLockStatus().data?.state === "locked";
+  const locked = useWalletGateClosed();
   useEffect(() => {
-    if (locked) {
-      dismissPrivateToast();
-      return;
-    }
+    if (locked) return;
     return onReceived((batch) => {
       const total = batch.reduce((n, p) => n + p.duffs, 0);
       showToast(receivedText(total, shown, false), undefined, receivedText(total, shown, true));
@@ -34,7 +31,7 @@ export function ReceivedToaster({ network }: { network: NetworkInfo }) {
 }
 
 /** Whether `el` is on screen for someone: connected, and with no `inert` ancestor (the shell is inert
- * behind a sheet, a dialog, the lock screen, onboarding). It follows the attribute as it changes. */
+ * behind a sheet, a dialog, onboarding; a lock unmounts it). It follows the attribute as it changes. */
 function useExposed(el: HTMLElement | null): boolean {
   const [exposed, setExposed] = useState(false);
   useEffect(() => {
@@ -62,9 +59,9 @@ export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId
   // open, is marked new until the view closes.
   const [seen] = useState<ReadonlySet<string>>(() => new Set(payments.filter((p) => p.read).map((p) => p.id)));
   const rows: readonly ReceivedPayment[] = limit ? payments.slice(0, limit) : payments;
-  // Seen means shown, to someone: the rows on screen, with the wallet unlocked and nothing over the
-  // view (a page can stay mounted behind the lock screen or a transaction's sheet).
-  const locked = useLockStatus().data?.state === "locked";
+  // Seen means shown, to someone: the rows on screen, with the wallet unlocked and no inert ancestor
+  // (a transaction's sheet, a dialog). A locked window has no pages: the lock screen replaces them.
+  const locked = useWalletGateClosed();
   const [section, setSection] = useState<HTMLElement | null>(null);
   const exposed = useExposed(section);
   const shownIds = rows.map((p) => p.id).join(",");

@@ -9,7 +9,7 @@ import { CopyValue, DetailRow } from "../../components/detail";
 import type { UsedIcon } from "../../components/icons";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
-import { broadcastFailure, type Outcome } from "./model";
+import { broadcastFailure, type Outcome, type Sending } from "./model";
 import type { DraftApi } from "./useDraft";
 
 const TITLE: Record<Outcome["kind"], string> = {
@@ -29,18 +29,23 @@ export function ResultSheet({
   network,
   draft,
   returnFocus,
-  onOutcome,
+  retrying,
+  onRetry,
   onDone,
 }: {
   outcome: Outcome;
   network: NetworkInfo;
   draft: DraftApi;
   returnFocus: () => HTMLElement | null;
-  onOutcome: (o: Outcome) => void;
+  /** A Try again is running, perhaps from before a lock. */
+  retrying: boolean;
+  /** Starts a Try again: where its outcome goes, or `null` when there is none to run. */
+  onRetry: () => ((o: Outcome) => void) | null;
   /** `show`: open the transaction in Activity. */
   onDone: (show: boolean) => void;
 }) {
-  const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState(false);
+  const busy = running || retrying;
   // Finished retries, for a harness that must not miss a fast one's busy state (DP3-06 Sol r1 #1).
   const [tries, setTries] = useState(0);
   const shown = useDisplay(network);
@@ -49,15 +54,17 @@ export function ResultSheet({
   const retryButton = useRef<HTMLButtonElement>(null);
   const retry = async () => {
     if (outcome.kind !== "unknown" || !outcome.retry || busy) return;
-    setBusy(true);
-    const { draft: d, prepared, amount, fee, note } = outcome;
+    const settle = onRetry();
+    if (!settle) return;
+    setRunning(true);
+    const { txid: held, draft: d, prepared, amount, fee, note } = outcome;
     try {
       const { txid } = await draft.broadcast(d, prepared);
-      onOutcome({ kind: "sent", txid, amount, fee, note });
+      settle({ kind: "sent", txid, amount, fee, note });
     } catch (e) {
-      onOutcome(broadcastFailure(e, shown.chain, { draft: d, prepared, amount, fee, note }, false, shown.amountUnit));
+      settle(broadcastFailure(e, shown.chain, { txid: held, draft: d, prepared, amount, fee, note }, false, shown.amountUnit));
     } finally {
-      setBusy(false);
+      setRunning(false);
       setTries((n) => n + 1);
     }
   };
@@ -91,7 +98,7 @@ export function ResultSheet({
           </>
         )}
       </div>
-      {outcome.kind === "sent" && (
+      {outcome.kind !== "failed" && (
         <dl className="detail-list card-l1" data-testid="pay-result-facts">
           <DetailRow label="Network fee">
             <AmountText text={shown.full(outcome.fee)} unitName={unit} glyph={false} />
@@ -129,6 +136,21 @@ export function ResultSheet({
             Back to payment
           </DashButton>
         )}
+      </div>
+    </Sheet>
+  );
+}
+
+/** A payment whose broadcast is still running when its form comes back (after an unlock): held up
+ * until the result replaces it, so nothing behind it looks unsent. */
+export function SendingSheet({ sending, network }: { sending: Sending; network: NetworkInfo }) {
+  const shown = useDisplay(network);
+  return (
+    <Sheet title="Sending payment" width="small" testId="pay-sending" closable={false} onClose={() => undefined}>
+      <div className="result" role="status">
+        <span className="spinner" aria-hidden="true" />
+        <AmountText className="result-amount" text={shown.full(sending.amount)} unitName={shown.name} glyphFactor={0.8} />
+        <p className="result-text">The payment is being sent. Its result shows here.</p>
       </div>
     </Sheet>
   );

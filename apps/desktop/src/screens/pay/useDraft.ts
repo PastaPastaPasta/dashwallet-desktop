@@ -1,6 +1,7 @@
 // The Pay page's engine draft (U-03 D6, E0-13 D8): made on first use, closed through
 // `closeSendDraft` when the page goes, the wallet changes or the vault locks. A broadcast of
-// this page still running at that moment may reach the network, and DEC-67's line says so.
+// this page still running at that moment may reach the network, and DEC-67's line says so; the
+// close waits for it, so the draft and its prepared transaction outlive no answer and drop none.
 //
 // Writing a draft takes several calls (recipients, coins, fee, change), so every write runs on
 // one promise chain: an estimate never interleaves with another, and a prepare signs exactly the
@@ -54,7 +55,7 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
   const b = useBackend();
   const draft = useRef<Promise<number> | null>(null);
   const chain = useRef<Promise<unknown>>(Promise.resolve());
-  const broadcasts = useRef(0);
+  const broadcasts = useRef(new Set<Promise<unknown>>());
   /** Bumped by `close`: a write queued under an older generation is cancelled. */
   const generation = useRef(0);
   /** The hook's page is gone (between the unmount cleanup and a remount, as StrictMode does). */
@@ -76,8 +77,10 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
     draft.current = null;
     const handle = await pending?.catch(() => null);
     if (handle === null || handle === undefined) return;
+    const running = [...broadcasts.current];
+    await Promise.allSettled(running);
     try {
-      const { warning } = await closeSendDraft(handle, broadcasts.current > 0);
+      const { warning } = await closeSendDraft(handle, running.length > 0);
       if (warning) showToast(warning);
     } catch {
       // A handle a network switch already dropped: nothing left to close.
@@ -151,13 +154,11 @@ export function useDraft(walletId: string, locked: boolean): DraftApi {
   );
 
   const broadcast = useCallback(
-    async (d: number, prepared: number) => {
-      broadcasts.current++;
-      try {
-        return await b.draftBroadcast(d, prepared);
-      } finally {
-        broadcasts.current--;
-      }
+    (d: number, prepared: number) => {
+      const run = b.draftBroadcast(d, prepared);
+      broadcasts.current.add(run);
+      void run.catch(() => undefined).finally(() => broadcasts.current.delete(run));
+      return run;
     },
     [b],
   );

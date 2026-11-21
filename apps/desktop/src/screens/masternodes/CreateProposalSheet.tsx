@@ -9,6 +9,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
+import { lockGeneration, refusedWhileLocked, walletGateClosed } from "../../api/lockGate";
 import type { MyProposal } from "../../api/generated/MyProposal";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { ProposalDraft } from "../../api/generated/ProposalDraft";
@@ -195,17 +196,27 @@ export function CreateProposalSheet({
     }
   };
 
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
   /** Whether the failed call made the proposal anyway: Mine says, ignoring the proposals it held
    *  when Pay was pressed (D34). */
   const checkMine = async (d: ProposalDraft, known: ReadonlySet<string>) => {
     setAfter({ kind: "checking" });
+    let next: AfterFailure | null;
     try {
       const made = createdFrom(await b.governanceMyProposals(wallet.walletId), d, known);
-      if (made) credential.setError(null); // the notice says what happened instead
-      setAfter(made ? { kind: "created", p: made } : null);
+      if (made && mounted.current) credential.setError(null); // the notice says what happened instead
+      next = made ? { kind: "created", p: made } : null;
     } catch {
-      setAfter({ kind: "unknown", known });
+      next = { kind: "unknown", known };
     }
+    if (mounted.current) setAfter(next);
     void refresh();
   };
 
@@ -213,12 +224,14 @@ export function CreateProposalSheet({
    *  "under way" when the refusal names none or Mine can't be read. */
   const showExisting = async (hash: string | null) => {
     setAfter({ kind: "checking" });
+    let next: AfterFailure;
     try {
       const p = hash === null ? undefined : (await b.governanceMyProposals(wallet.walletId)).find((m) => m.hash === hash);
-      setAfter(p ? { kind: "existing", p } : { kind: "underway" });
+      next = p ? { kind: "existing", p } : { kind: "underway" };
     } catch {
-      setAfter({ kind: "underway" });
+      next = { kind: "underway" };
     }
+    if (mounted.current) setAfter(next);
     void refresh();
   };
 
@@ -227,10 +240,14 @@ export function CreateProposalSheet({
     const confirmed = figures;
     if (busy || after || !draft || !draftKey || !confirmed || !credential.ready) return;
     const known = new Set((mine.data ?? []).map((p) => p.hash));
+    // Once the sheet closes or a lock comes, nothing this press started may pay.
+    const gen = lockGeneration();
+    const departed = () => !mounted.current || walletGateClosed() || lockGeneration() !== gen;
     setBusy(true);
     setGeneral(null);
     try {
       const r = await preview.refetch();
+      if (departed()) return;
       if (r.isError || !r.data) return; // the preview's effect says why
       if (shownKey.current !== draftKey) return; // the draft moved on (D33): its own review
       if (!sameFee(r.data, confirmed)) {
@@ -241,12 +258,18 @@ export function CreateProposalSheet({
       }
       setFeeChanged(false);
       const grant = await credential.authorize({ kind: "spend", maxDuffs: feeGrantCap(confirmed) });
-      if (!grant || shownKey.current !== draftKey) return;
+      if (!grant) return;
+      if (departed() || shownKey.current !== draftKey) {
+        void b.revokeGrant(grant.id).catch(() => null);
+        return;
+      }
       let created: MyProposal;
       try {
         created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
       } catch (e) {
-        if (refuseFields(e)) return;
+        // A call the lock stopped before the engine paid nothing; a sheet that has gone shows and
+        // reads nothing more.
+        if (refusedWhileLocked(e) || !mounted.current || refuseFields(e)) return;
         const existing = inProgressRefusal(e);
         if (existing !== undefined) {
           setBusy(false);
@@ -263,9 +286,9 @@ export function CreateProposalSheet({
       void refresh();
       onCreated(created);
     } catch (e) {
-      credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
+      if (mounted.current) credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   };
 
