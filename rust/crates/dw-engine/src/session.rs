@@ -171,8 +171,14 @@ pub(crate) const PERSISTER_RELEASE: Duration = Duration::from_secs(3);
 /// Waits, within [`PERSISTER_RELEASE`], for the persister's last reference
 /// to go; `false` when one is still held.
 async fn persister_released(persister: &Weak<SqlitePersister>) -> bool {
+    released(persister).await
+}
+
+/// Waits, within [`PERSISTER_RELEASE`], for the last reference to `held`
+/// to go; `false` when one is still held.
+async fn released<T>(held: &Weak<T>) -> bool {
     let deadline = tokio::time::Instant::now() + PERSISTER_RELEASE;
-    while persister.strong_count() > 0 {
+    while held.strong_count() > 0 {
         if tokio::time::Instant::now() >= deadline {
             return false;
         }
@@ -358,8 +364,13 @@ impl NetworkSession {
         let appdb = Arc::new(appdb);
         {
             let (vault, db) = (vault.clone(), Arc::clone(&appdb));
-            tokio::task::spawn_blocking(move || crate::keys::sync_signing_window(&vault, &db))
-                .await?;
+            tokio::task::spawn_blocking(move || {
+                vault.attach_policy_commitments(Arc::new(crate::keys::PolicyCommitmentStore(
+                    Arc::downgrade(&db),
+                )));
+                crate::keys::sync_signing_window(&vault, &db)
+            })
+            .await?;
         }
         // Owner-only whatever the umask (DASHPAY §3.4). The cache is
         // disposable, so a stray file, a symlink that cannot be resolved, or
@@ -701,6 +712,7 @@ impl NetworkSession {
         session.hub.attach_leases(&session.leases);
         session.attach_reconcile();
         session.attach_sweep_resend();
+        session.attach_balance_reread();
         session.attach_sweep_news();
         // Only a header the SPV store holds is evidence for a sweep record:
         // absent, unreadable or no SPV, its chunk stays pending.
@@ -755,7 +767,14 @@ impl NetworkSession {
         // Avatars (DP4-02): the toggle, the cache directory's descriptor.
         session.open_avatars(Arc::clone(&appdb)).await;
         // Before SPV starts: no block can replay a coin outside its account.
-        session.restore_loaded_wallets(&manager).await;
+        // A replay owed but not stored: the session does not open, and is
+        // closed as a close does, so the next open in this process can claim
+        // the wallet database.
+        if let Err(e) = session.restore_loaded_wallets(&manager).await {
+            drop((manager, appdb));
+            session.close().await;
+            return Err(e);
+        }
         for id in manager.list_wallet_ids_blocking() {
             session.resume_replay(&manager, WalletId(id)).await;
         }
@@ -1039,6 +1058,7 @@ impl NetworkSession {
         self.vault.lock();
         // A picture toggle's write lands before the session ends (DP4-02 D37).
         self.platform.avatars.settled().await;
+        self.platform.avatars.close().await;
         self.platform.deactivate(true).await;
         self.platform.contacts.close().await;
         // A retained session handle keeps no scanned key (DP2-03).
@@ -1173,12 +1193,14 @@ impl NetworkSession {
             }
         }
         let persister = Arc::downgrade(&live.persister);
+        let appdb = Arc::downgrade(&live.appdb);
         drop(manager);
         drop(live.store);
         drop(live.persister);
         drop(live.appdb);
         drop(live.tap);
         drop(live.provenance);
+        drop(live.replay);
         // The close returns once the database is released, so the network
         // reopens in this process (CI 41289102488: `StorageInUse` on a
         // reopen right after a close). Bounded: a holder that never lets go
@@ -1194,6 +1216,15 @@ impl NetworkSession {
             tracing::warn!(
                 network = %self.network,
                 "the wallet database is still held after the close; reopening it in this process is refused until it is released"
+            );
+        }
+        // A write the pump or the store's tap left on a blocking thread
+        // (first-seen times, an unread count) still holds the app database
+        // for as long as it runs; the close waits for those too.
+        if !holds_database && !released(&appdb).await {
+            tracing::warn!(
+                network = %self.network,
+                "the app database is still held after the close: a reopen in this process is not alone on it, and on Windows its file cannot be replaced until it is released"
             );
         }
         // Per network, so the last to close (§8.5).

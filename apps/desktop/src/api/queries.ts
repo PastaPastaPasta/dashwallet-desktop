@@ -10,6 +10,7 @@ import type { ShieldedStatus } from "./generated/ShieldedStatus";
 import type { SyncStatus } from "./generated/SyncStatus";
 import type { ShieldQuote } from "./generated/ShieldQuote";
 import type { WithdrawAmount } from "./generated/WithdrawAmount";
+import { freshLockStatus, lockGeneration, seedLockStatus } from "./lockGate";
 import { creditsToDuffs } from "./pending";
 import { feedSync, rawSync, readTicket, useRawSync, useShownSync } from "./syncDisplay";
 import type { ShieldedRequest } from "../shielded/flow";
@@ -129,8 +130,9 @@ export function useOpenNetwork() {
   return useQuery({
     queryKey: keys.network,
     queryFn: async () => {
+      const since = lockGeneration();
       const { lock } = await b.openNetwork();
-      client.setQueryData(keys.lockStatus, lock);
+      seedLockStatus(client, lock, since);
       return lock;
     },
   });
@@ -138,12 +140,12 @@ export function useOpenNetwork() {
 
 export function useLockStatus() {
   const b = useBackend();
-  return useQuery({ queryKey: keys.lockStatus, queryFn: () => b.lockStatus() });
+  return useQuery({ queryKey: keys.lockStatus, queryFn: () => freshLockStatus(() => b.lockStatus()) });
 }
 
-export function useWallets() {
+export function useWallets(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: keys.wallets, queryFn: () => b.listWallets() });
+  return useQuery({ queryKey: keys.wallets, queryFn: () => b.listWallets(), enabled });
 }
 
 /** `null` while the wallet is catching up, for a reading that must not count a partial balance. */

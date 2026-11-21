@@ -304,6 +304,8 @@ for (const theme of THEMES) {
         await page.getByTestId("pay-confirm-passphrase").waitFor();
       } else if (where === "pay") {
         await page.getByTestId("pay-fee-line").waitFor();
+      } else {
+        await page.getByTestId("request-create").and(page.locator(":enabled")).waitFor();
       }
       await page.mouse.move(0, 0);
       await shoot(page, view, theme);

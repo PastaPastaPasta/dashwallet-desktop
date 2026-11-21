@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TxNoticeRow } from "../api/generated/TxNoticeRow";
-import { announceReceived, exposedNow, lookupPending, LOOKUP_TIMEOUT_MS, isReceivedPayment, markReceivedRead, onReceived, recordReceived, resetReceived, unreadReceived } from "./received";
+import { announceReceived, exposedNow, forgetReceived, lookupPending, LOOKUP_TIMEOUT_MS, isReceivedPayment, markReceivedRead, MAX_SEALED, onReceived, receivedKept, receivedNow, receivedOf, recordReceived, resetReceived, sealReceived, unreadReceived } from "./received";
 
 const row = (over: Partial<TxNoticeRow> = {}): TxNoticeRow => ({
   txid: "aa".repeat(32),
@@ -121,5 +121,78 @@ describe("exposedNow (DEC-1058 r3 #3)", () => {
     expect(exposedNow(live)).toBe(true);
     inert = true;
     expect(exposedNow(live)).toBe(false);
+  });
+});
+
+describe("the payments across a lock", () => {
+  it("a lock drops their amounts and addresses, and gives their txids back oldest first", () => {
+    recordReceived("w", [row({ txid: "a" })]);
+    recordReceived("v", [row({ txid: "b" })]);
+    markReceivedRead("w", ["a:0"]);
+    expect(sealReceived()).toEqual([
+      { walletId: "w", txid: "a" },
+      { walletId: "v", txid: "b" },
+    ]);
+    // Looked up again after the unlock: the bell's seen mark comes back with it, the amount is the new read's.
+    const again = recordReceived("w", [row({ txid: "a", amount: 7 })], 5, false);
+    expect(again).toEqual([expect.objectContaining({ txid: "a", duffs: 7, read: true })]);
+    expect(recordReceived("v", [row({ txid: "b" })], 5, false)).toEqual([expect.objectContaining({ read: false })]);
+  });
+
+  it("a lookup that answers after a lock records nothing and says so", async () => {
+    let answer!: (rows: TxNoticeRow[]) => void;
+    const seen: unknown[] = [];
+    const stop = onReceived((b) => seen.push(b));
+    const lookup = announceReceived({ txNotices: () => new Promise<TxNoticeRow[]>((r) => (answer = r)) }, "w", ["a"]);
+    sealReceived();
+    answer([row({ txid: "a" })]);
+    expect(await lookup).toBe("stale");
+    expect(seen).toEqual([]);
+    expect(sealReceived()).toEqual([]);
+    expect(await announceReceived({ txNotices: async () => [row({ txid: "a" })] }, "w", ["a"])).toBe("recorded");
+    stop();
+  });
+
+  it("forgets what the lock kept of a removed wallet", () => {
+    recordReceived("w", [row({ txid: "a" })]);
+    markReceivedRead("w", ["a:0"]);
+    sealReceived();
+    forgetReceived("w");
+    expect(recordReceived("w", [row({ txid: "a" })])).toEqual([expect.objectContaining({ read: false })]);
+  });
+
+  it("a lock leaves no other wallet's rows in the memo either", () => {
+    recordReceived("w", [row({ txid: "a" })]);
+    recordReceived("v", [row({ txid: "b" })]);
+    expect(receivedOf("w")).toEqual([expect.objectContaining({ duffs: 999_819, address: "yAddr" })]);
+    expect(receivedOf("v")).toHaveLength(1);
+    expect(receivedKept().memoized).toBe(2);
+    sealReceived();
+    expect(receivedKept().memoized).toBe(0);
+    expect(receivedOf("w")).toEqual([]);
+  });
+
+  it("a removed wallet's rows and memo go, and a network switch takes every one", () => {
+    recordReceived("w", [row({ txid: "a" })]);
+    recordReceived("v", [row({ txid: "b" })]);
+    receivedOf("w");
+    receivedOf("v");
+    forgetReceived("w");
+    expect(receivedNow().map((p) => p.walletId)).toEqual(["v"]);
+    expect(receivedKept().memoized).toBe(1);
+    forgetReceived();
+    expect(receivedNow()).toEqual([]);
+    expect(receivedKept()).toEqual({ sealed: 0, memoized: 0 });
+  });
+
+  it("keeps the read state of the newest payments only, across many locks", () => {
+    for (let lock = 0; lock < 5; lock++) {
+      recordReceived("w", Array.from({ length: 50 }, (_, i) => row({ txid: `t${lock}-${i}` })), lock * 100 + 1);
+      sealReceived();
+    }
+    expect(receivedKept().sealed).toBe(MAX_SEALED);
+    // The newest lock's are kept: recorded again, they come back unread as they were.
+    expect(recordReceived("w", [row({ txid: "t4-0" })], 999, false)).toEqual([expect.objectContaining({ at: 401 })]);
+    expect(recordReceived("w", [row({ txid: "t0-0" })], 999, false)).toEqual([expect.objectContaining({ at: 999 })]);
   });
 });

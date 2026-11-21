@@ -23,7 +23,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use super::avatar::{
-    Admission, CANDIDATE_WITHOUT_URL, Pictures, Pipeline, Target, UNKNOWN_CANDIDATE, Whose,
+    Admission, AvatarRuntime, CANDIDATE_WITHOUT_URL, Pictures, Pipeline, Target, UNKNOWN_CANDIDATE,
+    Whose,
 };
 use super::avatar_cache::ThumbDir;
 use super::avatar_dhash::mobile_dhash;
@@ -1523,5 +1524,41 @@ async fn an_off_waits_for_a_running_lookup_and_stops_a_later_one() {
         *made.lock().unwrap(),
         ["held.test"],
         "no lookup after the off"
+    );
+}
+
+/// A store call a revoked read left running holds the app database; the
+/// close returns only once it has ended (issue #190).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_close_waits_for_a_store_call_left_running() {
+    let db = Arc::new(AppDb::open_in_memory().unwrap());
+    let held = Arc::downgrade(&db);
+    let avatars = AvatarRuntime::default();
+    let resolver = Arc::new(Script::default()) as Arc<dyn NameResolver>;
+    avatars.install(Pipeline::new(test_policy(), resolver, None, db));
+    let (started, running) = std::sync::mpsc::channel();
+    let (finish, finished) = std::sync::mpsc::channel::<()>();
+    let pipeline = avatars.pipeline().unwrap();
+    let call = tokio::spawn(async move {
+        (pipeline.blocking(move |_| {
+            started.send(()).unwrap();
+            let _ = finished.recv();
+        }))
+        .await
+    });
+    tokio::task::spawn_blocking(move || running.recv().unwrap())
+        .await
+        .unwrap();
+    call.abort();
+    assert!(call.await.unwrap_err().is_cancelled());
+    let close = avatars.close();
+    tokio::pin!(close);
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut close).await;
+    assert!(early.is_err(), "the close returned while a store call ran");
+    finish.send(()).unwrap();
+    close.await;
+    assert!(
+        held.upgrade().is_none(),
+        "the closed pipeline still holds the app database"
     );
 }

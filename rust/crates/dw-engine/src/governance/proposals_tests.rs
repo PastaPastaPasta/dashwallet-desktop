@@ -1834,7 +1834,7 @@ fn a_fee_that_may_be_out_blocks_its_name() {
 #[test]
 fn a_public_proposal_past_its_end_frees_its_name() {
     let p = props(Mode::Accept);
-    let end = now() + 4;
+    let end = now() + 20;
     let hash = p.saved_named(p.f.wallet, "dw-proposal", end, 1);
     p.echo(&hash);
     assert!(matches!(p.state(&hash), MyProposalState::Public { .. }));

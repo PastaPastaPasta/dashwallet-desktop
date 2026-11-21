@@ -35,6 +35,14 @@ tauri-plugin-window-state = "2.5"
 # U-05 D2: the OS's open and save dialogs, through the Rust API only (no
 # capability grants the plugin's commands: shell/files.rs).
 tauri-plugin-dialog = "2.8"
+# PK-03: the signed update feed, registered only in a build that has one
+# (src/updates.rs); no capability grants the plugin's own commands. Without
+# `zip`: the feed carries v2 artifacts only.
+tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
+# The status of a feed the plugin found no release in (404 or not): the
+# plugin's own reqwest, with its TLS and proxy features.
+reqwest = { version = "0.13", default-features = false }
+semver = "1"
 # Byte payloads (avatars, raw transactions) cross IPC as base64 strings.
 base64 = "0.22"
 # The default data root, as Tauri's `app_data_dir` finds it, before the app is built.
@@ -87,6 +95,8 @@ zbus = "5"
 tauri-plugin-single-instance = "2.5"
 
 [dev-dependencies]
+# PK-03: a throwaway key pair made at test time signs the test feed entries.
+minisign = "0.10"
 tauri = { version = "2.12", features = ["test", "tray-icon"] }
 # QR images for api/scan.rs's tests (as dw-desktop's).
 image = { version = "0.25", default-features = false, features = ["png"] }

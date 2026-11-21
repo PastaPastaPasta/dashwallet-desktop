@@ -51,6 +51,7 @@ import { sendHandlers, type Pair, type SendDeps } from "./send";
 import { toolsHandlers } from "./tools";
 import { topUpHandlers } from "./topup";
 import { ratesHandlers } from "./rates";
+import { updatesHandlers } from "./updates";
 import { identitiesHandlers } from "./identities";
 import { isClosed, settingsHandlers } from "./settings";
 import { AVATAR_PNG, emptyWallet, MAX_REPORT_WALLETS, type FixtureGrant, type World } from "./scenarios";
@@ -719,6 +720,7 @@ export const HANDLERS: Handlers = {
   ...identitiesHandlers({ dashpay, grant: checkGrant, useGrant }),
   // Prices in fiat (MP-01): rates.ts.
   ...ratesHandlers(),
+  ...updatesHandlers(),
 
   // App and network
   launch_info: (_, { world }) => world.launch,

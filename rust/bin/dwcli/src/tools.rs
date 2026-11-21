@@ -229,12 +229,22 @@ fn print_coins(
         );
     }
     if let Some(b) = session.balances(&id).map_err(|e| e.to_string())? {
-        println!(
-            "balance confirmed={} unconfirmed={} total={}",
-            b.confirmed, b.unconfirmed, b.total
-        );
+        println!("{}", balance_line(&b));
     }
     Ok(())
+}
+
+fn balance_line(b: &dw_engine::WalletBalances) -> String {
+    format!(
+        "balance confirmed={} unconfirmed={} total={} catching_up={}",
+        b.confirmed, b.unconfirmed, b.total, b.catching_up
+    )
+}
+
+fn wallet_total(b: Option<&dw_engine::WalletBalances>) -> String {
+    b.map_or("unknown".into(), |b| {
+        format!("{} catching_up={}", b.total, b.catching_up)
+    })
 }
 
 pub fn run(
@@ -359,7 +369,7 @@ pub fn run(
             sync_all(engine, session, sync_height, timeout)?;
             println!("rescan done");
             for w in session.wallet_infos().map_err(e)? {
-                let total = w.balances.map_or("unknown".into(), |b| b.total.to_string());
+                let total = wallet_total(w.balances.as_ref());
                 println!("wallet {} total={total}", w.wallet_id);
             }
         }
@@ -604,4 +614,26 @@ pub fn run(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn balance_lines_say_whether_the_scan_is_catching_up() {
+        let b = dw_engine::WalletBalances {
+            confirmed: 5,
+            unconfirmed: 2,
+            total: 7,
+            catching_up: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            balance_line(&b),
+            "balance confirmed=5 unconfirmed=2 total=7 catching_up=true"
+        );
+        assert_eq!(wallet_total(Some(&b)), "7 catching_up=true");
+        assert_eq!(wallet_total(None), "unknown");
+    }
 }

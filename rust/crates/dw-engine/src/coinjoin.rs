@@ -2404,8 +2404,9 @@ impl NetworkSession {
             tracing::warn!(%wallet_id, error = %e, "the recovery scan could not raise the lookahead");
         }
         raised?;
-        self.store_lookahead(wallet_id, RECOVERY_LOOKAHEAD).await;
-        Ok(())
+        // Stored, or the recovery is refused: a restart during its replay
+        // scans with the lookahead it needs.
+        self.write_lookahead(wallet_id, RECOVERY_LOOKAHEAD).await
     }
 
     /// IOS-057 recovery scan: raises the CoinJoin account's and the BIP44
@@ -2416,7 +2417,7 @@ impl NetworkSession {
     ) -> Result<RecoveryReport, EngineError> {
         let this = Arc::clone(self);
         self.on_runtime(async move {
-            let (known_before, birth) = {
+            let (known_before, birth, marked) = {
                 let _op = this.enter().await?;
                 let manager = this.manager()?;
                 if !manager.spv().is_started() {
@@ -2427,15 +2428,36 @@ impl NetworkSession {
                         "another rescan is running".into(),
                     ));
                 }
+                // Loaded, its birth read and its replay stored under the
+                // lifecycle lock: nothing is stored for a wallet not open.
+                let _lifecycle = this.wallet_lifecycle.hold().await;
+                let birth = {
+                    use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+                    let wm = manager.wallet_manager_arc();
+                    let wm = wm.read().await;
+                    (wm.get_wallet_info(&wallet_id.0)).map(|info| info.core_wallet.birth_height())
+                };
+                let birth = birth.ok_or_else(|| EngineError::WalletNotFound(wallet_id.to_string()))?;
+                // The replay from the birth is owed, durably, before the
+                // larger lookahead is stored: a crash in between replays it
+                // at the next open.
+                let marked = this.wide_scan(wallet_id).await?;
+                (this.require_replay_from(&manager, wallet_id, Some(birth.saturating_sub(1))))
+                    .await?;
                 this.raise_for_recovery(&manager, wallet_id).await?;
-                let birth = this
-                    .hub
-                    .wallet_state(&wallet_id)
-                    .map(|s| s.birth_height)
-                    .unwrap_or(0);
-                (this.hub.history.snapshot(&wallet_id).len(), birth)
+                (this.hub.history.snapshot(&wallet_id).len(), birth, marked)
             };
             this.rescan(crate::sync::RescanFrom::Height(birth)).await?;
+            // The rescan's replay record holds the obligation now; done again
+            // only with every range applied and the pools wide.
+            if marked == Some(crate::keys::WideScan::Done) {
+                let manager = this.manager()?;
+                let (_, ranges) = this.apply_stored_ranges(&manager, wallet_id, true).await;
+                let widened = crate::keys::ensure_coinjoin_scan_gap(&manager, wallet_id).await;
+                if ranges.is_ok() && widened.is_ok() {
+                    this.set_wide_scan(wallet_id, marked).await;
+                }
+            }
             // Wait for the rescan to finish (it reports through the hub); a
             // stopped SPV client or a closed session ends it unfinished.
             loop {
@@ -2586,13 +2608,18 @@ impl NetworkSession {
     /// event names (`TransactionsSwept::winner_block`), so a row that
     /// outlives a fork names the replaced block and is no evidence
     /// ([`sweep_out_state`]); a truncation deletes the rows above it
-    /// ([`delete_beaten_above`]), which is cleanup only.
+    /// ([`delete_beaten_above`]), which is cleanup only. The hub outlives
+    /// the close, so the hook holds no app database (issue #190).
     pub(crate) fn attach_sweep_news(self: &Arc<Self>) {
         let Ok(live) = self.live() else {
             return;
         };
-        let appdb = Arc::clone(&live.appdb);
+        let appdb = Arc::downgrade(&live.appdb);
         self.hub.attach_sweep_news(Box::new(move |wallet_id, news| {
+            // Closed: there is nothing to write and nothing to try again.
+            let Some(appdb) = appdb.upgrade() else {
+                return Some(false);
+            };
             let scope = dw_appdb::local_scope(&wallet_id.to_string());
             let written = match news {
                 SweepNews::Truncated { height } => delete_beaten_above(&appdb, &scope, height),
