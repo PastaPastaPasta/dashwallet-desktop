@@ -40,8 +40,9 @@ export type TagNames<M> = Tags<Texts<M>>;
 export type Params<M, V> = { [P in ParamNames<M>]: P extends "count" ? (M extends Plural ? number : V) : V };
 
 /** Another language's catalog: any of English's keys, no other (an extra or mistyped key fails
- * `tsc`); a missing key falls back to English. */
-export type Catalog<T> = { readonly [K in keyof T]?: T[K] extends string ? string : T[K] extends Plural ? Plural : Catalog<T[K]> };
+ * `tsc`, and an area English has no messages in yet takes none); a missing key falls back to
+ * English. */
+export type Catalog<T> = { readonly [K in keyof T]?: T[K] extends string ? string : T[K] extends Plural ? Plural : [keyof T[K]] extends [never] ? never : Catalog<T[K]> };
 
 /** Every message of `tree` by its dotted key. */
 export function flatten(tree: Tree, prefix = "", into = new Map<string, Message>()): Map<string, Message> {
