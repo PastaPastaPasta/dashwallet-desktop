@@ -263,6 +263,7 @@ export function Overview({ walletId, network, onOpen }: { walletId: string; netw
 
   return (
     <main className="page page-overview" data-testid="page-home">
+      <h1 className="sr-only">Home</h1>
       <div className="hero-band" data-testid="hero-band">
         <BalanceHero balances={balance.data ?? null} shielded={pools.shielded} platform={pools.platform} network={network} hero={hero} />
         <ShortcutCard onTransfer={() => transfer.start(defaultRoute(transferPools))} />

@@ -12,6 +12,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import { isAppError } from "../../api/backend";
+import { refusedWhileLocked } from "../../api/lockGate";
 import type { AuthGrant } from "../../api/generated/AuthGrant";
 import type { CredentialSpec } from "../../api/generated/CredentialSpec";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
@@ -42,7 +43,10 @@ import {
   type Advanced,
   type Confirmed,
   type Outcome,
+  type Sending,
+  LOCKED_BEFORE_SEND,
 } from "./model";
+import type { PayAttempt } from "./form";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 const USING: Record<Advanced["coins"], string> = {
@@ -74,6 +78,7 @@ export function ConfirmSheet({
   returnFocus,
   onCancel,
   onOutcome,
+  onSend,
   contact,
   unsigned = false,
 }: {
@@ -88,7 +93,10 @@ export function ConfirmSheet({
   draft: DraftApi;
   returnFocus: () => HTMLElement | null;
   onCancel: () => void;
+  /** A result that is no payment's (Create Unsigned's). */
   onOutcome: (o: Outcome) => void;
+  /** Send was pressed: the payment's own handle for what follows, kept past the sheet. */
+  onSend: (sending: Sending) => PayAttempt;
 }) {
   const b = useBackend();
   const shown = useDisplay(network);
@@ -196,19 +204,22 @@ export function ConfirmSheet({
     }
     setBusy(true);
     setError(null);
+    const attempt = onSend({ amount: estimate.totalSent, fee: estimate.fee });
     const credential: CredentialSpec = prompt === "passphrase" ? { kind: "passphrase", passphrase } : { kind: "unencrypted" };
     setPassphrase("");
     const refused = (e: unknown) => {
       setBusy(false);
       const refusal = isAppError(e) ? authRefusal(e) : { kind: "other" as const };
       if (refusal.kind === "needsPassphrase") {
+        attempt.release();
         setAskAnyway(true);
         setError("Enter your passphrase to send this payment.");
       } else if (refusal.kind === "wrongPassphrase") {
+        attempt.release();
         setError(refusal.text);
         // The vault refuses every attempt until then: Send waits too (Sol r1).
         if (refusal.waitSecs > 0) setRetryAt(Date.now() + refusal.waitSecs * 1000);
-      } else onOutcome({ kind: "failed", text: failureText(e, chain, amountUnit) });
+      } else attempt.outcome({ kind: "failed", text: failureText(e, chain, amountUnit) });
     };
 
     // Accept and pay (DP3-06 D10): the accept runs first, under the lease the prepare takes.
@@ -225,7 +236,7 @@ export function ConfirmSheet({
         if (e instanceof AcceptFailed && e.stage === "authorize") return refused(e.cause);
         const text = acceptFailedText(e instanceof AcceptFailed ? e.cause : e);
         toast({ kind: "accept", contact: contact.payee.contact, ok: false, text }, true);
-        onOutcome({ kind: "failed", text });
+        attempt.outcome({ kind: "failed", text });
         return;
       }
       authId = lease;
@@ -243,7 +254,7 @@ export function ConfirmSheet({
     }
     // Two sentences under the "Payment not sent" heading: the refusals that say "not sent" already
     // must not say it twice (Sol r1 #2).
-    const notSent = (text: string) => onOutcome({ kind: "failed", text: accepted ? `${accepted} ${text}` : text });
+    const notSent = (text: string) => attempt.outcome({ kind: "failed", text: accepted ? `${accepted} ${text}` : text });
     const endLease = () => lease !== null && void b.endFlow(lease).catch(() => null);
 
     let held;
@@ -265,17 +276,20 @@ export function ConfirmSheet({
     // An accept that went through is said with whatever outcome the payment gets, a retry's too.
     const sent = { amount: estimate.totalSent, fee: prepared.summary.fee, ...(accepted && { note: accepted }) };
     const toContact = isContact(spec.recipient);
+    attempt.broadcasting(sent);
     try {
       const { txid } = await draft.broadcast(d, prepared.handle);
-      onOutcome({ kind: "sent", txid, ...sent });
+      attempt.outcome({ kind: "sent", txid, ...sent });
     } catch (e) {
-      // "Not sent" only when the engine released it, or held a contact payment back before its
-      // hand-off (then it is abandoned here); nothing else is abandoned after a broadcast.
-      const o = broadcastFailure(e, chain, { draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
+      // "Not sent" only when the engine released it, held a contact payment back before its
+      // hand-off, or the window locked before it was asked (then it is abandoned here); nothing
+      // else is abandoned after a broadcast.
+      const never = refusedWhileLocked(e);
+      const o = never ? ({ kind: "failed", text: LOCKED_BEFORE_SEND } as const) : broadcastFailure(e, chain, { txid: prepared.summary.txid, draft: d, prepared: prepared.handle, ...sent }, true, amountUnit, toContact);
       if (o.kind === "failed") {
-        if (toContact) await draft.abandon(d, prepared.handle);
+        if (toContact || never) await draft.abandon(d, prepared.handle);
         notSent(o.text);
-      } else onOutcome(accepted && o.kind === "unknown" ? { ...o, text: `${accepted} ${o.text}` } : o);
+      } else attempt.outcome(accepted && o.kind === "unknown" ? { ...o, text: `${accepted} ${o.text}` } : o);
     } finally {
       // The lease ends with the first broadcast (dwcli's point): a retry needs none.
       endLease();

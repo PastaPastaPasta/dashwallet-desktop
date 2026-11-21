@@ -7,13 +7,20 @@ import type { Backend } from "./backend";
 import type { AppEvent } from "./generated/commands";
 import type { HistoryRows } from "./generated/HistoryRows";
 import type { LockOutcome } from "./generated/LockOutcome";
+import type { LockStatus } from "./generated/LockStatus";
+import type { TxNoticeRow } from "./generated/TxNoticeRow";
+import { onReceived, receivedNow, resetReceived } from "../payments/received";
 import { installFixture } from "../fixture";
 import { FIXTURE_WALLET_ID } from "../fixture/scenarios";
 import { profileKeys } from "../dashpay/profileQueries";
 import { dashpayKeys } from "../dashpay/queries";
 import { mnKeys } from "../masternodes/queries";
+import { lockGeneration, lockUnconfirmed, resetWalletGate, seedLockStatus, walletGateClosed } from "./lockGate";
 import { keys } from "./queries";
 import { IpcBackend } from "./tauri";
+
+const LOCK: LockStatus = { state: "locked", encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] };
+const NOTICE: TxNoticeRow = { txid: "", recordIndex: 0, amount: 5000, timestamp: null, txType: "recvWithAddress", address: null, label: null, coinjoinInternal: false };
 
 const REPORT: LockOutcome = {
   status: { state: "locked", encrypted: true, quickUnlockEnrolled: false, failedAttempts: 0, retryAfterSecs: null, walletsWithSecrets: [] },
@@ -22,10 +29,23 @@ const REPORT: LockOutcome = {
   walletsWithSecretsOmitted: 0,
 };
 
-beforeEach(() => vi.stubGlobal("window", globalThis));
+/** Every bridge a test opens is closed after it: each follows the one window-wide lock gate. */
+const bridges: (() => void)[] = [];
+const bridged = async (...args: Parameters<typeof bridgeEvents>) => {
+  const stop = await bridgeEvents(...args);
+  bridges.push(stop);
+  return stop;
+};
+
+beforeEach(() => {
+  vi.stubGlobal("window", globalThis);
+  resetWalletGate();
+});
 afterEach(() => {
+  bridges.splice(0).forEach((stop) => stop());
   clearMocks();
   vi.unstubAllGlobals();
+  resetWalletGate();
 });
 
 describe("event bridge", () => {
@@ -45,7 +65,9 @@ describe("event bridge", () => {
       dashpayKeys.quote("w"),
       keys.coinjoinStatus("w"),
     ]);
-    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll]);
+    // A lock drops the wallet's queries rather than reading them again; an unlock reads them.
+    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "locked" })).toEqual([keys.lockStatus, keys.lockReconcile]);
+    expect(invalidationsFor({ kind: "vaultLockState", network: "testnet", state: "unlocked" })).toEqual([keys.lockStatus, keys.wallets, keys.lockReconcile, dashpayKeys.registrationsAll, mnKeys.listAll, mnKeys.detailAll]);
     expect(invalidationsFor({ kind: "leaseChanged", network: "testnet", lease: {} as never })).toEqual([keys.lockReconcile]);
     // DP1-09 D14: a registration lease's change re-reads the rows, whose `waiting` moved.
     const registration = { flow: "registration" } as never;
@@ -93,7 +115,7 @@ describe("event bridge", () => {
       client.setQueryData([...keys.lockReconcile, previous], { settled: false });
       let emit: (e: AppEvent) => void = () => undefined;
       const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-      await bridgeEvents(fake, client, "testnet");
+      await bridged(fake, client, "testnet");
       emit({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } });
       expect(client.getQueryData(keys.lockDrain)).toMatchObject({ inFlight: 1 });
       emit({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report: REPORT } });
@@ -115,7 +137,7 @@ describe("event bridge", () => {
     const fixture = installFixture({ scenario: "lock-report-resolved" });
     const backend = new IpcBackend("fixture");
     const client = new QueryClient();
-    await bridgeEvents(backend, client, "testnet");
+    await bridged(backend, client, "testnet");
     const previous = await backend.lock();
     await vi.waitFor(() => expect(client.getQueryData(keys.lastLockReport)).toEqual(previous));
 
@@ -141,7 +163,7 @@ describe("event bridge", () => {
       client.setQueryData(key, { settled: false });
       let emit: (e: AppEvent) => void = () => undefined;
       const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-      const unsubscribe = await bridgeEvents(fake, client, "testnet");
+      const unsubscribe = await bridged(fake, client, "testnet");
       const lease = () => emit({ kind: "leaseChanged", network: "testnet", lease: {} as never });
       for (let t = 0; t < RECONCILE_MAX_WAIT_MS; t += RECONCILE_COALESCE_MS / 2) {
         lease();
@@ -159,16 +181,17 @@ describe("event bridge", () => {
     }
   });
 
-  it("invalidates the lock status when the fixture vault locks", async () => {
+  it("invalidates the lock status when the fixture vault locks, and drops the wallet's reads", async () => {
     installFixture({ scenario: "funded" });
     const backend = new IpcBackend("fixture");
     const client = new QueryClient();
     client.setQueryData(keys.lockStatus, await backend.lockStatus());
     client.setQueryData(keys.balance(FIXTURE_WALLET_ID), await backend.balance(FIXTURE_WALLET_ID));
-    await bridgeEvents(backend, client, "testnet");
+    await bridged(backend, client, "testnet");
     await backend.lock();
     expect(client.getQueryState(keys.lockStatus)?.isInvalidated).toBe(true);
-    expect(client.getQueryState(keys.balance(FIXTURE_WALLET_ID))?.isInvalidated).toBe(false);
+    expect(walletGateClosed()).toBe(true);
+    expect(client.getQueryState(keys.balance(FIXTURE_WALLET_ID))).toBeUndefined();
   });
 
   it("cuts a loaded history list back to its first page before refetching", async () => {
@@ -178,7 +201,7 @@ describe("event bridge", () => {
     client.setQueryData<InfiniteData<HistoryRows, string | null>>(key, { pages: [page, page], pageParams: [null, "2"] });
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-    await bridgeEvents(fake, client, "testnet");
+    await bridged(fake, client, "testnet");
     emit({ kind: "historyChanged", network: "testnet", walletId: FIXTURE_WALLET_ID, txids: [] });
     expect(client.getQueryData<InfiniteData<HistoryRows, string | null>>(key)?.pages).toHaveLength(1);
     expect(client.getQueryState(key)?.isInvalidated).toBe(true);
@@ -190,7 +213,7 @@ describe("event bridge", () => {
     client.setQueryData(keys.dashpayStatus("b"), { kind: "noIdentity", reason: "watchOnly" });
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-    await bridgeEvents(fake, client, "testnet");
+    await bridged(fake, client, "testnet");
     emit({ kind: "walletCreated", network: "testnet", walletId: "a" });
     expect(client.getQueryState(keys.dashpayStatus("a"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
@@ -202,7 +225,7 @@ describe("event bridge", () => {
     client.setQueryData(keys.scanHeight("b"), 80);
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-    await bridgeEvents(fake, client, "testnet");
+    await bridged(fake, client, "testnet");
     emit({ kind: "walletRemoved", network: "testnet", walletId: "a" });
     expect(client.getQueryData(keys.scanHeight("a"))).toBeUndefined();
     expect(client.getQueryData(keys.scanHeight("b"))).toBe(80);
@@ -231,7 +254,7 @@ describe("event bridge", () => {
     }
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-    await bridgeEvents(fake, client, "testnet");
+    await bridged(fake, client, "testnet");
     emit({ kind: "walletCreated", network: "testnet", walletId: "a" });
     expect(client.getQueryData(keys.usernameInRequests("a"))).toBeUndefined();
     expect(client.getQueryData(keys.receiveUsername("a"))).toBeUndefined();
@@ -248,7 +271,7 @@ describe("event bridge", () => {
     client.setQueryData(keys.identities("a"), []);
     let emit: (e: AppEvent) => void = () => undefined;
     const fake = { onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined) } as unknown as Backend;
-    await bridgeEvents(fake, client, "testnet");
+    await bridged(fake, client, "testnet");
     emit({ kind: "spvStateChanged", network: "testnet", running: true });
     expect(client.getQueryState(keys.dashpayStatus("a"))?.isInvalidated).toBe(true);
     expect(client.getQueryState(keys.dashpayStatus("b"))?.isInvalidated).toBe(false);
@@ -279,7 +302,7 @@ describe("event bridge", () => {
       onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
       txNotices: async () => (calls.push("txNotices"), []),
     } as unknown as Backend;
-    await bridgeEvents(fake, client, "mainnet");
+    await bridged(fake, client, "mainnet");
     emit({ kind: "lockProgress", network: "testnet", progress: { kind: "done", report: REPORT } });
     emit({ kind: "lockProgress", network: "testnet", progress: { kind: "draining", inFlight: 1, deadlineInMs: 500 } });
     emit({ kind: "balances", network: "testnet", walletId: "w", balances: null });
@@ -294,6 +317,162 @@ describe("event bridge", () => {
     // The window's own network still goes through.
     emit({ kind: "balances", network: "mainnet", walletId: "w", balances: null });
     expect(client.getQueryState(keys.balance("w"))?.isInvalidated).toBe(true);
+  });
+
+  it("looks up a payment that arrives while locked only at the unlock, for the bell, without a toast", async () => {
+    resetReceived();
+    const client = new QueryClient();
+    const lock = (state: LockStatus["state"]) => seedLockStatus(client, { ...LOCK, state }, lockGeneration());
+    lock("locked");
+    let emit: (e: AppEvent) => void = () => undefined;
+    const asked: string[][] = [];
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      txNotices: async (_w: string, txids: string[]) => (asked.push(txids), txids.map((txid) => ({ ...NOTICE, txid }))),
+    } as unknown as Backend;
+    const toasts: unknown[] = [];
+    const stopToasts = onReceived((b) => toasts.push(b));
+    await bridged(fake, client, "testnet");
+    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["a"], catchUp: false } as AppEvent);
+    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["a", "b"], catchUp: false } as AppEvent);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([]);
+    lock("unlockedMixingOnly");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([["b", "a"]]);
+    lock("unlocked");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toHaveLength(1);
+    expect(toasts).toEqual([]);
+    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["c"], catchUp: false } as AppEvent);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([["b", "a"], ["c"]]);
+    expect(toasts).toHaveLength(1);
+    stopToasts();
+    resetReceived();
+  });
+
+  it("closes the gate on the lock event itself, before the status is read again, and drops the wallet's queries", async () => {
+    resetReceived();
+    const client = new QueryClient();
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
+    client.setQueryData(keys.balance("w"), "32.04698287");
+    let emit: (e: AppEvent) => void = () => undefined;
+    const asked: string[][] = [];
+    const statusReads: unknown[] = [];
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      lockStatus: () => new Promise((r) => statusReads.push(r)),
+      txNotices: async (_w: string, txids: string[]) => (asked.push(txids), txids.map((txid) => ({ ...NOTICE, txid }))),
+    } as unknown as Backend;
+    await bridged(fake, client, "testnet");
+    expect(walletGateClosed()).toBe(false);
+    emit({ kind: "vaultLockState", network: "testnet", state: "locked" } as AppEvent);
+    expect(walletGateClosed()).toBe(true);
+    expect(client.getQueryData<LockStatus>(keys.lockStatus)?.state).toBe("locked");
+    expect(client.getQueryCache().find({ queryKey: keys.balance("w") })).toBeUndefined();
+    // A payment in the same interval waits for the unlock.
+    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["a"], catchUp: false } as AppEvent);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([]);
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(walletGateClosed()).toBe(false);
+    expect(asked).toEqual([["a"]]);
+    resetReceived();
+  });
+
+  it("ends a confirmation with the bridge", async () => {
+    const client = new QueryClient();
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
+    let emit: (e: AppEvent) => void = () => undefined;
+    let statusReads = 0;
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      lockStatus: () => (statusReads++, new Promise(() => undefined)),
+    } as unknown as Backend;
+    const stop = await bridged(fake, client, "testnet");
+    vi.useFakeTimers();
+    try {
+      emit({ kind: "eventsOverflowed", network: "testnet" } as AppEvent);
+      expect(statusReads).toBe(1);
+      expect(lockUnconfirmed()).toBe(true);
+      stop();
+      expect(lockUnconfirmed()).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops the payments held for a removed wallet and its governance reads, and all the payments on a network switch", async () => {
+    resetReceived();
+    const client = new QueryClient();
+    seedLockStatus(client, LOCK, lockGeneration());
+    let emit: (e: AppEvent) => void = () => undefined;
+    const asked: [string, string[]][] = [];
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      txNotices: async (w: string, txids: string[]) => (asked.push([w, txids]), txids.map((txid) => ({ ...NOTICE, txid }))),
+    } as unknown as Backend;
+    await bridged(fake, client, "testnet");
+    const paid = (walletId: string, txid: string) => emit({ kind: "newTransactions", network: "testnet", walletId, txids: [txid], catchUp: false } as AppEvent);
+    paid("w", "a");
+    paid("v", "b");
+    client.setQueryData([...keys.governanceAll, "mine", "v"], [{ name: "p" }]);
+    client.setQueryData([...keys.governanceAll, "mine", "w"], [{ name: "q" }]);
+    emit({ kind: "walletRemoved", network: "testnet", walletId: "v" } as AppEvent);
+    expect(client.getQueryData([...keys.governanceAll, "mine", "v"])).toBeUndefined();
+    expect(client.getQueryData([...keys.governanceAll, "mine", "w"])).toEqual([{ name: "q" }]);
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([["w", ["a"]]]);
+    seedLockStatus(client, LOCK, lockGeneration());
+    paid("w", "c");
+    emit({ kind: "sessionClosed", network: "testnet" } as AppEvent);
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toHaveLength(1);
+    resetReceived();
+  });
+
+  it("drops the bell's payments on a lock and reads them again after the unlock, a lookup that answers locked recording nothing", async () => {
+    resetReceived();
+    const client = new QueryClient();
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
+    let emit: (e: AppEvent) => void = () => undefined;
+    const asked: string[][] = [];
+    let slow: ((rows: TxNoticeRow[]) => void) | null = null;
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      txNotices: (_w: string, txids: string[]) => {
+        asked.push(txids);
+        const rows = txids.map((txid) => ({ ...NOTICE, txid, address: "yPaid" }));
+        return slow === null ? Promise.resolve(rows) : new Promise((r) => (slow = () => r(rows)));
+      },
+    } as unknown as Backend;
+    const stop = await bridged(fake, client, "testnet");
+    emit({ kind: "newTransactions", network: "testnet", walletId: "w", txids: ["a"], catchUp: false } as AppEvent);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(receivedNow().map((p) => p.txid)).toEqual(["a"]);
+    const lock = (state: LockStatus["state"]) => seedLockStatus(client, { ...LOCK, state }, lockGeneration());
+    lock("locked");
+    expect(receivedNow()).toEqual([]);
+    // The unlock's lookup is slow, and the vault locks again before it answers.
+    slow = () => undefined;
+    lock("unlocked");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([["a"], ["a"]]);
+    lock("locked");
+    (slow as unknown as () => void)();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(receivedNow()).toEqual([]);
+    slow = null;
+    lock("unlocked");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(receivedNow().map((p) => [p.txid, p.address])).toEqual([["a", "yPaid"]]);
+    stop();
+    resetReceived();
   });
 });
 
@@ -318,11 +497,33 @@ describe("announcing new transactions", () => {
       onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
       txNotices: async (_: string, txids: string[]) => (asked.push(txids), []),
     } as unknown as Backend;
-    await bridgeEvents(fake, client, "testnet");
+    await bridged(fake, client, "testnet");
     const history = Array.from({ length: 256 }, (_, i) => `old${i}`);
     emit(batch(history, history.map(() => false), true));
     emit(batch(["old", "paid"], [false, true], true));
     await new Promise((r) => setTimeout(r, 0));
     expect(asked).toEqual([["paid"]]);
+  });
+
+  it("holds only the live payments of a catch-up batch that arrives while locked, and looks them up at the unlock", async () => {
+    resetReceived();
+    const client = new QueryClient();
+    seedLockStatus(client, LOCK, lockGeneration());
+    let emit: (e: AppEvent) => void = () => undefined;
+    const asked: string[][] = [];
+    const fake = {
+      onEvent: async (l: (e: AppEvent) => void) => ((emit = l), () => undefined),
+      txNotices: async (_: string, txids: string[]) => (asked.push(txids), txids.map((txid) => ({ ...NOTICE, txid }))),
+    } as unknown as Backend;
+    await bridged(fake, client, "testnet");
+    expect(walletGateClosed()).toBe(true);
+    emit(batch(["scanned", "paid"], [false, true], true));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([]);
+    seedLockStatus(client, { ...LOCK, state: "unlocked" }, lockGeneration());
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual([["paid"]]);
+    expect(receivedNow().map((p) => p.txid)).toEqual(["paid"]);
+    resetReceived();
   });
 });

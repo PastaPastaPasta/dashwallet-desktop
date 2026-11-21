@@ -17,6 +17,7 @@ export const CONVERTED = [
   "screens/settings/LocalCurrency.tsx",
   "screens/settings/Privacy.tsx",
   "screens/settings/SettingsPage.tsx",
+  "screens/settings/Updates.tsx",
   "screens/settings/parts.tsx",
 ];
 

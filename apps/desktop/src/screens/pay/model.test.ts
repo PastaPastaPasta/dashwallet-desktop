@@ -161,7 +161,7 @@ describe("the engine's refusals", () => {
   });
 
   it("is not sent only when the engine released a first attempt (E0-13 D8)", () => {
-    const held = { draft: 1, prepared: 2, amount: 5, fee: 1 };
+    const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 5, fee: 1 };
     expect(broadcastFailure(err("send.broadcast_unknown"), "test", held, true)).toMatchObject({ kind: "unknown", retry: true, ...held });
     expect(broadcastFailure(err("send.broadcast_rejected", { kind: "reason", reason: "bad-txns" }), "test", held, true)).toEqual({
       kind: "failed",
@@ -174,7 +174,7 @@ describe("the engine's refusals", () => {
   });
 
   it("never turns an unknown payment into not sent on a retry", () => {
-    const held = { draft: 1, prepared: 2, amount: 5, fee: 1 };
+    const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 5, fee: 1 };
     expect(broadcastFailure(err("send.no_peers"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
     expect(broadcastFailure(err("send.broadcast_rejected"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
     // The handle went with the draft (a lock closed it): still unknown, nothing to retry.

@@ -1,4 +1,5 @@
-// Settings ▸ About (QT-018, QT-153, IOS-107): the versions, the network and where its data is.
+// Settings ▸ About (QT-018, QT-153, IOS-107): the versions, the network and where its data is, and
+// updates (PK-03).
 // Help ▸ About keeps U-01's small sheet. Command-line options (D22) and support (U-05) are not
 // shown yet.
 
@@ -6,6 +7,7 @@ import { useBackupDirectory, useNodeInfo } from "../../api/queries";
 import { useLaunch } from "../../app/App";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { NotYetRow, pendingText, SettingsCard } from "./parts";
+import { UpdatesCard } from "./Updates";
 
 export function AboutTab() {
   const launch = useLaunch();
@@ -35,6 +37,7 @@ export function AboutTab() {
           </DetailRow>
         </dl>
       </SettingsCard>
+      <UpdatesCard />
       <SettingsCard title="More" testId="settings-about-more">
         <NotYetRow testId="settings-command-line" title="Command-line options" why="These options are not available here yet." />
         <NotYetRow testId="settings-support" title="Support, source code and log export" why="Support and log export are coming soon." />

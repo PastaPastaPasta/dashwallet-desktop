@@ -2,6 +2,7 @@
 // vault, so the sheet stays over the shell to say what happened; closing it drops the phrase.
 
 import { useEffect, useState } from "react";
+import { walletNamesForRecovery } from "../api/lockGate";
 import { useBackend } from "../api/queries";
 import { useSecretScreen } from "../app/ui";
 import { DashButton } from "../components/basics";
@@ -13,7 +14,16 @@ import { useModel } from "../onboarding/model";
 
 export function ForgotPassphraseSheet({ onClose }: { onClose: () => void }) {
   const backend = useBackend();
-  const [model] = useState(() => new ForgotPassphraseModel(backend));
+  // The locked window's one wallet read: their names, through `walletNamesForRecovery`.
+  const [model] = useState(
+    () =>
+      new ForgotPassphraseModel({
+        lockStatus: () => backend.lockStatus(),
+        checkMnemonic: (phrase) => backend.checkMnemonic(phrase),
+        recoverWithMnemonic: (...args) => backend.recoverWithMnemonic(...args),
+        listWallets: () => walletNamesForRecovery(backend),
+      }),
+  );
   useModel(model);
   useEffect(() => {
     void model.load();

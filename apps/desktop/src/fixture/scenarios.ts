@@ -41,6 +41,7 @@ import { newPendingWorld, PLATFORM_PAYEE, sendTerms, type PendingWorld } from ".
 import { scanWorld, type ScanWorld } from "./scan";
 import { coinjoinScenarios, newCoinJoinWorld, type CoinJoinWorld } from "./coinjoin";
 import { newRatesWorld, onMainnet, ratesScenarios, withPrices, type RatesWorld } from "./rates";
+import { newUpdatesWorld, type UpdatesWorld } from "./updates";
 import { governanceScenarios, newGovernanceWorld, type GovernanceWorld } from "./governance";
 import { masternodesScenarios, newMasternodesWorld, type MasternodesWorld } from "./masternodes";
 import { transferScenarios } from "./transfer";
@@ -152,6 +153,8 @@ export interface World {
   masternodes: MasternodesWorld;
   /** Prices in fiat: settings, rates.json and the next attempt (rates.ts, MP-01). */
   rates: RatesWorld;
+  /** Updates: what this copy can do, the feed and the install (updates.ts, PK-03). */
+  updates: UpdatesWorld;
   /** The commands dw-app does not have yet: network choice, shielded and Platform balances (pending.ts). */
   pending: PendingWorld;
 }
@@ -253,6 +256,7 @@ function base(theme: ThemeName | null, variant: HistoryVariant = "default", plai
     governance: newGovernanceWorld(),
     masternodes: newMasternodesWorld(),
     rates: newRatesWorld(),
+    updates: newUpdatesWorld(),
     pending: newPendingWorld(),
   };
 }

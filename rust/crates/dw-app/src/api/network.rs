@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::dto::{LockStatus, NetworkInfo, parse_network};
-use crate::error::{AppCode, AppError, CloseRefusalReason, ErrorData};
+use crate::error::{AppCode, AppError, CloseRefusalReason, ErrorData, UpdateBusyReason};
 use crate::ipc::commands;
 use crate::launch::LaunchOptions;
 use crate::state::AppState;
@@ -507,6 +507,33 @@ fn busy_of(leases: &[LeaseView], mixing: bool, broadcast: bool) -> Option<Busy> 
     (!busy.flows.is_empty() || busy.mixing || busy.broadcast).then_some(busy)
 }
 
+/// What runs on `session` that closing the engine for an update would cut
+/// (PK-03): a broadcast not yet returned, mixing or a Platform flow.
+pub(crate) fn running(
+    session: &NetworkSession,
+    broadcasts: &AtomicUsize,
+) -> Result<Option<UpdateBusyReason>, AppError> {
+    Ok(update_busy(
+        &session.leases()?,
+        session.mixing_busy(),
+        broadcasts.load(Ordering::SeqCst) > 0,
+    ))
+}
+
+/// The one reason an update names: a payment first, then mixing, then a
+/// Platform flow.
+fn update_busy(leases: &[LeaseView], mixing: bool, broadcast: bool) -> Option<UpdateBusyReason> {
+    busy_of(leases, mixing, broadcast).map(|b| {
+        if b.broadcast {
+            UpdateBusyReason::Payment
+        } else if b.mixing {
+            UpdateBusyReason::Mixing
+        } else {
+            UpdateBusyReason::Platform
+        }
+    })
+}
+
 fn busy_error(busy: Busy) -> AppError {
     let Busy {
         flows,
@@ -596,6 +623,22 @@ mod tests {
         let busy = busy_of(std::slice::from_ref(&ended), true, false).unwrap();
         assert!(!busy.stalled, "no flow, nothing to stall");
         assert!(busy_of(&[ended], false, false).is_none());
+    }
+
+    #[test]
+    fn an_update_names_a_payment_then_mixing_then_a_platform_flow() {
+        use dw_engine::platform::FlowKind;
+        let active = lease(FlowKind::TopUp, LeaseStateView::Active);
+        let waiting = lease(FlowKind::ContactRequest, LeaseStateView::NeedsGrant);
+        let ended = lease(FlowKind::TopUp, LeaseStateView::Ended);
+        let flows = [active.clone(), waiting.clone()];
+        assert_eq!(update_busy(&flows, true, true), Some(UpdateBusyReason::Payment));
+        assert_eq!(update_busy(&flows, true, false), Some(UpdateBusyReason::Mixing));
+        assert_eq!(update_busy(&[], true, false), Some(UpdateBusyReason::Mixing));
+        assert_eq!(update_busy(&[waiting], false, false), Some(UpdateBusyReason::Platform));
+        assert_eq!(update_busy(&[active], false, false), Some(UpdateBusyReason::Platform));
+        assert_eq!(update_busy(&[ended], false, false), None);
+        assert_eq!(update_busy(&[], false, false), None);
     }
 
     #[test]

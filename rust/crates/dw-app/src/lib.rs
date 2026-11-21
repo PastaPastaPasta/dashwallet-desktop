@@ -27,6 +27,7 @@ mod portal;
 pub mod settings;
 pub mod shell;
 pub mod state;
+pub mod updates;
 #[cfg(test)]
 mod upgrade_path_tests;
 
@@ -273,6 +274,9 @@ pub fn run() {
         base = base.plugin(window_state);
     }
     base = base.plugin(tauri_plugin_dialog::init());
+    if updates::build_has_updater(context.config()) {
+        base = base.plugin(updates::plugin());
+    }
     let app = app_builder(base, launch, started, dw_vault::VaultConfig::default())
         .menu(shell::menu::build)
         .on_menu_event(shell::menu::handle)
