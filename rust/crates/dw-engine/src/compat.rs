@@ -1023,14 +1023,16 @@ impl NetworkSession {
         .map(Some)
     }
 
-    /// Puts back what [`Self::write_imported_state`] replaced.
-    pub(crate) async fn restore_imported_state(&self, prior: dw_appdb::PriorRows) {
-        if let Err(e) = self
+    /// Puts back what [`Self::write_imported_state`] replaced; whether it
+    /// did.
+    pub(crate) async fn restore_imported_state(&self, prior: dw_appdb::PriorRows) -> bool {
+        let restored = self
             .appdb_op(move |db| db.restore_settings_and_locks(&prior))
-            .await
-        {
+            .await;
+        if let Err(e) = &restored {
             tracing::warn!(error = %e, "could not put back the rows a failed import replaced");
         }
+        restored.is_ok()
     }
 
     /// Applies the range of `state` to registered wallet `id`, before it is
@@ -1051,15 +1053,26 @@ impl NetworkSession {
         self.cover_issued(manager, id, issued).await
     }
 
-    /// Wallet `id`'s stored legacy counters, if valid ones are stored.
-    pub(crate) async fn stored_issued(&self, id: WalletId) -> Option<(u32, u32)> {
-        let appdb = Arc::clone(&self.live().ok()?.appdb);
+    /// Wallet `id`'s stored legacy counters, if stored; `Err` when they
+    /// cannot be read or are malformed.
+    pub(crate) async fn stored_issued(
+        &self,
+        id: WalletId,
+    ) -> Result<Option<(u32, u32)>, EngineError> {
+        #[cfg(test)]
+        if crate::keys::fails_for(&crate::keys::FAIL_RESTORE_READ, id) {
+            return Err(EngineError::Storage("test: range not read".into()));
+        }
         let key = id.to_string();
-        let value = tokio::task::spawn_blocking(move || appdb.setting(&key, ISSUED_SETTING))
-            .await
-            .ok()?
-            .ok()??;
-        parse_issued(&value)
+        let value = self
+            .appdb_op(move |db| db.setting(&key, ISSUED_SETTING))
+            .await?;
+        value
+            .map(|v| {
+                parse_issued(&v)
+                    .ok_or_else(|| EngineError::Storage(format!("malformed stored range {v:?}")))
+            })
+            .transpose()
     }
 }
 
@@ -1457,6 +1470,54 @@ mod tests {
         assert_eq!(report.wallet_id, id);
         assert_eq!(*created.0.lock().unwrap(), [id]);
         assert_eq!(engine.block_on(s.locked_outpoints(id)).unwrap().len(), 1);
+        engine.block_on(engine.shutdown()).unwrap();
+    }
+
+    /// F-B: keys attached from a wallet.dat whose range cannot be applied
+    /// are refused, and the marker and lookahead they replaced are back: a
+    /// reopen neither lowers the birth nor replays.
+    #[test]
+    fn an_attach_whose_range_fails_leaves_nothing_behind() {
+        let (_dir, engine, s, _created) = regtest_session();
+        let id = import(&engine, &s, "bdb_wide_range.dat");
+        assert!(s.vault().delete_wallet_secret(&id.0).unwrap());
+        engine.block_on(s.set_wide_scan(id, Some(crate::keys::WideScan::Done)));
+        let gap = |s: &NetworkSession| {
+            (s.live().unwrap().appdb)
+                .setting(&id.to_string(), crate::keys::LOOKAHEAD_SETTING)
+                .unwrap()
+        };
+        let birth = |s: &NetworkSession| {
+            use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+            let wm = s.manager().unwrap().wallet_manager_arc();
+            engine.block_on(async {
+                let wm = wm.read().await;
+                (wm.get_wallet_info(&id.0).unwrap().core_wallet).birth_height()
+            })
+        };
+        let (gap_before, birth_before) = (gap(&s), birth(&s));
+        FAIL_COVER_IN
+            .lock()
+            .unwrap()
+            .push(s.data_dir().to_path_buf());
+
+        let file = testdata("compat/walletdat/bdb_wide_range.dat");
+        let failed = engine.block_on(s.import_wallet_dat(file, None, ImportOptions::default()));
+
+        assert!(failed.is_err());
+        assert_eq!(
+            engine.block_on(s.wide_scan(id)).unwrap(),
+            Some(crate::keys::WideScan::Done)
+        );
+        assert_eq!(gap(&s), gap_before);
+        let s = reopen(&engine, s);
+        assert_eq!(birth(&s), birth_before);
+        assert!(
+            engine
+                .block_on(s.live().unwrap().replay.get(id))
+                .unwrap()
+                .is_none()
+        );
         engine.block_on(engine.shutdown()).unwrap();
     }
 

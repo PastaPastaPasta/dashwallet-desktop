@@ -491,6 +491,25 @@ impl ReplayRecords {
         self.load(&mut records, wallet).await
     }
 
+    /// `wallet`'s stored record, read without applying this session's forks
+    /// or keeping it (a read through [`Self::get`] may store them). `Err`
+    /// when it cannot be read.
+    pub(crate) async fn stored(
+        &self,
+        wallet: WalletId,
+    ) -> Result<Option<ReplayRecord>, EngineError> {
+        #[cfg(test)]
+        if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Storage("replay record read failed".into()));
+        }
+        if let Some(record) = self.records.lock().await.get(&wallet) {
+            return Ok(*record);
+        }
+        let (db, scope) = (Arc::clone(&self.appdb), wallet.to_string());
+        let value = appdb_job(db, move |db| db.setting(&scope, KEY)).await?;
+        Ok(value.map(|v| ReplayRecord::decode(&v)))
+    }
+
     /// Stores, durably, a rewind of `wallet` to `checkpoint` whose replay
     /// is done at `target`, merged with its record, whose hold is no lower
     /// than `floor` (the wallet's birth height less one). Returns the

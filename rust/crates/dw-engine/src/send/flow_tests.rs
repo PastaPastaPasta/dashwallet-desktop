@@ -2234,6 +2234,21 @@ fn a_replay_refuses_spends_until_it_reaches_its_target() {
     f.engine.block_on(draft.prepare(grant())).unwrap();
 }
 
+/// Signing a PSBT is refused during a replay, as building one is, and
+/// signs once the replay is back at its target.
+#[test]
+fn a_replay_refuses_psbt_signing_until_it_reaches_its_target() {
+    let f = fixture(false);
+    let prev = f.credit_with_prev(1, COIN);
+    f.advance(1_000);
+    let change = f.own_address();
+    let psbt = psbt_spending(&prev, &[(FOREIGN, COIN / 2), (&change, 45_000_000)]);
+    f.checkpoint(500);
+    assert!(replaying(f.sign_psbt(&psbt, f.spend_grant(55_000_000))));
+    f.advance(1_000);
+    f.sign_psbt(&psbt, f.spend_grant(55_000_000)).unwrap();
+}
+
 /// The prepare of `draft` on the runtime, for a test to interleave with.
 fn spawn_prepare(
     f: &Fixture,
