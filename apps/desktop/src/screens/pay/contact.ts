@@ -223,7 +223,7 @@ export interface BannerInput {
 
 export const PAYMENT_LOCK_TEXT = "A payment to this contact may have been sent. Check it again before you pay again.";
 
-/** First match wins (D6). A locked vault never reaches the tab: the lock screen covers it. */
+/** First match wins (D6). A locked vault never reaches the tab: the lock screen replaces the pages. */
 export function payBanner(i: BannerInput): Banner | null {
   if (i.detail === undefined) return i.readError ? { kind: "readFailed", text: `Could not read this contact: ${i.readError}` } : { kind: "loading" };
   if (i.detail === null) return { kind: "gone", text: "This user is no longer in your contacts." };
