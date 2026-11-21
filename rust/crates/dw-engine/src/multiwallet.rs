@@ -754,7 +754,9 @@ impl NetworkSession {
                 // A row an earlier attempt left does not narrow this one.
                 let previous_gap = this.lookahead_row(id).await?;
                 if lookahead == WATCH_ONLY_DEFAULT_LOOKAHEAD {
-                    this.set_lookahead_row(id, None).await?;
+                    if !this.stored_registration(id).await? {
+                        this.set_lookahead_row(id, None).await?;
+                    }
                 } else {
                     this.write_lookahead(id, lookahead).await?;
                 }

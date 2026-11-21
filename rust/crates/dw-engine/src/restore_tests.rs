@@ -3749,3 +3749,253 @@ fn an_undecodable_marker_is_owed_from_genesis() {
         Some(crate::keys::WideScan::From(0))
     );
 }
+
+/// Round 4, 1: a fork noted while a lower birth height is stored keeps
+/// its record when the birth cannot be stored: the edit's record goes
+/// back only while it is still the one the edit stored.
+#[test]
+fn a_fork_during_a_refused_birth_edit_keeps_its_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    engine
+        .block_on(session.set_birth_height(id, HEIGHT))
+        .unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+    (crate::tools::FORK_ON_BIRTH_STORE.lock().unwrap()).push((id.0, HEIGHT + 50, HEIGHT + 100));
+
+    let set = failing(&crate::tools::FAIL_BIRTH_STORE, id, || {
+        engine.block_on(session.set_birth_height(id, 500))
+    });
+
+    assert!(set.is_err());
+    assert!(
+        replay_record(&engine, &session, id).is_some(),
+        "the fork's record stays"
+    );
+}
+
+/// Round 4, 4: a lower birth height a transient error keeps buffered may
+/// still be stored by a later flush: its replay stays owed.
+#[test]
+fn a_lower_birth_height_still_buffered_keeps_its_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    engine
+        .block_on(session.set_birth_height(id, HEIGHT))
+        .unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT + 100);
+
+    let set = failing(&crate::tools::BUFFER_BIRTH_STORE, id, || {
+        engine.block_on(session.set_birth_height(id, 500))
+    });
+
+    assert!(set.is_err());
+    assert_eq!(replay_record(&engine, &session, id).map(|r| r.0), Some(499));
+}
+
+/// Round 4, 2: keys attached with a lookahead below the wallet's live
+/// CoinJoin gap, refused by the vault, leave the live gap as it was.
+#[test]
+fn an_attach_the_vault_refuses_keeps_the_live_coinjoin_gap() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    engine
+        .block_on(session.vault_op(|v| v.create(Some(b"pw"))))
+        .unwrap();
+    let id = import_phrase(&engine, &session, PHRASE, HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    let manager = session.manager().unwrap();
+    engine
+        .block_on(crate::keys::ensure_coinjoin_scan_gap(&manager, id))
+        .unwrap();
+    let wide = gap(&engine, &session, id, cj());
+    assert!(wide > 200, "{wide}");
+    session.vault().lock();
+    (session.vault())
+        .unlock(b"pw", dw_vault::UnlockScope::MixingOnly)
+        .unwrap();
+
+    let refused = engine.block_on(session.import_wallet(
+        zeroize::Zeroizing::new(PHRASE.to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(HEIGHT),
+            lookahead: Some(200),
+            ..Default::default()
+        },
+    ));
+
+    assert!(refused.is_err());
+    assert_eq!(gap(&engine, &session, id, cj()), wide);
+}
+
+/// Round 4, 3: a removal that fails to delete the wallet from its store
+/// leaves its lookahead row; an import of it again with the default
+/// lookahead keeps that row up to its registration, so an exit there
+/// reopens the stored wallet with its own gap.
+#[test]
+fn a_default_reimport_keeps_the_lookahead_of_a_wallet_still_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |lookahead| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(HEIGHT),
+                lookahead,
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(Some(200)).unwrap();
+    let wipe = (session.vault())
+        .authorize(
+            dw_vault::GrantPurpose::Wipe,
+            Some(&id.0),
+            dw_vault::Credential::None,
+        )
+        .unwrap()
+        .id;
+    (crate::wallets::FAIL_DELETE_IN.lock().unwrap()).push(session.data_dir().to_path_buf());
+    assert!(engine.block_on(session.remove_wallet(id, wipe)).is_err());
+    let seen = lookahead_at_registration(&session);
+
+    let _ = import(None);
+
+    assert_eq!(seen.lock().unwrap().as_deref(), Some("200"));
+}
+
+/// Writes a `.dwbackup` of `wallets` sealed by `session`'s vault (backup
+/// passphrase `bk`), each bundle born at 0 and carrying the lookahead row
+/// given.
+fn craft_backup(
+    session: &NetworkSession,
+    path: &std::path::Path,
+    wallets: &[(WalletId, Option<&str>)],
+) {
+    let header = serde_json::json!({
+        "format": "dwbackup", "format_version": 1, "network": "regtest", "created_at": 1,
+        "wallet_ids": wallets.iter().map(|(id, _)| id.to_string()).collect::<Vec<_>>(),
+        "automatic": false, "app_version": "test",
+    });
+    let header_line = serde_json::to_vec(&header).unwrap();
+    let bundles: Vec<_> = (wallets.iter())
+        .map(|(id, lookahead)| {
+            let rows: Vec<_> = (lookahead.iter())
+                .map(|v| {
+                    serde_json::json!([{ "t": id.to_string() }, { "t": crate::keys::LOOKAHEAD_SETTING }, { "t": v }])
+                })
+                .collect();
+            let payload = serde_json::json!({
+                "name": "A", "birth_height": 0, "created_at": null,
+                "app_rows": [{ "table": "settings_kv", "columns": ["scope", "key", "value"], "rows": rows }],
+            });
+            (session.vault())
+                .backup_bundle(&id.0, Some(b"bk"), &serde_json::to_vec(&payload).unwrap(), &header_line)
+                .unwrap()
+        })
+        .collect();
+    let mut out = b"DWBACKUP 1\n".to_vec();
+    out.extend_from_slice(&header_line);
+    out.push(b'\n');
+    out.extend(serde_json::to_vec(&serde_json::json!({ "bundles": bundles })).unwrap());
+    out.push(b'\n');
+    std::fs::write(path, out).unwrap();
+}
+
+/// Round 4, 6: a restore whose first bundle, carrying a lookahead, attaches
+/// keys to a watch-only wallet and whose second fails (a wallet with keys
+/// already) leaves the first wallet's scan as it was: a reopen keeps its
+/// birth and marker and owes no replay.
+#[test]
+fn a_failed_restore_leaves_the_scan_of_a_wallet_it_attached_keys_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let a = born_at_700(&engine, &session);
+    let b = import_phrase(&engine, &session, PHRASE, HEIGHT).unwrap();
+    let backup = dir.path().join("two.dwbackup");
+    craft_backup(&session, &backup, &[(a, Some("200")), (b, None)]);
+    assert!(session.vault().delete_wallet_secret(&a.0).unwrap());
+    let marker = wide_scan(&engine, &session, a);
+
+    let restored = engine
+        .block_on(session.restore_backup(backup, Some(zeroize::Zeroizing::new(b"bk".to_vec()))));
+
+    assert!(restored.is_err(), "{restored:?}");
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, a), 700);
+    assert_eq!(replay_record(&engine, &session, a), None);
+    assert_eq!(wide_scan(&engine, &session, a), marker);
+}
+
+/// Round 4, 9: a rescan from below the birth whose lower birth cannot be
+/// stored takes back the replay it stored: a reopen keeps the birth and
+/// rescans nothing.
+#[test]
+fn a_rescan_below_the_birth_whose_birth_cannot_be_stored_owes_no_replay() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = born_at_700(&engine, &session);
+    start_offline_spv(&engine, &session);
+    let before = replay_record(&engine, &session, id);
+
+    let rescanned = failing(&crate::tools::FAIL_BIRTH_STORE, id, || {
+        engine.block_on(session.rescan(crate::RescanFrom::Height(100)))
+    });
+
+    assert!(rescanned.is_err());
+    assert_eq!(replay_record(&engine, &session, id), before);
+    let session = reopen(&engine, session);
+    assert_eq!(birth_height(&engine, &session, id), 700);
+}
+
+/// Round 4, 7: keys attached with only a lookahead to a wallet whose stored
+/// legacy range start-up could not apply apply that range before the
+/// replay: its addresses are derived, and the wallet is marked done.
+#[test]
+fn keys_attached_with_a_lookahead_apply_a_stored_range_start_up_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = import_phrase(&engine, &session, PHRASE, HEIGHT).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    store_setting(
+        &engine,
+        &session,
+        id,
+        crate::compat::ISSUED_SETTING,
+        "1001,2",
+    );
+    let session = failing(&crate::keys::FAIL_RESTORE_READ, id, || {
+        reopen(&engine, session)
+    });
+
+    let attached = engine.block_on(session.import_wallet(
+        zeroize::Zeroizing::new(PHRASE.to_vec()),
+        zeroize::Zeroizing::new(Vec::new()),
+        crate::ImportOptions {
+            birth_height: Some(HEIGHT),
+            lookahead: Some(200),
+            ..Default::default()
+        },
+    ));
+
+    assert_eq!(attached.unwrap(), id);
+    let highest = engine.block_on(async {
+        let manager = session.manager().unwrap();
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+        let funds = info.accounts.funds_account(&bip44()).unwrap();
+        funds.managed_account_type().address_pools()[0].highest_generated
+    });
+    assert!(highest.is_some_and(|h| h >= 1001), "{highest:?}");
+}

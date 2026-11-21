@@ -751,7 +751,9 @@ impl NetworkSession {
             birth_height: Some(payload.birth_height.unwrap_or(0)),
             core_compat: false,
             name: payload.name.clone(),
-            lookahead,
+            // A wallet there before gets it with its rows, as on main: an
+            // attach would rewind it before the restore commits.
+            lookahead: lookahead.filter(|_| !existed),
         };
         match self
             .import_secret_locked(

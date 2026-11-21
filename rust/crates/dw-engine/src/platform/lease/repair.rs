@@ -43,15 +43,17 @@
 //!   pays the fee; the self-spend links the denominations it spends (one per
 //!   lock at most) and turns them into one ordinary coin.
 //! - A step with locks of both kinds, which only an older build leaves:
-//!   every live input of its locks, as main repairs it. The one transaction
-//!   links the mixed coins to the unmixed ones; refusing would hold them
-//!   for good. A repair with only denominations left is refused.
+//!   the live inputs of its locks, no user-locked one and no other coin.
+//!   The one transaction links the mixed coins to the unmixed ones;
+//!   refusing would hold them for good. A repair with only denominations
+//!   left is refused.
 //!
 //! The inputs of
 //! tracked `Built`/`Broadcast` locks are reserved for every other build
 //! (`coins.rs`); this draft names exactly them as exempt. A coin the user
 //! locked, or one a pending payment of the engine reserves, is not
-//! exempt: the draft refuses it (`send.outpoint_unavailable`), since the
+//! exempt: the draft refuses it (`send.outpoint_unavailable`), picked or
+//! not, as main's draft of every coin did, since the
 //! library saw neither lock nor reservation, so a lost lock may have spent
 //! it, and a self-spend without it might not conflict with that lock. The
 //! user unlocks it (or waits for the payment) and repairs again.
@@ -92,7 +94,7 @@ use super::ArtifactId;
 use super::mode_b::StuckFundingRefusal;
 use crate::coinjoin::CoinJoinFailure;
 use crate::platform::flows::is_funding_step;
-use crate::send::{BroadcastOutcome, CoinSource, Recipient, TxDraft};
+use crate::send::{BroadcastOutcome, CoinSource, Recipient, SendFailure, TxDraft};
 use crate::{EngineError, NetworkSession, WalletId};
 
 impl From<StuckFundingRefusal> for EngineError {
@@ -185,6 +187,16 @@ impl NetworkSession {
                     .filter(|c| c.coinjoin_account && recorded.contains(&c.utxo.outpoint))
                     .collect()
             } else {
+                // A coin that stopped main's all-coin draft (locked, or
+                // reserved other than as a lock's input) stops this one.
+                let stops = |c: &&crate::coins::WalletCoin| {
+                    c.send_account
+                        && c.utxo.is_spendable(snapshot.height)
+                        && (c.user_locked || (c.reserved && !c.lock_input))
+                };
+                if let Some(c) = snapshot.coins.iter().find(stops) {
+                    return Err(SendFailure::OutpointUnavailable(c.utxo.outpoint).into());
+                }
                 funding_repair_coins(spendable.filter(|c| c.send_account).collect(), &rows)?
             };
             if coins.is_empty() {
@@ -311,8 +323,8 @@ fn funding_repair_coins<'a>(
         }
         return Ok(unmixed);
     }
-    // Locks of both kinds (an older build's): every live input of the
-    // step's locks, as main repairs it, linking the mixed coins to the others.
+    // Locks of both kinds (an older build's): the step's locks' live
+    // inputs, linking the mixed coins to the others.
     if unmixed_lock {
         let inputs: HashSet<&OutPoint> = rows.iter().flat_map(|(_, i)| i).collect();
         return Ok((send.into_iter())
@@ -425,9 +437,8 @@ mod tests {
         );
     }
 
-    /// F-D: an older build's locks of both kinds are repaired as main
-    /// repairs them, through every live input of the step's locks, in
-    /// either row order.
+    /// F-D: an older build's locks of both kinds are repaired through the
+    /// live inputs of the step's locks, in either row order.
     #[test]
     fn locks_of_both_kinds_take_their_inputs() {
         for rows in [

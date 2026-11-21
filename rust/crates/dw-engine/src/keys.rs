@@ -366,19 +366,26 @@ pub(crate) async fn apply_lookahead(
     wallet: &platform_wallet::wallet::platform_wallet::PlatformWallet,
     gap: u32,
 ) -> Result<(), EngineError> {
+    use key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
     // Every one the wallet has: a watch-only wallet's is BIP44 account N.
-    let accounts: Vec<(AccountTypePreference, u32)> = {
+    // None is lowered: a pool already wider (a CoinJoin scan's) keeps it.
+    let widest = |a: &key_wallet::managed_account::ManagedCoreFundsAccount| {
+        let pools = a.managed_account_type().address_pools();
+        (pools.iter().map(|p| p.gap_limit)).fold(gap, u32::max)
+    };
+    let accounts: Vec<(AccountTypePreference, u32, u32)> = {
         let state = wallet.state().await;
         let accounts = &state.core_wallet.accounts;
-        (accounts.standard_bip44_accounts.keys())
-            .map(|i| (AccountTypePreference::BIP44, *i))
+        (accounts.standard_bip44_accounts.iter())
+            .map(|(i, a)| (AccountTypePreference::BIP44, *i, widest(a)))
             .chain(
-                (accounts.coinjoin_accounts.keys()).map(|i| (AccountTypePreference::CoinJoin, *i)),
+                (accounts.coinjoin_accounts.iter())
+                    .map(|(i, a)| (AccountTypePreference::CoinJoin, *i, widest(a))),
             )
             .collect()
     };
     let mut first_error = None;
-    for (account, index) in accounts {
+    for (account, index, gap) in accounts {
         if let Err(e) = wallet.core().set_gap_limit(account, index, gap).await {
             first_error.get_or_insert(e);
         }
@@ -1135,7 +1142,13 @@ impl NetworkSession {
         };
         if registered {
             if let Some((from, raised)) = attached {
-                if self.widen_published_wallet(&manager, wallet_id, from).await && raised {
+                // A stored range start-up left unapplied goes on before the
+                // replay, or the replay stays owed.
+                let (_, ranges) = self.apply_stored_ranges(&manager, wallet_id).await;
+                if self.widen_published_wallet(&manager, wallet_id, from).await
+                    && raised
+                    && ranges.is_ok()
+                {
                     self.set_wide_scan(wallet_id, Some(WideScan::Done)).await;
                 }
                 self.refresh_wallet_state(&manager, wallet_id).await;
@@ -1161,10 +1174,14 @@ impl NetworkSession {
         let pending = async {
             let previous = self.wide_scan(wallet_id).await?;
             self.mark_pending(wallet_id, WideScan::Birth).await?;
-            // A row an earlier attempt left does not narrow this one.
+            // A row an earlier attempt left does not narrow this one; one of
+            // a wallet still stored (a failed removal) stays.
             match lookahead {
                 Some(gap) => self.write_lookahead(wallet_id, gap).await?,
-                None => self.set_lookahead_row(wallet_id, None).await?,
+                None if !self.stored_registration(wallet_id).await? => {
+                    self.set_lookahead_row(wallet_id, None).await?
+                }
+                None => {}
             }
             Ok::<_, EngineError>(previous)
         }
@@ -1339,6 +1356,16 @@ impl NetworkSession {
         let key = id.to_string();
         self.appdb_op(move |db| db.setting(&key, LOOKAHEAD_SETTING))
             .await
+    }
+
+    /// Whether wallet.sqlite holds wallet `id`.
+    pub(crate) async fn stored_registration(&self, id: WalletId) -> Result<bool, EngineError> {
+        let db_path = self.data_dir().join(crate::session::WALLET_DB_FILE);
+        let heights =
+            tokio::task::spawn_blocking(move || crate::store::stored_heights(&db_path, &id.0));
+        let (_, birth) = (heights.await?)
+            .map_err(|e| EngineError::Storage(format!("the stored registration: {e}")))?;
+        Ok(birth.is_some())
     }
 
     /// Stores wallet `id`'s lookahead row `value` as read, or deletes it,
@@ -1736,7 +1763,8 @@ impl NetworkSession {
         if synced <= published_at {
             return widened.is_ok();
         }
-        if let Err(e) = (self.lower_birth_height(manager, id, published_at.saturating_add(1))).await
+        if let Err((e, _)) =
+            (self.lower_birth_height(manager, id, published_at.saturating_add(1))).await
         {
             tracing::warn!(wallet_id = %id, error = %e, "could not lower the birth height to replay below it");
             return false;

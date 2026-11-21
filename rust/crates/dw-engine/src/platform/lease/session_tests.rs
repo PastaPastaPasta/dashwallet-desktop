@@ -4426,3 +4426,35 @@ fn a_shield_drain_lease_signs_coinjoin_inputs_and_its_credit_key_only_while_it_h
         Err(dw_vault::SignerError::Locked)
     ));
 }
+
+/// Round 4, 8: a user-locked denomination no lock of the step spent stops
+/// Repair, with main's refusal, as it stopped main's draft of every coin,
+/// though the lock's own denomination alone would repair it.
+#[test]
+fn repair_refuses_while_an_unrelated_coin_is_locked_as_main_did() {
+    const STEP: &str = "registration/1/funding";
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let denomination = f.credit(3, dw_coinjoin::denoms::DENOMINATIONS[2]);
+    let locked = f.credit(4, dw_coinjoin::denoms::DENOMINATIONS[1]);
+    f.stuck_signing(STEP, 51, &[denomination]);
+    f.track_lock(
+        51,
+        0,
+        &[denomination],
+        platform_wallet::AssetLockStatus::Built,
+    );
+    (f.engine)
+        .block_on(f.session.lock_outpoints(f.wallet, vec![locked]))
+        .unwrap();
+
+    match f
+        .engine
+        .block_on(f.session.stuck_funding_draft(f.wallet, STEP))
+    {
+        Err(EngineError::Send(crate::send::SendFailure::OutpointUnavailable(o))) => {
+            assert_eq!(o, locked)
+        }
+        other => panic!("{other:?}"),
+    }
+}
