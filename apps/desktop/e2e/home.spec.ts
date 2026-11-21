@@ -87,7 +87,8 @@ test("An open Shielded passphrase prompt survives the Home section appearing and
     page.evaluate((n) => {
       const f = window.__dwFixture!;
       f.world.pending.shielded!.pendingShields = n ? [{ txid: "c0ffee00".repeat(8), duffs: 50_000_000, proved: false, consumptionUnknown: false }] : [];
-      f.emit({ kind: "eventsOverflowed" });
+      // Not a lost event queue: that closes the wallet until the lock status is read again.
+      f.emit({ kind: "platform", network: f.world.launch.network.dirName, walletId: f.world.wallets[0].summary.walletId, change: { domain: "startup" } });
     }, n);
   await setShields(1);
   await expect(page.getByTestId("unfinished-card").getByTestId("shielded-unfinished")).toHaveCount(1);

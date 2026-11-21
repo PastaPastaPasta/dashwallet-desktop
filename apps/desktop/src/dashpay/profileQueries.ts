@@ -75,14 +75,14 @@ export interface PictureScopeValue {
 export const PictureScope = createContext<PictureScopeValue | null>(null);
 
 /** "Load contact pictures" (DP4-02 D17); unread or unreadable counts as off (D13). */
-export function useContactPictures() {
+export function useContactPictures(enabled = true) {
   const b = useBackend();
-  return useQuery({ queryKey: profileKeys.contactPictures, queryFn: () => b.loadContactPictures() });
+  return useQuery({ queryKey: profileKeys.contactPictures, queryFn: () => b.loadContactPictures(), enabled });
 }
 
 /** The scope App gives the window (D12); `null` until a wallet is known. */
 export function usePictureScopeValue(walletId: string | undefined): PictureScopeValue | null {
-  const others = useContactPictures().data === true;
+  const others = useContactPictures(walletId !== undefined).data === true;
   return useMemo(() => (walletId ? { walletId, others } : null), [walletId, others]);
 }
 

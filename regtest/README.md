@@ -211,7 +211,8 @@ network.
 | `DW_DP_SCAN` | colon-separated extra files for the end-of-run secret scan |
 | `DW_DP_STRICT` | `1`: the unknown-outcome case fails instead of skipping when the relay is not configured |
 | `DWCLI` | the dwcli binary |
-| `DW_DP_NOTIFY` | nightly only: the absolute path of the site's notifier, an executable that delivers its one argument (the failure message) |
+| `DW_DP_NOTIFY` | nightly only: the absolute path of the site's notifier, an executable that delivers its one argument (a failure message, or `<unit>: result=success` after a run that passed) |
+| `DW_DP_ISSUE_REPO` | nightly only, for the issue notifier `scripts/dashpay-nightly-issue.sh`: the repository (`owner/name`) its issue lives in. That notifier also needs `gh`, signed in with issue access to that repository, and `jq` |
 | `DW_DP_HOLD_UPSTREAM` | `ip:port` of a testnet peer serving BIP157 filters, for the unknown-outcome relay (DP3); that case is skipped when unset (fails with `DW_DP_STRICT=1`) |
 
 The harness assumes `DW_DP_STATE` is private to it: mode 0700, owned by the user that runs the
@@ -267,14 +268,21 @@ pytest's output goes to `pytest.log` only; the script's log and the journal get 
 once the secret scan has passed. Everything stays in `DW_DP_STATE/nightly/<date>`.
 
 On agentbox it runs from the systemd user timer in `ci/agentbox/`, with the launcher,
-`scripts/dashpay-unfunded.sh` and `scripts/dashpay-nightly-notify.sh` installed outside
-`DW_DP_STATE` and outside any checkout
+`scripts/dashpay-unfunded.sh`, `scripts/dashpay-nightly-notify.sh`, `scripts/dashpay-nightly-issue.sh`
+and `ci/github/nightly-issue.sh` installed outside `DW_DP_STATE` and outside any checkout
 (`~/.local/libexec/dashwallet-desktop/`; install steps in the service file). It does not gate
 anything; it alerts. A failed run fails the unit, and its `OnFailure=` unit
 (`dw-dashpay-nightly-failed.service`) runs the site-provided notifier `DW_DP_NOTIFY` with the
 unit's result and exit status and the run's artifact directory, never test output. The install
 requires one test start of that unit, with its message seen to arrive, before the timer is
-enabled.
+enabled. After a run that passed, the unit runs the notifier once more with `result=success`.
+
+On agentbox the notifier is `scripts/dashpay-nightly-issue.sh`: it keeps one open issue labelled
+`nightly-failure` ("Nightly failure: DashPay suites on testnet") in `DW_DP_ISSUE_REPO` while the
+nightly is red, adds a comment for each further red night, and closes it after the next green
+one. The issue is public, so it names the artifact directory by the launcher's name for it only, and publishes nothing from a notice of any other form. The scheduled
+GitHub Actions nightly reports the same way ("Nightly failure: GitHub Actions", with links to
+the failed jobs), through the same `ci/github/nightly-issue.sh`.
 
 **T2 is blocked.** On the shared dashmate `local` devnet (3 evonodes) dash-spv never finishes
 its masternode list: the network forms no `llmq_test_dip0024` quorum, so QRInfo is never

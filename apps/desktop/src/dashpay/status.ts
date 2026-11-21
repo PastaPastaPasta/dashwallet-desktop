@@ -238,7 +238,7 @@ const card = (state: CardState, tone: CardTone, title: string, lines: string[] =
 
 const action = (kind: CardActionKind, label: string, disabled = false): CardAction => ({ kind, label, disabled });
 
-/** Unlock, only while unlocked for mixing only: fully locked, the lock screen covers the shell. */
+/** Unlock, only while unlocked for mixing only: fully locked, the lock screen replaces the shell. */
 const unlockAction = (lock: LockStateName | undefined): CardAction | null => (lock === "unlockedMixingOnly" ? action("unlock", COPY.unlock) : null);
 
 /** S3–S6: DashPay has not said whether the wallet has an identity (BL-153 D2, D16). */

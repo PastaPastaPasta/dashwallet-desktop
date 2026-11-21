@@ -9,7 +9,7 @@
 //! wallet whose seed is not in the vault.
 
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use dashcore::Address;
 use dw_uri::keyio::{Destination, decode_destination};
@@ -170,6 +170,63 @@ pub(crate) fn asks_every_payment(stored: Option<&str>) -> bool {
 
 fn payment_auth_key(vault_id: &[u8]) -> String {
     format!("{PAYMENT_AUTH_KEY}{}", hex::encode(vault_id))
+}
+
+/// The vault's policy commitments ([`dw_vault::PolicyCommitments`]): one
+/// durable row per vault id in the app database. The database is held
+/// weakly, so the vault of a closed session keeps no handle on
+/// `app.sqlite` (#190); once it is gone the commitment can be neither read
+/// nor written, and the vault fails closed.
+pub(crate) struct PolicyCommitmentStore(pub(crate) Weak<dw_appdb::AppDb>);
+
+impl PolicyCommitmentStore {
+    fn db(&self) -> Result<Arc<dw_appdb::AppDb>, String> {
+        self.0
+            .upgrade()
+            .ok_or_else(|| "the app database is closed".into())
+    }
+}
+
+fn policy_commit_key(vault_id: &[u8]) -> String {
+    format!("vault.policy_generation/{}", hex::encode(vault_id))
+}
+
+impl dw_vault::PolicyCommitments for PolicyCommitmentStore {
+    fn committed(&self, vault_id: &[u8]) -> Result<Option<u64>, String> {
+        self.db()?
+            .setting(dw_appdb::GLOBAL_SCOPE, &policy_commit_key(vault_id))
+            .map_err(|e| e.to_string())?
+            .map(|v| policy_generation(&v))
+            .transpose()
+    }
+
+    fn commit(&self, vault_id: &[u8], generation: u64) -> Result<u64, String> {
+        policy_generation(&generation.to_string())?;
+        let stored = self
+            .db()?
+            .raise_setting_durable(
+                dw_appdb::GLOBAL_SCOPE,
+                &policy_commit_key(vault_id),
+                generation,
+            )
+            .map_err(|e| e.to_string())?;
+        policy_generation(&stored)
+    }
+
+    fn forget(&self, vault_id: &[u8]) -> Result<(), String> {
+        self.db()?
+            .set_setting_durable(dw_appdb::GLOBAL_SCOPE, &policy_commit_key(vault_id), None)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// A stored generation, which the database keeps as a signed integer.
+fn policy_generation(stored: &str) -> Result<u64, String> {
+    stored
+        .parse::<u64>()
+        .ok()
+        .filter(|&g| i64::try_from(g).is_ok())
+        .ok_or_else(|| format!("unreadable policy commitment {stored:?}"))
 }
 
 /// Tells the vault the stored choice for the vault it holds, so it opens a
@@ -1841,5 +1898,51 @@ mod payment_auth_tests {
         assert!(asks_every_payment(Some("garbage")));
         assert!(!asks_every_payment(Some("window")));
         assert!(!asks_every_payment(Some("0")));
+    }
+}
+
+#[cfg(test)]
+mod policy_commitment_tests {
+    use super::PolicyCommitmentStore;
+    use dw_vault::{
+        Credential, GrantPurpose, KdfParams, KdfPolicy, MemoryOsStore, Vault, VaultConfig,
+        VaultError,
+    };
+    use std::sync::Arc;
+
+    /// The vault's store does not keep the app database open (#190): once
+    /// the session lets go of it, a vault still held fails closed.
+    #[test]
+    fn the_vaults_store_keeps_no_app_database_after_it_is_released() {
+        let dir = dw_testutil::private_tempdir();
+        let db = Arc::new(dw_appdb::AppDb::open(&dir.path().join("app.sqlite")).unwrap());
+        let config = VaultConfig {
+            kdf: KdfPolicy::Fixed(KdfParams::TEST),
+            os_store: Arc::new(MemoryOsStore::new()),
+            ..VaultConfig::default()
+        };
+        let vault = Vault::open(
+            dir.path().join("vault"),
+            dashcore::Network::Regtest,
+            "regtest",
+            config,
+        )
+        .unwrap();
+        vault.create(Some(b"pw")).unwrap();
+        vault.attach_policy_commitments(Arc::new(PolicyCommitmentStore(Arc::downgrade(&db))));
+        let released = Arc::downgrade(&db);
+        drop(db);
+        assert!(released.upgrade().is_none());
+        let change = vault
+            .authorize(
+                GrantPurpose::ChangeCredential,
+                None,
+                Credential::Passphrase(b"pw"),
+            )
+            .unwrap();
+        assert!(matches!(
+            vault.set_quick_unlock_spend_limit(&change.id, 500_000_000),
+            Err(VaultError::Storage(_))
+        ));
     }
 }

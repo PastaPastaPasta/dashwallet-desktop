@@ -3726,19 +3726,22 @@ fn an_abandon_whose_replay_is_not_stored_does_not_happen() {
             },
         )
     });
-    let spend = dashcore::Transaction {
-        version: 2,
-        lock_time: 0,
-        input: vec![dashcore::TxIn {
-            previous_output: coin,
-            ..Default::default()
-        }],
-        output: vec![TxOut {
-            value: COIN / 2,
-            script_pubkey: script_of(FOREIGN),
-        }],
-        special_transaction_payload: None,
-    };
+    let spend = f.signed(
+        dashcore::Transaction {
+            version: 2,
+            lock_time: 0,
+            input: vec![dashcore::TxIn {
+                previous_output: coin,
+                ..Default::default()
+            }],
+            output: vec![TxOut {
+                value: COIN / 2,
+                script_pubkey: script_of(FOREIGN),
+            }],
+            special_transaction_payload: None,
+        },
+        &[],
+    );
     let txid = spend.txid();
     f.session.hub.history.with_wallet(f.wallet, |h| {
         h.txs.insert(
@@ -3877,6 +3880,31 @@ impl Fixture {
                 },
             )
         });
+    }
+
+    /// `tx` with each input that spends a coin of the wallet signed by the
+    /// key of the fixture's seed, as its own send signs with the vault's:
+    /// key-wallet ignores an unconfirmed spend of a coin it holds that the
+    /// coin's owner did not sign, and the manager's wallet holds no keys.
+    fn signed(
+        &self,
+        tx: dashcore::Transaction,
+        fundings: &[&dashcore::Transaction],
+    ) -> dashcore::Transaction {
+        let manager = Arc::clone(&self.session.live().unwrap().manager);
+        let id = self.wallet;
+        let device = key_wallet::Wallet::from_mnemonic(
+            key_wallet::Mnemonic::from_phrase(PHRASE).unwrap(),
+            key_wallet::Network::Regtest,
+            key_wallet::wallet::initialization::WalletAccountCreationOptions::Default,
+        )
+        .unwrap();
+        self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let wm = wm.read().await;
+            let info = &wm.get_wallet_info(&id.0).unwrap().core_wallet;
+            key_wallet::test_utils::sign_owned_inputs(&device, info, tx, fundings).await
+        })
     }
 
     /// The wallet sees `tx` unconfirmed: key-wallet records it and the
@@ -4167,6 +4195,7 @@ fn abandon_fixture(older: OlderFunding) -> (Fixture, Txid, dashcore::Transaction
         ],
         special_transaction_payload: None,
     };
+    let root = f.signed(root, &[]);
     f.see_tx(&root);
     let descendant = dashcore::Transaction {
         version: 2,
@@ -4187,6 +4216,7 @@ fn abandon_fixture(older: OlderFunding) -> (Fixture, Txid, dashcore::Transaction
         }],
         special_transaction_payload: None,
     };
+    let descendant = f.signed(descendant, &[&root]);
     let root_id = root.txid();
     (f, root_id, descendant)
 }
@@ -6808,7 +6838,7 @@ impl Fixture {
         let (manager, id, tx) = (
             Arc::clone(&self.session.live().unwrap().manager),
             self.wallet,
-            self.spend_of(7, &[coin]),
+            self.signed(self.spend_of(7, &[coin]), &[]),
         );
         self.engine.block_on(async move {
             let wm = manager.wallet_manager_arc();

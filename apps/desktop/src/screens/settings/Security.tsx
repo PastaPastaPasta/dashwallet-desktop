@@ -5,7 +5,8 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState, type ChangeEvent, type FormEvent } from "react";
-import { useBackend, useBackupDirectory, useLockStatus } from "../../api/queries";
+import type { LockStatus } from "../../api/generated/LockStatus";
+import { keys, useBackend, useBackupDirectory, useLockStatus } from "../../api/queries";
 import { navigate, ui } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { NewPassphraseForm, PassphrasePrompt } from "../../components/passphrase";
@@ -20,10 +21,15 @@ import { Done, Hint, NotYetRow, Problem, SettingsCard } from "./parts";
 
 type SecuritySheet = "encrypt" | "change" | "wipe" | null;
 
+/** The wipe sheet's flow when the vault locked with it open: Settings unmounts with the other pages
+ * when the lock screen replaces them, and the sheet opens again with it once unlocked, the shell
+ * held meanwhile (D33, D38). */
+let wipeAcrossLock: WipeModel | null = null;
+
 export function SecurityTab() {
   const lock = useLockStatus();
   const { prefs, save, problem } = useSavePrefs();
-  const [sheet, setSheet] = useState<SecuritySheet>(null);
+  const [sheet, setSheet] = useState<SecuritySheet>(() => (wipeAcrossLock ? "wipe" : null));
   const [notice, setNotice] = useState<string | null>(null);
   const id = useId();
   const status = lock.data;
@@ -326,19 +332,24 @@ function ChangePassphraseSheet({ onClose }: { onClose: (done: boolean) => void }
 function WipeSheet({ onClose }: { onClose: () => void }) {
   const backend = useBackend();
   const client = useQueryClient();
-  const [model] = useState(() => new WipeModel(backend));
+  const [model] = useState(() => wipeAcrossLock ?? new WipeModel(backend));
   useModel(model);
   useLockTimer(model.lock);
   useEffect(() => void model.load(), [model]);
   // While the sheet is open onboarding stays closed: the last removal empties the wallet list
-  // before the vault is deleted, and a failure there must show here (D33).
+  // before the vault is deleted, and a failure there must show here (D33). A lock does not close it.
   useEffect(() => {
     ui.set({ wiping: true });
+    if (wipeAcrossLock === model) wipeAcrossLock = null;
     return () => {
+      if (client.getQueryData<LockStatus>(keys.lockStatus)?.state === "locked") {
+        wipeAcrossLock = model;
+        return;
+      }
       model.cancel();
       ui.set({ wiping: false });
     };
-  }, [model]);
+  }, [model, client]);
   // Nothing is left for the sheet to stand on: onboarding opens over a fresh shell, and the toast
   // says what happened.
   useEffect(() => {

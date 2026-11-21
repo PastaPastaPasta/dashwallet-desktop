@@ -570,6 +570,19 @@ impl std::fmt::Debug for VaultConfig {
     }
 }
 
+/// Where the host keeps, outside the vault file, the generation at which
+/// each vault last sealed its spending limit
+/// ([`crate::Vault::attach_policy_commitments`]). A file whose policy is
+/// older than the commitment counts as having limit 0, and so does every
+/// policy while the commitment cannot be read. `commit` raises the stored
+/// value to at least `generation` in one durable step, never lowers it, and
+/// returns what is stored.
+pub trait PolicyCommitments: Send + Sync {
+    fn committed(&self, vault_id: &[u8]) -> Result<Option<u64>, String>;
+    fn commit(&self, vault_id: &[u8], generation: u64) -> Result<u64, String>;
+    fn forget(&self, vault_id: &[u8]) -> Result<(), String>;
+}
+
 /// Default grant lifetime: long enough for one confirm-and-sign round.
 pub const DEFAULT_GRANT_TTL_SECS: u64 = 120;
 

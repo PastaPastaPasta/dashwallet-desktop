@@ -24,6 +24,9 @@ export interface ReceivedPayment {
 /** Most kept per app run: an old payment is in Activity. */
 const MAX_KEPT = 50;
 
+/** Most payments whose read state a lock keeps: the newest. */
+export const MAX_SEALED = 2 * MAX_KEPT;
+
 /** Record types that are a payment to the wallet: dash-qt's "Incoming transaction" popups. Mixing,
  * dust and rewards are not announced. */
 const INCOMING_TYPES: ReadonlySet<string> = new Set(["recvWithAddress", "recvFromOther"]);
@@ -32,21 +35,32 @@ const INCOMING_TYPES: ReadonlySet<string> = new Set(["recvWithAddress", "recvFro
 export const isReceivedPayment = (row: TxNoticeRow): boolean => row.amount > 0 && !row.coinjoinInternal && INCOMING_TYPES.has(row.txType);
 
 let list: readonly ReceivedPayment[] = [];
+/** Bumped by each lock (`sealReceived`): a lookup begun before it records nothing. */
+let generation = 0;
+/** What the bell knew of a payment when the vault locked, by `walletId:id`: not its amount or
+ * address, which a lookup after the unlock reads again. */
+const sealed = new Map<string, { read: boolean; at: number }>();
 const listeners = new Set<() => void>();
 const announced = new Set<(batch: ReceivedPayment[]) => void>();
 
 const changed = () => listeners.forEach((l) => l());
 
-/** Keeps the payments among `rows` that are new, newest first, and tells `onReceived` listeners. */
-export function recordReceived(walletId: string, rows: readonly TxNoticeRow[], now: number = Date.now()): ReceivedPayment[] {
+/** Keeps the payments among `rows` that are new, newest first, and tells `onReceived` listeners
+ * unless `announce` is false (payments that came while the wallet was locked). */
+export function recordReceived(walletId: string, rows: readonly TxNoticeRow[], now: number = Date.now(), announce = true): ReceivedPayment[] {
   const fresh = rows
     .filter(isReceivedPayment)
-    .map((r): ReceivedPayment => ({ id: `${r.txid}:${r.recordIndex}`, walletId, txid: r.txid, duffs: r.amount, address: r.address, at: now, read: false }))
+    .map((r): ReceivedPayment => {
+      const id = `${r.txid}:${r.recordIndex}`;
+      const before = sealed.get(`${walletId}:${id}`);
+      return { id, walletId, txid: r.txid, duffs: r.amount, address: r.address, at: before?.at ?? now, read: before?.read ?? false };
+    })
     .filter((p) => !list.some((q) => q.walletId === walletId && q.id === p.id));
+  for (const p of fresh) sealed.delete(`${walletId}:${p.id}`);
   if (fresh.length === 0) return [];
   list = [...fresh, ...list].slice(0, MAX_KEPT);
   changed();
-  for (const f of announced) f(fresh);
+  if (announce) for (const f of announced) f(fresh);
   return fresh;
 }
 
@@ -69,8 +83,16 @@ export const lookupPending = (walletId: string): boolean => lookups.has(walletId
 /** Asks the engine what `txids` are and records the payments among them. While it asks, `lookupPending`
  * says so, so a screen does not take the lack of a payment for proof (Receive's rotation). A failed read
  * says nothing: Activity still shows the payment. A lookup slower than `timeoutMs` stops being waited
- * for, and is recorded all the same if it answers later. */
-export async function announceReceived(backend: Pick<Backend, "txNotices">, walletId: string, txids: string[], timeoutMs: number = LOOKUP_TIMEOUT_MS): Promise<void> {
+ * for, and is recorded all the same if it answers later, unless the vault locked since it began:
+ * then nothing is recorded and it says `stale`, so the caller asks again after the next unlock. */
+export async function announceReceived(
+  backend: Pick<Backend, "txNotices">,
+  walletId: string,
+  txids: string[],
+  timeoutMs: number = LOOKUP_TIMEOUT_MS,
+  announce = true,
+): Promise<"recorded" | "stale" | "failed"> {
+  const began = generation;
   let open = true;
   const end = () => {
     if (!open) return;
@@ -80,9 +102,14 @@ export async function announceReceived(backend: Pick<Backend, "txNotices">, wall
   setLookups(walletId, 1);
   const timer = setTimeout(end, timeoutMs);
   try {
-    recordReceived(walletId, await backend.txNotices(walletId, txids));
+    const rows = await backend.txNotices(walletId, txids);
+    if (began !== generation) return "stale";
+    recordReceived(walletId, rows, Date.now(), announce);
+    return "recorded";
   } catch (e) {
+    if (began !== generation) return "stale";
     console.warn("could not read the notices of new transactions", e);
+    return "failed";
   } finally {
     clearTimeout(timer);
     end();
@@ -97,7 +124,7 @@ export function onReceived(f: (batch: ReceivedPayment[]) => void): () => void {
 
 /** Marks the payments `ids` of `walletId` as seen: the rows a view showed, not the ones it left out. */
 /** Whether `el` is on screen for someone right now: connected, with no `inert` ancestor (the shell is
- * inert behind a sheet, a dialog, the lock screen, onboarding). Read from the DOM at the moment of
+ * inert behind a sheet, a dialog, onboarding; a lock unmounts it). Read from the DOM at the moment of
  * asking, never from a state an observer updates later: a row and a covering sheet can commit in one
  * React batch, before the observer has run. */
 export function exposedNow(el: Pick<Element, "isConnected" | "closest"> | null): boolean {
@@ -111,10 +138,52 @@ export function markReceivedRead(walletId: string, ids: readonly string[]) {
   changed();
 }
 
+/** The vault locked: the payments' amounts and addresses go, and a lookup under way records
+ * nothing. Returns their txids, oldest first, to look up again after the unlock; whether the bell
+ * showed each one is kept with its id. */
+export function sealReceived(): { walletId: string; txid: string }[] {
+  generation++;
+  const again: { walletId: string; txid: string }[] = [];
+  for (const p of [...list].reverse()) {
+    sealed.set(`${p.walletId}:${p.id}`, { read: p.read, at: p.at });
+    if (!again.some((a) => a.walletId === p.walletId && a.txid === p.txid)) again.push({ walletId: p.walletId, txid: p.txid });
+  }
+  const over = sealed.size - MAX_SEALED;
+  if (over > 0) for (const [k] of [...sealed].sort(([, a], [, b]) => a.at - b.at).slice(0, over)) sealed.delete(k);
+  byWallet.clear();
+  if (list.length > 0) {
+    list = [];
+    changed();
+  }
+  return again;
+}
+
+/** A wallet removed, or every wallet (a network switch, a wipe): its payments go, and what a lock
+ * kept of them. */
+export function forgetReceived(walletId?: string) {
+  for (const k of [...sealed.keys()]) if (walletId === undefined || k.startsWith(`${walletId}:`)) sealed.delete(k);
+  if (walletId === undefined) byWallet.clear();
+  else byWallet.delete(walletId);
+  const kept = walletId === undefined ? [] : list.filter((p) => p.walletId !== walletId);
+  if (kept.length !== list.length) {
+    list = kept;
+    changed();
+  }
+}
+
+/** Tests: how many payments' read state a lock keeps, and how many wallets' rows are memoized. */
+export const receivedKept = () => ({ sealed: sealed.size, memoized: byWallet.size });
+
+/** Every payment kept, newest first. */
+export const receivedNow = (): readonly ReceivedPayment[] => list;
+
 /** Tests: forget everything (a fresh app). */
 export function resetReceived() {
   list = [];
   lookups.clear();
+  sealed.clear();
+  byWallet.clear();
+  generation++;
   changed();
 }
 
@@ -127,16 +196,16 @@ const EMPTY: readonly ReceivedPayment[] = [];
 const byWallet = new Map<string, { source: readonly ReceivedPayment[]; value: readonly ReceivedPayment[] }>();
 
 /** `walletId`'s payments, newest first; the same array until they change. */
-export function useReceived(walletId: string | undefined): readonly ReceivedPayment[] {
-  return useSyncExternalStore(subscribe, () => {
-    if (!walletId) return EMPTY;
-    const hit = byWallet.get(walletId);
-    if (hit?.source === list) return hit.value;
-    const value = list.filter((p) => p.walletId === walletId);
-    byWallet.set(walletId, { source: list, value });
-    return value;
-  });
+export function receivedOf(walletId: string | undefined): readonly ReceivedPayment[] {
+  if (!walletId) return EMPTY;
+  const hit = byWallet.get(walletId);
+  if (hit?.source === list) return hit.value;
+  const value = list.filter((p) => p.walletId === walletId);
+  byWallet.set(walletId, { source: list, value });
+  return value;
 }
+
+export const useReceived = (walletId: string | undefined): readonly ReceivedPayment[] => useSyncExternalStore(subscribe, () => receivedOf(walletId));
 
 /** Whether a notice lookup of `walletId` is outstanding; a screen re-renders when that changes. */
 export function useLookupPending(walletId: string | undefined): boolean {

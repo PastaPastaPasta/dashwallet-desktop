@@ -1,8 +1,11 @@
-# Install (every step is required; do not enable the timer before step 5 has delivered its message):
+# Install (every step is required; do not enable the timer before step 5 has delivered its message).
+# With the issue notifier, do not start at all until its login is kept where the suites cannot
+# read it: they run the fetched revision as this user and could change or close the alert.
 #  1. Install the launcher, its build sandbox and the notifier outside DW_DP_STATE and outside
 #     any checkout: `install -d -m 700 ~/.local/libexec/dashwallet-desktop` and
 #     `install -m 700 regtest/scripts/dashpay-nightly.sh regtest/scripts/dashpay-unfunded.sh
-#     regtest/scripts/dashpay-nightly-notify.sh ~/.local/libexec/dashwallet-desktop/`.
+#     regtest/scripts/dashpay-nightly-notify.sh regtest/scripts/dashpay-nightly-issue.sh
+#     ci/github/nightly-issue.sh ~/.local/libexec/dashwallet-desktop/`.
 #     The sandbox needs bubblewrap (`bwrap`); the launcher fails at every run where the build
 #     could read the funder's file or the state root.
 #  2. Copy this unit, dw-dashpay-nightly-failed.service and dw-dashpay-nightly.timer to
@@ -11,11 +14,12 @@
 #  4. `systemctl --user daemon-reload`.
 #  5. Verify the notifier with one test start: `systemctl --user start
 #     dw-dashpay-nightly-failed.service`, and check that its message arrived where the site's
-#     notifier delivers it.
+#     notifier delivers it. With the issue notifier this opens a "Nightly failure: DashPay suites
+#     on testnet" issue; close it by hand.
 #  6. `systemctl --user enable --now dw-dashpay-nightly.timer`.
 #
 # The environment file sets DW_DP_STATE, DW_DP_FUNDER, DW_DP_FUNDER_BIRTH, DW_DP_HOLD_UPSTREAM
-# and DW_DP_NOTIFY. DW_DP_STATE is an absolute directory outside any checkout, owned by this
+# and DW_DP_NOTIFY (and DW_DP_ISSUE_REPO for the issue notifier). DW_DP_STATE is an absolute directory outside any checkout, owned by this
 # user with mode 0700 (the launcher and the harness create it so, and refuse one open to group or
 # others, a symlink, or one that is or sits in a git checkout). DW_DP_FUNDER names the funder's
 # phrase file, owner-only (0600 or 0400; the harness refuses any other mode): on agentbox the
@@ -23,12 +27,18 @@
 # with a small capped balance: the build cannot read its file, but the suites run the fetched
 # revision with it. DW_DP_NOTIFY is the absolute
 # path of a site-provided executable that delivers its one argument (a message, chat or mail);
-# the launcher refuses to run without it.
+# the launcher refuses to run without it. On agentbox it is dashpay-nightly-issue.sh, installed
+# with ci/github/nightly-issue.sh beside it in the same directory: it needs DW_DP_ISSUE_REPO
+# (owner/name) in the environment file, `jq`, and this user's `gh` signed in with issue access,
+# and it keeps one open issue labelled nightly-failure while the nightly is red. The suites run
+# as the same user and can read that login: give it no more than issue access to that repository.
 #
 # Not gating, alerting: a failed run fails this unit, and OnFailure= starts
 # dw-dashpay-nightly-failed.service, which runs DW_DP_NOTIFY with the unit's result and exit
 # status and the run's artifact directory ($DW_DP_STATE/nightly/<date>: junit.xml, pytest.log,
-# nightly.log, the dwcli logs), never test output.
+# nightly.log, the dwcli logs), never test output. After a run that passed, ExecStartPost= runs
+# the notifier with "result=success", which closes that issue; a notifier that fails there, or
+# takes more than two minutes, does not fail the unit.
 #
 # The unit runs on testnet only: the launcher refuses any other DW_DP_NET (one set in the
 # environment file included). LimitCORE=0 (and the harness's own core limit) keeps a crash from
@@ -47,5 +57,6 @@ UMask=0077
 LimitCORE=0
 Environment=DW_DP_NET=testnet
 ExecStart=%h/.local/libexec/dashwallet-desktop/dashpay-nightly.sh
+ExecStartPost=-/usr/bin/timeout --kill-after=5s 115s %h/.local/libexec/dashwallet-desktop/dashpay-nightly-notify.sh --green dw-dashpay-nightly.service
 Nice=10
 TimeoutStartSec=4h
