@@ -3460,8 +3460,8 @@ pub(crate) async fn periodic_pass(
 }
 
 /// [`guarded_pass`]'s pass, held back unless it still `runs` once its locks
-/// are taken and again as the library's pass starts; a periodic one's proved note `count`, with the time it was
-/// proved at, may skip it.
+/// are taken and again as the library's pass starts; a periodic one's proved
+/// note `count`, with the time it was proved at, may skip it.
 async fn pass(
     session: &Arc<NetworkSession>,
     manager: &Manager,
