@@ -14,7 +14,7 @@ owner updates the State column as items land and reports against it daily.
   `main` as it was at the release pull request (#72, 11-19) plus four changes made on the `release/0.2` branch
   (#92, #100, #104 and the notes, #107), all merged back into `main`. Everything else that merged to `main` after #72 ships in 0.3.
 - State on 2026-11-21, 03:15 UTC: 15 issues are open on the "1.0 RC must-fix" milestone and 20 are closed.
-  One more was filed at 03:50 UTC (#202, below).
+  One more was filed at 03:51 UTC (#202, below).
   - Merged on 11-20: #84, #85 and #87 (#123), #108 (#115), #125 (#124), six of #81's `wallet.dat`
     follow-ups (#119), the interim lock for #105 (#132; the SQLite bump follows with the Platform re-pin due
     by 11-25), the balance on Home while the wallet syncs (#140; Activity already showed the payment), the
@@ -26,7 +26,7 @@ owner updates the State column as items land and reports against it daily.
     lane C). #134 merged with a load that cannot read all of its evidence restoring no claim; what it
     leaves is in #170.
   - `main` went red on 11-20 at 21:40 UTC, from #160's changes, first seen in the run at #184, in jobs
-    that run only on `main`. #160 changed two
+    that pull requests skip. #160 changed two
     doc comments on exported vault methods without regenerating the Swift bindings, and its new
     power-loss test replaces `app.sqlite` while a handle on it is open, which Windows refuses. #189
     regenerated the comment text but missed two checksum lines, because the bindings check prints only
@@ -45,10 +45,11 @@ owner updates the State column as items land and reports against it daily.
     The first run of `main` that holds the last four of these merges had not finished at the time of
     writing.
   - `main` was red again on 11-21 from 03:17 to 04:12 UTC, in the macOS job of the run at #181: one
-    `dwcli` test pins a status line that depends on the three-second budget of a new wallet's DashPay
-    bring-up, and the runner was slower than that (#202). What the test is there to prove held in that
-    run. The macOS job of the next run, at #137, passed. The fix is to the tests only (#203, in a pull
-    request). Merges were not held for it after 04:10 UTC: #199 merged at 04:07 UTC.
+    `dwcli` test pins a status line that depends on timing when SPV runs. The status read met a
+    writer on the wallet manager and gave its other correct answer (#202). The abandonment checks of
+    the test's one-shot run passed before that assertion; its session half did not run. The macOS job
+    of the next run, at #137, passed. The fix is to that test only (#203, in a pull request). Merges
+    are not held for it: #199 merged at 04:07 UTC.
   - In a pull request:
     - #190 (#192): the holder is found and fixed (the session hub's sweep-news hook kept the app
       database), the Windows skip is removed, and the test passes on Windows in a run of the branch. It
