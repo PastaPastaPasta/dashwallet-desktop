@@ -4,6 +4,7 @@
 
 import { useEffect, useState, type Ref } from "react";
 import { DashButton } from "../../components/basics";
+import { useT } from "../../i18n";
 
 export function UnsignedPsbt({
   watchOnly,
@@ -18,23 +19,22 @@ export function UnsignedPsbt({
   buttonRef: Ref<HTMLButtonElement>;
   summaryRef: Ref<HTMLElement>;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(watchOnly);
   useEffect(() => {
     if (watchOnly) setOpen(true);
   }, [watchOnly]);
   return (
     <details className="disclosure card-l1" data-testid="pay-advanced-psbt" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary ref={summaryRef}>Advanced: unsigned transaction (PSBT)</summary>
+      <summary ref={summaryRef}>{t("pay.psbt.summary")}</summary>
       {open && (
         <div className="coin-control-body">
           <p className="placeholder-note" data-testid="pay-psbt-note">
-            {watchOnly
-              ? "This wallet is watch-only, so it cannot sign. Create an unsigned transaction and sign it in the wallet that holds the keys, for example an offline Dash Core wallet."
-              : "Nothing is signed or sent. You can copy or save the PSBT and sign it in another wallet, for example an offline Dash Core wallet."}
+            {watchOnly ? t("pay.psbt.watchOnly") : t("pay.psbt.note")}
           </p>
           <div className="tool-actions">
             <DashButton ref={buttonRef} variant={watchOnly ? "filledBlue" : "tintedBlue"} size="small" data-testid="pay-create-psbt" disabled={why !== null} why={why} onClick={onCreate}>
-              Create unsigned transaction (PSBT)
+              {t("pay.psbt.create")}
             </DashButton>
           </div>
         </div>
