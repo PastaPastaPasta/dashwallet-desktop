@@ -55,6 +55,9 @@ const REMOTE_READS: usize = 4;
 /// A failed Platform read is the answer for this long, so the reads queued
 /// behind it share it rather than each asking again (D35).
 const REMOTE_FAILURE_LIFE: Duration = Duration::from_secs(5);
+/// How long the close waits for store calls still running (SQLite within
+/// its busy timeout, and local thumbnail files).
+const STORE_CALLS_END: Duration = Duration::from_secs(5);
 
 type RemoteRead = Result<Option<Profile>, AvatarError>;
 
@@ -498,6 +501,9 @@ pub(super) struct Pipeline {
     url_locks: Locks<String>,
     fetches: Semaphore,
     decodes: Arc<Semaphore>,
+    /// Held by each store call's blocking task: the close waits for those a
+    /// revoked read left running (issue #190).
+    calls: Arc<tokio::sync::RwLock<()>>,
 }
 
 impl Pipeline {
@@ -513,6 +519,7 @@ impl Pipeline {
             url_locks: Mutex::default(),
             fetches: Semaphore::new(FETCHES),
             decodes: Arc::new(Semaphore::new(DECODES)),
+            calls: Arc::default(),
         }
     }
 
@@ -520,18 +527,25 @@ impl Pipeline {
         keyed_lock(&self.url_locks, &url_sha.to_owned())
     }
 
-    async fn blocking<T: Send + 'static>(
+    pub(super) async fn blocking<T: Send + 'static>(
         &self,
         f: impl FnOnce(&AvatarStore) -> T + Send + 'static,
     ) -> Result<T, AvatarError> {
         let store = Arc::clone(&self.store);
-        tokio::task::spawn_blocking(move || f(&store))
-            .await
-            .map_err(|e| {
-                AvatarError::from(PlatformError::Internal {
-                    detail: format!("avatar store task: {e}"),
-                })
+        let call = Arc::clone(&self.calls).read_owned().await;
+        tokio::task::spawn_blocking(move || {
+            // A tuple drops its fields in order, also when `f` panics: the
+            // store (the app database) goes before the guard the close
+            // waits on.
+            let held = (store, call);
+            f(&held.0)
+        })
+        .await
+        .map_err(|e| {
+            AvatarError::from(PlatformError::Internal {
+                detail: format!("avatar store task: {e}"),
             })
+        })
     }
 
     /// Runs `work` (a decode) on a blocking thread, at most [`DECODES`] at
@@ -797,6 +811,24 @@ impl AvatarRuntime {
     /// Waits until no toggle transition is running (at close, D37).
     pub(crate) async fn settled(&self) {
         self.pictures.settled().await;
+    }
+
+    /// Drops the session's pipeline, and with it its hold on the app
+    /// database (at close): a retained session handle keeps no database.
+    /// Returns once its store calls in flight have ended, or after
+    /// [`STORE_CALLS_END`]: a call stuck on its thumbnail files must not
+    /// hang the close, and keeps the database until it ends.
+    pub(crate) async fn close(&self) {
+        let pipeline = guard(&self.pipeline).take();
+        if let Some(pipeline) = pipeline
+            && tokio::time::timeout(STORE_CALLS_END, pipeline.calls.write())
+                .await
+                .is_err()
+        {
+            tracing::warn!(
+                "an avatar store call is still running after the close; it holds the app database until it ends"
+            );
+        }
     }
 
     /// Keeps `candidate` and returns its id, dropping expired ones and the
