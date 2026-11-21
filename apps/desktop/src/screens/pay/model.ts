@@ -454,8 +454,6 @@ export type Outcome =
 /** A signed payment handed to the broadcast, its outcome not yet known. */
 export type Sending = { amount: number; fee: number; note?: string };
 
-/** A first broadcast the window refused because the vault locked: it never reached the engine. */
-
 /** The engine's codes for a first broadcast that released the transaction (E0-13 D8, `released`
  * in send.rs): nothing was sent and its handle is gone. */
 const RELEASED = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent", "send.cancelled"] as const;

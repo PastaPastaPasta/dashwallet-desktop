@@ -44,7 +44,6 @@ export interface NoOwner {
   next: "join" | "retry" | null;
 }
 
-
 export function noOwner(owner: Exclude<ContactsOwner, { kind: "identity" | "starting" }>): NoOwner {
   switch (owner.kind) {
     case "error":

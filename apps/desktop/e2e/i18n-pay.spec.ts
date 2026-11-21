@@ -87,6 +87,16 @@ const STATES: State[] = [
     },
   },
   {
+    name: "pay-amount-malformed",
+    roots: ["pay-address-form"],
+    data: ADDRESSES,
+    open: async (page, theme, lang) => {
+      await filled(page, theme, lang);
+      await page.getByTestId("pay-amount").fill("abc");
+      await expect(page.getByTestId("pay-amount")).toHaveAttribute("aria-invalid", "true");
+    },
+  },
+  {
     name: "pay-coin-control",
     roots: ["pay-address-form"],
     data: [...ADDRESSES, ...COIN_TABLE],
