@@ -3,16 +3,23 @@
 
 import type { Backend } from "../api/backend";
 import type { MnemonicCheck } from "../api/generated/MnemonicCheck";
-import { failureText, INVALID_PHRASE } from "./model";
+import { t } from "../i18n";
+import { failureText, listed } from "./model";
 import { normalizePhrase, partialWord, RESTORE_COUNTS, suggestions } from "./words";
 
 export const PhraseText = {
-  invalid: INVALID_PHRASE,
-  wordCount: "Recovery phrases have 12, 15, 18, 21 or 24 words.",
-  coreOnly: "This recovery phrase only passes Dash Core's legacy checksum. It will be restored with Dash Core compatibility.",
+  get invalid() {
+    return t("onboarding.failure.invalid_mnemonic");
+  },
+  get wordCount() {
+    return t("onboarding.phrase.wordCount");
+  },
+  get coreOnly() {
+    return t("onboarding.phrase.coreOnly");
+  },
   unknownWords(positions: number[]): string {
-    const list = positions.map((p) => p + 1).join(", ");
-    return positions.length === 1 ? `Word ${list} is not in the word list.` : `Words ${list} are not in the word list.`;
+    const words = listed(positions.map((p) => p + 1));
+    return positions.length === 1 ? t("onboarding.phrase.unknownWord", { words }) : t("onboarding.phrase.unknownWords", { words });
   },
 };
 

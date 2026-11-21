@@ -1,13 +1,23 @@
 // The vault passphrase's rules and strength meter (QT-111, IOS-010).
 
+import { t } from "../i18n";
+
 export const MAX_PASSPHRASE_CHARS = 1024;
 
 export const PassphraseText = {
-  empty: "Enter a passphrase.",
+  get empty() {
+    return t("onboarding.passphrase.empty");
+  },
   /** dash-qt `AskPassphraseDialog`. */
-  mismatch: "The supplied passphrases do not match.",
-  tooLong: "The passphrase is longer than 1024 characters.",
-  warning: "If you forget this passphrase, you can still restore the wallet with your recovery phrase.",
+  get mismatch() {
+    return t("onboarding.passphrase.mismatch");
+  },
+  get tooLong() {
+    return t("onboarding.passphrase.tooLong");
+  },
+  get warning() {
+    return t("onboarding.passphrase.warning");
+  },
 };
 
 /** Why `text` cannot be the new passphrase, or `null` when it can. Characters are counted as
@@ -22,7 +32,21 @@ export function passphraseProblem(text: string, confirmation: string): string | 
 export const STRENGTHS = ["none", "weak", "fair", "good", "strong"] as const;
 export type Strength = (typeof STRENGTHS)[number];
 
-export const STRENGTH_NAME: Record<Strength, string> = { none: "", weak: "Weak", fair: "Fair", good: "Good", strong: "Strong" };
+export const STRENGTH_NAME: Readonly<Record<Strength, string>> = {
+  none: "",
+  get weak() {
+    return t("onboarding.passphrase.strength.weak");
+  },
+  get fair() {
+    return t("onboarding.passphrase.strength.fair");
+  },
+  get good() {
+    return t("onboarding.passphrase.strength.good");
+  },
+  get strong() {
+    return t("onboarding.passphrase.strength.strong");
+  },
+};
 
 /** A rough meter that only guides; the vault's Argon2id cost is the protection. Under 8
  * characters is weak; each character class (lower, upper, digit, other) and each 4 characters
