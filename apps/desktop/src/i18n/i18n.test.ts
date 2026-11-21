@@ -67,7 +67,7 @@ describe("t", () => {
     expect(parts.join("")).toBe("Read [b:the terms] and [link:open 2].");
     expect(build<string>("<b>unclosed", {}, { locale: "en", isolate: false }, (tag, c) => `[${tag}:${c.join("")}]`).join("")).toBe("[b:unclosed]");
     const node = t.rich("settings.privacy.usernameInRequestsHint", { wallet: createElement("strong", null, "Main") });
-    expect(text(node)).toContain("payment requests of “[strong:Main]” show");
+    expect(text(node)).toContain("payment requests of “[bdi:[strong:Main]]” show");
     expect(tokenize("a {b} <c>d</c>")).toEqual([
       { kind: "text", text: "a " },
       { kind: "param", name: "b" },
@@ -159,6 +159,14 @@ describe("the language in use", () => {
     expect(formatLocale(undefined, "en", ["de-DE"])).toBe("en");
     expect(formatLocale("en-US", "ar-XB", ["en-US"])).toBe("ar-XB");
     expect(formatLocale("en-US", "tlh", ["en-US"])).toBe("en-US");
+    // A chosen language in another script than the system's formats in its own.
+    LANGUAGES.push({ tag: "zh-Hans", name: "简体中文", dir: "ltr", messages: new Map() });
+    try {
+      expect(formatLocale("zh-TW", "zh-Hans", ["zh-TW"])).toBe("zh-Hans");
+      expect(formatLocale("zh-CN", "zh-Hans", ["zh-CN"])).toBe("zh-CN");
+    } finally {
+      LANGUAGES.pop();
+    }
   });
 });
 
@@ -213,12 +221,25 @@ describe("bidi isolation", () => {
     expect(t("network.confirmTitle", { network: "a\uFEFFb" })).toBe("Switch to a\uFEFFb?");
   });
 
-  it("isolates an element placeholder of rich text in a right-to-left language only", () => {
-    const name = createElement("b", null, "@alice");
+  it("isolates an element placeholder of rich text in every language", () => {
+    const name = createElement("b", null, "@سارة");
     choose("ar-XB");
-    expect(text(t.rich("network.confirmTitle", { network: name }))).toBe("\u202eSwitch to \u202c[bdi:[b:@alice]]\u202e?\u202c");
+    expect(text(t.rich("network.confirmTitle", { network: name }))).toBe("\u202eSwitch to \u202c[bdi:[b:@سارة]]\u202e?\u202c");
     choose(null);
-    expect(text(t.rich("network.confirmTitle", { network: name }))).toBe("Switch to [b:@alice]?");
+    expect(text(t.rich("network.confirmTitle", { network: name }))).toBe("Switch to [bdi:[b:@سارة]]?");
+  });
+
+  it("draws an English fallback left to right as a whole in a right-to-left language", () => {
+    const ar: Language = { tag: "ar", name: "العربية", dir: "rtl", messages: new Map([["shell.status.synced", "متزامن"]]) };
+    LANGUAGES.push(ar);
+    try {
+      choose("ar");
+      expect(t("shell.status.synced")).toBe("متزامن");
+      expect(t("shell.status.peers", { count: 21 })).toBe(`\u2066\u2068${new Intl.NumberFormat("ar").format(21)}\u2069 peers\u2069`);
+      expect(text(t.rich("network.confirmTitle", { network: "x" }))).toBe("\u2066Switch to \u2068x\u2069?\u2069");
+    } finally {
+      LANGUAGES.pop();
+    }
   });
 });
 

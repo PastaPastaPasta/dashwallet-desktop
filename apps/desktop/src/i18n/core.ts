@@ -123,8 +123,8 @@ export function renderTag<N>(values: Values, tag: string, children: (N | string)
 }
 
 /** A rich-text message as a tree: text, filled placeholders, and each tag's children handed to
- * its renderer. An element given for a placeholder goes through `isolateNode` when `how.isolate`
- * is on, so it keeps its own direction as a text value does. Generic over the node type so it
+ * its renderer. An element given for a placeholder goes through `isolateNode` in every language
+ * (its text, unlike a string's, is not known here), so it keeps its own direction. Generic over the node type so it
  * stays free of React. */
 export function build<N>(message: string, values: Values, how: Fill, wrap: (tag: string, children: (N | string)[]) => N, isolateNode: (node: N) => N = (n) => n): (N | string)[] {
   const stack: { tag: string; children: (N | string)[] }[] = [{ tag: "", children: [] }];
@@ -133,7 +133,7 @@ export function build<N>(message: string, values: Values, how: Fill, wrap: (tag:
     if (t.kind === "text") top.children.push(t.text);
     else if (t.kind === "param") {
       const v = own(values, t.name);
-      top.children.push(typeof v === "string" || typeof v === "number" || v === undefined || v === null ? show(v, how) : how.isolate ? isolateNode(v as N) : (v as N));
+      top.children.push(typeof v === "string" || typeof v === "number" || v === undefined || v === null ? show(v, how) : isolateNode(v as N));
     } else if (t.kind === "open") stack.push({ tag: t.tag, children: [] });
     else if (stack.length > 1 && top.tag === t.tag) {
       stack.pop();

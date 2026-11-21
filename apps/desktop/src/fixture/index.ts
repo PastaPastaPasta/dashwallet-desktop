@@ -43,9 +43,11 @@ export interface FixtureOptions {
    * out when the screen shows. `release(command)` lets it answer. A relaunch holds them again. */
   holds?: CommandName[];
   /** The saved language (`lang=<tag>`, MP-14): a shipped one or a pseudo-locale (`en-XA` long,
-   * `ar-XB` right to left). `savedLang=<tag>` saves any well-formed tag as a hand-edited or older
-   * settings file may hold it (`EN`, `pt-BR`), shipped or not. */
+   * `ar-XB` right to left). Applied on every load, a relaunch's included. */
   language?: string;
+  /** `savedLang=<tag>`: any well-formed tag as a hand-edited or older settings file may hold it
+   * (`EN`, `pt-BR`), shipped or not. Seeds a fresh world only, so a relaunch keeps what was saved. */
+  savedLanguage?: string;
   /** This copy's update availability (`updates=<availability>`, PK-03); with `update=<version>`, the
    * version the stable feed serves, `updatePhase=<kind>` the phase it starts in and
    * `updateFault=<fault>` what goes wrong next. */
@@ -124,7 +126,9 @@ function relaunchedWorld(): World | null {
 }
 
 export function installFixture(opts: FixtureOptions): FixtureHandle {
-  const world = relaunchedWorld() ?? switchedWorld() ?? buildWorld(opts.scenario, opts.theme ?? null);
+  const carried = relaunchedWorld() ?? switchedWorld();
+  const world = carried ?? buildWorld(opts.scenario, opts.theme ?? null);
+  if (!carried && opts.savedLanguage) world.settings.ui = { ...world.settings.ui, language: opts.savedLanguage };
   if (opts.language) world.settings.ui = { ...world.settings.ui, language: opts.language };
   if (opts.updates) world.updates.availability = opts.updates;
   if (opts.updateServes) world.updates.serves = opts.updateServes;
@@ -238,12 +242,13 @@ export function fixtureOptionsFromUrl(search: string): FixtureOptions {
   const saved = p.get("savedLang");
   if (saved !== null && !isLanguageTag(saved)) throw new Error(`bad savedLang=${saved}: not a language tag`);
   if (saved !== null && p.has("lang")) throw new Error("give lang= or savedLang=, not both");
-  const language = saved ?? p.get("lang") ?? undefined;
-  if (saved === null && language !== undefined && !isLanguage(language)) throw new Error(`unknown language ${language}`);
+  const savedLanguage = saved ?? undefined;
+  const language = p.get("lang") ?? undefined;
+  if (language !== undefined && !isLanguage(language)) throw new Error(`unknown language ${language}`);
   const updates = oneOf(p, "updates", UPDATE_AVAILABILITIES);
   const updateServes = p.get("update") ?? undefined;
   const updatePhase = oneOf(p, "updatePhase", UPDATE_PHASES);
   const updateFault = oneOf(p, "updateFault", UPDATE_FAULTS);
   const delay = Number(p.get("delay") ?? 0);
-  return { scenario, theme, network, failures, holds, language, updates, updateServes, updatePhase, updateFault, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
+  return { scenario, theme, network, failures, holds, language, savedLanguage, updates, updateServes, updatePhase, updateFault, delayMs: Number.isFinite(delay) && delay > 0 ? delay : undefined };
 }

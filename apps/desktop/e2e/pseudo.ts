@@ -102,6 +102,7 @@ export async function checkArea(page: Page, info: TestInfo, theme: Theme, [lang,
     await expect(page.locator("html")).toHaveAttribute("dir", kind === "rtl" ? "rtl" : "ltr");
     await fontsReady(page);
     expect(await untranslated(page, check.roots, kind, check.data), `${lang} at ${size.width}`).toEqual([]);
+    for (const pane of check.panes ?? []) await expect(page.locator(pane).first(), `pane ${pane} at ${size.width}`).toBeVisible();
     expect(await overflow(page, [...PANES, ...(check.panes ?? [])]), `${lang} at ${size.width}`).toEqual([]);
     if (size.width === 1280) {
       await page.screenshot({ path: artifactPath(info, `i18n-${check.name}-${lang}-${theme}.png`) });
