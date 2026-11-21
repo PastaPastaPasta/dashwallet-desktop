@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
 
-use super::avatar_cache::{AvatarStore, ThumbDir, stem};
+use super::avatar_cache::{AvatarStore, ThumbDir, Thumbnail, stem};
 use super::avatar_fetch::{
     BlockingResolver, FetchError, FetchPolicy, Fetcher, MAX_BYTES, MAX_URL_LEN, NameResolver,
 };
@@ -479,6 +479,16 @@ fn status_of(e: &AvatarError) -> &'static str {
     }
 }
 
+/// A decode worker that could not start: transient, not a verdict on the
+/// image, so nothing is recorded or fetched again for it.
+fn no_worker(e: impl std::fmt::Display) -> AvatarError {
+    tracing::warn!(error = %e, "avatar decode worker did not start");
+    PlatformError::Internal {
+        detail: format!("avatar decode worker: {e}"),
+    }
+    .into()
+}
+
 fn fetch_error(e: FetchError) -> AvatarError {
     match e {
         FetchError::TooLarge => AvatarError::TooLarge,
@@ -504,6 +514,9 @@ pub(super) struct Pipeline {
     /// Held by each store call's blocking task: the close waits for those a
     /// revoked read left running (issue #190).
     calls: Arc<tokio::sync::RwLock<()>>,
+    /// Tests: no decode worker starts.
+    #[cfg(test)]
+    pub(super) no_workers: std::sync::atomic::AtomicBool,
 }
 
 impl Pipeline {
@@ -520,7 +533,15 @@ impl Pipeline {
             fetches: Semaphore::new(FETCHES),
             decodes: Arc::new(Semaphore::new(DECODES)),
             calls: Arc::default(),
+            #[cfg(test)]
+            no_workers: Default::default(),
         }
+    }
+
+    /// Tests: the decode permits.
+    #[cfg(test)]
+    pub(super) fn decodes(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.decodes)
     }
 
     fn url_lock(&self, url_sha: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -549,7 +570,8 @@ impl Pipeline {
     }
 
     /// Runs `work` (a decode) on a thread of its own, at most [`DECODES`] at
-    /// once; a panic is `avatar.unsupported`. Every image decode runs here,
+    /// once; a panic is `avatar.unsupported`, a worker that cannot start is
+    /// [`no_worker`]. Every image decode runs here,
     /// never on a `dw-engine` thread: the engine's panic hook poisons it
     /// even for a panic the decode catches.
     async fn decoding<T: Send + 'static>(
@@ -558,8 +580,11 @@ impl Pipeline {
     ) -> Result<T, AvatarError> {
         // The permit goes with the work: a dropped caller does not free it
         // while the decode still runs.
-        let permit = (Arc::clone(&self.decodes).acquire_owned().await)
-            .map_err(|_| AvatarError::Unsupported)?;
+        let permit = (Arc::clone(&self.decodes).acquire_owned().await).map_err(no_worker)?;
+        #[cfg(test)]
+        if self.no_workers.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(no_worker("test: no decode worker"));
+        }
         let (sent, received) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
             .name("dw-avatar-decode".into())
@@ -568,7 +593,7 @@ impl Pipeline {
                 let _permit = permit;
                 let _ = sent.send(work());
             })
-            .map_err(|_| AvatarError::Unsupported)?;
+            .map_err(no_worker)?;
         received.await.unwrap_or(Err(AvatarError::Unsupported))
     }
 
@@ -603,6 +628,7 @@ impl Pipeline {
                 self.blocking(move |s| s.record_ok(&url_sha, &stem, &i, now))
                     .await
             }
+            Err(AvatarError::Platform(PlatformError::Internal { .. })) => return ingested,
             Err(e) => {
                 let status = status_of(e);
                 self.blocking(move |s| s.record_failure(&url_sha, status, now))
@@ -672,15 +698,33 @@ impl Pipeline {
             let verified = row.status == "ok"
                 && avatar_image::matches(row.content_sha.as_deref().unwrap_or(""), profile);
             if verified {
-                let png = self.blocking(move |s| s.thumbnail(&row, size)).await?;
-                if let Some(png) = png
-                    && let Ok(Some(png)) = (self.decoding(move || {
-                        Ok(avatar_image::is_thumbnail(&png, size.px()).then_some(png))
-                    }))
-                    .await
-                {
-                    ticket.at("thumbnail").await;
-                    return Ok(Some(png));
+                let checked = match self.blocking(move |s| s.thumbnail(&row, size)).await? {
+                    None => Ok(None),
+                    Some(Thumbnail::Encoded(png)) => Ok(Some(png)),
+                    Some(Thumbnail::Read(png)) => {
+                        let check = self.decoding(move || {
+                            Ok(avatar_image::is_thumbnail(&png, size.px()).then_some(png))
+                        });
+                        if whose == Whose::Own {
+                            check.await
+                        } else {
+                            let checked = ticket.unless_revoked("thumbnail check", check);
+                            let Some(checked) = checked.await else {
+                                return Ok(None);
+                            };
+                            checked
+                        }
+                    }
+                };
+                match checked {
+                    Ok(Some(png)) => {
+                        ticket.at("thumbnail").await;
+                        return Ok(Some(png));
+                    }
+                    Err(e @ AvatarError::Platform(PlatformError::Internal { .. })) => {
+                        return Err(e);
+                    }
+                    Ok(None) | Err(_) => {}
                 }
             } else if !network() {
                 return Ok(None);

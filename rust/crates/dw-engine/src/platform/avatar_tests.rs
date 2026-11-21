@@ -1570,18 +1570,75 @@ fn in_child(name: &str, child: &str) -> bool {
     if std::env::var_os(child).is_some() {
         return true;
     }
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", name, "--nocapture", "--test-threads=1"])
-        .env(child, "1")
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut cmd = std::process::Command::new(std::env::current_exe().unwrap());
+    cmd.args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env(child, "1");
+    let (status, stdout, stderr) =
+        run_with_deadline(cmd, Duration::from_secs(120)).unwrap_or_else(|e| panic!("{name}: {e}"));
     assert!(
-        out.status.success() && stdout.contains("1 passed"),
-        "{stdout}\n{}",
-        String::from_utf8_lossy(&out.stderr)
+        status.success() && stdout.contains("1 passed"),
+        "{stdout}\n{stderr}"
     );
     false
+}
+
+/// `cmd`'s exit status and output; past `deadline` it is killed and reaped
+/// and the error carries what it printed (dw-app's `upgrade_path_tests`).
+fn run_with_deadline(
+    mut cmd: std::process::Command,
+    deadline: Duration,
+) -> Result<(std::process::ExitStatus, String, String), String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not start: {e}"))?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        })
+    };
+    let stdout = drain(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let stderr = drain(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() < deadline => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+            Err(e) => return Err(format!("could not wait: {e}")),
+        }
+    };
+    let (stdout, stderr) = (stdout.join().unwrap(), stderr.join().unwrap());
+    match status {
+        Some(status) => Ok((status, stdout, stderr)),
+        None => Err(format!(
+            "killed after {deadline:?} without finishing\n{stdout}\n{stderr}"
+        )),
+    }
 }
 
 /// An engine with the poison hook installed and its runtime's threads
@@ -1653,4 +1710,82 @@ fn a_thumbnail_check_that_panics_leaves_the_engine_unpoisoned() {
         assert!(rig.read(&profile).await.unwrap().is_some());
     });
     assert!(!crate::engine_poisoned());
+}
+
+/// A decode worker that cannot start is no verdict on the picture: the
+/// cached avatar is neither fetched again nor replaced, a fresh fetch
+/// records nothing, and both show once workers start again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_decode_worker_that_cannot_start_changes_nothing_cached() {
+    use std::sync::atomic::Ordering::SeqCst;
+    let rig = Rig::new().await;
+    let (a, b) = (png(40, 40), png(41, 41));
+    rig.server.route("/a.png", Route::ok(a.clone()));
+    rig.server.route("/b.png", Route::ok(b.clone()));
+    let cached = profile_for(&rig.server.url("good.test", "/a.png"), &a);
+    let fresh = profile_for(&rig.server.url("good.test", "/b.png"), &b);
+    let thumb = rig.read(&cached).await.unwrap().unwrap();
+    let row = |p: &Profile| {
+        let key = Target::parse(p.avatar_url.as_deref().unwrap())
+            .unwrap()
+            .url_sha;
+        rig.db.avatar_row(&key).unwrap()
+    };
+    let before = row(&cached);
+    let transient = |read: Result<Option<Vec<u8>>, AvatarError>| {
+        matches!(
+            read,
+            Err(AvatarError::Platform(PlatformError::Internal { .. }))
+        )
+    };
+    rig.pipeline.no_workers.store(true, SeqCst);
+    assert!(transient(rig.read(&cached).await));
+    assert!(transient(rig.read(&fresh).await));
+    rig.pipeline.no_workers.store(false, SeqCst);
+    assert_eq!(row(&cached), before, "the cached row was replaced");
+    assert_eq!(row(&fresh), None, "a failure was recorded");
+    assert_eq!(rig.read(&cached).await.unwrap().unwrap(), thumb);
+    assert!(rig.read(&fresh).await.unwrap().is_some());
+    assert_eq!(rig.server.hits(), vec!["/a.png", "/b.png", "/b.png"]);
+}
+
+/// An off does not wait for a contact's cached thumbnail check queued
+/// behind busy decodes: the read is dropped where it waits, before either
+/// permit is freed.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_off_drops_a_contact_read_waiting_for_a_decode() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    let rig = Rig::new().await;
+    let bytes = png(42, 42);
+    rig.server.route("/q.png", Route::ok(bytes.clone()));
+    let profile = profile_for(&rig.server.url("good.test", "/q.png"), &bytes);
+    assert!(rig.read(&profile).await.unwrap().is_some());
+    let busy = rig.pipeline.decodes().acquire_many_owned(2).await.unwrap();
+    let (at_row, reached) = tokio::sync::oneshot::channel();
+    let at_row = Mutex::new(Some(at_row));
+    rig.pictures.set_hook(Box::new(move |point| {
+        if point == "row"
+            && let Some(at_row) = at_row.lock().unwrap().take()
+        {
+            let _ = at_row.send(());
+        }
+        None
+    }));
+    let ended = AtomicBool::new(false);
+    let read = async {
+        let read = rig.read(&profile).await;
+        ended.store(true, SeqCst);
+        read
+    };
+    let off = async {
+        reached.await.unwrap();
+        let turn = rig.pictures.begin_transition().await;
+        let off = turn.apply(false, async { Ok::<_, ()>(()) });
+        let off = tokio::time::timeout(Duration::from_secs(10), off).await;
+        off.expect("the off waited for the decode").unwrap();
+        assert!(ended.load(SeqCst), "the read still runs");
+        drop(busy);
+    };
+    let (read, ()) = tokio::join!(read, off);
+    assert_eq!(read, Ok(None));
 }
