@@ -4016,5 +4016,51 @@ fn keys_attached_to_a_synced_wallet_show_their_replay() {
     let synced = synced_height(&engine, &session, id);
     let progress = session.rescan_progress().unwrap();
     assert_eq!(progress.map(|p| p.from_height), Some(synced + 1));
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInProgress)),
+        "{guard:?}"
+    );
     assert!(engine.block_on(session.cancel_rescan()).unwrap());
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT + 100);
+    let record = engine.block_on(session.live().unwrap().replay.get(id));
+    assert!(record.unwrap().is_some_and(|r| r.cancelled));
+    let guard = engine.block_on(session.replay_guard(id, 0));
+    assert!(
+        matches!(guard, Err(EngineError::RescanInterrupted)),
+        "{guard:?}"
+    );
+}
+
+/// Review #208, 2: keys attached to a synced wallet whose replay SPV
+/// finishes before the attach publishes it show no rescan.
+#[test]
+fn keys_attached_show_no_replay_spv_already_finished() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let import = |lookahead| {
+        engine.block_on(session.import_wallet(
+            zeroize::Zeroizing::new(PHRASE.to_vec()),
+            zeroize::Zeroizing::new(Vec::new()),
+            crate::ImportOptions {
+                birth_height: Some(HEIGHT),
+                lookahead,
+                ..Default::default()
+            },
+        ))
+    };
+    let id = import(None).unwrap();
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    commit_batch(&engine, &session, id, HEIGHT + 100);
+    let data = session.data_dir().to_path_buf();
+    (crate::keys::REACH_BEFORE_PUBLISH_IN.lock().unwrap()).push(data);
+
+    assert_eq!(import(Some(200)).unwrap(), id);
+
+    assert_eq!(synced_height(&engine, &session, id), HEIGHT + 100);
+    assert_eq!(
+        session.rescan_progress().unwrap().map(|p| p.from_height),
+        None
+    );
 }
