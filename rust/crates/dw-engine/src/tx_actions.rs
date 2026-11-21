@@ -3,18 +3,21 @@
 //!
 //! Abandon goes through key-wallet's `abandon_transaction` (the transaction
 //! and every recorded descendant leave the wallet; the coins they spent are
-//! released from the spent set) and is persisted as a sweep batch whose
-//! inputs are all released, so wallet.sqlite drops the rows and a restart
-//! neither re-credits the change nor re-sends the transaction. The app
-//! database keeps the raw transaction so the history still shows it as
-//! `Abandoned`. Key-wallet rediscovers the released coins through a filter
-//! rescan, which abandon schedules from the lowest funding height.
+//! released from the spent set) and is persisted as a sweep batch, so
+//! wallet.sqlite drops the rows and a restart neither re-credits the change
+//! nor re-sends the transaction. The app database keeps the raw transaction
+//! so the history still shows it as `Abandoned`. Key-wallet rediscovers the
+//! released coins through a filter rescan, which abandon schedules from the
+//! lowest funding height; a coin wallet.sqlite holds stays stored spent
+//! until that rescan credits it again, so a spend the wallet never heard of
+//! (#170 case 5) keeps it out.
 //!
 //! SPV sees no mempool: `in_mempool` is always `None` and abandon is allowed
 //! without proof; the host warns that the transaction may still confirm
 //! (DESIGN-opus §1.14). If it does, the history shows it confirmed again.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -169,6 +172,57 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Vec<(Txid, Tra
         let tx: Transaction = deserialize(&hex::decode(hex).ok()?).ok()?;
         (tx.txid() == txid).then_some((txid, tx))
     })
+}
+
+/// wallet.sqlite's key of the coin `outpoint`: its bincode varint
+/// encoding, the txid's length, the txid, then the vout.
+fn coin_key(outpoint: &OutPoint) -> Vec<u8> {
+    use dashcore::hashes::Hash;
+    let mut key = Vec::with_capacity(38);
+    key.push(32);
+    key.extend_from_slice(&outpoint.txid.to_byte_array());
+    match outpoint.vout {
+        v @ 0..=250 => key.push(v as u8),
+        v @ 251..=0xFFFF => {
+            key.push(251);
+            key.extend_from_slice(&(v as u16).to_le_bytes());
+        }
+        v => {
+            key.push(252);
+            key.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    key
+}
+
+/// The coins of `outpoints` wallet.sqlite holds a row for, spent or not,
+/// read over a read-only connection.
+pub(crate) fn stored_coins(
+    db_path: &Path,
+    wallet: WalletId,
+    outpoints: &BTreeSet<OutPoint>,
+) -> Result<BTreeSet<OutPoint>, rusqlite::Error> {
+    use rusqlite::OptionalExtension;
+    if outpoints.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let mut stmt =
+        conn.prepare("SELECT 1 FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2")?;
+    let mut stored = BTreeSet::new();
+    for o in outpoints {
+        let row = stmt
+            .query_row(rusqlite::params![&wallet.0[..], coin_key(o)], |_| Ok(()))
+            .optional()?;
+        if row.is_some() {
+            stored.insert(*o);
+        }
+    }
+    Ok(stored)
 }
 
 /// What decides a transaction's actions.
@@ -387,7 +441,13 @@ impl NetworkSession {
             if planned.iter().any(|t| locks.contains(t)) {
                 return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
             }
-            let checkpoint = self.abandon_rewind(wallet, &planned, &info.core_wallet);
+            let inputs = self.inputs_of(wallet, &planned);
+            let db_path = self.data_dir().join(crate::session::WALLET_DB_FILE);
+            let stored =
+                tokio::task::spawn_blocking(move || stored_coins(&db_path, wallet, &inputs))
+                    .await?
+                    .map_err(|e| EngineError::Storage(format!("abandon: {e}")))?;
+            let checkpoint = self.abandon_rewind(wallet, &planned, &info.core_wallet, &stored);
             if let Some(checkpoint) = checkpoint {
                 self.record_rewind_locked(wallet, info, checkpoint).await?;
             }
@@ -395,11 +455,7 @@ impl NetworkSession {
             if !abandoned.is_empty() {
                 info.core_wallet.update_balance();
             }
-            let released = self.released(
-                wallet,
-                &abandoned,
-                info.core_wallet.observed_spent_outpoints(),
-            );
+            let released = self.released(wallet, &abandoned, &stored, &info.core_wallet);
             (abandoned, checkpoint, released)
         };
         // key-wallet refuses (returns nothing) when it holds the root as
@@ -416,8 +472,8 @@ impl NetworkSession {
         let persister = Arc::clone(&live.persister);
         let sweep = SweepBatch {
             txids: abandoned.iter().copied().collect(),
-            // An input not released (a block spent it) stays stored spent,
-            // attributed to the root.
+            // An input not released stays stored spent, attributed to the
+            // root, until the rescan credits it again.
             superseded_by: root,
             winner_mined_height: None,
             released_outpoints: released.clone(),
@@ -510,21 +566,33 @@ impl NetworkSession {
         })
     }
 
-    /// The coins abandoning `abandoned` releases: their inputs that none of
-    /// them created and no processed block spent (`observed`): key-wallet
-    /// keeps the claim on a coin a block spent.
+    /// The inputs of the history's transactions of `txs` that none of them
+    /// created.
+    fn inputs_of(&self, wallet: WalletId, txs: &BTreeSet<Txid>) -> BTreeSet<OutPoint> {
+        (txs.iter())
+            .filter_map(|t| self.hub.history.get(&wallet, t))
+            .flat_map(|e| e.tx.input.into_iter().map(|i| i.previous_output))
+            .filter(|o| !txs.contains(&o.txid))
+            .collect()
+    }
+
+    /// The coins abandoning `abandoned` releases on disk: their inputs that
+    /// no processed block spent (key-wallet keeps the claim on those) and
+    /// that wallet.sqlite holds no row for (`stored`), or that key-wallet
+    /// (`core`, after the abandon) holds unspent. A stored coin stays
+    /// stored spent: a spend key-wallet never recorded may have taken it,
+    /// and the abandon's rescan stores it unspent again if it is free.
     fn released(
         &self,
         wallet: WalletId,
         abandoned: &BTreeSet<Txid>,
-        observed: &BTreeMap<OutPoint, u32>,
+        stored: &BTreeSet<OutPoint>,
+        core: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
     ) -> Vec<OutPoint> {
-        (abandoned.iter())
-            .filter_map(|t| self.hub.history.get(&wallet, t))
-            .flat_map(|e| e.tx.input.into_iter().map(|i| i.previous_output))
-            .filter(|o| !abandoned.contains(&o.txid) && !observed.contains_key(o))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
+        let observed = core.observed_spent_outpoints();
+        let held: HashSet<OutPoint> = core.utxos().into_iter().map(|u| u.outpoint).collect();
+        (self.inputs_of(wallet, abandoned).into_iter())
+            .filter(|o| !observed.contains_key(o) && (!stored.contains(o) || held.contains(o)))
             .collect()
     }
 
@@ -534,13 +602,16 @@ impl NetworkSession {
     /// coins are the union of the wallet-owned inputs its key-wallet records
     /// name and those the history's record names (key-wallet holds none for
     /// a send an earlier session recorded, and may name fewer); one that
-    /// neither holds replays from the birth height. No coins released, no
-    /// rewind.
+    /// neither holds replays from the birth height. The coins wallet.sqlite
+    /// holds of their inputs (`stored`) count as the wallet's too, so each
+    /// coin kept stored spent has a rescan scheduled to bring it back. No
+    /// coins released, no rewind.
     fn abandon_rewind(
         &self,
         wallet: WalletId,
         abandoned: &BTreeSet<Txid>,
         info: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+        stored: &BTreeSet<OutPoint>,
     ) -> Option<u32> {
         let birth = info.birth_height().saturating_sub(1);
         let own = |tx: &Transaction, indexes: &mut dyn Iterator<Item = u32>| -> Vec<OutPoint> {
@@ -549,7 +620,7 @@ impl NetworkSession {
                 .map(|i| i.previous_output)
                 .collect()
         };
-        let mut released = BTreeSet::new();
+        let mut released = stored.clone();
         for t in abandoned {
             let records: Vec<_> = (info.accounts.all_accounts().into_iter())
                 .filter_map(|a| a.transactions().get(t))

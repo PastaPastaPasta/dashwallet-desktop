@@ -463,8 +463,9 @@ fn a_payment_locked_apart_from_its_record_is_not_abandoned_after_a_restart() {
 
 /// A restored payment of A and B; after a restart, before the block
 /// funding them is scanned, another device's spend of B paying only
-/// someone else is mined. Abandoning the payment frees A only: after the
-/// next restart B is neither counted nor offered.
+/// someone else is mined. Abandoning the payment frees A only: both stay
+/// stored spent, the replay the abandon starts credits A, and B is never
+/// counted or offered.
 #[test]
 fn abandoning_a_payment_a_foreign_spend_beat_keeps_its_coin_spent_after_a_restart() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
@@ -495,9 +496,12 @@ fn abandoning_a_payment_a_foreign_spend_beat_keeps_its_coin_spent_after_a_restar
 
     let session = reopen(&engine, session);
     let mut want = outputs(&paid);
+    want.remove(&a);
     want.remove(&b);
     assert_holds(&engine, &session, id, &want, "abandoned, then a restart");
+    mined(&engine, &session, id, TIP - 1, vec![paid.clone()]);
     mined(&engine, &session, id, TIP, vec![winner]);
+    want.insert(a);
     assert_holds(&engine, &session, id, &want, "replayed after a restart");
     assert!(!spendable(&engine, &session, id, b), "B is not offered");
     assert!(spendable(&engine, &session, id, a), "A is");
@@ -681,4 +685,261 @@ fn a_locked_payment_a_mined_spend_beat_frees_its_other_coin_after_a_restart() {
     let session = reopen(&engine, session);
     mined(&engine, &session, id, TIP, vec![paid]);
     assert!(held(&engine, &session, id).contains(&a), "A is credited");
+}
+
+/// Another device's spend of `coin`, paying only someone else, as dash-spv
+/// hands its mempool transactions to the wallet: key-wallet finds it not
+/// the wallet's (the coin is claimed), so dash-spv keeps neither it nor its
+/// InstantSend lock.
+fn unheard_spend(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    funding: &Transaction,
+    coin: OutPoint,
+) -> Transaction {
+    let owner = Address::from_script(
+        &funding.output[coin.vout as usize].script_pubkey,
+        dashcore::Network::Regtest,
+    )
+    .unwrap();
+    let winner = super::signed_by_wallet(
+        engine,
+        session,
+        id,
+        &owner,
+        super::spend_of(coin, vec![(elsewhere(), COIN - 1_000)]),
+    );
+    let (manager, tx) = (session.manager().unwrap(), winner.clone());
+    let relevant = engine.block_on(async move {
+        use platform_wallet::key_wallet_manager::WalletInterface;
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        wm.process_mempool_transaction(&tx, None).await.is_relevant
+    });
+    assert!(!relevant, "key-wallet finds the spend not the wallet's");
+    winner
+}
+
+/// #170 case 5, the issue's probe. A restored payment of A and B; after a
+/// restart another device's mempool spend of B paying only someone else
+/// goes unrecorded and is InstantSend-locked, and the payment is abandoned.
+/// B stays stored spent: after the next restart it is neither counted nor
+/// offered. A comes back when the scan passes its funding block, and B
+/// stays out once the winner is mined.
+#[test]
+fn abandoning_a_payment_an_unheard_locked_spend_beat_keeps_its_coin_spent_after_a_restart() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    let winner = unheard_spend(&engine, &session, id, &paid, b);
+    abandon(&engine, &session, id, payment.txid());
+
+    let session = reopen(&engine, session);
+    let mut want = outputs(&paid);
+    want.remove(&a);
+    want.remove(&b);
+    assert_holds(&engine, &session, id, &want, "abandoned, then a restart");
+    assert!(!spendable(&engine, &session, id, b), "B is not offered");
+
+    mined(&engine, &session, id, TIP, vec![paid.clone(), winner]);
+    want.insert(a);
+    assert_holds(&engine, &session, id, &want, "funding and winner mined");
+    assert!(!spendable(&engine, &session, id, b), "B is not offered");
+    assert!(spendable(&engine, &session, id, a), "A is");
+
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &want, "then a restart");
+}
+
+/// As the probe, with the funding block scanned before the payment, and the
+/// winner mined in a block ChainLocked before the abandon: key-wallet drops
+/// its note of the spend once the scan is past that block, so only the
+/// store's own row keeps B out after the next restart.
+#[test]
+fn abandoning_a_payment_a_chainlocked_foreign_spend_beat_keeps_its_coin_spent_after_a_restart() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    let owner =
+        Address::from_script(&paid.output[1].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let winner = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(b, vec![(elsewhere(), COIN - 1_000)]),
+    );
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    let hash = super::block_with(vec![winner.clone()]).block_hash();
+    super::deliver(&engine, &session, id, move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            wm.apply_chain_lock(dashcore::ChainLock {
+                block_height: TIP + 1,
+                block_hash: hash,
+                signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+            });
+        })
+    });
+    mined(&engine, &session, id, TIP + 2, vec![foreign()]);
+    let manager = session.manager().unwrap();
+    let noted = engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        let info = wm.get_wallet_info(&id.0).unwrap();
+        info.core_wallet.observed_spent_outpoints().contains_key(&b)
+    });
+    assert!(!noted, "key-wallet no longer notes the spend of B");
+    abandon(&engine, &session, id, payment.txid());
+
+    let session = reopen(&engine, session);
+    let mut want = outputs(&paid);
+    want.remove(&a);
+    want.remove(&b);
+    assert_holds(&engine, &session, id, &want, "abandoned, then a restart");
+    assert!(!spendable(&engine, &session, id, b), "B is not offered");
+
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    mined(&engine, &session, id, TIP + 2, vec![foreign()]);
+    want.insert(a);
+    assert_holds(&engine, &session, id, &want, "replayed after a restart");
+    assert!(!spendable(&engine, &session, id, b), "B is not offered");
+    assert!(spendable(&engine, &session, id, a), "A is");
+
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &want, "then a restart");
+}
+
+/// An abandon in the session the payment was sent, nothing beating it:
+/// both coins come back once the scan passes their funding block, and are
+/// stored unspent, so a restart after holds them too.
+#[test]
+fn abandoning_a_payment_frees_its_coins_once_their_block_is_scanned_and_after_a_restart() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    abandon(&engine, &session, id, payment.txid());
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let want = outputs(&paid);
+    assert_holds(&engine, &session, id, &want, "abandoned, then scanned");
+    assert!(spendable(&engine, &session, id, a), "A is offered");
+
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &want, "then a restart");
+}
+
+/// A restored payment a peer relays again after a restart: key-wallet's
+/// record of it, stored over the first, names none of the wallet's inputs.
+/// Abandoning it after the next restart still schedules a rescan from its
+/// coins' funding block, which stores them unspent again.
+#[test]
+fn abandoning_a_relayed_payment_rescans_the_coins_it_keeps_stored_spent() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    mempool(&engine, &session, id, &payment);
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    eventually("the relayed record is stored", || {
+        persister.flush(id.0).unwrap();
+        (persister.get_core_tx_record(id.0, &payment.txid()).unwrap())
+            .is_some_and(|r| r.input_details.is_empty())
+    });
+    drop(persister);
+
+    let session = reopen(&engine, session);
+    abandon(&engine, &session, id, payment.txid());
+    assert!(synced(&engine, &session, id) < TIP, "a rescan is due");
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let want = outputs(&paid);
+    assert_holds(&engine, &session, id, &want, "rescanned");
+    let session = reopen(&engine, session);
+    assert_holds(&engine, &session, id, &want, "then a restart");
+}
+
+/// The abandon finds a coin's row in wallet.sqlite under the key the store
+/// writes, whatever the width of its vout, and no row for a coin it never
+/// stored.
+#[test]
+fn the_abandon_finds_each_stored_coin_by_its_key() {
+    let (_dir, engine, session, id) = engine_wallet();
+    let to = fresh_address(&engine, &session, id);
+    let txid = Txid::from_byte_array([3; 32]);
+    let coin = |vout: u32| {
+        key_wallet::Utxo::new(
+            OutPoint::new(txid, vout),
+            TxOut {
+                value: COIN,
+                script_pubkey: to.script_pubkey(),
+            },
+            to.clone(),
+            FUNDED_AT,
+            false,
+        )
+    };
+    let vouts = [0, 250, 251, 0xFFFF, 0x1_0000, u32::MAX];
+    store_raw(
+        &session,
+        id,
+        platform_wallet::changeset::CoreChangeSet {
+            new_utxos: vouts.iter().map(|v| coin(*v)).collect(),
+            ..Default::default()
+        },
+    );
+    let stored: BTreeSet<OutPoint> = vouts.iter().map(|v| OutPoint::new(txid, *v)).collect();
+    let mut asked = stored.clone();
+    asked.insert(OutPoint::new(txid, 7));
+    asked.insert(OutPoint::new(Txid::from_byte_array([4; 32]), 0));
+    let db = session.data_dir().join(crate::session::WALLET_DB_FILE);
+    assert_eq!(
+        crate::tx_actions::stored_coins(&db, id, &asked).unwrap(),
+        stored
+    );
 }
