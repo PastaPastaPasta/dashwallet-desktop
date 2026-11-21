@@ -392,6 +392,34 @@ test("create: a failed call whose proposal Mine can't read keeps Pay off until M
   await expect(page.getByTestId("create-pay")).toBeDisabled();
 });
 
+test("create: a second Pay for a name in progress is refused and sends the user to the first; a call still out keeps Pay off (issue #148)", async ({ page }) => {
+  await open(page, "governance");
+  await toReview(page);
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-sheet")).toBeHidden();
+  // The same draft again, as after a lock that hid the first outcome: the engine refuses it.
+  await toReview(page);
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-already-made")).toContainText("desktop-translations was made, and its fee may have gone out. Don't pay again");
+  await expect(page.getByTestId("create-pay")).toBeDisabled();
+  await expect(page.getByTestId("create-back")).toBeDisabled();
+  expect(await createCalls(page)).toBe(2);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  await page.getByTestId("create-show-mine").click();
+  await expect(page.getByTestId("create-sheet")).toBeHidden();
+  await expect(page.getByTestId("mine-chip-desktop-translations")).toHaveCount(1);
+  // Another call for this name is still out: the refusal names no proposal yet.
+  await page.evaluate(() => (window.__dwFixture!.world.governance.creating = ["desktop-docs"]));
+  await toReview(page, "desktop-docs");
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-underway")).toContainText("A payment for a proposal named desktop-docs is already under way, so Pay stays off.");
+  await expect(page.getByTestId("create-pay")).toBeDisabled();
+  await expect(page.getByTestId("mine-chip-desktop-docs")).toHaveCount(0);
+});
+
 test("create: a failed payment keeps the review open and says why", async ({ page }) => {
   await open(page, "governance");
   await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "duffs"));

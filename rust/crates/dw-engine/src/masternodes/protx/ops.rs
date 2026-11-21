@@ -539,7 +539,9 @@ impl NetworkSession {
             prepared.refund_unadmitted();
         }
         let code = error_code;
-        let end = if prepared.released() {
+        // An error before the hand-off (the sent mark's write) leaves the
+        // transaction pending: nothing was handed off.
+        let end = if prepared.released() || (outcome.is_err() && prepared.pending()) {
             AttemptEnd::NotSent {
                 first: !earlier,
                 error: outcome
