@@ -83,6 +83,24 @@ const RECOVERY = ["recovery-phrase"];
 
 const STATES: State[] = [
   {
+    // Mainnet's last step carries the price disclosure (fiat/consent.tsx); test networks never show it.
+    name: "onboarding-done-mainnet-rates",
+    roots: ONBOARDING,
+    open: async (page, theme, lang) => {
+      await page.goto(fixtureUrl("fiat-first-run", theme, `&lang=${lang}`));
+      await page.getByTestId("onboarding-restore").click();
+      await page.getByTestId("restore-input").fill(MAIN_PHRASE);
+      await page.getByTestId("restore-continue").click();
+      await page.getByTestId("onboarding-restoreOptions").waitFor();
+      await page.getByTestId("restore-finish").click();
+      await page.getByTestId("onboarding-choosePassphrase").waitFor();
+      await page.getByTestId("onboarding-passphrase-new").fill("restored pass");
+      await page.getByTestId("onboarding-passphrase-repeat").fill("restored pass");
+      await page.getByTestId("onboarding-passphrase-submit").click();
+      await page.getByTestId("onboarding-rates").waitFor();
+    },
+  },
+  {
     name: "onboarding-welcome",
     roots: ONBOARDING,
     open: async (page, theme, lang) => {

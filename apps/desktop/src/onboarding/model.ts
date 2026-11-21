@@ -43,7 +43,6 @@ export interface WalletChoice {
 /** dash-qt `AskPassphraseDialog`. */
 export const WRONG_PASSPHRASE = en.lock.wrongPassphrase;
 export const PASSPHRASE_REQUIRED = en.lock.passphraseRequired;
-export const INVALID_PHRASE = en.onboarding.failure.invalid_mnemonic;
 
 /** Each code with its own copy; `tsc` fails on a catalog key that is no error code. */
 type FailureCode = KeyOf<typeof en.onboarding.failure>;
@@ -56,9 +55,6 @@ const BY_CODE: Partial<Record<ErrorCode, string>> = Object.defineProperty(messag
   get: () => t("lock.wrongPassphrase"),
 });
 
-/** The engine's `wallet` code carries one reason a person can act on (E1 r2): a wallet is still
- * opening. The code is generic otherwise, so only that detail is shown. */
-export const WALLET_OPENING_TEXT = en.onboarding.error.walletOpening;
 
 export function failureText(e: unknown): string {
   if (!isAppError(e)) return t("onboarding.error.generic");
