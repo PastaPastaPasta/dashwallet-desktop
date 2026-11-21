@@ -2452,7 +2452,7 @@ impl NetworkSession {
             // only with every range applied and the pools wide.
             if marked == Some(crate::keys::WideScan::Done) {
                 let manager = this.manager()?;
-                let (_, ranges) = this.apply_stored_ranges(&manager, wallet_id).await;
+                let (_, ranges) = this.apply_stored_ranges(&manager, wallet_id, true).await;
                 let widened = crate::keys::ensure_coinjoin_scan_gap(&manager, wallet_id).await;
                 if ranges.is_ok() && widened.is_ok() {
                     this.set_wide_scan(wallet_id, marked).await;

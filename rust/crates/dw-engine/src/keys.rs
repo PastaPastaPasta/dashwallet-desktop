@@ -1150,10 +1150,7 @@ impl NetworkSession {
             if let Some((from, raised)) = attached {
                 // A stored range start-up left unapplied goes on before the
                 // replay, or the replay stays owed.
-                let ranges = match self.stored_issued(wallet_id).await {
-                    Ok(Some(issued)) => self.cover_issued(&manager, wallet_id, issued).await,
-                    stored => stored.map(drop),
-                };
+                let (_, ranges) = self.apply_stored_ranges(&manager, wallet_id, true).await;
                 if self.widen_published_wallet(&manager, wallet_id, from).await
                     && raised
                     && ranges.is_ok()
@@ -1424,11 +1421,12 @@ impl NetworkSession {
     /// Applies wallet `id`'s stored legacy range and lookahead, if any.
     /// Returns whether a lookahead may be stored (one is, or it cannot be
     /// read) and whether all of it is applied: an unreadable or malformed
-    /// setting is not.
+    /// setting is not. `keep_wider` (a wallet already live) lowers no pool.
     pub(crate) async fn apply_stored_ranges(
         &self,
         manager: &crate::session::Manager,
         id: WalletId,
+        keep_wider: bool,
     ) -> (bool, Result<(), EngineError>) {
         #[cfg(test)]
         if take_test_failure(&FAIL_RANGES_IN, self.data_dir()) {
@@ -1448,7 +1446,7 @@ impl NetworkSession {
         let lookahead = self.stored_lookahead(id).await;
         let raised = match &lookahead {
             Ok(Some(gap)) => match manager.get_wallet(&id.0).await {
-                Some(wallet) => apply_lookahead(&wallet, *gap, false).await,
+                Some(wallet) => apply_lookahead(&wallet, *gap, keep_wider).await,
                 None => Err(EngineError::WalletNotFound(id.to_string())),
             },
             Ok(None) => Ok(()),
@@ -1511,7 +1509,7 @@ impl NetworkSession {
         manager: &crate::session::Manager,
         id: WalletId,
     ) -> Result<(), EngineError> {
-        let (lookahead, raised) = self.apply_stored_ranges(manager, id).await;
+        let (lookahead, raised) = self.apply_stored_ranges(manager, id, false).await;
         // A partial raise still grew some pools, so the restore runs either way.
         if let Err(e) = self.restore_coins(manager, id).await {
             tracing::warn!(wallet_id = %id, error = %e, "could not restore the loaded wallet's coins");

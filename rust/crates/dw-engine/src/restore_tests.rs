@@ -3806,7 +3806,7 @@ fn a_default_reimport_keeps_the_lookahead_of_a_wallet_still_stored() {
 fn craft_backup(
     session: &NetworkSession,
     path: &std::path::Path,
-    wallets: &[(WalletId, Option<&str>)],
+    wallets: &[(WalletId, &[(&str, &str)])],
 ) {
     let header = serde_json::json!({
         "format": "dwbackup", "format_version": 1, "network": "regtest", "created_at": 1,
@@ -3815,11 +3815,9 @@ fn craft_backup(
     });
     let header_line = serde_json::to_vec(&header).unwrap();
     let bundles: Vec<_> = (wallets.iter())
-        .map(|(id, lookahead)| {
-            let rows: Vec<_> = (lookahead.iter())
-                .map(|v| {
-                    serde_json::json!([{ "t": id.to_string() }, { "t": crate::keys::LOOKAHEAD_SETTING }, { "t": v }])
-                })
+        .map(|(id, settings)| {
+            let rows: Vec<_> = (settings.iter())
+                .map(|(k, v)| serde_json::json!([{ "t": id.to_string() }, { "t": k }, { "t": v }]))
                 .collect();
             let payload = serde_json::json!({
                 "name": "A", "birth_height": 0, "created_at": null,
@@ -3850,7 +3848,11 @@ fn a_failed_restore_leaves_the_scan_of_a_wallet_it_attached_keys_to() {
     let a = born_at_700(&engine, &session);
     let b = import_phrase(&engine, &session, PHRASE, HEIGHT).unwrap();
     let backup = dir.path().join("two.dwbackup");
-    craft_backup(&session, &backup, &[(a, Some("200")), (b, None)]);
+    craft_backup(
+        &session,
+        &backup,
+        &[(a, &[(crate::keys::LOOKAHEAD_SETTING, "200")]), (b, &[])],
+    );
     assert!(session.vault().delete_wallet_secret(&a.0).unwrap());
     let marker = wide_scan(&engine, &session, a);
 
@@ -3930,4 +3932,58 @@ fn a_fresh_import_and_a_reopen_with_a_lookahead_of_one_run_with_one() {
     assert_eq!(gap(&engine, &session, id, bip44()), 1, "fresh import");
     let session = reopen(&engine, session);
     assert_eq!(gap(&engine, &session, id, bip44()), 1, "reopen");
+}
+
+/// Round 5, 1: a backup restored onto a watch-only wallet whose stored
+/// lookahead start-up could not apply, with the wallet's legacy counters
+/// and no lookahead, applies that lookahead before it marks the wallet
+/// scanned.
+#[test]
+fn a_range_only_attach_applies_the_stored_lookahead_start_up_left() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = import_phrase(&engine, &session, PHRASE, HEIGHT).unwrap();
+    engine.block_on(session.store_lookahead(id, 1000));
+    let backup = dir.path().join("one.dwbackup");
+    craft_backup(
+        &session,
+        &backup,
+        &[(id, &[(crate::compat::ISSUED_SETTING, "5,2")])],
+    );
+    assert!(session.vault().delete_wallet_secret(&id.0).unwrap());
+    let data = session.data_dir().to_path_buf();
+    (crate::keys::FAIL_RANGES_IN.lock().unwrap()).push(data);
+    let session = reopen(&engine, session);
+    assert!(gap(&engine, &session, id, bip44()) < 1000);
+
+    engine
+        .block_on(session.restore_backup(backup, Some(zeroize::Zeroizing::new(b"bk".to_vec()))))
+        .unwrap();
+
+    assert_eq!(
+        wide_scan(&engine, &session, id),
+        Some(crate::keys::WideScan::Done)
+    );
+    assert_eq!(gap(&engine, &session, id, bip44()), 1000);
+}
+
+/// Round 5, 2: a rescan of a wallet whose live BIP44 gap is wider than
+/// its stored lookahead (a raise whose row was not written) keeps the
+/// live gap.
+#[test]
+fn a_rescan_keeps_a_live_gap_wider_than_the_stored_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, session) = open_spv_engine(dir.path().join("data"));
+    create_vault(&engine, &session);
+    let id = created(&engine, &session);
+    engine.block_on(session.store_lookahead(id, 50));
+    let manager = session.manager().unwrap();
+    (engine.block_on(session.raise_lookahead(&manager, id, 1000))).unwrap();
+    store_checkpoint(&engine, &session, id, HEIGHT);
+    start_offline_spv(&engine, &session);
+
+    (engine.block_on(session.rescan(crate::RescanFrom::Height(500)))).unwrap();
+
+    assert_eq!(gap(&engine, &session, id, bip44()), 1000);
 }

@@ -591,7 +591,7 @@ impl crate::NetworkSession {
                 .map(crate::WalletId)
                 .collect();
             for id in &ids {
-                let (_, ranges) = this.apply_stored_ranges(&manager, *id).await;
+                let (_, ranges) = this.apply_stored_ranges(&manager, *id, true).await;
                 let widened = crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await;
                 if let Err(e) = &widened {
                     tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap before the rescan");
