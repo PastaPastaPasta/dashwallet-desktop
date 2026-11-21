@@ -1019,23 +1019,68 @@ fn beaten_payment_with_its_other_coin_back() -> (
     (dir, engine, session, id, b, held, winner.txid())
 }
 
-/// The payment above, its winner's record unreadable at a wallet load
-/// (the history load's read, or the read of the stored spends before the
-/// wallet loads): the load claims nothing, so B stays held, counted and
-/// stored unspent; the next clean load sees the payment beaten.
-fn a_load_missing_the_winner_keeps_the_coin_back(stored_read: bool) {
+/// How a load misses the winner of [`beaten_payment_with_its_other_coin_back`].
+#[derive(Clone, Copy, PartialEq)]
+enum WinnerFault {
+    /// The history load cannot read its record.
+    HistoryRead,
+    /// The read of the stored spends before the wallet loads cannot.
+    StoredRead,
+    /// Its stored row's wallet id has the wrong length, so listing skips
+    /// it and no wallet's store load reads it. (A txid of the wrong length
+    /// fails the store's own load, and the wallet does not open.)
+    SkippedRow,
+}
+
+/// Moves the stored transaction row of `txid` from wallet id `from` to
+/// wallet id `to`, as damage would: the store's own writes check the key.
+fn rekey_stored_row(session: &NetworkSession, txid: Txid, from: &[u8], to: &[u8]) {
+    use dashcore::hashes::Hash;
+    let conn = rusqlite::Connection::open(session.data_dir().join(crate::session::WALLET_DB_FILE))
+        .unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    let changed = conn
+        .execute(
+            "UPDATE core_transactions SET wallet_id = ?1 WHERE wallet_id = ?2 AND txid = ?3",
+            rusqlite::params![to, from, txid.to_byte_array().as_slice()],
+        )
+        .unwrap();
+    assert_eq!(changed, 1);
+}
+
+/// The payment above, its winner missed at a wallet load: the load claims
+/// nothing, so B stays held, counted and stored unspent; the next clean
+/// load sees the payment beaten.
+fn a_load_missing_the_winner_keeps_the_coin_back(fault: WinnerFault) {
     let (_dir, engine, session, id, b, held, winner) = beaten_payment_with_its_other_coin_back();
     engine.block_on(session.unload_wallet(id)).unwrap();
+    let key = id.0;
+    let skipped: Vec<u8> = key.iter().copied().chain([0]).collect();
     {
         let mut unreadable = session.hub.unreadable_record.lock().unwrap();
-        match stored_read {
-            false => unreadable.0 = Some(winner),
-            true => unreadable.1 = Some(winner),
+        match fault {
+            WinnerFault::HistoryRead => unreadable.0 = Some(winner),
+            WinnerFault::StoredRead => unreadable.1 = Some(winner),
+            WinnerFault::SkippedRow => rekey_stored_row(&session, winner, &key, &skipped),
         }
     }
     engine.block_on(session.load_wallet(id)).unwrap();
+    let hits = session
+        .hub
+        .unreadable_hits
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        hits,
+        usize::from(fault != WinnerFault::SkippedRow),
+        "the fault was hit"
+    );
     assert_holds(&engine, &session, id, &held, "the winner unread");
     assert!(stored_unspent(&session, id, b), "the winner unread");
+    if fault == WinnerFault::SkippedRow {
+        rekey_stored_row(&session, winner, &skipped, &key);
+    }
 
     let session = reopen(&engine, session);
     assert_holds(&engine, &session, id, &held, "a clean load after it");
@@ -1044,12 +1089,19 @@ fn a_load_missing_the_winner_keeps_the_coin_back(stored_read: bool) {
 
 #[test]
 fn a_history_load_missing_the_winner_keeps_the_coin_a_beaten_payment_spent() {
-    a_load_missing_the_winner_keeps_the_coin_back(false);
+    a_load_missing_the_winner_keeps_the_coin_back(WinnerFault::HistoryRead);
 }
 
 #[test]
 fn a_stored_spends_read_missing_the_winner_keeps_the_coin_a_beaten_payment_spent() {
-    a_load_missing_the_winner_keeps_the_coin_back(true);
+    a_load_missing_the_winner_keeps_the_coin_back(WinnerFault::StoredRead);
+}
+
+/// #170 case 7: a stored row whose key has the wrong length makes the
+/// listing incomplete, not a load that misses the winner unnoticed.
+#[test]
+fn a_load_listing_a_skipped_row_keeps_the_coin_a_beaten_payment_spent() {
+    a_load_missing_the_winner_keeps_the_coin_back(WinnerFault::SkippedRow);
 }
 
 /// A load that cannot read a stored record unrelated to the payment claims
@@ -1089,6 +1141,123 @@ fn a_load_with_an_unreadable_record_claims_nothing_until_a_clean_load() {
         "claimed again: {clean:?}"
     );
     assert_holds(&engine, &session, id, &clean, "a clean load");
+}
+
+/// A payment of the wallet's coin A, sent and stored unmined; returns
+/// it with A and the funding transaction.
+fn pending_payment_of_one_coin() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+    OutPoint,
+    Transaction,
+) {
+    let (dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    (dir, engine, session, id, payment, a, paid)
+}
+
+fn try_abandon(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) -> Result<BTreeSet<Txid>, crate::EngineError> {
+    let s = Arc::clone(session);
+    engine.block_on(session.on_runtime(async move {
+        let manager = s.manager()?;
+        s.abandon_inner(&manager, id, txid).await
+    }))
+}
+
+fn abandoned_marks(session: &NetworkSession, id: WalletId) -> BTreeSet<Txid> {
+    (crate::tx_actions::load_abandoned(&session.live().unwrap().appdb, id).0)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect()
+}
+
+/// #170 case 7: an abandon writes its abandoned marks durably before it is
+/// applied. When that write fails the abandon is refused with nothing
+/// changed: the payment stays stored and pending and keeps its claim on A
+/// across a restart, so A is never released while no mark says so.
+#[test]
+fn a_failed_abandoned_mark_write_refuses_the_abandon() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (_dir, engine, session, id, payment, a, paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    session
+        .hub
+        .fail_abandon_mark
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    assert!(
+        !session
+            .hub
+            .fail_abandon_mark
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the fault was hit"
+    );
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    persister.flush(id.0).unwrap();
+    assert!(
+        persister.get_core_tx_record(id.0, &txid).unwrap().is_some(),
+        "the record stays stored"
+    );
+    drop(persister);
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned()),
+        "the payment stays pending"
+    );
+    assert!(abandoned_marks(&session, id).is_empty());
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(!held(&engine, &session, id).contains(&a), "A stays claimed");
+    assert!(sent_marks(&session, id).contains(&txid));
+}
+
+/// The marks are durable before the sweep that removes the payment's
+/// record: an abandon whose sweep fails after them (as a crash between the
+/// two writes leaves it) loads abandoned at the next start, claims nothing,
+/// and the funding block scanned again credits A.
+#[test]
+fn an_abandon_whose_sweep_fails_after_its_mark_loads_abandoned() {
+    let (_dir, engine, session, id, payment, a, paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    session
+        .hub
+        .fail_abandon_sweep
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    assert!(
+        !session
+            .hub
+            .fail_abandon_sweep
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the fault was hit"
+    );
+    assert_eq!(abandoned_marks(&session, id), BTreeSet::from([txid]));
+
+    let session = reopen(&engine, session);
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_some_and(|e| e.is_abandoned()),
+        "the payment loads abandoned"
+    );
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(held(&engine, &session, id).contains(&a), "A is credited");
 }
 
 /// An abandoned payment relayed again unlocked by a peer is ignored. Its

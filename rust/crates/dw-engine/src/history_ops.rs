@@ -161,7 +161,12 @@ fn read_records<'a, E: std::fmt::Display>(
     (records, clean)
 }
 
-fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Persisted>, rusqlite::Error> {
+/// With whether every row was listed: a row whose wallet id or txid is not
+/// 32 bytes cannot be attributed, and it may be the winner of a pending
+/// payment.
+fn persisted_txids(
+    db_path: &Path,
+) -> Result<(HashMap<[u8; 32], Persisted>, bool), rusqlite::Error> {
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -177,9 +182,12 @@ fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Persisted>, rusql
         ))
     })?;
     let mut out: HashMap<[u8; 32], Persisted> = HashMap::new();
+    let mut listed = true;
     for row in rows {
         let (wallet, txid, recordless) = row?;
         let (Ok(wallet), Ok(txid)) = (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid)) else {
+            tracing::warn!("a stored transaction row with a malformed key");
+            listed = false;
             continue;
         };
         let persisted = out.entry(wallet).or_default();
@@ -189,7 +197,7 @@ fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Persisted>, rusql
             persisted.records.push(txid);
         }
     }
-    Ok(out)
+    Ok((out, listed))
 }
 
 /// The parts of a [`ChainView`] read from the library's state.
@@ -263,6 +271,8 @@ impl NetworkSession {
         let fault = self.hub.record_read_fault.lock().unwrap().take();
         #[cfg(test)]
         let unreadable = self.hub.unreadable_record.lock().unwrap().0.take();
+        #[cfg(test)]
+        let hits = Arc::clone(&self.hub.unreadable_hits);
         let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
@@ -276,7 +286,7 @@ impl NetworkSession {
                 persisted_txids(&db_path)
             };
             let (txids, listed) = match listing {
-                Ok(txids) => (txids, true),
+                Ok(listing) => listing,
                 Err(e) => {
                     tracing::warn!(error = %e, "could not list persisted transactions; history starts empty");
                     (HashMap::new(), false)
@@ -295,7 +305,10 @@ impl NetworkSession {
                         };
                         #[cfg(test)]
                         let read = match unreadable == Some(*t) {
-                            true => RecordFault::Error.apply(read),
+                            true => {
+                                hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                RecordFault::Error.apply(read)
+                            }
                             false => read,
                         };
                         read
@@ -538,10 +551,13 @@ impl NetworkSession {
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
         #[cfg(test)]
         let unreadable = self.hub.unreadable_record.lock().unwrap().1.take();
+        #[cfg(test)]
+        let hits = Arc::clone(&self.hub.unreadable_hits);
         let stored = tokio::task::spawn_blocking(move || {
             let mut history = crate::history::WalletHistory::default();
             let persisted = match persisted_txids(&db_path) {
-                Ok(mut all) => all.remove(&wallet.0).unwrap_or_default(),
+                Ok((mut all, true)) => all.remove(&wallet.0).unwrap_or_default(),
+                Ok((_, false)) => return (history, crate::tx_actions::Sent::new()),
                 Err(e) => {
                     tracing::warn!(%wallet, error = %e, "could not list stored transactions for spend claims");
                     return (history, crate::tx_actions::Sent::new());
@@ -552,7 +568,10 @@ impl NetworkSession {
                 let read = persister.get_core_tx_record(wallet.0, t);
                 #[cfg(test)]
                 let read = match unreadable == Some(*t) {
-                    true => RecordFault::Error.apply(read),
+                    true => {
+                        hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        RecordFault::Error.apply(read)
+                    }
                     false => read,
                 };
                 read
