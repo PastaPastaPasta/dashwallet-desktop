@@ -24360,10 +24360,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_vault_change_passphrase() != 65154) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_create() != 45384) {
+    if (uniffi_dashwallet_core_checksum_method_vault_create() != 17227) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_vault_encrypt() != 49372) {
+    if (uniffi_dashwallet_core_checksum_method_vault_encrypt() != 27555) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_vault_enroll_quick_unlock() != 31048) {

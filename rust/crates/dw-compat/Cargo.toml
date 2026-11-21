@@ -9,8 +9,8 @@ description = "Dash Core compatibility: BIP39 quirks, dumpwallet, SQLite descrip
 
 [dependencies]
 # Same git source and revision that the platform pin (rust/Cargo.toml) pins.
-dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d", default-features = false, features = ["secp-recovery"] }
-key-wallet = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "ae49570ae897cbfa93afcce9e0f950b57fc9b25d", default-features = false }
+dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "570d686cbb4aac032d2903c6d4e1332a7067e4b5", default-features = false, features = ["secp-recovery"] }
+key-wallet = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "570d686cbb4aac032d2903c6d4e1332a7067e4b5", default-features = false }
 dw-uri = { path = "../dw-uri" }
 unicode-normalization = "0.1"
 zeroize = "1.8"

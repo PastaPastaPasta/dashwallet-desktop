@@ -392,6 +392,50 @@ test("create: a failed call whose proposal Mine can't read keeps Pay off until M
   await expect(page.getByTestId("create-pay")).toBeDisabled();
 });
 
+test("create: a second Pay for a name in progress is refused and sends the user to the first; a call still out keeps Pay off (issue #148)", async ({ page }) => {
+  await open(page, "governance");
+  await toReview(page);
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-sheet")).toBeHidden();
+  // The same draft again, as after a lock that hid the first outcome: the engine refuses it.
+  await toReview(page);
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-in-progress")).toContainText("desktop-translations is already in progress in this wallet, so Pay stays off. Nothing was paid just now.");
+  await expect(page.getByTestId("create-already-made")).toHaveCount(0);
+  await expect(page.getByTestId("create-pay")).toBeDisabled();
+  await expect(page.getByTestId("create-back")).toBeEnabled();
+  expect(await createCalls(page)).toBe(2);
+  expect(await seriousAxeViolations(page)).toEqual([]);
+  // The first payment's toast has gone by now; the refusal must not announce a payment (#188).
+  await expect(page.locator(".toast")).toHaveCount(0, { timeout: 15_000 });
+  await page.getByTestId("create-show-existing").click();
+  await expect(page.getByTestId("create-sheet")).toBeHidden();
+  await expect(page.getByTestId("mine-chip-desktop-translations")).toHaveCount(1);
+  await expect(page.locator(".toast")).toHaveCount(0);
+  // Another call for this name is still out: the refusal names no proposal yet.
+  await page.evaluate(() => (window.__dwFixture!.world.governance.creating = ["desktop-docs"]));
+  await toReview(page, "desktop-docs");
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-underway")).toContainText("A payment for a proposal named desktop-docs is already under way, so Pay stays off. Nothing was paid just now.");
+  await expect(page.getByTestId("create-pay")).toBeDisabled();
+  await expect(page.getByTestId("mine-chip-desktop-docs")).toHaveCount(0);
+  // A refusal paid nothing: Back works, and another name can be paid for (#188).
+  await page.getByTestId("create-back").click();
+  await page.getByTestId("create-back").click();
+  await page.getByTestId("create-name").fill("desktop-docs-2");
+  await page.getByTestId("create-continue").click();
+  await page.getByTestId("create-continue").click();
+  await expect(page.getByTestId("create-underway")).toHaveCount(0);
+  await page.getByTestId("create-passphrase").fill("demo");
+  await page.getByTestId("create-pay").click();
+  await expect(page.getByTestId("create-sheet")).toBeHidden();
+  await expect(page.getByTestId("mine-chip-desktop-docs-2")).toHaveCount(1);
+  expect(await createCalls(page)).toBe(4);
+});
+
 test("create: a failed payment keeps the review open and says why", async ({ page }) => {
   await open(page, "governance");
   await page.evaluate(() => window.__dwFixture!.fail("governance_create_proposal", "duffs"));

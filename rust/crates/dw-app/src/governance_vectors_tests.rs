@@ -281,6 +281,10 @@ fn build() -> Value {
         GovernanceError::SubmitRefused {
             reason: SubmitRefusal::InFlight,
         },
+        GovernanceError::ProposalInProgress {
+            hash: Some("5d".repeat(32)),
+        },
+        GovernanceError::ProposalInProgress { hash: None },
         GovernanceError::ContestNotFound {
             label: "a11ce".into(),
         },
