@@ -34,6 +34,7 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   // opens on its screen, and `pre-release-notice` is the one that shows it.
   preReleaseNoticeDismissed: true,
   language: null,
+  checkUpdatesAutomatically: false,
 };
 const MAX_AUTO_LOCK_SECS = 86_400;
 /** The language tags `settings.rs` accepts: narrower than BCP 47. A 2–3 letter language, subtags of

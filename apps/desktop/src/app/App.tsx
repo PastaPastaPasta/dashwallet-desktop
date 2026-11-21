@@ -50,6 +50,9 @@ import { mark } from "./startup";
 import { useThemeAttribute } from "./theme";
 import { useLanguageAttributes } from "../i18n";
 import { savePrefs } from "../settings/prefs";
+import { updatesModel, useAutomaticUpdateCheck } from "../settings/updates";
+import { UpdateRestartNotice } from "../screens/settings/Updates";
+import { useModel } from "../onboarding/model";
 import { navigate, ui, useUi } from "./ui";
 
 const closeDialog = () => ui.set({ dialog: null, recoveryWallet: null });
@@ -406,6 +409,9 @@ export function App() {
   // Opening the network loads the wallet database; the splash is up meanwhile.
   const network = useOpenNetwork();
   useEffect(() => mark("shell"), []);
+  const backend = useBackend();
+  useAutomaticUpdateCheck(backend);
+  const restartRequired = useModel(updatesModel(backend)).view.kind === "restartRequired";
   // A network switch that failed booted this page again; it says what happened (row 74).
   useEffect(() => {
     const note = takeSwitchNote();
@@ -416,7 +422,7 @@ export function App() {
   const switching = useUi((s) => s.switching) !== null;
   return (
     <div className="app" data-testid="app-shell">
-      <div className="app-under-switch" inert={switching}>
+      <div className="app-under-switch" inert={switching || restartRequired}>
         {network.isSuccess ? (
           <Shell />
         ) : (
@@ -424,6 +430,7 @@ export function App() {
         )}
       </div>
       <SwitchingCard />
+      <UpdateRestartNotice />
       <ToastHost />
     </div>
   );

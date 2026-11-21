@@ -14,13 +14,28 @@ pub(crate) const EXCLUDED: &[(&str, &str)] = &[];
 /// no opener or shell grant (`open_releases_page`).
 pub(crate) const RELEASES_URL: &str = "https://github.com/PastaPastaPasta/dashwallet-desktop/releases";
 
+/// Opens `url`, a page under [`RELEASES_URL`], in the system browser.
+pub(crate) async fn open_official(url: String) -> Result<(), AppError> {
+    if url != RELEASES_URL && !url.starts_with(&format!("{RELEASES_URL}/")) {
+        return Err(AppError::app(AppCode::BrowserOpen, format!("not a release page: {url}")));
+    }
+    tauri::async_runtime::spawn_blocking(move || open::that_detached(url))
+        .await
+        .map_err(|e| AppError::app(AppCode::BrowserOpen, e.to_string()))?
+        .map_err(|e| AppError::app(AppCode::BrowserOpen, e.to_string()))
+}
+
 commands! {
     /// How the app was launched: the self-test, the forced theme, and the
     /// network `openNetwork` opens by default: the window's, which
     /// `switchNetwork` changes.
     #[facade()]
     fn launch_info(state) -> LaunchInfo {
-        Ok(LaunchInfo::new(&state.launch, &state.window_network()))
+        Ok(LaunchInfo::new(
+            &state.launch,
+            &state.window_network(),
+            state.updates.current_version(),
+        ))
     }
 
     /// Of the last 64 engine notices, oldest first, those of the window's
@@ -72,11 +87,7 @@ commands! {
     #[facade()]
     fn open_releases_page(state) -> () {
         let _ = state;
-        tauri::async_runtime::spawn_blocking(|| open::that_detached(RELEASES_URL))
-            .await
-            .map_err(|e| AppError::app(AppCode::BrowserOpen, e.to_string()))?
-            .map_err(|e| AppError::app(AppCode::BrowserOpen, e.to_string()))?;
-        Ok(())
+        open_official(RELEASES_URL.into()).await
     }
 
     /// Registered but granted by no capability: the U6 probe that the ACL
