@@ -712,6 +712,7 @@ impl NetworkSession {
         session.hub.attach_leases(&session.leases);
         session.attach_reconcile();
         session.attach_sweep_resend();
+        session.attach_balance_reread();
         session.attach_sweep_news();
         // Only a header the SPV store holds is evidence for a sweep record:
         // absent, unreadable or no SPV, its chunk stays pending.
@@ -766,7 +767,14 @@ impl NetworkSession {
         // Avatars (DP4-02): the toggle, the cache directory's descriptor.
         session.open_avatars(Arc::clone(&appdb)).await;
         // Before SPV starts: no block can replay a coin outside its account.
-        session.restore_loaded_wallets(&manager).await;
+        // A replay owed but not stored: the session does not open, and is
+        // closed as a close does, so the next open in this process can claim
+        // the wallet database.
+        if let Err(e) = session.restore_loaded_wallets(&manager).await {
+            drop((manager, appdb));
+            session.close().await;
+            return Err(e);
+        }
         for id in manager.list_wallet_ids_blocking() {
             session.resume_replay(&manager, WalletId(id)).await;
         }

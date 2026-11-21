@@ -517,6 +517,9 @@ pub(crate) struct SessionHub {
     /// Runs on each SPV peers 0 -> >0 transition: the recorded sweep
     /// chunks are sent again (`coinjoin`); unset in hub-only tests.
     peers_up: OnceLock<Box<dyn Fn() + Send + Sync>>,
+    /// Reads a wallet's balances again from the manager, after the event
+    /// being applied (`update_balance`).
+    balance_reread: OnceLock<Box<dyn Fn(WalletId) + Send + Sync>>,
     /// Records a beaten sweep chunk or a truncation in the sweep rows;
     /// unset in hub-only tests.
     sweep_news: OnceLock<SweepNewsHook>,
@@ -543,6 +546,10 @@ pub(crate) struct SessionHub {
     /// Tests: holds the next wallet open before its replay is resumed.
     #[cfg(test)]
     pub(crate) pause_load: Mutex<Option<Arc<crate::coins::TestPause>>>,
+    /// Tests: runs once, when a load or watch-only import has published a
+    /// wallet and before it widens the wallet's pools.
+    #[cfg(test)]
+    pub(crate) on_published: Mutex<Option<PublishedHook>>,
     /// Tests: holds the next wallet open before its spend claims are set.
     #[cfg(test)]
     pub(crate) pause_claims: Mutex<Option<Arc<crate::coins::TestPause>>>,
@@ -590,7 +597,18 @@ pub(crate) struct SessionHub {
     pub(crate) pause_event: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
 }
 
+#[cfg(test)]
+pub(crate) type PublishedHook = Box<dyn FnOnce(crate::WalletId) -> bool + Send>;
+
 impl SessionHub {
+    /// Tests: runs [`Self::on_published`], if set, for wallet `id`. A load
+    /// stops there, as a quit would, when it returns `true`.
+    #[cfg(test)]
+    pub(crate) fn run_on_published(&self, id: crate::WalletId) -> bool {
+        let hook = self.on_published.lock().unwrap().take();
+        hook.is_some_and(|hook| hook(id))
+    }
+
     pub(crate) fn set_rates(&self, rates: std::sync::Weak<crate::rates::RatesHub>) {
         let _ = self.rates.set(rates);
     }
@@ -669,6 +687,7 @@ impl SessionHub {
             reconcile: OnceLock::new(),
             reconcile_pending: Mutex::new(HashSet::new()),
             peers_up: OnceLock::new(),
+            balance_reread: OnceLock::new(),
             sweep_news: OnceLock::new(),
             sweep_retry_due: Mutex::new(HashSet::new()),
             sweep_retry: OnceLock::new(),
@@ -681,6 +700,8 @@ impl SessionHub {
             pause_seen: Mutex::new(None),
             #[cfg(test)]
             pause_load: Mutex::new(None),
+            #[cfg(test)]
+            on_published: Mutex::new(None),
             #[cfg(test)]
             pause_claims: Mutex::new(None),
             #[cfg(test)]
@@ -716,6 +737,11 @@ impl SessionHub {
 
     fn lease_table(&self) -> Option<Arc<crate::platform::lease::LeaseTable>> {
         self.leases.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    /// Sets what reads a wallet's balances again (once).
+    pub(crate) fn attach_balance_reread(&self, run: Box<dyn Fn(WalletId) + Send + Sync>) {
+        let _ = self.balance_reread.set(run);
     }
 
     /// Sets what runs on each SPV peers 0 -> >0 transition (once).
@@ -1042,7 +1068,43 @@ impl SessionHub {
 
     /// Applies a wallet event's balance snapshot. Returns whether the
     /// visible balances changed.
+    ///
+    /// A snapshot with locked coins was taken while a funding held its
+    /// temporary locks (only those set the flag), and may be applied after
+    /// they were released: the balances are read again once it is.
     fn update_balance(
+        &self,
+        id: WalletId,
+        balance: &WalletCoreBalance,
+        accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+    ) -> bool {
+        let changed = self.write_balances(id, balance, accounts);
+        if (balance.locked() > 0 || accounts.values().any(|b| b.locked() > 0))
+            && let Some(reread) = self.balance_reread.get()
+        {
+            reread(id);
+        }
+        changed
+    }
+
+    /// Applies balances read from the manager, under its lock, unless the
+    /// wallet is unloaded; announces them when they changed.
+    pub(crate) fn apply_balance_read(
+        &self,
+        id: WalletId,
+        balance: &WalletCoreBalance,
+        accounts: &BTreeMap<AccountType, WalletCoreBalance>,
+    ) {
+        let unloaded = self.unloaded.lock().unwrap_or_else(|p| p.into_inner());
+        if unloaded.contains(&id) {
+            return;
+        }
+        if self.write_balances(id, balance, accounts) {
+            self.pump.mark_balances(id);
+        }
+    }
+
+    fn write_balances(
         &self,
         id: WalletId,
         balance: &WalletCoreBalance,

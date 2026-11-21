@@ -581,13 +581,39 @@ impl crate::NetworkSession {
             }
             // No wallet is loaded or removed between the list and the rewinds.
             let _lifecycle = this.wallet_lifecycle.hold().await;
+            // A refused request changes no marker.
+            if this.rescan_running() {
+                return Err(crate::EngineError::RescanInProgress);
+            }
             let ids: Vec<crate::WalletId> = manager
                 .list_wallet_ids_blocking()
                 .into_iter()
                 .map(crate::WalletId)
                 .collect();
             for id in &ids {
-                crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await?;
+                let (_, ranges) = this.apply_stored_ranges(&manager, *id, true).await;
+                let widened = crate::keys::ensure_coinjoin_scan_gap(&manager, *id).await;
+                if let Err(e) = &widened {
+                    tracing::warn!(wallet_id = %id, error = %e, "could not widen the CoinJoin scan gap before the rescan");
+                }
+                if ranges.is_err() || widened.is_err() {
+                    // Its next load replays what this rescan matches narrow;
+                    // no rescan without that marker.
+                    let start = match from {
+                        RescanFrom::WalletBirth => None,
+                        RescanFrom::Genesis => Some(0),
+                        RescanFrom::Height(h) => Some(h.saturating_sub(1)),
+                    };
+                    let birth = crate::keys::birth_checkpoint(&manager, *id).await;
+                    // A wallet without a marker is owed from the start or
+                    // its birth, the earlier: nothing else records it.
+                    if this.wide_scan(*id).await?.is_none() {
+                        let owed = start.map_or(birth, |s| s.min(birth));
+                        (this.mark_pending(*id, crate::keys::WideScan::From(owed))).await?;
+                    } else {
+                        this.note_narrow_from(*id, start, Some(birth)).await?;
+                    }
+                }
             }
             let from_height = match from {
                 RescanFrom::WalletBirth => ids
