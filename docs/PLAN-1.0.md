@@ -14,6 +14,7 @@ owner updates the State column as items land and reports against it daily.
   `main` as it was at the release pull request (#72, 11-19) plus four changes made on the `release/0.2` branch
   (#92, #100, #104 and the notes, #107), all merged back into `main`. Everything else that merged to `main` after #72 ships in 0.3.
 - State on 2026-11-21, 03:15 UTC: 15 issues are open on the "1.0 RC must-fix" milestone and 20 are closed.
+  One more was filed at 03:50 UTC (#202, below).
   - Merged on 11-20: #84, #85 and #87 (#123), #108 (#115), #125 (#124), six of #81's `wallet.dat`
     follow-ups (#119), the interim lock for #105 (#132; the SQLite bump follows with the Platform re-pin due
     by 11-25), the balance on Home while the wallet syncs (#140; Activity already showed the payment), the
@@ -24,14 +25,15 @@ owner updates the State column as items land and reports against it daily.
     #88 (#134) and the quote and check of a username registration paid from the Shielded balance (#180,
     lane C). #134 merged with a load that cannot read all of its evidence restoring no claim; what it
     leaves is in #170.
-  - `main` went red on 11-20 at 21:05 UTC, from #160, in two jobs that run only on `main`. It changed two
+  - `main` went red on 11-20 at 21:40 UTC, from #160's changes, first seen in the run at #184, in jobs
+    that run only on `main`. #160 changed two
     doc comments on exported vault methods without regenerating the Swift bindings, and its new
     power-loss test replaces `app.sqlite` while a handle on it is open, which Windows refuses. #189
     regenerated the comment text but missed two checksum lines, because the bindings check prints only
     the first 40 lines of its diff; #193 set them, and #191 skipped the test on Windows. Product merges
     were held until `main`'s Swift and Windows jobs were green again, at 01:14 UTC on 11-21. The run of
     `main` at #193 finished green in every job.
-  - Merged on 11-21 by 03:15 UTC: item 6 of #173 (#185), the fix for case 18 of #170 (#195, the release
+  - Merged on 11-21 by 03:15 UTC: the two checksum lines (#193, at 00:12 UTC), item 6 of #173 (#185), the fix for case 18 of #170 (#195, the release
     owner's masternode lane), #148 (#187), the nightly-failure issue (#181), a refused proposal reading
     as a refusal (#197, two items of #188), **the pin of the rust-dashcore and platform forks for #45,
     #46, #47 and #120 (#159), which is therefore in 0.3**, item 1 of #173 (#198), and the renderer part
@@ -39,7 +41,12 @@ owner updates the State column as items land and reports against it daily.
     two storage migrations, after a copy to `backups/auto`. #159 merged with three known limits, ruled
     by the release owner and listed in #177 (items 9, 10 and 11); the fixes for 9 and 10 are being
     written in the rust-dashcore fork and re-pin in their own pull request, aimed at 11-22 18:00 UTC.
-    The first run of `main` that holds these merges had not finished at the time of writing.
+    The first run of `main` that holds the last four of these merges had not finished at the time of
+    writing.
+  - `main` is red again since 11-21 03:17 UTC, in the macOS job of the run at #181: one `dwcli` test
+    pins a status line that depends on the three-second budget of a new wallet's DashPay bring-up, and
+    the runner was slower than that (#202). What the test is there to prove held in that run. The fix
+    is to the tests only. Merges wait for a green macOS job on `main`.
   - In a pull request:
     - #190 (#192): the holder is found and fixed (the session hub's sweep-news hook kept the app
       database), the Windows skip is removed, and the test passes on Windows in a run of the branch. It
@@ -95,7 +102,7 @@ thread; "MG" is the masternode and governance thread, which is also the release 
 | C Shielded and Platform | MG | finish item 0 (BL-617) → Platform ↔ Shielded → Max drains → top-up from Shielded or Platform → funding-source picker with shielded-funded identity → pay a contact from any balance → withdrawal to own Platform address → protocol advisory banner → vault scopes and viewing-key cache → idle shielded-sync traffic (#178, RC) | 11-18 → 11-27 | item 0 part A3b (#26), Max on Send from Shielded (#63) and the Platform → Shielded quote (#110, 11-20) merged; the engine part of withdrawal to own Platform address merged (#169, 11-20); #49 in review |
 | D Masternode screens | MG | MG-10 app bindings → My masternodes → registration wizard → ProUpRegTx → MG-10b shared masternodes → shown by default when the wallet holds keys → voting-key import → contested-vote polish | 11-19 → 11-25 | engine done; the first app bindings (#51) and the shared abandon spends (#94) merged; the api wrappers and fixture world in review (#55) |
 | E Masternode checks | MG | MG-08 `dwcli` owner commands and regtest suites → MG-12 signing-path review and BL-582..585 | 11-19 → 11-26 | the owner gov commands and nightly regtest suites merged (#35); of MG-12, voting keys refusing plain message signing merged (#44) |
-| F CoinJoin | PO | BL-614 → BL-615 → V24 promotion and demotion → mixed-send warnings. Cut: sleep prevention, start on login | 11-19 → 11-25 | BL-614 (#38) and BL-615 (#39) merged (11-19); their follow-up fixes (#68, #69 and the engine part of #74) are in #121: two more fix rounds came out of its last reviews on 11-20, the second is in CI, it merges when its checks are green and that round's check is closed, and what it leaves is listed in #172; V24 promotion and demotion is on a branch, no pull request yet; the mixed-send warnings are not started (they follow #137) |
+| F CoinJoin | PO | BL-614 → BL-615 → V24 promotion and demotion → mixed-send warnings. Cut: sleep prevention, start on login | 11-19 → 11-25 | BL-614 (#38) and BL-615 (#39) merged (11-19); their follow-up fixes (#68, #69 and the engine part of #74) are in #121: its review of 11-21 found eight more cases, seven of them are in a third fix round, which is written and in its gates, it merges when its checks are green and that round's check is closed, and what it leaves is listed in #172; V24 promotion and demotion is on a branch, no pull request yet; the mixed-send warnings are not started (they follow #137) |
 | G Core compatibility | PO | legacy Berkeley DB `wallet.dat`. Cut: MP-07 sweep and BIP38, MP-06 phrase repair, MP-05 BIP70, spend unconfirmed change, per-transaction notifications | 11-19 → 11-23 | `wallet.dat` merged (#34, 11-20); six fixes from its last review merged (#119, 11-20); what is left is listed in #81: the watch-only rewind and the retry of a stored range that fails at load are in #121, the rest is not started |
 | H Marketplace | PO | Cut: X4 (browse, buy, extra names, instant-name offer), identity-verify link | — | cut to 1.0.x |
 | I Invitations | PO | Cut: the storage patch, X3 create, share and history, shielded-funded and small invites, the Home claim card, scanning an invitation's QR code. Claiming an invitation from a link or pasted text shipped in 0.1 and stays | — | cut to 1.0.x |
@@ -255,7 +262,7 @@ working days with tests and review, from reading the code; nothing was built exc
 | 6: a reorg that disconnects a plain block | expected in 1.0.x; needs the platform fork and a pin bump | 3 to 4.5 | not started |
 
 - Each case gets its own pull request, with a review and a test that fails without the fix. They are worked
-  in the order of the table: two lanes from 11-21, and a third when the lane on #159 frees (the lanes #121
+  in the order of the table: two lanes from 11-21, and a third when the fork lane frees (it stays on #177's fixes after #159 merged; the lanes #121
   and #160 free go to #172 and #173, below).
 - **Promised.** If a promised case is not merged by 11-28 18:00 UTC, the release owner decides then, in
   writing, whether the release candidate moves or the case becomes a line in its notes. Nothing slips by
@@ -373,9 +380,9 @@ No longer on this list: partner credentials and Explore database access (lane L 
 - **The RC must-fix list grew on 11-20.** It holds 24 cases: 22 left by the four funds fixes (#170
   eleven, #172 six, #173 two, #177 three), #178 in lane C, and #190 (fixed in #192, in a pull request). Of #170's, case 14 is written, eight add up
   to about 15.5 to 23.5 working days by its table (12.5 to 19 without case 6, which is expected in
-  1.0.x), and cases 16 and 17 are not sized; #172's and #173's eight add up to 7 to 11.75, with the
-  first-start message not sized; #177's three add up to 3.5; #178 is not sized. Fourteen cases are
-  promised. Cases 16 and 17 have no term yet. The tables above say which cases are promised, which are
+  1.0.x), case 16 is not sized and case 17 is closed at load by #159; #172's and #173's eight add up to 7 to 11.75, with the
+  first-start message not sized; #177's three add up to 3.5; #178 is not sized. Fourteen of the 22 are
+  promised, and #190 is fixed in a pull request. Case 16 has no term yet. The tables above say which cases are promised, which are
   attempted and when each is decided.
 - **Security review on new code.** H-01 runs 11-27 → 11-29 over code written the same fortnight. Its
   findings land before the release candidate or the affected feature ships disabled.
