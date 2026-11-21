@@ -335,16 +335,17 @@ impl Ticket {
         self.allows().then_some(done)
     }
 
-    /// `work`, unless the toggle moves first: then `None`, and `work` is
-    /// dropped where it stands, so an off does not wait for it (D36). A
-    /// read that began off is not ended by staying off.
-    pub(super) async fn unless_moved<T>(
+    /// `work`, unless the toggle turns off after the read began: then
+    /// `None`, and `work` is dropped where it stands, so the off does not
+    /// wait for it (D36). An on leaves it running.
+    pub(super) async fn unless_off<T>(
         &self,
         point: &'static str,
         work: impl Future<Output = T>,
     ) -> Option<T> {
         let epoch = self.stamp.epoch;
-        self.unless(point, |s| s.epoch != epoch, work).await
+        self.unless(point, |s| !s.on && s.epoch != epoch, work)
+            .await
     }
 
     async fn unless<T>(
@@ -533,6 +534,8 @@ pub(super) struct Pipeline {
     url_locks: Locks<String>,
     fetches: Semaphore,
     decodes: Arc<Semaphore>,
+    /// The cached thumbnails' checks: never behind an ingest.
+    checks: Arc<Semaphore>,
     /// Held by each store call's blocking task: the close waits for those a
     /// revoked read left running (issue #190).
     calls: Arc<tokio::sync::RwLock<()>>,
@@ -554,6 +557,7 @@ impl Pipeline {
             url_locks: Mutex::default(),
             fetches: Semaphore::new(FETCHES),
             decodes: Arc::new(Semaphore::new(DECODES)),
+            checks: Arc::new(Semaphore::new(DECODES)),
             calls: Arc::default(),
             #[cfg(test)]
             no_workers: Default::default(),
@@ -564,6 +568,12 @@ impl Pipeline {
     #[cfg(test)]
     pub(super) fn decodes(&self) -> Arc<Semaphore> {
         Arc::clone(&self.decodes)
+    }
+
+    /// Tests: the thumbnail check permits.
+    #[cfg(test)]
+    pub(super) fn checks(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.checks)
     }
 
     fn url_lock(&self, url_sha: &str) -> Arc<tokio::sync::Mutex<()>> {
@@ -591,18 +601,19 @@ impl Pipeline {
         })
     }
 
-    /// Runs `work` (a decode) on a thread of its own, at most [`DECODES`] at
-    /// once; a panic is `avatar.unsupported`, a worker that cannot start is
+    /// Runs `work` (a decode) on a thread of its own, holding one of
+    /// `permits`; a panic is `avatar.unsupported`, a worker that cannot start is
     /// [`no_worker`]. Every image decode runs here,
     /// never on a `dw-engine` thread: the engine's panic hook poisons it
     /// even for a panic the decode catches.
     async fn decoding<T: Send + 'static>(
         &self,
+        permits: &Arc<Semaphore>,
         work: impl FnOnce() -> Result<T, AvatarError> + Send + 'static,
     ) -> Result<T, AvatarError> {
         // The permit goes with the work: a dropped caller does not free it
         // while the decode still runs.
-        let permit = (Arc::clone(&self.decodes).acquire_owned().await).map_err(no_worker)?;
+        let permit = (Arc::clone(permits).acquire_owned().await).map_err(no_worker)?;
         #[cfg(test)]
         if self.no_workers.load(std::sync::atomic::Ordering::SeqCst) {
             return Err(no_worker("test: no decode worker"));
@@ -635,8 +646,10 @@ impl Pipeline {
         let crop = target.crop;
         let ingested = match fetched {
             Ok(bytes) => {
-                self.decoding(move || avatar_image::ingest(&bytes, crop, fingerprint))
-                    .await
+                self.decoding(&self.decodes, move || {
+                    avatar_image::ingest(&bytes, crop, fingerprint)
+                })
+                .await
             }
             Err(e) => {
                 tracing::debug!(error = %e, "avatar fetch failed");
@@ -724,11 +737,11 @@ impl Pipeline {
                     None => Ok(None),
                     Some(Thumbnail::Encoded(png)) => Ok(Some(png)),
                     Some(Thumbnail::Read(png)) => {
-                        let check = self.decoding(move || {
+                        let check = self.decoding(&self.checks, move || {
                             Ok(avatar_image::is_thumbnail(&png, size.px()).then_some(png))
                         });
                         let checked = if whose == Whose::Own {
-                            ticket.unless_moved("thumbnail check", check).await
+                            ticket.unless_off("thumbnail check", check).await
                         } else {
                             ticket.unless_revoked("thumbnail check", check).await
                         };
@@ -988,7 +1001,9 @@ impl AvatarRuntime {
                     return Err(AvatarError::TooLarge);
                 }
                 let (upload, ingested) = (pipeline)
-                    .decoding(move || avatar_image::ingest_file(&bytes, crop))
+                    .decoding(&pipeline.decodes, move || {
+                        avatar_image::ingest_file(&bytes, crop)
+                    })
                     .await?;
                 (None, Some(upload), ingested)
             }

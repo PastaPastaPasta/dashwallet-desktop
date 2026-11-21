@@ -1756,7 +1756,7 @@ async fn a_decode_worker_that_cannot_start_changes_nothing_cached() {
 }
 
 /// An off does not wait for an own identity's cached thumbnail check
-/// queued behind busy decodes; a check that began off still runs, and its
+/// queued behind busy checks; a check that began off still runs, and its
 /// thumbnail is served.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_off_drops_an_own_read_waiting_for_a_decode() {
@@ -1771,7 +1771,7 @@ async fn an_off_drops_an_own_read_waiting_for_a_decode() {
             .await
     };
     let thumb = own().await.unwrap().unwrap();
-    let busy = rig.pipeline.decodes().acquire_many_owned(2).await.unwrap();
+    let busy = rig.pipeline.checks().acquire_many_owned(2).await.unwrap();
     let (at_check, reached) = tokio::sync::oneshot::channel();
     let at_check = Mutex::new(Some(at_check));
     rig.pictures.set_hook(Box::new(move |point| {
@@ -1804,14 +1804,14 @@ async fn an_off_drops_an_own_read_waiting_for_a_decode() {
     let later = own();
     tokio::pin!(later);
     let waited = tokio::time::timeout(Duration::from_millis(200), &mut later).await;
-    assert!(waited.is_err(), "the check did not wait for a decode");
+    assert!(waited.is_err(), "the check did not wait for a permit");
     drop(busy);
     assert_eq!(later.await, Ok(Some(thumb)));
     assert_eq!(rig.server.hits().len(), 1);
 }
 
 /// An off does not wait for a contact's cached thumbnail check queued
-/// behind busy decodes: the read is dropped where it waits, before either
+/// behind busy checks: the read is dropped where it waits, before either
 /// permit is freed.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_off_drops_a_contact_read_waiting_for_a_decode() {
@@ -1821,7 +1821,7 @@ async fn an_off_drops_a_contact_read_waiting_for_a_decode() {
     rig.server.route("/q.png", Route::ok(bytes.clone()));
     let profile = profile_for(&rig.server.url("good.test", "/q.png"), &bytes);
     assert!(rig.read(&profile).await.unwrap().is_some());
-    let busy = rig.pipeline.decodes().acquire_many_owned(2).await.unwrap();
+    let busy = rig.pipeline.checks().acquire_many_owned(2).await.unwrap();
     let (at_check, reached) = tokio::sync::oneshot::channel();
     let at_check = Mutex::new(Some(at_check));
     rig.pictures.set_hook(Box::new(move |point| {
@@ -1852,4 +1852,89 @@ async fn an_off_drops_a_contact_read_waiting_for_a_decode() {
     };
     let (read, ()) = tokio::join!(read, off);
     assert_eq!(read, Ok(None));
+}
+
+/// A cached thumbnail check, an own identity's or a contact's, does not
+/// wait for ingests holding every decode permit.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cached_check_does_not_wait_for_busy_decodes() {
+    let rig = Rig::new().await;
+    let bytes = png(42, 42);
+    rig.server.route("/q.png", Route::ok(bytes.clone()));
+    let profile = profile_for(&rig.server.url("good.test", "/q.png"), &bytes);
+    let thumb = rig.read(&profile).await.unwrap().unwrap();
+    let _busy = rig.pipeline.decodes().acquire_many_owned(2).await.unwrap();
+    for whose in [Whose::Own, Whose::Other] {
+        let read = (rig.pipeline).for_profile(&profile, AvatarSize::Small, whose, rig.ticket());
+        let read = tokio::time::timeout(Duration::from_secs(10), read).await;
+        let read = read.unwrap_or_else(|_| panic!("{whose:?}: the check waited for a decode"));
+        assert_eq!(read, Ok(Some(thumb.clone())), "{whose:?}");
+    }
+}
+
+/// An on does not end an own identity's read that began off: its check
+/// runs, and its thumbnail is served. An off ends it (above).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_on_leaves_an_own_read_that_began_off() {
+    let rig = Rig::new().await;
+    let bytes = png(42, 42);
+    rig.server.route("/me.png", Route::ok(bytes.clone()));
+    let profile = profile_for(&rig.server.url("good.test", "/me.png"), &bytes);
+    let own = || async {
+        (rig.pipeline)
+            .for_profile(&profile, AvatarSize::Small, Whose::Own, rig.ticket())
+            .await
+    };
+    let thumb = own().await.unwrap().unwrap();
+    let off = rig.pictures.begin_transition().await;
+    off.apply(false, async { Ok::<_, ()>(()) }).await.unwrap();
+    let busy = rig.pipeline.checks().acquire_many_owned(2).await.unwrap();
+    let (at_check, reached) = tokio::sync::oneshot::channel();
+    let at_check = Mutex::new(Some(at_check));
+    rig.pictures.set_hook(Box::new(move |point| {
+        if point == "thumbnail check"
+            && let Some(at_check) = at_check.lock().unwrap().take()
+        {
+            let _ = at_check.send(());
+        }
+        None
+    }));
+    let on = async {
+        let reached = tokio::time::timeout(Duration::from_secs(10), reached).await;
+        reached
+            .expect("the read never reached its thumbnail check")
+            .unwrap();
+        let turn = rig.pictures.begin_transition().await;
+        turn.apply(true, async { Ok::<_, ()>(()) }).await.unwrap();
+        drop(busy);
+    };
+    let (read, ()) = tokio::join!(own(), on);
+    assert_eq!(read, Ok(Some(thumb)));
+}
+
+/// Held in memory (no thumbnail directory), a cached thumbnail is the
+/// engine's own encoding: it is served with no check, whatever holds the
+/// decode and check permits.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_in_memory_thumbnail_is_served_without_a_check() {
+    let mut rig = Rig::new().await;
+    rig.pipeline = Pipeline::new(
+        test_policy(),
+        Arc::clone(&rig.script) as Arc<dyn NameResolver>,
+        None,
+        Arc::clone(&rig.db),
+    );
+    let bytes = png(42, 42);
+    rig.server.route("/q.png", Route::ok(bytes.clone()));
+    let profile = profile_for(&rig.server.url("good.test", "/q.png"), &bytes);
+    let thumb = rig.read(&profile).await.unwrap().unwrap();
+    let _decodes = rig.pipeline.decodes().acquire_many_owned(2).await.unwrap();
+    let _checks = rig.pipeline.checks().acquire_many_owned(2).await.unwrap();
+    for whose in [Whose::Own, Whose::Other] {
+        let read = (rig.pipeline).for_profile(&profile, AvatarSize::Small, whose, rig.ticket());
+        let read = tokio::time::timeout(Duration::from_secs(10), read).await;
+        let read = read.unwrap_or_else(|_| panic!("{whose:?}: the read waited for a permit"));
+        assert_eq!(read, Ok(Some(thumb.clone())), "{whose:?}");
+    }
+    assert_eq!(rig.server.hits().len(), 1);
 }
