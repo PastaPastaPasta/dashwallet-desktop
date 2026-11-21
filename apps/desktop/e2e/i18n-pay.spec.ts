@@ -16,7 +16,6 @@ const ADDRESSES = [/^[Xy][1-9A-HJ-NP-Za-km-z]{25,34}$/, /^[Xy][1-9A-HJ-NP-Za-km-
 const CONTACTS = [/^(Carol|Grace Hopper|Bob Builder|Dave|dave|Erin|heidi)$/, /^\p{L}{1,2}$/u];
 
 /** Still English: a contact's payment note comes from contacts/pane.ts. */
-const PAY_NOTE = [/^Payments with this contact are still being set up\. The payment finishes the setup\.$/];
 
 /** Still English: the coin table and its summary come from components/coins.tsx. */
 const COIN_TABLE = [/^Amount \($/, /^\)$/, /^Select$/, /^Coins of this wallet$/, /^Address \/ Label$/, /^Confirmations$/, /^Status$/, /^(Quantity|Amount|Fee|After fee|Bytes|Change|Dust)$/, /^Mixed, \p{Nd}+ rounds$/u];
@@ -161,7 +160,7 @@ const STATES: State[] = [
   {
     name: "pay-contact-form",
     roots: ["pay-contact-form"],
-    data: [...CONTACTS, ...PAY_NOTE],
+    data: CONTACTS,
     open: async (page, theme, lang) => {
       await contactForm(page, theme, lang);
       await page.getByTestId("pay-amount").fill("0.02");
@@ -171,7 +170,7 @@ const STATES: State[] = [
   {
     name: "pay-contact-confirm",
     roots: ["pay-confirm"],
-    data: [...CONTACTS, ...PAY_NOTE],
+    data: CONTACTS,
     open: async (page, theme, lang) => {
       await contactForm(page, theme, lang);
       await page.getByTestId("pay-amount").fill("0.02");

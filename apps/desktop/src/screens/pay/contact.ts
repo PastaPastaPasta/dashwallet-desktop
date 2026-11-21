@@ -18,7 +18,7 @@ import type { PayTab } from "../../app/ui";
 import { actionError } from "../../contacts/actions";
 import { cardLine } from "../../contacts/add";
 import { avatarLetters, networkHits, shownName, subtitle, type ContactsOwner } from "../../contacts/model";
-import { BROKEN, ENABLE_FIRST, payNote } from "../../contacts/pane";
+import { payNote } from "../../contacts/pane";
 import { messageTable, t } from "../../i18n";
 import { en } from "../../i18n/en";
 
@@ -231,9 +231,9 @@ export function payBanner(i: BannerInput): Banner | null {
   const request = acceptsToo(i.detail, i.accepted);
   if (relation !== "contact" && !request && !i.accepted) return { kind: "gone", text: t("pay.contact.banner.notContacts") };
   if (i.watchOnly) return { kind: "watchOnly", text: t("pay.contact.watchOnly") };
-  if (request && i.hasKeys === false) return { kind: "enable", text: `${ENABLE_FIRST} ${t("pay.contact.banner.thenAccept")}` };
+  if (request && i.hasKeys === false) return { kind: "enable", text: `${t("contacts.pane.enableFirst")} ${t("pay.contact.banner.thenAccept")}` };
   if (i.detail.paymentLock) return { kind: "paymentLock", text: t("pay.contact.banner.paymentLock"), txid: i.detail.paymentLock.txid };
-  if (channel === "broken") return { kind: "broken", text: BROKEN };
+  if (channel === "broken") return { kind: "broken", text: t("contacts.pane.broken") };
   if (i.lock === "unlockedMixingOnly") return { kind: "mixingOnly", text: t("pay.contact.banner.mixingOnly") };
   if (request) return { kind: "note", text: t("pay.contact.banner.request") };
   const note = payNote(channel);

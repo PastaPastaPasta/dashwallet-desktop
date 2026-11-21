@@ -19,7 +19,6 @@ import type { Recipient } from "../../api/generated/Recipient";
 import type { TxEstimate } from "../../api/generated/TxEstimate";
 import type { OutPoint } from "../../api/generated/OutPoint";
 import type { Utxo } from "../../api/generated/Utxo";
-import { BROKEN } from "../../contacts/pane";
 import { formatWithUnit, type Chain, type Unit } from "../../format/amount";
 import { t } from "../../i18n";
 import { en } from "../../i18n/en";
@@ -258,7 +257,7 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
     case "contact.payment_locked":
       return { text: t("pay.error.contactLocked"), field: null };
     case "contact.channel_broken":
-      return { text: BROKEN, field: null };
+      return { text: t("contacts.pane.broken"), field: null };
     case "contact.ineligible":
       return {
         text: e.data?.kind === "ineligible" && e.data.reason === "pendingIncoming" ? t("pay.error.pendingIncoming") : t("pay.error.ineligible"),
