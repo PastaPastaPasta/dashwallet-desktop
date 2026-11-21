@@ -11,6 +11,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { bridgeEvents } from "./api/events";
+import { guardWhileLocked } from "./api/lockGate";
 import { BackendContext } from "./api/queries";
 import { inTauri, IpcBackend } from "./api/tauri";
 import { App, LaunchContext } from "./app/App";
@@ -25,12 +26,12 @@ import { loadPrefs } from "./settings/prefs";
  * production build has no fixture code at all (`__DW_FIXTURES__` is false, so Vite drops the
  * import), and outside Tauri it only says where it runs. */
 async function connect(): Promise<{ backend: IpcBackend; fixturePassphrase: string | null }> {
-  if (inTauri()) return { backend: new IpcBackend("tauri"), fixturePassphrase: null };
+  if (inTauri()) return { backend: guardWhileLocked(new IpcBackend("tauri")), fixturePassphrase: null };
   if (__DW_FIXTURES__) {
     const { installFixture, fixtureOptionsFromUrl } = await import("./fixture");
     const fixture = installFixture(fixtureOptionsFromUrl(location.search));
     window.__dwFixture = fixture;
-    return { backend: new IpcBackend("fixture", () => fixture.now, fixture.locale), fixturePassphrase: fixture.world.passphrase };
+    return { backend: guardWhileLocked(new IpcBackend("fixture", () => fixture.now, fixture.locale)), fixturePassphrase: fixture.world.passphrase };
   }
   throw new Error("this page runs only inside the Dash Wallet app");
 }

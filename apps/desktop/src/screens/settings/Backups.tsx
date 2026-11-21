@@ -8,6 +8,7 @@ import type { CoreExportFormatName } from "../../api/generated/CoreExportFormatN
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { keys, useAutomaticBackups, useBackend, useBackupDirectory, useBackupPolicy, useLockStatus, useWallets } from "../../api/queries";
 import { useLaunch } from "../../app/App";
+import { keptAcrossLock, useAcrossLock } from "../../app/acrossLock";
 import { useSecretScreen } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { CopyValue, DetailRow } from "../../components/detail";
@@ -22,11 +23,21 @@ import { Done, Hint, NotYetRow, pendingText, Problem, SettingsCard } from "./par
 
 type BackupsSheet = { kind: "backup" | "export"; wallet: WalletSummary } | { kind: "importFile" | "importKeys" } | null;
 
+/** A sheet whose file was being written or read, or whose result was up, when the vault locked:
+ * it opens again with the same model after the unlock, so where the file went, or why it failed,
+ * is still said (app/acrossLock.ts). */
+type Kept<M> = { sheet: NonNullable<BackupsSheet>; model: M };
+const SLOT = "settings-backups";
+
+function useKeptSheet<M>(sheet: NonNullable<BackupsSheet>, make: () => M, holds: (m: M) => boolean, end?: (m: M) => void): M {
+  return useAcrossLock<Kept<M>>(SLOT, () => ({ sheet, model: make() }), (k) => holds(k.model), end && ((k) => end(k.model))).model;
+}
+
 const KEEP_CHOICES = Array.from({ length: 11 }, (_, i) => i);
 
 export function BackupsTab() {
   const wallets = useWallets();
-  const [sheet, setSheet] = useState<BackupsSheet>(null);
+  const [sheet, setSheet] = useState<BackupsSheet>(() => keptAcrossLock<Kept<unknown>>(SLOT)?.sheet ?? null);
   const [walletId, setWalletId] = useState<string | null>(null);
   const id = useId();
   const own = (wallets.data ?? []).filter((w) => !w.watchOnly);
@@ -173,7 +184,7 @@ function BackupSheet({ wallet, onClose }: { wallet: WalletSummary; onClose: () =
   const backend = useBackend();
   const client = useQueryClient();
   const lock = useLockStatus();
-  const [model] = useState(() => new BackupModel(backend, () => backend.now()));
+  const model = useKeptSheet({ kind: "backup", wallet }, () => new BackupModel(backend, () => backend.now()), (m) => m.working || m.done !== null);
   useModel(model);
   const encrypted = lock.data?.encrypted !== false;
   useEffect(() => {
@@ -241,7 +252,7 @@ function DoneLines({ done, onClose }: { done: ImportDone; onClose: () => void })
 function ImportFileSheet({ onClose }: { onClose: () => void }) {
   const backend = useBackend();
   const { network } = useLaunch();
-  const [model] = useState(() => new ImportFileModel(backend, network.dirName));
+  const model = useKeptSheet({ kind: "importFile" }, () => new ImportFileModel(backend, network.dirName), (m) => m.step === "working" || m.step === "done");
   useModel(model);
   const [path, setPath] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -331,7 +342,7 @@ function ImportFileSheet({ onClose }: { onClose: () => void }) {
 
 function ImportKeysSheet({ onClose }: { onClose: () => void }) {
   const backend = useBackend();
-  const [model] = useState(() => new ImportKeysModel(backend));
+  const model = useKeptSheet({ kind: "importKeys" }, () => new ImportKeysModel(backend), (m) => m.working || m.done !== null);
   useModel(model);
   const [kind, setKind] = useState<KeyKind>("hdSeed");
   const [text, setText] = useState("");
@@ -392,12 +403,16 @@ function ImportKeysSheet({ onClose }: { onClose: () => void }) {
 
 function ExportSheet({ wallet, onClose }: { wallet: WalletSummary; onClose: () => void }) {
   const backend = useBackend();
-  const [model] = useState(() => new ExportModel(backend, () => backend.now(), wallet.walletId, wallet.name));
+  const model = useKeptSheet(
+    { kind: "export", wallet },
+    () => new ExportModel(backend, () => backend.now(), wallet.walletId, wallet.name),
+    (m) => m.step === "working" || m.step === "done",
+    (m) => m.cancel(),
+  );
   useModel(model);
   useLockTimer(model.lock);
   useEffect(() => {
-    void model.load();
-    return () => model.cancel();
+    if (model.step === "loading") void model.load();
   }, [model]);
   const [format, setFormat] = useState<CoreExportFormatName>("dumpWallet");
   return (

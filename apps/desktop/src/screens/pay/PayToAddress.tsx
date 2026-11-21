@@ -14,10 +14,10 @@ import { AddressBookPicker } from "../tools/AddressBook";
 import { useDisplay } from "../../format/display";
 import { CoinControl } from "./CoinControl";
 import { ConfirmSheet } from "./ConfirmSheet";
-import { PayFromPlatform } from "./PayFromPlatform";
-import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, usePayAmount, usePaySheets } from "./form";
+import { HeldPlatformSend, PayFromPlatform } from "./PayFromPlatform";
+import { AmountFields, draftSpec, FormField, PayFooter, SETTLE_MS, useAvailable, useEstimate, useMax, payFormKey, usePayAmount, usePaySheets } from "./form";
 import { addressProblem, confirmedOf, DEFAULT_ADVANCED, recipientOf, reviewBlockedReason, type Advanced } from "./model";
-import { ResultSheet } from "./ResultSheet";
+import { ResultSheet, SendingSheet } from "./ResultSheet";
 import { UnsignedPsbt } from "./UnsignedPsbt";
 import { useDraft } from "./useDraft";
 
@@ -48,14 +48,14 @@ export function PayToAddress({
   const [message, setMessage] = useState(prefill?.message ?? "");
   const [advanced, setAdvanced] = useState<Advanced>(coins?.length ? { ...DEFAULT_ADVANCED, coins: "selected", selected: coins } : DEFAULT_ADVANCED);
   // A payment that went, or may have, ends the form: paying again is a new payment.
-  const sheets = usePaySheets(walletId, draft, () => {
+  const sheets = usePaySheets(payFormKey(walletId), walletId, draft, () => {
     setAddress("");
     amount.setText("");
     setSubtractFee(subtractFeeByDefault());
     setLabel("");
     setMessage("");
     setAdvanced(DEFAULT_ADVANCED);
-  });
+  }, "link");
   const { phase } = sheets;
   // Closing the confirm or result sheet returns to Review, or to the address of a cleared form.
   const reviewButton = useRef<HTMLButtonElement>(null);
@@ -187,6 +187,7 @@ export function PayToAddress({
           </>
         )}
       </form>
+      {!platform && <HeldPlatformSend walletId={walletId} network={network} />}
       {picking && <AddressBookPicker walletId={walletId} network={network} purpose="send" onChoose={chosen} onClose={() => setPicking(false)} />}
       {phase.kind === "confirm" && (
         <ConfirmSheet
@@ -200,15 +201,18 @@ export function PayToAddress({
           returnFocus={backToForm}
           onCancel={sheets.cancel}
           onOutcome={sheets.outcome}
+          onSend={sheets.begin}
         />
       )}
+      {phase.kind === "sending" && <SendingSheet sending={phase.sending} network={network} />}
       {phase.kind === "result" && (
         <ResultSheet
           outcome={phase.outcome}
           network={network}
           draft={draft}
           returnFocus={backToForm}
-          onOutcome={sheets.outcome}
+          retrying={phase.retrying}
+          onRetry={sheets.retry}
           onDone={sheets.done}
         />
       )}

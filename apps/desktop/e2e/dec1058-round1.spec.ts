@@ -225,7 +225,7 @@ test.describe("read marking", () => {
     await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
   });
 
-  test("a Notifications page behind the lock screen marks nothing read", async ({ page }) => {
+  test("a payment that arrives while locked is not shown, nor marked read, until the unlock", async ({ page }) => {
     await open(page);
     await page.getByTestId("toolbar-bell").click();
     await expect(page.getByTestId("notifications-payments")).toBeAttached();
@@ -233,8 +233,10 @@ test.describe("read marking", () => {
     await expect(page.getByTestId("lock-screen")).toBeVisible();
     await pay(page, 150_000_000);
     await page.waitForTimeout(500);
-    // The badge is in the (inert) toolbar: still unread, not cleared behind the lock screen.
-    expect(await page.getByTestId("toolbar-bell-badge").evaluate((e) => e.textContent)).toBe("1");
+    // The lock screen stands in place of the page and the toolbar: no row, no badge, no toast.
+    await expect(page.getByTestId("notifications-payments")).toHaveCount(0);
+    await expect(page.getByTestId("toolbar-bell-badge")).toHaveCount(0);
+    await expect(page.locator(".toast")).toHaveCount(0);
     await authorizeUnlock(page, "notifications-payments");
     // Unlocked, the page shows it: now read.
     await expect(page.getByTestId("bell-payment")).toHaveCount(1);

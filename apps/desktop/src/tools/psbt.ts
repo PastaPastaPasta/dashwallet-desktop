@@ -133,7 +133,8 @@ export class PsbtModel extends Model {
   error: string | null = null;
   constructor(
     private readonly api: Api,
-    readonly grants: GrantModel,
+    /** Whose prompt a Sign asks through: the one the Tools page shows (Psbt.tsx sets it). */
+    public grants: GrantModel,
     /** The wallet that signs; `null`: no wallet is loaded. */
     readonly walletId: string | null,
     /** The display settings (U-04 D4): amounts are said in this unit. */
