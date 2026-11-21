@@ -1733,3 +1733,298 @@ fn a_cancel_during_an_admitted_settle_keeps_the_close_behind_it() {
 
 #[path = "shielded_disposition_tests.rs"]
 mod disposition_tests;
+
+/// #178: a periodic pass skips the library's note scan while Platform's
+/// proved note count shows the pool unchanged (`shielded_pool::guarded_pass`).
+/// The count is the test's (`PlatformRuntime::notes_count`); the passes that
+/// reach the library's scan are counted (`PlatformRuntime::passes_run`).
+mod idle_tests {
+    use std::sync::atomic::Ordering;
+
+    use super::*;
+
+    /// [`scanned_unrested`], with the rest clock's first scan marked as the
+    /// pass's `observe_rest` does.
+    fn scanned(
+        engine: &Engine,
+        session: &Arc<NetworkSession>,
+        wallet: WalletId,
+        notes: u8,
+        watermark: u64,
+    ) {
+        scanned_unrested(engine, session, wallet, notes, watermark);
+        rested(session, wallet);
+    }
+
+    /// Marks `wallet`'s rest clock as first scanned, as `observe_rest` does.
+    fn rested(session: &Arc<NetworkSession>, wallet: WalletId) {
+        let now = crate::events::unix_now();
+        let appdb = session.live().unwrap().appdb;
+        pool::write_rest_clock(&appdb, wallet, &[], (now, now), true).unwrap();
+    }
+
+    /// Appends `notes` commitments to the shielded tree and sets `wallet`'s
+    /// watermark to `watermark`, as a completed scan of this session does.
+    fn scanned_unrested(
+        engine: &Engine,
+        session: &Arc<NetworkSession>,
+        wallet: WalletId,
+        notes: u8,
+        watermark: u64,
+    ) {
+        let (s, m) = (Arc::clone(session), session.manager().unwrap());
+        engine.block_on(async move {
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            let mut store = coordinator.store().write().await;
+            for n in 0..notes {
+                store.append_commitment(&[n; 32], false).unwrap();
+            }
+            store
+                .set_last_synced_note_index(subwallet(wallet), watermark)
+                .unwrap();
+        });
+    }
+
+    /// Whether one pass (`force`: the user's) with Platform's count `count`
+    /// reached the library's note scan.
+    fn scans(
+        engine: &Engine,
+        session: &Arc<NetworkSession>,
+        count: Option<u64>,
+        force: bool,
+    ) -> bool {
+        *session.platform.notes_count.lock().unwrap() = Some(count);
+        let (s, m) = (Arc::clone(session), session.manager().unwrap());
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        assert!(
+            engine.block_on(async move { pool::guarded_pass(&s, &m, force).await }),
+            "the pass was admitted"
+        );
+        session.platform.passes_run.load(Ordering::SeqCst) > before
+    }
+
+    fn periodic(engine: &Engine, session: &Arc<NetworkSession>, count: Option<u64>) -> bool {
+        scans(engine, session, count, false)
+    }
+
+    /// After a completed scan, an idle periodic pass with the count unchanged
+    /// fetches no notes; one more note on Platform runs it, and so does a
+    /// lower count (a node behind the tree, or a reset Platform).
+    #[test]
+    fn an_unchanged_count_skips_the_periodic_scan_and_a_new_note_runs_it() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 3, 3);
+        assert!(!periodic(&engine, &session, Some(3)), "unchanged: no fetch");
+        assert!(
+            periodic(&engine, &session, Some(2)),
+            "a count below the tree"
+        );
+        assert!(
+            periodic(&engine, &session, Some(4)),
+            "a new note on Platform"
+        );
+    }
+
+    /// The first pass after the start, and after a wallet's bind, scans even
+    /// with the count unchanged.
+    #[test]
+    fn the_first_pass_after_the_start_or_a_bind_scans() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        assert!(
+            periodic(&engine, &session, Some(0)),
+            "nothing scanned this session"
+        );
+        scanned(&engine, &session, wallet, 0, 0);
+        assert!(!periodic(&engine, &session, Some(0)));
+
+        let other = engine
+            .block_on(session.import_wallet(
+                Zeroizing::new(OTHER_PHRASE.as_bytes().to_vec()),
+                Zeroizing::new(Vec::new()),
+                ImportOptions {
+                    birth_height: Some(0),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+        assert!(bind(&engine, &session, other));
+        rested(&session, other);
+        assert!(periodic(&engine, &session, Some(0)), "a wallet bound since");
+        scanned(&engine, &session, other, 0, 0);
+        assert!(!periodic(&engine, &session, Some(0)));
+    }
+
+    /// A count that is not read runs the pass, as the network's unreachable
+    /// count does here.
+    #[test]
+    fn a_failed_count_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        assert!(periodic(&engine, &session, None), "the read fails");
+        *session.platform.notes_count.lock().unwrap() = None;
+        let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+        let before = session.platform.passes_run.load(Ordering::SeqCst);
+        assert!(engine.block_on(async move { pool::guarded_pass(&s, &m, false).await }));
+        assert_eq!(
+            session.platform.passes_run.load(Ordering::SeqCst),
+            before + 1,
+            "the network's count is unreachable offline"
+        );
+        assert!(!periodic(&engine, &session, Some(1)));
+    }
+
+    /// The user's passes (Sync, and those after a spend, a shield or a resume)
+    /// always scan.
+    #[test]
+    fn a_user_pass_scans_with_the_count_unchanged() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        assert!(!periodic(&engine, &session, Some(1)));
+        assert!(scans(&engine, &session, Some(1), true), "the user's pass");
+    }
+
+    /// A wallet whose watermark is short of the tree (a failed commit) scans.
+    #[test]
+    fn a_lagging_wallet_scans() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 2, 1);
+        assert!(periodic(&engine, &session, Some(2)), "watermark 1 of 2");
+        scanned(&engine, &session, wallet, 0, 2);
+        assert!(!periodic(&engine, &session, Some(2)));
+    }
+
+    /// A stored spend of unknown result (reserved, with its transition kept for
+    /// the re-send) runs every pass until it resolves.
+    #[test]
+    fn an_unresolved_spend_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        assert!(!periodic(&engine, &session, Some(1)));
+        store_spends(&engine, &session, wallet);
+        assert!(periodic(&engine, &session, Some(1)), "a stored spend");
+        let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+        engine.block_on(async move {
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            let mut store = coordinator.store().write().await;
+            for n in 1..=2 {
+                (store.resolve_redrive(
+                    subwallet(wallet),
+                    &[n; 32],
+                    ShieldedSpendDisposition::NotExecuted(NotExecutedReason::Refused),
+                ))
+                .unwrap();
+            }
+        });
+        assert!(
+            periodic(&engine, &session, Some(1)),
+            "outcomes not yet consumed"
+        );
+        assert!(
+            !periodic(&engine, &session, Some(1)),
+            "consumed by the last pass"
+        );
+    }
+
+    /// A spend whose library record failed (marked) runs every pass until a
+    /// scan finds its notes spent.
+    #[test]
+    fn a_marked_spend_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        mark(&engine, &session, wallet);
+        assert!(periodic(&engine, &session, Some(1)), "a marked spend");
+        spent_seen(&session, wallet, &MARKED_NULLIFIERS);
+        assert!(markers(&engine, &session, wallet).is_empty());
+        assert!(!periodic(&engine, &session, Some(1)));
+    }
+
+    /// The first pass after a relaunch scans with the tree kept, the
+    /// watermark persisted and the count unchanged (at the pin the wallet's
+    /// store restores no watermark; a restored one is not this session's).
+    #[test]
+    fn the_first_pass_after_a_relaunch_scans() {
+        use platform_wallet::changeset::{
+            PlatformWalletChangeSet, PlatformWalletPersistence, ShieldedChangeSet,
+        };
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        let mut shielded = ShieldedChangeSet::default();
+        shielded.synced_indices.insert(subwallet(wallet), 1);
+        let changeset = PlatformWalletChangeSet {
+            shielded: Some(shielded),
+            ..Default::default()
+        };
+        (session.live().unwrap().store)
+            .store(wallet.0, changeset)
+            .unwrap();
+        drop(session);
+        engine
+            .block_on(engine.close_network(DashNetwork::Regtest))
+            .unwrap();
+        let session = open(&engine);
+        assert!(bind(&engine, &session, wallet), "bound from wallet.sqlite");
+        let (s, m) = (Arc::clone(&session), session.manager().unwrap());
+        let tree = engine.block_on(async move {
+            let coordinator = pool::coordinator(&s, &m, None).await.unwrap();
+            coordinator.store().read().await.tree_size().unwrap()
+        });
+        assert_eq!(tree, 1, "the tree is kept");
+        assert!(
+            periodic(&engine, &session, Some(1)),
+            "not scanned this session"
+        );
+        scanned(&engine, &session, wallet, 0, 1);
+        assert!(!periodic(&engine, &session, Some(1)));
+    }
+
+    /// A skip proves the pool unchanged, so the "Last checked" the status
+    /// gives moves to it.
+    #[test]
+    fn an_idle_skip_moves_last_checked() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned(&engine, &session, wallet, 1, 1);
+        let before = crate::events::unix_now();
+        assert!(!periodic(&engine, &session, Some(1)));
+        let state = engine
+            .block_on(on_pool(&session, wallet, |_, lib| async move {
+                Ok(pool::ShieldedLib::sync_state(&lib))
+            }))
+            .unwrap();
+        assert!(
+            state.last_sync_at.is_some_and(|at| at >= before),
+            "{state:?}"
+        );
+    }
+
+    /// A first scan whose rest-clock mark was not written (a failed
+    /// `observe_rest`) keeps the periodic pass running, so the next one
+    /// writes it.
+    #[test]
+    fn an_unmarked_rest_clock_runs_the_pass() {
+        let dir = dw_testutil::private_tempdir();
+        let engine = engine_at(dir.path());
+        let (session, wallet) = first_launch(&engine);
+        scanned_unrested(&engine, &session, wallet, 1, 1);
+        assert!(periodic(&engine, &session, Some(1)), "the mark is retried");
+        scanned(&engine, &session, wallet, 0, 1);
+        assert!(!periodic(&engine, &session, Some(1)));
+    }
+}

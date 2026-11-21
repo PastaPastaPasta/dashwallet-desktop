@@ -116,6 +116,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, Weak};
 use std::time::Duration;
 
+use dash_sdk::platform::Fetch;
+use dash_sdk::query_types::{NoParamQuery, ShieldedNotesCount};
 use dashcore::{Address, Network, OutPoint, Txid};
 use dpp::address_funds::{OrchardAddress, PlatformAddress};
 use dpp::balances::credits::CREDITS_PER_DUFF;
@@ -137,7 +139,7 @@ use platform_wallet::wallet::shielded::store::StalePendingSpend;
 use platform_wallet::wallet::shielded::{
     CachedOrchardProver, DispatchRefused, FileShieldedStoreError, NetworkShieldedCoordinator,
     ShieldedActivityEntry, ShieldedActivityKind as Kind, ShieldedActivityStatus as Status,
-    ShieldedDirection as Direction, ShieldedDispatch, ShieldedDispatchKind,
+    ShieldedBalanceSource, ShieldedDirection as Direction, ShieldedDispatch, ShieldedDispatchKind,
     ShieldedDispatchPayload, ShieldedDispositionRefusal, ShieldedLocalBalanceState, ShieldedNote,
     ShieldedSpendDisposition, ShieldedStore, SubwalletId, UnresolvedReason,
 };
@@ -2513,11 +2515,14 @@ impl ShieldedLib for PwShielded {
         guarded_pass(&self.pw.session, &self.manager, true).await
     }
 
+    /// `last_sync_at`: the last pass's end, or a later skip's proof that
+    /// the pool is unchanged ([`guarded_pass`]).
     fn sync_state(&self) -> SyncState {
         let sync = self.manager.shielded_sync();
+        let checked = (self.pw.session.platform.shielded_checked_at).load(Ordering::Acquire);
         SyncState {
             syncing: sync.is_syncing(),
-            last_sync_at: sync.last_sync_unix_seconds(),
+            last_sync_at: (sync.last_sync_unix_seconds()).max((checked != 0).then_some(checked)),
         }
     }
 
@@ -3395,13 +3400,21 @@ async fn hold_passes(
 /// holding the session's pass lock from the admission to its end, so a
 /// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
 /// before the lock outlives it. Its tail reads the library's spend
-/// outcomes into the journal ([`consume_dispositions`]). `false` when it
-/// was held back.
+/// outcomes into the journal ([`consume_dispositions`]). A periodic pass
+/// reads Platform's note count before its locks and admission, and skips
+/// the library's pass while [`pool_is_idle`]. `false` when it was held back.
 pub(crate) async fn guarded_pass(
     session: &Arc<NetworkSession>,
     manager: &Manager,
     force: bool,
 ) -> bool {
+    // Read before the pass's locks, so a silent network holds nothing.
+    let checked_at = crate::events::unix_now();
+    let count = if force {
+        None
+    } else {
+        notes_count(session, manager).await
+    };
     // A spend's hold first, then the drain's lock (always in this order).
     let _spends = session.platform.shielded_spends.read().await;
     let _pass = session.platform.shielded_passes.read().await;
@@ -3422,6 +3435,20 @@ pub(crate) async fn guarded_pass(
             let _ = pause.resume.await;
         }
     }
+    if let Some(count) = count
+        && pool_is_idle(session, manager, &coordinator, count)
+            .await
+            .is_some()
+    {
+        tracing::debug!(
+            count,
+            "the shielded pool is unchanged; the periodic pass is skipped"
+        );
+        (session.platform.shielded_checked_at).store(checked_at, Ordering::Release);
+        return true;
+    }
+    #[cfg(test)]
+    session.platform.passes_run.fetch_add(1, Ordering::SeqCst);
     let summary = manager.shielded_sync().sync_now(force).await;
     if summary.error_count() > 0 {
         tracing::info!(
@@ -3445,6 +3472,89 @@ pub(crate) async fn guarded_pass(
     }
     true
 }
+
+/// Whether a periodic pass would find nothing (#178): Platform's proved
+/// note `count` is the local tree's size, every bound account has scanned
+/// the whole tree in this session and its rest clock's first scan is
+/// marked, and no spend waits on a pass (stored, reserved, with an outcome
+/// or marked). `None` when any of it does not hold or cannot be read, so
+/// the pass runs.
+async fn pool_is_idle(
+    session: &NetworkSession,
+    manager: &Manager,
+    coordinator: &NetworkShieldedCoordinator,
+    count: u64,
+) -> Option<()> {
+    let tree = coordinator.store().read().await.tree_size().ok()?;
+    if count != tree {
+        return None;
+    }
+    let wallets = pass_wallets(manager, coordinator).await;
+    for &wallet in &wallets {
+        let scanned = match coordinator.local_balance_snapshot(wallet).await.ok()? {
+            ShieldedLocalBalanceState::Unbound => true,
+            ShieldedLocalBalanceState::RestoreIncomplete => false,
+            ShieldedLocalBalanceState::Ready(snapshot) => {
+                let appdb = session.live().ok()?.appdb;
+                let clock =
+                    tokio::task::spawn_blocking(move || read_rest_clock(&appdb, WalletId(wallet)));
+                clock.await.ok()?.ok()?.scanned
+                    && snapshot.accounts.values().all(|a| {
+                        a.source == ShieldedBalanceSource::ScannedThisSession
+                            && a.last_scanned_index >= Some(tree)
+                    })
+            }
+        };
+        let settled = coordinator
+            .spend_dispositions(wallet)
+            .await
+            .ok()?
+            .is_empty()
+            && !session.leases.marks_unrecorded(WalletId(wallet)).await;
+        if !scanned || !settled {
+            return None;
+        }
+    }
+    let subwallets = coordinator.registered_subwallets().await;
+    let store = coordinator.store().read().await;
+    let idle = wallets
+        .iter()
+        .all(|&w| (store.pending_redrives_for_wallet(w)).is_ok_and(|r| r.is_empty()))
+        && (subwallets.iter()).all(|&s| store.stale_pending_spends(s).is_ok_and(|r| r.is_empty()));
+    idle.then_some(())
+}
+
+/// The number of notes in Platform's shielded pool, proved; `None` when the
+/// read fails (two tries of [`NOTES_COUNT_TIMEOUT`] at most).
+async fn notes_count(
+    #[cfg_attr(not(test), expect(unused_variables))] session: &NetworkSession,
+    manager: &Manager,
+) -> Option<u64> {
+    #[cfg(test)]
+    if let Some(count) = *session.platform.notes_count.lock().unwrap() {
+        return count;
+    }
+    let sdk = manager.sdk_arc();
+    if !sdk.prove() {
+        return None;
+    }
+    let settings = dash_sdk::RequestSettings {
+        timeout: Some(NOTES_COUNT_TIMEOUT),
+        retries: Some(1),
+        ban_failed_address: Some(false),
+        ..Default::default()
+    };
+    match ShieldedNotesCount::fetch_with_settings(&sdk, NoParamQuery {}, settings).await {
+        Ok(count) => count.map(|c| c.0),
+        Err(e) => {
+            tracing::debug!(error = %e, "the shielded note count was not read");
+            None
+        }
+    }
+}
+
+/// How long one read of the note count waits for its node.
+const NOTES_COUNT_TIMEOUT: Duration = Duration::from_secs(5);
 
 // MARK: the Platform side's start
 

@@ -143,10 +143,20 @@ pub(crate) struct PlatformRuntime {
     /// Shuts the dispatch hook from the close's start and during each drain
     /// of `shielded_passes`.
     pub(crate) hook_fence: Arc<super::shielded_pool::HookFence>,
+    /// Unix seconds a periodic pass last proved the shielded pool unchanged
+    /// and skipped its scan; `0` before one did.
+    pub(crate) shielded_checked_at: AtomicU64,
     /// A test's pause of the next shielded pass, after its admission and
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
     pub(crate) pass_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's proved note count for the periodic pass's check
+    /// (`Some(None)`: the read fails); the network's while `None`.
+    #[cfg(test)]
+    pub(crate) notes_count: Mutex<Option<Option<u64>>>,
+    /// How many shielded passes reached the library's pass.
+    #[cfg(test)]
+    pub(crate) passes_run: std::sync::atomic::AtomicUsize,
     /// A test's crash of the disposition consumer between its journal
     /// write and its acknowledgement (`shielded_pool::consume_dispositions`).
     #[cfg(test)]
@@ -479,8 +489,13 @@ impl PlatformRuntime {
             loops_on: Arc::new(AtomicBool::new(false)),
             shielded_passes: Arc::default(),
             hook_fence: Arc::default(),
+            shielded_checked_at: AtomicU64::new(0),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
+            #[cfg(test)]
+            notes_count: Mutex::new(None),
+            #[cfg(test)]
+            passes_run: Default::default(),
             #[cfg(test)]
             crash_before_ack: AtomicBool::new(false),
             shielded_spends: tokio::sync::RwLock::new(()),
