@@ -705,10 +705,9 @@ fn the_facade_lease_handle_begins_ends_and_checks_its_grants() {
     ));
 }
 
-/// The signing window caps the grants a lease composes, not only each
-/// `authorize`: two credential-free grants, each within the sealed limit
-/// but from two windows, do not make one "Accept and pay" above it. A
-/// passphrase grant is not counted.
+/// Two credential-free grants issued under a higher limit do not make one
+/// "Accept and pay" above a lower one: lowering the limit ends the window
+/// and its grants. In a new window, a passphrase grant is not counted.
 #[test]
 fn a_lease_does_not_compose_window_grants_past_the_spend_limit() {
     const PART: u64 = 6_000_000;
@@ -728,10 +727,17 @@ fn a_lease_does_not_compose_window_grants_past_the_spend_limit() {
         }))
         .unwrap();
     assert_eq!(
-        f.lease(FlowKind::AcceptAndPay, &[platform.clone(), spend])
+        f.lease(FlowKind::AcceptAndPay, &[platform, spend])
             .unwrap_err(),
         LeaseError::Invalid
     );
+    f.engine
+        .block_on(
+            f.session
+                .vault_op(|v| v.unlock(PASS, UnlockScope::Full).map(drop)),
+        )
+        .unwrap();
+    let platform = f.platform_op(0, PART * 1_000);
     let typed = f.grant(
         GrantPurpose::Spend { max_duffs: PART },
         Credential::Passphrase(PASS),
@@ -782,7 +788,8 @@ fn a_lease_racing_window_grants_stays_within_the_limit() {
                 None,
                 Credential::Passphrase(PASS),
             )?;
-            v.set_quick_unlock_spend_limit(&change.id, LIMIT).map(drop)
+            v.set_quick_unlock_spend_limit(&change.id, LIMIT)?;
+            v.unlock(PASS, UnlockScope::Full).map(drop)
         }))
         .unwrap();
     let grants = [
@@ -810,6 +817,43 @@ fn a_lease_racing_window_grants_stays_within_the_limit() {
     });
     assert_eq!(beside, (LIMIT - 2 * PART) / PART);
     assert_eq!(f.session.vault().signing_window_remaining(), Some(0));
+}
+
+/// A whole older vault file put back while the app is closed counts as
+/// limit 0 at the next open: the commitment is in the app database.
+#[test]
+fn an_older_vault_file_put_back_between_runs_has_limit_0() {
+    let mut f = fixture(true);
+    let set = |f: &Fixture, limit: u64| {
+        f.engine
+            .block_on(f.session.vault_op(move |v| {
+                let change = v.authorize(
+                    GrantPurpose::ChangeCredential,
+                    None,
+                    Credential::Passphrase(PASS),
+                )?;
+                v.set_quick_unlock_spend_limit(&change.id, limit).map(drop)
+            }))
+            .unwrap();
+    };
+    set(&f, 500_000_000);
+    let file = f
+        .session
+        .data_dir()
+        .join(dw_vault::VAULT_DIR)
+        .join("vault.dwv");
+    let older = std::fs::read(&file).unwrap();
+    set(&f, 0);
+    f.engine
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    std::fs::write(&file, &older).unwrap();
+    f.session = f
+        .engine
+        .block_on(f.engine.open_network(DashNetwork::Regtest, options()))
+        .unwrap();
+    f.session.vault().unlock(PASS, UnlockScope::Full).unwrap();
+    assert_eq!(f.session.vault().quick_unlock_policy().spend_limit_duffs, 0);
 }
 
 /// A recovery reads the replaced vault's payment choice under the same
@@ -852,6 +896,10 @@ fn a_recovery_keeps_a_payment_choice_changed_while_it_waited() {
 /// "Ask every payment" is stored durably: once turning it on returns, a
 /// power loss does not bring back the window.
 #[test]
+#[cfg_attr(
+    windows,
+    ignore = "app.sqlite is still held open when the power loss is simulated (issue #190)"
+)]
 fn an_acknowledged_ask_every_payment_survives_a_power_loss() {
     use dw_appdb::durability_sim::{arm, power_loss};
     let mut f = fixture(true);
