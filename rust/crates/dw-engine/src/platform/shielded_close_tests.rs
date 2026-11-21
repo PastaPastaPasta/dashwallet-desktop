@@ -1753,6 +1753,11 @@ mod idle_tests {
         watermark: u64,
     ) {
         scanned_unrested(engine, session, wallet, notes, watermark);
+        rested(session, wallet);
+    }
+
+    /// Marks `wallet`'s rest clock as first scanned, as `observe_rest` does.
+    fn rested(session: &Arc<NetworkSession>, wallet: WalletId) {
         let now = crate::events::unix_now();
         let appdb = session.live().unwrap().appdb;
         pool::write_rest_clock(&appdb, wallet, &[], (now, now), true).unwrap();
@@ -1847,6 +1852,7 @@ mod idle_tests {
             ))
             .unwrap();
         assert!(bind(&engine, &session, other));
+        rested(&session, other);
         assert!(periodic(&engine, &session, Some(0)), "a wallet bound since");
         scanned(&engine, &session, other, 0, 0);
         assert!(!periodic(&engine, &session, Some(0)));

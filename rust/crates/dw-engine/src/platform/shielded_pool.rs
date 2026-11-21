@@ -3409,6 +3409,7 @@ pub(crate) async fn guarded_pass(
     force: bool,
 ) -> bool {
     // Read before the pass's locks, so a silent network holds nothing.
+    let checked_at = crate::events::unix_now();
     let count = if force {
         None
     } else {
@@ -3443,7 +3444,7 @@ pub(crate) async fn guarded_pass(
             count,
             "the shielded pool is unchanged; the periodic pass is skipped"
         );
-        (session.platform.shielded_checked_at).store(crate::events::unix_now(), Ordering::Release);
+        (session.platform.shielded_checked_at).store(checked_at, Ordering::Release);
         return true;
     }
     #[cfg(test)]
