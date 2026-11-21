@@ -3469,6 +3469,26 @@ fn a_clean_reopen_forgets_the_removed_wallets() {
     engine.block_on(engine.shutdown()).unwrap();
 }
 
+/// The same while the host still holds the closed session: the close
+/// released the app database, so the reopen is alone on it (issue #190).
+#[test]
+fn a_reopen_while_the_closed_session_is_held_forgets_the_removed_wallets() {
+    let (_dir, engine, s, id, wipe) = removable();
+    engine.block_on(s.remove_wallet(id, wipe)).unwrap();
+    let path = s.data_dir().join(dw_appdb::APP_DB_FILE);
+    engine
+        .block_on(engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    assert_nothing_left_open(&path);
+
+    let reopened = open_offline(&engine);
+    let (db, wallet) = (reopened.live().unwrap().appdb, id.to_string());
+    db.set_main_identity(&wallet, &base58(ALICE)).unwrap();
+    assert_eq!(db.main_identity(&wallet).unwrap(), Some(base58(ALICE)));
+    drop(s);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
 /// A session opened while another process has the network's app database
 /// open, after it removed a wallet, keeps that wallet recorded: the other
 /// process's late write of it is skipped (DEC-210 (3b)).
