@@ -984,3 +984,81 @@ fn a_quit_mid_rescan_resumes_the_replay_on_the_late_coin_shape_against_dashd() {
     assert!(!late(&f), "reloaded after the replay");
     f.assert_counted(2 * COIN, 0, "reloaded after the replay");
 }
+
+/// #170 case 5 through the real replay. A payment of coin X that dashd
+/// refuses (its fee lowered in dashd's eyes) is restored after a restart,
+/// then abandoned while dashd is off the network, so the restart that
+/// follows comes before the abandon's replay reaches X's block. That
+/// restart does not count X (the abandon keeps it stored spent) and resumes
+/// the replay below X's block; the replay credits X again, counted and
+/// spendable, and a reload after it loads X from the store.
+#[test]
+fn a_coin_an_abandon_frees_comes_back_through_the_replay_after_a_restart_against_dashd() {
+    let dir = dw_testutil::private_tempdir();
+    let Some(node) = funded_node(dir.path()) else {
+        eprintln!("skipped: DASHD_PATH is not set");
+        return;
+    };
+    let mut f = Fixture::new(dir.path(), &node);
+    let address = f.receive_address();
+    node.pay(&address);
+    let funded = node.height();
+    node.mine(5);
+    let tip = node.height();
+    f.start_spv();
+    f.wait_scanned(tip);
+    let x = f.coin_at(&address);
+    f.assert_counted(COIN, 0, "first sync");
+
+    let payee = node.cli(&["-rpcwallet=miner", "getnewaddress"]);
+    let (draft, prepared) = f.prepare_from(x, &payee);
+    let txid = prepared.summary().txid.clone();
+    node.cli(&[
+        "prioritisetransaction",
+        &txid,
+        &(-10 * COIN as i64).to_string(),
+    ]);
+    let out = f.engine.block_on(draft.broadcast(Arc::clone(&prepared)));
+    assert!(
+        matches!(
+            &out,
+            Err(EngineError::Send(SendFailure::BroadcastUnknown { .. }))
+        ),
+        "{out:?}"
+    );
+    assert!(!node.in_mempool(&txid));
+    drop((draft, prepared));
+
+    f.reload(&node);
+    f.start_spv();
+    f.wait_scanned(tip);
+    let held = |f: &Fixture| f.coins().iter().any(|c| c.outpoint == x);
+    assert!(!held(&f), "the restored payment claims X");
+
+    node.cli(&["setnetworkactive", "false"]);
+    f.engine
+        .block_on(
+            f.session
+                .abandon_transaction(f.wallet, txid.parse().unwrap()),
+        )
+        .unwrap();
+    f.reload(&node);
+    node.cli(&["setnetworkactive", "true"]);
+    let resumed = f.session.wallet_scan_height(&f.wallet);
+    assert!(
+        resumed.is_some_and(|h| h < funded),
+        "the reopened wallet resumes at {resumed:?}, not below X's block at {funded}"
+    );
+    assert!(!held(&f), "X stays stored spent until the replay");
+    f.assert_counted(0, 0, "restarted before the replay");
+
+    f.start_spv();
+    f.wait_rescanned(tip);
+    assert_eq!(f.coin_at(&address), x, "the replay credits X again");
+    f.assert_counted(COIN, 0, "after the replay");
+    drop(f.prepare_from(x, &payee));
+
+    f.reload(&node);
+    assert_eq!(f.coin_at(&address), x, "reloaded after the replay");
+    f.assert_counted(COIN, 0, "reloaded after the replay");
+}
