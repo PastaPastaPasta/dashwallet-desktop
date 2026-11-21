@@ -1660,7 +1660,9 @@ fn a_locked_payment_a_chainlock_beat_in_its_own_session_is_not_offered() {
 /// its sweep, as at an exit. The next open shows the payment
 /// InstantSend-locked and the child live, its output counted, and replays
 /// from the rewind the abandon stored; once the replay is done a second
-/// abandon of the payment takes both, after a restart too.
+/// abandon of the payment takes both, after a restart too. An exit after
+/// the sweep and before the later marks instead leaves the child out of
+/// the history, not shown Abandoned, with the balances the abandon left.
 #[test]
 fn an_override_abandon_cut_before_its_sweep_ends_with_the_next() {
     let (_dir, engine, session, id, paid, payment, child) = payment_and_child(false);

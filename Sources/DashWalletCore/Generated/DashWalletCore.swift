@@ -2125,7 +2125,8 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
     
     /**
      * dash-qt "Abandon transaction" (QT-091): marks it abandoned, releases
-     * its inputs for new payments and excludes it from balances (status
+     * the inputs no processed block spent for new payments and excludes it
+     * from balances (status
      * `Abandoned`, amount in brackets). Its recorded descendants are
      * abandoned with it. SPV cannot prove the transaction is in no mempool,
      * so it may still confirm; the engine then shows it confirmed again.
@@ -2133,12 +2134,14 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * An InstantSend-locked transaction is refused (`InstantLocked`)
      * unless a transaction in a block of the SPV header chain, at or below
      * the wallet's ChainLock whose block that chain holds, spends one of
-     * its inputs, nothing descending from it is in a block or locked, and
-     * the scan has passed the ChainLock. Then it is abandoned: inputs a
+     * its inputs, nothing descending from it is in a block, locked or
+     * finalized, the history load was complete and the scan has passed
+     * the ChainLock with no replay pending. Then it is abandoned: inputs a
      * recorded block of that chain spends stay spent, and only inputs the
      * wallet holds unspent from a scanned block are released.
-     * `RescanFirst` when an input its own spend claim, restored at load,
-     * still holds: a restart and a rescan give that evidence.
+     * `RescanFirst` instead when all of that holds and the only inputs
+     * missing are held by its own spend claim restored at load: a restart
+     * and a rescan give that evidence.
      * Emits `HistoryChanged` and `Balances`.
      */
     func abandonTransaction(walletId: String, txid: String) async throws 
@@ -2151,7 +2154,8 @@ public protocol NetworkSessionProtocol: AnyObject, Sendable {
      * releases only the inputs proven unspent. Then it rescans from the
      * lowest funding height of the coins they spent; one rescan holds back
      * further exceptions until it ends, so a second run takes the next.
-     * Needs a running SPV client. Returns how many transactions were
+     * One the exception refuses (`InstantLocked` or `RescanFirst`, as
+     * `abandon_transaction` says) is skipped. Needs a running SPV client. Returns how many transactions were
      * dropped.
      */
     func dropUnconfirmed(walletId: String?) async throws  -> UInt32
@@ -3727,7 +3731,8 @@ open func warnings()throws  -> [EngineWarning]  {
     
     /**
      * dash-qt "Abandon transaction" (QT-091): marks it abandoned, releases
-     * its inputs for new payments and excludes it from balances (status
+     * the inputs no processed block spent for new payments and excludes it
+     * from balances (status
      * `Abandoned`, amount in brackets). Its recorded descendants are
      * abandoned with it. SPV cannot prove the transaction is in no mempool,
      * so it may still confirm; the engine then shows it confirmed again.
@@ -3735,12 +3740,14 @@ open func warnings()throws  -> [EngineWarning]  {
      * An InstantSend-locked transaction is refused (`InstantLocked`)
      * unless a transaction in a block of the SPV header chain, at or below
      * the wallet's ChainLock whose block that chain holds, spends one of
-     * its inputs, nothing descending from it is in a block or locked, and
-     * the scan has passed the ChainLock. Then it is abandoned: inputs a
+     * its inputs, nothing descending from it is in a block, locked or
+     * finalized, the history load was complete and the scan has passed
+     * the ChainLock with no replay pending. Then it is abandoned: inputs a
      * recorded block of that chain spends stay spent, and only inputs the
      * wallet holds unspent from a scanned block are released.
-     * `RescanFirst` when an input its own spend claim, restored at load,
-     * still holds: a restart and a rescan give that evidence.
+     * `RescanFirst` instead when all of that holds and the only inputs
+     * missing are held by its own spend claim restored at load: a restart
+     * and a rescan give that evidence.
      * Emits `HistoryChanged` and `Balances`.
      */
 open func abandonTransaction(walletId: String, txid: String)async throws   {
@@ -3767,7 +3774,8 @@ open func abandonTransaction(walletId: String, txid: String)async throws   {
      * releases only the inputs proven unspent. Then it rescans from the
      * lowest funding height of the coins they spent; one rescan holds back
      * further exceptions until it ends, so a second run takes the next.
-     * Needs a running SPV client. Returns how many transactions were
+     * One the exception refuses (`InstantLocked` or `RescanFirst`, as
+     * `abandon_transaction` says) is skipped. Needs a running SPV client. Returns how many transactions were
      * dropped.
      */
 open func dropUnconfirmed(walletId: String?)async throws  -> UInt32  {
@@ -24349,10 +24357,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_dashwallet_core_checksum_method_networksession_warnings() != 33150) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 53063) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_abandon_transaction() != 43002) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_dashwallet_core_checksum_method_networksession_drop_unconfirmed() != 8564) {
+    if (uniffi_dashwallet_core_checksum_method_networksession_drop_unconfirmed() != 41476) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_dashwallet_core_checksum_method_networksession_export_history_csv() != 61293) {

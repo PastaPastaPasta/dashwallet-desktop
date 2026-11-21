@@ -153,15 +153,18 @@ commands! {
         Ok(state.session().await?.tx_detail_extras(id, txid).await?.into())
     }
 
-    /// dash-qt "Abandon transaction": marks it abandoned, releases its
-    /// inputs and excludes it from balances. SPV cannot prove it is in no
-    /// mempool, so it may still confirm; the history then shows it
-    /// confirmed again. An InstantSend-locked transaction is refused unless
-    /// a ChainLocked block on the SPV header chain spends one of its inputs
-    /// (and nothing settled descends from it, with the scan past the
-    /// ChainLock); then only inputs proven unspent are released, and
-    /// `rescanFirst` asks for a restart and a rescan when its own restored
-    /// claim still holds one.
+    /// dash-qt "Abandon transaction": marks it abandoned, releases the
+    /// inputs no processed block spent and excludes it from balances. SPV
+    /// cannot prove it is in no mempool, so it may still confirm; the
+    /// history then shows it confirmed again. An InstantSend-locked
+    /// transaction is refused (`instantLocked`) unless a transaction in a
+    /// ChainLocked block of the SPV header chain spends one of its inputs,
+    /// nothing descending from it is in a block, locked or finalized, the
+    /// history load was complete and the scan has passed the ChainLock with
+    /// no replay pending; then only inputs proven unspent are released.
+    /// `rescanFirst` instead when all of that holds and the only inputs
+    /// missing are held by its own spend claim restored at load: a restart
+    /// and a rescan give that evidence.
     #[facade("NetworkSession::abandon_transaction")]
     fn abandon_transaction(state, wallet_id: String, txid: String) -> () {
         let id = parse_wallet_id(&wallet_id)?;
@@ -185,8 +188,9 @@ commands! {
     /// wallet (every wallet when `walletId` is `null`) that Abandon would,
     /// InstantSend-locked ones only under its ChainLock exception, and
     /// rescans from the lowest funding height; that rescan holds back the
-    /// next exception, which a later run takes. Needs a running SPV client.
-    /// Returns how many were dropped.
+    /// next exception, which a later run takes. One the exception refuses
+    /// (`instantLocked` or `rescanFirst`, as Abandon says) is skipped.
+    /// Needs a running SPV client. Returns how many were dropped.
     #[facade("NetworkSession::drop_unconfirmed")]
     fn drop_unconfirmed(state, wallet_id: Option<String>) -> u32 {
         let id = wallet_id.as_deref().map(parse_wallet_id).transpose()?;

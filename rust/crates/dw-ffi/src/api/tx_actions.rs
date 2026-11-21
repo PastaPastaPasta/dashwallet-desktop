@@ -191,7 +191,8 @@ impl NetworkSession {
     }
 
     /// dash-qt "Abandon transaction" (QT-091): marks it abandoned, releases
-    /// its inputs for new payments and excludes it from balances (status
+    /// the inputs no processed block spent for new payments and excludes it
+    /// from balances (status
     /// `Abandoned`, amount in brackets). Its recorded descendants are
     /// abandoned with it. SPV cannot prove the transaction is in no mempool,
     /// so it may still confirm; the engine then shows it confirmed again.
@@ -199,12 +200,14 @@ impl NetworkSession {
     /// An InstantSend-locked transaction is refused (`InstantLocked`)
     /// unless a transaction in a block of the SPV header chain, at or below
     /// the wallet's ChainLock whose block that chain holds, spends one of
-    /// its inputs, nothing descending from it is in a block or locked, and
-    /// the scan has passed the ChainLock. Then it is abandoned: inputs a
+    /// its inputs, nothing descending from it is in a block, locked or
+    /// finalized, the history load was complete and the scan has passed
+    /// the ChainLock with no replay pending. Then it is abandoned: inputs a
     /// recorded block of that chain spends stay spent, and only inputs the
     /// wallet holds unspent from a scanned block are released.
-    /// `RescanFirst` when an input its own spend claim, restored at load,
-    /// still holds: a restart and a rescan give that evidence.
+    /// `RescanFirst` instead when all of that holds and the only inputs
+    /// missing are held by its own spend claim restored at load: a restart
+    /// and a rescan give that evidence.
     /// Emits `HistoryChanged` and `Balances`.
     pub async fn abandon_transaction(
         &self,
@@ -236,7 +239,8 @@ impl NetworkSession {
     /// releases only the inputs proven unspent. Then it rescans from the
     /// lowest funding height of the coins they spent; one rescan holds back
     /// further exceptions until it ends, so a second run takes the next.
-    /// Needs a running SPV client. Returns how many transactions were
+    /// One the exception refuses (`InstantLocked` or `RescanFirst`, as
+    /// `abandon_transaction` says) is skipped. Needs a running SPV client. Returns how many transactions were
     /// dropped.
     pub async fn drop_unconfirmed(&self, wallet_id: Option<String>) -> Result<u32, TxActionError> {
         let id = wallet_id.as_deref().map(parse_wallet_id).transpose()?;
