@@ -449,6 +449,7 @@ fn failure(e: GovernanceError, unknown_object: &str) -> ConsoleFailure {
         // Nor contested-name calls (MG-07); worded for completeness.
         e @ (GovernanceError::InvalidProposal { .. }
         | GovernanceError::SubmitRefused { .. }
+        | GovernanceError::ProposalInProgress { .. }
         | GovernanceError::ContestNotFound { .. }
         | GovernanceError::ContestClosed { .. }
         | GovernanceError::NotAContender { .. }) => rpc(code::MISC_ERROR, e.to_string()),

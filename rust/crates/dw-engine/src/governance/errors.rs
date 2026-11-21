@@ -37,6 +37,15 @@ pub enum GovernanceError {
     /// `submit_proposal` on a proposal past submitting.
     #[error("submit refused: {}", reason.as_str())]
     SubmitRefused { reason: SubmitRefusal },
+    /// `create_proposal` of a draft whose name is that of one of the
+    /// wallet's own proposals in progress (MG-06 D26): `hash` is that
+    /// proposal's, `None` while another call for the name has saved
+    /// nothing yet.
+    #[error(
+        "a proposal of this name is in progress ({})",
+        hash.as_deref().unwrap_or("its create call is still out")
+    )]
+    ProposalInProgress { hash: Option<String> },
     /// No DPNS poll for the label: no contender and no stored result.
     #[error("no contest for {label}")]
     ContestNotFound { label: String },
@@ -67,6 +76,7 @@ impl GovernanceError {
             Self::ListUnavailable => "governance.list_unavailable",
             Self::InvalidProposal { .. } => "governance.invalid_proposal",
             Self::SubmitRefused { .. } => "governance.submit_refused",
+            Self::ProposalInProgress { .. } => "governance.proposal_in_progress",
             Self::ContestNotFound { .. } => "governance.contest_not_found",
             Self::ContestClosed { .. } => "governance.contest_closed",
             Self::NotAContender { .. } => "governance.not_a_contender",

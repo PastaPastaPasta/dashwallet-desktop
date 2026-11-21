@@ -32,6 +32,7 @@ import {
   fieldText,
   GovText,
   governanceErrorText,
+  inProgressRefusal,
   lastPaymentText,
   MAX_PAYMENTS,
   sameFee,
@@ -54,9 +55,9 @@ const STEPS: { n: Step; title: string; heading: string }[] = [
 
 type FieldErrors = Partial<Record<ProposalFieldName, string>>;
 
-/** After a failed `create_proposal` (D34): reading Mine, the proposal it made anyway, or Mine
- *  unreadable. Pay stays off in all three. */
-type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "unknown"; known: ReadonlySet<string> };
+/** After a failed `create_proposal` (D34): reading Mine, the proposal it made anyway, Mine
+ *  unreadable, or a refused draft whose name's payment is under way. Pay stays off in all four. */
+type AfterFailure = { kind: "checking" } | { kind: "created"; p: MyProposal } | { kind: "unknown"; known: ReadonlySet<string> } | { kind: "underway" };
 
 export function CreateProposalSheet({
   wallet,
@@ -197,6 +198,19 @@ export function CreateProposalSheet({
     void refresh();
   };
 
+  /** The engine refused the draft: a proposal of its name is in progress. Mine's row of it, or
+   *  "under way" when the refusal names none or Mine can't be read. */
+  const showExisting = async (hash: string | null) => {
+    setAfter({ kind: "checking" });
+    try {
+      const p = hash === null ? undefined : (await b.governanceMyProposals(wallet.walletId)).find((m) => m.hash === hash);
+      setAfter(p ? { kind: "created", p } : { kind: "underway" });
+    } catch {
+      setAfter({ kind: "underway" });
+    }
+    void refresh();
+  };
+
   const create = async () => {
     // The figures the review shows as Pay is pressed: the ones the user confirms.
     const confirmed = figures;
@@ -222,6 +236,12 @@ export function CreateProposalSheet({
         created = await b.governanceCreateProposal(wallet.walletId, draft, grant.id);
       } catch (e) {
         if (refuseFields(e)) return;
+        const existing = inProgressRefusal(e);
+        if (existing !== undefined) {
+          setBusy(false);
+          await showExisting(existing);
+          return;
+        }
         credential.setError(governanceErrorText(e) ?? failureText(e, shown.chain, shown.amountUnit));
         // `after` keeps Pay and Back off; the sheet may close while Mine is read.
         setBusy(false);
@@ -424,6 +444,12 @@ export function CreateProposalSheet({
                   Show it in Mine
                 </DashButton>
               </div>
+            )}
+            {after?.kind === "underway" && (
+              <p className="mg-notice mg-notice-warning" role="alert" data-testid="create-underway">
+                A payment for a proposal named {draft.name} is already under way, so Pay stays off. Mine shows it once it&apos;s saved; for another
+                proposal, use another name.
+              </p>
             )}
             {after?.kind === "unknown" && (
               <div className="mg-notice mg-notice-warning" role="alert" data-testid="create-unknown">

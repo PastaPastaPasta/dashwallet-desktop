@@ -27,6 +27,7 @@ import {
   FIELD_STEP,
   fieldText,
   governanceErrorText,
+  inProgressRefusal,
   inProgress,
   lastPaymentText,
   lastVoteLine,
@@ -257,6 +258,9 @@ describe("error sentences", () => {
     expect(governanceErrorText(err("governance.submit_refused", { kind: "reason", reason: "?" }))).toBe("This proposal can't be submitted now.");
     for (const code of ["sync_disabled", "not_synced", "proposal_not_found", "no_peers", "list_unavailable", "invalid_proposal", "not_implemented"])
       expect(governanceErrorText(err(`governance.${code}`)), code).toMatch(/\.$/);
+    expect(governanceErrorText(err("governance.proposal_in_progress", { kind: "proposalHash", hash: "ab".repeat(32) }))).toBe(
+      "A proposal with this name is already in progress, and its fee may have gone out. Don't pay again: Mine shows it.",
+    );
     expect(governanceErrorText(err("send.grant_exceeded"))).toBeNull();
     expect(governanceErrorText(new Error("x"))).toBeNull();
   });
@@ -368,6 +372,15 @@ describe("the fee (D29, D33, D34)", () => {
     expect(createdFrom([{ ...made, state: { kind: "feeFailed" } }], draft)).toBeUndefined();
     // One Mine held before Pay is an older proposal, not this call's.
     expect(createdFrom([made], draft, new Set([made.hash]))).toBeUndefined();
+  });
+  it("reads the engine's refusal of a draft named as a proposal in progress (issue #148)", () => {
+    const err = (code: string, data: unknown = null) => ({ code, message: code, data });
+    const hash = "ab".repeat(32);
+    expect(inProgressRefusal(err("governance.proposal_in_progress", { kind: "proposalHash", hash }))).toBe(hash);
+    // A call still out has saved nothing yet: the refusal names no proposal.
+    expect(inProgressRefusal(err("governance.proposal_in_progress"))).toBeNull();
+    expect(inProgressRefusal(err("governance.submit_refused", { kind: "reason", reason: "in_flight" }))).toBeUndefined();
+    expect(inProgressRefusal(new Error("x"))).toBeUndefined();
   });
 });
 
