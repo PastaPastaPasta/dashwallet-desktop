@@ -310,6 +310,12 @@ pub enum ErrorData {
         draft: String,
         wait_secs: Option<u64>,
     },
+    /// `registration.shielded_not_ready`: the first readiness check that
+    /// does not hold, and when the notes have rested (`rested`).
+    ShieldedNotReady {
+        reason: crate::dto::platform::ShieldedCheckName,
+        ready_at: Option<u64>,
+    },
     /// `name.invalid`: the rules the label breaks.
     UsernameRules { rules: Vec<UsernameRuleName> },
     /// `contact.ineligible`: the eligibility answer that refused.
