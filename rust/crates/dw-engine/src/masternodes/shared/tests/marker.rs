@@ -161,6 +161,7 @@ fn marked(f: &Fx, txid: Txid) -> BTreeSet<OutPoint> {
 }
 
 struct Shared {
+    id: String,
     /// Wallet 0's input, from `paid_a`, mined.
     a: OutPoint,
     paid_a: Transaction,
@@ -237,6 +238,7 @@ fn shared_with_a_coin_paying_us(f: &Fx) -> Shared {
     assert_eq!(spent, BTreeSet::from([a, x]));
     mempool(f, &registration);
     Shared {
+        id,
         a,
         paid_a,
         x,
@@ -283,4 +285,24 @@ fn this_wallets_input_stays_claimed_across_a_restart() {
     assert!(!held(&f).contains(&s.a), "{:?}", held(&f));
     assert_eq!(total(&f), before);
     assert!(!offered(&f, s.a));
+}
+
+/// A resend after a restart writes the mark again from the session's
+/// recorded contribution: a mark naming every input, as a version before
+/// #170 case 17 wrote it, is replaced by one naming this wallet's input.
+#[test]
+fn a_resend_after_a_restart_marks_only_the_recorded_contribution() {
+    let mut f = fx(1, true);
+    let s = shared_with_a_coin_paying_us(&f);
+    f.restart();
+    let txid = s.registration.txid();
+    let legacy = format!("{},{}", s.a, s.x);
+    let key = format!("{}{txid}", crate::tx_actions::SENT_PREFIX);
+    (f.db())
+        .set_setting_durable(&f.wallets[0].to_string(), &key, Some(&legacy))
+        .unwrap();
+    assert_eq!(marked(&f, txid), BTreeSet::from([s.a, s.x]));
+    f.send(0, &s.id, 700 * COIN + FEE).unwrap();
+    assert_eq!(f.net.sent().last().map(Transaction::txid), Some(txid));
+    assert_eq!(marked(&f, txid), BTreeSet::from([s.a]));
 }
