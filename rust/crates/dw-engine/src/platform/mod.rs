@@ -21,6 +21,8 @@ mod bringup;
 mod contact_names;
 mod contacts;
 pub(crate) mod contacts_model;
+#[cfg(all(test, target_os = "linux"))]
+mod contacts_perf_tests;
 #[cfg(test)]
 mod contacts_tests;
 pub(crate) mod contest_watch;
