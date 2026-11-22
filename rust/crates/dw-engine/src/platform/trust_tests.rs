@@ -731,7 +731,7 @@ async fn our_sent_request_held_without_its_proof_verifies() {
         auto_accept_proof: proof,
         ..request(7, 8, 1_700_000_000_123)
     };
-    let check = |held: ContactRequest, on_platform: ContactRequest| {
+    let check = |held: Held, on_platform: ContactRequest| {
         let fetch = FakeRefetch {
             trust: Arc::clone(&r.trust),
             keys: BTreeMap::new(),
@@ -740,18 +740,29 @@ async fn our_sent_request_held_without_its_proof_verifies() {
             requests: vec![on_platform],
             quorum: HashMap::from([(kind::CONTACT_REQUEST, A)]),
         };
-        tokio::spawn(async move { reverify(&Held::ContactRequest(held), &fetch).await })
+        tokio::spawn(async move { reverify(&held, &fetch).await })
     };
+    let sent = Held::SentRequest;
     let cases = [
-        (with(None), with(Some(vec![1; 38])), true),
-        (with(Some(vec![1; 38])), with(Some(vec![2; 38])), false),
-        (with(Some(vec![1; 38])), with(None), false),
+        (sent(with(None)), with(Some(vec![1; 38])), true),
         (
-            with(None),
+            sent(with(Some(vec![1; 38]))),
+            with(Some(vec![2; 38])),
+            false,
+        ),
+        (sent(with(Some(vec![1; 38]))), with(None), false),
+        (
+            sent(with(None)),
             ContactRequest {
                 encrypted_public_key: vec![5; 96],
                 ..with(Some(vec![1; 38]))
             },
+            false,
+        ),
+        // A received request gets no such exception.
+        (
+            Held::ContactRequest(with(None)),
+            with(Some(vec![1; 38])),
             false,
         ),
     ];

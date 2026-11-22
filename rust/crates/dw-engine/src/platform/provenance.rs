@@ -169,6 +169,12 @@ impl Provenance {
         }
     }
 
+    /// Forgets the records in memory (a test that also deletes them on file).
+    #[cfg(test)]
+    pub(crate) fn forget_records_for_tests(&self) {
+        guard(&self.verified).clear();
+    }
+
     /// A fetch of `entity`, with this content, verified against SPV-held
     /// quorum keys (E0-10b). An entity without a digest records nothing.
     /// Blocking (app.sqlite).
@@ -210,11 +216,15 @@ impl Provenance {
     /// used and no verification of this content is on record (DEC-183: a
     /// record of other content does not count). In memory.
     pub(crate) fn is_unverified(&self, entity: &Entity) -> bool {
-        self.fallback_used.load(Ordering::SeqCst) && {
-            let key = (entity.kind.to_string(), entity.key.clone());
-            let verified = guard(&self.verified);
-            entity.digest.is_none() || verified.get(&key) != entity.digest.as_ref()
-        }
+        self.fallback_used.load(Ordering::SeqCst) && self.lacks_record(entity)
+    }
+
+    /// No verification of this content is on record, whether or not the
+    /// fallback was used: H-09's strict gate needs a record, since a wallet
+    /// store may come from an installation that used it. In memory.
+    pub(crate) fn lacks_record(&self, entity: &Entity) -> bool {
+        let key = (entity.kind.to_string(), entity.key.clone());
+        entity.digest.is_none() || guard(&self.verified).get(&key) != entity.digest.as_ref()
     }
 }
 

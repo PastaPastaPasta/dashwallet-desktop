@@ -303,16 +303,18 @@ pub(super) fn payee_held(
 ) -> Option<Vec<Held>> {
     let dp = m.dashpay();
     let requests = if let Some(c) = dp.established_contacts().get(contact) {
-        vec![c.outgoing_request.clone(), c.incoming_request.clone()]
+        vec![
+            Held::SentRequest(c.outgoing_request.clone()),
+            Held::ContactRequest(c.incoming_request.clone()),
+        ]
     } else if dp.ignored_senders().contains(contact) {
         Vec::new()
+    } else if let Some(incoming) = dp.incoming_contact_requests().get(contact) {
+        vec![Held::ContactRequest(incoming.clone())]
     } else {
-        let incoming = dp.incoming_contact_requests().get(contact);
-        vec![
-            incoming
-                .or_else(|| dp.sent_contact_requests().get(contact))?
-                .clone(),
-        ]
+        vec![Held::SentRequest(
+            dp.sent_contact_requests().get(contact)?.clone(),
+        )]
     };
     let cached = (dp.contact_profiles.get(contact)).and_then(|e| e.profile.as_ref());
     let profile = cached.map(|p| Held::Profile {
@@ -320,12 +322,7 @@ pub(super) fn payee_held(
         shown: ShownProfile::of(p),
     });
     let label = username.map(|name| Held::label(name, *contact));
-    Some(
-        (profile.into_iter())
-            .chain(requests.into_iter().map(Held::ContactRequest))
-            .chain(label)
-            .collect(),
-    )
+    Some((profile.into_iter()).chain(requests).chain(label).collect())
 }
 
 /// Design D12: the account a payment to `contact` derives its address
@@ -463,11 +460,23 @@ impl SessionEnv<'_> {
         wm: &WalletManager<PlatformWalletInfo>,
         provenance: &Provenance,
     ) -> Option<Vec<Held>> {
-        Some(
-            (self.held(wm)?.into_iter())
-                .filter(|h| provenance.is_unverified(&h.entity()))
-                .collect(),
-        )
+        Some(self.unverified_of(self.held(wm)?, provenance))
+    }
+
+    /// Of `held`, what `provenance` does not count as verified. A payee
+    /// needs a record of its current content (H-09).
+    fn unverified_of(&self, held: Vec<Held>, provenance: &Provenance) -> Vec<Held> {
+        let payee = matches!(self.subject, Subject::Payee(..));
+        (held.into_iter())
+            .filter(|h| {
+                let e = h.entity();
+                if payee {
+                    provenance.lacks_record(&e)
+                } else {
+                    provenance.is_unverified(&e)
+                }
+            })
+            .collect()
     }
 }
 
@@ -481,16 +490,16 @@ impl GateEnv for SessionEnv<'_> {
         if !self.payable(&wm) {
             return Err(Refusal::NotPayable);
         }
+        let held = self.held(&wm);
         if let Subject::Payee(..) = self.subject {
-            let now = self.held(&wm);
             let mut seen = guard(&self.seen);
             match &*seen {
-                None => *seen = Some(now.clone().unwrap_or_default()),
-                Some(first) if Some(first) != now.as_ref() => return Err(Refusal::Unverified),
+                None => *seen = Some(held.clone().unwrap_or_default()),
+                Some(first) if Some(first) != held.as_ref() => return Err(Refusal::Unverified),
                 Some(_) => {}
             }
         }
-        Ok(self.unverified(&wm, &live.provenance))
+        Ok(held.map(|held| self.unverified_of(held, &live.provenance)))
     }
 
     async fn record(&self, verified: Vec<Held>) {
@@ -593,5 +602,25 @@ impl NetworkSession {
             self.rebuild_soon(refusal);
         }
         checked.map(|()| rule == Rule5::Enforce)
+    }
+}
+
+#[cfg(test)]
+impl NetworkSession {
+    /// Records `subject`'s data as the library holds it now as verified, as
+    /// an earlier verified fetch would have.
+    pub(crate) async fn record_verified_for_tests(&self, subject: Subject) {
+        let env = SessionEnv {
+            session: self,
+            subject,
+            reserved: None,
+            seen: Mutex::default(),
+        };
+        let live = self.live().unwrap();
+        let wm = live.manager.wallet_manager_arc();
+        let held = env.held(&*wm.read().await).unwrap_or_default();
+        for h in held {
+            live.provenance.record_verified(&h.entity()).unwrap();
+        }
     }
 }
