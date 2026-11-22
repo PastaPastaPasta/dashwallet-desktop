@@ -81,6 +81,10 @@ const SNAPSHOT_SHA256: &[(&str, &str)] = &[
         "v0.2.0",
         "0c013e154937c2d28112d630173a9588a1e719d1150b983224b791fb2fa4a37d",
     ),
+    (
+        "v0.3.0",
+        "42c4ad4fd72815d379b538ae3aad637965e5253987f63503c455cd2cee440b59",
+    ),
 ];
 
 /// Why `text` is not the snapshot committed for `tag`, if so.

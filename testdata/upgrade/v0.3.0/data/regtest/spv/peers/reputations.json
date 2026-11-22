@@ -1,0 +1,14 @@
+{
+  "127.0.0.1:45351": {
+    "score": 0,
+    "ban_count": 0,
+    "positive_actions": 0,
+    "negative_actions": 0,
+    "connection_attempts": 2,
+    "successful_connections": 1,
+    "last_seen": {
+      "secs_since_epoch": 1795375751,
+      "nanos_since_epoch": 280640027
+    }
+  }
+}
