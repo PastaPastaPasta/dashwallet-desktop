@@ -8,6 +8,7 @@ import type { UserHit } from "../../api/generated/UserHit";
 import { ui } from "../../app/ui";
 import { Chip, DashButton } from "../../components/basics";
 import type { ActionOutcome } from "../../contacts/actions";
+import { unverifiedWarning } from "../../contacts/model";
 import { useContactActions, useEligibility } from "../../contacts/queries";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
@@ -60,6 +61,7 @@ export function FoundUser({
     arm("send");
   };
 
+  const warning = line?.next === "send" ? unverifiedWarning("send", hit.unverified) : line?.next === "acceptAndPay" ? unverifiedWarning("accept", hit.unverified) : null;
   let button = null;
   switch (line?.next) {
     case "send":
@@ -106,6 +108,11 @@ export function FoundUser({
         <span data-testid="pay-found-line">{line === undefined ? t("pay.contact.checking") : line.text}</span>
         {button}
       </div>
+      {warning && (
+        <p className="sheet-warning" role="note" data-testid="pay-found-unverified">
+          {warning}
+        </p>
+      )}
       <Outcome ok={false} text={failed?.text ?? null} testId="pay-found-outcome" />
       <EnableFailure actions={actions} testId="pay-found-enable-outcome" />
       <p className="placeholder-note pay-found-address">

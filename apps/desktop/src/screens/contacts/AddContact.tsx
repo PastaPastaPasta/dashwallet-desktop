@@ -32,7 +32,7 @@ import {
   type Listed,
   watchClaim,
 } from "../../contacts/add";
-import { initials, NETWORK_DEBOUNCE_MS, networkPrefix, relationTitle, type ContactsOwner } from "../../contacts/model";
+import { initials, NETWORK_DEBOUNCE_MS, networkPrefix, relationTitle, unverifiedWarning, type ContactsOwner } from "../../contacts/model";
 import { useEligibility, useMyUserLink, useNetworkSearch, useScreenScanMode } from "../../contacts/queries";
 import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
@@ -212,6 +212,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
       break;
   }
   const note = claimNote(c.claim, now);
+  const warning = line?.next === "send" ? unverifiedWarning("send", c.unverified) : null;
   return (
     <div className="add-contact-candidate" data-testid="add-contact-candidate">
       <header className="contact-detail-header">
@@ -248,6 +249,11 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
               {line.text}
             </p>
           )
+        )}
+        {warning && (
+          <p className="sheet-warning" role="note" data-testid="add-contact-unverified">
+            {warning}
+          </p>
         )}
         {button && <span className="add-contact-actions">{button}</span>}
         <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="add-contact-outcome" polite />
