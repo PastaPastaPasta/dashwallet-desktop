@@ -36,7 +36,7 @@ name: CI
 
 # A branch is checked through its pull request only: a push trigger for it as well ran every
 # job twice, and the hosted macOS runners are the scarce ones.
-# Pull requests run the Linux checks only (lint, rust-linux, desktop-renderer, ui-playwright). The
+# Pull requests run the fast Linux checks their changes need (the `changes` job). Playwright and the
 # macOS, Windows, deep-link, E2E and Swift jobs run on pushes to main, nightly and on a dispatch
 # (`gh workflow run ci.yml --ref <branch>` runs them all for a branch); docs/ci.md, "Triggers".
 on:
@@ -76,8 +76,7 @@ jobs:
   # and the platform matrix run on main and nightly, and a red main is fixed before the next merge.
   # - docs/ or *.md only (not docs/contracts or the generated E0-13 coverage table): nothing.
   # - only apps/desktop (not the paths Rust tests read, below): desktop-renderer (tokens, tsc, vitest,
-  #   and dw-protx's no_operator_signing scan of apps/desktop/src), plus ui-playwright when a
-  #   Playwright spec, baseline or config changed.
+  #   and dw-protx's no_operator_signing scan of apps/desktop/src).
   # - anything else, unknown paths included: lint, rust-linux and desktop-renderer.
   # With FUNDS_FULL_SUITE true, a funds path (any renderer file but i18n catalogs and stylesheets, any
   # Rust or Swift file, or a path naming a funds word) runs every required job.
@@ -112,7 +111,6 @@ jobs:
             renderer_only='^apps/desktop/'
             # Renderer files the Rust tests read (docs/ci.md, "Pull request checks"): these run rust-linux.
             read_by_rust='^apps/desktop/src/(api/generated/|fixture/vectors/|dashpay/editProfile\.ts$)'
-            playwright='^apps/desktop/(e2e/|playwright\.config\.ts$)'
             # Funds paths: send, signing, CoinJoin, keys, wallet storage, fees and coin selection,
             # the engine and the Swift and Rust bindings.
             funds_tree='^rust/|^Sources/|^Tests/|^Package\.(swift|resolved)$|^apps/desktop/src/api/|\.(rs|swift)$'
@@ -124,7 +122,6 @@ jobs:
               any=true
               if [[ $f =~ $docs && ! $f =~ $docs_code ]]; then kind=docs
               elif [[ $f =~ $renderer_only && ! $f =~ $read_by_rust ]]; then kind=renderer renderer=true
-                [[ ! $f =~ $playwright ]] || ui=true
               else kind=all rust=true renderer=true
               fi
               if [[ $FUNDS_FULL_SUITE == true && $kind != docs && ! $f =~ $copy ]] \
