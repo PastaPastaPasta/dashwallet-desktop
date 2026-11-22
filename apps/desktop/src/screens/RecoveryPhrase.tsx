@@ -9,10 +9,12 @@ import { PassphrasePrompt } from "../components/passphrase";
 import { PhraseGrid, ProtectionPending, WalletChoiceList } from "../components/phrase";
 import { Sheet } from "../components/sheet";
 import { useModel } from "../onboarding/model";
+import { useT } from "../i18n";
 import { RecoveryPhraseModel, RecoveryText } from "../onboarding/recovery";
 import { useLockTimer } from "./LockScreen";
 
 export function RecoveryPhraseSheet({ walletId, onClose }: { walletId: string | null; onClose: () => void }) {
+  const t = useT();
   const backend = useBackend();
   const [model] = useState(() => new RecoveryPhraseModel(backend));
   useModel(model);
@@ -32,7 +34,7 @@ export function RecoveryPhraseSheet({ walletId, onClose }: { walletId: string | 
         <>
           {(model.step === "loading" || model.step === "working") && (
             <p className="sheet-text" role="status">
-              {model.step === "loading" ? "Loading…" : "Checking…"}
+              {model.step === "loading" ? t("onboarding.loading") : t("onboarding.recovery.checking")}
             </p>
           )}
           {model.step === "unavailable" && <p className="sheet-text">{RecoveryText.noPhrase}</p>}
@@ -43,7 +45,7 @@ export function RecoveryPhraseSheet({ walletId, onClose }: { walletId: string | 
           )}
           {model.step === "wallet" && (
             <>
-              <p className="sheet-text">Which wallet's recovery phrase do you want to see?</p>
+              <p className="sheet-text">{t("onboarding.recovery.whichWallet")}</p>
               <WalletChoiceList wallets={model.wallets} testId="recovery-wallet" onChoose={(id) => model.choose(id)} />
             </>
           )}
@@ -59,7 +61,7 @@ export function RecoveryPhraseSheet({ walletId, onClose }: { walletId: string | 
                   error={model.lock.message ?? model.error}
                   busy={model.lock.working}
                   disabled={model.lock.blocked}
-                  submitLabel="Show recovery phrase"
+                  submitLabel={t("onboarding.recovery.show")}
                   onSubmit={(p) => model.reveal(p)}
                 />
               ) : (
@@ -70,7 +72,7 @@ export function RecoveryPhraseSheet({ walletId, onClose }: { walletId: string | 
                     </p>
                   )}
                   <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid="recovery-reveal" onClick={() => void model.reveal("")}>
-                    Show recovery phrase
+                    {t("onboarding.recovery.show")}
                   </DashButton>
                 </>
               )}
@@ -82,11 +84,11 @@ export function RecoveryPhraseSheet({ walletId, onClose }: { walletId: string | 
               <PhraseGrid words={model.words} testId="recovery-words" />
               {model.hasBip39 && (
                 <p className="sheet-warning" data-testid="recovery-bip39">
-                  This wallet also uses a BIP39 passphrase. You need it with the recovery phrase to restore the wallet.
+                  {t("onboarding.recovery.bip39")}
                 </p>
               )}
               <DashButton variant="filledBlue" size="large" fill data-autofocus data-testid="recovery-done" onClick={onClose}>
-                Done
+                {t("onboarding.done")}
               </DashButton>
             </>
           )}
