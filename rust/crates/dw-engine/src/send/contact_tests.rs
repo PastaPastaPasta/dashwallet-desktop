@@ -3006,3 +3006,27 @@ fn a_refused_second_contact_payment_leaves_nothing_to_resend() {
         .block_on(f.session.tx_detail_extras(f.wallet, twin_txid));
     assert!(extras.is_err(), "listed after a restart: {extras:?}");
 }
+
+/// A contact payment whose sent mark cannot be written keeps the contact's
+/// address and can be sent again with the same handle.
+#[test]
+fn a_contact_payment_whose_mark_fails_keeps_its_address() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    Seam::install(&d, Net::Accept);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let address = paid(&p);
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::Before;
+    dw_appdb::fault::arm(&path, crate::send::SENT_MARK_FAULT, stage);
+    assert!(f.engine.block_on(d.broadcast(Arc::clone(&p))).is_err());
+    dw_appdb::fault::disarm(&path);
+    assert_eq!(
+        f.reserved(BOB).map(|a| a.to_string()),
+        Some(address),
+        "the address"
+    );
+    f.engine.block_on(d.broadcast(p)).unwrap();
+}

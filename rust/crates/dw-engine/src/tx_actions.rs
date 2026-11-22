@@ -767,6 +767,31 @@ impl NetworkSession {
                         Err(e) => return Err(e),
                     }
                 }
+                // A payment whose saved copy does not read back is listed
+                // nowhere but keeps its coins out: retired here, unless a
+                // payment under way holds one of them.
+                let sent = this.appdb_op(move |db| Ok(load_sent(db, id).0)).await?;
+                let damaged: Vec<Txid> = (sent.into_iter())
+                    .filter(|(t, m)| {
+                        m.kept && m.tx.is_none() && this.hub.history.get(&id, t).is_none()
+                    })
+                    .filter(|(t, m)| {
+                        (this
+                            .spends
+                            .held_by_others(&id, crate::send::SpendOwner::Tx(*t)))
+                        .is_disjoint(&m.coins.iter().copied().collect())
+                    })
+                    .map(|(t, _)| t)
+                    .collect();
+                for txid in damaged {
+                    this.abandon_inner(&manager, id, txid).await?;
+                    this.appdb_op(move |db| {
+                        forget_sent(db, id, &[txid]);
+                        Ok(())
+                    })
+                    .await?;
+                    dropped += 1;
+                }
             }
             Ok(dropped)
         })

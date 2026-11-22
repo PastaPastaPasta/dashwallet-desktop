@@ -532,3 +532,177 @@ fn damaged_copies_keep_their_coins_out_and_leave_the_others_restored() {
         }
     }
 }
+
+/// Tools ▸ Repair ▸ Remove unconfirmed transactions retires a payment
+/// whose saved copy is damaged: its coin comes back, also after a restart.
+/// A readable mark stays, and a coin another payment spends stays out.
+#[test]
+fn remove_unconfirmed_retires_a_damaged_payment_and_frees_its_coin() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let kept = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![b]),
+        COIN / 2,
+        false,
+    );
+    let damaged = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &kept);
+    super::instant_lock(&engine, &session, id, &kept);
+    {
+        let (appdb, scope) = (&session.live().unwrap().appdb, id.to_string());
+        let txid = damaged.txid();
+        appdb
+            .set_setting(&scope, &format!("senttx:{txid}"), Some("zz"))
+            .unwrap();
+        appdb
+            .set_setting(&scope, &format!("sent:{txid}"), Some(&format!("{a},{b}")))
+            .unwrap();
+    }
+    let session = reopen(&engine, session);
+    assert!(!held(&engine, &session, id).contains(&a), "A is out");
+    assert!(!held(&engine, &session, id).contains(&b), "B is out");
+
+    engine.block_on(session.start_spv()).unwrap();
+    super::own_spend_disk_tests::eventually("SPV runs", || {
+        session.spv_state().unwrap() == crate::SpvState::Running
+    });
+    let dropped = engine.block_on(session.drop_unconfirmed(Some(id))).unwrap();
+    assert_eq!(dropped, 1, "the damaged payment is counted");
+    assert!(
+        !sent_marks(&session, id).contains(&damaged.txid()),
+        "retired"
+    );
+    assert!(
+        sent_marks(&session, id).contains(&kept.txid()),
+        "the readable mark stays"
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(held(&engine, &session, id).contains(&a), "A is counted");
+    assert!(spendable(&engine, &session, id, a), "A is offered");
+    assert!(!spendable(&engine, &session, id, b), "B is offered");
+
+    let session = reopen(&engine, session);
+    assert!(
+        held(&engine, &session, id).contains(&a),
+        "A after a restart"
+    );
+    assert!(
+        spendable(&engine, &session, id, a),
+        "A offered after a restart"
+    );
+    assert!(
+        !held(&engine, &session, id).contains(&b),
+        "B after a restart"
+    );
+}
+
+/// A restored payment of a coin funded without a record, relayed back
+/// (its record names no input), in the next session: listed as the
+/// payment it is, and abandoning it rescans from the birth height.
+#[test]
+fn a_relayed_restored_payment_keeps_its_inputs_in_the_next_session() {
+    let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
+    let (session, coin) = coin_funded_without_a_record(&engine, session, id, 10);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![coin]),
+        COIN / 2,
+        false,
+    );
+    assert_eq!(payment.output.len(), 2, "with change");
+    let session = reopen(&engine, session);
+    mempool(&engine, &session, id, &payment);
+    super::own_spend_disk_tests::wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    let row = rows(&engine, &session, id)
+        .into_iter()
+        .find(|r| r.0 == payment.txid().to_string());
+    assert!(
+        row.as_ref().is_some_and(|r| r.3 < 0),
+        "listed as a payment: {row:?}"
+    );
+    abandon(&engine, &session, id, payment.txid());
+    assert_eq!(
+        synced(&engine, &session, id),
+        super::BIRTH - 1,
+        "the abandon rescans from the birth"
+    );
+}
+
+/// A payment that never left whose sent mark cannot be dropped stays held
+/// as maybe sent: Abandon is refused and its coin stays out, so the copy
+/// left behind cannot be resent for coins already freed.
+#[test]
+fn a_mark_that_cannot_be_dropped_keeps_the_payment_held() {
+    struct RefuseAndBreakTheMarks(std::path::PathBuf);
+    impl crate::send::TestBroadcaster for RefuseAndBreakTheMarks {
+        fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            Box::pin(async {})
+        }
+        fn broadcast(
+            &self,
+            _tx: &Transaction,
+            _first: bool,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Txid, platform_wallet::PlatformWalletError>>
+                    + Send,
+            >,
+        > {
+            let stage = dw_appdb::fault::Stage::Before;
+            dw_appdb::fault::arm(&self.0, crate::send::SENT_MARK_FAULT, stage);
+            Box::pin(async {
+                Err(platform_wallet::PlatformWalletError::TransactionBroadcast(
+                    "rejected".into(),
+                ))
+            })
+        }
+    }
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let net = Arc::new(super::own_spend_disk_tests::Accept::default());
+    let (draft, prepared) = super::own_spend_disk_tests::prepare(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+        &net,
+    );
+    let prepared = prepared.unwrap();
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    *draft.broadcaster.lock().unwrap() = Some(Arc::new(RefuseAndBreakTheMarks(path.clone())) as _);
+    assert!(
+        engine
+            .block_on(draft.broadcast(Arc::clone(&prepared)))
+            .is_err()
+    );
+    dw_appdb::fault::disarm(&path);
+    let txid: Txid = prepared.summary().txid.parse().unwrap();
+    assert!(sent_marks(&session, id).contains(&txid), "the mark stays");
+    let abandoned = engine.block_on(draft.abandon(prepared));
+    assert!(
+        matches!(
+            abandoned,
+            Err(crate::EngineError::Send(
+                crate::send::SendFailure::PreparedTxSpent
+            ))
+        ),
+        "{abandoned:?}"
+    );
+    assert!(!spendable(&engine, &session, id, a), "its coin is offered");
+}

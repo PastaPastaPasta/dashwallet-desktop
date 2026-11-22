@@ -1563,25 +1563,22 @@ impl TxDraft {
             *phase = Phase::Broadcasting;
             (first, in_flight)
         };
+        if first {
+            self.record_contact(&prepared).await?;
+        }
         // The evidence a later process restores this payment's spend
         // claims from (#88), stored before it can leave; again for a send
         // recovered with its outcome unknown, which may be its first.
         if let Err(e) = self.mark_sent(&prepared, true).await {
-            if first {
-                let _ = self.mark_sent(&prepared, false).await;
-            }
-            *prepared.phase() = if first {
-                Phase::Pending
-            } else {
-                Phase::Unknown
+            let next = match first && self.drop_mark(&prepared).await {
+                true => Phase::Pending,
+                false => Phase::Unknown,
             };
+            self.settle_contact(&prepared, first, next).await;
+            *prepared.phase() = next;
             return Err(e);
         }
-        if first && let Err(e) = self.record_contact(&prepared).await {
-            let _ = self.mark_sent(&prepared, false).await;
-            return Err(e);
-        }
-        let (outcome, next) = match &prepared.lease {
+        let (outcome, mut next) = match &prepared.lease {
             Some((lease, artifact)) => self.fenced(&prepared, lease, *artifact, first).await,
             None => {
                 let outcome = self.dispatch(&prepared, first, None).await;
@@ -1589,6 +1586,13 @@ impl TxDraft {
                 (outcome, next)
             }
         };
+        // Never handed off: no copy may stay to be resent. One that cannot
+        // be dropped keeps the payment held as maybe sent.
+        let unsent = next == Phase::Released
+            || (first && next == Phase::Pending && attempt_outcome(&outcome) == Outcome::NotSent);
+        if unsent && !self.drop_mark(&prepared).await {
+            next = Phase::Unknown;
+        }
         // The contact settles before the phase leaves `Broadcasting`.
         self.settle_contact(&prepared, first, next).await;
         *prepared.phase() = next;
@@ -1596,17 +1600,7 @@ impl TxDraft {
             Phase::Sent => self.session.spends.release(&self.wallet_id, prepared.owner),
             // Never sent: release key-wallet's reservation (owner-guarded, a
             // no-op where platform-wallet already did) and the engine's.
-            Phase::Released => {
-                prepared.release(&self.session).await;
-                if let Err(e) = self.mark_sent(&prepared, false).await {
-                    tracing::warn!(error = %e, txid = %prepared.summary.txid,
-                        "could not drop the sent mark of a payment never sent");
-                }
-            }
-            // Not handed off (the session or wallet went): no copy to resend.
-            Phase::Pending if first && matches!(attempt_outcome(&outcome), Outcome::NotSent) => {
-                let _ = self.mark_sent(&prepared, false).await;
-            }
+            Phase::Released => prepared.release(&self.session).await,
             Phase::Pending | Phase::Unknown | Phase::Broadcasting => {}
         }
         let dispatched = matches!(
@@ -2249,6 +2243,15 @@ impl Drop for PreparedTx {
 }
 
 impl TxDraft {
+    /// Drops `prepared`'s sent mark; whether it went (a failure is logged).
+    async fn drop_mark(&self, prepared: &PreparedTx) -> bool {
+        let dropped = self.mark_sent(prepared, false).await;
+        if let Err(e) = &dropped {
+            tracing::warn!(error = %e, "could not drop a payment's sent mark: it stays held as maybe sent");
+        }
+        dropped.is_ok()
+    }
+
     /// Marks `prepared` as a payment this app sent, naming the wallet's
     /// coins it signed (`sent`), or removes the mark
     /// ([`crate::tx_actions::SENT_PREFIX`]).

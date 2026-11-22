@@ -578,25 +578,46 @@ impl WalletHistory {
         network: Network,
     ) {
         for (txid, mark) in sent {
+            if self.swept.contains(txid) {
+                continue;
+            }
+            self.marked.insert(*txid, mark.coins.clone());
+            let from_mark = |o: &OutPoint| {
+                let (value, address) = mark.inputs.get(o)?;
+                let address = address.parse::<Address<_>>().ok()?;
+                Some((*value, address.require_network(network).ok()?))
+            };
+            // A record of it read back (a relay after the restart) may name
+            // none of its inputs: the mark's fill in what it lacks.
+            if let Some(e) = self.txs.get_mut(txid) {
+                for (n, i) in e.tx.input.iter().enumerate() {
+                    if mark.coins.contains(&i.previous_output)
+                        && !e.own_inputs.contains_key(&(n as u32))
+                        && let Some(own) = from_mark(&i.previous_output)
+                    {
+                        e.own_inputs.insert(n as u32, own);
+                    }
+                }
+                continue;
+            }
             let Some(tx) = &mark.tx else { continue };
-            if stored.contains(txid) || self.txs.contains_key(txid) || self.swept.contains(txid) {
+            if stored.contains(txid) {
                 continue;
             }
             let own_inputs = (tx.input.iter().enumerate())
                 .filter(|(_, i)| mark.coins.contains(&i.previous_output))
                 .filter_map(|(n, i)| {
                     let o = i.previous_output;
-                    if let Some((value, address)) = mark.inputs.get(&o) {
-                        let address = (address.parse::<Address<_>>().ok())
-                            .and_then(|a| a.require_network(network).ok())?;
-                        return Some((n as u32, (*value, address)));
-                    }
-                    let out = self.txs.get(&o.txid)?.tx.output.get(o.vout as usize)?;
-                    let address = Address::from_script(&out.script_pubkey, network).ok()?;
-                    Some((n as u32, (out.value, address)))
+                    let own = from_mark(&o).or_else(|| {
+                        let out = self.txs.get(&o.txid)?.tx.output.get(o.vout as usize)?;
+                        Some((
+                            out.value,
+                            Address::from_script(&out.script_pubkey, network).ok()?,
+                        ))
+                    })?;
+                    Some((n as u32, own))
                 })
                 .collect::<BTreeMap<_, _>>();
-            self.marked.insert(*txid, mark.coins.clone());
             self.txs.insert(
                 *txid,
                 TxEntry {

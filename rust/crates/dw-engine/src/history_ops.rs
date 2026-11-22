@@ -433,7 +433,9 @@ impl NetworkSession {
         }
         let (claims, settled) = self.hub.history.with_wallet(wallet, |h| {
             let mut claims = crate::history::unmined_own_spends(&h.txs, sent);
-            claims.retain(|(_, spender)| !h.session_held.contains(spender));
+            claims.retain(|(_, spender)| {
+                !h.session_held.contains(spender) && !h.swept.contains(spender)
+            });
             (claims, crate::history::settled_sends(&h.txs, sent, stored))
         });
         self.apply_spend_claims(manager, wallet, &claims).await;
