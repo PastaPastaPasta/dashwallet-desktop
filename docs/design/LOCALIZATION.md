@@ -130,6 +130,13 @@ Still English inside those areas, for the slices that convert the shared compone
 English pixel identity holds for the states shot on the pull request, not for every state: numbers in
 catalog messages are now formatted for the locale, so a peer count of 1234 reads "1,234 peers".
 
+Documented English changes (copy fixes made on purpose, not by a conversion):
+
+- The abandon confirmation in a transaction's details (`screens/TxDetailSheet.tsx`) now reads
+  "Abandon this transaction? Its coins come back to the balance. If it reaches the network anyway, it
+  still counts, so sending the same payment again could pay twice." An abandoned payment can still
+  reach the network, so sending it again could pay twice; the old text did not say so.
+
 ### What the checks catch
 
 - `converted.test.ts` reads each converted `.tsx` file and fails on JSX text, on a string literal in a

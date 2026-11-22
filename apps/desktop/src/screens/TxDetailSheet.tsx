@@ -190,7 +190,7 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       {confirming ? (
         <>
           <p className="tx-actions-question">
-            Abandon this transaction? Its coins come back to the balance; if it reaches the network anyway, it still counts.
+            Abandon this transaction? Its coins come back to the balance. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.
           </p>
           <span className="tx-actions-row">
             <DashButton variant="tintedGray" size="small" disabled={busy} onClick={() => setConfirming(false)}>

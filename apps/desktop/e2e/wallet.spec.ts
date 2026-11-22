@@ -821,6 +821,9 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-resend").click();
     await expect(page.getByTestId("tx-action-note")).toBeVisible();
     await page.getByTestId("tx-abandon").click();
+    await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
+      "Abandon this transaction? Its coins come back to the balance. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.",
+    );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
     await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
