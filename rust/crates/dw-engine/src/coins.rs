@@ -471,6 +471,10 @@ pub(crate) struct CoinFences {
     /// takes the coin fences.
     #[cfg(test)]
     pub(crate) pause_broadcast: std::sync::Mutex<Option<Arc<TestPause>>>,
+    /// Tests: holds the next PSBT broadcast between a wallet's lookup and
+    /// its ownership read.
+    #[cfg(test)]
+    pub(crate) pause_ownership: std::sync::Mutex<Option<Arc<TestPause>>>,
     /// Tests: holds the next masternode row write after its reservation,
     /// its fence held: a shared session's (`start_shared`, `join_shared`,
     /// MG-04b D63) or a ProTx operation's (`save_operation`, BL-352).

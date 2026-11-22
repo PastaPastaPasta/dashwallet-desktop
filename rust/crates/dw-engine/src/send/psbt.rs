@@ -359,7 +359,7 @@ impl NetworkSession {
             };
             let w = this.wallet(&id).await?;
             let owned = {
-                let state = w.state().await;
+                let state = crate::wallet_read::info_of(&w).await?;
                 ownership(&state.core_wallet, &psbt, network)
             };
             let external_sent = base
@@ -534,6 +534,8 @@ impl NetworkSession {
                 let Ok(w) = this.wallet(&id).await else {
                     continue;
                 };
+                #[cfg(test)]
+                crate::coins::pause_at(&this.coin_fences.pause_ownership).await;
                 let owns = {
                     let state = crate::wallet_read::info_of(&w).await?;
                     !ownership(&state.core_wallet, &psbt, network)
