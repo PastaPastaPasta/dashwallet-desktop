@@ -143,10 +143,34 @@ pub(crate) struct PlatformRuntime {
     /// Shuts the dispatch hook from the close's start and during each drain
     /// of `shielded_passes`.
     pub(crate) hook_fence: Arc<super::shielded_pool::HookFence>,
+    /// Unix seconds a periodic pass last proved the shielded pool unchanged
+    /// and skipped its scan; `0` before one did.
+    pub(crate) shielded_checked_at: AtomicU64,
     /// A test's pause of the next shielded pass, after its admission and
     /// before the library's pass (`shielded_pool::guarded_pass`).
     #[cfg(test)]
     pub(crate) pass_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's proved note count for the periodic pass's check
+    /// (`Some(None)`: the read fails); the network's while `None`.
+    #[cfg(test)]
+    pub(crate) notes_count: Mutex<Option<Option<u64>>>,
+    /// A test's pause of the next periodic pass after its count read, while
+    /// it holds nothing of the session (`shielded_pool::periodic_pass`).
+    #[cfg(test)]
+    pub(crate) probe_pause: Mutex<Option<super::shielded_pool::PassPause>>,
+    /// A test's block of the next count read's thread until a send or drop,
+    /// as a quorum wait's `block_in_place` does.
+    #[cfg(test)]
+    pub(crate) probe_block: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// Told when the next shielded pass waits for its locks.
+    #[cfg(test)]
+    pub(crate) spends_queued: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// Told when the next shielded pass, its locks taken, is admitted.
+    #[cfg(test)]
+    pub(crate) admitting: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// How many shielded passes reached the library's pass.
+    #[cfg(test)]
+    pub(crate) passes_run: std::sync::atomic::AtomicUsize,
     /// A test's crash of the disposition consumer between its journal
     /// write and its acknowledgement (`shielded_pool::consume_dispositions`).
     #[cfg(test)]
@@ -479,8 +503,21 @@ impl PlatformRuntime {
             loops_on: Arc::new(AtomicBool::new(false)),
             shielded_passes: Arc::default(),
             hook_fence: Arc::default(),
+            shielded_checked_at: AtomicU64::new(0),
             #[cfg(test)]
             pass_pause: Mutex::new(None),
+            #[cfg(test)]
+            notes_count: Mutex::new(None),
+            #[cfg(test)]
+            probe_pause: Mutex::new(None),
+            #[cfg(test)]
+            probe_block: Mutex::new(None),
+            #[cfg(test)]
+            spends_queued: Mutex::new(None),
+            #[cfg(test)]
+            admitting: Mutex::new(None),
+            #[cfg(test)]
+            passes_run: Default::default(),
             #[cfg(test)]
             crash_before_ack: AtomicBool::new(false),
             shielded_spends: tokio::sync::RwLock::new(()),
@@ -642,6 +679,12 @@ impl PlatformRuntime {
     /// otherwise hide this lock from a bring-up that holds keys.
     pub(crate) fn note_lock(&self) {
         self.lock.send_modify(|view| view.locks += 1);
+    }
+
+    /// Whether the loops the supervisor of `epoch` started still run: no
+    /// stop or close since (`NamesRuns::runs`).
+    pub(super) fn loops_run(&self, epoch: u64) -> bool {
+        self.loops_on.load(Ordering::Acquire) && self.recovery.names_runs.runs(epoch)
     }
 
     /// Marks SPV started; `false` when a stop or close took the supervisor
