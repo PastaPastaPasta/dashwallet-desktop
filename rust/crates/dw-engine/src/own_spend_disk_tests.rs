@@ -920,6 +920,7 @@ fn a_chainlock_applied_while_both_wallets_were_closed_beats_a_locked_payment() {
         )
         .unwrap();
     engine.block_on(session.unload_wallet(id)).unwrap();
+    let winner_txid = winner.txid().to_string();
     let winner_block = super::block_with(vec![winner]).block_hash();
     chain_lock(&engine, &session, other, TIP + 1, winner_block);
     engine.block_on(session.unload_wallet(other)).unwrap();
@@ -933,6 +934,52 @@ fn a_chainlock_applied_while_both_wallets_were_closed_beats_a_locked_payment() {
         spendable(&engine, &session, id, a),
         "and a payment can spend it"
     );
+    let page = engine
+        .block_on(session.history_page(
+            id,
+            crate::history::HistoryQuery {
+                filter: Default::default(),
+                sort: crate::history::HistorySort::NewestFirst,
+                cursor: None,
+                limit: 100,
+            },
+        ))
+        .unwrap();
+    assert!(
+        (page.records.iter()).any(|r| r.txid == winner_txid && r.status.chain_locked),
+        "the rival reads ChainLocked"
+    );
+}
+
+/// A wallet closed while coin control's summary waits on the app
+/// database: its coin read reads the wallet's state only before it waits,
+/// so it ends without a panic.
+#[test]
+fn closing_a_wallet_during_a_coin_read_does_not_panic() {
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    let read = {
+        let s = Arc::clone(&session);
+        let held = crate::coins::HOLD_APPDB_JOB.scope(Arc::clone(&pause), async move {
+            let fee = crate::send::FeeMode::PerKb(1_000);
+            (s.coin_selection_summary(id, Vec::new(), Vec::new(), fee, false)).await
+        });
+        session.rt.spawn(held)
+    };
+    eventually("the coin read's app database job", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let unload = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move { s.unload_wallet(id).await })
+    };
+    eventually("the wallet closed", || {
+        (session.wallet_load_states().unwrap().iter()).all(|w| w.wallet_id != id || !w.loaded)
+    });
+    pause.release.notify_one();
+    let read = engine.block_on(read).unwrap();
+    assert!(!read.as_ref().is_err_and(|e| e.is_task_panic()), "{read:?}");
+    engine.block_on(unload).unwrap().unwrap();
 }
 
 /// While a load claims nothing (another stored record is unreadable), the

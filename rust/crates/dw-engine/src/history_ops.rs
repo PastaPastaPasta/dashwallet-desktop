@@ -690,7 +690,8 @@ impl NetworkSession {
                 .last_applied_chain_lock
                 .as_ref()
                 .map(|c| c.block_height)
-                .max(self.hub.tracker().chainlock_height()),
+                .max(self.hub.tracker().chainlock_height())
+                .max(self.hub.best_chainlock().map(|(h, _)| h)),
         }
     }
 
