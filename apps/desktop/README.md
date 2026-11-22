@@ -118,7 +118,10 @@ DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/e2e-tauri-dashpa
 ```
 
 Each write flow keeps a ledger in the fixture (`DP1-09.json`, `DP2-08.json`, `DP2-09.json`,
-`DP3-06.json`), so a second run checks rather than repeats; registration is skipped once done, and
+`DP3-06.json`), so a second run checks rather than repeats. Registration makes a new wallet E: its phrase
+and its app data root's passphrase (`DW_REG_STATE`, default `<fixture>.reg-state`, beside the fixture
+because registration fails on a secret among the fixture's files) go to the store as
+`<prefix>-E-<wallet id>-{mnemonic,reg-passphrase}`. Registration is skipped once done, and
 bell-accept's C→B pair is spent after one accept (move its ledger aside and pick B–D with
 `DW_BELL_SENDER`/`DW_BELL_RECEIVER`). The runner ends with a phrase and key check over everything it kept
 (`e2e-tauri/artifact-scan.ts`: the fixture's phrases and passphrases, any run of 12 BIP39 words,

@@ -185,8 +185,9 @@ async function run(
     step(`To a contact lists ${USERNAME} in ${via}; strip: ${JSON.stringify(out.frequent)}`);
     await wd.press(via === "the frequent strip" ? chip : row);
 
+    // The card shows the display name and, under it, @username (the name itself when none is set).
     const payeeName = await poll(TIMEOUT_MS, `the payee card to name ${USERNAME}`, async () => {
-      const t = await textOf(tid("pay-payee-name"));
+      const t = await textOf(tid("pay-payee"));
       return t.includes(USERNAME) ? t : undefined;
     });
     const banner = await wd.script<{ kind: string; text: string } | null>(

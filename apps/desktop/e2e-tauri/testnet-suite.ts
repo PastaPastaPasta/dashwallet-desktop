@@ -9,8 +9,8 @@
 //     key check (artifact-scan.ts) over <out> and each <dir>. Exits 1 when a flow failed or the
 //     check found anything.
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, relative } from "node:path";
 import { scanArtifacts, suspicious } from "./artifact-scan.ts";
 
 interface Row {
@@ -52,18 +52,24 @@ function firstError(log: string): string | null {
   return line && line.length > 400 ? `${line.slice(0, 400)}…` : line;
 }
 
-/** Each phrase and passphrase the fixture holds, for the plain-text check. */
+/** Each phrase and passphrase the fixture holds, for the plain-text check. A link the store has not
+ * filled yet (`secret sync`) is an error: the check would run without that secret. */
 function fixtureSecrets(fixtureDir: string): string[] {
   const out: string[] = [];
-  const files = [
-    ...readdirSync(fixtureDir).filter((f) => f.endsWith(".mnemonic") || f === "passphrase").map((f) => join(fixtureDir, f)),
-    join(fixtureDir, "reg-state", "passphrase"),
+  // Registration's passphrases: DW_REG_STATE and the runs moved aside beside it (<fixture>.reg-state*).
+  const parent = dirname(fixtureDir);
+  const regPasses = [
+    join(process.env.DW_REG_STATE ?? `${fixtureDir}.reg-state`, "passphrase"),
+    ...readdirSync(parent).filter((d) => d.startsWith(`${basename(fixtureDir)}.reg-state`)).map((d) => join(parent, d, "passphrase")),
   ];
+  const files = [...readdirSync(fixtureDir).filter((f) => f.endsWith(".mnemonic") || f === "passphrase").map((f) => join(fixtureDir, f)), ...new Set(regPasses)];
   for (const f of files) {
-    if (!existsSync(f)) continue;
+    if (regPasses.includes(f) && !lstatSync(f, { throwIfNoEntry: false })) continue;
+    if (!existsSync(f)) throw new Error(`${f} is a dangling link: run \`secret sync\` first`);
     const s = readFileSync(f, "utf8").trim();
     if (s) out.push(s, s.split(/\s+/).join(" "));
   }
+  if (out.length === 0) throw new Error(`${fixtureDir} holds no phrase to check for`);
   return out;
 }
 
@@ -72,9 +78,8 @@ function summary(out: string, fixtureDir: string, extra: string[]): number {
   // A flow masks its own errors; this is the backstop for the one line the summary quotes.
   const clean = (line: string | null) => {
     if (!line) return line;
-    const words = new Set(secrets.flatMap((s) => s.split(/\s+/)));
     const kinds = suspicious(line);
-    if (secrets.some((s) => line.includes(s)) || [...words].some((w) => w.length > 12 && line.includes(w))) kinds.push("known-secret");
+    if (secrets.some((s) => line.includes(s))) kinds.push("known-secret");
     return kinds.length ? `[withheld: ${kinds.join(", ")}]` : line;
   };
   const runs = readFileSync(join(out, "runs.tsv"), "utf8")

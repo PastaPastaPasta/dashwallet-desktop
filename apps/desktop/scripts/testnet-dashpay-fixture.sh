@@ -16,6 +16,7 @@
 #   DW_E2E_SKIP_BUILD=1        reuse <target>/debug/dwcli (<target>: $CARGO_TARGET_DIR, else rust/target)
 #   see e2e-tauri/testnet-fixture.ts for the rest (secret names, amounts, timeouts)
 set -euo pipefail
+[[ -n "${DW_TESTNET_FIXTURE:-}" && "$DW_TESTNET_FIXTURE" != /* ]] && export DW_TESTNET_FIXTURE=$PWD/$DW_TESTNET_FIXTURE
 cd "$(dirname "$0")/.."
 repo=$(cd ../.. && pwd)
 [[ -n "${DW_TESTNET_FIXTURE:-}" ]] || { echo "testnet-dashpay-fixture: set DW_TESTNET_FIXTURE" >&2; exit 2; }

@@ -3,7 +3,7 @@
 // dwcli funds it from fixture wallet A's Core coins, then the wizard registers a non-contested
 // username. Once the row has its asset lock's txid (fundingSent or proofWaiting: before the
 // identity is confirmed) the app is closed. The relaunch opens locked; Home says the registration
-// is paused (nothing resumes alone, D12); Continue under the passphrase resumes the same row and
+// is paused (nothing resumes alone, D12); Continue (the passphrase sheet only when the payment rule asks) resumes the same row and
 // the same lock, and the run ends on Welcome to DashPay, @name. The engine's rows say one registration, one
 // txid; E's balance fell by one lock, not two. Writes: one payment A→E, one asset lock, one
 // identity and its name.
@@ -294,7 +294,7 @@ async function registerAndClose(wd: WebDriver, a: App, walletId: string, passphr
   if (kind !== "progress" || !row.running) throw new Error(`the running registration showed ${kind} (running ${row.running}, waiting ${row.waiting}); a rerun goes on from closed without this check, so fix this first`);
 }
 
-/** The relaunch: locked, Home's card paused, Continue under the passphrase, Welcome to DashPay, @name. */
+/** The relaunch: locked, Home's card paused, Continue (a sheet if asked), Welcome to DashPay, @name. */
 async function resume(wd: WebDriver, a: App, walletId: string, passphrase: string) {
   const { draft, lockTxid, label } = ledger!;
   await unlock(wd, a, passphrase);
@@ -316,9 +316,17 @@ async function resume(wd: WebDriver, a: App, walletId: string, passphrase: strin
   await poll(TIMEOUT_MS, "the paused screen", async () => ((await a.attr(tid("registration-screen"), "data-kind")) === "paused" ? true : undefined));
   await wd.screenshot("5-paused");
   await wd.press(tid("registration-continue"));
-  await grantPassphrase(wd, a, passphrase);
-  await wd.waitGone(tid("grant-sheet"), "the passphrase sheet");
-  step("Continue: passphrase given");
+  // The sheet asks only when "Ask for my passphrase for every payment" is on; off (the default)
+  // the unlock just made opens the signing window and Continue resumes at once.
+  const asked = await poll(PAUSED_AFTER_CONTINUE_MS, "the passphrase sheet or the resumed run", async () => {
+    if (await wd.find(tid("grant-sheet-field"))) return "sheet";
+    return (await a.attr(tid("registration-screen"), "data-kind")) !== "paused" ? "resumed" : undefined;
+  });
+  if (asked === "sheet") {
+    await grantPassphrase(wd, a, passphrase);
+    await wd.waitGone(tid("grant-sheet"), "the passphrase sheet");
+  }
+  step(asked === "sheet" ? "Continue: passphrase given" : "Continue: resumed inside the unlock's signing window, no sheet");
   // Continue's run shows progress: a paused screen that outlasts a few polls is the D26 bug.
   let pausedSince: number | null = null;
   const end = await poll(REGISTRATION_TIMEOUT_MS, "the registration to end", async () => {

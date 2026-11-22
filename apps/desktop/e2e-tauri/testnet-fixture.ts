@@ -18,9 +18,12 @@
 // Idempotent and resumable: each write is recorded as intended before it is made, and a rerun
 // reads the network before writing again. A phrase is made once (a store entry is never
 // overwritten), the faucet is asked once (a request whose outcome is unknown stops the run for a
-// look), A pays B, C and D once, a registration starts only when the wallet has no identity and no
-// registration row, and a contact request goes out only when the pair has no relation. Phrases go
-// to dwcli on stdin and to `secret` on stdin, never argv or stdout.
+// look; a definite refusal is cleared, so a later run asks again), A pays B, C and D once, a
+// registration starts only when the wallet has no identity and no registration row (an idle one
+// is resumed under its quote's grant), and a contact request goes out only when the pair has no
+// relation and none was recorded. One run at a time (`.lock`); a fixture whose secrets exist
+// without fixture-state.json is refused. Phrases go to dwcli and `secret` on stdin, never argv or
+// stdout.
 //
 //   DW_FIXTURE_SECRET_PREFIX   store names' prefix (default dwd-qa-testnet-<basename of dir>)
 //   DW_FIXTURE_FAUCET_TDASH    what the faucet pays A (default 3)
@@ -31,7 +34,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, randomInt } from "node:crypto";
 import { createInterface } from "node:readline";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { leaks } from "./scratch.ts";
@@ -69,6 +72,8 @@ const STRANGERS: [W, W][] = [
 ];
 
 const STATE_FILE = join(FIXTURE, "fixture-state.json");
+const FIXTURE_JSON = join(FIXTURE, "fixture.json");
+const LOCK = join(FIXTURE, ".lock");
 const ROOT = join(FIXTURE, "state");
 const PASS_FILE = join(FIXTURE, "passphrase");
 const LOGS = join(FIXTURE, "logs");
@@ -94,7 +99,10 @@ interface State {
 }
 
 let state: State = { wallets: {}, registrations: {}, contacts: {}, steps: [] };
-const save = () => writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), { mode: 0o600 });
+function save() {
+  writeFileSync(`${STATE_FILE}.tmp`, JSON.stringify(state, null, 2), { mode: 0o600 });
+  renameSync(`${STATE_FILE}.tmp`, STATE_FILE);
+}
 function step(s: string) {
   console.log(`fixture: ${s}`);
   state.steps.push(`${new Date().toISOString()} ${s}`);
@@ -157,9 +165,10 @@ function phrase(w: W): string {
     const scratch = mkdtempSync(join(FIXTURE, ".gen-"));
     try {
       dwcli(["init-vault"], undefined, scratch);
-      const out = dwcli(["create"], undefined, scratch);
-      const words = /^mnemonic (.+)$/m.exec(out)?.[1]?.trim();
-      if (!words || words.split(/\s+/).length !== 12) throw new Error("dwcli create printed no 12-word phrase");
+      // Its stdout holds the phrase: never part of an error.
+      const r = spawnSync(DWCLI, ["--datadir", scratch, ...NETWORK, "--passphrase-file", PASS_FILE, "create"], { encoding: "utf8", timeout: 300_000 });
+      const words = /^mnemonic (.+)$/m.exec(r.stdout ?? "")?.[1]?.trim();
+      if (r.status !== 0 || !words || words.split(/\s+/).length !== 12) throw new Error(`dwcli create made no 12-word phrase (${r.status ?? r.signal})`);
       addPhrase(words);
       secret(["set", name, "--link", file, "--note", `dwd QA testnet fixture wallet ${w} (testnet only)`], `${words}\n`);
     } finally {
@@ -251,7 +260,15 @@ async function faucet() {
       return undefined;
     }
   })();
-  if (r.status !== 0 || !txid) throw new Error(`the faucet did not pay (${r.status}): ${r.stderr.trim().split("\n").slice(-2).join(" ")}`);
+  if (r.status !== 0 || !txid) {
+    const why = r.stderr.trim().split("\n").slice(-2).join(" ");
+    // Only an unknown outcome may have paid; anything else made no payment and a later run asks again.
+    if (r.status !== null && !/Outcome unknown/.test(r.stderr)) {
+      delete state.faucet;
+      save();
+    }
+    throw new Fatal(`the faucet did not pay (${r.status ?? r.signal}): ${why}`);
+  }
   state.faucet = { ...state.faucet, state: "paid", txid };
   step(`the faucet paid A ${FAUCET_TDASH} tDASH: ${txid}`);
 }
@@ -286,6 +303,12 @@ async function shares() {
 
 type Answer = { ok: boolean; result?: any; error?: { code: string; message: string } };
 
+/** A decision, not a hiccup: a poll stops on it at once. */
+class Fatal extends Error {}
+
+/** One request may take this long; past it the session is ended (it answers in order). */
+const REQUEST_TIMEOUT_MS = Number(env("DW_FIXTURE_REQUEST_TIMEOUT_MS", "900000"));
+
 /** One `dwcli dashpay --spv session` for the whole DashPay phase: SPV and DashPay's bring-up run
  * once for the four wallets. */
 class Session {
@@ -309,6 +332,7 @@ class Session {
         this.#waiting.delete(a.id);
       }
     });
+    this.#child.stdin!.on("error", () => undefined);
     this.#closed = new Promise((r) => this.#child.on("exit", (code) => r(code)));
     void this.#closed.then((code) => {
       for (const [, done] of this.#waiting) done({ ok: false, error: { code: "session_exit", message: `dwcli session exited (${code})` } });
@@ -321,15 +345,27 @@ class Session {
     const what = args.filter((a) => !/^[0-9a-f]{64}$/.test(a)).slice(0, 3).join(" ");
     const started = Date.now();
     const slow = setInterval(() => console.log(`fixture: dwcli ${what} still running (${Math.round((Date.now() - started) / 1000)} s)`), 120_000);
+    let timer: NodeJS.Timeout | undefined;
     return new Promise<Answer>((r) => {
+      if (this.#child.exitCode !== null) return r({ ok: false, error: { code: "session_exit", message: `dwcli session exited (${this.#child.exitCode})` } });
       this.#waiting.set(id, r);
+      timer = setTimeout(() => {
+        this.#child.kill("SIGTERM");
+        r({ ok: false, error: { code: "session_exit", message: `dwcli ${what} took over ${REQUEST_TIMEOUT_MS / 1000} s; session ended` } });
+      }, REQUEST_TIMEOUT_MS);
       this.#child.stdin!.write(`${JSON.stringify({ args, id })}\n`);
-    }).finally(() => clearInterval(slow));
+    }).finally(() => {
+      clearInterval(slow);
+      clearTimeout(timer);
+    });
   }
 
   async run<T = any>(...args: string[]): Promise<T> {
     const a = await this.ask(...args);
-    if (!a.ok) throw new Error(`${args.slice(0, 2).join(" ")}: ${a.error?.code}: ${mask(a.error?.message ?? "")}`);
+    if (!a.ok) {
+      const E = a.error?.code === "session_exit" ? Fatal : Error;
+      throw new E(`${args.slice(0, 2).join(" ")}: ${a.error?.code}: ${mask(a.error?.message ?? "")}`);
+    }
     return a.result as T;
   }
 
@@ -355,26 +391,43 @@ interface Row {
 /** A non-contested label (a digit 2–9, DIP-23). */
 const newLabel = (w: W) => `dwo4a${w.toLowerCase()}${Array.from({ length: 4 }, () => randomInt(2, 10)).join("")}`;
 
+/** Calls `probe` every `every` ms until it returns a value. A failed read (DAPI, a timeout) is
+ * logged and tried again until `ms` runs out; a `Fatal` ends the wait at once. */
 async function poll<T>(ms: number, what: string, every: number, probe: () => Promise<T | undefined>): Promise<T> {
   const until = Date.now() + ms;
   const started = Date.now();
   let notedAt = started;
+  let lastError: unknown;
   for (;;) {
     if (Date.now() - notedAt > 120_000) {
       console.log(`fixture: still waiting for ${what} (${Math.round((Date.now() - started) / 1000)} s)`);
       notedAt = Date.now();
     }
-    const v = await probe();
-    if (v !== undefined) return v;
-    if (Date.now() > until) throw new Error(`timed out after ${Math.round(ms / 1000)} s waiting for ${what}`);
+    try {
+      const v = await probe();
+      if (v !== undefined) return v;
+    } catch (e) {
+      if (e instanceof Fatal) throw e;
+      lastError = e;
+      console.log(`fixture: while waiting for ${what}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (Date.now() > until) throw new Error(`timed out after ${Math.round(ms / 1000)} s waiting for ${what}${lastError ? ` (last error: ${lastError instanceof Error ? lastError.message : String(lastError)})` : ""}`);
     await sleep(every);
   }
 }
 
-const mainIdentity = async (s: Session, w: W): Promise<string | null> => {
+const mainIdentity = async (s: Session, w: W): Promise<string | undefined> => {
   const st = await s.run<{ kind: string; main?: string }>("dashpay", "--wallet", idOf(w), "status");
-  return st.kind === "ready" ? st.main! : null;
+  return st.kind === "ready" ? st.main : undefined;
 };
+
+type Grant = { max_duffs: number; max_credits: number };
+const quoteFor = async (s: Session, wallet: string, label: string) =>
+  (
+    await s.run<{ quote: { available_duffs: number; total_duffs: number; lock_duffs: number; remaining_credits: number; grant: Grant } }>(
+      "identity", "--wallet", wallet, "register", "--label", label, "--quote-only",
+    )
+  ).quote;
 
 /** W's identity and name: started once (never while W has an identity or a registration row), then
  * followed to done. */
@@ -383,17 +436,15 @@ async function register(s: Session, w: W) {
   let reg = state.registrations[w];
   if (reg?.state === "done") return;
   const rows = await s.run<Row[]>("identity", "--wallet", wallet, "registrations");
-  let row = reg ? rows.find((r) => r.label === reg!.label) : rows[0];
-  if (!row && reg?.state === "started") throw new Error(`${w}'s registration ${reg.draft} is gone from the engine: look before running again`);
+  const row = reg ? rows.find((r) => r.label === reg!.label) : rows[0];
+  if (!row && reg?.state === "started") throw new Fatal(`${w}'s registration ${reg.draft} is gone from the engine: look before running again`);
   if (!row) {
     const ids = await s.run<unknown[]>("identity", "--wallet", wallet, "list");
-    if (ids.length > 0) throw new Error(`${w} has an identity but fixture-state.json has no registration: look before running again`);
+    if (ids.length > 0) throw new Fatal(`${w} has an identity but fixture-state.json has no registration: look before running again`);
     // Spendable funds first: the quote's available set must cover the total.
     let lastQuote = "";
     const quote = await poll(REGISTRATION_TIMEOUT_MS, `${w}'s funds to be spendable`, 15_000, async () => {
-      const q = (await s.run<{ quote: { available_duffs: number; total_duffs: number; lock_duffs: number; remaining_credits: number } }>(
-        "identity", "--wallet", wallet, "register", "--label", "dwo4aquote2", "--quote-only",
-      )).quote;
+      const q = await quoteFor(s, wallet, "dwo4aquote2");
       const seen = `${q.available_duffs}/${q.total_duffs}`;
       if (seen !== lastQuote) console.log(`fixture: ${w}: spendable ${q.available_duffs} of the ${q.total_duffs} duffs the registration takes`);
       lastQuote = seen;
@@ -414,7 +465,6 @@ async function register(s: Session, w: W) {
     reg.state = "started";
     reg.draft = started.draft;
     step(`${w}: registration ${started.draft} started`);
-    row = undefined;
   } else if (!reg) {
     reg = { state: "started", label: row.label, draft: row.draft };
     state.registrations[w] = reg;
@@ -427,15 +477,19 @@ async function register(s: Session, w: W) {
     const now = `${r.phase} waiting=${r.waiting} running=${r.running}`;
     if (now !== last) step(`${w}: ${now}${r.txid ? ` lock ${r.txid}` : ""}`);
     last = now;
-    if (r.failure) throw new Error(`${w}'s registration failed: ${r.failure.code} at ${r.failure.phase}`);
-    if (!r.running && (r.waiting === "unlock" || r.waiting === "authorize")) {
-      step(`${w}: resuming ${r.draft} (waiting ${r.waiting})`);
-      await s.run("identity", "--wallet", wallet, "resume", r.draft, "--max-duffs", String(reg!.quote?.totalDuffs ?? 0));
+    if (r.failure) throw new Fatal(`${w}'s registration failed: ${r.failure.code} at ${r.failure.phase}`);
+    if (r.phase === "done") return r;
+    if (!r.running) {
+      // Nothing moves an idle row but a resume (DP1-09 D12, D26), as the app's Continue does.
+      if (r.waiting === "funding_unknown" || r.waiting === "needs_finish") throw new Fatal(`${w}'s registration ${r.draft} waits ${r.waiting}: look before running again`);
+      const grant = (await quoteFor(s, wallet, r.label)).grant;
+      step(`${w}: resuming ${r.draft} (${r.phase}, waiting ${r.waiting})`);
+      await s.run("identity", "--wallet", wallet, "resume", r.draft, "--max-duffs", String(grant.max_duffs), "--max-credits", String(grant.max_credits));
     }
-    return r.phase === "done" ? r : undefined;
+    return undefined;
   });
   if (done.name_failure) throw new Error(`${w}'s identity registered but not its name: ${done.name_failure}`);
-  const main = await poll(300_000, `${w}'s DashPay status to be ready`, 10_000, async () => (await mainIdentity(s, w)) ?? undefined);
+  const main = await poll(300_000, `${w}'s DashPay status to be ready`, 10_000, () => mainIdentity(s, w));
   reg.state = "done";
   reg.identity = main;
   step(`${w}: identity ${main}, @${reg.label}`);
@@ -453,39 +507,48 @@ const relations = async (s: Session, w: W): Promise<ContactRowInfo[]> => {
 const relationOf = async (s: Session, w: W, other: W) =>
   (await relations(s, w)).find((r) => r.contact === state.registrations[other]!.identity)?.relation ?? "stranger";
 
+/** A DashPay pass now where the engine has one (`DashPay.sync_now` may be a stub); otherwise the
+ * session's own sync loop reads the network and the caller polls. */
+async function syncNow(s: Session, w: W) {
+  const a = await s.ask("dashpay", "--wallet", idOf(w), "sync");
+  if (!a.ok && a.error?.code !== "platform.not_implemented") throw new Error(`dashpay sync: ${a.error?.code}: ${mask(a.error?.message ?? "")}`);
+}
+
 /** `from` asks `to`, `to` accepts: each write only when the relation says it is still needed. */
 async function befriend(s: Session, from: W, to: W) {
   const key = `${from}>${to}`;
   if (state.contacts[key]?.state === "contacts") return;
   const toId = state.registrations[to]!.identity!;
   const fromId = state.registrations[from]!.identity!;
-  await s.run("dashpay", "--wallet", idOf(from), "sync");
+  await syncNow(s, from);
   let rel = await relationOf(s, from, to);
   if (rel === "stranger") {
-    if (state.contacts[key]?.state === "requesting") throw new Error(`fixture-state.json says ${key} was being requested and ${from} shows no relation: look before running again`);
+    const recorded = state.contacts[key]?.state;
+    if (recorded) throw new Fatal(`fixture-state.json says ${key} is ${recorded} and ${from} shows no relation: look before running again`);
     state.contacts[key] = { state: "requesting", at: new Date().toISOString() };
     step(`${from} asks ${to} (${toId})`);
-    const out = await s.run<{ kind: string }>("contact", "--wallet", idOf(from), "request", toId);
+    const out = (await s.run<{ outcome?: { kind: string } }>("contact", "--wallet", idOf(from), "request", toId)).outcome;
     state.contacts[key] = { state: "sent", at: new Date().toISOString() };
-    step(`${from}→${to} request: ${out.kind}`);
+    step(`${from}→${to} request: ${out?.kind}`);
     rel = await relationOf(s, from, to);
   } else if (rel !== "pending_outgoing" && rel !== "contact") {
-    throw new Error(`${from} relates to ${to} as ${rel}`);
+    throw new Fatal(`${from} relates to ${to} as ${rel}`);
   }
   if (rel !== "contact") {
     const incoming = await poll(CONTACT_TIMEOUT_MS, `${to} to see ${from}'s request`, 20_000, async () => {
-      await s.run("dashpay", "--wallet", idOf(to), "sync");
+      await syncNow(s, to);
       const r = await relationOf(s, to, from);
       return r === "pending_incoming" || r === "contact" ? r : undefined;
     });
     if (incoming === "pending_incoming") {
+      if (state.contacts[key]?.state === "accepting") throw new Fatal(`fixture-state.json says ${to} was accepting ${from}, and the request still waits: look before running again`);
       state.contacts[key] = { state: "accepting", at: new Date().toISOString() };
       step(`${to} accepts ${from} (${fromId})`);
-      const out = await s.run<{ kind: string }>("contact", "--wallet", idOf(to), "accept", fromId);
-      step(`${to} accepted ${from}: ${out.kind}`);
+      const out = (await s.run<{ outcome?: { kind: string } }>("contact", "--wallet", idOf(to), "accept", fromId)).outcome;
+      step(`${to} accepted ${from}: ${out?.kind}`);
     }
     await poll(CONTACT_TIMEOUT_MS, `${from} to list ${to} as a contact`, 20_000, async () => {
-      await s.run("dashpay", "--wallet", idOf(from), "sync");
+      await syncNow(s, from);
       return (await relationOf(s, from, to)) === "contact" ? true : undefined;
     });
   }
@@ -495,11 +558,38 @@ async function befriend(s: Session, from: W, to: W) {
 
 // ------------------------------------------------------------------ main
 
+/** One run at a time: `.lock` holds the pid; a lock whose process is gone is taken over. */
+function lock() {
+  for (let i = 0; i < 2; i++) {
+    try {
+      const fd = openSync(LOCK, "wx", 0o600);
+      writeFileSync(fd, `${process.pid}\n`);
+      closeSync(fd);
+      process.on("exit", () => rmSync(LOCK, { force: true }));
+      return;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      const pid = Number(readFileSync(LOCK, "utf8").trim());
+      try {
+        process.kill(pid, 0);
+        throw new Fatal(`another fixture run (pid ${pid}) holds ${LOCK}`);
+      } catch (k) {
+        if (k instanceof Fatal) throw k;
+        rmSync(LOCK, { force: true });
+      }
+    }
+  }
+  throw new Error(`could not take ${LOCK}`);
+}
+
 async function main() {
-  if (!(FIXTURE + "/").startsWith(homedir() + "/")) throw new Error(`${FIXTURE}: the fixture must lie under ${homedir()} (the secret store links only there)`);
+  if (!FIXTURE.startsWith(`${homedir()}/`)) throw new Error(`${FIXTURE}: the fixture must lie below ${homedir()} (the secret store links only there)`);
   mkdirSync(FIXTURE, { recursive: true, mode: 0o700 });
+  lock();
   mkdirSync(LOGS, { recursive: true, mode: 0o700 });
   if (existsSync(STATE_FILE)) state = { ...state, ...(JSON.parse(readFileSync(STATE_FILE, "utf8")) as State) };
+  else if (existsSync(PASS_FILE) || WALLETS.some((w) => existsSync(join(FIXTURE, `${w}.mnemonic`))))
+    throw new Error(`${FIXTURE} holds secrets but no fixture-state.json: its payments and registrations are unknown; use a new fixture directory`);
   secrets.push(passphrase());
   await wallets();
   await faucet();
@@ -508,24 +598,29 @@ async function main() {
   const s = new Session();
   let lastKind: string | undefined;
   try {
-    await poll(300_000, "DashPay's bring-up", 10_000, async () => {
-      const a = await s.ask("dashpay", "--wallet", idOf("A"), "status");
-      if (!a.ok && a.error?.code === "session_exit") throw new Error(a.error.message);
-      const kind = a.ok ? a.result?.kind : a.error?.code;
-      if (kind !== lastKind) console.log(`fixture: DashPay status of A: ${kind}`);
-      lastKind = kind;
-      return a.ok && kind !== "startup_incomplete" ? true : undefined;
-    });
+    for (const w of WALLETS)
+      await poll(300_000, `DashPay's bring-up for ${w}`, 10_000, async () => {
+        const a = await s.ask("dashpay", "--wallet", idOf(w), "status");
+        if (!a.ok && a.error?.code === "session_exit") throw new Fatal(a.error.message);
+        const kind = a.ok ? a.result?.kind : a.error?.code;
+        if (kind !== lastKind) console.log(`fixture: DashPay status of ${w}: ${kind}`);
+        lastKind = kind;
+        return a.ok && kind !== "startup_incomplete" ? true : undefined;
+      });
     // Registrations run side by side: each waits for SPV, its lock's proof and Platform.
     const results = await Promise.allSettled(WALLETS.map((w) => register(s, w)));
     const failed = results.flatMap((r, i) => (r.status === "rejected" ? [`${WALLETS[i]}: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`] : []));
     if (failed.length) throw new Error(failed.join("; "));
     for (const [from, to] of EDGES) await befriend(s, from, to);
+    // The flows spend these pairs (bell-accept, add-contact): once fixture.json exists a related
+    // pair is the flows' doing, worth a line, not a failure.
+    const related: string[] = [];
     for (const [x, y] of STRANGERS) {
       const r = await relationOf(s, x, y);
-      if (r !== "stranger") throw new Error(`${x} and ${y} must not relate, but ${x} sees ${y} as ${r}`);
+      if (r !== "stranger") related.push(`${x}–${y} (${r})`);
     }
-    step(`not related, as the flows need: ${STRANGERS.map(([x, y]) => `${x}–${y}`).join(", ")}`);
+    if (related.length && !existsSync(FIXTURE_JSON)) throw new Fatal(`these pairs must not relate before the flows run: ${related.join(", ")}`);
+    step(related.length ? `related since the flows ran: ${related.join(", ")}` : `not related, as the flows need: ${STRANGERS.map(([x, y]) => `${x}–${y}`).join(", ")}`);
 
     const fixture: Record<string, unknown> = {};
     for (const w of WALLETS) {
@@ -542,13 +637,12 @@ async function main() {
         credits: balance,
       };
     }
-    writeFileSync(join(FIXTURE, "fixture.json"), `${JSON.stringify(fixture, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(FIXTURE_JSON, `${JSON.stringify(fixture, null, 2)}\n`, { mode: 0o600 });
     step(`fixture.json written: ${WALLETS.map((w) => `${w} @${state.registrations[w]!.label} {${(fixture[w] as { contacts: string[] }).contacts.join(",")}}`).join("; ")}`);
   } finally {
     await s.close();
   }
-  const found = [LOGS, STATE_FILE, join(FIXTURE, "fixture.json")].flatMap((p) => (existsSync(p) && lstatSync(p).isDirectory() ? leaks(p, secrets) : []));
-  for (const f of [STATE_FILE, join(FIXTURE, "fixture.json")]) if (existsSync(f) && secrets.some((x) => readFileSync(f, "utf8").includes(x))) found.push(f);
+  const found = [...leaks(LOGS, secrets), ...[STATE_FILE, FIXTURE_JSON].filter((f) => existsSync(f) && secrets.some((x) => readFileSync(f, "utf8").includes(x)))];
   if (found.length) throw new Error(`secrets in plain text: ${found.join(", ")}`);
   console.log("fixture: READY");
 }
