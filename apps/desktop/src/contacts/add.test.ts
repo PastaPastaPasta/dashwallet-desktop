@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ScannedContactInfo } from "../api/generated/ScannedContactInfo";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import {
+  AddText,
   AddContactModel,
   answersAtOnce,
   candidateName,
@@ -20,13 +21,8 @@ import {
   imageError,
   myQr,
   nextRead,
-  NO_CODE_IN_IMAGE,
-  NOT_A_CODE,
   ownerLine,
-  SCAN_EXPIRED,
-  SCAN_UNVERIFIED,
   scanStatus,
-  SCREEN_UNAVAILABLE,
   userLinkText,
   verifyError,
   watchClaim,
@@ -129,9 +125,9 @@ describe("eligibility (D4, D13)", () => {
 
 describe("copy (D6, D7, D9, D12)", () => {
   it("IOS-073 says verification refusals, with Try again only for the network", () => {
-    expect(verifyError(appError("contact.scan_unverified"))).toEqual({ text: SCAN_UNVERIFIED, retry: false });
+    expect(verifyError(appError("contact.scan_unverified"))).toEqual({ text: AddText.scanUnverified, retry: false });
     expect(verifyError(appError("contact.scan_expired"))).toEqual({ text: "This QR code has expired. Ask for a new one.", retry: false });
-    expect(verifyError(appError("invalid_argument"))).toEqual({ text: NOT_A_CODE, retry: false });
+    expect(verifyError(appError("invalid_argument"))).toEqual({ text: AddText.notACode, retry: false });
     expect(verifyError(appError("platform.unavailable"))).toEqual({ text: "Could not reach Dash Platform.", retry: true });
     expect(verifyError(appError("platform.timeout")).retry).toBe(true);
   });
@@ -139,7 +135,7 @@ describe("copy (D6, D7, D9, D12)", () => {
   it("IOS-043 says image and capture refusals", () => {
     expect(imageError(appError("app.image_unreadable"))).toBe("This image could not be read. Use a PNG, JPEG or BMP file.");
     expect(imageError(appError("app.no_qr_code"))).toBe("No QR code was found in this image.");
-    expect(imageError(appError("app.screen_capture_unavailable"))).toBe(SCREEN_UNAVAILABLE);
+    expect(imageError(appError("app.screen_capture_unavailable"))).toBe(AddText.screenUnavailable);
     expect(imageError(appError("app.file_too_large"))).toBe("The file is too large.");
   });
 
@@ -155,7 +151,7 @@ describe("copy (D6, D7, D9, D12)", () => {
     // The engine refuses a claim with a minute or less left.
     for (const secs of [60, -1]) {
       expect(claimNote(at(secs), now)).toBeNull();
-      expect(claimLine(send, at(secs), now)).toEqual({ text: SCAN_EXPIRED, next: null });
+      expect(claimLine(send, at(secs), now)).toEqual({ text: AddText.scanExpired, next: null });
     }
     // Only Send needs the claim; a plain card and other next steps stand.
     expect(claimLine(send, null, now)).toEqual(send);
@@ -222,7 +218,7 @@ describe("an open claim (D36)", () => {
     const send = { text: null, next: "send" as const };
     // What the card renders on each tick.
     const shown: (string | null)[] = [];
-    const render = () => shown.push(claimLine(send, claim, Date.now())?.next === "send" ? claimNote(claim, Date.now()) : SCAN_EXPIRED);
+    const render = () => shown.push(claimLine(send, claim, Date.now())?.next === "send" ? claimNote(claim, Date.now()) : AddText.scanExpired);
     const stop = watchClaim(claim, Date.now, render);
     vi.advanceTimersByTime(CLAIM_TICK_MS);
     expect(shown).toEqual(["This code asks them to accept you automatically. They confirm it when your request arrives. It expires in 30 min."]);
@@ -233,7 +229,7 @@ describe("an open claim (D36)", () => {
     vi.advanceTimersByTime(14 * 60_000 + 10_000 - 1);
     expect(shown.at(-1)).toMatch(/expires in 1 min\.$/);
     vi.advanceTimersByTime(1);
-    expect(shown.at(-1)).toBe(SCAN_EXPIRED);
+    expect(shown.at(-1)).toBe(AddText.scanExpired);
     // Nothing changes after that: the timer is done.
     const ticks = shown.length;
     expect(vi.getTimerCount()).toBe(0);
@@ -292,7 +288,7 @@ describe("AddContactModel", () => {
     });
     await model.verifyText(LINK);
     expect(model.candidate).toBeNull();
-    expect(model.scan).toEqual({ kind: "failed", source: "scan", text: SCAN_UNVERIFIED, retry: false });
+    expect(model.scan).toEqual({ kind: "failed", source: "scan", text: AddText.scanUnverified, retry: false });
   });
 
   it("D13 a link says its username while it is checked, and errors on the card", async () => {
@@ -346,7 +342,7 @@ describe("AddContactModel", () => {
       }),
     });
     await model.openImage();
-    expect(model.scan).toMatchObject({ kind: "failed", text: NO_CODE_IN_IMAGE });
+    expect(model.scan).toMatchObject({ kind: "failed", text: AddText.noCodeInImage });
   });
 
   it("IOS-043 a cancelled dialog or picker changes nothing; a decoder refusal is said", async () => {

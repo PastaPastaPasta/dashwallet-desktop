@@ -5,7 +5,7 @@ import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo"
 import { DashButton } from "../../components/basics";
 import type { ActionOutcome, ContactActions } from "../../contacts/actions";
 import { shownName } from "../../contacts/model";
-import { ENABLE_FIRST } from "../../contacts/pane";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 
 export function RequestButtons({
@@ -23,6 +23,7 @@ export function RequestButtons({
   onDone?: (outcome: ActionOutcome | null) => void;
 }) {
   useModel(actions);
+  const t = useT();
   const name = shownName(c);
   const accepting = actions.isRunning("accept", c.contact);
   const ignoring = actions.isRunning("ignore", c.contact);
@@ -32,22 +33,22 @@ export function RequestButtons({
         variant="filledBlue"
         size="small"
         data-testid={`${testPrefix}-accept`}
-        aria-label={`${accepting ? "Accepting" : "Accept"} ${name}`}
-        title={hasKeys === false ? ENABLE_FIRST : undefined}
+        aria-label={accepting ? t("contacts.request.acceptingName", { name }) : t("contacts.request.acceptName", { name })}
+        title={hasKeys === false ? t("contacts.pane.enableFirst") : undefined}
         disabled={actions.busy || hasKeys === false}
         onClick={() => void actions.accept(c.contact, name).then(onDone)}
       >
-        {accepting ? "Accepting…" : "Accept"}
+        {accepting ? t("contacts.request.accepting") : t("contacts.request.accept")}
       </DashButton>
       <DashButton
         variant="tintedGray"
         size="small"
         data-testid={`${testPrefix}-ignore`}
-        aria-label={`${ignoring ? "Ignoring" : "Ignore"} ${name}`}
+        aria-label={ignoring ? t("contacts.request.ignoringName", { name }) : t("contacts.request.ignoreName", { name })}
         disabled={actions.busy}
         onClick={() => void actions.ignore(c.contact).then(onDone)}
       >
-        {ignoring ? "Ignoring…" : "Ignore"}
+        {ignoring ? t("contacts.request.ignoring") : t("contacts.request.ignore")}
       </DashButton>
     </span>
   );

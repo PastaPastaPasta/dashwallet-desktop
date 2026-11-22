@@ -228,6 +228,12 @@ impl NamesRuns {
         runs.epoch
     }
 
+    /// Whether the supervisor of `epoch` still runs.
+    pub(super) fn runs(&self, epoch: u64) -> bool {
+        let runs = guard(&self.0);
+        runs.active && runs.epoch == epoch
+    }
+
     /// The epoch of the supervisor running, for a test's kicks.
     #[cfg(test)]
     pub(super) fn epoch(&self) -> u64 {

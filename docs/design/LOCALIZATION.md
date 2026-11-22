@@ -27,20 +27,28 @@ language. The choice is saved with the other display settings (`UiSettings.langu
 than BCP 47: a 2–3 letter language, then subtags of 1–8 letters or digits, each single-character
 subtag (an extension or private-use singleton) followed by a longer subtag, at most 35 bytes. So
 `de-u-co-phonebk` and `en-x-wallet` are accepted, `en-u`, `en-x` and private-use-only tags
-(`x-wallet`) are not. The grammar is a check of shape, not of the registry. A `language` of the wrong
+(`x-wallet`) are not. The grammar is a check of shape, not of the registry: it lets through tags such as
+`con` and `nul`, which are reserved file names on Windows. No path is built from a tag today; one that
+ever is gets a fixed prefix. A `language` of the wrong
 type in a hand-edited file, of any shape or depth, reads as `null` and leaves
 the other settings as saved; an IPC write with one is refused. System default takes the system's first
-language that has a **complete** catalog, by tag and then by language alone (`pt-PT` takes `pt`), and
-English otherwise. Reset options goes back to System default.
+language that has a **complete** catalog, by tag and then by language alone in a script that does not conflict (`pt-PT` takes `pt`, `zh-Hans-CN` takes
+`zh-Hans`, `zh-Hant-TW` does not), and
+English otherwise. Reset options goes back to System default. A saved tag is matched to its
+language whatever its case (`EN` shows as English); a saved tag this build does not ship shows as its
+own row ("pt-BR (not available, using System default)") until another choice replaces it.
 
 The language sets `<html lang>` and `dir`, and the locale numbers, dates and fiat are formatted with
 (`Backend.locale`): the system's while the language follows the system or is the system's own language
-(so `en-GB` keeps its date order), the chosen language's otherwise. Under System default, numbers
+(so `en-GB` keeps its date order; a system language in a conflicting script, `zh-TW` under a chosen
+`zh-Hans`, does not count as its own), the chosen language's otherwise. Under System default, numbers
 follow the system's formats even when the system's language has no catalog and the text falls back to
 English.
 
 The first local currency (prices turned on with no currency saved) comes from the system's region
-(`Backend.regionLocale`), never from the UI language; a saved currency always wins. Currency names,
+(`Backend.regionLocale`), never from the UI language; a saved currency always wins. The region is the one
+the webview reports (its first language with a region, else its default locale), which can differ
+from the operating system's own region setting. Currency names,
 prices and dates use the display locale.
 
 ## Adding a string
@@ -54,12 +62,16 @@ const t = useT();
 ```
 
 - **Placeholders** are named: `"Switch to {network}?"`. `t` requires exactly the placeholders the
-  English text has; numbers are formatted for the locale. Never build a sentence from pieces
+  English text has; numbers are formatted for the locale. A number placeholder uses `Intl.NumberFormat`'s default
+  precision, so it is for counts only: an amount goes through the amount formatter (`format/amount.ts`)
+  and is passed as the formatted string. Never build a sentence from pieces
   (`"Switch to " + name`): word order differs between languages.
 - **Plurals** are an object chosen by a numeric `count` (a string `count` fails `tsc`) through
   `Intl.PluralRules`:
   `peers: { one: "{count} peer", other: "{count} peers" }`, read as `t("shell.status.peers", { count })`.
   English needs `one` and `other`; a translation gives the forms its language has (`few`, `many`, …).
+  A key a translation lacks falls back to the English message, whose form is chosen by English's
+  rules (a Russian window shows "21 peers", not "21 peer"); the number keeps the language's format.
 - **Rich text**: a sentence with a link or bold part is one message with tags,
   `"Read the <link>guide</link> first."`, read with
   `t.rich("…", { link: (text) => <a href={…}>{text}</a> })`. Placeholders of `t.rich` may be elements.
@@ -68,9 +80,16 @@ const t = useT();
 - A text module that is read outside a component (`NetworkText`, `LockText`) reads `t` in a getter or a
   function, so it is read in the language of the render that reads it. A table becomes
   `messageTable(prefix, keys)`.
-- In a right-to-left language each placeholder value that is text or a number is a bidi isolate, so a
-  username or address keeps its own direction. An element given to `t.rich` is placed as it is. Text
-  that is only data (a wallet name, `@username`) goes in `<bdi>`.
+- In a right-to-left language each placeholder value that is text or a number is a bidi isolate (U+2068 …
+  U+2069); in a left-to-right language only a text value with right-to-left letters or a bidi control is
+  (an Arabic or Hebrew username), so English text is unchanged. A value's own isolate controls are
+  paired, and each of its paragraphs is isolated on its own, so nothing in it reaches the text after it. An element given to `t.rich` is wrapped in
+  `<bdi>` in every language. A message a right-to-left catalog lacks falls back to English and is drawn
+  left to right as a whole (U+2066 … U+2069). The isolate characters stay in `aria-label` and `title`
+  values; screen readers ignore them, and a test comparing an exact accessible name under `ar-XB` includes
+  them. Text that is only data outside a message (a wallet name, `@username`) goes in `<bdi>`. An amount
+  (`AmountText`, and the Activity table's amount cell) is a left-to-right isolate, so a debit reads
+  "-1.25" in a right-to-left window.
 
 `Catalog<typeof en>` types every other language: a key English does not have fails `tsc`, and a missing
 key shows English. A test checks that each translation uses only English's placeholders and tags.
@@ -114,18 +133,20 @@ catalog messages are now formatted for the locale, so a peer count of 1234 reads
 ### What the checks catch
 
 - `converted.test.ts` reads each converted `.tsx` file and fails on JSX text, on a string literal in a
-  text attribute or copy prop, on a template literal, on both literal branches of `?:`, and on a
-  literal right-hand side of `??` or `||`.
+  text attribute or copy prop, on a template literal, on both literal branches of `?:`, on a literal
+  on either side of `??`, `||`, `&&` or a `+` concatenation, and on a literal handed to `showToast`.
   It does not see text built elsewhere and passed in: a helper's return value (`title={helper()}`), an
-  imported constant, concatenation, a string handed to `showToast`, or an error-code mapping.
-- `e2e/i18n.spec.ts` walks the visible text nodes under the toolbar, sidebar, status bar and the page
+  imported constant, or an error-code mapping in a `.ts` module.
+- `e2e/pseudo.ts` (`checkArea`, used by `e2e/i18n.spec.ts` and each area's spec) fails on a root that
+  is not on the page, and walks the visible text nodes under the toolbar, sidebar, status bar and the page
   or lock screen, and fails on plain Latin text that carries neither pseudo-locale's mark. A node with a
   mark anywhere passes whole, so English interpolated into a translated sentence is not caught, and a
   clipped string still has its closing bracket in the DOM. Accessible names, placeholders, unselected
-  options, a root that is not on the page (it is skipped) and states the spec does not open (the
+  options and states the spec does not open (the
   unlock sheet, error and copy states) are not checked.
 - The overflow check runs at 1280×820 and 920×600 and fails on sideways scrolling and on an element
-  that sticks out of the toolbar, sidebar, status bar, page or lock column.
+  that sticks out of the toolbar, sidebar, status bar, page or lock column, or a pane an
+  area's spec adds (a sheet, a dialog).
 - axe runs at 1280×820 only, for Settings ▸ General and the lock screen under both pseudo-locales,
   light and dark, and fails on serious and critical violations of the WCAG 2.0/2.1 A and AA and
   best-practice rules.

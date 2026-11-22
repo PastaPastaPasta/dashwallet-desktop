@@ -951,6 +951,19 @@ fn a_payment_mark_goes_at_the_load_after_it_is_mined() {
     assert_eq!(sent_marks(&session, id), BTreeSet::from([pending.txid()]));
 }
 
+/// #170 case 17 guard: a payment's mark names every coin it spends, all of
+/// them the wallet's.
+#[test]
+fn a_payments_mark_names_each_coin_it_spends() {
+    let (_dir, engine, session, id, paid) = funded_wallet_and_funding();
+    let coins = BTreeSet::from([OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1)]);
+    let source = CoinSource::Outpoints(coins.iter().copied().collect());
+    let tx = send(&engine, &session, id, source, COIN * 3 / 2, false);
+    let (sent, read) = crate::tx_actions::load_sent(&session.live().unwrap().appdb, id);
+    assert!(read);
+    assert_eq!(sent.get(&tx.txid()), Some(&coins));
+}
+
 fn held(engine: &Engine, session: &NetworkSession, id: WalletId) -> BTreeSet<OutPoint> {
     coins(engine, session, id)
         .into_iter()
