@@ -63,7 +63,7 @@ export const RepairText = {
   },
   resolved: (txid: string) => t("tools.repair.resolved", { txid }),
   /** A stuck top-up's line (DP1-10 D16): whose credits it tops up. */
-  topUp: (name: string | null) => (name ? t("tools.repair.topUpNamed", { name }) : t("tools.repair.topUpUnnamed")),
+  topUp: (name: string | null) => (name ? t("tools.repair.topUpNamed", { username: `@${name}` }) : t("tools.repair.topUpUnnamed")),
   get resolveStuckTopUpQuestion() {
     return t("tools.repair.resolveStuckTopUpQuestion");
   },

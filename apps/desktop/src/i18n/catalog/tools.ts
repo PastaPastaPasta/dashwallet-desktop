@@ -248,7 +248,7 @@ export const tools = {
     stuckTopUpsTitle: "Stuck credit top-ups",
     stuckTopUpsHint: "Whether these top-ups' payment reached the network is unknown. Sending every coin of the wallet to itself settles it either way; you can top up again once that is confirmed.",
     stuckTopUpsUnreadable: "This wallet's credit top-ups could not be read, so their stuck funding cannot be checked here.",
-    topUpNamed: "A top-up of @{name}'s credits",
+    topUpNamed: "A top-up of {username}'s credits",
     topUpUnnamed: "A top-up of an identity's credits",
     resolveStuckTopUpQuestion: "Send every coin of this wallet to yourself? Whether the top-up's payment reached the network is settled either way; the payment costs only its fee.",
     resolvedTopUp: "All coins were sent to yourself (transaction {txid}). You can top up again once it is confirmed.",
