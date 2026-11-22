@@ -48,6 +48,39 @@ async function prepared(r: ContactRecipient) {
 
 const refusal = (p: Promise<unknown>) => p.then(() => null, (e: cmd.AppError) => ({ code: e.code, data: e.data }));
 
+describe("fixture contact payment to an unverified contact (H-09)", () => {
+  it("goes through while the data counts as checked", async () => {
+    const { p } = await prepared(to("erin"));
+    expect(p.summary.totalSent).toBe(1_000_000);
+  });
+
+  it("refuses at prepare with context_unavailable, or trust_mismatch, for an unverified contact only", async () => {
+    clearMocks();
+    fixture = installFixture({ scenario: "dashpay-contact-unchecked" });
+    expect(await refusal(prepared(to("erin")))).toEqual({ code: "platform.context_unavailable", data: null });
+    // The draft and its estimate do not wait: only prepare does.
+    expect((await cmd.draftEstimate(await draftFor(to("erin")))).totalSent).toBe(1_000_000);
+    expect((await prepared(to("bob"))).p.summary.totalSent).toBe(1_000_000);
+    clearMocks();
+    fixture = installFixture({ scenario: "dashpay-contact-mismatch" });
+    expect(await refusal(prepared(to("erin")))).toEqual({ code: "platform.trust_mismatch", data: null });
+  });
+
+  it("holds prepare with hold=draft_prepare: the wait Send shows", async () => {
+    clearMocks();
+    fixture = installFixture({ scenario: "dashpay-contact-unchecked", holds: ["draft_prepare"] });
+    let settled = false;
+    const out = refusal(prepared(to("erin"))).then((r) => {
+      settled = true;
+      return r;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(settled).toBe(false);
+    fixture.release("draft_prepare");
+    expect(await out).toEqual({ code: "platform.context_unavailable", data: null });
+  });
+});
+
 describe("fixture contact payment", () => {
   it("pays the contact's reserved address, not the wallet's, and attributes it", async () => {
     const { d, est, p } = await prepared(to("bob", 1_000_000, { note: "Lunch" }));
