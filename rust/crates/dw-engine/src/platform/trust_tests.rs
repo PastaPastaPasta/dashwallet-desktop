@@ -722,6 +722,44 @@ async fn the_post_sync_refetch_records_verified_matches_only() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn our_sent_request_held_without_its_proof_verifies() {
+    let r = rig(TrustMode::Degraded);
+    r.spv.set(A, SpvAnswer::Verified(REAL));
+    r.trusted.set(A, REAL);
+    let with = |proof: Option<Vec<u8>>| ContactRequest {
+        auto_accept_proof: proof,
+        ..request(7, 8, 1_700_000_000_123)
+    };
+    let check = |held: ContactRequest, on_platform: ContactRequest| {
+        let fetch = FakeRefetch {
+            trust: Arc::clone(&r.trust),
+            keys: BTreeMap::new(),
+            profile: ShownProfile::default(),
+            domain: (String::new(), Identifier::new([0; 32])),
+            requests: vec![on_platform],
+            quorum: HashMap::from([(kind::CONTACT_REQUEST, A)]),
+        };
+        tokio::spawn(async move { reverify(&Held::ContactRequest(held), &fetch).await })
+    };
+    let cases = [
+        (with(None), with(Some(vec![1; 38])), true),
+        (with(Some(vec![1; 38])), with(Some(vec![2; 38])), false),
+        (with(Some(vec![1; 38])), with(None), false),
+        (
+            with(None),
+            ContactRequest {
+                encrypted_public_key: vec![5; 96],
+                ..with(Some(vec![1; 38]))
+            },
+            false,
+        ),
+    ];
+    for (i, (held, on_platform, want)) in cases.into_iter().enumerate() {
+        assert_eq!(check(held, on_platform).await.unwrap(), want, "case {i}");
+    }
+}
+
 /// DP2-01's rows look up contact requests by m4 §5's key:
 /// `sender:recipient:$createdAt`, Base58 ids and milliseconds. The record a
 /// verified request writes is exactly that key.

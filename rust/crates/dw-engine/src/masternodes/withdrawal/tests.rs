@@ -1648,6 +1648,37 @@ async fn an_unverified_read_with_a_huge_height_raises_no_floor_in_any_mode() {
     }
 }
 
+/// H-09 (Astra H1): under rule 5, an open record whose hand-off was lost
+/// is not sent again on an unverified nonce read, though that read says
+/// Drive still takes the nonce: the pass is undecided. A verified read
+/// later sends it.
+#[tokio::test]
+async fn an_unverified_nonce_read_hands_nothing_off() {
+    {
+        let rule = Rule5::Enforce;
+        let f = fx();
+        f.scene.rule(rule);
+        f.plat.answer(Answer::Unknown("lost".into()), false);
+        let row = f.withdraw(Owner, AMOUNT).await.unwrap();
+        let sent = f.plat.sent().len();
+        f.plat.deviate(Read::Nonce, Dev::Unverified, ALWAYS);
+        let outcome = f.recheck(3).await;
+        assert!(
+            !matches!(outcome, Outcome::Done | Outcome::NotExecuted),
+            "{rule:?}: {outcome:?}"
+        );
+        assert_eq!(
+            f.plat.sent().len(),
+            sent,
+            "{rule:?}: sent on an unverified read"
+        );
+        assert!(f.row(&row.signed.id).state.is_open(), "{rule:?}");
+        f.plat.calm();
+        f.recheck(3).await;
+        assert!(f.plat.sent().len() > sent, "{rule:?}: sent once verified");
+    }
+}
+
 #[tokio::test]
 async fn a_verified_nonce_read_raises_the_groups_floor() {
     let f = fx();

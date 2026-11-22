@@ -638,6 +638,13 @@ fn the_trusted_only_toggle_survives_a_reopen() {
         s.quorum_source().unwrap(),
         dw_engine::platform::QuorumSource::Trusted
     );
+    if !cfg!(debug_assertions) {
+        assert!(engine.block_on(s.set_trusted_quorums_only(true)).is_err());
+        drop(s);
+        close();
+        engine.block_on(engine.shutdown()).unwrap();
+        return;
+    }
     engine.block_on(s.set_trusted_quorums_only(true)).unwrap();
     assert!(s.trusted_quorums_only().unwrap(), "applied at once");
     drop(s);

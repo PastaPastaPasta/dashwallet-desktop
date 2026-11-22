@@ -46,8 +46,10 @@ use crate::events::{EngineEvent, EventSink, NoticeCode};
 /// trusted service only, SPV not consulted.
 pub(crate) const TRUSTED_ONLY_KEY: &str = "trust.trusted_only";
 /// Whether this build may turn the toggle on: developer builds only
-/// (H-09; dw-app refuses the command in a release build too).
-const TRUSTED_ONLY_ALLOWED: bool = cfg!(debug_assertions);
+/// (H-09; dw-app refuses the command in a release build too). Unit tests
+/// take it in any profile and model a release build with
+/// `in_release_build`.
+const TRUSTED_ONLY_ALLOWED: bool = cfg!(any(debug_assertions, test));
 
 /// How long an unknown quorum waits for SPV once masternode sync is done
 /// (rule 3).

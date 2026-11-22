@@ -330,7 +330,9 @@ pub(super) async fn check(h: &Held, fetch: &dyn Refetcher) -> Check {
                 .map(|fetched| fetched == Some((spelling.clone(), *owner))),
             Held::ContactRequest(r) => {
                 let fetched = fetch.contact_requests(r.sender_id, r.recipient_id, r.created_at);
-                fetched.await.map(|all| all.contains(r))
+                fetched
+                    .await
+                    .map(|all| all.iter().any(|f| same_request(f, r)))
             }
         }
     })
@@ -442,6 +444,20 @@ fn domain_of(doc: &Document) -> Option<(String, Identifier)> {
     let records = props.get("records")?.to_map().ok()?;
     let (_, identity) = (records.iter()).find(|(k, _)| k.as_text() == Some("identity"))?;
     Some((spelling, identity.to_identifier().ok()?))
+}
+
+/// The library keeps our own sent request without its `autoAcceptProof`
+/// (docs/research/dashpay/platform-wallet-sent-auto-accept-proof.md), so a
+/// fetched copy carrying a proof still matches a held copy without one when
+/// every other field is equal. The proof chooses no address.
+fn same_request(fetched: &ContactRequest, held: &ContactRequest) -> bool {
+    fetched == held
+        || (held.auto_accept_proof.is_none()
+            && fetched.auto_accept_proof.is_some()
+            && ContactRequest {
+                auto_accept_proof: None,
+                ..fetched.clone()
+            } == *held)
 }
 
 /// A `contactRequest` document as platform-wallet reads it
