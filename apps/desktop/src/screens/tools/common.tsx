@@ -96,10 +96,9 @@ export function useReloadOnSync(reload: () => void) {
 }
 
 /** An outcome line under an action: the result, or what went wrong. */
-export function Outcome({ ok, text, testId }: { ok: boolean; text: string | null; testId: string }) {
-  if (!text) return null;
+export function Outcome({ ok, text, testId, polite = false }: { ok: boolean; text: string | null; testId: string; polite?: boolean }) {
   return (
-    <p className={ok ? "form-ok" : "form-problem"} role={ok ? "status" : "alert"} data-testid={testId}>
+    <p className={`outcome ${ok ? "form-ok" : "form-problem"}`} role={ok || polite ? "status" : "alert"} data-testid={testId}>
       {text}
     </p>
   );

@@ -2853,6 +2853,11 @@ input[type="radio"]:disabled {
   color: var(--dw-role-success-text);
 }
 
+.outcome:empty {
+  position: absolute;
+  margin: 0;
+}
+
 .onboarding-warning,
 .sheet-warning {
   padding: var(--dw-space-sm) var(--dw-space-m);

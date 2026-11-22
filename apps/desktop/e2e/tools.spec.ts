@@ -300,10 +300,12 @@ test.describe("Sign/Verify", () => {
     await page.getByTestId("verify-signature").fill(signature);
     await page.getByTestId("verify-verify").click();
     await expect(page.getByTestId("verify-result")).toHaveText("Message verified.");
-    await expect(page.getByTestId("verify-result")).toHaveClass("form-ok");
+    await expect(page.getByTestId("verify-result")).toContainClass("form-ok");
+    await expect(page.getByTestId("verify-result")).not.toContainClass("form-problem");
     await page.getByTestId("verify-message").fill("hello dash!");
     await page.getByTestId("verify-verify").click();
-    await expect(page.getByTestId("verify-result")).toHaveClass("form-problem");
+    await expect(page.getByTestId("verify-result")).toContainClass("form-problem");
+    await expect(page.getByTestId("verify-result")).not.toContainClass("form-ok");
     await page.getByTestId("verify-clear").click();
     await expect(page.getByTestId("verify-result")).toHaveCount(0);
   });

@@ -40,8 +40,9 @@ const rendered = (page: Page) => page.evaluate(() => new Promise((r) => requestA
 /** How `el` reads to assistive tech now, in the page: "<politeness>: <text>" (polite or assertive)
  * for an exposed live region; for a live region a reader cannot reach yet, why not and its text;
  * else "absent" or "not a live region". An explicit `aria-live` wins over the role's default (`off`
- * is not live). A region inside aria-busy="true" is not exposed: readers hold its updates. The text is what a reader gets: text inside an aria-hidden, hidden, inert or
- * unrendered element of the region is left out. Self-contained: it runs in the page. */
+ * is not live). A region inside aria-busy="true" is not exposed: readers hold its updates. The
+ * text is what a reader gets: text inside an aria-hidden, hidden, inert or unrendered element of
+ * the region is left out. Self-contained: it runs in the page. */
 function liveState(el: Element | null): string {
   if (!el?.isConnected) return "absent";
   const explicit = el.getAttribute("aria-live");
@@ -288,7 +289,7 @@ test("keyboard only: send a contact request", async ({ page }) => {
   await page.keyboard.press("Enter");
   await authorizeFrom(page, send);
 
-  // The outcome shows (whether a reader hears it is defect "Add contact" below), and focus has a
+  // The outcome shows (that a reader hears it is the "Add contact" test below), and focus has a
   // place in the card that now says it went.
   const outcome = page.getByTestId("add-contact-outcome");
   await expect(outcome).toHaveText("Contact request sent to Mallory.");
@@ -340,7 +341,7 @@ test("keyboard only: accept a contact request from the bell", async ({ page }) =
   await page.keyboard.press("Enter");
   await authorizeFrom(page, accept);
 
-  // Shown inline while the popover is open (whether a reader hears it is defect "bell" below);
+  // Shown inline while the popover is open (that a reader hears it is the "bell" test below);
   // focus goes to the request now in heidi's place.
   const outcome = page.getByTestId("bell-outcome");
   await expect(outcome).toHaveText("You and heidi are now contacts.");
@@ -386,7 +387,7 @@ test("keyboard only: accept a contact request in the contacts list", async ({ pa
   await page.keyboard.press("Enter");
   await authorizeFrom(page, accept);
 
-  // The pane shows what happened (whether a reader hears it is defect "contact pane" below) and
+  // The pane shows what happened (that a reader hears it is the "contact pane" test below) and
   // takes focus at what it offers now.
   const outcome = page.getByTestId("contact-pane-outcome");
   await expect(outcome).toHaveText("You and heidi are now contacts.");
@@ -563,11 +564,10 @@ test("defect (#288): while a contact payment is sent, Confirm payment leaves foc
   await expect.poll(async () => ((await holdsFocus(confirm)) ? "in Confirm payment" : await focusName(page))).toBe("in Confirm payment");
 });
 
-// A contact action's result goes in `Outcome` (src/screens/tools/common.tsx), which renders nothing
-// until there is text: its role=status region appears already holding the result, which screen
-// readers do not reliably announce. Expected: an empty status region present before the action,
-// and that same element given the result. `reach` gets to the action's button; Enter and the
-// passphrase run it.
+// A contact action's result goes in `Outcome` (src/screens/tools/common.tsx). A status region that
+// appears already holding its text is not reliably announced (#291), so the empty status region is
+// there before the action and that same element is given the result. `reach` gets to the action's
+// button; Enter and the passphrase run it.
 const OUTCOME_SITES: { where: string; region: string; said: string; reach: (page: Page) => Promise<Locator> }[] = [
   {
     where: "Add contact ▸ Send request (add-contact-outcome)",
@@ -605,7 +605,7 @@ const OUTCOME_SITES: { where: string; region: string; said: string; reach: (page
 ];
 
 for (const site of OUTCOME_SITES) {
-  test(`defect (#291): ${site.where}: the result's status region only appears with the result, so it is not announced`, async ({ page }) => {
+  test(`${site.where}: the result is said by the status region present before the action (#291)`, async ({ page }) => {
     const errors = await open(page, "dashpay-registered");
     const trigger = await site.reach(page);
     const region = await page.evaluateHandle((s) => document.querySelector(s), site.region);
@@ -613,14 +613,8 @@ for (const site of OUTCOME_SITES) {
     await armRecorder(page, region);
     await page.keyboard.press("Enter");
     await authorizeFrom(page, trigger);
-    // The result shows; the question is only whether the region held before the action said it.
     await expect(page.locator(site.region)).toHaveText(site.said);
-    const shownIn = await page.locator(site.region).evaluate(liveState);
     expect(errors).toEqual([]);
-    test.fail(
-      true,
-      `${site.where}: no status region is in the page before the action ("${before}"); the result comes in a new role=status element that appears with its text ("${shownIn}"). Expected an empty status region present before the action, then that element given "${site.said}" politely while exposed.`,
-    );
     await expect
       .poll(async () => ({ before, said: (await heardBy(region)).includes(`polite: ${site.said}`) }))
       .toEqual({ before: "polite: ", said: true });
