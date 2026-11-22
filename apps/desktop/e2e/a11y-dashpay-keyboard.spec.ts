@@ -37,28 +37,43 @@ const holdsFocus = (target: Locator) => target.evaluate((el) => el.contains(docu
 /** Two frames: the browser has rendered, and moved focus off anything that became disabled. */
 const rendered = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 
-/** How `el` reads to assistive tech now, in the page: "live: <its text>" for an exposed live
- * region; for a live region a reader cannot reach yet, why not and its text; else "absent" or "not
- * a live region". An explicit `aria-live` wins over the role's default (`off` is not live).
- * Self-contained: it runs in the page. */
+/** How `el` reads to assistive tech now, in the page: "<politeness>: <text>" (polite or assertive)
+ * for an exposed live region; for a live region a reader cannot reach yet, why not and its text;
+ * else "absent" or "not a live region". An explicit `aria-live` wins over the role's default (`off`
+ * is not live). The text is what a reader gets: text inside an aria-hidden, hidden, inert or
+ * unrendered element of the region is left out. Self-contained: it runs in the page. */
 function liveState(el: Element | null): string {
   if (!el?.isConnected) return "absent";
   const explicit = el.getAttribute("aria-live");
   const politeness = explicit !== null ? explicit.trim() : ({ status: "polite", alert: "assertive", log: "polite" } as Record<string, string>)[el.getAttribute("role") ?? ""];
   if (politeness !== "polite" && politeness !== "assertive") return "not a live region";
-  const text = (el.textContent ?? "").trim();
+  const parts: string[] = [];
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    let shown = true;
+    for (let p = node.parentElement; p && p !== el; p = p.parentElement) {
+      const style = getComputedStyle(p);
+      if (p.getAttribute("aria-hidden") === "true" || p.hasAttribute("hidden") || p.hasAttribute("inert") || style.display === "none" || style.visibility === "hidden") {
+        shown = false;
+        break;
+      }
+    }
+    if (shown) parts.push((node as Text).data);
+  }
+  const text = parts.join("").replace(/\s+/g, " ").trim();
   if (el.closest('[aria-hidden="true"], [inert]')) return `hidden from assistive tech: ${text}`;
   const modal = document.querySelector('[aria-modal="true"]');
   if (modal && !modal.contains(el)) return `outside the open modal: ${text}`;
   if (!el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true })) return `not rendered: ${text}`;
-  return `live: ${text}`;
+  return `${politeness}: ${text}`;
 }
 
 type Heard = Element & { __heard?: string[] };
 
-/** Records what `el` says from now on: at each change of its content, `liveState` then. A reader
- * announces a content change, so text that arrived while the region was hidden and was exposed
- * later without changing is recorded as hidden. A missing `el` records nothing. */
+/** Records what `el` says from now on: at each content change that changes its text for a reader,
+ * `liveState` then. A reader announces changed text only, so text that arrived while the region
+ * was hidden and was exposed later, and a mutation that leaves the text as it was, say nothing new.
+ * A missing `el` records nothing. */
 async function armRecorder(page: Page, region: JSHandle<Element | null>) {
   await page.evaluate(`window.__dwLiveState = ${liveState.toString()}`);
   await region.evaluate((el: Heard | null) => {
@@ -66,7 +81,14 @@ async function armRecorder(page: Page, region: JSHandle<Element | null>) {
     const heard: string[] = [];
     el.__heard = heard;
     const read = (window as unknown as { __dwLiveState: typeof liveState }).__dwLiveState;
-    new MutationObserver(() => heard.push(read(el))).observe(el, { childList: true, subtree: true, characterData: true });
+    const textOf = (state: string) => state.slice(state.indexOf(": ") + 2);
+    let last = textOf(read(el));
+    new MutationObserver(() => {
+      const state = read(el);
+      if (textOf(state) === last) return;
+      last = textOf(state);
+      heard.push(state);
+    }).observe(el, { childList: true, subtree: true, characterData: true });
   });
 }
 
@@ -78,17 +100,17 @@ const heardBy = (region: JSHandle<Element | null>) => region.evaluate((el: Heard
 async function liveRegion(page: Page, selector: string, { empty = true } = {}) {
   await page.evaluate(`window.__dwLiveState = ${liveState.toString()}`);
   const state = () => page.evaluate((s) => (window as unknown as { __dwLiveState: typeof liveState }).__dwLiveState(document.querySelector(s)), selector);
-  const ready = empty ? /^(live|hidden from assistive tech|outside the open modal|not rendered): $/ : /^(live|hidden from assistive tech|outside the open modal|not rendered): /;
-  await expect.poll(state, { message: `live region ${selector} before the action` }).toMatch(ready);
+  const kinds = "polite|assertive|hidden from assistive tech|outside the open modal|not rendered";
+  await expect.poll(state, { message: `live region ${selector} before the action` }).toMatch(new RegExp(empty ? `^(${kinds}): $` : `^(${kinds}): `));
   const region = await page.evaluateHandle((s) => document.querySelector(s), selector);
   await armRecorder(page, region);
   return region;
 }
 
-/** The element held by `liveRegion` said `text` while exposed: all its text, or (a RegExp) a match
- * in it. */
-async function expectSaid(region: JSHandle<Element | null>, text: string | RegExp) {
-  const said = typeof text === "string" ? `live: ${text}` : expect.stringMatching(new RegExp(`^live: [\\s\\S]*${text.source}`));
+/** The element held by `liveRegion` said `text` while exposed, at `politeness`: all its text, or
+ * (a RegExp) a match in it. */
+async function expectSaid(region: JSHandle<Element | null>, politeness: "polite" | "assertive", text: string | RegExp) {
+  const said = typeof text === "string" ? `${politeness}: ${text}` : expect.stringMatching(new RegExp(`^${politeness}: .*${text.source}`));
   await expect.poll(() => heardBy(region)).toContainEqual(said);
 }
 
@@ -188,7 +210,7 @@ async function toConfirmAndPay(page: Page, label: string) {
   await expectAxeClean(page);
   const availability = await liveRegion(page, '[data-testid="registration-availability"]');
   await page.keyboard.type(label);
-  await expectSaid(availability, "Username available");
+  await expectSaid(availability, "polite", "Username available");
   await expect(field).toBeFocused();
   await page.keyboard.press("Enter");
 
@@ -217,7 +239,7 @@ test("keyboard only: register a username", async ({ page }) => {
   const draft = await page.evaluate(() => window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft);
   await page.evaluate((d) => window.__dwFixture!.advanceRegistration(d), draft);
   await expect(screen.getByTestId("registration-progress-step")).toHaveText("(2/3) Creating identity");
-  await expectSaid(progress, /\(2\/3\) Creating identity/);
+  await expectSaid(progress, "polite", /\(2\/3\) Creating identity/);
 
   // The network finishes the run; the welcome takes focus at its title, which a reader says.
   await page.evaluate((d) => {
@@ -348,7 +370,7 @@ async function toPaneAccept(page: Page) {
   const announcer = await liveRegion(page, '[data-testid="contacts-announcer"]');
   await page.keyboard.press("Enter");
   await expect(heidi).toHaveAttribute("aria-current", "true");
-  await expectSaid(announcer, "heidi, Request received");
+  await expectSaid(announcer, "polite", "heidi, Request received");
   await expect(page.getByTestId("contact-detail-relation")).toHaveText("Request received");
   await expectAxeClean(page);
 
@@ -466,7 +488,7 @@ test("keyboard only: edit my profile", async ({ page }) => {
   const toasts = await liveRegion(page, ".toast-host");
   await page.keyboard.press("Enter");
   await authorizeFrom(page, save);
-  await expectSaid(toasts, "Your profile was saved.");
+  await expectSaid(toasts, "polite", "Your profile was saved.");
   // The sheet closes on the saved profile, and focus is back on Edit Profile.
   await expect(sheet).toHaveCount(0);
   await expect(page.getByTestId("profile-name")).toHaveText("Alice L.");
@@ -596,10 +618,10 @@ for (const site of OUTCOME_SITES) {
     expect(errors).toEqual([]);
     test.fail(
       true,
-      `${site.where}: no status region is in the page before the action ("${before}"); the result comes in a new role=status element that appears with its text ("${shownIn}"). Expected an empty status region present before the action, then that element given "${site.said}" while exposed.`,
+      `${site.where}: no status region is in the page before the action ("${before}"); the result comes in a new role=status element that appears with its text ("${shownIn}"). Expected an empty status region present before the action, then that element given "${site.said}" politely while exposed.`,
     );
     await expect
-      .poll(async () => ({ before, said: (await heardBy(region)).includes(`live: ${site.said}`) }))
-      .toEqual({ before: "live: ", said: true });
+      .poll(async () => ({ before, said: (await heardBy(region)).includes(`polite: ${site.said}`) }))
+      .toEqual({ before: "polite: ", said: true });
   });
 }
