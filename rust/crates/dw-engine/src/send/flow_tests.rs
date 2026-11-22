@@ -1151,6 +1151,26 @@ fn send_metadata_is_written_only_for_a_sent_payment_and_never_relabels() {
     assert_eq!(book(), want);
 }
 
+/// #263: the payment's metadata is written after the hand-off; a wallet
+/// closed by then skips it, and the payment stays sent.
+#[test]
+fn a_wallet_closed_before_the_payment_metadata_keeps_the_payment_sent() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let recorded = f
+        .engine
+        .block_on(f.session.record_send_metadata(f.wallet, &p));
+    assert!(recorded.is_ok(), "{recorded:?}");
+}
+
 // ---- PSBT signing caps (review H1) ----
 
 impl Fixture {

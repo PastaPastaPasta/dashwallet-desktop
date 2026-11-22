@@ -607,6 +607,12 @@ impl CoinFences {
         }
     }
 
+    /// Tests: how many wait for `wallet`'s fence while one holds it.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self, wallet: WalletId) -> usize {
+        (self.map().get(&wallet)).map_or(0, |f| Arc::strong_count(f).saturating_sub(2))
+    }
+
     /// `wallet`'s fence if no one holds it now.
     pub(crate) fn try_acquire(&self, wallet: WalletId) -> Option<CoinFence> {
         let fence = Arc::clone(self.map().entry(wallet).or_default());

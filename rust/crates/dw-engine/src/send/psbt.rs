@@ -535,7 +535,9 @@ impl NetworkSession {
                     continue;
                 };
                 let owns = {
-                    let state = w.state().await;
+                    let Ok(state) = crate::wallet_read::info_of(&w).await else {
+                        continue;
+                    };
                     !ownership(&state.core_wallet, &psbt, network)
                         .paths
                         .is_empty()

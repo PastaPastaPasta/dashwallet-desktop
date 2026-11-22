@@ -431,7 +431,7 @@ impl NetworkSession {
     ) -> Result<(HashMap<Txid, TxEntry>, HashSet<OutPoint>), MasternodesError> {
         let w = self.wallet(&wallet).await?;
         let unspent = {
-            let state = w.state().await;
+            let state = crate::wallet_read::info_of(&w).await?;
             read_coins(&state.core_wallet)
                 .coins
                 .into_iter()

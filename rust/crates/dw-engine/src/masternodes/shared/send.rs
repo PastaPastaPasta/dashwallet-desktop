@@ -323,7 +323,7 @@ impl NetworkSession {
         let pending = self.spends.snapshot(&wallet);
         let w = self.wallet(&wallet).await?;
         let coin = {
-            let state = w.state().await;
+            let state = crate::wallet_read::info_of(&w).await?;
             read_coins(&state.core_wallet)
                 .coins
                 .into_iter()

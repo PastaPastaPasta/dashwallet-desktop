@@ -406,7 +406,7 @@ impl NetworkSession {
             return Err(dead());
         }
         let w = self.wallet(&wallet).await?;
-        let state = w.state().await;
+        let state = crate::wallet_read::info_of(&w).await?;
         let coins = read_coins(&state.core_wallet).coins;
         outpoints
             .iter()

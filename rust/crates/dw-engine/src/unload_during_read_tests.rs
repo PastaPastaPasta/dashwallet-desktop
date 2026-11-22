@@ -194,7 +194,9 @@ fn unloading_a_wallet_while_a_coin_read_waits_for_its_fence_does_not_panic() {
                 .await
         }
     });
-    std::thread::sleep(Duration::from_millis(500));
+    wait_until("the read waits for the fence", || {
+        s.coin_fences.waiting(id) > 0
+    });
     engine.block_on(s.unload_wallet(id)).unwrap();
     drop(fence);
     let joined = engine.block_on(task);

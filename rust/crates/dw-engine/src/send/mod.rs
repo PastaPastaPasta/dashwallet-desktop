@@ -2290,9 +2290,19 @@ impl NetworkSession {
             Some(_) => &[][..],
             None => &prepared.records[..],
         };
-        let wallet = self.wallet(&wallet_id).await?;
+        // After the hand-off: a wallet closed meanwhile keeps the payment
+        // sent and skips what only it would show.
+        let skipped = || {
+            tracing::warn!(wallet = %wallet_id, "the wallet closed: a payment's message and address-book entries were not stored");
+            Ok(())
+        };
+        let Ok(wallet) = self.wallet(&wallet_id).await else {
+            return skipped();
+        };
         let owned: Vec<bool> = {
-            let state = wallet.state().await;
+            let Ok(state) = crate::wallet_read::info_of(&wallet).await else {
+                return skipped();
+            };
             records
                 .iter()
                 .map(|(a, _, _)| {

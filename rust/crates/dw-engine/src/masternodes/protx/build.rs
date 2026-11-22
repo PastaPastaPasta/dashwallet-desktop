@@ -682,7 +682,7 @@ impl NetworkSession {
                     return Err(MasternodesError::CollateralUnavailable);
                 }
                 let w = self.wallet(&wallet).await?;
-                let state = w.state().await;
+                let state = crate::wallet_read::info_of(&w).await?;
                 if wallet_owns(&state.core_wallet, &address)
                     || read_coins(&state.core_wallet)
                         .coins
