@@ -271,6 +271,17 @@ describe("fixture send engine", () => {
     await expect(cmd.abandonTransaction(W, txid)).rejects.toMatchObject({ code: "tx_action_refused", data: { kind: "txAction", refusal: "alreadyAbandoned" } });
   });
 
+  it("abandons an unconfirmed incoming payment but never resends it", async () => {
+    const [row] = (await cmd.historyPage(W, { categories: [], text: null, sort: "newestFirst", cursor: null, limit: 1 })).rows;
+    expect(row).toMatchObject({ category: "received", status: { kind: "unconfirmed", instantLocked: false } });
+    expect(await cmd.txDetailExtras(W, row.txid)).toMatchObject({ canAbandon: true, canResend: false, totalDebit: 0 });
+    await expect(cmd.resendTransaction(W, row.txid)).rejects.toMatchObject({ code: "tx_action_refused", data: { kind: "txAction", refusal: "notSentByWallet" } });
+    const before = (await cmd.balance(W))!;
+    await cmd.abandonTransaction(W, row.txid);
+    expect(await cmd.txDetailExtras(W, row.txid)).toMatchObject({ canAbandon: false, canResend: false, abandoned: true });
+    expect((await cmd.balance(W))!.total).toBe(before.total - row.amount);
+  });
+
   it("labels a transaction", async () => {
     const [row] = (await cmd.historyPage(W, { categories: [], text: null, sort: "newestFirst", cursor: null, limit: 1 })).rows;
     await cmd.setTxLabel(W, row.txid, "  Lunch ");

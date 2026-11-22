@@ -381,13 +381,18 @@ function maxSpendable(world: World, wallet: FixtureWallet, source: CoinSource, f
   return sourceCoins(world, wallet, source).reduce((n, u) => n + u.amount, 0);
 }
 
-function txActionRefusal(row: TxRow): TxActionRefusalName | null {
-  if (row.amount >= 0 && row.category !== "sent") return "notSentByWallet";
+/** Why the wallet can't abandon `row`. Like dash-qt, it abandons any unconfirmed transaction, incoming too. */
+function abandonRefusal(row: TxRow): TxActionRefusalName | null {
   if (row.status.kind === "abandoned") return "alreadyAbandoned";
   if (row.txType === "generated") return "coinbase";
   if (row.status.confirmations > 0) return "confirmed";
   if (row.status.instantLocked) return "instantLocked";
   return null;
+}
+
+/** Why the wallet can't resend `row`: it only resends what it sent. */
+function resendRefusal(row: TxRow): TxActionRefusalName | null {
+  return row.amount >= 0 && row.category !== "sent" ? "notSentByWallet" : abandonRefusal(row);
 }
 
 /** The wallet's row for `txid`, or `tx_not_found`. */
@@ -792,7 +797,6 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     tx_detail_extras: ({ walletId, txid }, { world }) => {
       const row = rowOf(wallet(world, walletId), txid);
       const d = txDetails(row);
-      const refusal = txActionRefusal(row);
       const extras: TxDetailExtrasInfo = {
         txid,
         isCoinbase: row.txType === "generated",
@@ -802,8 +806,8 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
         maturesIn: row.status.maturesIn,
         inMempool: null,
         abandoned: row.status.kind === "abandoned",
-        canAbandon: refusal === null,
-        canResend: refusal === null,
+        canAbandon: abandonRefusal(row) === null,
+        canResend: resendRefusal(row) === null,
         dustLockedOutputs: [],
         lastAnnouncedAt: world.send.announced[txid] ?? null,
       };
@@ -812,20 +816,20 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
     abandon_transaction: ({ walletId, txid }, ctx) => {
       const w = wallet(ctx.world, walletId);
       const row = rowOf(w, txid);
-      const refusal = txActionRefusal(row);
+      const refusal = abandonRefusal(row);
       if (refusal) throw refused(refusal);
       w.rows = w.rows.map((r) => (r.txid === txid ? { ...r, status: { ...r.status, kind: "abandoned" }, countsTowardBalance: false } : r));
       const mine = ctx.world.send.sent[txid];
       if (mine) {
         w.coins = [...w.coins.filter((u) => !(mine.change && sameOutpoint(u.outpoint, mine.change))), ...mine.spent.map((u) => ({ ...u, reserved: false, spendable: true }))];
         delete ctx.world.send.sent[txid];
-      }
+      } else if (row.amount > 0) w.coins = w.coins.filter((u) => u.outpoint.txid !== txid);
       moveBalance(w, -row.amount);
       changed(ctx, w, [txid]);
       return null;
     },
     resend_transaction: ({ walletId, txid }, { world }) => {
-      const refusal = txActionRefusal(rowOf(wallet(world, walletId), txid));
+      const refusal = resendRefusal(rowOf(wallet(world, walletId), txid));
       if (refusal) throw refused(refusal);
       world.send.announced[txid] = secs(FIXTURE_NOW);
       return null;

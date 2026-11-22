@@ -829,6 +829,24 @@ test.describe("Activity", () => {
     await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
     await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
   });
+
+  test("abandons an unconfirmed incoming payment with its own warning and no Resend", async ({ page }) => {
+    const errors = await open(page);
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(".tx-row").first().click();
+    await expect(page.getByTestId("tx-detail")).toContainText("+0.20");
+    await expect(page.getByTestId("tx-abandon")).toBeVisible();
+    await expect(page.getByTestId("tx-resend")).toHaveCount(0);
+    await page.getByTestId("tx-abandon").click();
+    await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
+      "Abandon this transaction? Dash Wallet stops counting it. If it reaches the network anyway, it counts again.",
+    );
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
+    expect(errors).toEqual([]);
+  });
 });
 
 // DP3-02 / DP3-03 on U-03's screens: the fixture's `dashpay-registered` wallet ("alice") has a
