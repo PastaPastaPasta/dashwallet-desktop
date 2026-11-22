@@ -342,8 +342,8 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Vec<(Txid, Tra
 /// again and is left. Run before the wallets load, so a swept payment's
 /// change is never credited. A mark is known by its key, so one whose copy
 /// does not read back still counts, its coins then taken from its sent
-/// mark. A read that fails (the marks, a stored record) or a sweep that
-/// cannot be stored fails the load.
+/// mark. A read that fails (the marks, a stored record, the sent marks)
+/// or a sweep that cannot be stored fails the load.
 pub(crate) fn finish_marked_abandons(
     persister: &platform_wallet_storage::SqlitePersister,
     appdb: &AppDb,
@@ -439,12 +439,15 @@ pub(crate) fn finish_marked_abandons(
             match copy {
                 Some(tx) => spent.extend(tx.input.iter().map(|i| i.previous_output)),
                 None => {
-                    let sent = sent.get_or_insert_with(|| load_sent(appdb, wallet).0);
-                    spent.extend(
-                        sent.get(t)
-                            .into_iter()
-                            .flat_map(|m| m.coins.iter().copied()),
-                    );
+                    if sent.is_none() {
+                        let (read, complete) = load_sent(appdb, wallet);
+                        if !complete {
+                            return Err(storage(&"the sent marks do not read"));
+                        }
+                        sent = Some(read);
+                    }
+                    let coins = (sent.iter()).filter_map(|s| s.get(t));
+                    spent.extend(coins.flat_map(|m| m.coins.iter().copied()));
                 }
             }
         }

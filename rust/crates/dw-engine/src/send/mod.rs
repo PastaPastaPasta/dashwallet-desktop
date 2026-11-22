@@ -1557,11 +1557,13 @@ impl TxDraft {
         // A contact payment's first broadcast is under way until its
         // outcome settled the contact (`settle_contact`). Taken before the
         // mark is written, so an abandon of the draft meanwhile is refused.
-        if let Some(e) = prepared.held_error() {
-            return Err(e);
-        }
+        // Read under the phase guard: `held` is set before the phase leaves
+        // `Broadcasting`, so a repeat that sees `Unknown` sees it too.
         let (first, _in_flight) = {
             let mut phase = prepared.phase();
+            if let Some(e) = prepared.held_error() {
+                return Err(e);
+            }
             let first = match *phase {
                 Phase::Pending => true,
                 Phase::Unknown => false,
@@ -1828,11 +1830,11 @@ impl TxDraft {
         self.session
             .on_runtime(async move {
                 let _op = session.enter().await?;
-                if let Some(e) = prepared.held_error() {
-                    return Err(e);
-                }
                 {
                     let mut phase = prepared.phase();
+                    if let Some(e) = prepared.held_error() {
+                        return Err(e);
+                    }
                     match *phase {
                         Phase::Pending => *phase = Phase::Released,
                         Phase::Released => return Ok(()),

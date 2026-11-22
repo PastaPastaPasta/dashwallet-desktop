@@ -1786,6 +1786,127 @@ fn a_half_done_abandon_without_a_record_or_a_readable_copy_releases_its_coins() 
     );
 }
 
+/// A half-done abandon whose coins only its sent mark names, while the
+/// sent marks don't read (a key that isn't text fails the query): the load
+/// fails and changes nothing; once they read, it releases A.
+#[test]
+fn a_half_done_abandon_fails_the_load_while_its_sent_marks_do_not_read() {
+    let (_dir, engine, session, id, payment, a, _paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    (session.live().unwrap().appdb)
+        .set_setting(&id.to_string(), &format!("abandoned:{txid}"), Some("00"))
+        .unwrap();
+    alter_record(
+        &session,
+        id,
+        txid,
+        "DELETE FROM core_transactions WHERE wallet_id = ?1 AND txid = ?2",
+    );
+    let conn = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    let bad_key = "CAST(X'73656e743aff' AS TEXT)";
+    conn.execute(
+        &format!("INSERT INTO settings_kv (scope, key, value) VALUES (?1, {bad_key}, '')"),
+        [id.to_string()],
+    )
+    .unwrap();
+
+    assert!(
+        finish_now(&session, id).is_err(),
+        "swept with nothing released"
+    );
+    assert_eq!(stored_spent(&session, id, a), Some(true));
+    conn.execute(
+        &format!("DELETE FROM settings_kv WHERE scope = ?1 AND key = {bad_key}"),
+        [id.to_string()],
+    )
+    .unwrap();
+    finish_now(&session, id).unwrap();
+    assert_eq!(
+        stored_spent(&session, id, a),
+        Some(false),
+        "A was not released"
+    );
+}
+
+/// The way out of a half-done abandon that releases nothing (no stored
+/// record, no readable copy, no sent mark), its coin's funding already
+/// mined: Tools ▸ Repair's rescan from the wallet's birth gives A back
+/// once it passes A's funding block.
+#[test]
+fn a_rescan_from_the_birth_frees_a_coin_a_half_done_abandon_could_not_name() {
+    use super::own_spend_disk_tests::{FUNDED_AT, spendable};
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, FUNDED_AT + 1, vec![paid.clone()]);
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let txid = payment.txid();
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    let scope = id.to_string();
+    let appdb = Arc::clone(&session.live().unwrap().appdb);
+    appdb
+        .set_setting(&scope, &format!("abandoned:{txid}"), Some("00"))
+        .unwrap();
+    for prefix in ["sent:", "senttx:", "sentin:"] {
+        appdb
+            .set_setting(&scope, &format!("{prefix}{txid}"), None)
+            .unwrap();
+    }
+    drop(appdb);
+    alter_record(
+        &session,
+        id,
+        txid,
+        "DELETE FROM core_transactions WHERE wallet_id = ?1 AND txid = ?2",
+    );
+
+    let session = reopen(&engine, session);
+    assert!(
+        !record_stored(&session, id, txid),
+        "the payment is not swept"
+    );
+    assert_eq!(stored_spent(&session, id, a), Some(true), "A is released");
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+    engine.block_on(session.start_spv()).unwrap();
+    eventually("SPV runs", || {
+        session.spv_state().unwrap() == crate::SpvState::Running
+    });
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    mined(&engine, &session, id, FUNDED_AT + 1, vec![paid.clone()]);
+    assert!(
+        held(&engine, &session, id).contains(&a),
+        "A is not credited"
+    );
+    eventually("A stored unspent", || {
+        stored_spent(&session, id, a) == Some(false)
+    });
+    assert!(spendable(&engine, &session, id, a), "A is not offered");
+    let session = reopen(&engine, session);
+    assert!(
+        held(&engine, &session, id).contains(&a),
+        "A is gone after a restart"
+    );
+    assert!(
+        spendable(&engine, &session, id, a),
+        "A is not offered after a restart"
+    );
+}
+
 /// Open Wallet finishes the abandon too: a wallet closed with a half-done
 /// abandon and opened again in the session does not credit its change.
 #[test]
