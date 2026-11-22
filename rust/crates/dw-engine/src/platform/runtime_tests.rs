@@ -505,8 +505,9 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     let dir = dw_testutil::private_tempdir();
     let hole = blackhole();
     let (engine, s) = session_held(dir.path(), &hole);
-    // After the engine, so a panic closes the listeners before the
-    // engine's drop thread joins the passes.
+    // After the engine, so a panic — the 60 s bounds below included —
+    // drops this first and closes the listeners before the engine's drop
+    // thread joins the passes.
     let release = ReleaseListeners(hole);
     let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
     give_identity(&engine, &s, id);
@@ -520,7 +521,12 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     });
 
     let stopping = Instant::now();
-    let stopped = engine.block_on(s.stop_spv());
+    // `block_on` drives this on the engine's tokio runtime. The outer
+    // bound fails the test if a stop stops draining, instead of hanging
+    // the job. With no attempt deadline the pass does not end on its own.
+    let stopped = engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), s.stop_spv()).await })
+        .expect("the stop returned within 60 s");
     eprintln!(
         "stop with a stuck pass took {:?}: {stopped:?}",
         stopping.elapsed()
@@ -542,7 +548,10 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
             && !manager.platform_address_sync().is_syncing()
             && !manager.shielded_sync().is_syncing()
     });
-    engine.block_on(engine.shutdown()).unwrap();
+    engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), engine.shutdown()).await })
+        .expect("the shutdown returned within 60 s")
+        .unwrap();
 }
 
 /// Reads `spv_state` as each `SpvStateChanged{running: true}` is emitted.
