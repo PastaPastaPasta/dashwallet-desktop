@@ -337,18 +337,25 @@ pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Optio
 /// `RecursiveUpdateTxState` (:1388-1458). A block spending one of its
 /// inputs that is not the wallet's is not seen (BIP158 filters match the
 /// wallet's scripts only): such a spender holds its other inputs until it
-/// is abandoned.
-pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint> {
+/// is abandoned. An InstantSend-locked one is conflicted only by a block
+/// `chainlock` covers (key-wallet's finality order).
+pub(crate) fn spent_outpoints(
+    txs: &HashMap<Txid, TxEntry>,
+    chainlock: Option<u32>,
+) -> HashSet<OutPoint> {
     let mined = |e: &TxEntry| e.context.block_info().is_some();
-    let in_block: HashMap<OutPoint, Txid> = (txs.iter().filter(|(_, e)| mined(e)))
-        .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
+    let in_block: HashMap<OutPoint, (Txid, &TxEntry)> = (txs.iter().filter(|(_, e)| mined(e)))
+        .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, (*t, e))))
         .collect();
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
     let mut todo = Vec::new();
     for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
         for i in &e.tx.input {
             children.entry(i.previous_output.txid).or_default().push(*t);
-            if in_block.get(&i.previous_output).is_some_and(|b| b != t) {
+            let beats = |(b, be): &(Txid, &TxEntry)| {
+                b != t && (!instant_locked(e) || chain_locked(&be.context, chainlock))
+            };
+            if in_block.get(&i.previous_output).is_some_and(beats) {
                 todo.push(*t);
             }
         }

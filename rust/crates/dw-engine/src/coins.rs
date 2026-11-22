@@ -1142,7 +1142,11 @@ impl NetworkSession {
         let unresolved = self.leases.unresolved_lock_inputs(wallet_id);
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
-        let spent = (self.hub.history).read(&wallet_id, crate::history::spent_outpoints);
+        let chainlock = crate::history_ops::applied_chainlock(&*wallet.state().await)
+            .max(self.hub.tracker().chainlock_height());
+        let spent = (self.hub.history).read(&wallet_id, |txs| {
+            crate::history::spent_outpoints(txs, chainlock)
+        });
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             let lock = locked.get(&lock_key(&o));

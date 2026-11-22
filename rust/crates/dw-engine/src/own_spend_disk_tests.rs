@@ -763,7 +763,7 @@ fn a_block_seen_before_the_claims_beats_a_locked_payment_only_once_chainlocked()
     let winner = super::signed_by_wallet(&engine, &session, id, &owner, winner);
     let winner_block = super::block_with(vec![winner.clone()]).block_hash();
 
-    let credited = |chainlocked: bool| {
+    let credited = |chainlock: Option<u32>| {
         engine.block_on(session.unload_wallet(id)).unwrap();
         let pause = Arc::new(crate::coins::TestPause::default());
         *session.hub.pause_claims.lock().unwrap() = Some(Arc::clone(&pause));
@@ -783,17 +783,137 @@ fn a_block_seen_before_the_claims_beats_a_locked_payment_only_once_chainlocked()
                 (wm.process_block_for_wallets(&block, block.block_hash(), TIP + 1, &ids)).await;
             })
         });
-        if chainlocked {
-            chain_lock(&engine, &session, id, TIP + 1, winner_block);
+        if let Some(height) = chainlock {
+            chain_lock(&engine, &session, id, height, winner_block);
         }
         pause.release.notify_one();
         engine.block_on(load).unwrap().unwrap();
         mined(&engine, &session, id, TIP, vec![paid.clone()]);
         held(&engine, &session, id).contains(&a)
     };
-    assert!(!credited(false), "a plain block: A stays claimed");
+    assert!(!credited(None), "a plain block: A stays claimed");
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
-    assert!(credited(true), "ChainLocked: A is credited");
+    assert!(
+        !credited(Some(TIP)),
+        "a ChainLock below it: A stays claimed"
+    );
+    assert!(credited(Some(TIP + 1)), "ChainLocked: A is credited");
+}
+
+/// A payment of A and B, InstantSend-locked and stored; after a restart
+/// another device's spend of B is mined in a plain block and stored; then a
+/// restart. Returns the funding transaction and the winner.
+fn locked_payment_with_a_plain_winner() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+    Transaction,
+) {
+    let (dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, 1);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    wait_stored(&session, id, &[winner.txid()]);
+    let session = reopen(&engine, session);
+    (dir, engine, session, id, paid, winner)
+}
+
+/// The claims are chosen under the write lock that installs them: a
+/// ChainLock of the winner's block applied while a wallet opened later
+/// waits to install them beats the locked payment, and the funding block
+/// scanned again credits A.
+#[test]
+fn a_chainlock_applied_before_the_claims_are_installed_beats_a_locked_payment() {
+    let (_dir, engine, session, id, paid, winner) = locked_payment_with_a_plain_winner();
+    let a = OutPoint::new(paid.txid(), 0);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_spend_claims.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the claims' pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let winner_block = super::block_with(vec![winner]).block_hash();
+    chain_lock(&engine, &session, id, TIP + 1, winner_block);
+    pause.release.notify_one();
+    engine.block_on(load).unwrap().unwrap();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(held(&engine, &session, id).contains(&a), "A is credited");
+}
+
+/// A ChainLock of the winner's block applied while the wallet was closed,
+/// to another wallet that stayed open, beats the locked payment when the
+/// wallet opens again and after a restart.
+#[test]
+fn a_chainlock_applied_while_the_wallet_was_closed_beats_a_locked_payment() {
+    let (_dir, engine, session, id, paid, winner) = locked_payment_with_a_plain_winner();
+    let a = OutPoint::new(paid.txid(), 0);
+    let other = engine
+        .block_on(
+            session.import_wallet(
+                zeroize::Zeroizing::new(
+                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
+                        .to_vec(),
+                ),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(BIRTH),
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let winner_block = super::block_with(vec![winner]).block_hash();
+    chain_lock(&engine, &session, other, TIP + 1, winner_block);
+    engine.block_on(session.load_wallet(id)).unwrap();
+    engine
+        .block_on(session.set_load_on_startup(id, true))
+        .unwrap();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(
+        held(&engine, &session, id).contains(&a),
+        "reopened: A is credited"
+    );
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(held(&engine, &session, id).contains(&a), "after a restart");
+}
+
+/// While a load claims nothing (another stored record is unreadable), the
+/// history keeps the locked payment's coins from selection against a plain
+/// block: A, which only the payment spends, is credited but not offered.
+#[test]
+fn a_locked_payment_keeps_its_coin_from_selection_without_a_claim() {
+    let (_dir, engine, session, id, paid, _) = locked_payment_with_a_plain_winner();
+    let a = OutPoint::new(paid.txid(), 0);
+    let other = funding(8, &[fresh_address(&engine, &session, id)], COIN);
+    mempool(&engine, &session, id, &other);
+    wait_stored(&session, id, &[other.txid()]);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    *session.hub.unreadable_record.lock().unwrap() = (Some(other.txid()), Some(other.txid()));
+    engine.block_on(session.load_wallet(id)).unwrap();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(held(&engine, &session, id).contains(&a), "no claim");
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
 }
 
 /// Unloads wallet `id` and opens it again; `paid`'s block is processed for
