@@ -112,6 +112,22 @@ fn pinned_tag_problems(tags: &[String]) -> Vec<String> {
     problems
 }
 
+/// `fixtures_in(root)`, refused unless its directories are exactly the
+/// tags pinned in `SNAPSHOT_SHA256`.
+fn pinned_fixtures_in(root: &Path) -> Result<Vec<(PathBuf, Value)>, String> {
+    let fixtures = fixtures_in(root)?;
+    let tags: Vec<String> = fixtures
+        .iter()
+        .map(|(f, _)| f.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    let unmatched = pinned_tag_problems(&tags);
+    if unmatched.is_empty() {
+        Ok(fixtures)
+    } else {
+        Err(unmatched.join("; "))
+    }
+}
+
 /// Every release directory under `root`, each with a readable, parseable
 /// `expected.json`; files beside them (the README) are skipped. Any entry that
 /// cannot be read, or a directory without its snapshot, is an error naming it.
@@ -392,17 +408,11 @@ fn every_release_data_root_opens_with_the_same_answers() {
         return;
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/upgrade");
-    let fixtures = fixtures_in(&root).unwrap_or_else(|e| panic!("{e}"));
+    let fixtures = pinned_fixtures_in(&root).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         !fixtures.is_empty(),
         "no testdata/upgrade/<tag>/expected.json"
     );
-    let tags: Vec<String> = fixtures
-        .iter()
-        .map(|(f, _)| f.file_name().unwrap().to_string_lossy().into_owned())
-        .collect();
-    let unmatched = pinned_tag_problems(&tags);
-    assert!(unmatched.is_empty(), "{}", unmatched.join("; "));
     let mut report = Vec::new();
     for (fixture, expected) in &fixtures {
         let tag = fixture.file_name().unwrap().to_string_lossy().into_owned();
@@ -888,6 +898,19 @@ fn every_pinned_release_has_its_fixture_and_every_fixture_is_pinned() {
     let problems = pinned_tag_problems(&extra);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("v9.9.9"), "{problems:?}");
+
+    let root = dw_testutil::private_tempdir();
+    for tag in &pinned {
+        std::fs::create_dir(root.path().join(tag)).unwrap();
+        std::fs::write(root.path().join(tag).join("expected.json"), "{}").unwrap();
+    }
+    assert_eq!(pinned_fixtures_in(root.path()).unwrap().len(), pinned.len());
+    std::fs::remove_dir_all(root.path().join(&pinned[0])).unwrap();
+    let e = pinned_fixtures_in(root.path()).unwrap_err();
+    assert!(
+        e.contains(&pinned[0]) && e.contains("no fixture directory"),
+        "{e}"
+    );
 }
 
 #[test]
