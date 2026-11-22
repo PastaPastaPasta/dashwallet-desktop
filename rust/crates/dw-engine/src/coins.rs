@@ -1072,7 +1072,7 @@ impl NetworkSession {
             "the fence of another wallet"
         );
         let (mut snapshot, lock_inputs, unseen) = {
-            let state = wallet.state().await;
+            let state = crate::wallet_read::info_of(wallet).await?;
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
             (

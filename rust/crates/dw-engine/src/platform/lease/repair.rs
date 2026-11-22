@@ -158,7 +158,9 @@ impl NetworkSession {
             // them again under its own, so a coin locked in between is
             // refused there (`send.outpoint_unavailable`).
             let fence = this.coin_fence(wallet_id).await?;
-            if let Some(txid) = crate::coins::unsettled_spend(&wallet.state().await.core_wallet) {
+            if let Some(txid) = crate::coins::unsettled_spend(
+                &crate::wallet_read::info_of(&wallet).await?.core_wallet,
+            ) {
                 return Err(StuckFundingRefusal::SpendUnsettled(txid).into());
             }
             let snapshot = this.coin_snapshot(&fence, &wallet).await?;

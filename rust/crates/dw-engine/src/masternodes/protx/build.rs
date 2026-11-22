@@ -859,7 +859,7 @@ impl NetworkSession {
                 db.held_outpoints(&w, holder)
             })
             .await?;
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(wallet).await?;
         let picked = coins
             .into_iter()
             .filter(|u| {

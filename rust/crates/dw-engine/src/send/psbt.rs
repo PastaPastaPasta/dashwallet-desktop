@@ -267,7 +267,7 @@ impl TxDraft {
                 check_against_plan(&tx, &r.plan, &change).map_err(|m| m.into_error())?;
                 let fingerprint = session.master_fingerprint(&this.wallet_id).await;
                 let history = session.hub.history.snapshot(&this.wallet_id);
-                let state = wallet.state().await;
+                let state = crate::wallet_read::info_of(&wallet).await?;
                 let info = &state.core_wallet;
                 let network = this.network();
                 let inputs = tx
