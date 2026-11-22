@@ -112,6 +112,9 @@ export function ConfirmSheet({
   const [passphrase, setPassphrase] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** A contact payment's prepare is out: it waits, up to a minute, for the contact's data to be
+   * checked (H-09). */
+  const [checkingContact, setCheckingContact] = useState(false);
   /** When the vault takes the next attempt (ms since epoch), as on the lock screen; null: now. */
   const [retryAt, setRetryAt] = useState<number | null>(null);
   const [, tick] = useState(0);
@@ -254,14 +257,18 @@ export function ConfirmSheet({
     const notSent = (text: string) => attempt.outcome({ kind: "failed", text: accepted ? `${accepted} ${text}` : text });
     const endLease = () => lease !== null && void b.endFlow(lease).catch(() => null);
 
+    const toContact = isContact(spec.recipient);
     let held;
+    setCheckingContact(toContact);
     try {
       held = await draft.prepare(spec, authId);
     } catch (e) {
       if (grant) void b.revokeGrant(grant.id).catch(() => null);
       endLease();
-      notSent(failureText(e, chain, amountUnit));
+      notSent(failureText(e, chain, amountUnit, toContact));
       return;
+    } finally {
+      setCheckingContact(false);
     }
     const { draft: d, prepared } = held;
     if (!keepsPromise(confirmed, prepared.summary)) {
@@ -272,7 +279,6 @@ export function ConfirmSheet({
     }
     // An accept that went through is said with whatever outcome the payment gets, a retry's too.
     const sent = { amount: estimate.totalSent, fee: prepared.summary.fee, ...(accepted && { note: accepted }) };
-    const toContact = isContact(spec.recipient);
     attempt.broadcasting(sent);
     try {
       const { txid } = await draft.broadcast(d, prepared.handle);
@@ -469,7 +475,7 @@ export function ConfirmSheet({
           )}
           {actions.send && (
             <DashButton key="send" type="submit" variant="filledBlue" size="large" data-testid="pay-confirm-send" disabled={busy || !policyKnown || !waitKnown || retryAt !== null} why={busy ? null : retryAt !== null ? t("pay.confirm.waitMoment") : t("pay.confirm.checkingNetwork")}>
-              {busy ? t("pay.confirm.sending") : contact?.acceptsToo ? t("pay.confirm.acceptAndPay") : t("pay.confirm.send")}
+              {busy ? (checkingContact ? t("pay.confirm.checkingContact") : t("pay.confirm.sending")) : contact?.acceptsToo ? t("pay.confirm.acceptAndPay") : t("pay.confirm.send")}
             </DashButton>
           )}
         </div>
