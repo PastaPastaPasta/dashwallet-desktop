@@ -7,6 +7,7 @@ import type { Backend } from "../api/backend";
 import { hasCode } from "../api/backend";
 import type { LockStateName } from "../api/generated/LockStateName";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
+import { t } from "../i18n";
 import { birthHeightFor } from "./birthHeight";
 import { LockModel } from "./lock";
 import { failureText, Model } from "./model";
@@ -50,7 +51,9 @@ export interface RestoreOptions {
 }
 
 export const OnboardingText = {
-  birthDateInFuture: "The wallet creation date cannot be in the future.",
+  get birthDateInFuture() {
+    return t("onboarding.options.birthDateInFuture");
+  },
 };
 
 type Api = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "createVault" | "generateMnemonic" | "checkMnemonic" | "importWallet">;

@@ -501,6 +501,9 @@ fn the_close_ends_the_shielded_passes_that_redrive_spends() {
     let dir = dw_testutil::private_tempdir();
     let hole = blackhole();
     let (engine, s) = session_on(dir.path(), &hole, false);
+    // The pool's count unread at once: the pass goes on to the silent nodes
+    // before the other bring-up calls give up on them.
+    *s.platform.notes_count.lock().unwrap() = Some(None);
     let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
     give_identity(&engine, &s, id);
     engine.block_on(s.start_spv()).unwrap();
