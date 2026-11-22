@@ -113,8 +113,8 @@ pub(super) enum Held {
     /// as the library holds it.
     ContactRequest(ContactRequest),
     /// The wallet's own sent request, as the library holds it: without the
-    /// `autoAcceptProof` Platform has ([`same_request`]). Recorded as a
-    /// [`Held::ContactRequest`].
+    /// `autoAcceptProof` Platform has ([`same_request`]). Its record kind is
+    /// its own, so it never vouches for a received copy.
     SentRequest(ContactRequest),
 }
 
@@ -210,8 +210,12 @@ impl Held {
             Self::Identity { id, .. } => (kind::IDENTITY, id.to_string(Encoding::Base58)),
             Self::Profile { id, .. } => (kind::PROFILE, id.to_string(Encoding::Base58)),
             Self::Label { label, .. } => (kind::DPNS_LABEL, label.clone()),
-            Self::ContactRequest(r) | Self::SentRequest(r) => (
+            Self::ContactRequest(r) => (
                 kind::CONTACT_REQUEST,
+                contact_request_key(&r.sender_id, &r.recipient_id, r.created_at),
+            ),
+            Self::SentRequest(r) => (
+                kind::CONTACT_REQUEST_SENT,
                 contact_request_key(&r.sender_id, &r.recipient_id, r.created_at),
             ),
         }

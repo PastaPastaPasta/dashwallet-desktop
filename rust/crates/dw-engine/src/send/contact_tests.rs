@@ -2005,6 +2005,49 @@ fn a_payee_without_a_record_is_gated_without_the_latch() {
         .expect("paid once its record is written");
 }
 
+/// H-09 (MG's check): the data a payment to Bob verifies is always Bob's.
+/// A request held under Bob that names another identity refuses, even
+/// though Platform verifies that other request.
+#[test]
+fn a_request_held_under_the_payee_naming_another_identity_refuses() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Verified);
+    platform.answer_requests(vec![
+        request(ME, BOB, 1_000_000),
+        request(CAROL, ME, 2_000_000),
+    ]);
+    f.with_me(|me| {
+        me.established_contact_mut(&id(BOB))
+            .unwrap()
+            .incoming_request = request(CAROL, ME, 2_000_000);
+    });
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+    assert!(f.reserved(BOB).is_none());
+}
+
+/// H-09: the party check is where the money goes, so a developer build's
+/// trusted-only toggle, which skips verification, still refuses it.
+#[test]
+fn the_toggle_still_refuses_a_request_naming_another_identity() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    f.session.trust.set_trusted_only(true);
+    f.with_me(|me| {
+        me.established_contact_mut(&id(BOB))
+            .unwrap()
+            .incoming_request = request(CAROL, ME, 2_000_000);
+    });
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+    assert!(f.reserved(BOB).is_none());
+    assert_eq!(platform.fetches(), 0);
+}
+
 /// H-09: a release build ignores a trusted-only toggle a developer build
 /// stored, and cannot turn it on, so a contact payment stays gated. A
 /// developer build still reads it.
@@ -2272,11 +2315,11 @@ fn an_unstamped_account_is_not_paid_in_any_setting() {
             set(&f);
             if rotated {
                 f.bob_rotated_before_the_sweep();
+                f.verify_contacts();
             } else {
                 f.bobs_account_built_from(None);
             }
-            // No latch, so nothing is unverified: the refusal is the
-            // destination's.
+            // Everything is verified: the refusal is the destination's.
             assert_eq!(
                 platform_error(f.prepare(&f.draft(BOB))),
                 "platform.context_unavailable",
