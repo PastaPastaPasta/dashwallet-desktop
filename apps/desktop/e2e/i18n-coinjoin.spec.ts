@@ -3,7 +3,7 @@ import { authorize, fixtureUrl, THEMES, trackPageErrors, type Theme } from "./he
 import { checkArea, PSEUDO } from "./pseudo";
 
 // Localization (MP-14): CoinJoin under the two pseudo-locales (./pseudo.ts): the CoinJoin page
-// (mixing with expanded Session details, custom level, empty/too-little, error/disabled), the Home
+// (mixing with expanded Session details, custom level, empty/too-little, error/disabled, status-read failure), the Home
 // card (mixing and locked-stop), the Stop Mixing confirmation sheet, and Move mixed coins (wallet
 // confirm and outcome, Shielded quote, combine >50 coins, and mixing refusal). States are reached
 // as coinjoin.spec.ts and move-mixed.spec.ts reach them.
@@ -62,6 +62,17 @@ const STATES: Record<string, State> = {
     open: async (page, theme, lang) => {
       await openCoinJoin(page, "coinjoin-error", theme, lang);
       await expect(page.getByTestId("coinjoin-status")).toHaveAttribute("data-state", "error");
+    },
+  },
+  "page-read-failed": {
+    roots: ["page-coinJoin"],
+    open: async (page, theme, lang) => {
+      await page.goto(fixtureUrl("funded", theme, `&fail=coinjoin_status:none&lang=${lang}`));
+      await page.getByTestId("toolbar").waitFor();
+      await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "coinJoin" }));
+      await expect(page.getByTestId("coinjoin-status")).toHaveAttribute("data-state", "readFailed");
+      await expect(page.getByTestId("coinjoin-status-title")).not.toHaveText("Could not read the mixing status");
+      await expect(page.getByTestId("coinjoin-action")).not.toHaveText("Try again");
     },
   },
   "page-disabled": {
