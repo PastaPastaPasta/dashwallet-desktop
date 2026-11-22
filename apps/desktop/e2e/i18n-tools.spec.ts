@@ -68,8 +68,7 @@ const GRANT_SHARED = [/^Passphrase$/];
 const PEERS_TABLE = '.table-card:has([data-testid="peers-table"])';
 const COIN_TABLE = '.table-card:has([data-testid="coin-table"])';
 
-/** components/coins.tsx's screen-reader-only header text is positioned outside the coin table's
- * card and widens the document in English too (1143 at 920); contained here until it is fixed. */
+/** Works around #240 (coins.tsx's screen-reader-only headers widen the page in English) until #240 lands. */
 const CONTAIN_ENGLISH_COIN_TABLE_SR_ONLY_HEADERS = `${COIN_TABLE} { position: relative; }`;
 
 const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) => Promise<void>; roots?: string[]; data?: RegExp[]; panes?: string[]; scrollers?: string[] }> = {
