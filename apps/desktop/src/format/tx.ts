@@ -9,6 +9,7 @@ import type { TxRow } from "../api/generated/TxRow";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { TxTypeName } from "../api/generated/TxTypeName";
 import { initials } from "../contacts/model";
+import { t } from "../i18n";
 
 export const TxTitle = {
   received: "Received",
@@ -317,7 +318,7 @@ export const timeOfDay = (d: Date, locale?: string) => d.toLocaleTimeString(loca
 /** "Oct 6, 2026 at 1:39 AM" (UX-SPEC §5.7 detail style). */
 export function detailDate(d: Date, locale?: string): string {
   const date = d.toLocaleDateString(locale, { year: "numeric", month: "short", day: "numeric" });
-  return `${date} at ${timeOfDay(d, locale)}`;
+  return t("components.date.at", { date, time: timeOfDay(d, locale) });
 }
 
 export interface DayBucket<T> {

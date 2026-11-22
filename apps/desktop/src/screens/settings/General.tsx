@@ -261,7 +261,7 @@ function NetworkCard() {
           {network.kind === "devnet" ? network.dirName : networkName(network.kind)}
         </DetailRow>
         <DetailRow label={t("settings.general.dataDirectory")} testId="settings-data-dir">
-          {node.data ? <CopyValue value={node.data.dataDir} label={t("settings.general.dataDirectoryCopy")} mono /> : pendingText(node)}
+          {node.data ? <CopyValue value={node.data.dataDir} action={t("settings.general.dataDirectoryCopy")} mono /> : pendingText(node)}
         </DetailRow>
       </dl>
       <NetworkPicker state={picker} testId="settings-network-choice" />

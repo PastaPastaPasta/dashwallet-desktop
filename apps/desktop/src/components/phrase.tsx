@@ -8,13 +8,19 @@ import type { WalletChoice } from "../onboarding/model";
 import type { PhraseEntry } from "../onboarding/phraseEntry";
 import { PhraseText } from "../onboarding/phraseEntry";
 import { completeWord, partialWord } from "../onboarding/words";
+import { t as tNow, useT } from "../i18n";
 import { DashButton } from "./basics";
 
 export const ProtectionText = {
-  preparing: "Preparing…",
-  failed:
-    "Dash Wallet could not keep this window out of screenshots and screen sharing, so it will not show or take a recovery phrase.",
-  failedKeys: "Dash Wallet could not keep this window out of screenshots and screen sharing, so it will not take a seed or private key.",
+  get preparing() {
+    return tNow("components.phrase.preparing");
+  },
+  get failed() {
+    return tNow("components.phrase.failed");
+  },
+  get failedKeys() {
+    return tNow("components.phrase.failedKeys");
+  },
 };
 
 /** What a view that shows or takes a recovery phrase shows until the window is kept out of
@@ -23,23 +29,24 @@ export const ProtectionText = {
 export function ProtectionPending({
   protection,
   onCancel,
-  failedText = ProtectionText.failed,
+  failedText,
 }: {
   protection: Protection;
   onCancel?: (() => void) | null;
   failedText?: string;
 }) {
+  const t = useT();
   // Cancel either way: a protection that never answers must not trap Add Wallet.
   const cancel = onCancel && (
     <DashButton variant="plainBlue" data-testid="protection-cancel" onClick={onCancel}>
-      Cancel
+      {t("common.cancel")}
     </DashButton>
   );
   if (protection !== "failed") {
     return (
       <>
         <p className="sheet-text" role="status" data-testid="protection-pending">
-          {ProtectionText.preparing}
+          {t("components.phrase.preparing")}
         </p>
         {cancel && <div className="sheet-actions">{cancel}</div>}
       </>
@@ -47,11 +54,11 @@ export function ProtectionPending({
   }
   return (
     <div role="alert" data-testid="protection-failed">
-      <p className="form-problem">{failedText}</p>
+      <p className="form-problem">{failedText ?? t("components.phrase.failed")}</p>
       <div className="sheet-actions">
         {cancel}
         <DashButton variant="filledBlue" data-autofocus data-testid="protection-retry" onClick={retryProtection}>
-          Try again
+          {t("components.phrase.tryAgain")}
         </DashButton>
       </div>
     </div>
@@ -91,6 +98,7 @@ export function PhraseInput({
   text: string;
   onChange: (text: string) => void;
 }) {
+  const t = useT();
   const id = useId();
   const [blurred, setBlurred] = useState(false);
   const typing = partialWord(text) !== "" && !blurred;
@@ -99,7 +107,7 @@ export function PhraseInput({
   return (
     <div className="phrase-input">
       <div className="form-field">
-        <label htmlFor={id}>Recovery phrase</label>
+        <label htmlFor={id}>{t("components.phrase.label")}</label>
         <textarea
           id={id}
           className="phrase-textarea"
@@ -128,7 +136,7 @@ export function PhraseInput({
         />
       </div>
       {entry.suggestions.length > 0 && (
-        <div className="phrase-suggestions" role="group" aria-label="Suggestions">
+        <div className="phrase-suggestions" role="group" aria-label={t("components.phrase.suggestions")}>
           {entry.suggestions.map((word) => (
             <button key={word} type="button" className="phrase-suggestion" data-testid={`${testId}-suggestion`} onClick={() => complete(word)}>
               {word}
@@ -143,7 +151,7 @@ export function PhraseInput({
           </p>
         ) : entry.valid ? (
           <p className="form-ok" data-testid={`${testId}-valid`}>
-            {entry.coreOnly ? PhraseText.coreOnly : "The recovery phrase is valid."}
+            {entry.coreOnly ? PhraseText.coreOnly : t("components.phrase.valid")}
           </p>
         ) : null}
       </div>
@@ -165,10 +173,11 @@ export function Bip39Field({
   autoFocus?: boolean;
   hint?: string;
 }) {
+  const t = useT();
   const id = useId();
   return (
     <div className="form-field">
-      <label htmlFor={id}>BIP39 passphrase (optional)</label>
+      <label htmlFor={id}>{t("components.phrase.bip39")}</label>
       <input
         id={id}
         type="password"
@@ -190,8 +199,9 @@ export function Bip39Field({
 
 /** Which wallet a flow is for, when several qualify. */
 export function WalletChoiceList({ wallets, testId, onChoose }: { wallets: WalletChoice[]; testId: string; onChoose: (walletId: string) => void }) {
+  const t = useT();
   return (
-    <div className="choice-list" role="group" aria-label="Wallets">
+    <div className="choice-list" role="group" aria-label={t("components.phrase.wallets")}>
       {wallets.map((w) => (
         <button key={w.walletId} type="button" className="choice-row" data-testid={testId} onClick={() => onChoose(w.walletId)}>
           {w.name}

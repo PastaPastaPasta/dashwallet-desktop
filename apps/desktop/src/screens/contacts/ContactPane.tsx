@@ -8,6 +8,7 @@ import type { ContactDetailInfo } from "../../api/generated/ContactDetailInfo";
 import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { errorMessage } from "../../api/backend";
+import { useBackend } from "../../api/queries";
 import { AmountText, DashButton, Icon } from "../../components/basics";
 import { EmptyArt } from "../../components/emptyArt";
 import { CopyValue } from "../../components/detail";
@@ -56,6 +57,7 @@ export function ContactPane({ adding, selected, pane }: { adding: ReactNode; sel
 /** The selected contact: its row's facts at once, then what its detail adds (DP2-09 D1). */
 function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: PaneContext }) {
   const t = useT();
+  const { locale } = useBackend();
   const sub = subtitle(c);
   const chips = rowChips(c);
   // Only a contact has private details (DP2-09 D7).
@@ -97,7 +99,7 @@ function Selected({ contact: c, pane }: { contact: ContactSummaryInfo; pane: Pan
           <>
             {/* When the row's time was: a contact's start, else its request's. */}
             <dt>{t(`contacts.pane.since.${c.relation}`)}</dt>
-            <dd>{detailDate(new Date(c.since * 1000))}</dd>
+            <dd>{detailDate(new Date(c.since * 1000), locale)}</dd>
           </>
         )}
       </dl>

@@ -9,6 +9,7 @@
 
 import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useT } from "../i18n";
 import { DashButton } from "./basics";
 
 /** App's layer for sheets opened inside the shell; `null` renders a sheet in place. */
@@ -61,6 +62,7 @@ export function Sheet({
   returnFocus?: () => HTMLElement | null;
   children: ReactNode;
 }) {
+  const t = useT();
   const panel = useRef<HTMLDivElement>(null);
   const layer = useContext(SheetLayer);
   useEffect(() => {
@@ -125,7 +127,7 @@ export function Sheet({
             {title}
           </h2>
           <span className="sheet-header-side">
-            <button type="button" className="sheet-close" aria-label="Close" disabled={!closable} onClick={onClose}>
+            <button type="button" className="sheet-close" aria-label={t("components.sheet.close")} disabled={!closable} onClick={onClose}>
               <svg viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M5 5l10 10M15 5 5 15" />
               </svg>
@@ -157,12 +159,13 @@ export function QuestionSheet({
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const t = useT();
   return (
     <Sheet title={title} width="small" testId={testId} onClose={onClose}>
       <p className="sheet-text">{text}</p>
       <div className="sheet-actions">
         <DashButton variant="tintedGray" data-autofocus onClick={onClose}>
-          Cancel
+          {t("common.cancel")}
         </DashButton>
         <DashButton
           variant="filledBlue"

@@ -17,9 +17,6 @@ const CONTACTS = [/^(Carol|Grace Hopper|Bob Builder|Dave|dave|Erin|heidi)$/, /^\
 
 /** Still English: a contact's payment note comes from contacts/pane.ts. */
 
-/** Still English: the coin table and its summary come from components/coins.tsx. */
-const COIN_TABLE = [/^Amount \($/, /^\)$/, /^Select$/, /^Coins of this wallet$/, /^Address \/ Label$/, /^Confirmations$/, /^Status$/, /^(Quantity|Amount|Fee|After fee|Bytes|Change|Dust)$/, /^Mixed, \p{Nd}+ rounds$/u];
-
 const world = (page: Page, fn: string) => page.evaluate(`(${fn})(window.__dwFixture.world)`);
 
 async function payPage(page: Page, scenario: string, theme: Theme, lang: string) {
@@ -98,7 +95,7 @@ const STATES: State[] = [
   {
     name: "pay-coin-control",
     roots: ["pay-address-form"],
-    data: [...ADDRESSES, ...COIN_TABLE],
+    data: ADDRESSES,
     open: async (page, theme, lang) => {
       await filled(page, theme, lang);
       await page.getByTestId("pay-advanced").locator("summary").click();

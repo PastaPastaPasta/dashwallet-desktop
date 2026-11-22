@@ -49,7 +49,7 @@ export const settings = {
     dustInvalid: "The dust threshold must be between 1 and 1,000,000 duffs.",
     network: "Network",
     dataDirectory: "Data directory",
-    dataDirectoryCopy: "data directory",
+    dataDirectoryCopy: "Copy data directory",
     unavailable: "Not available yet.",
   },
   currency: {

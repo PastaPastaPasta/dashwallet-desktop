@@ -5,10 +5,12 @@
 
 import { useId, useState, type FormEvent, type ReactNode } from "react";
 import { passphraseStrength, STRENGTH_NAME, STRENGTHS, type Strength } from "../onboarding/passphrase";
+import { useT } from "../i18n";
 import { DashButton } from "./basics";
 
 /** Four bars and the strength's name. */
 export function StrengthMeter({ strength }: { strength: Strength }) {
+  const t = useT();
   const level = STRENGTHS.indexOf(strength);
   return (
     <div className="strength" data-strength={strength} data-testid="passphrase-strength">
@@ -18,7 +20,7 @@ export function StrengthMeter({ strength }: { strength: Strength }) {
         ))}
       </span>
       <span className="strength-name" aria-live="polite">
-        {strength === "none" ? "" : `Strength: ${STRENGTH_NAME[strength]}`}
+        {strength === "none" ? "" : t("components.passphrase.strength", { strength: STRENGTH_NAME[strength] })}
       </span>
     </div>
   );
@@ -41,6 +43,7 @@ export function NewPassphraseForm({
   onSubmit: (text: string, confirmation: string) => void | Promise<unknown>;
   children?: ReactNode;
 }) {
+  const t = useT();
   const id = useId();
   const [text, setText] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -54,7 +57,7 @@ export function NewPassphraseForm({
   return (
     <form className="secret-form" onSubmit={submit} data-testid={`${testId}-form`}>
       <div className="form-field">
-        <label htmlFor={`${id}-new`}>New passphrase</label>
+        <label htmlFor={`${id}-new`}>{t("components.passphrase.new")}</label>
         <input
           id={`${id}-new`}
           type="password"
@@ -72,7 +75,7 @@ export function NewPassphraseForm({
       </div>
       <StrengthMeter strength={passphraseStrength(text)} />
       <div className="form-field">
-        <label htmlFor={`${id}-repeat`}>Repeat the passphrase</label>
+        <label htmlFor={`${id}-repeat`}>{t("components.passphrase.repeat")}</label>
         <input
           id={`${id}-repeat`}
           type="password"
@@ -115,6 +118,7 @@ export function PassphrasePrompt({
   submitLabel: string;
   onSubmit: (passphrase: string) => void | Promise<unknown>;
 }) {
+  const t = useT();
   const id = useId();
   const [text, setText] = useState("");
   const submit = (e: FormEvent) => {
@@ -127,7 +131,7 @@ export function PassphrasePrompt({
   return (
     <form className="secret-form" onSubmit={submit} data-testid={`${testId}-form`}>
       <div className="form-field">
-        <label htmlFor={id}>Passphrase</label>
+        <label htmlFor={id}>{t("components.passphrase.passphrase")}</label>
         <input
           id={id}
           type="password"
@@ -153,7 +157,7 @@ export function PassphrasePrompt({
         disabled={busy || disabled || !text}
         data-testid={`${testId}-submit`}
       >
-        {busy ? "Checking…" : submitLabel}
+        {busy ? t("components.passphrase.checking") : submitLabel}
       </DashButton>
     </form>
   );

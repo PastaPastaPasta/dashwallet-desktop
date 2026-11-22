@@ -2,6 +2,8 @@
 // illustration, one sentence, and at most one next step. The screen wires the step.
 
 import { hasCode } from "../api/backend";
+import { t } from "../i18n";
+import { en } from "../i18n/en";
 import type { EmptyArtId } from "./emptyArt";
 
 export interface EmptyAction {
@@ -17,145 +19,58 @@ export interface EmptyCopy {
   action: EmptyAction | null;
 }
 
+type EmptyText = Exclude<keyof typeof en.components.empty, "action">;
+
+interface Step {
+  testId: string;
+  action: keyof typeof en.components.empty.action;
+}
+
+/** A row whose words are read from the catalog when the screen reads them. */
+function empty<A extends EmptyArtId>(art: A, text: EmptyText, step: Step): { art: A; title: string; message: string; action: EmptyAction };
+function empty<A extends EmptyArtId>(art: A, text: EmptyText, step: null): { art: A; title: string; message: string; action: null };
+function empty(art: EmptyArtId, text: EmptyText, step: Step | null): EmptyCopy {
+  return {
+    art,
+    get title() {
+      return t(`components.empty.${text}.title`);
+    },
+    get message() {
+      return t(`components.empty.${text}.message`);
+    },
+    action: step && {
+      testId: step.testId,
+      get label() {
+        return t(`components.empty.action.${step.action}`);
+      },
+    },
+  };
+}
+
 export const EMPTY = {
-  homeHistory: {
-    art: "activity",
-    title: "There are no transactions to display",
-    message: "Payments you receive and send show up here.",
-    action: { testId: "history-empty-receive", label: "Receive Dash" },
-  },
-  activity: {
-    art: "activity",
-    title: "There are no transactions to display",
-    message: "Payments you receive and send show up here.",
-    action: { testId: "tx-empty-receive", label: "Receive Dash" },
-  },
-  historySyncing: {
-    art: "activity",
-    title: "Your history is still syncing",
-    message: "Payments show up here as the wallet catches up.",
-    action: null,
-  },
-  historyStarting: {
-    art: "activity",
-    title: "The wallet is still starting",
-    message: "Payments show up here once it has caught up.",
-    action: null,
-  },
-  historyStopped: {
-    art: "activity",
-    title: "Syncing has stopped",
-    message: "Payments show up here once the wallet is syncing again.",
-    action: null,
-  },
-  historyUnreadable: {
-    art: "activity",
-    title: "Could not tell whether the wallet has caught up",
-    message: "Payments show up here once that can be checked.",
-    action: { testId: "history-recheck", label: "Try again" },
-  },
-  activityUnreadable: {
-    art: "activity",
-    title: "Could not tell whether the wallet has caught up",
-    message: "Payments show up here once that can be checked.",
-    action: { testId: "tx-recheck", label: "Try again" },
-  },
-  activityFiltered: {
-    art: "search",
-    title: "Nothing matches these filters",
-    message: "Try a different search, or show every transaction.",
-    action: { testId: "tx-empty-clear", label: "Clear filters" },
-  },
-  contacts: {
-    art: "contacts",
-    title: "No contacts yet",
-    message: "Search for a user by their username to send them a contact request.",
-    action: { testId: "contacts-empty-search", label: "Add contact" },
-  },
-  notifications: {
-    art: "notifications",
-    title: "No notifications yet",
-    message: "Contact requests and payments from your contacts show up here.",
-    action: { testId: "notifications-add-contact", label: "Add contact" },
-  },
-  notificationsNoIdentity: {
-    art: "notifications",
-    title: "No notifications yet",
-    message: "Create a username to get contact requests and payments from contacts.",
-    action: { testId: "notifications-join", label: "Join DashPay" },
-  },
-  addressSend: {
-    art: "address",
-    title: "No sending addresses yet",
-    message: "Save an address you pay often.",
-    action: { testId: "address-book-empty-add", label: "Add address" },
-  },
-  addressReceive: {
-    art: "address",
-    title: "No receiving addresses yet",
-    message: "New addresses are created on Receive.",
-    action: { testId: "address-book-empty-receive", label: "Receive Dash" },
-  },
-  addressSearch: {
-    art: "search",
-    title: "No entry matches the search",
-    message: "Try a different address or label.",
-    action: { testId: "address-book-empty-clear", label: "Clear search" },
-  },
-  coins: {
-    art: "coins",
-    title: "No coins yet",
-    message: "Coins you receive show up here.",
-    action: { testId: "coins-empty-receive", label: "Receive Dash" },
-  },
-  coinsStarting: {
-    art: "coins",
-    title: "The wallet is still starting",
-    message: "Coins show up here once it has caught up.",
-    action: null,
-  },
-  coinsSyncing: {
-    art: "coins",
-    title: "Coins are still syncing",
-    message: "Coins you already have show up here as the wallet catches up.",
-    action: null,
-  },
-  coinsStopped: {
-    art: "coins",
-    title: "Syncing has stopped",
-    message: "Coins show up here once the wallet is syncing again.",
-    action: null,
-  },
-  coinsUnreadable: {
-    art: "coins",
-    title: "Could not tell whether the wallet has caught up",
-    message: "Coins show up here once that can be checked.",
-    action: { testId: "coins-recheck", label: "Try again" },
-  },
-  coinsHidden: {
-    art: "coins",
-    title: "Every coin here is a CoinJoin coin",
-    message: "CoinJoin coins are hidden from this list.",
-    action: { testId: "coins-empty-show", label: "Show all coins" },
-  },
-  peers: {
-    art: "peers",
-    title: "No peers are connected",
-    message: "Check your internet connection. The wallet keeps looking for peers.",
-    action: null,
-  },
-  join: {
-    art: "username",
-    title: "Join DashPay",
-    message: "Create a username to add contacts and pay them by name.",
-    action: { testId: "contacts-join-button", label: "Join DashPay" },
-  },
-  wallet: {
-    art: "wallet",
-    title: "No wallet on this network yet",
-    message: "Create or restore a wallet to get started.",
-    action: null,
-  },
+  homeHistory: empty("activity", "noTransactions", { testId: "history-empty-receive", action: "receive" }),
+  activity: empty("activity", "noTransactions", { testId: "tx-empty-receive", action: "receive" }),
+  historySyncing: empty("activity", "historySyncing", null),
+  historyStarting: empty("activity", "historyStarting", null),
+  historyStopped: empty("activity", "historyStopped", null),
+  historyUnreadable: empty("activity", "historyUnreadable", { testId: "history-recheck", action: "tryAgain" }),
+  activityUnreadable: empty("activity", "historyUnreadable", { testId: "tx-recheck", action: "tryAgain" }),
+  activityFiltered: empty("search", "activityFiltered", { testId: "tx-empty-clear", action: "clearFilters" }),
+  contacts: empty("contacts", "contacts", { testId: "contacts-empty-search", action: "addContact" }),
+  notifications: empty("notifications", "notifications", { testId: "notifications-add-contact", action: "addContact" }),
+  notificationsNoIdentity: empty("notifications", "notificationsNoIdentity", { testId: "notifications-join", action: "join" }),
+  addressSend: empty("address", "addressSend", { testId: "address-book-empty-add", action: "addAddress" }),
+  addressReceive: empty("address", "addressReceive", { testId: "address-book-empty-receive", action: "receive" }),
+  addressSearch: empty("search", "addressSearch", { testId: "address-book-empty-clear", action: "clearSearch" }),
+  coins: empty("coins", "coins", { testId: "coins-empty-receive", action: "receive" }),
+  coinsStarting: empty("coins", "coinsStarting", null),
+  coinsSyncing: empty("coins", "coinsSyncing", null),
+  coinsStopped: empty("coins", "coinsStopped", null),
+  coinsUnreadable: empty("coins", "coinsUnreadable", { testId: "coins-recheck", action: "tryAgain" }),
+  coinsHidden: empty("coins", "coinsHidden", { testId: "coins-empty-show", action: "showAllCoins" }),
+  peers: empty("peers", "peers", null),
+  join: empty("username", "join", { testId: "contacts-join-button", action: "join" }),
+  wallet: empty("wallet", "wallet", null),
 } as const satisfies Record<string, EmptyCopy>;
 
 export type EmptyId = keyof typeof EMPTY;

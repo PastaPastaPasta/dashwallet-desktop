@@ -22,9 +22,6 @@ async function openCoinJoin(page: Page, scenario: string, theme: Theme, lang: st
 /** Formatted Dash amounts shown as plain strings (e.g. "0.200002 tDASH", "1,000 tDASH"). */
 const AMOUNTS = [/^[\p{Nd}.,٫٬\s•*]+ (t?DASH|mDASH|μDASH|duffs)(, [\p{Nd}.,٫٬\s•*]+ (t?DASH|mDASH|μDASH|duffs))*$/u];
 
-/** Still English, from components/sheet.tsx: QuestionSheet's Cancel button. */
-const SHEET_CANCEL = [/^Cancel$/];
-
 interface State {
   roots: string[];
   data?: RegExp[];
@@ -98,7 +95,6 @@ const STATES: Record<string, State> = {
   },
   "stop-sheet": {
     roots: ["coinjoin-stop-sheet"],
-    data: SHEET_CANCEL,
     open: async (page, theme, lang) => {
       await openCoinJoin(page, "coinjoin-mixing", theme, lang);
       await page.getByTestId("coinjoin-action").click();
