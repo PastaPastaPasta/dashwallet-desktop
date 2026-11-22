@@ -40,8 +40,9 @@ const rendered = (page: Page) => page.evaluate(() => new Promise((r) => requestA
 /** How `el` reads to assistive tech now, in the page: "<politeness>: <text>" (polite or assertive)
  * for an exposed live region; for a live region a reader cannot reach yet, why not and its text;
  * else "absent" or "not a live region". An explicit `aria-live` wins over the role's default (`off`
- * is not live). A region inside aria-busy="true" is not exposed: readers hold its updates. The text is what a reader gets: text inside an aria-hidden, hidden, inert or
- * unrendered element of the region is left out. Self-contained: it runs in the page. */
+ * is not live). A region inside aria-busy="true" is not exposed: readers hold its updates. The
+ * text is what a reader gets: text inside an aria-hidden, hidden, inert or unrendered element of
+ * the region is left out. Self-contained: it runs in the page. */
 function liveState(el: Element | null): string {
   if (!el?.isConnected) return "absent";
   const explicit = el.getAttribute("aria-live");
@@ -242,7 +243,8 @@ test("keyboard only: register a username", async ({ page }) => {
   await expect(screen.getByTestId("registration-progress-step")).toHaveText("(2/3) Creating identity");
   await expectSaid(progress, "polite", /\(2\/3\) Creating identity/);
 
-  // The network finishes the run; the welcome takes focus at its title, which a reader says.
+  // The network finishes the run; the welcome keeps focus at its title, and its status says it.
+  const announced = await liveRegion(page, '[data-testid="registration-announced"]', { empty: false });
   await page.evaluate((d) => {
     while (window.__dwFixture!.advanceRegistration(d));
   }, draft);
@@ -250,6 +252,7 @@ test("keyboard only: register a username", async ({ page }) => {
   const title = screen.getByRole("heading", { level: 2 });
   await expect(title).toHaveText("Welcome to DashPay, @alice-77");
   await expect(title).toBeFocused();
+  await expectSaid(announced, "polite", /Welcome to DashPay, @alice-77\./);
   await expect(page.getByTestId("toolbar-chip")).toContainText("@alice-77");
   await expectAxeClean(page);
   expect(errors).toEqual([]);
@@ -288,7 +291,7 @@ test("keyboard only: send a contact request", async ({ page }) => {
   await page.keyboard.press("Enter");
   await authorizeFrom(page, send);
 
-  // The outcome shows (whether a reader hears it is defect "Add contact" below), and focus has a
+  // The outcome shows (that a reader hears it is the "Add contact" test below), and focus has a
   // place in the card that now says it went.
   const outcome = page.getByTestId("add-contact-outcome");
   await expect(outcome).toHaveText("Contact request sent to Mallory.");
@@ -340,7 +343,7 @@ test("keyboard only: accept a contact request from the bell", async ({ page }) =
   await page.keyboard.press("Enter");
   await authorizeFrom(page, accept);
 
-  // Shown inline while the popover is open (whether a reader hears it is defect "bell" below);
+  // Shown inline while the popover is open (that a reader hears it is the "bell" test below);
   // focus goes to the request now in heidi's place.
   const outcome = page.getByTestId("bell-outcome");
   await expect(outcome).toHaveText("You and heidi are now contacts.");
@@ -386,7 +389,7 @@ test("keyboard only: accept a contact request in the contacts list", async ({ pa
   await page.keyboard.press("Enter");
   await authorizeFrom(page, accept);
 
-  // The pane shows what happened (whether a reader hears it is defect "contact pane" below) and
+  // The pane shows what happened (that a reader hears it is the "contact pane" test below) and
   // takes focus at what it offers now.
   const outcome = page.getByTestId("contact-pane-outcome");
   await expect(outcome).toHaveText("You and heidi are now contacts.");
@@ -498,20 +501,28 @@ test("keyboard only: edit my profile", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("defect (#286): after Confirm & pay's passphrase, the registration progress screen leaves focus on <body>", async ({ page }) => {
+test("#286: after Confirm & pay's passphrase, focus moves to the registration progress screen", async ({ page }) => {
   const errors = await open(page, "dashpay-no-identity");
   const pay = await toConfirmAndPay(page, "alice-77");
   await page.keyboard.press("Enter");
   await authorizeFrom(page, pay);
+  // Confirm & pay is disabled as the run starts and goes with Step 2, so the grant sheet has
+  // nowhere to give focus back: the progress screen takes it at its title, not <body>.
   const screen = page.getByTestId("registration-screen");
   await expect(screen).toHaveAttribute("data-kind", "progress");
   await rendered(page);
   expect(errors).toEqual([]);
-  test.fail(
-    true,
-    "Join DashPay ▸ Confirm & pay: the button is disabled while the run starts, then goes with Step 2, so the grant sheet has nowhere to give focus back and it falls to <body>; expected on the progress screen (its title or first control).",
-  );
   await expect.poll(async () => ((await holdsFocus(screen)) ? "on the progress screen" : await focusName(page))).toBe("on the progress screen");
+  const title = screen.getByRole("heading", { level: 2 });
+  await expect(title).toBeFocused();
+  // The welcome then keeps focus at the title, which gets no new focus event, so it is announced.
+  await page.evaluate(() => {
+    const d = window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft;
+    while (window.__dwFixture!.advanceRegistration(d));
+  });
+  await expect(screen).toHaveAttribute("data-kind", "done");
+  await expect(title).toBeFocused();
+  await expect(page.getByTestId("registration-announced")).toHaveText("Welcome to DashPay, @alice-77. Your username is ready. Friends can now find you and pay you by name.");
 });
 
 /** The bell popover now, read in one go: "closed" (absent or not rendered), "focus kept" (it
@@ -563,11 +574,10 @@ test("defect (#288): while a contact payment is sent, Confirm payment leaves foc
   await expect.poll(async () => ((await holdsFocus(confirm)) ? "in Confirm payment" : await focusName(page))).toBe("in Confirm payment");
 });
 
-// A contact action's result goes in `Outcome` (src/screens/tools/common.tsx), which renders nothing
-// until there is text: its role=status region appears already holding the result, which screen
-// readers do not reliably announce. Expected: an empty status region present before the action,
-// and that same element given the result. `reach` gets to the action's button; Enter and the
-// passphrase run it.
+// A contact action's result goes in `Outcome` (src/screens/tools/common.tsx). A status region that
+// appears already holding its text is not reliably announced (#291), so the empty status region is
+// there before the action and that same element is given the result. `reach` gets to the action's
+// button; Enter and the passphrase run it.
 const OUTCOME_SITES: { where: string; region: string; said: string; reach: (page: Page) => Promise<Locator> }[] = [
   {
     where: "Add contact ▸ Send request (add-contact-outcome)",
@@ -605,7 +615,7 @@ const OUTCOME_SITES: { where: string; region: string; said: string; reach: (page
 ];
 
 for (const site of OUTCOME_SITES) {
-  test(`defect (#291): ${site.where}: the result's status region only appears with the result, so it is not announced`, async ({ page }) => {
+  test(`${site.where}: the result is said by the status region present before the action (#291)`, async ({ page }) => {
     const errors = await open(page, "dashpay-registered");
     const trigger = await site.reach(page);
     const region = await page.evaluateHandle((s) => document.querySelector(s), site.region);
@@ -613,14 +623,8 @@ for (const site of OUTCOME_SITES) {
     await armRecorder(page, region);
     await page.keyboard.press("Enter");
     await authorizeFrom(page, trigger);
-    // The result shows; the question is only whether the region held before the action said it.
     await expect(page.locator(site.region)).toHaveText(site.said);
-    const shownIn = await page.locator(site.region).evaluate(liveState);
     expect(errors).toEqual([]);
-    test.fail(
-      true,
-      `${site.where}: no status region is in the page before the action ("${before}"); the result comes in a new role=status element that appears with its text ("${shownIn}"). Expected an empty status region present before the action, then that element given "${site.said}" politely while exposed.`,
-    );
     await expect
       .poll(async () => ({ before, said: (await heardBy(region)).includes(`polite: ${site.said}`) }))
       .toEqual({ before: "polite: ", said: true });
