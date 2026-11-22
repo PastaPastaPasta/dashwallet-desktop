@@ -244,6 +244,10 @@ describe("checkSettings (D11)", () => {
     const german = vi.spyOn(Intl, "NumberFormat").mockImplementation(function (locale?: string | string[], options?: Intl.NumberFormatOptions) {
       return new Real(locale ?? "de-DE", options);
     } as typeof Intl.NumberFormat);
+    const realToLocale = Number.prototype.toLocaleString;
+    const germanNumbers = vi.spyOn(Number.prototype, "toLocaleString").mockImplementation(function (this: number, locale?: Intl.LocalesArgument, options?: Intl.NumberFormatOptions) {
+      return realToLocale.call(this, locale ?? "de-DE", options);
+    });
     try {
       const wrong = checkSettings({ ...formOf(current), denomsHardCap: "5" }, current, LIMITS);
       expect(wrong).toEqual({ field: "denomsHardCap", text: "Inputs per denomination: Maximum must be a whole number from 10 to 100,000." });
@@ -252,6 +256,7 @@ describe("checkSettings (D11)", () => {
       expect(checkSettings({ ...formOf(current), denomsHardCap: low }, current, LIMITS)).toMatchObject({ field: "denomsGoal" });
     } finally {
       german.mockRestore();
+      germanNumbers.mockRestore();
     }
   });
 
