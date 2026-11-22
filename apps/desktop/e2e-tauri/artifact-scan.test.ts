@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { crc32, deflateSync } from "node:zlib";
-import { longestPhraseRun, phraseWordsIn, scanArtifacts, singleColourPng, suspicious } from "./artifact-scan.ts";
+import { folded, longestPhraseRun, nearMatch, phraseWordsIn, scanArtifacts, singleColourPng, suspicious } from "./artifact-scan.ts";
 
 /** An 8-bit RGB PNG of `pixel`, its rows filtered with each of the five filters in turn. */
 function png(width: number, height: number, pixel: (x: number, y: number) => [number, number, number]): Buffer {
@@ -161,5 +161,33 @@ describe("the testnet artifact check (H-04 O4a)", () => {
       process.env.FAKE_OCR_TEXT = "legal winner thank\nyear wave sausage";
       expect(scanArtifacts([shots], ["legal winner thank year wave sausage"]).hits).toEqual(hit);
     });
+
+    it.skipIf(process.platform === "win32")("finds a passphrase OCR misread: a brace for a J, a dropped or an extra character", () => {
+      const shots = shot();
+      fakeTesseract();
+      const pass = "kQ7JxW2mPa9R";
+      const hit = [`${join(shots, "1-form.png")}: known-secret (ocr)`];
+      for (const text of ["Passphrase: kQ7}xW2mPa9R", "Passphrase kQ7xW2mPa9R", "kQ7J xW2m.Pa9R)", "kQ7]xW2rnPa9R"]) {
+        process.env.FAKE_OCR_TEXT = text;
+        expect(scanArtifacts([shots], [pass]).hits, text).toEqual(hit);
+      }
+      process.env.FAKE_OCR_TEXT = "Pay QA B 0.0001 tDASH Confirm with your passphrase";
+      expect(scanArtifacts([shots], [pass]).hits).toEqual([]);
+    });
+  });
+
+  it("matches a secret of eight or more characters within max(2, 20%) edits, a shorter one only exactly", () => {
+    const near = (text: string, secret: string) => nearMatch(folded(text), folded(secret));
+    expect(near("abc kQ7}xW2mPa9R xyz", "kQ7JxW2mPa9R")).toBe(true);
+    expect(near("kQ7xW2mPa9", "kQ7JxW2mPa9R")).toBe(true);
+    expect(near("kQ7xW2mPa", "kQ7JxW2mPa9R")).toBe(false);
+    const long = "Aa3Bb4Cc5Dd6Ee7Ff8Gg9H";
+    expect(near("Aa3Bb4Cc5Dd6Ee7Ff8", long)).toBe(true);
+    expect(near("Aa3Bb4Cc5Dd6Ee7F", long)).toBe(false);
+    expect(near("Zq7xK2m", "Zq7xK2mP")).toBe(true);
+    expect(near("Zq7xK2", "Zq7xK2mP")).toBe(true);
+    expect(near("Zq7xK", "Zq7xK2mP")).toBe(false);
+    expect(near("Zq7xK2m", "Zq7xK2m")).toBe(true);
+    expect(near("Zq7xKm", "Zq7xK2m")).toBe(false);
   });
 });

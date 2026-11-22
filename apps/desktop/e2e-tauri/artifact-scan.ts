@@ -1,8 +1,10 @@
 // The phrase and key check every kept artifact of a testnet run passes before it leaves the box
 // (H-04 O4a): the known secrets as plain text (scratch.ts's `leaks`), any run of 12 or more BIP39
-// words, and any extended private key (xprv/tprv). PNGs are read through tesseract, so a
-// screenshot of a phrase or passphrase is caught too; a PNG it cannot read fails the check. Reports
-// a path and the kind of hit, never the text. Node built-ins only, so vitest checks it.
+// words, and any extended private key (xprv/tprv). PNGs are read through tesseract and matched
+// approximately (look-alikes folded, then within a few edits), so a screenshot of a phrase or
+// passphrase is caught too; a PNG it cannot read fails the check. OCR is the second line: the first
+// is that a flow types a secret only into a masked field (driver.ts fillSecret). Reports a path and
+// the kind of hit, never the text. Node built-ins only, so vitest checks it.
 
 import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
@@ -116,14 +118,41 @@ export function singleColourPng(png: Buffer): boolean {
 const hasTesseract = () => spawnSync("tesseract", ["--version"], { encoding: "utf8" }).status === 0;
 
 /** How a secret is looked for in OCR text, which breaks lines, splits or joins words and confuses
- * look-alikes: case folded, white space dropped, i/l/1/| as one, o/0 as one, -/_ as one. */
-const folded = (s: string) =>
+ * look-alikes: case folded, white space dropped, and each look-alike group as one character:
+ * i l j 1 | ! [ ] { } ( ), o 0 q d, s 5 $, z 2, b 8, g 9, - _ ~ and quotes. */
+export const folded = (s: string) =>
   s
     .toLowerCase()
     .replace(/\s+/g, "")
-    .replace(/[il|]/g, "1")
-    .replace(/o/g, "0")
-    .replace(/_/g, "-");
+    .replace(/[ilj1|!\[\]{}()]/g, "1")
+    .replace(/[o0qd]/g, "0")
+    .replace(/[s5$]/g, "5")
+    .replace(/z/g, "2")
+    .replace(/b/g, "8")
+    .replace(/g/g, "9")
+    .replace(/[-_~]/g, "-")
+    .replace(/[`'"‘’“”]/g, "'");
+
+/** A secret this long or longer is also matched approximately in OCR text; a shorter one only
+ * exactly (folded), so that short common words do not match. */
+export const APPROX_MIN = 8;
+
+/** Whether some window of `text` lies within edit distance max(2, 20% of its length) of `secret`
+ * (both folded): Sellers' approximate substring match. */
+export function nearMatch(text: string, secret: string): boolean {
+  const n = secret.length;
+  if (n < APPROX_MIN) return text.includes(secret);
+  const k = Math.max(2, Math.floor(n * 0.2));
+  // col[i]: the least edits that turn secret[0..i) into a substring of text ending here.
+  let col = Array.from({ length: n + 1 }, (_, i) => i);
+  for (const c of text) {
+    const next = [0];
+    for (let i = 1; i <= n; i++) next[i] = Math.min(col[i]! + 1, next[i - 1]! + 1, col[i - 1]! + (secret[i - 1] === c ? 0 : 1));
+    if (next[n]! <= k) return true;
+    col = next;
+  }
+  return false;
+}
 
 /** Every hit under `dirs`, as `<path>: <kind>`; `ocr` says whether tesseract was there. A PNG that
  * cannot be read (no tesseract, an OCR run that fails, no text read from an image of more than one
@@ -158,7 +187,7 @@ export function scanArtifacts(dirs: string[], secrets: string[]): { hits: string
       }
       for (const kind of suspicious(text)) hits.push(`${f}: ${kind}`);
       const flat = folded(text);
-      if (known.some((s) => flat.includes(s)) || phrases.some((p) => phraseWordsIn(text, p) >= PHRASE_WORDS_SHOWN)) hits.push(`${f}: known-secret (ocr)`);
+      if (known.some((s) => nearMatch(flat, s)) || phrases.some((p) => phraseWordsIn(text, p) >= PHRASE_WORDS_SHOWN)) hits.push(`${f}: known-secret (ocr)`);
     }
   }
   return { hits, files: count, ocr };

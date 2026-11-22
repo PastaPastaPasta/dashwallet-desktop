@@ -28,7 +28,7 @@ import type { RegistrationQuote } from "../src/api/generated/RegistrationQuote";
 import type { RegistrationStatus } from "../src/api/generated/RegistrationStatus";
 import type { SyncStatus } from "../src/api/generated/SyncStatus";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
-import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
+import { APP, driverGone, DWCLI, env, fillSecret, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
 import { keepSecretAt, noteSecretAt, randomPassphrase } from "./flow-secrets.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
@@ -118,16 +118,16 @@ function app(wd: WebDriver) {
     wd.start({ alwaysMatch: { "tauri:options": { application: APP, args: ["--datadir", ROOT, ...NETWORK, "--sync", "--theme", "light"] } } });
   const texts = (css: string) => wd.script<string[]>(`return [...document.querySelectorAll(arguments[0])].map((e) => e.textContent.trim())`, [css]);
   const attr = (css: string, name: string) => wd.script<string | null>(`return document.querySelector(arguments[0])?.getAttribute(arguments[1]) ?? null`, [css, name]);
+  const CLEAR = `${CONTROL}a${CONTROL}${BACKSPACE}`;
   const retype = async (id: string, text: string) => {
     const el = await wd.waitFor(tid(id));
-    await wd.type(el, `${CONTROL}a${CONTROL}${BACKSPACE}${text}`);
+    await wd.type(el, `${CLEAR}${text}`);
   };
-  /** Types into a field and checks by length that it took every key (onboarding.ts). */
-  const enter = async (id: string, text: string) => {
+  /** Types a secret into a masked field (fillSecret) and checks by length that it took every key (onboarding.ts). */
+  const enterSecret = async (id: string, text: string) => {
     const lengths: number[] = [];
     for (let i = 0; i < 3; i++) {
-      if (i === 0) await wd.fill(tid(id), text);
-      else await retype(id, text);
+      await fillSecret(wd, tid(id), text, i === 0 ? "" : CLEAR);
       const length = await wd.script<number>(`return document.querySelector(arguments[0])?.value.length ?? -1`, [tid(id)]);
       if (length === text.length) return;
       lengths.push(length);
@@ -148,7 +148,7 @@ function app(wd: WebDriver) {
     if (r.err !== undefined) throw new Error(`${command}: ${r.err}`);
     return r.ok as T;
   };
-  return { launch, texts, attr, retype, enter, clickText, invoke };
+  return { launch, texts, attr, retype, enterSecret, clickText, invoke };
 }
 
 type App = ReturnType<typeof app>;
@@ -159,8 +159,8 @@ async function createWallet(wd: WebDriver, a: App, passphrase: string): Promise<
   await wd.waitFor(tid("onboarding-welcome"), "Welcome on a fresh data root");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
   await wd.press(tid("onboarding-create"));
-  await a.enter("onboarding-passphrase-new", passphrase);
-  await a.enter("onboarding-passphrase-repeat", passphrase);
+  await a.enterSecret("onboarding-passphrase-new", passphrase);
+  await a.enterSecret("onboarding-passphrase-repeat", passphrase);
   await wd.press(tid("onboarding-passphrase-submit"));
   await wd.waitFor(tid("onboarding-phrase-words"), "the recovery phrase");
   const words = await a.texts(`${tid("onboarding-phrase-words")} .phrase-word`);
@@ -183,14 +183,14 @@ async function createWallet(wd: WebDriver, a: App, passphrase: string): Promise<
 
 /** The passphrase sheet a grant asks with. */
 async function grantPassphrase(wd: WebDriver, a: App, passphrase: string) {
-  await a.enter("grant-sheet-field", passphrase);
+  await a.enterSecret("grant-sheet-field", passphrase);
   await wd.press(tid("grant-sheet-submit"));
 }
 
 async function unlock(wd: WebDriver, a: App, passphrase: string) {
   await wd.waitFor(tid("lock-field"), "the lock screen");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
-  await a.enter("lock-field", passphrase);
+  await a.enterSecret("lock-field", passphrase);
   await wd.press(tid("lock-submit"));
   await wd.waitGone(tid("lock-screen"), "the lock screen");
 }

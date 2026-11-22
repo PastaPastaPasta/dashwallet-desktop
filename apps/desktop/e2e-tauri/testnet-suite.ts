@@ -13,9 +13,16 @@
 //     key check (artifact-scan.ts) over <out> and each <dir>, for the fixture's secrets and those
 //     the flows made (<out>/secrets.manifest, flow-secrets.ts). Exits 1 when a flow failed or the
 //     check found anything.
+//   node e2e-tauri/testnet-suite.ts prune <run> <fixture>
+//     deletes a finished run (<run> and the profile directory its summary names) and the secrets
+//     its flows put in the store, together, and only once the check over all of it is clean: a
+//     run's throwaway secrets last as long as its artifacts. Each manifest name the store holds
+//     alone is removed with `secret rm` (its name printed, never its value); a linked one (wallet
+//     E's, which the fixture keeps) stays. A failed `secret rm` stops it with the run kept; the
+//     names already removed are listed in <run>/secrets.pruned, so a rerun goes on from there.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { scanArtifacts, suspicious } from "./artifact-scan.ts";
@@ -130,12 +137,14 @@ const withSpaced = (value: string) => {
 };
 
 /** The secrets the run's flows made (flow-secrets.ts): read from the store by the names in
- * <out>/secrets.manifest, or through the links it lists. One that cannot be read is a problem. */
-function manifestSecrets(out: string): { secrets: string[]; problems: string[] } {
+ * <out>/secrets.manifest, or through the links it lists, and the names the store holds alone (no
+ * link). One that cannot be read is a problem, unless prune already removed it. */
+function manifestSecrets(out: string, removed: string[] = []): { secrets: string[]; problems: string[]; names: string[] } {
   const manifest = join(out, "secrets.manifest");
   const secrets: string[] = [];
   const problems: string[] = [];
-  if (!existsSync(manifest)) return { secrets, problems };
+  const names: string[] = [];
+  if (!existsSync(manifest)) return { secrets, problems, names };
   for (const line of readFileSync(manifest, "utf8").split("\n").filter(Boolean)) {
     let entry: { name?: string; link?: string };
     try {
@@ -144,18 +153,25 @@ function manifestSecrets(out: string): { secrets: string[]; problems: string[] }
       problems.push(`${manifest}: a line that is not JSON`);
       continue;
     }
+    if (entry.name && !entry.link) names.push(entry.name);
+    if (entry.name && removed.includes(entry.name)) continue;
     const r = entry.name ? spawnSync("secret", ["get", entry.name], { encoding: "utf8" }) : null;
     const value = r ? (r.status === 0 ? r.stdout : null) : entry.link && existsSync(entry.link) ? readFileSync(entry.link, "utf8") : null;
     if (value?.trim()) secrets.push(...withSpaced(value));
     else problems.push(`${manifest}: ${entry.name ?? entry.link} cannot be read`);
   }
-  return { secrets, problems };
+  return { secrets, problems, names };
+}
+
+/** The fixture's secrets and the run's (manifestSecrets), with what is wrong with either. */
+function runSecrets(out: string, fixtureDir: string, removed: string[] = []) {
+  const kept = fixtureSecrets(fixtureDir);
+  const made = manifestSecrets(out, removed);
+  return { secrets: [...kept.secrets, ...made.secrets], problems: [...kept.problems, ...made.problems], names: made.names };
 }
 
 function summary(out: string, fixtureDir: string, extra: string[]): number {
-  const kept = fixtureSecrets(fixtureDir);
-  const made = manifestSecrets(out);
-  const secrets = [...kept.secrets, ...made.secrets];
+  const { secrets, problems } = runSecrets(out, fixtureDir);
   // A flow masks its own errors; this is the backstop for the one line the summary quotes.
   const clean = (line: string | null) => {
     if (!line) return line;
@@ -172,10 +188,11 @@ function summary(out: string, fixtureDir: string, extra: string[]): number {
       const result = status === "skip" ? "skip" : code === 0 ? "pass" : "fail";
       return { flow: flow!, result, exit: status === "skip" ? null : code, seconds: Number(seconds), error: result === "fail" ? clean(firstError(log!)) : null, log: relative(out, log!) };
     });
-  const scan = scanArtifacts([out, ...extra.filter(existsSync)], secrets);
-  scan.hits.push(...kept.problems, ...made.problems);
+  const dirs = extra.filter(existsSync);
+  const scan = scanArtifacts([out, ...dirs], secrets);
+  scan.hits.push(...problems);
   const at = new Date().toISOString();
-  const json = { at, flows: runs, scan: { files: scan.files, ocr: scan.ocr, clean: scan.hits.length === 0, hits: scan.hits.map((h) => relative(out, h)) } };
+  const json = { at, flows: runs, dirs, scan: { files: scan.files, ocr: scan.ocr, clean: scan.hits.length === 0, hits: scan.hits.map((h) => relative(out, h)) } };
   writeFileSync(join(out, "summary.json"), `${JSON.stringify(json, null, 2)}\n`);
   const md = [
     `# DashPay GL flows on testnet (${at})`,
@@ -192,12 +209,46 @@ function summary(out: string, fixtureDir: string, extra: string[]): number {
   return runs.some((r) => r.result === "fail") || scan.hits.length ? 1 : 0;
 }
 
+const PROFILE_DIR = /^dwd-dashpay-testnet-profile-/;
+
+function prune(run: string, fixtureDir: string): number {
+  const sum = join(run, "summary.json");
+  if (!existsSync(sum)) throw new Error(`${run} is not a finished run (no summary.json)`);
+  const listed = (JSON.parse(readFileSync(sum, "utf8")) as { dirs?: string[] }).dirs;
+  if (!Array.isArray(listed)) throw new Error(`${sum} lists no directories: written before prune existed, so prune it by hand`);
+  const dirs = listed.filter(existsSync);
+  const stray = dirs.find((d) => !PROFILE_DIR.test(basename(d)) || !lstatSync(d).isDirectory());
+  if (stray) throw new Error(`${sum} names ${stray}, not a profile directory a run makes`);
+  const pruned = join(run, "secrets.pruned");
+  const removed = existsSync(pruned) ? readFileSync(pruned, "utf8").split("\n").filter(Boolean) : [];
+  const s = runSecrets(run, fixtureDir, removed);
+  const hits = [...scanArtifacts([run, ...dirs], s.secrets).hits, ...s.problems];
+  if (hits.length) {
+    console.error(`testnet-suite: ${run} not pruned, nothing removed: the check found ${hits.length}:\n${hits.map((h) => `- ${h}`).join("\n")}`);
+    return 1;
+  }
+  for (const name of s.names.filter((n) => !removed.includes(n))) {
+    const r = spawnSync("secret", ["rm", name], { encoding: "utf8" });
+    // `secret rm` also exits 1 for a sync problem elsewhere: what counts is that the name is gone.
+    const gone = r.status === 0 || /^secret: no secret '/m.test(spawnSync("secret", ["get", name], { encoding: "utf8" }).stderr ?? "");
+    if (!gone) throw new Error(`secret rm ${name} failed (${r.error?.message ?? (r.stderr?.trim() || `exit ${r.status}`)}); ${run} is kept, rerun prune once \`secret status\` is clean`);
+    appendFileSync(pruned, `${name}\n`, { mode: 0o600 });
+    console.log(`removed ${name}`);
+  }
+  for (const d of [...dirs, run]) rmSync(d, { recursive: true, force: true });
+  const latest = join(dirname(run), "latest");
+  if (lstatSync(latest, { throwIfNoEntry: false })?.isSymbolicLink() && readlinkSync(latest) === basename(run)) rmSync(latest);
+  console.log(`pruned ${[...dirs, run].join(", ")}`);
+  return 0;
+}
+
 const [cmd, ...args] = process.argv.slice(2);
 try {
   if (cmd === "env" && args[0]) console.log(envLines(args[0]).join("\n"));
   else if (cmd === "secrets" && args[0]) checkStored(args[0]);
   else if (cmd === "summary" && args[0] && args[1]) process.exitCode = summary(args[0], args[1], args.slice(2));
-  else throw new Error("usage: testnet-suite.ts env <fixture> | summary <out> <fixture> [<dir>…]");
+  else if (cmd === "prune" && args[0] && args[1]) process.exitCode = prune(args[0], args[1]);
+  else throw new Error("usage: testnet-suite.ts env <fixture> | secrets <fixture> | summary <out> <fixture> [<dir>…] | prune <run> <fixture>");
 } catch (e) {
   console.error(`testnet-suite: ${e instanceof Error ? e.message : String(e)}`);
   process.exitCode = 2;

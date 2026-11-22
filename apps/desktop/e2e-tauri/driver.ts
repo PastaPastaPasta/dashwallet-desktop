@@ -122,6 +122,31 @@ export class WebDriver {
   end = () => this.call<null>("DELETE", this.s(""));
 }
 
+// ------------------------------------------------------------------ secrets into the app
+
+/** Why `e` may not take a secret, or null: it must be an <input type="password"> with no reveal
+ * toggle in its form or dialog (a control naming it in aria-controls, marked data-reveal, or whose
+ * label, title or text says show, reveal, hide or unmask). Runs in the page (serialised), so it uses nothing from outside itself. */
+export function maskedFieldProblem(e: any): string | null {
+  if (!e) return "no such field";
+  if (String(e.tagName).toUpperCase() !== "INPUT" || e.type !== "password") return `not a masked field (${String(e.tagName).toLowerCase()}${e.type ? ` type=${e.type}` : ""})`;
+  const scopes = [e.form, e.closest && e.closest("[role=dialog], [role=alertdialog]"), e.parentElement].filter(Boolean);
+  const controls: any[] = scopes.flatMap((s: any) => Array.from(s.querySelectorAll("button, [role=button], [role=switch], input[type=checkbox]")));
+  const said = (c: any) => [c.getAttribute("aria-label"), c.getAttribute("title"), c.textContent, ...Array.from(c.labels || []).map((l: any) => l.textContent)].join(" ");
+  const reveals = (c: any) => c.hasAttribute("data-reveal") || (e.id && c.getAttribute("aria-controls") === e.id) || /\b(show|reveal|hide|unmask)\b/i.test(said(c));
+  return controls.some(reveals) ? "a reveal toggle beside it" : null;
+}
+
+/** The one way a flow types a secret (H-04 O4a): only into a masked field, checked first, so no
+ * screenshot can show it whatever OCR makes of it. `prefix` (keys such as select-all and delete)
+ * goes before it. Throws, typing nothing, when the field is not masked. */
+export async function fillSecret(wd: WebDriver, css: string, value: string, prefix = ""): Promise<void> {
+  const el = await wd.waitFor(css);
+  const problem = await wd.script<string | null>(`return (${maskedFieldProblem.toString()})(document.querySelector(arguments[0]))`, [css]);
+  if (problem) throw new Error(`refusing to type a secret into ${css}: ${problem}`);
+  await wd.type(el, `${prefix}${value}`);
+}
+
 // ------------------------------------------------------------------ tauri-driver and dwcli
 
 /** Starts tauri-driver on `port` (and `nativePort`, by default `port + 1`, for WebKitWebDriver),

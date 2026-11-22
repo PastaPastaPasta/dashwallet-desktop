@@ -13,8 +13,8 @@
 //   DW_APP=… DWCLI=… TAURI_DRIVER=… DW_TESTNET_FIXTURE=<dir> node e2e-tauri/profile-write.ts
 //
 // Writes: ONE profile edit of wallet DW_PROFILE_WALLET (default A), harmless and repeatable
-// (display name and public message DW_PROFILE_LABEL), recorded in <fixture>/BL-162.json as soon as
-// the app confirms it (profile-edit.ts; the testnet suite skips the flow once it is there). Reads otherwise. Phrases go to dwcli on
+// (display name and public message DW_PROFILE_LABEL), recorded in <fixture>/BL-162.json
+// (profile-edit.ts: pending before the submit, done once read back; the testnet suite skips the flow once it says done). Reads otherwise. Phrases go to dwcli on
 // stdin, never argv. Set DW_LOG (EnvFilter) for the engine's log in OUT/tauri-driver.log.
 //
 // Files: every runtime file (data root, passphrase file, the app's XDG dirs, XDG_RUNTIME_DIR and
@@ -34,7 +34,7 @@ import { join, resolve } from "node:path";
 import type { DashPayProfile } from "../src/api/generated/DashPayProfile";
 import type { SyncStatus } from "../src/api/generated/SyncStatus";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
-import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, WebDriver } from "./driver.ts";
+import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, WebDriver, fillSecret } from "./driver.ts";
 import { canonical, inside, newDirIn, removeOwned, scratchRoot } from "./scratch.ts";
 import { type Answer, writeProfile, type WriteResult } from "./profile-edit.ts";
 
@@ -176,7 +176,7 @@ async function main() {
     try {
       await wd.start({ alwaysMatch: { "tauri:options": { application: APP, args: ["--datadir", appRoot, ...NETWORK, "--sync", "--theme", "light"] } } });
       await wd.call("POST", wd.s("/timeouts"), { script: WRITE_TIMEOUT_MS });
-      await wd.fill(tid("lock-field"), passphrase);
+      await fillSecret(wd, tid("lock-field"), passphrase);
       await wd.press(tid("lock-submit"));
       await wd.waitGone(tid("lock-screen"), "the lock screen");
       if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
@@ -216,7 +216,7 @@ async function main() {
         write = await writeProfile(
           (cmd, args) => invoke(wd, cmd, args),
           (name) => wd.screenshot(name),
-          { walletId, identity, passphrase, phase: lastPhaseLine, label: LABEL, writeAt: WRITE_AT, ledger: join(FIXTURE, "BL-162.json") },
+          { walletId, identity, passphrase, phase: lastPhaseLine, label: LABEL, writeAt: WRITE_AT, ledger: join(FIXTURE, "BL-162.json"), again: process.env.DW_PROFILE_WRITE_AGAIN === "1" },
           step,
           mask,
         );

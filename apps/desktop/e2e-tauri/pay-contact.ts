@@ -25,7 +25,7 @@ import { newPassphrase } from "./flow-secrets.ts";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DWCLI, driverGone, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver, APP } from "./driver.ts";
+import { DWCLI, driverGone, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver, APP, fillSecret } from "./driver.ts";
 import { payeeCardMismatch, type PayeeCard } from "./payee-card.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
@@ -161,7 +161,7 @@ export async function run(
   const out: Record<string, unknown> = {};
   const textOf = (css: string) => wd.script<string>(`return document.querySelector('${css}')?.innerText.replace(/\\s+/g, " ").trim() ?? ""`);
   const disabled = (id: string) => wd.script<boolean>(`return !!document.querySelector('${tid(id)}')?.disabled`);
-  await wd.fill(tid("lock-field"), passphrase);
+  await fillSecret(wd, tid("lock-field"), passphrase);
   await wd.press(tid("lock-submit"));
   await wd.waitGone(tid("lock-screen"), "the lock screen");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
@@ -238,7 +238,7 @@ export async function run(
       if (!payTo.includes(USERNAME)) throw new Error(`the confirm sheet pays ${payTo}, not ${USERNAME}`);
       if (await wd.find(tid("pay-confirm-unsigned"))) throw new Error("the confirm sheet offers an unsigned transaction for a contact");
       out.confirm = await textOf(tid("pay-confirm-facts"));
-      await wd.fill(tid("pay-confirm-passphrase"), passphrase);
+      await fillSecret(wd, tid("pay-confirm-passphrase"), passphrase);
     };
     await confirm();
     await wd.screenshot("3-confirm");

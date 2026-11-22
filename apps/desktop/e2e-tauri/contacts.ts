@@ -19,7 +19,7 @@ import { newPassphrase } from "./flow-secrets.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
+import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver, fillSecret } from "./driver.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const WALLET = env("DW_CONTACTS_WALLET", "A");
@@ -77,7 +77,7 @@ const isRow = (r: Row, username: string) => r.name === username || r.username ==
 
 async function run(passphrase: string, wd: WebDriver, step: (s: string) => void): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {};
-  await wd.fill(tid("lock-field"), passphrase);
+  await fillSecret(wd, tid("lock-field"), passphrase);
   await wd.press(tid("lock-submit"));
   await wd.waitGone(tid("lock-screen"), "the lock screen");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");

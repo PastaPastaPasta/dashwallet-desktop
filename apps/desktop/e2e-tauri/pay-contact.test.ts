@@ -16,6 +16,7 @@ const PAID: Ledger = { payer: "A", payee: "B", payerIdentity: "idA", payeeIdenti
 function app(card: { name: string; sub: string | null }) {
   const did: string[] = [];
   const answer = (js: string): unknown => {
+    if (js.includes("not a masked field")) return null;
     if (js.includes("status-bar")) return "Synced";
     if (js.includes("__dwFixture")) return false;
     if (js.includes("querySelectorAll")) return [`QA B @${USERNAME}`];
@@ -28,6 +29,8 @@ function app(card: { name: string; sub: string | null }) {
   const wd = {
     press: async (css: string) => void did.push(`press ${css}`),
     fill: async (css: string) => void did.push(`fill ${css}`),
+    waitFor: async (css: string) => css,
+    type: async (el: string) => void did.push(`fill ${el}`),
     click: async (el: string) => void did.push(`click ${el}`),
     waitGone: async () => undefined,
     find: async (css: string) => (css.includes(TXID) ? "row" : null),

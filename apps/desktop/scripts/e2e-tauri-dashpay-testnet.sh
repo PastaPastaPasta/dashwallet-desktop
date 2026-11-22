@@ -16,8 +16,8 @@
 # screenshots through tesseract, BIP39 runs of 12+, xprv/tprv) runs over everything kept. The
 # writes are the flows' own, each guarded by its ledger in the fixture, so a rerun does not repeat
 # them; registration is skipped once its ledger says done, and profile-write once BL-162.json
-# says done (profile-write.ts writes it as soon as the edit is confirmed; DW_PROFILE_WRITE_AGAIN=1
-# asks for another edit). Each secret a flow makes (its app passphrase, registration's E phrase and
+# says done (e2e-tauri/profile-edit.ts: pending before the submit, done once read back;
+# DW_PROFILE_WRITE_AGAIN=1 asks for another edit). Each secret a flow makes (its app passphrase, registration's E phrase and
 # passphrase) goes to the store as it is made and its store name to <run>/secrets.manifest
 # (e2e-tauri/flow-secrets.ts), which the closing check reads with the fixture's. Wallet E's phrase
 # (<fixture>/E.mnemonic) and the registration's passphrase (in DW_REG_STATE, beside the fixture,
@@ -43,6 +43,11 @@
 #   DW_SECRET_STORE=<dir>          where the store's links point (default ~/.secrets)
 #   DW_FIXTURE_SECRET_PREFIX       store names for E (default dwd-qa-testnet-<basename of the fixture>,
 #                                  as scripts/testnet-dashpay-fixture.sh)
+#
+# A run's throwaway secrets last as long as its artifacts. `e2e-tauri-dashpay-testnet.sh prune <run>`
+# (same environment; <run> one of the runs under DW_SUITE_OUT) deletes the run and its profile
+# directory and `secret rm`s the store names its flows made, together, once the phrase and key check
+# over all of it is clean (e2e-tauri/testnet-suite.ts prune); it prints the names, never the values.
 set -euo pipefail
 [[ -n "${DW_TESTNET_FIXTURE:-}" ]] || { echo "e2e-tauri-dashpay-testnet: set DW_TESTNET_FIXTURE" >&2; exit 2; }
 fixture=$(cd "$DW_TESTNET_FIXTURE" && pwd -P)
@@ -80,6 +85,13 @@ store=${DW_SECRET_STORE:-$HOME/.secrets}
 [[ -d "$store" ]] || { echo "e2e-tauri-dashpay-testnet: no secret store at $store" >&2; exit 2; }
 store=$(cd "$store" && pwd -P)
 export DW_SECRET_STORE=$store
+if [[ "${1:-}" == prune ]]; then
+  [[ -n "${2:-}" && -d "$2" ]] || { echo "usage: e2e-tauri-dashpay-testnet.sh prune <run directory>" >&2; exit 2; }
+  run=$(cd "$2" && pwd -P)
+  [[ "$(dirname "$run")" == "$root" ]] || { echo "e2e-tauri-dashpay-testnet: $run is not a run under $root" >&2; exit 2; }
+  cd "$app"
+  exec node e2e-tauri/testnet-suite.ts prune "$run" "$fixture"
+fi
 cd "$app"
 repo=$(cd ../.. && pwd)
 

@@ -18,7 +18,7 @@ import { newPassphrase } from "./flow-secrets.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, WebDriver } from "./driver.ts";
+import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, WebDriver, fillSecret } from "./driver.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const WALLET = env("DW_STATUS_WALLET", "A");
@@ -70,7 +70,7 @@ async function run(passphrase: string, wd: WebDriver, step: (s: string) => void)
   const expected = fixture[WALLET]?.expected_main_name;
   if (!expected) throw new Error(`fixture.json names no expected_main_name for wallet ${WALLET}`);
 
-  await wd.fill(tid("lock-field"), passphrase);
+  await fillSecret(wd, tid("lock-field"), passphrase);
   await wd.press(tid("lock-submit"));
   await wd.waitGone(tid("lock-screen"), "the lock screen");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");

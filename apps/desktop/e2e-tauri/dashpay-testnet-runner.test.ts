@@ -50,8 +50,9 @@ echo edit >>"${t}/profile-writes"; echo "profile-write: ok"`,
     );
     script(join(app, "scripts/e2e-tauri-dashpay-status.sh"), `echo "dashpay-status: ok"`);
     for (const bin of ["dash-wallet", "dwcli"]) script(join(t, "target/debug", bin), "exit 0");
-    // The store: `secret adopt` moves the file in and leaves a link, `set` and `get` keep and read a
-    // value; all fail with FAKE_SECRET_FAIL=1.
+    // The store: `secret adopt` moves the file in and leaves a link, `set`, `get` and `rm` keep, read
+    // and delete a value (`get` and `rm` of a missing name answer as the real one does); all fail
+    // with FAKE_SECRET_FAIL=1, `rm` alone with FAKE_SECRET_RM_FAIL=1.
     store = join(t, "store");
     mkdirSync(store);
     script(
@@ -59,7 +60,9 @@ echo edit >>"${t}/profile-writes"; echo "profile-write: ok"`,
       `[ "\${FAKE_SECRET_FAIL:-0}" = 1 ] && { echo "secret: the store is unreachable" >&2; exit 1; }
 case "$1" in
   set) cat >"${store}/$2"; exit 0 ;;
+  get | rm) [ -e "${store}/$2" ] || { echo "secret: no secret '$2'" >&2; exit 2; } ;;&
   get) exec cat "${store}/$2" ;;
+  rm) [ "\${FAKE_SECRET_RM_FAIL:-0}" = 1 ] && { echo "secret: push failed" >&2; exit 1; }; rm "${store}/$2"; exit 0 ;;
   adopt) ;;
   *) exit 3 ;;
 esac
@@ -97,8 +100,8 @@ mv "$path" "${store}/$name"
   });
   afterEach(() => rmSync(t, { recursive: true, force: true }));
 
-  const runner = (extra: Record<string, string> = {}, cwd = t) =>
-    spawnSync("bash", [join(app, "scripts/e2e-tauri-dashpay-testnet.sh")], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 60_000 });
+  const runner = (extra: Record<string, string> = {}, cwd = t, args: string[] = []) =>
+    spawnSync("bash", [join(app, "scripts/e2e-tauri-dashpay-testnet.sh"), ...args], { cwd, env: { ...env, ...extra }, encoding: "utf8", timeout: 60_000 });
   const latest = () => join(t, "results", readlinkSync(join(t, "results/latest")));
 
   it("never empties a directory it did not create: each run gets a new one", () => {
@@ -203,9 +206,84 @@ echo "dashpay-status: ok"`,
     expect(readFileSync(join(latest(), "secrets.manifest"), "utf8")).not.toMatch(/flow-made/);
   });
 
+  describe("prune", () => {
+    const PASS = "flow-made-Qx7vK2mPw9";
+    // A flow that registers a passphrase (store, then manifest) and a linked secret, as registration
+    // does for E; with LEAK=1 it also leaves the passphrase in an artifact.
+    const flow = () =>
+      script(
+        join(app, "scripts/e2e-tauri-dashpay-status.sh"),
+        `printf %s "${PASS}" | secret set "$DW_SECRET_RUN_PREFIX-passphrase" --note x
+printf '{"name":"%s"}\n' "$DW_SECRET_RUN_PREFIX-passphrase" >>"$DW_SECRET_MANIFEST"
+printf 'e linked words' | secret set "$DW_SECRET_RUN_PREFIX-E-mnemonic" --note x
+ln -s "${store}/$DW_SECRET_RUN_PREFIX-E-mnemonic" "${t}/E-link"
+printf '{"name":"%s","link":"%s"}\n' "$DW_SECRET_RUN_PREFIX-E-mnemonic" "${t}/E-link" >>"$DW_SECRET_MANIFEST"
+mkdir -p "$DW_E2E_OUT"; echo "typed \${LEAK:+${PASS}}" >"$DW_E2E_OUT/form.txt"
+echo "dashpay-status: ok"`,
+      );
+    const name = (run: string, what: string) => `dwd-qa-testnet-fixture-run-${run.split("/").at(-1)}-dashpay-status-${what}`;
+    beforeEach(() => {
+      flow();
+      script(join(app, "scripts/e2e-tauri-profile-write.sh"), `mkdir -p "$DW_E2E_OUT"; echo shot >"$DW_E2E_OUT/1.txt"; echo "profile-write: ok"`);
+    });
+
+    it("deletes a clean run, its profile directory and its unlinked secrets together, printing only names", () => {
+      expect(runner({ DW_SUITE_FLOWS: "dashpay-status profile-write" }).status).toBe(0);
+      const run = latest();
+      const profile = (JSON.parse(readFileSync(join(run, "summary.json"), "utf8")) as { dirs: string[] }).dirs;
+      expect(profile).toHaveLength(1);
+      const r = runner({}, t, ["prune", run]);
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain(`removed ${name(run, "passphrase")}`);
+      expect(`${r.stdout}${r.stderr}`).not.toMatch(/Qx7vK2mPw9|linked words/);
+      expect(existsSync(join(store, name(run, "passphrase")))).toBe(false);
+      expect(readFileSync(join(store, name(run, "E-mnemonic")), "utf8")).toBe("e linked words");
+      expect(existsSync(run)).toBe(false);
+      expect(existsSync(profile[0]!)).toBe(false);
+      expect(existsSync(join(t, "results/latest"))).toBe(false);
+    });
+
+    it("removes nothing from a run the check finds a secret in", () => {
+      expect(runner({ DW_SUITE_FLOWS: "dashpay-status", LEAK: "1" }).status).toBe(1);
+      const run = latest();
+      const r = runner({}, t, ["prune", run]);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toMatch(/not pruned, nothing removed: the check found 1:\n- .*form\.txt \(\d+\): known-secret/);
+      expect(r.stdout).not.toContain("removed");
+      expect(readFileSync(join(store, name(run, "passphrase")), "utf8")).toBe(PASS);
+      expect(existsSync(join(run, "dashpay-status/out/form.txt"))).toBe(true);
+    });
+
+    it("keeps the run when `secret rm` fails, and a rerun finishes the job", () => {
+      expect(runner({ DW_SUITE_FLOWS: "dashpay-status" }).status).toBe(0);
+      const run = latest();
+      const failed = runner({ FAKE_SECRET_RM_FAIL: "1" }, t, ["prune", run]);
+      expect(failed.status).toBe(2);
+      expect(failed.stderr).toMatch(/secret rm .*-passphrase failed \(secret: push failed\); .* is kept/);
+      expect(existsSync(join(store, name(run, "passphrase")))).toBe(true);
+      expect(existsSync(run)).toBe(true);
+      const again = runner({}, t, ["prune", run]);
+      expect(again.status, again.stderr).toBe(0);
+      expect(existsSync(join(store, name(run, "passphrase")))).toBe(false);
+      expect(existsSync(run)).toBe(false);
+    });
+
+    it("prunes only a finished run under the results directory", () => {
+      expect(runner({}, t, ["prune", fixture]).stderr).toMatch(/is not a run under/);
+      mkdirSync(join(t, "results/unfinished"), { recursive: true });
+      const r = runner({}, t, ["prune", join(t, "results/unfinished")]);
+      expect(r.stderr).toMatch(/not a finished run \(no summary\.json\)/);
+      expect(existsSync(join(t, "results/unfinished"))).toBe(true);
+      writeFileSync(join(t, "results/unfinished/summary.json"), "{}");
+      expect(runner({}, t, ["prune", join(t, "results/unfinished")]).stderr).toMatch(/lists no directories/);
+      expect(existsSync(join(t, "results/unfinished"))).toBe(true);
+      expect(existsSync(fixture)).toBe(true);
+    });
+  });
+
   it("does not edit the profile again when the edit went out and the next screenshot failed", async () => {
     const ledger = join(fixture, "BL-162.json");
-    const answers: Record<string, unknown> = { authorize: { ok: { id: "g1" } }, dashpay_update_profile: { ok: null } };
+    const answers: Record<string, unknown> = { authorize: { ok: { id: "g1" } }, dashpay_update_profile: { ok: null }, dashpay_profile: { ok: { displayName: "BL-162 test" } } };
     const shots: string[] = [];
     const edit = writeProfile(
       async (cmd) => answers[cmd] as never,
@@ -213,7 +291,7 @@ echo "dashpay-status: ok"`,
         shots.push(name);
         throw new Error("GET /screenshot: no such window");
       },
-      { walletId: "w", identity: "idA", passphrase: "p", phase: "Synced", label: "BL-162 test", writeAt: "synced", ledger },
+      { walletId: "w", identity: "idA", passphrase: "p", phase: "Synced", label: "BL-162 test", writeAt: "synced", ledger, again: false },
       () => undefined,
       (s) => s,
     );
@@ -224,20 +302,6 @@ echo "dashpay-status: ok"`,
     expect(rerun.status, rerun.stderr).toBe(0);
     expect(readFileSync(join(latest(), "summary.md"), "utf8")).toContain("| profile-write | SKIP |");
     expect(existsSync(join(t, "profile-writes"))).toBe(false);
-  });
-
-  it("fails the edit, before any screenshot, when its record cannot be written", async () => {
-    const shots: string[] = [];
-    const answers: Record<string, unknown> = { authorize: { ok: { id: "g1" } }, dashpay_update_profile: { ok: null } };
-    const edit = writeProfile(
-      async (cmd) => answers[cmd] as never,
-      async (name) => void shots.push(name),
-      { walletId: "w", identity: "idA", passphrase: "p", phase: "Synced", label: "BL-162 test", writeAt: "synced", ledger: join(fixture, "no-such-dir", "BL-162.json") },
-      () => undefined,
-      (s) => s,
-    );
-    await expect(edit).rejects.toThrow(/the edit went out but .* could not be written/);
-    expect(shots).toEqual([]);
   });
 
   it("fails every run while a finished registration's passphrase link is missing", () => {

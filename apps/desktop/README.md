@@ -129,14 +129,34 @@ files are links into the store from the start: `<fixture>/E.mnemonic` and `DW_RE
 (default `<fixture>.reg-state`, beside the fixture because registration fails on a secret among the
 fixture's files). Every run first checks that each phrase and passphrase file of the fixture and its
 registration state is a link into the store, and that each one the ledgers say exists is there.
-Registration is skipped once done, profile-write once `BL-162.json` records its edit
-(`DW_PROFILE_WRITE_AGAIN=1` for another), and bell-accept's C→B pair is spent after one accept (move its
+Registration is skipped once done. Profile-write records its edit `pending` before it submits (no
+record, no submit) and `done` once the profile reads the new name back; a rerun that finds `pending`
+reads the profile rather than submit again, records `done` if it shows the pending name and stops
+otherwise, and it is skipped once `done` (`DW_PROFILE_WRITE_AGAIN=1` submits another edit). And bell-accept's C→B pair is spent after one accept (move its
 ledger aside and pick B–D with `DW_BELL_SENDER`/`DW_BELL_RECEIVER`); pay-contact's rerun pays nothing
-but still checks the payee card. The runner ends with a phrase and key check over everything it kept
-(`e2e-tauri/artifact-scan.ts`: the fixture's secrets and those in the manifest, any run of 12 BIP39
-words, xprv/tprv, and the secrets in screenshots through tesseract; a screenshot it cannot read, or of
-more than one colour that OCR reads no text from, is a hit); the summary says whether it came back clean.
-`DW_SUITE_FLOWS` runs a subset, `DW_E2E_SKIP_BUILD=1` reuses the binaries.
+but still checks the payee card.
+
+A secret never reaches a screenshot in the first place: every flow types one only through
+`fillSecret` (`e2e-tauri/driver.ts`), which refuses, typing nothing, unless the field is an
+`<input type="password">` with no reveal toggle in its form. The runner's closing phrase and key check
+over everything it kept is the second line (`e2e-tauri/artifact-scan.ts`: the fixture's secrets and
+those in the manifest, any run of 12 BIP39 words, xprv/tprv, and the secrets in screenshots through
+tesseract). OCR misreads, so a screenshot is matched with look-alikes folded together (`J`, `l`, `1`,
+`}` and `]` as one, and so on) and approximately: any stretch within max(2, 20%) edits of a secret of 8
+or more characters is a hit. A screenshot it cannot read, or of more than one colour that OCR reads no
+text from, is a hit too; the summary says whether it came back clean. `DW_SUITE_FLOWS` runs a subset,
+`DW_E2E_SKIP_BUILD=1` reuses the binaries.
+
+A run's throwaway secrets last as long as its artifacts. When a run is no longer needed, prune it:
+
+```sh
+DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/e2e-tauri-dashpay-testnet.sh prune test-results/dashpay-testnet/<run>
+```
+
+It reruns the check over the run and its profile directory and, only if that is clean, `secret rm`s
+each name the run's manifest holds in the store alone (printing the names, never the values; E's
+linked secrets stay with the fixture) and deletes the run, together. Nothing else removes a run, and
+nothing else removes its secrets.
 
 ## Fixture backend (U-07)
 
