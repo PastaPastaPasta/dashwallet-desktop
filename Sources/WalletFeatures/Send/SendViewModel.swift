@@ -596,6 +596,7 @@ public final class SendViewModel {
     /// `io`; review L5).
     public static let definiteBroadcastFailures: Set<ServiceErrorCode> = [
         .sendBroadcastRejected, .sendPreparedTxSpent, .sendNoPeers, .sendCancelled, .sendPreparedTxUnknown,
+        .sendHeldUntilRestart,
         .networkNotOpen, .walletNotFound, .invalidArgument, .notImplemented, .wallet, .storage, .spv, .io,
     ]
 
@@ -765,7 +766,7 @@ public final class SendViewModel {
                 self.prepared = nil
             }
             let txid = prepared.summary.txid
-            if isRetry {
+            if isRetry, error.code != .sendHeldUntilRestart {
                 // The first attempt may still have reached a peer.
                 phase = .broadcastUnknown(txid: txid, failure: failure)
             } else if Self.definiteBroadcastFailures.contains(error.code) {

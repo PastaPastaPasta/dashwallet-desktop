@@ -774,16 +774,17 @@ fn an_abandon_stopped_after_its_sweep_stays_abandoned_after_a_restart() {
     super::own_spend_disk_tests::wait_stored(&session, id, &[payment.txid()]);
     assert!(sent_marks(&session, id).contains(&payment.txid()), "marked");
 
-    crate::tx_actions::sweep_stop::arm(
-        &*session.live().unwrap().persister,
-        crate::tx_actions::sweep_stop::Stop::AfterFlush,
-    );
+    crate::tx_actions::sweep_stop::arm(&*session.live().unwrap().persister);
     let (s, txid) = (Arc::clone(&session), payment.txid());
     let stopped = engine.block_on(session.on_runtime(async move {
         let manager = s.manager()?;
         s.abandon_inner(&manager, id, txid).await
     }));
     assert!(stopped.is_err(), "stopped after the sweep: {stopped:?}");
+    assert!(
+        !crate::tx_actions::sweep_stop::armed(&*session.live().unwrap().persister),
+        "the stop was hit"
+    );
 
     let session = reopen(&engine, session);
     assert!(

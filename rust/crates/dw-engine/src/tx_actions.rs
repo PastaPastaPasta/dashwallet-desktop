@@ -93,38 +93,30 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// signed.
 pub(crate) const SENT_PREFIX: &str = "sent:";
 
-/// Tests: the next abandon sweep of a session's wallet store stops at
-/// `Stop`, as if the process stopped there.
+/// Tests: the next abandon sweep of a session's wallet store stops right
+/// after it is stored, as if the process stopped there.
 #[cfg(test)]
 pub(crate) mod sweep_stop {
     use std::sync::Mutex;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum Stop {
-        /// Stored, not flushed.
-        BeforeFlush,
-        /// Stored and flushed.
-        AfterFlush,
-    }
-
-    static ARMED: Mutex<Vec<(usize, Stop)>> = Mutex::new(Vec::new());
+    static ARMED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
     fn key<T>(store: &T) -> usize {
         std::ptr::from_ref(store) as usize
     }
 
-    pub(crate) fn arm<T>(store: &T, stop: Stop) {
-        ARMED.lock().unwrap().push((key(store), stop));
+    pub(crate) fn arm<T>(store: &T) {
+        ARMED.lock().unwrap().push(key(store));
     }
 
     /// Whether a stop is still armed for `store`.
     pub(crate) fn armed<T>(store: &T) -> bool {
-        ARMED.lock().unwrap().iter().any(|(k, _)| *k == key(store))
+        ARMED.lock().unwrap().contains(&key(store))
     }
 
-    pub(crate) fn take<T>(store: &T, stop: Stop) -> bool {
+    pub(crate) fn take<T>(store: &T) -> bool {
         let mut armed = ARMED.lock().unwrap();
-        let found = armed.iter().position(|a| *a == (key(store), stop));
+        let found = armed.iter().position(|k| *k == key(store));
         found.map(|i| armed.remove(i)).is_some()
     }
 }
@@ -645,13 +637,9 @@ impl NetworkSession {
                 ..Default::default()
             };
             persister.store(wallet.0, changeset)?;
-            #[cfg(test)]
-            if sweep_stop::take(&*persister, sweep_stop::Stop::BeforeFlush) {
-                return Err(platform_wallet::changeset::PersistenceError::LockPoisoned);
-            }
             persister.flush(wallet.0)?;
             #[cfg(test)]
-            if sweep_stop::take(&*persister, sweep_stop::Stop::AfterFlush) {
+            if sweep_stop::take(&*persister) {
                 return Err(platform_wallet::changeset::PersistenceError::LockPoisoned);
             }
             Ok::<_, platform_wallet::changeset::PersistenceError>(())

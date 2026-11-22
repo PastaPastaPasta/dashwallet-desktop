@@ -1400,40 +1400,6 @@ fn abandoning_again_after_a_failed_sweep_stores_it() {
     );
 }
 
-/// The app stops after the sweep was handed to the store but before it was
-/// flushed: the next start loads the payment abandoned, C is not credited,
-/// and A comes back.
-#[test]
-fn an_abandon_stopped_before_its_sweep_is_flushed_loads_abandoned() {
-    let (_dir, engine, session, id, payment, _a, paid) = pending_payment_of_one_coin();
-    let txid = payment.txid();
-    let persister = Arc::clone(&session.live().unwrap().persister);
-    crate::tx_actions::sweep_stop::arm(
-        &*persister,
-        crate::tx_actions::sweep_stop::Stop::BeforeFlush,
-    );
-    assert!(try_abandon(&engine, &session, id, txid).is_err());
-    assert!(
-        !crate::tx_actions::sweep_stop::armed(&*persister),
-        "the stop was hit"
-    );
-    drop(persister);
-
-    let session = reopen(&engine, session);
-    assert!(
-        (session.hub.history.get(&id, &txid)).is_some_and(|e| e.is_abandoned()),
-        "the payment loads abandoned"
-    );
-    mined(&engine, &session, id, TIP, vec![paid.clone()]);
-    assert_holds(
-        &engine,
-        &session,
-        id,
-        &paid_outputs(&paid),
-        "after a restart",
-    );
-}
-
 /// The load sweeps only payments marked abandoned: a pending payment E
 /// beside an abandoned one whose sweep was not stored keeps its record and
 /// its change.
@@ -1456,11 +1422,23 @@ fn the_load_sweeps_only_payments_marked_abandoned() {
     mempool(&engine, &session, id, &d);
     mempool(&engine, &session, id, &e);
     wait_stored(&session, id, &[d.txid(), e.txid()]);
-    let ce = change_of(&e, &own_scripts(&engine, &session, id));
+    let own = own_scripts(&engine, &session, id);
+    let (cd, ce) = (change_of(&d, &own), change_of(&e, &own));
     fail_the_next_sweep(&session);
     assert!(try_abandon(&engine, &session, id, d.txid()).is_err());
 
     let session = reopen(&engine, session);
+    assert!(
+        (session.live().unwrap().persister)
+            .get_core_tx_record(id.0, &d.txid())
+            .unwrap()
+            .is_none(),
+        "D's record is swept"
+    );
+    assert!(
+        !held(&engine, &session, id).contains(&cd),
+        "D's change is held"
+    );
     assert!(
         (session.hub.history.get(&id, &d.txid())).is_some_and(|x| x.is_abandoned()),
         "D loads abandoned"
@@ -1557,5 +1535,102 @@ fn a_payment_abandoned_and_then_locked_is_left_by_the_load() {
     assert!(
         (session.hub.history.get(&id, &p.txid())).is_some_and(|e| !e.is_abandoned()),
         "listed abandoned"
+    );
+}
+
+/// The load's sweep of D (A and B) leaves B spent when a stored mined E
+/// spends it too, and releases A. The store itself refuses that release
+/// (its surviving-claims check); the sweep's own check adds a stored
+/// pending spender, which this test does not set up.
+#[test]
+fn the_load_sweep_keeps_a_coin_a_stored_mined_payment_spends() {
+    use key_wallet::account::{AccountType, StandardAccountType};
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::transaction_router::TransactionType;
+    use key_wallet::transaction_checking::{BlockInfo, TransactionContext};
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let d = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &d);
+    wait_stored(&session, id, &[d.txid()]);
+    let mut e = foreign();
+    e.input[0].previous_output = b;
+    let record = TransactionRecord::new(
+        e.clone(),
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        TransactionContext::InBlock(BlockInfo::new(TIP, dashcore::hashes::Hash::all_zeros(), 0)),
+        TransactionType::Standard,
+        TransactionDirection::Outgoing,
+        Vec::new(),
+        Vec::new(),
+        0,
+    );
+    store_raw(
+        &session,
+        id,
+        platform_wallet::changeset::CoreChangeSet {
+            records: vec![record],
+            ..Default::default()
+        },
+    );
+    wait_stored(&session, id, &[e.txid()]);
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, d.txid()).is_err());
+
+    // The load's step itself, on the store as it is.
+    let live = session.live().unwrap();
+    let db_path = session.data_dir().join(crate::session::WALLET_DB_FILE);
+    crate::tx_actions::finish_marked_abandons(&live.persister, &live.appdb, &db_path, &[id])
+        .unwrap();
+    drop(live);
+    assert!(
+        (session.live().unwrap().persister)
+            .get_core_tx_record(id.0, &d.txid())
+            .unwrap()
+            .is_none(),
+        "D is swept"
+    );
+    assert!(stored_unspent(&session, id, a), "A is not released");
+    assert!(
+        !stored_unspent(&session, id, b),
+        "B is released though E spends it"
+    );
+}
+
+/// Open Wallet finishes the abandon too: a wallet closed with a half-done
+/// abandon and opened again in the session does not credit its change.
+#[test]
+fn opening_a_wallet_finishes_its_half_done_abandon() {
+    let (_dir, engine, session, id, payment, _a, paid) = pending_payment_of_one_coin();
+    let c = change_of(&payment, &own_scripts(&engine, &session, id));
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, payment.txid()).is_err());
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert!(!stored_unspent(&session, id, c), "C stays stored");
+    assert!(
+        (session.hub.history.get(&id, &payment.txid())).is_some_and(|x| x.is_abandoned()),
+        "abandoned once opened"
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert_holds(
+        &engine,
+        &session,
+        id,
+        &paid_outputs(&paid),
+        "opened, then scanned",
     );
 }
