@@ -13,6 +13,7 @@ import { DashButton } from "../components/basics";
 import { CopyValue } from "../components/detail";
 import { Sheet } from "../components/sheet";
 import { useDisplay } from "../format/display";
+import { useT } from "../i18n";
 import { feeWarning, feeWarningText } from "../format/feeWarning";
 import { useModel } from "../onboarding/model";
 import { isCode, SHIELDED_COPY as C, shieldedCanChange, shieldedErrorText, shieldedFor, type ShieldedFlow } from "../shielded/flow";
@@ -34,6 +35,7 @@ export function useFormats(network: NetworkInfo) {
 }
 
 function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: NetworkInfo; status: ShieldedStatus | null }) {
+  const tr = useT();
   const b = useBackend();
   const id = useId();
   const { shown, duffs: fmt, credits } = useFormats(network);
@@ -67,7 +69,7 @@ function FormStep({ flow, network, status }: { flow: ShieldedFlow; network: Netw
     : amountProblem ?? (amount === null || amount <= 0 ? C.form.why.amount : kind === "send" && to === "" ? C.form.why.to : memoTooLong ? C.form.why.memo : null);
   const amountField = (
     <label className="form-field">
-      {C.form.amount} ({shown.name})
+      {tr("transfer.amountIn", { unit: shown.name })}
       <input
         data-testid="shielded-amount"
         inputMode="decimal"
@@ -188,7 +190,7 @@ function Row({ label, value, testId, total }: { label: string; value: string; te
     <div className={`detail-row ${total ? "topup-total" : ""}`}>
       <dt className="detail-label">{label}</dt>
       <dd className="detail-value" data-testid={testId}>
-        {value}
+        <bdi dir="ltr">{value}</bdi>
       </dd>
     </div>
   );
@@ -383,6 +385,7 @@ export function ShieldedSheet({ flow, walletId, network, status }: { flow: Shiel
 
 /** The Shielded address with its QR (Receive's Shielded section). */
 export function useShieldedReceiveContent(walletId: string, network: NetworkInfo, enabled = true) {
+  const tr = useT();
   const b = useBackend();
   const fmt = useFormats(network);
   const address = useQuery({ queryKey: keys.shieldedAddress(walletId), queryFn: () => b.shieldedReceiveAddress(walletId), retry: false, enabled });
@@ -394,7 +397,7 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
           {isCode(address.error, SHIELDED_CODES.notSynced) ? C.receive.notSynced : shieldedErrorText(address.error, fmt.credits, fmt.duffs)}
         </p>
       ) : address.data ? (
-        <Qr text={address.data.address} label={`QR code of ${address.data.address}`} testId="shielded-receive-qr" />
+        <Qr text={address.data.address} label={tr("transfer.shielded.receive.qr", { address: address.data.address })} testId="shielded-receive-qr" />
       ) : (
         <p className="sheet-text" role="status">
           {C.receive.loading}
@@ -403,7 +406,7 @@ export function useShieldedReceiveContent(walletId: string, network: NetworkInfo
     </>,
     after: !address.isError && address.data ? (
       <p className="withdraw-to" data-testid="shielded-receive-address">
-        <CopyValue value={address.data.address} label="Shielded address" mono />
+        <CopyValue value={address.data.address} label={tr("transfer.shielded.receive.address")} mono />
       </p>
     ) : null,
   };

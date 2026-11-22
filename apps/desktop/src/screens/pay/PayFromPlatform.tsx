@@ -70,7 +70,7 @@ function ConfirmRows({ q, credits }: { q: PlatformSendQuote; credits: (c: string
           {q.to}
         </Row>
         <Row label={C.rows.amount} testId="platform-send-confirm-amount">
-          {q.feeFromAmount ? C.rows.amountEverything(credits(q.amountCredits)) : credits(q.amountCredits)}
+          {q.feeFromAmount ? C.rows.amountEverything(credits(q.amountCredits)) : <bdi dir="ltr">{credits(q.amountCredits)}</bdi>}
         </Row>
         <Row label={C.rows.fee} testId="platform-send-confirm-fee">
           {C.feeValue(credits(q.feeCredits))}
@@ -82,11 +82,11 @@ function ConfirmRows({ q, credits }: { q: PlatformSendQuote; credits: (c: string
         )}
         {q.feeFromAmount && (
           <Row label={C.rows.recipientGets} testId="platform-send-confirm-recipient">
-            {credits(recipientGets)}
+            <bdi dir="ltr">{credits(recipientGets)}</bdi>
           </Row>
         )}
         <Row label={q.feeFromAmount ? C.rows.totalExact : C.rows.total} testId="platform-send-confirm-total" total>
-          {credits(taken)}
+          <bdi dir="ltr">{credits(taken)}</bdi>
         </Row>
       </dl>
       <p className="field-hint" data-testid={q.feeFromAmount ? "platform-send-fee-from-amount" : "platform-send-fee-source"}>
