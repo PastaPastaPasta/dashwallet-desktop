@@ -62,6 +62,10 @@ export const pay = {
     self: "This is you.",
     noIdentity: "Your DashPay identity is not available. Try again once DashPay has synced.",
     platformUnreachable: "Could not reach Dash Platform. Try again.",
+    /** A contact payment whose contact's data the wallet could not check in time (H-09). */
+    contactUnchecked: "Dash Wallet can't check this contact's payment details yet. Try again in a few minutes.",
+    /** A contact payment whose contact's data did not match what the Dash network proves (H-09). */
+    contactMismatch: "Dash Wallet couldn't confirm this contact's payment details with the Dash network. Try again later.",
     leaseRevoked: "The wallet locked during the payment.",
     unlockAndRetry: "Unlock the wallet and try again.",
     storage: "The payment could not be recorded in this wallet.",
@@ -173,6 +177,8 @@ export const pay = {
     waitMoment: "Wait a moment before trying again.",
     checkingNetwork: "Checking the network’s requirements…",
     sending: "Sending…",
+    /** Send's label while a contact payment waits for the contact's data to be checked (H-09). */
+    checkingContact: "Checking contact…",
     acceptAndPay: "Accept and pay",
     send: "Send",
   },

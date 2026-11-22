@@ -287,6 +287,15 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
   }
 }
 
+/** A contact payment's refusals over the contact's data (H-09): `prepare` waits for it to verify,
+ * then refuses with `platform.context_unavailable`, or `platform.trust_mismatch` when it does not
+ * match. `null` for any other refusal; other Platform calls keep their own words for these. */
+export function contactDataText(e: unknown): string | null {
+  if (hasCode(e, "platform.context_unavailable")) return t("pay.error.contactUnchecked");
+  if (hasCode(e, "platform.trust_mismatch")) return t("pay.error.contactMismatch");
+  return null;
+}
+
 // ---------------------------------------------------------------- the payment policy (E0-13 D11)
 
 /** What the signing window would cover for this payment. `null` when it has not been read. */
@@ -489,7 +498,10 @@ export function broadcastFailure(
   return { kind: "unknown", text, retry: !gone, ...held };
 }
 
-export function failureText(e: unknown, chain: Chain, unit: Unit = "DASH"): string {
+/** `contact`: the payment pays a DashPay contact, whose data refusals say so (`contactDataText`). */
+export function failureText(e: unknown, chain: Chain, unit: Unit = "DASH", contact = false): string {
+  const data = contact ? contactDataText(e) : null;
+  if (data) return data;
   const send = sendErrorText(e, chain, unit);
   if (send) return send.text;
   if (isAppError(e)) return e.message;
