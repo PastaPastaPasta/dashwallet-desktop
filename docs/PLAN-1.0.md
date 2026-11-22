@@ -197,39 +197,13 @@ macOS job on `main`. A new release is covered by committing its directory:
 (cd rust && cargo test -p dw-app --lib upgrade_path_tests)                # test upgrade_path_tests::… ok
 ```
 
-**macOS and Windows, by hand in the QA pass** (not run yet; a test user account with no
-`org.dash.wallet.desktop` data root: `~/Library/Application Support/org.dash.wallet.desktop` on macOS,
-`%APPDATA%\org.dash.wallet.desktop` on Windows). The automated check does not cover each OS's installer
-upgrading in place, its default data root or its keychain, so the steps below do. The Touch ID and Windows Hello
-steps (marked "biometric") apply only to a release pair whose shipped app has quick-unlock enrolment and unlock
-in both releases. Neither 0.1.0 nor the 0.2 line has them yet (Settings ▸ Security shows the row as not yet
-available), so skip them for an upgrade from 0.1.0:
-
-1. macOS only: the same fixture check, from a checkout: `cd rust && cargo test -p dw-app --lib upgrade_path_tests`.
-   Expected: `test upgrade_path_tests::every_release_data_root_opens_with_the_same_answers ... ok`. (CI runs it on
-   macOS on `main`. It cannot run on Windows, where `dw-app`'s test binaries do not load (docs/ci.md); there,
-   steps 2 to 5 are the check.)
-2. Install the previous release from its GitHub release after checking it against `SHA256SUMS`
-   (`shasum -a 256 -c SHA256SUMS --ignore-missing` on macOS; on Windows compare
-   `(Get-FileHash dash-wallet-0.1.0-windows-x64-setup.exe).Hash` with its line). Open it, choose testnet in
-   Settings, create a wallet with a passphrase, fund it from the testnet faucet, pay 0.1 tDASH back with a
-   recipient label, add an address-book entry and a receive request, set unit mDASH, auto-lock 15 minutes, dark
-   theme and CoinJoin rounds 6; biometric: enrol Touch ID or Windows Hello. In Tools ▸ Sign/Verify sign
-   `h08 upgrade` with the first receive address. Write down the balance, every Activity row (txid, amount, status), the labels and the
-   signature, and take screenshots of Home, Activity and Settings.
-3. Quit the app (⌘Q on macOS, File ▸ Exit on Windows) and keep a copy of the data root:
-   `ditto ~/Library/Application\ Support/org.dash.wallet.desktop ~/h08-backup` (macOS) or
-   `robocopy "%APPDATA%\org.dash.wallet.desktop" "%USERPROFILE%\h08-backup" /E` (Windows).
-4. Install the release candidate over it (drag to Applications and replace; or run the new `setup.exe`). Open it.
-   Expected: the lock screen, not Welcome; the old passphrase unlocks (biometric: so do Touch ID or Windows Hello,
-   with the spending limit set before); the same
-   wallet name, balance, Activity rows, labels, address book, receive request and Settings values; the network is
-   still testnet; Tools ▸ Sign/Verify accepts the old signature, and signing the same text again gives the same
-   signature. Quit and open again: the same.
-5. Downgrade, after step 4: install the previous release again and open it. Expected for 0.1.0 (seen on Linux):
-   "Dash Wallet could not open the wallet: storage error: app database: migration: migration
-   V2026110501__tx_fiat is missing from the filesystem" with Try again, and the release candidate still opens the
-   data root afterwards with nothing changed. Restore the copy from step 3 before going on.
+**macOS and Windows, by hand in the QA pass** (not run yet): [`docs/qa/H-08-macos-windows.md`](qa/H-08-macos-windows.md).
+The automated check does not cover each OS's installer upgrading in place, its default data root, its secret store,
+uninstalling or the unsigned first launch, so that script does: on a Mac with Apple silicon, an Intel Mac, Windows 11
+and Windows 10, it installs the release candidate fresh, upgrades in place from 0.1.0, 0.2.0 and 0.3.0 with one
+wallet behind a passphrase and one in the OS secret store, downgrades, and uninstalls with the data kept and
+removed. From a clean data root the network is chosen on Welcome, and 0.1.0 applies it only after a restart (#101
+item 12). No release has quick unlock, so there is no Touch ID or Windows Hello step.
 
 ## What the funds fixes leave for the release candidate
 
