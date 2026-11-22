@@ -336,13 +336,20 @@ export function contactConfirmActions(watchOnly: boolean | undefined): ReturnTyp
 }
 
 export const PAY_INCOMPLETE = en.pay.incomplete;
+export const PAY_INCOMPLETE_CONTACT = en.pay.incompleteContact;
 export const PAY_CHECKING = en.pay.checking;
+
+/** The form a payment is drafted in: an address and an amount, or a picked contact and an amount. */
+export type PayForm = "address" | "contact";
+
+/** What an incomplete form still needs: the contact form has no address to ask for. */
+export const incompleteText = (form: PayForm) => (form === "contact" ? t("pay.incompleteContact") : t("pay.incomplete"));
 
 /** Why a payment cannot be reviewed yet (P15): the first field problem the form shows, then the
  * draft's own, then whether it is still incomplete or being checked; `null` once it can. */
-export function reviewBlockedReason(ready: boolean, problems: (string | null | undefined)[], complete: boolean): string | null {
+export function reviewBlockedReason(ready: boolean, problems: (string | null | undefined)[], complete: boolean, form: PayForm = "address"): string | null {
   if (ready) return null;
-  return problems.find((p): p is string => !!p) ?? (complete ? t("pay.checking") : t("pay.incomplete"));
+  return problems.find((p): p is string => !!p) ?? (complete ? t("pay.checking") : incompleteText(form));
 }
 
 /** What an `authorize` refusal means for the confirm sheet. */
