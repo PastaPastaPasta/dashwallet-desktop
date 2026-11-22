@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type JSHandle, type Locator, type Page } from "@playwright/test";
 import { seriousAxeViolations } from "./axe";
 import { fixtureUrl, fontsReady, trackPageErrors } from "./helpers";
 
@@ -36,6 +36,51 @@ const holdsFocus = (target: Locator) => target.evaluate((el) => el.contains(docu
 
 /** Two frames: the browser has rendered, and moved focus off anything that became disabled. */
 const rendered = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+
+/** How `el` reads to assistive tech, in the page: "live: <its text>" for an exposed live region,
+ * else why it is not one. Self-contained: it runs in the page. */
+function liveState(el: Element | null): string {
+  if (!el?.isConnected) return "absent";
+  const role = el.getAttribute("role");
+  const live = el.getAttribute("aria-live");
+  if (role !== "status" && role !== "alert" && live !== "polite" && live !== "assertive") return "not a live region";
+  if (el.closest('[aria-hidden="true"], [inert]')) return "hidden from assistive tech";
+  const modal = document.querySelector('[aria-modal="true"]');
+  if (modal && !modal.contains(el)) return "outside the open modal";
+  if (!el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true })) return "not rendered";
+  return `live: ${(el.textContent ?? "").trim()}`;
+}
+
+type Heard = Element & { __heard?: string[] };
+
+/** The live region at `selector`, held before an action once it is there and empty, so that what
+ * it says next is announced. Every state it goes through from now on is recorded, with whether it
+ * was exposed then (a modal open over it hides it), so a result that leaves again (a toast) is
+ * still seen. */
+async function liveRegion(page: Page, selector: string) {
+  await page.evaluate(`window.__dwLiveState = ${liveState.toString()}`);
+  const empty = (s: string) =>
+    page.evaluate((s) => {
+      const el = document.querySelector(s);
+      if (!el) return "absent";
+      const live = el.getAttribute("aria-live") ?? { status: "polite", alert: "assertive" }[el.getAttribute("role") ?? ""];
+      return live ? `${live}: ${(el.textContent ?? "").trim()}` : "not a live region";
+    }, s);
+  await expect.poll(() => empty(selector), { message: `live region ${selector} before the action` }).toMatch(/^(polite|assertive): $/);
+  const region = await page.evaluateHandle((s) => document.querySelector(s)!, selector);
+  await region.evaluate((el: Heard) => {
+    const heard: string[] = [];
+    el.__heard = heard;
+    const read = (window as unknown as { __dwLiveState: typeof liveState }).__dwLiveState;
+    new MutationObserver(() => heard.push(read(el))).observe(el, { childList: true, subtree: true, characterData: true });
+  });
+  return region;
+}
+
+/** The element held by `liveRegion` said `text`. */
+async function expectSaid(region: JSHandle<Element>, text: string) {
+  await expect.poll(() => region.evaluate((el: Heard) => el.__heard ?? [])).toContain(`live: ${text}`);
+}
 
 /** Presses Tab (Shift+Tab with `back`) until `target` has focus: how a keyboard user gets there. */
 async function tabTo(page: Page, target: Locator, { back = false, max = 60 } = {}) {
@@ -174,8 +219,8 @@ test("keyboard only: register a username", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("keyboard only: send a contact request", async ({ page }) => {
-  const errors = await open(page, "dashpay-registered");
+/** Contacts ▸ Add contact ▸ "mal" ▸ Mallory: Send request focused. */
+async function toSendRequest(page: Page) {
   await goTo(page, "contacts");
   await expect(page.getByTestId("page-contacts")).toBeVisible();
   await expectAxeClean(page);
@@ -183,8 +228,7 @@ test("keyboard only: send a contact request", async ({ page }) => {
   const addButton = page.getByTestId("contacts-add");
   await tabTo(page, addButton);
   await page.keyboard.press("Enter");
-  const add = page.getByTestId("add-contact");
-  await expect(add).toBeVisible();
+  await expect(page.getByTestId("add-contact")).toBeVisible();
   await expect(page.getByRole("searchbox", { name: "Search username" })).toBeFocused();
   await expectAxeClean(page);
 
@@ -199,10 +243,17 @@ test("keyboard only: send a contact request", async ({ page }) => {
 
   const send = page.getByTestId("add-contact-send");
   await tabTo(page, send);
+  return { addButton, send };
+}
+
+test("keyboard only: send a contact request", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  const { addButton, send } = await toSendRequest(page);
   await page.keyboard.press("Enter");
   await authorizeFrom(page, send);
 
-  // The outcome is announced, and focus has a place in the card that now says it went.
+  // The outcome shows (whether a reader hears it is defect "Add contact" below), and focus has a
+  // place in the card that now says it went.
   const outcome = page.getByTestId("add-contact-outcome");
   await expect(outcome).toHaveText("Contact request sent to Mallory.");
   await expect(outcome).toHaveAttribute("role", "status");
@@ -213,7 +264,7 @@ test("keyboard only: send a contact request", async ({ page }) => {
   // Close gives focus back to Add contact; Pending lists the request.
   await tabTo(page, page.getByTestId("add-contact-close"), { back: true });
   await page.keyboard.press("Enter");
-  await expect(add).toHaveCount(0);
+  await expect(page.getByTestId("add-contact")).toHaveCount(0);
   await expect(addButton).toBeFocused();
   await expect(page.getByTestId("contacts-group-pending").locator(".contact-row-name")).toContainText(["Mallory"]);
   expect(errors).toEqual([]);
@@ -232,8 +283,8 @@ async function openBell(page: Page, key = "Enter") {
   return { bell, popover };
 }
 
-test("keyboard only: accept a contact request from the bell", async ({ page }) => {
-  const errors = await open(page, "dashpay-registered");
+/** The bell opened with Escape checked, then with Space: Accept heidi focused. */
+async function toBellAccept(page: Page) {
   const { bell, popover } = await openBell(page);
   await expectAxeClean(page);
   await escapeReturnsTo(page, popover, bell);
@@ -244,10 +295,17 @@ test("keyboard only: accept a contact request from the bell", async ({ page }) =
   const accept = heidi.getByTestId("bell-accept");
   await expect(accept).toHaveAccessibleName("Accept heidi");
   await tabTo(page, accept);
+  return { bell, popover, heidi, accept };
+}
+
+test("keyboard only: accept a contact request from the bell", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  const { bell, popover, heidi, accept } = await toBellAccept(page);
   await page.keyboard.press("Enter");
   await authorizeFrom(page, accept);
 
-  // Said inline while the popover is open; focus goes to the request now in heidi's place.
+  // Shown inline while the popover is open (whether a reader hears it is defect "bell" below);
+  // focus goes to the request now in heidi's place.
   const outcome = page.getByTestId("bell-outcome");
   await expect(outcome).toHaveText("You and heidi are now contacts.");
   await expect(outcome).toHaveAttribute("role", "status");
@@ -257,34 +315,43 @@ test("keyboard only: accept a contact request from the bell", async ({ page }) =
 
   await escapeReturnsTo(page, popover, bell);
   await goTo(page, "contacts");
+  await expect(page.getByTestId("page-contacts")).toBeVisible();
   await expect(page.getByTestId("contacts-group-contacts").locator(".contact-row-name")).toContainText(["heidi"]);
+  await expectAxeClean(page);
   expect(errors).toEqual([]);
 });
 
-test("keyboard only: accept a contact request in the contacts list", async ({ page }) => {
-  const errors = await open(page, "dashpay-registered");
+/** Contacts ▸ arrow keys to heidi's request ▸ Enter (the selection announced): Accept focused. */
+async function toPaneAccept(page: Page) {
   await goTo(page, "contacts");
   await expect(page.getByTestId("page-contacts")).toBeVisible();
 
-  // Into the list, then the arrow keys between rows; Enter selects.
   const heidi = namedRow(page, "contact-row", "heidi");
   await tabTo(page, heidi);
   await page.keyboard.press("ArrowDown");
   await expect(namedRow(page, "contact-row", "Grace Hopper")).toBeFocused();
   await page.keyboard.press("ArrowUp");
   await expect(heidi).toBeFocused();
+  const announcer = await liveRegion(page, '[data-testid="contacts-announcer"]');
   await page.keyboard.press("Enter");
   await expect(heidi).toHaveAttribute("aria-current", "true");
-  await expect(page.getByTestId("contacts-announcer")).toHaveText("heidi, Request received");
+  await expectSaid(announcer, "heidi, Request received");
   await expect(page.getByTestId("contact-detail-relation")).toHaveText("Request received");
   await expectAxeClean(page);
 
   const accept = page.getByTestId("contact-accept");
   await tabTo(page, accept);
+  return accept;
+}
+
+test("keyboard only: accept a contact request in the contacts list", async ({ page }) => {
+  const errors = await open(page, "dashpay-registered");
+  const accept = await toPaneAccept(page);
   await page.keyboard.press("Enter");
   await authorizeFrom(page, accept);
 
-  // The pane says what happened and takes focus at what it offers now.
+  // The pane shows what happened (whether a reader hears it is defect "contact pane" below) and
+  // takes focus at what it offers now.
   const outcome = page.getByTestId("contact-pane-outcome");
   await expect(outcome).toHaveText("You and heidi are now contacts.");
   await expect(outcome).toHaveAttribute("role", "status");
@@ -321,6 +388,8 @@ test("keyboard only: pay a contact", async ({ page }) => {
   await page.keyboard.press("ArrowRight");
   await expect(toAddress).toBeFocused();
   await expect(toAddress).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByTestId("pay-address")).toBeVisible();
+  await expectAxeClean(page);
   await page.keyboard.press("ArrowLeft");
   await expect(toContact).toBeFocused();
   await expect(toContact).toHaveAttribute("aria-selected", "true");
@@ -380,8 +449,11 @@ test("keyboard only: edit my profile", async ({ page }) => {
 
   const save = page.getByTestId("edit-profile-save");
   await tabTo(page, save);
+  // The toast host is the live region that says the save.
+  const toasts = await liveRegion(page, ".toast-host");
   await page.keyboard.press("Enter");
   await authorizeFrom(page, save);
+  await expectSaid(toasts, "Your profile was saved.");
   // The sheet closes on the saved profile, and focus is back on Edit Profile.
   await expect(sheet).toHaveCount(0);
   await expect(page.getByTestId("profile-name")).toHaveText("Alice L.");
@@ -391,13 +463,14 @@ test("keyboard only: edit my profile", async ({ page }) => {
 });
 
 test("defect (#286): after Confirm & pay's passphrase, the registration progress screen leaves focus on <body>", async ({ page }) => {
-  await open(page, "dashpay-no-identity");
+  const errors = await open(page, "dashpay-no-identity");
   const pay = await toConfirmAndPay(page, "alice-77");
   await page.keyboard.press("Enter");
   await authorizeFrom(page, pay);
   const screen = page.getByTestId("registration-screen");
   await expect(screen).toHaveAttribute("data-kind", "progress");
   await rendered(page);
+  expect(errors).toEqual([]);
   test.fail(
     true,
     "Join DashPay ▸ Confirm & pay: the button is disabled while the run starts, then goes with Step 2, so the grant sheet has nowhere to give focus back and it falls to <body>; expected on the progress screen (its title or first control).",
@@ -405,23 +478,33 @@ test("defect (#286): after Confirm & pay's passphrase, the registration progress
   await expect.poll(async () => ((await holdsFocus(screen)) ? "on the progress screen" : await focusName(page))).toBe("on the progress screen");
 });
 
+/** The bell popover now, read in one go: "closed" (absent or not rendered), "focus kept" (it
+ * holds focus), else where focus went while it stays open. */
+const bellState = (page: Page) =>
+  page.evaluate(() => {
+    const p = document.querySelector<HTMLElement>('[data-testid="bell-popover"]');
+    if (!p || !p.checkVisibility({ visibilityProperty: true, opacityProperty: true, checkVisibilityCSS: true, checkOpacity: true })) return "closed";
+    if (p.contains(document.activeElement)) return "focus kept";
+    const a = document.activeElement;
+    return `focus on ${a === document.body ? "<body>" : (a?.getAttribute("data-testid") ?? a?.tagName)} with the popover open`;
+  });
+
 test("defect (#287): Tab past the bell popover's last control moves focus behind it while it stays open", async ({ page }) => {
-  await open(page, "dashpay-registered");
-  const { bell, popover } = await openBell(page);
+  const errors = await open(page, "dashpay-registered");
+  const { popover } = await openBell(page);
   await tabTo(page, popover.getByTestId("bell-see-all"));
   await page.keyboard.press("Tab");
+  await rendered(page);
+  expect(errors).toEqual([]);
   test.fail(
     true,
     "Toolbar bell popover (role=dialog, no aria-modal): Tab from See all goes to the toolbar's Hide balance and Lock wallet, then the sidebar, while the popover stays open over the page; expected focus kept in the popover, or the popover closed when focus leaves it.",
   );
-  // The bell's wrapper holds the popover; focus outside it with the popover still open is the gap.
-  await expect
-    .poll(async () => ((await popover.count()) === 0 || (await holdsFocus(bell.locator(".."))) ? "kept or closed" : `${await focusName(page)} with the popover open`))
-    .toBe("kept or closed");
+  await expect.poll(() => bellState(page)).toMatch(/^(closed|focus kept)$/);
 });
 
 test("defect (#288): while a contact payment is sent, Confirm payment leaves focus on <body>", async ({ page }) => {
-  await open(page, "dashpay-registered");
+  const errors = await open(page, "dashpay-registered");
   await goTo(page, "pay");
   await toPayReview(page);
   await page.keyboard.press("Enter");
@@ -436,9 +519,71 @@ test("defect (#288): while a contact payment is sent, Confirm payment leaves foc
   await expect(confirm).toBeVisible();
   await expect(passphrase).toBeDisabled();
   await rendered(page);
+  expect(errors).toEqual([]);
   test.fail(
     true,
     "Pay ▸ Confirm payment: Enter disables the passphrase field while the payment is authorized, prepared and broadcast, and focus falls to <body> until the result; expected focus kept in the dialog (on the dialog itself or its sending status).",
   );
   await expect.poll(async () => ((await holdsFocus(confirm)) ? "in Confirm payment" : await focusName(page))).toBe("in Confirm payment");
 });
+
+// A contact action's result goes in `Outcome` (src/screens/tools/common.tsx), which renders nothing
+// until there is text: its role=status region appears already holding the result, which screen
+// readers do not reliably announce. Expected: an empty status region present before the action,
+// and that same element given the result. `reach` gets to the action's button; Enter and the
+// passphrase run it.
+const OUTCOME_SITES: { where: string; region: string; said: string; reach: (page: Page) => Promise<Locator> }[] = [
+  {
+    where: "Add contact ▸ Send request (add-contact-outcome)",
+    region: '[data-testid="add-contact-outcome"]',
+    said: "Contact request sent to Mallory.",
+    reach: async (page) => (await toSendRequest(page)).send,
+  },
+  {
+    where: "bell popover ▸ Accept (bell-outcome)",
+    region: '[data-testid="bell-outcome"]',
+    said: "You and heidi are now contacts.",
+    reach: async (page) => (await toBellAccept(page)).accept,
+  },
+  {
+    where: "contact pane ▸ Accept (contact-pane-outcome)",
+    region: '[data-testid="contact-pane-outcome"]',
+    said: "You and heidi are now contacts.",
+    reach: toPaneAccept,
+  },
+  {
+    where: "Notifications page ▸ Accept (notifications-outcome)",
+    region: '[data-testid="notifications-outcome"]',
+    said: "You and heidi are now contacts.",
+    reach: async (page) => {
+      const { popover } = await openBell(page);
+      await tabTo(page, popover.getByTestId("bell-see-all"));
+      await page.keyboard.press("Enter");
+      const list = page.getByTestId("notifications-requests");
+      await expect(list).toBeVisible();
+      const accept = list.getByTestId("bell-request").filter({ hasText: "heidi" }).getByTestId("bell-accept");
+      await tabTo(page, accept);
+      return accept;
+    },
+  },
+];
+
+for (const site of OUTCOME_SITES) {
+  test(`defect: ${site.where}: the result's status region only appears with the result, so it is not announced`, async ({ page }) => {
+    const errors = await open(page, "dashpay-registered");
+    const trigger = await site.reach(page);
+    const region = await page.evaluateHandle((s) => document.querySelector(s), site.region);
+    const before = await region.evaluate(liveState);
+    await page.keyboard.press("Enter");
+    await authorizeFrom(page, trigger);
+    // The result shows; the question is only which element says it.
+    await expect(page.locator(site.region)).toHaveText(site.said);
+    const after = (await region.evaluate((el) => el?.isConnected ?? false)) ? await region.evaluate(liveState) : `a new region: ${await page.locator(site.region).evaluate(liveState)}`;
+    expect(errors).toEqual([]);
+    test.fail(
+      true,
+      `${site.where}: no status region is in the page before the action ("${before}"); the result comes in a new role=status element that appears with its text ("${after}"). Expected an empty status region present before the action, then that element given "${site.said}".`,
+    );
+    expect({ before, after }).toEqual({ before: "live: ", after: `live: ${site.said}` });
+  });
+}
