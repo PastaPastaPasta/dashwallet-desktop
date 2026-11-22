@@ -155,3 +155,28 @@ for (const theme of THEMES)
         });
         expect(errors).toEqual([]);
       });
+
+const SETTINGS_ENGLISH = [
+  "Mixing rounds",
+  "Target balance",
+  "Parallel sessions",
+  "Inputs per denomination",
+  "This setting determines the amount of individual masternodes",
+  "This amount acts as a threshold",
+  "Use this many separate masternodes",
+  "How many inputs of each denominated amount",
+];
+
+{
+  const lang = "en-XA";
+  test(`Settings ▸ CoinJoin's field labels and hints follow ${lang}`, async ({ page }) => {
+    const errors = trackPageErrors(page);
+    await openHome(page, "coinjoin-mixing", "light", lang);
+    await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+    await page.getByTestId("settings-tabs-coinjoin").click();
+    const card = page.locator("main.page");
+    await expect(page.getByTestId("settings-coinjoin-rounds")).toBeVisible();
+    for (const english of SETTINGS_ENGLISH) await expect(card).not.toContainText(english);
+    expect(errors).toEqual([]);
+  });
+}
