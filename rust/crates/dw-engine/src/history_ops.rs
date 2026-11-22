@@ -59,11 +59,7 @@ pub(crate) fn owned_scripts(info: &PlatformWalletInfo) -> HashMap<ScriptBuf, Own
             for info in pool.addresses.values() {
                 map.insert(
                     info.script_pubkey.clone(),
-                    Owned {
-                        address: info.address.clone(),
-                        chain,
-                        coinjoin,
-                    },
+                    Owned::new(info.address.clone(), chain, coinjoin),
                 );
             }
         }

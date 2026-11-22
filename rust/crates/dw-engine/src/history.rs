@@ -15,7 +15,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
 use dashcore::blockdata::transaction::special_transaction::TransactionType as SpecialType;
@@ -845,12 +845,31 @@ pub enum AddressChain {
 }
 
 /// One script the wallet owns.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct Owned {
     pub address: Address,
     pub chain: AddressChain,
     /// Owned by a CoinJoin account (dash-qt treats those outputs as change).
     pub coinjoin: bool,
+    /// `address` as text, encoded once per view: a history read shows one
+    /// owned address on many records (H-06).
+    text: OnceLock<String>,
+}
+
+impl Owned {
+    pub(crate) fn new(address: Address, chain: AddressChain, coinjoin: bool) -> Self {
+        Self {
+            address,
+            chain,
+            coinjoin,
+            text: OnceLock::new(),
+        }
+    }
+
+    /// `address` as text.
+    pub(crate) fn text(&self) -> &str {
+        self.text.get_or_init(|| self.address.to_string())
+    }
 }
 
 /// Inputs to [`decompose`] beyond the transaction itself.
@@ -1082,7 +1101,7 @@ fn decompose_with(entry: &TxEntry, view: &ChainView<'_>, marked_coinjoin_send: b
             };
             parts.push(Part {
                 tx_type,
-                address: Some(owned.address.to_string()),
+                address: Some(owned.text().to_owned()),
                 amount: to_i64(tx.output[vout].value),
                 vout: Some(vout as u32),
             });
@@ -1747,14 +1766,7 @@ mod tests {
                 (9, AddressChain::Change),
             ] {
                 let a = hash_addr(n);
-                owned.insert(
-                    a.script_pubkey(),
-                    Owned {
-                        address: a,
-                        chain,
-                        coinjoin: false,
-                    },
-                );
+                owned.insert(a.script_pubkey(), Owned::new(a, chain, false));
             }
             Self {
                 owned,
@@ -1814,6 +1826,30 @@ mod tests {
         assert_eq!(status.confirmations, 1);
         assert!(records[0].counts_toward_balance);
         assert_eq!(records[0].timestamp, Some(1_700_000_000));
+    }
+
+    /// One view encodes an owned address once, however many records show
+    /// it (H-06: a 40k wallet's page encoded one per record).
+    #[test]
+    fn a_view_encodes_each_owned_address_once() {
+        let mut f = Fixture::new();
+        let ids: Vec<Txid> = (0..3)
+            .map(|n| {
+                let t = tx(vec![foreign_input(n)], vec![out(1_000, &hash_addr(1))]);
+                f.add(entry(t, in_block(100, 1_700_000_000)))
+            })
+            .collect();
+        let view = f.view(100);
+        let script = hash_addr(1).script_pubkey();
+        assert!(view.owned[&script].text.get().is_none());
+        let mut encoded = Vec::new();
+        for id in &ids {
+            let (records, _, _) = records_of(id, &f.history[id], &view, &Labels::default());
+            let shown = hash_addr(1).to_string();
+            assert_eq!(records[0].address.as_deref(), Some(shown.as_str()));
+            encoded.push(view.owned[&script].text.get().unwrap().as_ptr());
+        }
+        assert!(encoded.windows(2).all(|w| w[0] == w[1]));
     }
 
     fn record(
