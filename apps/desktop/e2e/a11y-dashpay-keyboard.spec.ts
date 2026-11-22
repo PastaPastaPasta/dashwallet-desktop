@@ -569,7 +569,7 @@ const OUTCOME_SITES: { where: string; region: string; said: string; reach: (page
 ];
 
 for (const site of OUTCOME_SITES) {
-  test(`defect: ${site.where}: the result's status region only appears with the result, so it is not announced`, async ({ page }) => {
+  test(`defect (#291): ${site.where}: the result's status region only appears with the result, so it is not announced`, async ({ page }) => {
     const errors = await open(page, "dashpay-registered");
     const trigger = await site.reach(page);
     const region = await page.evaluateHandle((s) => document.querySelector(s), site.region);
