@@ -435,13 +435,13 @@ impl NetworkSession {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
             return;
         }
-        let settled =
-            (self.hub.history).with_wallet(wallet, |h| crate::history::settled_sends(&h.txs, sent));
+        let mut settled = Vec::new();
         self.apply_spend_claims(manager, wallet, |core, chainlock| {
             self.hub.history.with_wallet(wallet, |h| {
                 for t in core.instant_send_locks() {
                     h.set_instant_locked(t);
                 }
+                settled = crate::history::settled_sends(&h.txs, sent);
                 let mut claims = crate::history::unmined_own_spends(&h.txs, sent, chainlock);
                 claims.retain(|(_, spender)| !h.session_held.contains(spender));
                 let locked = crate::history::locked_claimants(&h.txs, &claims);

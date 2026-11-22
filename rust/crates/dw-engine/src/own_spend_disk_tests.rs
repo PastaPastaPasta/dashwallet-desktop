@@ -790,6 +790,89 @@ fn a_lock_arriving_before_the_claims_are_installed_keeps_a_locked_payments_claim
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
 }
 
+/// Two abandoned payments: P of A and B, whose InstantSend lock arrives
+/// between the wallet's next load's history copy and its claims' install,
+/// and Q of C with no lock. The load restores P's claims and keeps its sent
+/// mark; Q's goes. With the lock known at the following load, P still
+/// claims A.
+#[test]
+fn a_lock_arriving_after_an_abandon_keeps_the_payments_sent_mark() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b, c) = (
+        OutPoint::new(paid.txid(), 0),
+        OutPoint::new(paid.txid(), 1),
+        OutPoint::new(paid.txid(), 2),
+    );
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        2 * COIN,
+        true,
+    );
+    mempool(&engine, &session, id, &p);
+    let q = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![c]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &q);
+    wait_stored(&session, id, &[p.txid(), q.txid()]);
+    abandon(&engine, &session, id, p.txid());
+    abandon(&engine, &session, id, q.txid());
+    let sent_marks = |session: &NetworkSession| {
+        crate::tx_actions::load_sent(&session.live().unwrap().appdb, id).0
+    };
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let copied = Arc::new(crate::coins::TestPause::default());
+    let _copied = crate::held_writes::ReleaseOnDrop(Arc::clone(&copied));
+    *session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&copied));
+    let load = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the history load's pause", || {
+        copied.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let installing = Arc::new(crate::coins::TestPause::default());
+    let _installing = crate::held_writes::ReleaseOnDrop(Arc::clone(&installing));
+    *session.hub.pause_spend_claims.lock().unwrap() = Some(Arc::clone(&installing));
+    copied.release.notify_one();
+    eventually("the claims' pause", || {
+        installing.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    instant_lock(&engine, &session, id, &p);
+    installing.release.notify_one();
+    engine.block_on(load).unwrap().unwrap();
+    let marks = sent_marks(&session);
+    assert!(marks.contains_key(&p.txid()), "P's sent mark stays");
+    assert!(!marks.contains_key(&q.txid()), "Q's goes");
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let copied = Arc::new(crate::coins::TestPause::default());
+    let _copied = crate::held_writes::ReleaseOnDrop(Arc::clone(&copied));
+    *session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&copied));
+    let load = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the history load's pause", || {
+        copied.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    instant_lock(&engine, &session, id, &p);
+    copied.release.notify_one();
+    engine.block_on(load).unwrap().unwrap();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    let held_now = held(&engine, &session, id);
+    assert!(!held_now.contains(&a), "P claims A");
+    assert!(held_now.contains(&c), "Q's coin is credited");
+}
+
 /// The same payment paid to another loaded wallet, its lock delivered
 /// once the claims are installed: the lock reaches only the recipient
 /// wallet, so the sender's history never sees it and A is credited and

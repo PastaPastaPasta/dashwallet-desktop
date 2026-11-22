@@ -399,12 +399,18 @@ pub(crate) fn unmined_own_spends(
         true => chain_locked(&winner.context, chainlock),
         false => winner.context.block_info().is_some() || instant_locked(winner),
     };
+    let mut spenders: HashMap<OutPoint, Vec<(&Txid, &TxEntry)>> = HashMap::new();
+    if !sent.is_empty() {
+        for (w, we) in txs {
+            for i in &we.tx.input {
+                spenders.entry(i.previous_output).or_default().push((w, we));
+            }
+        }
+    }
     let beaten = |t: &Txid, e: &TxEntry| {
-        let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
-        (txs.iter()).any(|(w, we)| {
-            w != t
-                && beats(we, e)
-                && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
+        (e.tx.input.iter()).any(|i| {
+            (spenders.get(&i.previous_output))
+                .is_some_and(|v| v.iter().any(|(w, we)| *w != t && beats(we, e)))
         })
     };
     (sent.iter())
