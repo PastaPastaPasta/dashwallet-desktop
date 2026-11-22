@@ -632,6 +632,35 @@ impl WalletHistory {
         }
     }
 
+    /// Fills each abandoned entry's own inputs it lacks from the saved
+    /// input details (`inputs`), which outlive its sent mark: a coin whose
+    /// funding has no record is still listed as spent by it.
+    pub fn fill_abandoned_inputs(
+        &mut self,
+        inputs: &BTreeMap<Txid, BTreeMap<OutPoint, (u64, String)>>,
+        network: Network,
+    ) {
+        for (txid, saved) in inputs {
+            let Some(e) = self.txs.get_mut(txid).filter(|e| e.abandoned) else {
+                continue;
+            };
+            for (n, i) in e.tx.input.iter().enumerate() {
+                if e.own_inputs.contains_key(&(n as u32)) {
+                    continue;
+                }
+                let Some((value, address)) = saved.get(&i.previous_output) else {
+                    continue;
+                };
+                let Some(address) = (address.parse::<Address<_>>().ok())
+                    .and_then(|a| a.require_network(network).ok())
+                else {
+                    continue;
+                };
+                e.own_inputs.insert(n as u32, (*value, address));
+            }
+        }
+    }
+
     pub fn set_instant_locked(&mut self, txid: &Txid) -> bool {
         match self.txs.get_mut(txid) {
             Some(e) if !e.instant_locked => {

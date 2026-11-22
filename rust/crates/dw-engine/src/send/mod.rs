@@ -1374,6 +1374,7 @@ impl TxDraft {
                 lease: lease.map(|l| (l, artifact)),
                 contact,
                 own_inputs: None,
+                held: Default::default(),
             }));
         }
 
@@ -1442,6 +1443,7 @@ impl TxDraft {
             lease: lease.map(|l| (l, artifact)),
             contact,
             own_inputs: None,
+            held: Default::default(),
         }))
     }
 
@@ -1491,6 +1493,7 @@ impl TxDraft {
             lease: Some((lease, artifact)),
             contact: None,
             own_inputs,
+            held: Default::default(),
         })
     }
 
@@ -1554,6 +1557,9 @@ impl TxDraft {
         // A contact payment's first broadcast is under way until its
         // outcome settled the contact (`settle_contact`). Taken before the
         // mark is written, so an abandon of the draft meanwhile is refused.
+        if let Some(e) = prepared.held_error() {
+            return Err(e);
+        }
         let (first, _in_flight) = {
             let mut phase = prepared.phase();
             let first = match *phase {
@@ -1582,6 +1588,13 @@ impl TxDraft {
                 true => Phase::Pending,
                 false => Phase::Unknown,
             };
+            if first && next == Phase::Unknown {
+                let message = match &e {
+                    EngineError::Storage(m) => m.clone(),
+                    other => other.to_string(),
+                };
+                *prepared.held.lock().unwrap() = Some(Held::Storage(message));
+            }
             self.settle_contact(&prepared, first, next).await;
             *prepared.phase() = next;
             return Err(e);
@@ -1600,6 +1613,7 @@ impl TxDraft {
             || (first && next == Phase::Pending && attempt_outcome(&outcome) == Outcome::NotSent);
         if unsent && !self.drop_mark(&prepared).await {
             next = Phase::Unknown;
+            *prepared.held.lock().unwrap() = Some(Held::UntilRestart);
             outcome = Err(SendFailure::HeldUntilRestart.into());
         }
         // The contact settles before the phase leaves `Broadcasting`.
@@ -1814,6 +1828,9 @@ impl TxDraft {
         self.session
             .on_runtime(async move {
                 let _op = session.enter().await?;
+                if let Some(e) = prepared.held_error() {
+                    return Err(e);
+                }
                 {
                     let mut phase = prepared.phase();
                     match *phase {
@@ -2140,6 +2157,18 @@ pub struct PreparedTx {
     /// mark restores a claim on each coin it names at load (#170 case 17).
     /// `None`: every input is the wallet's.
     own_inputs: Option<Vec<OutPoint>>,
+    /// Never handed off, but its sent mark may stand: neither sent again
+    /// nor released until a restart.
+    held: Mutex<Option<Held>>,
+}
+
+/// Why a [`PreparedTx`] is held: its sent mark could not be dropped after
+/// a definite non-send, or the mark's first write and its drop both failed
+/// (the mark is most likely not stored, so no Activity row is promised).
+#[derive(Debug, Clone)]
+enum Held {
+    UntilRestart,
+    Storage(String),
 }
 
 impl std::fmt::Debug for PreparedTx {
@@ -2152,6 +2181,13 @@ impl std::fmt::Debug for PreparedTx {
 }
 
 impl PreparedTx {
+    fn held_error(&self) -> Option<EngineError> {
+        (self.held.lock().unwrap().clone()).map(|h| match h {
+            Held::UntilRestart => SendFailure::HeldUntilRestart.into(),
+            Held::Storage(m) => EngineError::Storage(m),
+        })
+    }
+
     pub fn summary(&self) -> &PreparedSummary {
         &self.summary
     }
@@ -2294,6 +2330,15 @@ impl TxDraft {
                 .collect::<Vec<_>>()
                 .join(",")
         });
+        // The coins an earlier write may have saved that stay: this wallet's
+        // inputs of the transaction (a shared registration's recorded
+        // contribution, not a co-party's).
+        let ours: HashSet<OutPoint> = match &prepared.own_inputs {
+            Some(own) => own.iter().copied().collect(),
+            None => (prepared.transaction().iter())
+                .flat_map(|tx| tx.input.iter().map(|i| i.previous_output))
+                .collect(),
+        };
         let tx = (prepared.transaction())
             .filter(|_| sent)
             .map(|tx| serialize_hex(&tx));
@@ -2301,6 +2346,29 @@ impl TxDraft {
             .appdb_op(move |db| {
                 #[cfg(all(test, debug_assertions))]
                 db.fault_point(SENT_MARK_FAULT, dw_appdb::fault::Stage::Before)?;
+                // A repeat's summary can lack coins spent since: what an
+                // earlier write saved of `ours` stays.
+                let stored = |key: &str| -> Result<Option<String>, dw_appdb::AppDbError> {
+                    Ok((db.settings_with_prefix_lossy(&scope, key)?.into_iter())
+                        .find(|(k, _)| k == key)
+                        .and_then(|(_, v)| v))
+                };
+                let merged = |key: &str, new: Option<String>| {
+                    let Some(new) = new else { return Ok(None) };
+                    let old = stored(key)?.unwrap_or_default();
+                    let kept = (old.split(',')).filter(|e| {
+                        let outpoint = e.split(' ').next().and_then(|o| OutPoint::from_str(o).ok());
+                        outpoint.is_some_and(|o| ours.contains(&o))
+                    });
+                    let all: std::collections::BTreeSet<&str> = (new.split(',').chain(kept))
+                        .filter(|e| !e.is_empty())
+                        .collect();
+                    Ok::<_, dw_appdb::AppDbError>(Some(
+                        all.into_iter().collect::<Vec<_>>().join(","),
+                    ))
+                };
+                let coins = merged(&keys[0], coins)?;
+                let inputs = merged(&keys[2], inputs)?;
                 let writes = [
                     (keys[0].as_str(), coins.as_deref()),
                     (keys[1].as_str(), tx.as_deref()),

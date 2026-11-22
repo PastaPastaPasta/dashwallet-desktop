@@ -1437,7 +1437,7 @@ impl SessionHub {
                     }
                 });
                 if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
-                    crate::tx_actions::forget_sent(&appdb, id, txids);
+                    crate::tx_actions::forget_sent(&appdb, id, txids, &HashSet::new());
                 }
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {

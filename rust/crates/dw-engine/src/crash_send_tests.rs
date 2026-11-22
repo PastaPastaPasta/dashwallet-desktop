@@ -665,6 +665,49 @@ fn a_relayed_restored_payment_keeps_its_inputs_in_the_next_session() {
     );
 }
 
+/// A sent mark whose first write and drop both fail: the payment is held
+/// for the session with the storage error (its mark is most likely not
+/// stored), and neither a retry nor an Abandon of the draft hands it off
+/// or frees its coin.
+#[test]
+fn a_mark_that_cannot_be_written_or_dropped_refuses_a_retry_with_the_storage_error() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let net = Arc::new(super::own_spend_disk_tests::Accept::default());
+    let (draft, prepared) = super::own_spend_disk_tests::prepare(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+        &net,
+    );
+    let prepared = prepared.unwrap();
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::Before;
+    dw_appdb::fault::arm(&path, crate::send::SENT_MARK_FAULT, stage);
+    dw_appdb::fault::arm(&path, crate::send::SENT_MARK_FAULT, stage);
+    let first = engine.block_on(draft.broadcast(Arc::clone(&prepared)));
+    assert!(
+        matches!(first, Err(crate::EngineError::Storage(_))),
+        "{first:?}"
+    );
+    dw_appdb::fault::disarm(&path);
+    let again = engine.block_on(draft.broadcast(Arc::clone(&prepared)));
+    assert!(
+        matches!(again, Err(crate::EngineError::Storage(_))),
+        "{again:?}"
+    );
+    assert!(net.0.lock().unwrap().is_empty(), "a retry handed it off");
+    let abandoned = engine.block_on(draft.abandon(prepared));
+    assert!(
+        matches!(abandoned, Err(crate::EngineError::Storage(_))),
+        "{abandoned:?}"
+    );
+    assert!(!spendable(&engine, &session, id, a), "its coin is offered");
+}
+
 /// A payment that never left whose sent mark cannot be dropped stays held
 /// as maybe sent: Abandon is refused and its coin stays out, so the copy
 /// left behind cannot be resent for coins already freed.
@@ -722,12 +765,24 @@ fn a_mark_that_cannot_be_dropped_keeps_the_payment_held() {
     dw_appdb::fault::disarm(&path);
     let txid: Txid = prepared.summary().txid.parse().unwrap();
     assert!(sent_marks(&session, id).contains(&txid), "the mark stays");
+    *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&net) as _);
+    let again = engine.block_on(draft.broadcast(Arc::clone(&prepared)));
+    assert!(
+        matches!(
+            again,
+            Err(crate::EngineError::Send(
+                crate::send::SendFailure::HeldUntilRestart
+            ))
+        ),
+        "{again:?}"
+    );
+    assert!(net.0.lock().unwrap().is_empty(), "a retry handed it off");
     let abandoned = engine.block_on(draft.abandon(prepared));
     assert!(
         matches!(
             abandoned,
             Err(crate::EngineError::Send(
-                crate::send::SendFailure::PreparedTxSpent
+                crate::send::SendFailure::HeldUntilRestart
             ))
         ),
         "{abandoned:?}"
@@ -869,4 +924,135 @@ fn a_spend_the_store_dropped_as_unsigned_is_not_restored_from_its_mark() {
         "restored from its mark"
     );
     assert!(spendable(&engine, &session, id, a), "A is held");
+}
+
+/// key-wallet can record a payment before its event reaches the history.
+/// An Abandon of its parent marks it abandoned too, so after a restart it
+/// isn't restored pending from its saved copy, and its other coin is free
+/// once its funding is scanned.
+#[test]
+fn an_abandon_marks_a_child_key_wallet_recorded_before_the_history_did() {
+    use platform_wallet::key_wallet_manager::WalletInterface;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let parent = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &parent);
+    let own = super::own_spend_disk_tests::own_scripts(&engine, &session, id);
+    let change = super::own_spend_disk_tests::change_of(&parent, &own);
+    let child = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![change, b]),
+        COIN,
+        false,
+    );
+    let manager = session.manager().unwrap();
+    let recorded = child.clone();
+    engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let mut wm = wm.write().await;
+        assert!(
+            wm.process_mempool_transaction(&recorded, None)
+                .await
+                .is_relevant
+        );
+    });
+    assert!(
+        session.hub.history.get(&id, &child.txid()).is_none(),
+        "the history has the child"
+    );
+    abandon(&engine, &session, id, parent.txid());
+
+    let session = reopen(&engine, session);
+    assert!(
+        (session.hub.history.get(&id, &child.txid())).is_none_or(|e| e.is_abandoned()),
+        "the child is restored pending"
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(spendable(&engine, &session, id, b), "B stays held");
+}
+
+/// A height-only row without a height (an unconfirmed coin's) beside a
+/// saved payment is no evidence it settled: after the restart the payment
+/// is still listed pending and its coin stays out.
+#[test]
+fn an_unconfirmed_height_only_row_does_not_settle_a_saved_payment() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    let own = super::own_spend_disk_tests::own_scripts(&engine, &session, id);
+    let c = super::own_spend_disk_tests::change_of(&payment, &own);
+    let txout = payment.output[c.vout as usize].clone();
+    let address =
+        dashcore::Address::from_script(&txout.script_pubkey, dashcore::Network::Regtest).unwrap();
+    let utxo = key_wallet::Utxo::new(c, txout, address, 0, false);
+    assert!(!utxo.is_confirmed);
+    super::own_spend_disk_tests::store_raw(
+        &session,
+        id,
+        platform_wallet::changeset::CoreChangeSet {
+            new_utxos: vec![utxo],
+            ..Default::default()
+        },
+    );
+
+    let session = reopen(&engine, session);
+    assert!(
+        listed(&engine, &session, id, payment.txid()),
+        "settled by the row"
+    );
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+}
+
+/// An abandoned payment of a coin funded without a record keeps its saved
+/// input details after its sent mark goes: two starts after the Abandon it
+/// is still listed as a payment, not as a receipt of its change.
+#[test]
+fn an_abandoned_payment_of_a_coin_funded_without_a_record_stays_a_payment_two_starts_later() {
+    let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
+    let (session, coin) = coin_funded_without_a_record(&engine, session, id, 10);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![coin]),
+        COIN / 2,
+        false,
+    );
+    assert_eq!(payment.output.len(), 2, "with change");
+    let session = reopen(&engine, session);
+    abandon(&engine, &session, id, payment.txid());
+
+    let row = |session: &Arc<NetworkSession>| {
+        rows(&engine, session, id)
+            .into_iter()
+            .find(|r| r.0 == payment.txid().to_string())
+    };
+    let session = reopen(&engine, session);
+    let first = row(&session);
+    assert!(
+        first.as_ref().is_some_and(|r| r.3 < 0),
+        "first start: {first:?}"
+    );
+    let session = reopen(&engine, session);
+    let second = row(&session);
+    assert!(
+        second.as_ref().is_some_and(|r| r.3 < 0),
+        "second start: {second:?}"
+    );
 }

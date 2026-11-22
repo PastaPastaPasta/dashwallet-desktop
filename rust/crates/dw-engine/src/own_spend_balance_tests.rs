@@ -1628,13 +1628,9 @@ fn the_load_sweep_keeps_a_coin_a_stored_mined_payment_spends() {
         TransactionContext::InBlock(BlockInfo::new(TIP, dashcore::hashes::Hash::all_zeros(), 0));
     let (_dir, _engine, session, id, d, _e, a, b) = half_done_beside_a_spender_of_b(mined);
     finish_now(&session, id).unwrap();
-    assert!(!record_stored(&session, id, d.txid()), "D is swept");
+    assert!(!record_stored(&session, id, d.txid()), "D is not swept");
     assert!(stored_unspent(&session, id, a), "A is not released");
-    assert_eq!(
-        stored_spent(&session, id, b),
-        Some(true),
-        "B stays stored spent"
-    );
+    assert_eq!(stored_spent(&session, id, b), Some(true), "B was released");
 }
 
 /// The same with E stored pending: the store does not keep B for a pending
@@ -1645,13 +1641,9 @@ fn the_load_sweep_keeps_a_coin_a_stored_pending_payment_spends() {
     let (_dir, _engine, session, id, d, _e, a, b) =
         half_done_beside_a_spender_of_b(TransactionContext::Mempool);
     finish_now(&session, id).unwrap();
-    assert!(!record_stored(&session, id, d.txid()), "D is swept");
+    assert!(!record_stored(&session, id, d.txid()), "D is not swept");
     assert!(stored_unspent(&session, id, a), "A is not released");
-    assert_eq!(
-        stored_spent(&session, id, b),
-        Some(true),
-        "B stays stored spent"
-    );
+    assert_eq!(stored_spent(&session, id, b), Some(true), "B was released");
 }
 
 /// E's record does not read back: the sweep cannot tell whether E spends
@@ -1664,7 +1656,7 @@ fn the_load_sweep_fails_when_another_stored_record_does_not_read_back() {
     corrupt_record(&session, id, e.txid());
     assert!(finish_now(&session, id).is_err(), "the sweep went ahead");
     assert!(record_stored(&session, id, d.txid()), "D is not kept");
-    assert_eq!(stored_spent(&session, id, b), Some(true), "B is released");
+    assert_eq!(stored_spent(&session, id, b), Some(true), "B was released");
 }
 
 /// A wallet this start leaves closed is swept when it is opened, not at
@@ -1702,6 +1694,10 @@ fn a_closed_wallets_unfinished_sweep_fails_only_its_open() {
         engine.block_on(session.load_wallet(id)).is_err(),
         "opened without its sweep"
     );
+    assert!(
+        (session.wallet_load_states().unwrap().iter()).any(|w| w.wallet_id == id && !w.loaded),
+        "loaded though its Open failed"
+    );
     engine.block_on(session.load_wallet(id)).unwrap();
     assert!(
         !record_stored(&session, id, payment.txid()),
@@ -1710,6 +1706,15 @@ fn a_closed_wallets_unfinished_sweep_fails_only_its_open() {
 }
 
 fn corrupt_record(session: &NetworkSession, id: WalletId, txid: Txid) {
+    alter_record(
+        session,
+        id,
+        txid,
+        "UPDATE core_transactions SET record_blob = X'00' WHERE wallet_id = ?1 AND txid = ?2",
+    );
+}
+
+fn alter_record(session: &NetworkSession, id: WalletId, txid: Txid, sql: &str) {
     use platform_wallet::changeset::PlatformWalletPersistence;
     session.live().unwrap().persister.flush(id.0).unwrap();
     let conn = rusqlite::Connection::open(session.data_dir().join(crate::session::WALLET_DB_FILE))
@@ -1718,7 +1723,7 @@ fn corrupt_record(session: &NetworkSession, id: WalletId, txid: Txid) {
         .unwrap();
     let changed = conn
         .execute(
-            "UPDATE core_transactions SET record_blob = X'00' WHERE wallet_id = ?1 AND txid = ?2",
+            sql,
             rusqlite::params![&id.0[..], AsRef::<[u8]>::as_ref(&txid)],
         )
         .unwrap();
@@ -1751,6 +1756,33 @@ fn a_half_done_abandon_whose_mark_copy_does_not_read_back_is_swept() {
         id,
         &paid_outputs(&paid),
         "its change is not credited",
+    );
+}
+
+/// A half-done abandon whose payment has no stored record left (its
+/// outputs stay) and whose mark's copy does not read back: the load
+/// releases the coins its sent mark names.
+#[test]
+fn a_half_done_abandon_without_a_record_or_a_readable_copy_releases_its_coins() {
+    let (_dir, engine, session, id, payment, a, _paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    (session.live().unwrap().appdb)
+        .set_setting(&id.to_string(), &format!("abandoned:{txid}"), Some("00"))
+        .unwrap();
+    alter_record(
+        &session,
+        id,
+        txid,
+        "DELETE FROM core_transactions WHERE wallet_id = ?1 AND txid = ?2",
+    );
+    assert_eq!(stored_spent(&session, id, a), Some(true));
+    finish_now(&session, id).unwrap();
+    assert_eq!(
+        stored_spent(&session, id, a),
+        Some(false),
+        "A was not released"
     );
 }
 

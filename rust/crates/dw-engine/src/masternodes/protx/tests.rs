@@ -819,6 +819,38 @@ fn mg10_a_failed_sent_mark_on_a_resend_keeps_the_row_sent() {
     assert_eq!(refused.code(), "masternodes.operation_state");
 }
 
+/// A resend whose summary lacks an input spent since (no longer among the
+/// wallet's coins) keeps that coin and its details in the sent mark.
+#[test]
+fn mg10_a_resend_keeps_the_sent_mark_of_an_input_spent_since() {
+    let f = fx(Library::Unconfirmed);
+    let funding = f.credit(1, MASTERNODE_COLLATERAL + COIN);
+    let op = f
+        .register(request(CollateralChoice::FundNew), f.grant(COIN))
+        .unwrap();
+    assert_eq!(op.state, ProTxOperationState::Sent);
+    let txid = f.lib.sent()[0].txid();
+    let mark = |f: &Fx| crate::tx_actions::load_sent(&f.db(), f.wallet).0[&txid].clone();
+    let before = mark(&f);
+    assert!(before.coins.contains(&funding) && before.inputs.contains_key(&funding));
+    f.spend(funding);
+    f.engine
+        .block_on(
+            f.mn()
+                .resend_operation(f.wallet, op.id.clone(), f.grant(op.fee)),
+        )
+        .unwrap();
+    let after = mark(&f);
+    assert!(
+        after.coins.contains(&funding),
+        "the coin is gone: {after:?}"
+    );
+    assert!(
+        after.inputs.contains_key(&funding),
+        "its details are gone: {after:?}"
+    );
+}
+
 /// Control: the sent mark written, a hand-off without a verdict stays
 /// `sent`.
 #[test]

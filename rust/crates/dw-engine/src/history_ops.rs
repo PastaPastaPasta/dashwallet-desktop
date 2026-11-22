@@ -1,7 +1,7 @@
 //! Session operations over the history read model: loading persisted
 //! history at open, `history_page` and `tx_detail`.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -129,6 +129,9 @@ impl RecordFault {
 pub(crate) struct Persisted {
     pub(crate) records: Vec<Txid>,
     pub(crate) recordless: HashSet<Txid>,
+    /// Of `recordless`, the rows without a height: an unconfirmed coin's,
+    /// no evidence that its transaction settled.
+    pub(crate) unconfirmed: HashSet<Txid>,
     /// Spends the store's open dropped as not signed by their coins'
     /// owner (`core_dropped_unsigned_spends`): never restored from a mark.
     pub(crate) dropped: HashSet<Txid>,
@@ -172,22 +175,27 @@ pub(crate) fn persisted_txids(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    let mut stmt =
-        conn.prepare("SELECT wallet_id, txid, record_blob IS NULL FROM core_transactions")?;
+    let mut stmt = conn.prepare(
+        "SELECT wallet_id, txid, record_blob IS NULL, height IS NULL FROM core_transactions",
+    )?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, Vec<u8>>(0)?,
             r.get::<_, Vec<u8>>(1)?,
             r.get::<_, bool>(2)?,
+            r.get::<_, bool>(3)?,
         ))
     })?;
     let mut out: HashMap<[u8; 32], Persisted> = HashMap::new();
     for row in rows {
-        let (wallet, txid, recordless) = row?;
+        let (wallet, txid, recordless, unconfirmed) = row?;
         let (Ok(wallet), Ok(txid)) = (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid)) else {
             continue;
         };
         let persisted = out.entry(wallet).or_default();
+        if recordless && unconfirmed {
+            persisted.unconfirmed.insert(txid);
+        }
         if recordless {
             persisted.recordless.insert(txid);
         } else {
@@ -293,6 +301,11 @@ struct LoadedHistory {
     /// Every stored transaction of the wallet, with a record or not, when
     /// every stored record was listed and read; else none.
     stored: HashSet<Txid>,
+    /// Of `stored`, those that settle a sent payment: a record, or a
+    /// height-only row with a height.
+    settled: HashSet<Txid>,
+    /// The saved input details of the payments this app sent.
+    inputs: BTreeMap<Txid, BTreeMap<OutPoint, (u64, String)>>,
 }
 
 impl NetworkSession {
@@ -364,6 +377,17 @@ impl NetworkSession {
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
                     let (mut sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
                     sent.retain(|t, _| !persisted.dropped.contains(t));
+                    let inputs = crate::tx_actions::load_sent_inputs(&appdb, wallet);
+                    let stored: HashSet<Txid> = match clean {
+                        true => (persisted.records.into_iter())
+                            .chain(persisted.recordless)
+                            .collect(),
+                        false => HashSet::new(),
+                    };
+                    let settled = (stored.iter())
+                        .filter(|t| !persisted.unconfirmed.contains(*t))
+                        .copied()
+                        .collect();
                     LoadedHistory {
                         wallet,
                         records,
@@ -371,13 +395,9 @@ impl NetworkSession {
                         abandoned,
                         sent,
                         complete: clean && marks_read && sent_read,
-                        stored: if clean {
-                            (persisted.records.into_iter())
-                                .chain(persisted.recordless)
-                                .collect()
-                        } else {
-                            HashSet::new()
-                        },
+                        stored,
+                        settled,
+                        inputs,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -404,6 +424,8 @@ impl NetworkSession {
             sent,
             complete,
             stored,
+            settled,
+            inputs,
         } in loaded
         {
             let info = wm.get_wallet_info(&wallet.0);
@@ -442,8 +464,9 @@ impl NetworkSession {
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
                 h.mark_abandoned(&abandoned);
                 if complete {
-                    h.add_unrecorded_sends(&sent, &stored, self.network.core_network());
+                    h.add_unrecorded_sends(&sent, &settled, self.network.core_network());
                 }
+                h.fill_abandoned_inputs(&inputs, self.network.core_network());
                 // Stored apart from the records, which can still say mempool.
                 for t in info
                     .into_iter()
@@ -457,7 +480,7 @@ impl NetworkSession {
                     }
                 }
             });
-            sends.push((wallet, sent, complete, stored));
+            sends.push((wallet, sent, complete, settled));
         }
         drop(wm);
         for (wallet, sent, complete, stored) in sends {
@@ -488,18 +511,23 @@ impl NetworkSession {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
             return;
         }
-        let (claims, settled) = self.hub.history.with_wallet(wallet, |h| {
+        let (claims, settled, abandoned) = self.hub.history.with_wallet(wallet, |h| {
             let mut claims = crate::history::unmined_own_spends(&h.txs, sent);
             claims.retain(|(_, spender)| {
                 !h.session_held.contains(spender) && !h.swept.contains(spender)
             });
-            (claims, crate::history::settled_sends(&h.txs, sent, stored))
+            let settled = crate::history::settled_sends(&h.txs, sent, stored);
+            let abandoned: HashSet<Txid> = (settled.iter())
+                .filter(|t| h.txs.get(*t).is_some_and(|e| e.is_abandoned()))
+                .copied()
+                .collect();
+            (claims, settled, abandoned)
         });
         self.apply_spend_claims(manager, wallet, &claims).await;
         if !settled.is_empty() {
             let forgotten = self
                 .appdb_op(move |db| {
-                    crate::tx_actions::forget_sent(db, wallet, &settled);
+                    crate::tx_actions::forget_sent(db, wallet, &settled, &abandoned);
                     Ok(())
                 })
                 .await;
@@ -634,6 +662,7 @@ impl NetworkSession {
             }
             let stored: HashSet<Txid> = (persisted.records.iter())
                 .chain(&persisted.recordless)
+                .filter(|t| !persisted.unconfirmed.contains(*t))
                 .copied()
                 .collect();
             history.add_unrecorded_sends(&sent, &stored, network);
