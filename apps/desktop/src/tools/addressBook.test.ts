@@ -178,10 +178,14 @@ describe("Address Book (QT-095…098)", () => {
     for (const language of ["en-XA", "ar-XB"]) {
       ui.set({ prefs: { ...DEFAULT_PREFS, language } });
       try {
-        for (const name of [sending.exportFileName, receiving.exportFileName]) {
-          expect(name).toMatch(/[^.]\.csv$/);
-          expect(name).not.toMatch(/^(Sending|Receiving) addresses/);
+        const names = [sending.exportFileName, receiving.exportFileName];
+        for (const name of names) {
+          expect(name, language).toMatch(/[^.]\.csv$/);
+          expect(name, language).not.toMatch(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/);
         }
+        // ar-XB only reverses how English letters show, so without its controls the name is English.
+        if (language === "ar-XB") expect(names).toEqual(["Sending addresses.csv", "Receiving addresses.csv"]);
+        else for (const name of names) expect(name).not.toMatch(/^(Sending|Receiving) addresses/);
       } finally {
         ui.set({ prefs: DEFAULT_PREFS });
       }
