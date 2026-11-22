@@ -631,6 +631,9 @@ const checkContact: SendDeps["checkContact"] = (w, walletId, r, stage, amount) =
   if (!c || (relation !== "contact" && relation !== "pendingIncoming")) throw fail("invalid_argument", "not a contact of this identity");
   if (c.summary.channel === "broken") throw fail("contact.channel_broken", "the payment channel is broken");
   if (c.paymentLock) throw fail("contact.payment_locked", "contact payment locked", { kind: "txid", txid: c.paymentLock.txid });
+  const refusal = stage === "prepare" && c.summary.unverified ? dashpay(w, walletId).unverifiedPrepare : undefined;
+  if (refusal === "contextUnavailable") throw fail("platform.context_unavailable", "platform context unavailable");
+  if (refusal === "trustMismatch") throw fail("platform.trust_mismatch", "quorum key mismatch between SPV and the trusted service");
 };
 
 /** A contact payment's lease (DP3-01 D5): an `acceptAndPay` or `contactPayment` lease of the
