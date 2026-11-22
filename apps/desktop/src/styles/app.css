@@ -3891,6 +3891,10 @@ button.bell-row-open:focus-visible {
   min-width: 0;
 }
 
+.bell-row-title .chip-warning {
+  background: linear-gradient(var(--dw-role-warning-tint), var(--dw-role-warning-tint)), var(--dw-role-card-raised);
+}
+
 .bell-row-title {
   display: flex;
   flex-wrap: wrap;
