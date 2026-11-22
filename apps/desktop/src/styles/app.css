@@ -3892,6 +3892,10 @@ button.bell-row-open:focus-visible {
 }
 
 .bell-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dw-space-xs);
   font-size: var(--dw-type-subhead-size);
   line-height: var(--dw-type-subhead-line);
 }

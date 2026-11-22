@@ -187,7 +187,7 @@ describe("the engine's refusals", () => {
 
 describe("a contact payment's refusals over the contact's data (H-09)", () => {
   const UNCHECKED = "Dash Wallet can't check this contact's payment details yet. Try again in a few minutes.";
-  const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network. Try again later.";
+  const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
 
   it("says the contact's details can't be checked yet, or don't match", () => {
     expect(contactDataText(err("platform.context_unavailable"))).toBe(UNCHECKED);
