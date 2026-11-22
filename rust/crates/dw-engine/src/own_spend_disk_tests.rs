@@ -1533,3 +1533,64 @@ fn abandoning_does_not_credit_a_coin_another_engine_spend_holds() {
         session.spends.reserve(id, other, [a]);
     });
 }
+
+/// The case 12 window: a wallet opened later in the session processes A's
+/// funding F, and F's block is ChainLocked and passed, before the payment's
+/// claim on A is restored, so key-wallet keeps no guard on A. Another
+/// device's spend W of A, paying only someone else, is then not the
+/// wallet's; it is mined and passed, and its note pruned. Abandoning the
+/// payment credits nothing: A stays out, in the session and after a
+/// restart.
+#[test]
+fn abandoning_in_a_wallet_opened_later_does_not_credit_a_coin_spent_unseen() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = restored_payment_of_a(&engine, &session, id, &paid);
+    let w = spend_of_a(&engine, &session, id, &paid);
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *session.hub.pause_claims.lock().unwrap() = Some(Arc::clone(&pause));
+    let load = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the load's pause", || {
+        pause.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    chain_locked(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![foreign()]);
+    assert!(
+        pruned(&engine, &session, id, paid.txid()),
+        "F is a txid alone"
+    );
+    pause.release.notify_one();
+    engine.block_on(load).unwrap().unwrap();
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "the claim keeps A out"
+    );
+
+    mined(&engine, &session, id, TIP + 2, vec![w.clone()]);
+    chain_locked(&engine, &session, id, TIP + 2, vec![w]);
+    mined(&engine, &session, id, TIP + 3, vec![foreign()]);
+    let manager = session.manager().unwrap();
+    let noted = engine.block_on(async move {
+        let wm = manager.wallet_manager_arc();
+        let wm = wm.read().await;
+        (wm.get_wallet_info(&id.0).unwrap().core_wallet)
+            .observed_spent_outpoints()
+            .contains_key(&a)
+    });
+    assert!(!noted, "W's note is pruned");
+
+    abandon(&engine, &session, id, payment.txid());
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "A, which W spent, is credited"
+    );
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+    let session = reopen(&engine, session);
+    assert!(!held(&engine, &session, id).contains(&a), "A loads");
+}

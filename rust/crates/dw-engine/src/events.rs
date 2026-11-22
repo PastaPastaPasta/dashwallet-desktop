@@ -340,6 +340,9 @@ pub(crate) struct WalletState {
     /// The wallet is being opened and its stored replay not yet resumed:
     /// spends wait (`NetworkSession::load_wallet`).
     pub loading: bool,
+    /// Opened later in the session (`NetworkSession::load_wallet`): a block
+    /// may have been processed for it before its spend claims were set.
+    pub claims_late: bool,
     /// The height of the last truncation the hub found in key-wallet
     /// ([`SessionHub::detect_truncation`]) and has not yet heard the
     /// `ChainTruncated` event of: the event at this height, or one above
@@ -374,6 +377,7 @@ impl WalletState {
             scan_target: self.scan_target.max(read.synced_height),
             replay_cancelled: self.replay_cancelled,
             loading: self.loading,
+            claims_late: self.claims_late,
             fully_mixed: self.fully_mixed,
             detected: self.detected,
             ..read

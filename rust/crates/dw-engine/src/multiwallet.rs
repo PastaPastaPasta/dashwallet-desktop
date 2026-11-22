@@ -414,7 +414,10 @@ impl NetworkSession {
             // registered, not after the history load (#88).
             let stored = this.stored_spends(id).await?;
             this.hub.admit(id);
-            this.hub.update_wallet_state(id, |s| s.loading = true);
+            this.hub.update_wallet_state(id, |s| {
+                s.loading = true;
+                s.claims_late = true;
+            });
             // A wallet the session opened unloaded (not on the startup list)
             // has had no unload to note its checkpoint.
             // Not published unless that is stored.

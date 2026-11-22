@@ -631,7 +631,9 @@ impl NetworkSession {
     /// key-wallet knew the coin, so it recorded any spend of it; a replay
     /// does not credit it when the funding is finalized. Each is built from
     /// key-wallet's record of its funding, or the stored record of one it
-    /// keeps as a txid alone (`finalized`).
+    /// keeps as a txid alone (`finalized`). None in a wallet opened later in
+    /// the session: key-wallet may have processed a funding before its
+    /// claim was set, and recorded no spend of the coin.
     fn restorable(
         &self,
         wallet: WalletId,
@@ -640,6 +642,9 @@ impl NetworkSession {
         core: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
         finalized: &BTreeMap<Txid, TransactionRecord>,
     ) -> Vec<key_wallet::Utxo> {
+        if (self.hub.wallet_state(&wallet)).is_none_or(|s| s.claims_late) {
+            return Vec::new();
+        }
         let observed = core.observed_spent_outpoints();
         let held: HashSet<OutPoint> = core.utxos().into_iter().map(|u| u.outpoint).collect();
         let engine = (self.spends).held_except(
