@@ -172,6 +172,9 @@ struct Fixture {
     engine: Engine,
     session: Arc<NetworkSession>,
     wallet: WalletId,
+    /// The contacts' records [`Fixture::verify_contacts`] wrote are still
+    /// there.
+    seeded: std::sync::atomic::AtomicBool,
 }
 
 /// Our identity with Bob established (his paying account held) and
@@ -215,6 +218,7 @@ fn fixture(encrypted: bool) -> Fixture {
         engine,
         session,
         wallet,
+        seeded: std::sync::atomic::AtomicBool::new(false),
     };
     f.give_me();
     f.establish(BOB, false);
@@ -227,6 +231,7 @@ fn fixture(encrypted: bool) -> Fixture {
         me.apply_incoming_contact_request(request(CAROL, ME, 3_000_000));
     });
     f.credit(1, COIN);
+    f.verify_contacts();
     f
 }
 
@@ -1183,6 +1188,7 @@ fn accept_and_pay_spends_only_after_the_accept() {
     assert!(f.reserved(CAROL).is_none());
     // The accept, as the library leaves it.
     f.establish(CAROL, false);
+    f.verify_contacts();
     let p = f.engine.block_on(d.prepare(lease.id_string())).unwrap();
     assert_eq!(paid(&p), f.contact_address(CAROL, 0).to_string());
     Seam::install(&d, Net::Accept);
@@ -1454,7 +1460,7 @@ use platform_wallet::wallet::identity::{ContactProfileEntry, DashPayProfile};
 
 use crate::platform::money_gate::{Point, Refusal, Subject};
 use crate::platform::money_gate_tests::{
-    FakePlatform, Proof, gate_session, gate_session_unlatched, show_username,
+    FakePlatform, Proof, gate_session, gate_session_unlatched, hide_username, show_username,
 };
 use crate::platform::trust::TrustMode;
 
@@ -1462,6 +1468,7 @@ impl Fixture {
     /// The latch set, the provider in `mode`, and a Platform that holds
     /// Bob's two requests as the library does, its proofs `proof`.
     fn gated(&self, mode: TrustMode, proof: Proof) -> Arc<FakePlatform> {
+        self.unverify();
         let platform = FakePlatform::new(proof);
         platform.answer_requests(vec![
             request(ME, BOB, 1_000_000),
@@ -1503,6 +1510,38 @@ impl Fixture {
         meanwhile();
         pause.release.notify_one();
         self.engine.block_on(prepare).unwrap()
+    }
+
+    /// Records Bob's and Carol's data as the library holds it now as
+    /// verified (H-09's strict gate needs a record), as an earlier verified
+    /// fetch would have.
+    fn verify_contacts(&self) {
+        self.seeded.store(true, Ordering::SeqCst);
+        for n in [BOB, CAROL] {
+            let subject = Subject::Payee(self.wallet, (id(ME), id(n)));
+            let session = Arc::clone(&self.session);
+            (self.engine)
+                .block_on(session.on_runtime({
+                    let session = Arc::clone(&self.session);
+                    async move {
+                        session.record_verified_for_tests(subject).await;
+                        Ok(())
+                    }
+                }))
+                .unwrap();
+        }
+    }
+
+    /// Drops the records [`Self::verify_contacts`] wrote, once: the contacts'
+    /// data starts unverified, as a test of the gate needs.
+    fn unverify(&self) {
+        if self.seeded.swap(false, Ordering::SeqCst) {
+            (self.sqlite())
+                .execute("DELETE FROM dp_trust_verified", [])
+                .unwrap();
+            let provenance = self.session.live().unwrap().provenance;
+            provenance.forget_records_for_tests();
+        }
     }
 
     /// Queues `op` for Bob in the library's deferred contact crypto.
@@ -1797,9 +1836,14 @@ fn a_verified_payee_stays_verified_across_a_relaunch() {
 #[test]
 fn a_wallet_store_from_elsewhere_starts_unverified() {
     let mut f = fixture(false);
+    f.unverify();
     f.store(f.bobs_account(contact_xpub(BOB)));
     f.store_bobs_contact(request(BOB, ME, 2_000_000), Some(0));
     assert!(!f.bob_unverified(), "no fallback used here: verified");
+    f.relaunch();
+    let latched = || f.session.live().unwrap().provenance.fallback_used();
+    assert!(!latched(), "every wallet named: a reopen does not latch");
+    assert!(!f.bob_unverified());
 
     let data_dir = f.session.data_dir().to_path_buf();
     (f.engine)
@@ -1844,6 +1888,7 @@ fn a_qr_sent_contact_verifies_only_on_the_missing_proof() {
         f.with_me(move |me| me.apply_established_contact(contact));
         let platform = FakePlatform::new(Proof::Verified);
         platform.answer_requests(on_platform);
+        f.unverify();
         gate_session(&f.session, TrustMode::Degraded, platform);
         f.prepare(&f.draft(BOB))
     };
@@ -1876,7 +1921,8 @@ fn a_qr_sent_contact_verifies_only_on_the_missing_proof() {
 
 /// H-09, H3: the payee's data changes while the gate waits for it to
 /// verify. What verifies afterwards is not what the user was shown, so the
-/// gate refuses even though the new data verifies.
+/// gate refuses even though the new data verifies. The refusal does not
+/// stick: a retry pays the payee as now shown.
 #[test]
 fn a_payee_changed_during_the_wait_is_refused() {
     let f = fixture(false);
@@ -1896,6 +1942,67 @@ fn a_payee_changed_during_the_wait_is_refused() {
         platform_error(f.engine.block_on(prepare).unwrap()),
         "platform.context_unavailable"
     );
+    f.prepare(&f.draft(BOB)).expect("a retry pays");
+}
+
+/// H-09: a name that lands while the gate waits refuses that attempt; once
+/// its record is written, a retry pays.
+#[test]
+fn a_payee_name_landing_during_the_wait_refuses_once() {
+    let f = fixture(false);
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    platform.answer_domain("bob", id(BOB));
+    let prepare = f.spawn_prepare(&f.draft(BOB));
+    wait_until(|| platform.fetches() > 0);
+    show_username(&f.session, id(BOB), "bob");
+    platform.set_proof(Proof::Verified);
+    assert_eq!(
+        platform_error(f.engine.block_on(prepare).unwrap()),
+        "platform.context_unavailable"
+    );
+    f.prepare(&f.draft(BOB)).expect("a retry pays");
+}
+
+/// H-09 (Astra re-check H3): the name shown for the payee is dropped while
+/// the gate waits for it to verify. The rest verifies, but the payee is not
+/// what the user was shown, so the gate refuses.
+#[test]
+fn a_payee_name_dropped_during_the_wait_is_refused() {
+    let f = fixture(false);
+    show_username(&f.session, id(BOB), "bob");
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    let prepare = f.spawn_prepare(&f.draft(BOB));
+    wait_until(|| platform.fetches() > 0);
+    hide_username(&f.session, id(BOB));
+    platform.set_proof(Proof::Verified);
+    assert_eq!(
+        platform_error(f.engine.block_on(prepare).unwrap()),
+        "platform.context_unavailable"
+    );
+}
+
+/// H-09 (Astra re-check H1): with no fallback latch, a payee whose data has
+/// no verification record of its content is still gated: the wallet store
+/// may hold data another installation fetched through the fallback, under
+/// a wallet id this installation names.
+#[test]
+fn a_payee_without_a_record_is_gated_without_the_latch() {
+    let f = fixture(false);
+    f.unverify();
+    assert!(!f.session.live().unwrap().provenance.fallback_used());
+    let platform = FakePlatform::new(Proof::Unverified);
+    platform.answer_requests(vec![
+        request(ME, BOB, 1_000_000),
+        request(BOB, ME, 2_000_000),
+    ]);
+    gate_session_unlatched(&f.session, TrustMode::Degraded, Arc::clone(&platform));
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+    platform.set_proof(Proof::Verified);
+    f.prepare(&f.draft(BOB))
+        .expect("paid once its record is written");
 }
 
 /// H-09: a release build ignores a trusted-only toggle a developer build
@@ -2138,6 +2245,7 @@ fn an_account_a_crash_left_unrebuilt_is_not_paid() {
     let f = fixture(false);
     f.session.trust.set_mode(TrustMode::Enforcing);
     f.bob_rotated_before_the_sweep();
+    f.verify_contacts();
     assert_eq!(
         platform_error(f.prepare(&f.draft(BOB))),
         "platform.context_unavailable"
@@ -2534,6 +2642,7 @@ fn a_rotation_the_store_kept_is_what_a_relaunch_pays() {
     assert!(f.bobs_pool_holds(address_at(new, 0)));
     assert!(!f.bobs_pool_holds(address_at(old, 0)));
 
+    f.verify_contacts();
     f.credit(1, COIN);
     let pair = (id(ME), id(BOB));
     let payments = &f.session.platform.payments;

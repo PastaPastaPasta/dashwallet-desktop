@@ -4579,8 +4579,10 @@ renames or reshapes them takes the next version bump:
     trusted-only toggle turns rule 5 off as before, and only in developer builds: a release build ignores a stored
     `trust.trusted_only` and cannot set it. A contact's data that changes while the gate waits is
     `platform.context_unavailable` too. Our own request held without the `autoAcceptProof` Platform has verifies when
-    every other field matches. A session whose wallet store holds a wallet app.sqlite never named treats Platform data
-    as unverified until re-fetched.
+    every other field matches; a received request must match exactly. A contact payment needs a record of the
+    contact's current content even where the fallback was never used (a wallet store may come from an installation
+    that used it). A session whose wallet store holds a wallet app.sqlite never named also shows its Platform data as
+    unverified until re-fetched. A withdrawal's recovery takes candidate scripts only from a verified identity read.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

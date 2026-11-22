@@ -30,7 +30,8 @@
 //!    `couldnt_confirm`.
 //!
 //! Under `Enforce`, step 1's positive match, (i), (ii) and (iv) must pass
-//! rule 5 (P8 step 4, P12). No path signs again.
+//! rule 5 (P8 step 4, P12), and so must the nonce read a hand-off or a
+//! `Stale` decision rests on (H-09). No path signs again.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -275,9 +276,12 @@ async fn identity_for(
     if !group.iter().any(needs_identity) {
         return Ok(None);
     }
-    reached(env, height, "the identity", top, || net.identity(*id))
-        .await
-        .map(Some)
+    let read = reached(env, height, "the identity", top, || net.identity(*id)).await?;
+    // H-09: its keys name the candidate scripts a document must pay.
+    if !read.passed {
+        return Err(unverified("the identity"));
+    }
+    Ok(Some(read))
 }
 
 /// Raises the group's floor from `floor` to `top`, the highest

@@ -775,6 +775,37 @@ fn the_degraded_default_refuses_a_withdrawal_on_unverified_reads() {
     assert_eq!(r.unwrap().state, State::Sent);
 }
 
+/// H-09: a quote whose destinations read `checking{unverified}` starts the
+/// ready wait, and §6's event goes out once SPV verifies the read.
+#[test]
+fn an_unverified_quote_signals_once_its_read_verifies() {
+    let fa = Fa::new(true);
+    fa.f.session
+        .trust
+        .set_mode(crate::platform::trust::TrustMode::Degraded);
+    fa.plat.deviate(Read::Identity, Dev::Unverified, ALWAYS);
+    let before = fa.generation();
+    let q = fa.quote().unwrap();
+    let checking = Some(WithdrawalDestinationCheck::Checking {
+        reason: WithdrawalCheckingReason::Unverified,
+    });
+    assert_eq!(q.owner_destination, checking);
+    assert!(until(Duration::from_millis(500), || fa
+        .plat
+        .reads(Read::Identity)
+        >= 2));
+    assert_eq!(
+        fa.generation(),
+        before,
+        "no withdrawal_ready while unverified"
+    );
+    fa.plat.calm();
+    assert!(
+        until(Duration::from_secs(3), || fa.generation() > before),
+        "withdrawal_ready"
+    );
+}
+
 /// H-09 (Astra M5): an identity read that is unverified at first, and
 /// verified a moment later, withdraws in the same call: `withdraw` waits
 /// for SPV within its bound rather than refusing on the first read.

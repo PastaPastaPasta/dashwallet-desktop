@@ -109,8 +109,13 @@ pub(super) enum Held {
         spelling: String,
         owner: Identifier,
     },
-    /// A sent or received request, as the library holds it.
+    /// A received request, or any request when its direction is not known,
+    /// as the library holds it.
     ContactRequest(ContactRequest),
+    /// The wallet's own sent request, as the library holds it: without the
+    /// `autoAcceptProof` Platform has ([`same_request`]). Recorded as a
+    /// [`Held::ContactRequest`].
+    SentRequest(ContactRequest),
 }
 
 impl Held {
@@ -171,7 +176,7 @@ impl Held {
                     .bytes(spelling.as_bytes())
                     .id(owner);
             }
-            Self::ContactRequest(r) => {
+            Self::ContactRequest(r) | Self::SentRequest(r) => {
                 let ContactRequest {
                     sender_id,
                     recipient_id,
@@ -205,7 +210,7 @@ impl Held {
             Self::Identity { id, .. } => (kind::IDENTITY, id.to_string(Encoding::Base58)),
             Self::Profile { id, .. } => (kind::PROFILE, id.to_string(Encoding::Base58)),
             Self::Label { label, .. } => (kind::DPNS_LABEL, label.clone()),
-            Self::ContactRequest(r) => (
+            Self::ContactRequest(r) | Self::SentRequest(r) => (
                 kind::CONTACT_REQUEST,
                 contact_request_key(&r.sender_id, &r.recipient_id, r.created_at),
             ),
@@ -330,6 +335,10 @@ pub(super) async fn check(h: &Held, fetch: &dyn Refetcher) -> Check {
                 .map(|fetched| fetched == Some((spelling.clone(), *owner))),
             Held::ContactRequest(r) => {
                 let fetched = fetch.contact_requests(r.sender_id, r.recipient_id, r.created_at);
+                fetched.await.map(|all| all.contains(r))
+            }
+            Held::SentRequest(r) => {
+                let fetched = fetch.contact_requests(r.sender_id, r.recipient_id, r.created_at);
                 fetched
                     .await
                     .map(|all| all.iter().any(|f| same_request(f, r)))
@@ -392,10 +401,13 @@ pub(super) fn held_of(m: &ManagedIdentity, info: &PlatformWalletInfo) -> Vec<Hel
 fn requests_of(m: &ManagedIdentity) -> impl Iterator<Item = Held> + '_ {
     let dp = m.dashpay();
     let established = dp.established_contacts().values();
-    (dp.sent_contact_requests().values())
-        .chain(dp.incoming_contact_requests().values())
-        .chain(established.flat_map(|c| [&c.outgoing_request, &c.incoming_request]))
-        .map(|r| Held::ContactRequest(r.clone()))
+    let sent = (dp.sent_contact_requests().values())
+        .chain(established.clone().map(|c| &c.outgoing_request))
+        .map(|r| Held::SentRequest(r.clone()));
+    let received = (dp.incoming_contact_requests().values())
+        .chain(established.map(|c| &c.incoming_request))
+        .map(|r| Held::ContactRequest(r.clone()));
+    sent.chain(received)
 }
 
 /// The cached profiles of `m`'s contacts (and request senders). A
@@ -448,8 +460,8 @@ fn domain_of(doc: &Document) -> Option<(String, Identifier)> {
 
 /// The library keeps our own sent request without its `autoAcceptProof`
 /// (docs/research/dashpay/platform-wallet-sent-auto-accept-proof.md), so a
-/// fetched copy carrying a proof still matches a held copy without one when
-/// every other field is equal. The proof chooses no address.
+/// fetched copy carrying a proof still matches our held copy without it
+/// when every other field is equal. The proof chooses no address.
 fn same_request(fetched: &ContactRequest, held: &ContactRequest) -> bool {
     fetched == held
         || (held.auto_accept_proof.is_none()

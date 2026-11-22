@@ -110,7 +110,7 @@ impl FakePlatform {
                 } => {
                     a.domains.insert(label.clone(), (spelling.clone(), *owner));
                 }
-                Held::ContactRequest(r) => a.requests.push(r.clone()),
+                Held::ContactRequest(r) | Held::SentRequest(r) => a.requests.push(r.clone()),
             }
         }
     }
@@ -181,6 +181,13 @@ pub(crate) fn show_username(session: &NetworkSession, contact: Identifier, name:
     session.platform.contacts.names.show(contact, name);
     let provenance = session.live().unwrap().provenance;
     provenance.show_label(contact, Some(name));
+}
+
+/// Shows no DPNS name for `contact`, as a fetch that found none does.
+pub(crate) fn hide_username(session: &NetworkSession, contact: Identifier) {
+    session.platform.contacts.names.hide(contact);
+    let provenance = session.live().unwrap().provenance;
+    provenance.show_label(contact, None);
 }
 
 /// The session tests' switches: the fallback latch set, the provider in

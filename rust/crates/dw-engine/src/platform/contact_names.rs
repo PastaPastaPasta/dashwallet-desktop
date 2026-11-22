@@ -144,6 +144,12 @@ impl ContactNames {
         state.checked = Some((Instant::now(), false));
     }
 
+    /// Shows no name for `identity`, as a fetch that found none does.
+    #[cfg(test)]
+    pub(super) fn hide(&self, identity: Identifier) {
+        guard(&self.states).entry(identity).or_default().label = None;
+    }
+
     /// Drops the waiters of a wallet the session forgets.
     pub(super) fn forget(&self, wallet: &WalletId) {
         for state in guard(&self.states).values_mut() {
