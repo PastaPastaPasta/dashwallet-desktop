@@ -146,7 +146,7 @@ export const tools = {
       trustedFailed: "Trusted service",
       trustedFailedNote: "Could not read whether SPV checks of quorum keys are off.",
       trustedOnly: "Trusted service only (developer setting)",
-      trustedOnlyNote: "SPV checks of quorum keys are off.",
+      trustedOnlyNote: "Dash Wallet's own checks are off. Payments to contacts rely on the Platform service's data without them.",
       trustedDegraded: "Trusted service (degraded mode)",
       trustedDegradedNote: "Checked against SPV's quorum keys where SPV holds them.",
     },
