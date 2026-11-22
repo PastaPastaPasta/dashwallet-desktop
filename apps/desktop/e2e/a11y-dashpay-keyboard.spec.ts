@@ -37,49 +37,59 @@ const holdsFocus = (target: Locator) => target.evaluate((el) => el.contains(docu
 /** Two frames: the browser has rendered, and moved focus off anything that became disabled. */
 const rendered = (page: Page) => page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
 
-/** How `el` reads to assistive tech, in the page: "live: <its text>" for an exposed live region,
- * else why it is not one. Self-contained: it runs in the page. */
+/** How `el` reads to assistive tech now, in the page: "live: <its text>" for an exposed live
+ * region; for a live region a reader cannot reach yet, why not and its text; else "absent" or "not
+ * a live region". An explicit `aria-live` wins over the role's default (`off` is not live).
+ * Self-contained: it runs in the page. */
 function liveState(el: Element | null): string {
   if (!el?.isConnected) return "absent";
-  const role = el.getAttribute("role");
-  const live = el.getAttribute("aria-live");
-  if (role !== "status" && role !== "alert" && live !== "polite" && live !== "assertive") return "not a live region";
-  if (el.closest('[aria-hidden="true"], [inert]')) return "hidden from assistive tech";
+  const explicit = el.getAttribute("aria-live");
+  const politeness = explicit !== null ? explicit.trim() : ({ status: "polite", alert: "assertive", log: "polite" } as Record<string, string>)[el.getAttribute("role") ?? ""];
+  if (politeness !== "polite" && politeness !== "assertive") return "not a live region";
+  const text = (el.textContent ?? "").trim();
+  if (el.closest('[aria-hidden="true"], [inert]')) return `hidden from assistive tech: ${text}`;
   const modal = document.querySelector('[aria-modal="true"]');
-  if (modal && !modal.contains(el)) return "outside the open modal";
-  if (!el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true })) return "not rendered";
-  return `live: ${(el.textContent ?? "").trim()}`;
+  if (modal && !modal.contains(el)) return `outside the open modal: ${text}`;
+  if (!el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true })) return `not rendered: ${text}`;
+  return `live: ${text}`;
 }
 
 type Heard = Element & { __heard?: string[] };
 
-/** The live region at `selector`, held before an action once it is there and empty, so that what
- * it says next is announced. Every state it goes through from now on is recorded, with whether it
- * was exposed then (a modal open over it hides it), so a result that leaves again (a toast) is
- * still seen. */
-async function liveRegion(page: Page, selector: string) {
+/** Records what `el` says from now on: at each change of its content, `liveState` then. A reader
+ * announces a content change, so text that arrived while the region was hidden and was exposed
+ * later without changing is recorded as hidden. A missing `el` records nothing. */
+async function armRecorder(page: Page, region: JSHandle<Element | null>) {
   await page.evaluate(`window.__dwLiveState = ${liveState.toString()}`);
-  const empty = (s: string) =>
-    page.evaluate((s) => {
-      const el = document.querySelector(s);
-      if (!el) return "absent";
-      const live = el.getAttribute("aria-live") ?? { status: "polite", alert: "assertive" }[el.getAttribute("role") ?? ""];
-      return live ? `${live}: ${(el.textContent ?? "").trim()}` : "not a live region";
-    }, s);
-  await expect.poll(() => empty(selector), { message: `live region ${selector} before the action` }).toMatch(/^(polite|assertive): $/);
-  const region = await page.evaluateHandle((s) => document.querySelector(s)!, selector);
-  await region.evaluate((el: Heard) => {
+  await region.evaluate((el: Heard | null) => {
+    if (!el) return;
     const heard: string[] = [];
     el.__heard = heard;
     const read = (window as unknown as { __dwLiveState: typeof liveState }).__dwLiveState;
     new MutationObserver(() => heard.push(read(el))).observe(el, { childList: true, subtree: true, characterData: true });
   });
+}
+
+const heardBy = (region: JSHandle<Element | null>) => region.evaluate((el: Heard | null) => el?.__heard ?? []);
+
+/** The live region at `selector`, held and recorded before an action, once it is there as a live
+ * region (empty, with `empty`), whether or not a reader can reach it yet: what counts is that it
+ * is exposed when it speaks. */
+async function liveRegion(page: Page, selector: string, { empty = true } = {}) {
+  await page.evaluate(`window.__dwLiveState = ${liveState.toString()}`);
+  const state = () => page.evaluate((s) => (window as unknown as { __dwLiveState: typeof liveState }).__dwLiveState(document.querySelector(s)), selector);
+  const ready = empty ? /^(live|hidden from assistive tech|outside the open modal|not rendered): $/ : /^(live|hidden from assistive tech|outside the open modal|not rendered): /;
+  await expect.poll(state, { message: `live region ${selector} before the action` }).toMatch(ready);
+  const region = await page.evaluateHandle((s) => document.querySelector(s), selector);
+  await armRecorder(page, region);
   return region;
 }
 
-/** The element held by `liveRegion` said `text`. */
-async function expectSaid(region: JSHandle<Element>, text: string) {
-  await expect.poll(() => region.evaluate((el: Heard) => el.__heard ?? [])).toContain(`live: ${text}`);
+/** The element held by `liveRegion` said `text` while exposed: all its text, or (a RegExp) a match
+ * in it. */
+async function expectSaid(region: JSHandle<Element | null>, text: string | RegExp) {
+  const said = typeof text === "string" ? `live: ${text}` : expect.stringMatching(new RegExp(`^live: [\\s\\S]*${text.source}`));
+  await expect.poll(() => heardBy(region)).toContainEqual(said);
 }
 
 /** Presses Tab (Shift+Tab with `back`) until `target` has focus: how a keyboard user gets there. */
@@ -176,10 +186,9 @@ async function toConfirmAndPay(page: Page, label: string) {
   await expect(field).toBeFocused();
   await expect(page.getByTestId("registration-step")).toHaveText("Step 1 of 2 · Choose a username");
   await expectAxeClean(page);
+  const availability = await liveRegion(page, '[data-testid="registration-availability"]');
   await page.keyboard.type(label);
-  const availability = page.getByTestId("registration-availability");
-  await expect(availability).toHaveAttribute("role", "status");
-  await expect(availability).toHaveText("Username available");
+  await expectSaid(availability, "Username available");
   await expect(field).toBeFocused();
   await page.keyboard.press("Enter");
 
@@ -200,13 +209,17 @@ test("keyboard only: register a username", async ({ page }) => {
   // The progress screen: its steps are a polite live region.
   const screen = page.getByTestId("registration-screen");
   await expect(screen).toHaveAttribute("data-kind", "progress");
-  const live = screen.locator(".registration-live");
-  await expect(live).toHaveAttribute("role", "status");
-  await expect(live.getByTestId("registration-progress-step")).toHaveText("(1/3) Processing payment");
+  await expect(screen.getByTestId("registration-progress-step")).toHaveText("(1/3) Processing payment");
+  const progress = await liveRegion(page, '[data-testid="registration-screen"] .registration-live', { empty: false });
   await expectAxeClean(page);
 
-  // The network finishes the run; the welcome takes focus at its title, which a reader says.
+  // The network moves one step: the same region says it.
   const draft = await page.evaluate(() => window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft);
+  await page.evaluate((d) => window.__dwFixture!.advanceRegistration(d), draft);
+  await expect(screen.getByTestId("registration-progress-step")).toHaveText("(2/3) Creating identity");
+  await expectSaid(progress, /\(2\/3\) Creating identity/);
+
+  // The network finishes the run; the welcome takes focus at its title, which a reader says.
   await page.evaluate((d) => {
     while (window.__dwFixture!.advanceRegistration(d));
   }, draft);
@@ -574,16 +587,19 @@ for (const site of OUTCOME_SITES) {
     const trigger = await site.reach(page);
     const region = await page.evaluateHandle((s) => document.querySelector(s), site.region);
     const before = await region.evaluate(liveState);
+    await armRecorder(page, region);
     await page.keyboard.press("Enter");
     await authorizeFrom(page, trigger);
-    // The result shows; the question is only which element says it.
+    // The result shows; the question is only whether the region held before the action said it.
     await expect(page.locator(site.region)).toHaveText(site.said);
-    const after = (await region.evaluate((el) => el?.isConnected ?? false)) ? await region.evaluate(liveState) : `a new region: ${await page.locator(site.region).evaluate(liveState)}`;
+    const shownIn = await page.locator(site.region).evaluate(liveState);
     expect(errors).toEqual([]);
     test.fail(
       true,
-      `${site.where}: no status region is in the page before the action ("${before}"); the result comes in a new role=status element that appears with its text ("${after}"). Expected an empty status region present before the action, then that element given "${site.said}".`,
+      `${site.where}: no status region is in the page before the action ("${before}"); the result comes in a new role=status element that appears with its text ("${shownIn}"). Expected an empty status region present before the action, then that element given "${site.said}" while exposed.`,
     );
-    expect({ before, after }).toEqual({ before: "live: ", after: `live: ${site.said}` });
+    await expect
+      .poll(async () => ({ before, said: (await heardBy(region)).includes(`live: ${site.said}`) }))
+      .toEqual({ before: "live: ", said: true });
   });
 }
