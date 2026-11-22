@@ -3,10 +3,11 @@
 //! contact payment or a top-up whose payee the library holds unverified
 //! (no `dp_trust_verified` record of its current content, DEC-183) waits
 //! while the gate re-fetches it against SPV-held quorum keys, and refuses
-//! if it does not verify in time. In the degraded mode rule 5 is suspended:
-//! one bounded round of re-fetches looks for a mismatch, which still
-//! refuses, and the payment proceeds otherwise. The trusted-only toggle
-//! proceeds. In every mode a payee whose paying account is not the one
+//! if it does not verify in time. A contact payment is held to that in
+//! every mode (H-09, `TrustProvider::strict_rule_5`). For a top-up in the
+//! degraded mode rule 5 is suspended: one bounded round of re-fetches looks
+//! for a mismatch, which still refuses, and the top-up proceeds otherwise.
+//! The trusted-only toggle proceeds. In every mode a payee whose paying account is not the one
 //! their current request designates is refused (D12, D21, D25, D28).
 //!
 //! The gate records what verifies itself, as the background re-fetch
@@ -502,7 +503,10 @@ impl NetworkSession {
     /// nothing it rests on is unverified, or the mode lets it move anyway.
     /// May wait (`Enforce`: up to a minute plus one quorum lookup's wait).
     pub(crate) async fn money_gate(&self, subject: Subject) -> Result<(), Refusal> {
-        let rule = self.trust.rule_5();
+        let rule = match subject {
+            Subject::Payee(..) => self.trust.strict_rule_5(),
+            Subject::Identity(..) => self.trust.rule_5(),
+        };
         let signals = Signals {
             rule,
             lock: self.platform.lock.subscribe(),

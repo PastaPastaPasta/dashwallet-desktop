@@ -56,7 +56,7 @@ impl Env for SessionEnv {
     }
 
     fn rule_5(&self) -> Rule5 {
-        self.session.trust.rule_5()
+        self.session.trust.strict_rule_5()
     }
 
     /// The synced header tip (`sync.rs` `tip_height()`, not the chain-locked
