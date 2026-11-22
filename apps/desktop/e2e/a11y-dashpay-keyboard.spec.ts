@@ -40,7 +40,7 @@ const rendered = (page: Page) => page.evaluate(() => new Promise((r) => requestA
 /** How `el` reads to assistive tech now, in the page: "<politeness>: <text>" (polite or assertive)
  * for an exposed live region; for a live region a reader cannot reach yet, why not and its text;
  * else "absent" or "not a live region". An explicit `aria-live` wins over the role's default (`off`
- * is not live). The text is what a reader gets: text inside an aria-hidden, hidden, inert or
+ * is not live). A region inside aria-busy="true" is not exposed: readers hold its updates. The text is what a reader gets: text inside an aria-hidden, hidden, inert or
  * unrendered element of the region is left out. Self-contained: it runs in the page. */
 function liveState(el: Element | null): string {
   if (!el?.isConnected) return "absent";
@@ -62,6 +62,7 @@ function liveState(el: Element | null): string {
   }
   const text = parts.join("").replace(/\s+/g, " ").trim();
   if (el.closest('[aria-hidden="true"], [inert]')) return `hidden from assistive tech: ${text}`;
+  if (el.closest('[aria-busy="true"]')) return `busy, so readers hold its updates: ${text}`;
   const modal = document.querySelector('[aria-modal="true"]');
   if (modal && !modal.contains(el)) return `outside the open modal: ${text}`;
   if (!el.checkVisibility({ visibilityProperty: true, checkVisibilityCSS: true })) return `not rendered: ${text}`;
@@ -100,7 +101,7 @@ const heardBy = (region: JSHandle<Element | null>) => region.evaluate((el: Heard
 async function liveRegion(page: Page, selector: string, { empty = true } = {}) {
   await page.evaluate(`window.__dwLiveState = ${liveState.toString()}`);
   const state = () => page.evaluate((s) => (window as unknown as { __dwLiveState: typeof liveState }).__dwLiveState(document.querySelector(s)), selector);
-  const kinds = "polite|assertive|hidden from assistive tech|outside the open modal|not rendered";
+  const kinds = "polite|assertive|hidden from assistive tech|busy, so readers hold its updates|outside the open modal|not rendered";
   await expect.poll(state, { message: `live region ${selector} before the action` }).toMatch(new RegExp(empty ? `^(${kinds}): $` : `^(${kinds}): `));
   const region = await page.evaluateHandle((s) => document.querySelector(s), selector);
   await armRecorder(page, region);
