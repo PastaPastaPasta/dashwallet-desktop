@@ -15,25 +15,34 @@ import { coinsEmptyCopy, EMPTY, listDisplay } from "../../components/emptyStates
 import { EmptyState, focusWhenIdle, LoadingState } from "../../components/history";
 import type { Unit } from "../../format/amount";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { CoinSelectionModel, CoinText, copyText, type CopyField } from "../../tools/coins";
 import { outpointKey } from "../pay/model";
 import { Outcome, RowMenu, type MenuItem } from "./common";
 
-const COPY: [CopyField, string][] = [
-  ["address", "Copy address"],
-  ["label", "Copy label"],
-  ["amount", "Copy amount"],
-  ["outpoint", "Copy transaction ID and output index"],
+const COPY: [CopyField, string, "copyAddress" | "copyLabel" | "copyAmount" | "copyOutpoint"][] = [
+  ["address", "copy-address", "copyAddress"],
+  ["label", "copy-label", "copyLabel"],
+  ["amount", "copy-amount", "copyAmount"],
+  ["outpoint", "copy-transaction-id-and-output-index", "copyOutpoint"],
 ];
 
 /** dash-qt's coin context menu: the copies, then Lock or Unlock. */
 function CoinMenu({ u, model, unit }: { u: Utxo; model: CoinSelectionModel; unit: Unit }) {
+  const t = useT();
   const key = outpointKey(u.outpoint);
   const lock: MenuItem = u.userLocked
-    ? { title: "Unlock unspent", run: () => void model.unlock([key]) }
-    : { title: "Lock unspent", run: () => void model.lock([key]), disabled: u.reserved };
-  return <RowMenu label="Actions" name={`Actions for ${copyText(u, "amount", unit)} at ${u.address}`} items={[...COPY.map(([field, title]) => ({ title, copy: copyText(u, field, unit) })), lock]} testId={`coin-menu-${key}`} />;
+    ? { id: "unlock-unspent", title: t("tools.coins.unlockUnspent"), run: () => void model.unlock([key]) }
+    : { id: "lock-unspent", title: t("tools.coins.lockUnspent"), run: () => void model.lock([key]), disabled: u.reserved };
+  return (
+    <RowMenu
+      label={t("tools.coins.actions")}
+      name={t("tools.coins.actionsFor", { amount: copyText(u, "amount", unit), address: u.address })}
+      items={[...COPY.map(([field, id, message]) => ({ id, title: t(`tools.coins.${message}`), copy: copyText(u, field, unit) })), lock]}
+      testId={`coin-menu-${key}`}
+    />
+  );
 }
 
 /** The tab's model; the page keeps one per window wallet, so the view (mode, sort, CoinJoin
@@ -47,6 +56,7 @@ export function newCoinSelection(b: Backend, client: QueryClient, walletId: stri
 }
 
 export function CoinSelectionTab({ model, walletId, network }: { model: CoinSelectionModel; walletId: string; network: NetworkInfo }) {
+  const t = useT();
   const utxos = useUtxos(walletId, true);
   const { arrival, recheck } = useWalletCatchUp(walletId);
   const coins = listDisplay({
@@ -64,13 +74,13 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
   }, [model, utxos.data]);
 
   const filterRef = useRef<HTMLButtonElement>(null);
-  if (coins.kind === "arriving" && coins.why === "pending") return <LoadingState testId="coins-loading" text="Loading coins" />;
+  if (coins.kind === "arriving" && coins.why === "pending") return <LoadingState testId="coins-loading" text={t("tools.coins.loading")} />;
   if (coins.kind === "failed")
     return (
       <>
-        <Outcome ok={false} text={`Could not load the coins: ${errorMessage(utxos.error)}`} testId="coins-error" />
+        <Outcome ok={false} text={t("tools.coins.loadFailed", { error: errorMessage(utxos.error) })} testId="coins-error" />
         <DashButton variant="plainBlue" data-testid="coins-retry" onClick={() => void utxos.refetch()}>
-          Try again
+          {t("tools.common.tryAgain")}
         </DashButton>
       </>
     );
@@ -79,10 +89,10 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
   return (
     <div className="tool-stack" data-testid="tools-coinSelection">
       <div className="tool-actions">
-        <div className="segmented" role="group" aria-label="View" data-testid="coins-mode">
+        <div className="segmented" role="group" aria-label={t("tools.coins.view")} data-testid="coins-mode">
           {(["list", "tree"] as const).map((m) => (
             <button key={m} ref={m === "list" ? filterRef : undefined} type="button" className="segment" aria-pressed={model.mode === m} data-testid={`coins-mode-${m}`} onClick={() => model.setMode(m)}>
-              {m === "list" ? "List mode" : "Tree mode"}
+              {m === "list" ? t("tools.coins.listMode") : t("tools.coins.treeMode")}
             </button>
           ))}
         </div>
@@ -90,10 +100,10 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
           {model.coinJoinToggleTitle}
         </DashButton>
         <DashButton variant="tintedGray" size="small" data-testid="coins-select-all" onClick={() => model.toggleAll()}>
-          (un)select all
+          {t("tools.coins.selectAll")}
         </DashButton>
         <DashButton variant="tintedGray" size="small" data-testid="coins-toggle-locks" onClick={() => void model.toggleLocks()}>
-          Toggle lock state
+          {t("tools.coins.toggleLocks")}
         </DashButton>
         {model.lockedText && (
           <span className="tool-note" data-testid="coins-locked">
@@ -160,7 +170,7 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
         </div>
       )}
       {model.summary && (
-        <section className="tool-card card-l1" aria-label="Selection" data-testid="coins-selection">
+        <section className="tool-card card-l1" aria-label={t("tools.coins.selection")} data-testid="coins-selection">
           <CoinSummary summary={model.summary} shown={shown} />
           <p className="tool-note">{CoinText.tolerance(model.summary.feeTolerancePerInput)}</p>
         </section>
@@ -172,7 +182,7 @@ export function CoinSelectionTab({ model, walletId, network }: { model: CoinSele
       )}
       <div className="tool-actions">
         <DashButton variant="filledBlue" size="small" data-testid="coins-pay" disabled={model.selected.length === 0} onClick={() => openPayForm({ payCoins: model.selected })}>
-          Pay with these coins
+          {t("tools.coins.payWithCoins")}
         </DashButton>
       </div>
     </div>

@@ -6,6 +6,7 @@
 import { hasCode, type Backend } from "../api/backend";
 import type { ConsoleCommand } from "../api/generated/ConsoleCommand";
 import type { WalletSummary } from "../api/generated/WalletSummary";
+import { t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import type { GrantModel } from "./grant";
 
@@ -15,23 +16,30 @@ export const FONT_SIZES = { min: 4, max: 40, default: 12 };
 export const ConsoleText = {
   welcome: (mac: boolean) => {
     const [clear, bigger, smaller] = mac ? ["⌘L", "⌘+", "⌘-"] : ["Ctrl+L", "Ctrl++", "Ctrl+-"];
-    return [
-      "Welcome to the Dash Wallet RPC console.",
-      `Use up and down arrows to navigate history, and ${clear} to clear screen.`,
-      `Use ${bigger} and ${smaller} to increase or decrease the font size.`,
-      "Type help for an overview of available commands.",
-      "For more information on using this console, type help-console.",
-    ].join("\n");
+    return t("tools.console.welcome", { clear, bigger, smaller, help: "help", helpConsole: "help-console" });
   },
-  scamWarning:
-    "WARNING: Scammers have been active, telling users to type commands here, stealing their wallet contents. Do not use this console without fully understanding the ramifications of a command.",
-  executingWith: (name: string) => `Executing command using "${name}" wallet`,
-  executingWithout: "Executing command without any wallet",
-  invalidCommandLine: "Error: Invalid command line",
-  notAvailable: "Not available in SPV mode.",
-  walletRequired: "Wallet file not specified (must request wallet RPC through /wallet/<filename> uri-path).",
-  authorizationCancelled: "Authorization cancelled.",
-  grantInvalid: "The authorization expired. Please try again.",
+  get scamWarning() {
+    return t("tools.console.scamWarning");
+  },
+  executingWith: (name: string) => t("tools.console.executingWith", { wallet: name }),
+  get executingWithout() {
+    return t("tools.console.executingWithout");
+  },
+  get invalidCommandLine() {
+    return t("tools.console.invalidCommandLine");
+  },
+  get notAvailable() {
+    return t("tools.console.notAvailable");
+  },
+  get walletRequired() {
+    return t("tools.console.walletRequired", { path: "/wallet/<filename>" });
+  },
+  get authorizationCancelled() {
+    return t("tools.console.authorizationCancelled");
+  },
+  get grantInvalid() {
+    return t("tools.console.grantInvalid");
+  },
 };
 
 export type EntryKind = "welcome" | "warning" | "command" | "reply" | "error" | "info";

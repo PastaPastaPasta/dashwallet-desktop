@@ -41,7 +41,7 @@ const AREAS: Record<string, string[]> = {
 
   masternodes: [],
 
-  tools: [],
+  tools: ["screens/tools"],
 
   transfer: [],
 };
