@@ -8,7 +8,7 @@ import { PAYEE } from "./wallet";
 // match; Accept and Send Contact Request warn and stay on; the row keeps "Unverified".
 
 const UNCHECKED = "Dash Wallet can't check this contact's payment details yet. Try again in a few minutes.";
-const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network. Try again later.";
+const MISMATCH = "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.";
 const ACCEPT = "Dash Wallet can't check this profile yet. You can still accept. Payments to this contact wait until their details are checked.";
 const SEND = "Dash Wallet can't check this profile yet. You can still send the request. Payments to this contact wait until their details are checked.";
 
@@ -90,6 +90,17 @@ for (const theme of THEMES) {
     await row(page, "heidi").click();
     await expect(page.getByTestId("contact-accept")).toBeVisible();
     await expect(page.getByTestId("contact-pane-unverified")).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test(`H-09 the bell marks an unverified request and keeps its one-tap Accept (${theme})`, async ({ page }) => {
+    const errors = await open(page, "dashpay-unverified-request", theme);
+    await page.getByTestId("toolbar-bell").click();
+    const grace = page.getByTestId("bell-request").filter({ hasText: "Grace Hopper" });
+    await expect(grace.locator(".chip-warning")).toHaveText("Unverified");
+    await expect(page.getByTestId("bell-request").filter({ hasText: "heidi" }).locator(".chip-warning")).toHaveCount(0);
+    await expect(grace.getByRole("button", { name: /Accept/ })).toBeEnabled();
+    expect(await seriousAxeViolations(page)).toEqual([]);
     expect(errors).toEqual([]);
   });
 

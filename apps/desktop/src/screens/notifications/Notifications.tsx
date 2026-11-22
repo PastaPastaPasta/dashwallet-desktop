@@ -9,7 +9,7 @@ import type { DashPayEventInfo } from "../../api/generated/DashPayEventInfo";
 import { errorMessage } from "../../api/backend";
 import { useBackend } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
-import { DashButton } from "../../components/basics";
+import { Chip, DashButton } from "../../components/basics";
 import { EmptyArt } from "../../components/emptyArt";
 import { EMPTY } from "../../components/emptyStates";
 import { EmptyState, LoadingState } from "../../components/history";
@@ -262,6 +262,7 @@ function Requests({
                 <span className="bell-row-text">
                   <span className="bell-row-title">
                     <bdi>{shownName(c)}</bdi>
+                    {c.unverified && <Chip tone="warning">{t("contacts.unverified")}</Chip>}
                   </span>
                   {sub && (
                     <span className="bell-row-sub">

@@ -65,7 +65,7 @@ export const pay = {
     /** A contact payment whose contact's data the wallet could not check in time (H-09). */
     contactUnchecked: "Dash Wallet can't check this contact's payment details yet. Try again in a few minutes.",
     /** A contact payment whose contact's data did not match what the Dash network proves (H-09). */
-    contactMismatch: "Dash Wallet couldn't confirm this contact's payment details with the Dash network. Try again later.",
+    contactMismatch: "Dash Wallet couldn't confirm this contact's payment details with the Dash network, so nothing was sent. Try again later.",
     leaseRevoked: "The wallet locked during the payment.",
     unlockAndRetry: "Unlock the wallet and try again.",
     storage: "The payment could not be recorded in this wallet.",
