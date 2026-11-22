@@ -22,7 +22,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use dashcore::consensus::encode::{deserialize, serialize_hex};
-use dashcore::{OutPoint, Transaction, Txid};
+use dashcore::{Address, OutPoint, Transaction, Txid};
 use dw_appdb::{AppDb, LockReason};
 use dw_units::{Chain, Unit};
 use platform_wallet::changeset::changeset::SweepBatch;
@@ -37,7 +37,7 @@ use crate::history::{
 };
 use crate::session::Manager;
 use crate::{EngineError, NetworkSession, WalletId};
-use key_wallet::transaction_checking::{TransactionContext, WalletTransactionChecker};
+use key_wallet::managed_account::transaction_record::TransactionRecord;
 use key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 
 /// Why `abandon_transaction` / `resend_transaction` refused.
@@ -197,17 +197,18 @@ fn coin_key(outpoint: &OutPoint) -> Vec<u8> {
 }
 
 /// The coins of `outpoints` wallet.sqlite holds a row for, spent or not,
-/// read over a read-only connection. A sweep placeholder (a held claim
-/// with no funding data, which every later credit of the coin leaves
-/// spent) counts as no row: the abandon's release deletes it.
+/// and apart those whose row is a sweep placeholder (a held claim with no
+/// funding data, which every later credit of the coin leaves spent; the
+/// abandon's release deletes it), read over a read-only connection.
 pub(crate) fn stored_coins(
     db_path: &Path,
     wallet: WalletId,
     outpoints: &BTreeSet<OutPoint>,
-) -> Result<BTreeSet<OutPoint>, rusqlite::Error> {
+) -> Result<(BTreeSet<OutPoint>, BTreeSet<OutPoint>), rusqlite::Error> {
     use rusqlite::OptionalExtension;
+    let (mut stored, mut placeholders) = (BTreeSet::new(), BTreeSet::new());
     if outpoints.is_empty() {
-        return Ok(BTreeSet::new());
+        return Ok((stored, placeholders));
     }
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
@@ -215,19 +216,21 @@ pub(crate) fn stored_coins(
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     let mut stmt = conn.prepare(
-        "SELECT 1 FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2 \
-         AND is_sweep_placeholder = 0",
+        "SELECT is_sweep_placeholder FROM core_utxos WHERE wallet_id = ?1 AND outpoint = ?2",
     )?;
-    let mut stored = BTreeSet::new();
     for o in outpoints {
         let row = stmt
-            .query_row(rusqlite::params![&wallet.0[..], coin_key(o)], |_| Ok(()))
+            .query_row(rusqlite::params![&wallet.0[..], coin_key(o)], |r| {
+                r.get::<_, bool>(0)
+            })
             .optional()?;
-        if row.is_some() {
-            stored.insert(*o);
-        }
+        match row {
+            Some(false) => stored.insert(*o),
+            Some(true) => placeholders.insert(*o),
+            None => false,
+        };
     }
-    Ok(stored)
+    Ok((stored, placeholders))
 }
 
 /// What decides a transaction's actions.
@@ -436,7 +439,7 @@ impl NetworkSession {
             let wm = manager.wallet_manager_arc();
             let mut wm = wm.write().await;
             let (keys, info) = wm
-                .get_wallet_mut_and_info_mut(&wallet.0)
+                .get_wallet_and_info_mut(&wallet.0)
                 .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
             let mut trial = info.core_wallet.clone();
             let planned = abandon_with(&mut trial, root, &descendants);
@@ -447,23 +450,33 @@ impl NetworkSession {
                 return Err(EngineError::TxActionRefused(TxActionRefusal::InstantLocked));
             }
             let inputs = self.inputs_of(wallet, &planned);
+            let accounts = info.core_wallet.accounts.all_accounts();
+            let finalized: BTreeSet<Txid> = (inputs.iter().map(|o| o.txid))
+                .filter(|t| accounts.iter().any(|a| a.transaction_is_finalized(t)))
+                .collect();
             let db_path = self.data_dir().join(crate::session::WALLET_DB_FILE);
-            let stored =
-                tokio::task::spawn_blocking(move || stored_coins(&db_path, wallet, &inputs))
-                    .await?
-                    .map_err(|e| EngineError::Storage(format!("abandon: {e}")))?;
-            let checkpoint = self.abandon_rewind(wallet, &planned, &info.core_wallet, &stored);
+            let persister = Arc::clone(&self.live()?.persister);
+            let (stored, placeholders, finalized) = tokio::task::spawn_blocking(move || {
+                let (stored, placeholders) = stored_coins(&db_path, wallet, &inputs)?;
+                let records: BTreeMap<Txid, TransactionRecord> = (finalized.into_iter())
+                    .filter_map(|t| persister.get_core_tx_record(wallet.0, &t).ok().flatten())
+                    .map(|r| (r.txid, r))
+                    .collect();
+                Ok::<_, rusqlite::Error>((stored, placeholders, records))
+            })
+            .await?
+            .map_err(|e| EngineError::Storage(format!("abandon: {e}")))?;
+            let coins = &stored | &placeholders;
+            let checkpoint = self.abandon_rewind(wallet, &planned, &info.core_wallet, &coins);
             if let Some(checkpoint) = checkpoint {
                 self.record_rewind_locked(wallet, info, checkpoint).await?;
             }
             let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
             if !abandoned.is_empty() {
-                for (tx, context) in
-                    self.funding_in_batch(wallet, &abandoned, &stored, &info.core_wallet)
-                {
-                    (info.core_wallet)
-                        .check_core_transaction(&tx, context, keys, true, false)
-                        .await;
+                let restore =
+                    self.restorable(wallet, &abandoned, &stored, &info.core_wallet, &finalized);
+                if let Err(e) = info.core_wallet.restore_utxos(keys, restore) {
+                    tracing::warn!(%wallet, error = %e, "abandon: could not credit freed coins");
                 }
                 info.core_wallet.update_balance();
             }
@@ -610,34 +623,63 @@ impl NetworkSession {
             .collect()
     }
 
-    /// The funding transactions, with their block context, of the coins of
-    /// `abandoned` that wallet.sqlite holds, that no processed block spent
-    /// and that key-wallet (`core`, after the abandon) does not hold, whose
-    /// block is above the wallet's checkpoint and whose record key-wallet
-    /// holds: the scan processed that block in a filter batch not committed
-    /// yet, and no replay comes back to it, so the abandon processes the
-    /// transaction again for them. One key-wallet holds no record of is
-    /// still to be processed by the scan, which credits them then.
-    fn funding_in_batch(
+    /// The coins of `abandoned` to credit again once they are abandoned:
+    /// those wallet.sqlite holds (`stored`) that key-wallet (`core`, after
+    /// the abandon) does not hold, whose funding transaction it processed
+    /// this session, and that no processed block, other transaction of the
+    /// history or other spend of the engine spends. Since that funding,
+    /// key-wallet knew the coin, so it recorded any spend of it; a replay
+    /// does not credit it when the funding is finalized. Each is built from
+    /// key-wallet's record of its funding, or the stored record of one it
+    /// keeps as a txid alone (`finalized`).
+    fn restorable(
         &self,
         wallet: WalletId,
         abandoned: &BTreeSet<Txid>,
         stored: &BTreeSet<OutPoint>,
         core: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
-    ) -> Vec<(Transaction, TransactionContext)> {
+        finalized: &BTreeMap<Txid, TransactionRecord>,
+    ) -> Vec<key_wallet::Utxo> {
         let observed = core.observed_spent_outpoints();
         let held: HashSet<OutPoint> = core.utxos().into_iter().map(|u| u.outpoint).collect();
-        let synced = core.synced_height();
-        let parents: BTreeSet<Txid> = (self.inputs_of(wallet, abandoned).into_iter())
-            .filter(|o| stored.contains(o) && !observed.contains_key(o) && !held.contains(o))
-            .map(|o| o.txid)
-            .collect();
+        let engine = (self.spends).held_except(
+            &wallet,
+            |o| matches!(o, crate::send::SpendOwner::Tx(t) if abandoned.contains(t)),
+        );
+        let spent: HashSet<OutPoint> = self.hub.history.read(&wallet, |txs| {
+            (txs.iter())
+                .filter(|(t, e)| !abandoned.contains(*t) && !e.is_abandoned())
+                .flat_map(|(_, e)| e.tx.input.iter().map(|i| i.previous_output))
+                .collect()
+        });
         let accounts = core.accounts.all_accounts();
-        (parents.iter())
-            .filter(|t| accounts.iter().any(|a| a.transactions().contains_key(*t)))
-            .filter_map(|t| self.hub.history.get(&wallet, t))
-            .filter(|e| e.context.block_info().is_some_and(|b| b.height() > synced))
-            .map(|e| (e.tx, e.context))
+        let funding = |t: &Txid| {
+            (accounts.iter())
+                .find_map(|a| a.transactions().get(t))
+                .or_else(|| finalized.get(t))
+        };
+        (self.inputs_of(wallet, abandoned).into_iter())
+            .filter(|o| stored.contains(o) && !observed.contains_key(o) && !held.contains(o))
+            .filter(|o| !spent.contains(o) && !engine.contains(o))
+            .filter_map(|o| {
+                let record = funding(&o.txid)?;
+                let txout = record.transaction.output.get(o.vout as usize)?.clone();
+                let address = Address::from_script(&txout.script_pubkey, core.network).ok()?;
+                let height = record.context.block_info().map_or(0, |b| b.height());
+                let mut utxo = key_wallet::Utxo::new(
+                    o,
+                    txout,
+                    address,
+                    height,
+                    record.transaction.is_coin_base(),
+                );
+                utxo.is_confirmed = record.context.block_info().is_some();
+                utxo.is_instantlocked = matches!(
+                    record.context,
+                    key_wallet::transaction_checking::TransactionContext::InstantSend(_)
+                );
+                Some(utxo)
+            })
             .collect()
     }
 

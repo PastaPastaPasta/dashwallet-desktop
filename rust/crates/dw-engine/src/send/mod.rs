@@ -422,12 +422,21 @@ impl PendingSpends {
     /// The coins an owner other than `owner` holds (a ProTx resend's
     /// check, MG-04 D7).
     pub(crate) fn held_by_others(&self, wallet: &WalletId, owner: SpendOwner) -> HashSet<OutPoint> {
+        self.held_except(wallet, |o| *o == owner)
+    }
+
+    /// The coins an owner `mine` does not accept holds.
+    pub(crate) fn held_except(
+        &self,
+        wallet: &WalletId,
+        mine: impl Fn(&SpendOwner) -> bool,
+    ) -> HashSet<OutPoint> {
         self.map()
             .get(wallet)
             .map(|claims| {
                 claims
                     .iter()
-                    .filter(|(_, owners)| owners.iter().any(|o| *o != owner))
+                    .filter(|(_, owners)| owners.iter().any(|o| !mine(o)))
                     .map(|(o, _)| *o)
                     .collect()
             })

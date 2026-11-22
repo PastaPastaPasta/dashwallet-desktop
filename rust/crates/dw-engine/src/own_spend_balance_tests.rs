@@ -683,11 +683,12 @@ fn a_wallet_opened_later_drops_a_spent_coin_credited_before_its_claims() {
 }
 
 /// Abandoning the stored payment after its funding block was scanned in a
-/// later process keeps the coins it spent stored spent (#170 case 5): the
-/// restart after the abandon leaves them out until the replay due then
-/// credits them, which stores them unspent, so the next restart loads them.
+/// later process credits the coins it spent again (key-wallet processed
+/// their funding this session) and stores them unspent: the restart after
+/// the abandon loads them, before any replay, and the replay counts each
+/// once.
 #[test]
-fn coins_freed_by_an_abandon_after_their_funding_block_load_after_the_replay() {
+fn coins_freed_by_an_abandon_after_their_funding_block_load_after_a_restart() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let all: BTreeSet<OutPoint> = coins(&engine, &session, id)
         .into_iter()
@@ -705,10 +706,8 @@ fn coins_freed_by_an_abandon_after_their_funding_block_load_after_the_replay() {
         synced(&engine, &session, id) < TIP,
         "the replay is still due"
     );
-    let spent: BTreeSet<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
-    let rest: BTreeSet<OutPoint> = all.difference(&spent).copied().collect();
-    let b = assert_holds(&engine, &session, id, &rest, "abandoned, then a restart");
-    assert_eq!(b.total, (12 - spent.len() as u64) * COIN);
+    let b = assert_holds(&engine, &session, id, &all, "abandoned, then a restart");
+    assert_eq!(b.total, 12 * COIN);
     mined(&engine, &session, id, TIP, vec![paid]);
     assert_eq!(
         assert_holds(&engine, &session, id, &all, "replayed").total,
@@ -890,8 +889,7 @@ fn a_pending_spend_this_app_did_not_send_claims_nothing() {
 /// A restored payment of A and B that a mined spend of B by another device
 /// beats keeps A out (the engine leaves conflicts to key-wallet, which
 /// holds no record of it) until the user abandons it. The abandon gives
-/// back A, never B, which the winner spent: A stays stored spent until the
-/// replay the abandon starts credits it (#170 case 5).
+/// back A, never B, which the winner spent.
 #[test]
 fn a_beaten_payment_keeps_its_other_coin_out_until_it_is_abandoned() {
     let (_dir, engine, session, id, (a, b), paid, payment) =
@@ -914,8 +912,8 @@ fn a_beaten_payment_keeps_its_other_coin_out_until_it_is_abandoned() {
         .map(|c| c.0)
         .collect();
     assert!(
-        !held.contains(&a) && !held.contains(&b),
-        "restarted before the replay: neither A nor B loads: {held:?}"
+        held.contains(&a) && !held.contains(&b),
+        "restarted before the replay: A loads, B does not: {held:?}"
     );
     mined(&engine, &session, id, TIP, vec![paid.clone()]);
     mined(&engine, &session, id, TIP + 1, vec![rival.clone()]);
