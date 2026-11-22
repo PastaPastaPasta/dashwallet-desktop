@@ -16,13 +16,17 @@
 # screenshots through tesseract, BIP39 runs of 12+, xprv/tprv) runs over everything kept. The
 # writes are the flows' own, each guarded by its ledger in the fixture, so a rerun does not repeat
 # them; registration is skipped once its ledger says done, and profile-write once BL-162.json
-# says done (DW_PROFILE_WRITE_AGAIN=1 asks for another edit; a run that fails after its edit went
-# out records nothing, so the next edits again, which the flow allows: the edit is repeatable). Wallet E's phrase (which
-# registration.ts writes into the fixture) and the registration's passphrase (in DW_REG_STATE,
-# beside the fixture, not in it: registration.ts fails on a secret among the fixture's files) are
-# moved into the secret store as <prefix>-E-<wallet id>-{mnemonic,reg-passphrase} after it runs;
-# if that fails the run stops. Every run first checks that each phrase and passphrase file of the
-# fixture and its registration state is a link into the secret store, and stops if one is not.
+# says done (profile-write.ts writes it as soon as the edit is confirmed; DW_PROFILE_WRITE_AGAIN=1
+# asks for another edit). Each secret a flow makes (its app passphrase, registration's E phrase and
+# passphrase) goes to the store as it is made and its store name to <run>/secrets.manifest
+# (e2e-tauri/flow-secrets.ts), which the closing check reads with the fixture's. Wallet E's phrase
+# (<fixture>/E.mnemonic) and the registration's passphrase (in DW_REG_STATE, beside the fixture,
+# not in it: registration.ts fails on a secret among the fixture's files) are thus links into the
+# store from the start, as <prefix>-run-<run>-registration-E-{mnemonic,passphrase}; a plain file
+# left by registration.ts run alone is moved in after it runs, as
+# <prefix>-E-<wallet id>-{mnemonic,reg-passphrase}, and if that fails the run stops. Every run first checks that each phrase and passphrase file of the
+# fixture and its registration state is a link into the secret store, and that every one the
+# ledgers say exists is there, and stops if not.
 #
 # No window opens: without $DISPLAY the run starts under xvfb-run, and each flow gets a private
 # session bus (scripts/e2e-tauri.sh). Needs WebKitWebDriver, tauri-driver, xvfb-run, dbus-run-session
@@ -75,6 +79,7 @@ export DW_SUITE_OUT=$root
 store=${DW_SECRET_STORE:-$HOME/.secrets}
 [[ -d "$store" ]] || { echo "e2e-tauri-dashpay-testnet: no secret store at $store" >&2; exit 2; }
 store=$(cd "$store" && pwd -P)
+export DW_SECRET_STORE=$store
 cd "$app"
 repo=$(cd ../.. && pwd)
 
@@ -83,21 +88,12 @@ if [[ -z "${DISPLAY:-}" ]]; then
   exec xvfb-run -a -s "-screen 0 1440x960x24" "$PWD/scripts/e2e-tauri-dashpay-testnet.sh" "$@"
 fi
 
-# The secrets the closing check looks for, before hours of flows (a link `secret sync` has not filled).
-node e2e-tauri/testnet-suite.ts secrets "$fixture"
+# Before hours of flows: every phrase and passphrase file is a link into the store that resolves,
+# and every one the ledgers say exists is there (the closing check reads them all).
+node e2e-tauri/testnet-suite.ts secrets "$fixture" || exit 2
 env_lines=$(node e2e-tauri/testnet-suite.ts env "$fixture")
 eval "$env_lines"
 in_store() { [[ -L "$1" && "$(readlink -f "$1")" == "$store"/* ]]; }
-# Every phrase and passphrase file is a link into the store, never a plain file.
-stored_only() {
-  local f bad=0
-  for f in "$fixture"/*.mnemonic "$fixture"/passphrase "$DW_REG_STATE"/passphrase "$fixture".reg-state*/passphrase; do
-    [[ -e "$f" || -L "$f" ]] || continue
-    in_store "$f" || { echo "e2e-tauri-dashpay-testnet: $f is not a link into the secret store ($store)" >&2; bad=1; }
-  done
-  return $bad
-}
-stored_only || exit 2
 
 if [[ "${DW_E2E_SKIP_BUILD:-}" != 1 ]]; then
   pnpm tauri build --debug --no-bundle
@@ -153,6 +149,7 @@ for flow in $flows; do
   echo "== $flow ($(date -u +%H:%M:%SZ)); log $log"
   start=$(date +%s)
   env DW_E2E_SKIP_BUILD=1 DW_E2E_SCAN_EXTRA="$dir/logs" "${extra[@]}" \
+    DW_SECRET_MANIFEST="$out/secrets.manifest" DW_SECRET_RUN_PREFIX="$prefix-run-$(basename "$out")-$flow" \
     timeout --signal=TERM --kill-after=120 "${DW_SUITE_FLOW_TIMEOUT:-7200}" "scripts/e2e-tauri-$flow.sh" >"$log" 2>&1
   rc=$?
   secs=$(($(date +%s) - start))
@@ -162,15 +159,12 @@ for flow in $flows; do
     # Named by E's wallet id; a run that stopped before the ledger had one still goes to the store.
     e=$(node -e 'try { console.log((JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).walletId ?? "").slice(0, 8)) } catch { console.log("") }' "$fixture/DP1-09.json")
     [[ "$e" =~ ^[0-9a-f]{8}$ ]] || e=pending-$(date -u +%Y%m%dT%H%M%S)
-    if ! { adopt "$fixture/E.mnemonic" "$prefix-E-$e-mnemonic" && adopt "$DW_REG_STATE/passphrase" "$prefix-E-$e-reg-passphrase" && stored_only; } >"$dir/logs/secret-store.log" 2>&1; then
+    if ! { adopt "$fixture/E.mnemonic" "$prefix-E-$e-mnemonic" && adopt "$DW_REG_STATE/passphrase" "$prefix-E-$e-reg-passphrase" && node e2e-tauri/testnet-suite.ts secrets "$fixture"; } >"$dir/logs/secret-store.log" 2>&1; then
       echo "secret-store: FAIL: wallet E's phrase or passphrase is not in the secret store; the run stops" >>"$dir/logs/secret-store.log"
       printf 'secret-store\t1\t0\t%s\n' "$dir/logs/secret-store.log" >>"$out/runs.tsv"
       echo "   wallet E's secrets did not reach the store; stopping (see $dir/logs/secret-store.log)"
       break
     fi
-  fi
-  if [[ "$flow" == profile-write && $rc == 0 && "${DW_PROFILE_WRITE_AT:-synced}" != never ]]; then
-    printf '{\n  "state": "done",\n  "at": "%s",\n  "run": "%s"\n}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$out" >"$fixture/BL-162.json"
   fi
 done
 

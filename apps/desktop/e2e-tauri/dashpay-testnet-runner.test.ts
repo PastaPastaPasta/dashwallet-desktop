@@ -7,6 +7,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, re
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { writeProfile } from "./profile-edit.ts";
 
 const APP = join(import.meta.dirname, "..");
 const COPIED = ["scripts/e2e-tauri-dashpay-testnet.sh", "e2e-tauri/testnet-suite.ts", "e2e-tauri/artifact-scan.ts", "e2e-tauri/scratch.ts", "src/onboarding/bip39English.ts"];
@@ -17,7 +18,8 @@ const script = (path: string, body: string) => {
   chmodSync(path, 0o755);
 };
 
-describe.skipIf(process.platform !== "linux")("the DashPay testnet runner (H-04 O4a)", () => {
+// Each run spawns bash and node a few times: slow on a loaded box, hence one long timeout.
+describe.skipIf(process.platform !== "linux")("the DashPay testnet runner (H-04 O4a)", { timeout: 120_000 }, () => {
   let t: string;
   let app: string;
   let fixture: string;
@@ -32,7 +34,8 @@ describe.skipIf(process.platform !== "linux")("the DashPay testnet runner (H-04 
       cpSync(join(APP, f), join(app, f));
     }
     // Stand-in flows: registration writes E's phrase and passphrase as plain files, as
-    // registration.ts does; profile-write counts its edits.
+    // registration.ts run alone does; profile-write counts its edits and records each, as
+    // profile-edit.ts does.
     script(
       join(app, "scripts/e2e-tauri-registration.sh"),
       `printf 'e phrase words\\n' >"$DW_TESTNET_FIXTURE/E.mnemonic"
@@ -40,16 +43,26 @@ printf 'e-pass\\n' >"$DW_REG_STATE/passphrase"
 printf '{"walletId": "abcdef0123", "state": "done"}\\n' >"$DW_TESTNET_FIXTURE/DP1-09.json"
 echo "registration: ok"`,
     );
-    script(join(app, "scripts/e2e-tauri-profile-write.sh"), `echo edit >>"${t}/profile-writes"; echo "profile-write: ok"`);
+    script(
+      join(app, "scripts/e2e-tauri-profile-write.sh"),
+      `[ "\${DW_PROFILE_WRITE_AT:-synced}" = never ] || printf '{\n  "state": "done"\n}\n' >"$DW_TESTNET_FIXTURE/BL-162.json"
+echo edit >>"${t}/profile-writes"; echo "profile-write: ok"`,
+    );
     script(join(app, "scripts/e2e-tauri-dashpay-status.sh"), `echo "dashpay-status: ok"`);
     for (const bin of ["dash-wallet", "dwcli"]) script(join(t, "target/debug", bin), "exit 0");
-    // The store: `secret adopt` moves the file in and leaves a link, or fails with FAKE_SECRET_FAIL=1.
+    // The store: `secret adopt` moves the file in and leaves a link, `set` and `get` keep and read a
+    // value; all fail with FAKE_SECRET_FAIL=1.
     store = join(t, "store");
     mkdirSync(store);
     script(
       join(t, "bin/secret"),
       `[ "\${FAKE_SECRET_FAIL:-0}" = 1 ] && { echo "secret: the store is unreachable" >&2; exit 1; }
-[ "$1" = adopt ] || exit 3
+case "$1" in
+  set) cat >"${store}/$2"; exit 0 ;;
+  get) exec cat "${store}/$2" ;;
+  adopt) ;;
+  *) exit 3 ;;
+esac
 name=$3; path=$6
 mv "$path" "${store}/$name"
 [ "\${FAKE_SECRET_NOLINK:-0}" = 1 ] || ln -s "${store}/$name" "$path"`,
@@ -62,6 +75,9 @@ mv "$path" "${store}/$name"
     writeFileSync(join(fixture, "fixture.json"), JSON.stringify(rows));
     for (const [name, value] of [
       ["A.mnemonic", "a phrase words"],
+      ["B.mnemonic", "b phrase words"],
+      ["C.mnemonic", "c phrase words"],
+      ["D.mnemonic", "d phrase words"],
       ["passphrase", "fixture-pass"],
     ]) {
       writeFileSync(join(store, name), `${value}\n`);
@@ -134,7 +150,7 @@ mv "$path" "${store}/$name"
     writeFileSync(join(fixture, "E.mnemonic"), "e phrase words\n");
     const r = runner({ DW_SUITE_FLOWS: "profile-write" });
     expect(r.status).toBe(2);
-    expect(r.stderr).toMatch(/E\.mnemonic is not a link into the secret store/);
+    expect(r.stderr).toMatch(/E\.mnemonic is a plain file, not a link into the secret store/);
     expect(existsSync(join(t, "profile-writes"))).toBe(false);
   });
 
@@ -165,5 +181,74 @@ mv "$path" "${store}/$name"
     script(join(app, "scripts/e2e-tauri-profile-write.sh"), `echo "profile-write: FAIL: no edit"; exit 1`);
     expect(runner({ DW_SUITE_FLOWS: "profile-write" }).status).toBe(1);
     expect(existsSync(join(fixture, "BL-162.json"))).toBe(false);
+  });
+
+  it("finds in the kept artifacts a passphrase a flow made itself, which the fixture does not hold", () => {
+    // A flow that registers its passphrase (the store, then its name in the manifest) and then
+    // leaves it in an artifact.
+    script(
+      join(app, "scripts/e2e-tauri-dashpay-status.sh"),
+      `pass="flow-made-$RANDOM-Qx7vK2mPw9"
+if [ -n "\${DW_SECRET_MANIFEST:-}" ]; then
+  printf %s "$pass" | secret set "$DW_SECRET_RUN_PREFIX-passphrase" --note x
+  printf '{"name":"%s"}\n' "$DW_SECRET_RUN_PREFIX-passphrase" >>"$DW_SECRET_MANIFEST"
+fi
+mkdir -p "$DW_E2E_OUT"; echo "typed $pass" >"$DW_E2E_OUT/form.txt"
+echo "dashpay-status: ok"`,
+    );
+    const r = runner({ DW_SUITE_FLOWS: "dashpay-status" });
+    expect(r.status).toBe(1);
+    const md = readFileSync(join(latest(), "summary.md"), "utf8");
+    expect(md).toMatch(/1 HITS:\n\n- dashpay-status\/out\/form\.txt \(\d+\): known-secret/);
+    expect(readFileSync(join(latest(), "secrets.manifest"), "utf8")).not.toMatch(/flow-made/);
+  });
+
+  it("does not edit the profile again when the edit went out and the next screenshot failed", async () => {
+    const ledger = join(fixture, "BL-162.json");
+    const answers: Record<string, unknown> = { authorize: { ok: { id: "g1" } }, dashpay_update_profile: { ok: null } };
+    const shots: string[] = [];
+    const edit = writeProfile(
+      async (cmd) => answers[cmd] as never,
+      async (name) => {
+        shots.push(name);
+        throw new Error("GET /screenshot: no such window");
+      },
+      { walletId: "w", identity: "idA", passphrase: "p", phase: "Synced", label: "BL-162 test", writeAt: "synced", ledger },
+      () => undefined,
+      (s) => s,
+    );
+    await expect(edit).rejects.toThrow(/no such window/);
+    expect(shots).toEqual(["2-after-write"]);
+    expect(JSON.parse(readFileSync(ledger, "utf8"))).toMatchObject({ state: "done", identity: "idA" });
+    const rerun = runner({ DW_SUITE_FLOWS: "profile-write" });
+    expect(rerun.status, rerun.stderr).toBe(0);
+    expect(readFileSync(join(latest(), "summary.md"), "utf8")).toContain("| profile-write | SKIP |");
+    expect(existsSync(join(t, "profile-writes"))).toBe(false);
+  });
+
+  it("fails the edit, before any screenshot, when its record cannot be written", async () => {
+    const shots: string[] = [];
+    const answers: Record<string, unknown> = { authorize: { ok: { id: "g1" } }, dashpay_update_profile: { ok: null } };
+    const edit = writeProfile(
+      async (cmd) => answers[cmd] as never,
+      async (name) => void shots.push(name),
+      { walletId: "w", identity: "idA", passphrase: "p", phase: "Synced", label: "BL-162 test", writeAt: "synced", ledger: join(fixture, "no-such-dir", "BL-162.json") },
+      () => undefined,
+      (s) => s,
+    );
+    await expect(edit).rejects.toThrow(/the edit went out but .* could not be written/);
+    expect(shots).toEqual([]);
+  });
+
+  it("fails every run while a finished registration's passphrase link is missing", () => {
+    writeFileSync(join(store, "e-mnemonic"), "e phrase words\n");
+    symlinkSync(join(store, "e-mnemonic"), join(fixture, "E.mnemonic"));
+    writeFileSync(join(fixture, "DP1-09.json"), '{"walletId": "abcdef0123", "state": "done"}\n');
+    mkdirSync(`${fixture}.reg-state`);
+    for (let run = 1; run <= 2; run++) {
+      const r = runner({ DW_SUITE_FLOWS: "dashpay-status" });
+      expect(r.status, `run ${run}`).toBe(2);
+      expect(r.stderr).toMatch(/reg-state\/passphrase is missing/);
+    }
   });
 });

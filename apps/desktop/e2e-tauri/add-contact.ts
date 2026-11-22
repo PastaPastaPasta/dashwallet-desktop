@@ -18,7 +18,7 @@
 // session bus, on the private X display in $DISPLAY.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { newPassphrase } from "./flow-secrets.ts";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -294,7 +294,7 @@ async function main() {
   const recipientRoot = join(work, "recipient");
   const appRoot = join(work, "app");
   const passFile = join(work, "passphrase");
-  const passphrase = randomBytes(18).toString("base64url");
+  const passphrase = newPassphrase();
   for (const w of [SENDER, RECIPIENT]) {
     const phrase = readFileSync(join(FIXTURE, `${w}.mnemonic`), "utf8").trim();
     secrets.push(phrase, phrase.split(/\s+/).join(" "));

@@ -20,7 +20,7 @@
 // binaries and runs this file under a private session bus, on the private X display in $DISPLAY.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { randomBytes, randomInt } from "node:crypto";
+import { randomInt } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { DashPayStatus } from "../src/api/generated/DashPayStatus";
@@ -29,6 +29,7 @@ import type { RegistrationStatus } from "../src/api/generated/RegistrationStatus
 import type { SyncStatus } from "../src/api/generated/SyncStatus";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
 import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver } from "./driver.ts";
+import { keepSecretAt, noteSecretAt, randomPassphrase } from "./flow-secrets.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const STATE = resolve(env("DW_REG_STATE"));
@@ -166,7 +167,7 @@ async function createWallet(wd: WebDriver, a: App, passphrase: string): Promise<
   if (words.length !== 12) throw new Error(`the phrase step shows ${words.length} words`);
   addPhrase(words.join(" "));
   // Exclusive: never over another wallet's phrase.
-  writeFileSync(MNEMONIC, `${words.join(" ")}\n`, { flag: "wx", mode: 0o600 });
+  keepSecretAt("E-mnemonic", words.join(" "), MNEMONIC);
   await wd.press(tid("onboarding-written-down"));
   await wd.press(tid("onboarding-phrase-continue"));
   await wd.waitFor(tid("onboarding-verifyPhrase"), "the verify step");
@@ -362,8 +363,9 @@ async function main() {
     // Checked before the ledger is written, so a leftover never leaves a ledger that blocks reruns.
     for (const left of [ROOT, FUNDER_ROOT, PASS_FILE]) if (existsSync(left)) throw new Error(`${left} exists without a ledger: move it aside`);
     save({ state: "creating" }, true);
-    writeFileSync(PASS_FILE, `${randomBytes(18).toString("base64url")}\n`, { flag: "wx", mode: 0o600 });
+    keepSecretAt("E-passphrase", randomPassphrase(), PASS_FILE);
   }
+  if (ledger!.state !== "creating") for (const f of [PASS_FILE, MNEMONIC]) noteSecretAt(f);
   const passphrase = readFileSync(PASS_FILE, "utf8").trim();
   secrets.push(passphrase);
   addPhrase(readFileSync(join(FIXTURE, `${FUNDER}.mnemonic`), "utf8").trim());

@@ -5,6 +5,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { assertCaptureAllowed } from "./flow-secrets.ts";
 
 export const env = (name: string, fallback?: string): string => {
   const v = process.env[name] ?? fallback;
@@ -113,6 +114,7 @@ export class WebDriver {
   scriptAsync = <T>(script: string, args: unknown[] = []) => this.call<T>("POST", this.s("/execute/async"), { script, args });
 
   async screenshot(name: string) {
+    assertCaptureAllowed();
     const png = await this.call<string>("GET", this.s("/screenshot"));
     writeFileSync(join(this.out, `${name}.png`), Buffer.from(png, "base64"));
   }

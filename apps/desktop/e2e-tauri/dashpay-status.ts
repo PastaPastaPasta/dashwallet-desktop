@@ -14,7 +14,7 @@
 // binaries and runs this file under a private session bus, on the private X display in $DISPLAY.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { newPassphrase } from "./flow-secrets.ts";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -109,7 +109,7 @@ async function main() {
   work = mkdtempSync(join(tmpdir(), "dw-dashpay-status-")); // mode 0700
   const dataRoot = join(work, "app");
   const passFile = join(work, "passphrase");
-  const passphrase = randomBytes(18).toString("base64url");
+  const passphrase = newPassphrase();
   const phrase = readFileSync(join(FIXTURE, `${WALLET}.mnemonic`), "utf8").trim();
   secrets.push(...new Set([phrase, phrase.split(/\s+/).join(" "), passphrase]));
   writeFileSync(passFile, `${passphrase}\n`, { mode: 0o600 });

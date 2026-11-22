@@ -120,18 +120,22 @@ DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/e2e-tauri-dashpa
 ```
 
 Each write flow keeps a ledger in the fixture (`DP1-09.json`, `DP2-08.json`, `DP2-09.json`,
-`DP3-06.json`), so a second run checks rather than repeats. Registration makes a new wallet E: its phrase
-and its app data root's passphrase (`DW_REG_STATE`, default `<fixture>.reg-state`, beside the fixture
-because registration fails on a secret among the fixture's files) go to the store as
-`<prefix>-E-<wallet id>-{mnemonic,reg-passphrase}`; if that move fails the run stops, and every run
-first checks that each phrase and passphrase file of the fixture and its registration state is a link
-into the store. Registration is skipped once done, profile-write once `BL-162.json` records its edit
-(`DW_PROFILE_WRITE_AGAIN=1` for another), and
-bell-accept's C→B pair is spent after one accept (move its ledger aside and pick B–D with
-`DW_BELL_SENDER`/`DW_BELL_RECEIVER`). The runner ends with a phrase and key check over everything it kept
-(`e2e-tauri/artifact-scan.ts`: the fixture's phrases and passphrases, any run of 12 BIP39 words,
-xprv/tprv, and the phrases and passphrases in screenshots through tesseract; a screenshot it cannot read
-is a hit); the summary says whether it came back clean.
+`DP3-06.json`, and `BL-162.json`, which profile-write writes as soon as its edit is confirmed), so a
+second run checks rather than repeats. Every secret a flow makes (its app passphrase; registration's new
+wallet E, its phrase and its app data root's passphrase) goes to the store as it is made, as
+`<prefix>-run-<run>-<flow>-…`, and its name, never its value, to the run's `secrets.manifest`
+(`e2e-tauri/flow-secrets.ts`; a suite flow cannot take a screenshot before it has registered one). E's
+files are links into the store from the start: `<fixture>/E.mnemonic` and `DW_REG_STATE`'s passphrase
+(default `<fixture>.reg-state`, beside the fixture because registration fails on a secret among the
+fixture's files). Every run first checks that each phrase and passphrase file of the fixture and its
+registration state is a link into the store, and that each one the ledgers say exists is there.
+Registration is skipped once done, profile-write once `BL-162.json` records its edit
+(`DW_PROFILE_WRITE_AGAIN=1` for another), and bell-accept's C→B pair is spent after one accept (move its
+ledger aside and pick B–D with `DW_BELL_SENDER`/`DW_BELL_RECEIVER`); pay-contact's rerun pays nothing
+but still checks the payee card. The runner ends with a phrase and key check over everything it kept
+(`e2e-tauri/artifact-scan.ts`: the fixture's secrets and those in the manifest, any run of 12 BIP39
+words, xprv/tprv, and the secrets in screenshots through tesseract; a screenshot it cannot read, or of
+more than one colour that OCR reads no text from, is a hit); the summary says whether it came back clean.
 `DW_SUITE_FLOWS` runs a subset, `DW_E2E_SKIP_BUILD=1` reuses the binaries.
 
 ## Fixture backend (U-07)

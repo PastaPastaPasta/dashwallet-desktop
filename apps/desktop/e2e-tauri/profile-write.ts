@@ -13,7 +13,8 @@
 //   DW_APP=… DWCLI=… TAURI_DRIVER=… DW_TESTNET_FIXTURE=<dir> node e2e-tauri/profile-write.ts
 //
 // Writes: ONE profile edit of wallet DW_PROFILE_WALLET (default A), harmless and repeatable
-// (display name and public message DW_PROFILE_LABEL). Reads otherwise. Phrases go to dwcli on
+// (display name and public message DW_PROFILE_LABEL), recorded in <fixture>/BL-162.json as soon as
+// the app confirms it (profile-edit.ts; the testnet suite skips the flow once it is there). Reads otherwise. Phrases go to dwcli on
 // stdin, never argv. Set DW_LOG (EnvFilter) for the engine's log in OUT/tauri-driver.log.
 //
 // Files: every runtime file (data root, passphrase file, the app's XDG dirs, XDG_RUNTIME_DIR and
@@ -26,16 +27,16 @@
 // this file under a private session bus, on the private X display in $DISPLAY.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { newPassphrase } from "./flow-secrets.ts";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import type { AuthGrant } from "../src/api/generated/AuthGrant";
 import type { DashPayProfile } from "../src/api/generated/DashPayProfile";
 import type { SyncStatus } from "../src/api/generated/SyncStatus";
 import type { WalletSummary } from "../src/api/generated/WalletSummary";
 import { APP, driverGone, DWCLI, env, leaks, poll, startDriver, stopDriver, tid, WebDriver } from "./driver.ts";
 import { canonical, inside, newDirIn, removeOwned, scratchRoot } from "./scratch.ts";
+import { type Answer, writeProfile, type WriteResult } from "./profile-edit.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const WALLET = env("DW_PROFILE_WALLET", "A");
@@ -140,23 +141,8 @@ function identityOf(wallet: string): string {
 const INVOKE = `const [cmd, args, done] = arguments;
   window.__TAURI_INTERNALS__.invoke(cmd, args).then((ok) => done({ ok }), (err) => done({ err }));`;
 
-interface Answer<T> {
-  ok?: T;
-  err?: unknown;
-}
-
 async function invoke<T>(wd: WebDriver, cmd: string, args: Record<string, unknown> = {}): Promise<Answer<T>> {
   return wd.scriptAsync<Answer<T>>(INVOKE, [cmd, args]);
-}
-
-interface WriteResult {
-  at: string;
-  phase: string;
-  ms: number;
-  ok: boolean;
-  error: string | null;
-  label: string;
-  readBack?: string | null;
 }
 
 const phaseLine = (s: SyncStatus) => `${s.caughtUp ? "Synced" : "Syncing"} active=${s.activePhase ?? "-"} done=[${s.phases.filter((p) => p.done).map((p) => p.phase).join(",")}]`;
@@ -167,7 +153,7 @@ async function main() {
   if (!run) throw new Error("no run directory");
   const appRoot = join(run, "app");
   const passFile = join(run, "passphrase");
-  const passphrase = randomBytes(18).toString("base64url");
+  const passphrase = newPassphrase();
   const phrase = readFileSync(join(FIXTURE, `${WALLET}.mnemonic`), "utf8").trim();
   secrets.push(phrase, phrase.split(/\s+/).join(" "), passphrase);
   writeFileSync(passFile, `${passphrase}\n`, { mode: 0o600 });
@@ -226,7 +212,14 @@ async function main() {
       });
       await wd.screenshot("1-before-write");
       if (WRITE_AT === "never") step("reads only: no write");
-      else write = await writeProfile(wd, { walletId, identity, passphrase, phase: lastPhaseLine }, step);
+      else
+        write = await writeProfile(
+          (cmd, args) => invoke(wd, cmd, args),
+          (name) => wd.screenshot(name),
+          { walletId, identity, passphrase, phase: lastPhaseLine, label: LABEL, writeAt: WRITE_AT, ledger: join(FIXTURE, "BL-162.json") },
+          step,
+          mask,
+        );
     } catch (e) {
       failure = e;
       await wd.screenshot("failure").catch(() => undefined);
@@ -249,35 +242,6 @@ async function main() {
   step(`no phrase or passphrase in OUT, the app's XDG dirs or TMPDIR${SCAN_EXTRA ? `, or ${SCAN_EXTRA}` : ""}`);
   if (WRITE_AT !== "never" && !write?.ok) throw new Error("the write failed");
   console.log(`profile-write: PASS (${steps.length} steps, ${WRITE_AT === "never" ? "reads only" : "one write"}); output in ${OUT}`);
-}
-
-/** The one profile edit, under a single-use grant, then a read back. */
-async function writeProfile(
-  wd: WebDriver,
-  { walletId, identity, passphrase, phase }: { walletId: string; identity: string; passphrase: string; phase: string },
-  step: (s: string) => void,
-): Promise<WriteResult> {
-  const grant = await invoke<AuthGrant>(wd, "authorize", {
-    purpose: { kind: "platformOp", maxDuffs: 0, maxCredits: "300000000" },
-    walletId,
-    credential: { kind: "passphrase", passphrase },
-  });
-  if (!grant.ok) throw new Error(`authorize: ${JSON.stringify(grant.err)}`);
-  const edit = { displayName: LABEL, publicMessage: `${LABEL}, written ${WRITE_AT}`, avatar: { kind: "keep" } };
-  step(`writing the profile (${phase})`);
-  const t = Date.now();
-  const r = await invoke<null>(wd, "dashpay_update_profile", { walletId, identity, edit, grant: grant.ok.id });
-  const ms = Date.now() - t;
-  const ok = r.err === undefined;
-  const write: WriteResult = { at: WRITE_AT, phase, ms, ok, error: ok ? null : mask(JSON.stringify(r.err)), label: LABEL };
-  step(`write ${ok ? "OK" : `FAILED ${write.error}`} in ${ms} ms`);
-  await wd.screenshot("2-after-write");
-  if (ok) {
-    const back = await invoke<DashPayProfile | null>(wd, "dashpay_profile", { walletId, identity });
-    step(`read back: ${JSON.stringify(back.ok?.displayName ?? back.err)}`);
-    write.readBack = back.ok?.displayName ?? null;
-  }
-  return write;
 }
 
 async function interrupted(signal: NodeJS.Signals) {

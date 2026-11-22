@@ -6,6 +6,7 @@
 
 import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import { inflateSync } from "node:zlib";
 import { join } from "node:path";
 import { BIP39_ENGLISH } from "../src/onboarding/bip39English.ts";
 import { leaks } from "./scratch.ts";
@@ -61,6 +62,57 @@ function files(dir: string): string[] {
   return out;
 }
 
+/** Whether a PNG shows one colour only (so OCR may rightly read nothing). Decodes 8-bit, non-
+ * interlaced images; anything else, or a file that does not decode, counts as not one colour. */
+export function singleColourPng(png: Buffer): boolean {
+  try {
+    if (png.toString("latin1", 1, 4) !== "PNG") return false;
+    let width = 0;
+    let height = 0;
+    let channels = 0;
+    const idat: Buffer[] = [];
+    for (let at = 8; at + 8 <= png.length; ) {
+      const len = png.readUInt32BE(at);
+      const type = png.toString("latin1", at + 4, at + 8);
+      const data = png.subarray(at + 8, at + 8 + len);
+      if (type === "IHDR") {
+        width = data.readUInt32BE(0);
+        height = data.readUInt32BE(4);
+        const [depth, colour, , , interlace] = [data[8], data[9], data[10], data[11], data[12]];
+        channels = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 } as Record<number, number>)[colour!] ?? 0;
+        if (depth !== 8 || interlace !== 0 || !channels) return false;
+      } else if (type === "IDAT") idat.push(data);
+      else if (type === "IEND") break;
+      at += 12 + len;
+    }
+    const raw = inflateSync(Buffer.concat(idat));
+    const stride = width * channels;
+    if (!width || !height || raw.length < height * (stride + 1)) return false;
+    let prev = Buffer.alloc(stride);
+    let first: Buffer | null = null;
+    for (let y = 0; y < height; y++) {
+      const filter = raw[y * (stride + 1)];
+      const line = Buffer.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
+      for (let i = 0; i < stride; i++) {
+        const a = i >= channels ? line[i - channels]! : 0;
+        const b = prev[i]!;
+        const c = i >= channels ? prev[i - channels]! : 0;
+        const p = a + b - c;
+        const paeth = Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c;
+        const add = [0, a, b, (a + b) >> 1, paeth][filter!];
+        if (add === undefined) return false;
+        line[i] = (line[i]! + add) & 0xff;
+      }
+      first ??= line.subarray(0, channels);
+      for (let i = 0; i < stride; i += channels) if (!line.subarray(i, i + channels).equals(first)) return false;
+      prev = line;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const hasTesseract = () => spawnSync("tesseract", ["--version"], { encoding: "utf8" }).status === 0;
 
 /** How a secret is looked for in OCR text, which breaks lines, splits or joins words and confuses
@@ -74,7 +126,8 @@ const folded = (s: string) =>
     .replace(/_/g, "-");
 
 /** Every hit under `dirs`, as `<path>: <kind>`; `ocr` says whether tesseract was there. A PNG that
- * cannot be read (no tesseract, an OCR run that fails) is a hit: unread is not clean. */
+ * cannot be read (no tesseract, an OCR run that fails, no text read from an image of more than one
+ * colour) is a hit: unread is not clean. */
 export function scanArtifacts(dirs: string[], secrets: string[]): { hits: string[]; files: number; ocr: boolean } {
   const ocr = hasTesseract();
   const hits: string[] = [];
@@ -99,6 +152,10 @@ export function scanArtifacts(dirs: string[], secrets: string[]): { hits: string
         continue;
       }
       const text = r.stdout ?? "";
+      if (!text.trim() && !singleColourPng(readFileSync(f))) {
+        hits.push(`${f}: unread (tesseract read no text from a screenshot of more than one colour)`);
+        continue;
+      }
       for (const kind of suspicious(text)) hits.push(`${f}: ${kind}`);
       const flat = folded(text);
       if (known.some((s) => flat.includes(s)) || phrases.some((p) => phraseWordsIn(text, p) >= PHRASE_WORDS_SHOWN)) hits.push(`${f}: known-secret (ocr)`);

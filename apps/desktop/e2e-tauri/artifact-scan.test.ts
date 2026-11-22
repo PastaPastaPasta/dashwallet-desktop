@@ -2,7 +2,45 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { longestPhraseRun, phraseWordsIn, scanArtifacts, suspicious } from "./artifact-scan.ts";
+import { crc32, deflateSync } from "node:zlib";
+import { longestPhraseRun, phraseWordsIn, scanArtifacts, singleColourPng, suspicious } from "./artifact-scan.ts";
+
+/** An 8-bit RGB PNG of `pixel`, its rows filtered with each of the five filters in turn. */
+function png(width: number, height: number, pixel: (x: number, y: number) => [number, number, number]): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  const stride = width * 3;
+  const rows: Buffer[] = [];
+  let prev = Buffer.alloc(stride);
+  for (let y = 0; y < height; y++) {
+    const line = Buffer.from(Array.from({ length: width }, (_, x) => pixel(x, y)).flat());
+    const filter = y % 5;
+    const out = Buffer.alloc(stride + 1);
+    out[0] = filter;
+    for (let i = 0; i < stride; i++) {
+      const a = i >= 3 ? line[i - 3]! : 0;
+      const b = prev[i]!;
+      const c = i >= 3 ? prev[i - 3]! : 0;
+      const p = a + b - c;
+      const paeth = Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c;
+      out[i + 1] = (line[i]! - [0, a, b, (a + b) >> 1, paeth][filter]!) & 0xff;
+    }
+    rows.push(out);
+    prev = line;
+  }
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(Buffer.concat(rows))), chunk("IEND", Buffer.alloc(0))]);
+}
 
 // The BIP39 test vector phrase, public.
 const VECTOR = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -83,6 +121,27 @@ describe("the testnet artifact check (H-04 O4a)", () => {
       process.env.FAKE_OCR_EXIT = "0";
       process.env.FAKE_OCR_TEXT = "Pay QA B";
       expect(scanArtifacts([shots], ["x"]).hits).toEqual([]);
+    });
+
+    it("tells a one-colour screenshot from one of more colours, whatever the row filters", () => {
+      expect(singleColourPng(png(9, 7, () => [30, 40, 50]))).toBe(true);
+      expect(singleColourPng(png(9, 7, (x, y) => (x === 4 && y === 6 ? [31, 40, 50] : [30, 40, 50])))).toBe(false);
+      expect(singleColourPng(png(9, 7, (x, y) => [x * 20, y * 30, 7]))).toBe(false);
+      expect(singleColourPng(Buffer.from("not really a png"))).toBe(false);
+    });
+
+    it.skipIf(process.platform === "win32")("counts a screenshot of more than one colour that OCR read no text from as a hit", () => {
+      const shots = shot();
+      fakeTesseract();
+      process.env.FAKE_OCR_TEXT = "";
+      const text = join(shots, "2-form.png");
+      writeFileSync(text, png(40, 20, (x, y) => ((x + y) % 7 === 0 ? [0, 0, 0] : [255, 255, 255])));
+      const blank = join(shots, "3-blank.png");
+      writeFileSync(blank, png(40, 20, () => [255, 255, 255]));
+      rmSync(join(shots, "1-form.png"));
+      expect(scanArtifacts([shots], ["not-in-any-file"]).hits).toEqual([`${text}: unread (tesseract read no text from a screenshot of more than one colour)`]);
+      process.env.FAKE_OCR_TEXT = "   ";
+      expect(scanArtifacts([shots], ["not-in-any-file"]).hits).toHaveLength(1);
     });
 
     it.skipIf(process.platform === "win32")("finds a known passphrase or phrase in a screenshot whatever its case and line breaks", () => {
