@@ -1604,6 +1604,24 @@ impl AppDb {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// [`Self::settings_with_prefix`], a value that is not text read as `None`
+    /// instead of failing the read of every row.
+    pub fn settings_with_prefix_lossy(
+        &self,
+        scope: &str,
+        prefix: &str,
+    ) -> Result<Vec<(String, Option<String>)>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT key, value FROM settings_kv WHERE scope = ?1 AND substr(key, 1, ?3) = ?2
+             ORDER BY key",
+        )?;
+        let rows = stmt.query_map(params![scope, prefix, prefix.chars().count() as i64], |r| {
+            Ok((r.get(0)?, r.get_ref(1)?.as_str().ok().map(str::to_owned)))
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
     // ---- DashPay identity choices ----
 
     /// The wallet's chosen main identity (DASHPAY §3.4 `dp_main_identity`).

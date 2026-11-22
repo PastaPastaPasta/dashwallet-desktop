@@ -268,3 +268,267 @@ fn abandoning_a_marked_payment_of_an_unknown_coin_rescans_from_the_birth() {
         "the abandon rescans from the birth"
     );
 }
+
+/// A coin of the wallet whose funding the store keeps without a record (a
+/// height-only row, as for a contact's payment), after a restart.
+fn coin_funded_without_a_record(
+    engine: &Engine,
+    session: Arc<NetworkSession>,
+    id: WalletId,
+    seed: u8,
+) -> (Arc<NetworkSession>, OutPoint) {
+    let address = super::own_spend_disk_tests::fresh_address(engine, &session, id);
+    let coin = OutPoint::new(
+        <Txid as dashcore::hashes::Hash>::from_byte_array([seed; 32]),
+        0,
+    );
+    let txout = dashcore::TxOut {
+        value: COIN,
+        script_pubkey: address.script_pubkey(),
+    };
+    let mut utxo = key_wallet::Utxo::new(coin, txout, address, super::BIRTH + 1, false);
+    utxo.is_confirmed = true;
+    let core = platform_wallet::changeset::CoreChangeSet {
+        new_utxos: vec![utxo],
+        ..Default::default()
+    };
+    super::own_spend_disk_tests::store_raw(&session, id, core);
+    let session = reopen(engine, session);
+    assert!(held(engine, &session, id).contains(&coin), "the coin loads");
+    (session, coin)
+}
+
+/// A payment of such a coin to someone else, handed off before the app
+/// quit, with no change: the next start lists it as a payment, offers
+/// Abandon, and the abandon brings the coin back.
+#[test]
+fn a_payment_of_a_coin_funded_without_a_record_is_listed_and_can_be_abandoned() {
+    let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
+    let (session, coin) = coin_funded_without_a_record(&engine, session, id, 8);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![coin]),
+        COIN,
+        true,
+    );
+    assert_eq!(payment.output.len(), 1, "no change");
+
+    let session = reopen(&engine, session);
+    let row = rows(&engine, &session, id)
+        .into_iter()
+        .find(|r| r.0 == payment.txid().to_string());
+    assert!(row.is_some_and(|r| r.3 < 0), "listed as a payment");
+    assert!(
+        !held(&engine, &session, id).contains(&coin),
+        "its coin is out"
+    );
+    let extras = engine
+        .block_on(session.tx_detail_extras(id, payment.txid()))
+        .unwrap();
+    assert!(extras.can_abandon && extras.can_resend, "{extras:?}");
+    abandon(&engine, &session, id, payment.txid());
+
+    let session = reopen(&engine, session);
+    assert!(
+        held(&engine, &session, id).contains(&coin),
+        "the coin is back"
+    );
+}
+
+/// As above with change: listed as the payment it is, not as a receipt of
+/// its change.
+#[test]
+fn a_payment_with_change_of_a_coin_funded_without_a_record_is_listed_as_a_payment() {
+    let (_dir, engine, session, id, _paid) = wallet_funded_unmined();
+    let (session, coin) = coin_funded_without_a_record(&engine, session, id, 9);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![coin]),
+        COIN / 2,
+        false,
+    );
+    assert_eq!(payment.output.len(), 2, "with change");
+
+    let session = reopen(&engine, session);
+    let row = rows(&engine, &session, id)
+        .into_iter()
+        .find(|r| r.0 == payment.txid().to_string());
+    assert!(
+        row.as_ref().is_some_and(|r| r.3 < 0),
+        "listed as a payment: {row:?}"
+    );
+    let extras = engine
+        .block_on(session.tx_detail_extras(id, payment.txid()))
+        .unwrap();
+    assert!(extras.can_abandon && extras.can_resend, "{extras:?}");
+}
+
+/// An abandon of the draft while its sent mark is being written is
+/// refused: the broadcast goes on, and the mark matches it.
+#[test]
+fn a_draft_abandoned_while_its_mark_is_written_is_refused() {
+    use crate::held_writes::{ReleaseOnDrop, hold_first_job};
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let net = Arc::new(super::own_spend_disk_tests::Accept::default());
+    let (draft, prepared) = super::own_spend_disk_tests::prepare(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+        &net,
+    );
+    let prepared = prepared.unwrap();
+    let (pause, task) = hold_first_job(&session, {
+        let (draft, prepared) = (Arc::clone(&draft), Arc::clone(&prepared));
+        async move {
+            draft.broadcast(prepared).await.unwrap();
+        }
+    });
+    let _release = ReleaseOnDrop(Arc::clone(&pause));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !pause.reached.load(std::sync::atomic::Ordering::SeqCst) {
+        assert!(std::time::Instant::now() < deadline, "the mark write");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let abandoned = engine.block_on(draft.abandon(Arc::clone(&prepared)));
+    assert!(
+        matches!(
+            abandoned,
+            Err(crate::EngineError::Send(
+                crate::send::SendFailure::PreparedTxSpent
+            ))
+        ),
+        "{abandoned:?}"
+    );
+    pause.release.notify_one();
+    engine.block_on(task).unwrap();
+    let txid: Txid = prepared.summary().txid.parse().unwrap();
+    assert_eq!(net.0.lock().unwrap().len(), 1, "handed off");
+    assert!(sent_marks(&session, id).contains(&txid), "marked");
+}
+
+/// A sent mark that cannot be written leaves the draft pending and no
+/// mark: it can still be abandoned.
+#[test]
+fn a_failed_mark_write_leaves_the_draft_pending_and_no_mark() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let net = Arc::new(super::own_spend_disk_tests::Accept::default());
+    let (draft, prepared) = super::own_spend_disk_tests::prepare(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+        &net,
+    );
+    let prepared = prepared.unwrap();
+    let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::Before;
+    dw_appdb::fault::arm(&path, crate::send::SENT_MARK_FAULT, stage);
+    assert!(
+        engine
+            .block_on(draft.broadcast(Arc::clone(&prepared)))
+            .is_err()
+    );
+    dw_appdb::fault::disarm(&path);
+    let txid: Txid = prepared.summary().txid.parse().unwrap();
+    assert!(net.0.lock().unwrap().is_empty(), "nothing handed off");
+    assert!(!sent_marks(&session, id).contains(&txid), "marked");
+    engine.block_on(draft.abandon(prepared)).unwrap();
+}
+
+/// A marked payment of a coin whose funding the history doesn't hold,
+/// relayed back after the restart (its record names no input): abandoning
+/// it rescans from the birth height.
+#[test]
+fn abandoning_a_relayed_marked_payment_of_an_unknown_coin_rescans_from_the_birth() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    let own = super::own_spend_disk_tests::fresh_address(&engine, &session, id);
+    let coin = OutPoint::new(
+        <Txid as dashcore::hashes::Hash>::from_byte_array([7; 32]),
+        0,
+    );
+    let payment = super::spend_of(
+        coin,
+        vec![
+            (super::elsewhere(), COIN / 2),
+            (own.script_pubkey(), COIN / 4),
+        ],
+    );
+    let (scope, txid) = (id.to_string(), payment.txid());
+    let hex = dashcore::consensus::encode::serialize_hex(&payment);
+    {
+        let appdb = &session.live().unwrap().appdb;
+        (appdb.set_setting(&scope, &format!("sent:{txid}"), Some(&coin.to_string()))).unwrap();
+        (appdb.set_setting(&scope, &format!("senttx:{txid}"), Some(&hex))).unwrap();
+    }
+
+    let session = reopen(&engine, session);
+    mempool(&engine, &session, id, &payment);
+    abandon(&engine, &session, id, txid);
+    assert_eq!(
+        synced(&engine, &session, id),
+        super::BIRTH - 1,
+        "the abandon rescans from the birth"
+    );
+}
+
+/// One payment's copy that does not decode, and another's that is not
+/// text, leave an intact payment restored: each damaged payment's coins
+/// stay out, unlisted, with nothing to resend.
+#[test]
+fn damaged_copies_keep_their_coins_out_and_leave_the_others_restored() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let coin = |v| OutPoint::new(paid.txid(), v);
+    let pay = |v| {
+        send(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(vec![coin(v)]),
+            COIN / 2,
+            false,
+        )
+    };
+    let (intact, bad_hex, not_text) = (pay(0), pay(1), pay(2));
+    let scope = id.to_string();
+    {
+        let appdb = &session.live().unwrap().appdb;
+        let key = format!("senttx:{}", bad_hex.txid());
+        appdb.set_setting(&scope, &key, Some("zz")).unwrap();
+    }
+    let db = rusqlite::Connection::open(session.data_dir().join(dw_appdb::APP_DB_FILE)).unwrap();
+    let key = format!("senttx:{}", not_text.txid());
+    db.execute(
+        "UPDATE settings_kv SET value = CAST(X'FF' AS TEXT) WHERE scope = ?1 AND key = ?2",
+        [&scope, &key],
+    )
+    .unwrap();
+    drop(db);
+
+    let session = reopen(&engine, session);
+    assert!(
+        listed(&engine, &session, id, intact.txid()),
+        "the intact one"
+    );
+    for (v, tx) in [(0, &intact), (1, &bad_hex), (2, &not_text)] {
+        assert!(!spendable(&engine, &session, id, coin(v)), "{v}: offered");
+        assert!(
+            !held(&engine, &session, id).contains(&coin(v)),
+            "{v}: counted"
+        );
+        if v > 0 {
+            assert!(!listed(&engine, &session, id, tx.txid()), "{v}: listed");
+        }
+    }
+}

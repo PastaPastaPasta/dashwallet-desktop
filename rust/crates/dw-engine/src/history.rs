@@ -14,7 +14,7 @@
 //! transactions, and `Other` for mixed debit transactions.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -391,6 +391,13 @@ pub(crate) fn unmined_own_spends(
                 .filter(|o| coins.contains(o))
                 .map(move |o| (o, *t))
         })
+        .chain(
+            // A payment whose stored copy does not read back keeps its coins
+            // out, unlisted, until a record of it settles it.
+            (sent.iter())
+                .filter(|(t, m)| m.kept && m.tx.is_none() && !txs.contains_key(*t))
+                .flat_map(|(t, m)| m.coins.iter().map(move |o| (*o, *t))),
+        )
         .collect()
 }
 
@@ -418,9 +425,10 @@ pub(crate) struct WalletHistory {
     /// Transactions a conflict sweep removed this session: a load whose
     /// marks were read before the sweep restores none of them.
     pub swept: HashSet<Txid>,
-    /// Payments restored from their sent marks (`add_unrecorded_sends`)
-    /// with a signed coin whose funding the history doesn't hold.
-    pub unresolved: HashSet<Txid>,
+    /// The wallet's coins each payment restored from its sent mark
+    /// (`add_unrecorded_sends`) signed, which a later record of it may not
+    /// name.
+    pub marked: HashMap<Txid, BTreeSet<OutPoint>>,
     /// Transactions key-wallet held this session: its records when the
     /// history was filled at open and each one its events named since.
     /// Records only read from storage are not among them (platform-wallet
@@ -578,17 +586,17 @@ impl WalletHistory {
                 .filter(|(_, i)| mark.coins.contains(&i.previous_output))
                 .filter_map(|(n, i)| {
                     let o = i.previous_output;
+                    if let Some((value, address)) = mark.inputs.get(&o) {
+                        let address = (address.parse::<Address<_>>().ok())
+                            .and_then(|a| a.require_network(network).ok())?;
+                        return Some((n as u32, (*value, address)));
+                    }
                     let out = self.txs.get(&o.txid)?.tx.output.get(o.vout as usize)?;
                     let address = Address::from_script(&out.script_pubkey, network).ok()?;
                     Some((n as u32, (out.value, address)))
                 })
                 .collect::<BTreeMap<_, _>>();
-            let signed = (tx.input.iter())
-                .filter(|i| mark.coins.contains(&i.previous_output))
-                .count();
-            if own_inputs.len() < signed {
-                self.unresolved.insert(*txid);
-            }
+            self.marked.insert(*txid, mark.coins.clone());
             self.txs.insert(
                 *txid,
                 TxEntry {
@@ -2558,6 +2566,7 @@ mod tests {
         let mut txs = HashMap::new();
         let mut sent = crate::tx_actions::Sent::new();
         let mark = |coins: &[OutPoint], tx| crate::tx_actions::SentMark {
+            inputs: Default::default(),
             coins: coins.iter().copied().collect(),
             tx,
             kept: false,
@@ -2621,6 +2630,7 @@ mod tests {
             (
                 lost.txid(),
                 crate::tx_actions::SentMark {
+                    inputs: Default::default(),
                     coins: [coin(1)].into(),
                     tx: Some(lost.clone()),
                     kept: true,
@@ -2629,6 +2639,7 @@ mod tests {
             (
                 stored.txid(),
                 crate::tx_actions::SentMark {
+                    inputs: Default::default(),
                     coins: [coin(3)].into(),
                     tx: Some(stored.clone()),
                     kept: true,

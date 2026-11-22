@@ -1543,14 +1543,9 @@ impl TxDraft {
             Some(_) => Some(prepared.attempts.lock().await),
             None => None,
         };
-        // The evidence a later process restores this payment's spend
-        // claims from (#88), stored before it can leave; again for a send
-        // recovered with its outcome unknown, which may be its first.
-        if matches!(*prepared.phase(), Phase::Pending | Phase::Unknown) {
-            self.mark_sent(&prepared, true).await?;
-        }
         // A contact payment's first broadcast is under way until its
-        // outcome settled the contact (`settle_contact`).
+        // outcome settled the contact (`settle_contact`). Taken before the
+        // mark is written, so an abandon of the draft meanwhile is refused.
         let (first, _in_flight) = {
             let mut phase = prepared.phase();
             let first = match *phase {
@@ -1568,8 +1563,23 @@ impl TxDraft {
             *phase = Phase::Broadcasting;
             (first, in_flight)
         };
-        if first {
-            self.record_contact(&prepared).await?;
+        // The evidence a later process restores this payment's spend
+        // claims from (#88), stored before it can leave; again for a send
+        // recovered with its outcome unknown, which may be its first.
+        if let Err(e) = self.mark_sent(&prepared, true).await {
+            if first {
+                let _ = self.mark_sent(&prepared, false).await;
+            }
+            *prepared.phase() = if first {
+                Phase::Pending
+            } else {
+                Phase::Unknown
+            };
+            return Err(e);
+        }
+        if first && let Err(e) = self.record_contact(&prepared).await {
+            let _ = self.mark_sent(&prepared, false).await;
+            return Err(e);
         }
         let (outcome, next) = match &prepared.lease {
             Some((lease, artifact)) => self.fenced(&prepared, lease, *artifact, first).await,
@@ -1592,6 +1602,10 @@ impl TxDraft {
                     tracing::warn!(error = %e, txid = %prepared.summary.txid,
                         "could not drop the sent mark of a payment never sent");
                 }
+            }
+            // Not handed off (the session or wallet went): no copy to resend.
+            Phase::Pending if first && matches!(attempt_outcome(&outcome), Outcome::NotSent) => {
+                let _ = self.mark_sent(&prepared, false).await;
             }
             Phase::Pending | Phase::Unknown | Phase::Broadcasting => {}
         }
@@ -2244,11 +2258,27 @@ impl TxDraft {
         let keys = [
             format!("{}{txid}", crate::tx_actions::SENT_PREFIX),
             format!("{}{txid}", crate::tx_actions::SENT_TX_PREFIX),
+            format!("{}{txid}", crate::tx_actions::SENT_IN_PREFIX),
         ];
+        let all = || prepared.summary.inputs.iter().map(|i| i.outpoint).collect();
+        let own: Vec<OutPoint> = prepared.own_inputs.clone().unwrap_or_else(all);
         let coins = sent.then(|| {
-            let all = || prepared.summary.inputs.iter().map(|i| i.outpoint).collect();
-            (prepared.own_inputs.clone().unwrap_or_else(all).iter())
+            own.iter()
                 .map(OutPoint::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        });
+        let inputs = sent.then(|| {
+            (prepared.summary.inputs.iter())
+                .filter(|i| own.contains(&i.outpoint))
+                .filter_map(|i| {
+                    Some(format!(
+                        "{} {} {}",
+                        i.outpoint,
+                        i.amount,
+                        i.address.as_ref()?
+                    ))
+                })
                 .collect::<Vec<_>>()
                 .join(",")
         });
@@ -2262,6 +2292,7 @@ impl TxDraft {
                 let writes = [
                     (keys[0].as_str(), coins.as_deref()),
                     (keys[1].as_str(), tx.as_deref()),
+                    (keys[2].as_str(), inputs.as_deref()),
                 ];
                 db.set_settings_durable(&scope, &writes)
             })

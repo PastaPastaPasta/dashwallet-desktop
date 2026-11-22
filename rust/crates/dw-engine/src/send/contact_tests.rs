@@ -2963,3 +2963,46 @@ fn abandoning_a_contact_payment_of_unknown_outcome_keeps_the_contact_locked() {
     assert_eq!(f.rows(), vec![(b58(BOB), txid)], "the lock's row");
     assert_eq!(f.resolve(BOB), LockResolution::Unknown);
 }
+
+/// A payment to a contact refused at its hand-off, another to the contact
+/// being under way, leaves no copy: after a restart nothing of it is listed
+/// or can be resent.
+#[test]
+fn a_refused_second_contact_payment_leaves_nothing_to_resend() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Hold);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    f.credit(2, COIN);
+    let other = f.draft(BOB);
+    Seam::install(&other, Net::Accept);
+    let twin = (f.engine)
+        .block_on(other.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let twin_txid: Txid = twin.summary().txid.parse().unwrap();
+    let broadcast = f.session.rt.spawn({
+        let (d, p) = (Arc::clone(&d), Arc::clone(&p));
+        async move { d.broadcast(p).await }
+    });
+    wait_until(|| seam.entered.load(Ordering::SeqCst) > 0);
+    assert!(f.engine.block_on(other.broadcast(twin)).is_err(), "refused");
+    let marked = |f: &Fixture| {
+        let appdb = Arc::clone(&f.session.live().unwrap().appdb);
+        crate::tx_actions::load_sent(&appdb, f.wallet)
+            .0
+            .contains_key(&twin_txid)
+    };
+    assert!(!marked(&f), "a copy of the refused payment");
+    seam.gate.notify_one();
+    let _ = f.engine.block_on(broadcast).unwrap();
+    drop((d, other, p));
+
+    let f = f.reopen();
+    assert!(!marked(&f), "a copy after a restart");
+    let extras = f
+        .engine
+        .block_on(f.session.tx_detail_extras(f.wallet, twin_txid));
+    assert!(extras.is_err(), "listed after a restart: {extras:?}");
+}
