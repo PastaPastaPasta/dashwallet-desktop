@@ -471,6 +471,10 @@ pub(crate) struct CoinFences {
     /// takes the coin fences.
     #[cfg(test)]
     pub(crate) pause_broadcast: std::sync::Mutex<Option<Arc<TestPause>>>,
+    /// Tests: holds the next PSBT broadcast between a wallet's lookup and
+    /// its ownership read.
+    #[cfg(test)]
+    pub(crate) pause_ownership: std::sync::Mutex<Option<Arc<TestPause>>>,
     /// Tests: holds the next masternode row write after its reservation,
     /// its fence held: a shared session's (`start_shared`, `join_shared`,
     /// MG-04b D63) or a ProTx operation's (`save_operation`, BL-352).
@@ -605,6 +609,12 @@ impl CoinFences {
             checked: std::sync::Mutex::new(None),
             temp_locks: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Tests: how many wait for `wallet`'s fence while one holds it.
+    #[cfg(test)]
+    pub(crate) fn waiting(&self, wallet: WalletId) -> usize {
+        (self.map().get(&wallet)).map_or(0, |f| Arc::strong_count(f).saturating_sub(2))
     }
 
     /// `wallet`'s fence if no one holds it now.
@@ -1072,7 +1082,7 @@ impl NetworkSession {
             "the fence of another wallet"
         );
         let (mut snapshot, lock_inputs, unseen, applied) = {
-            let state = wallet.state().await;
+            let state = crate::wallet_read::info_of(wallet).await?;
             let snapshot = read_coins(&state.core_wallet);
             let unseen = unseen_collateral_sized(&self.hub.history, wallet_id, &snapshot.coins);
             (

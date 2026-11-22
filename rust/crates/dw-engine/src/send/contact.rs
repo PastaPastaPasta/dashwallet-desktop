@@ -174,13 +174,13 @@ impl TxDraft {
                 "the draft's recipient changed during prepare".into(),
             ));
         }
+        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await?;
         let lease = match given {
             Some(lease) => lease,
             None => (session.begin_lease(wallet_id, FlowKind::ContactPayment, &[grant_id]))
                 .await
                 .map_err(|e| lease_failure(e, 0))?,
         };
-        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
         let outflow = external_sent.saturating_add(r.plan.fee);
         let purpose = BudgetPurpose::Spend;
         let (charge, signer) =

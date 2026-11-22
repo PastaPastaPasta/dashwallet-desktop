@@ -120,11 +120,13 @@ impl NetworkSession {
             if rows.is_empty() {
                 continue;
             }
-            // A wallet unloaded since `wallet_ids` has no view to judge by.
-            let (history, unspent) = match self.op_view(wallet).await {
-                Err(MasternodesError::Engine(EngineError::WalletNotFound(_))) => continue,
-                view => view?,
+            // A wallet unloaded since `wallet_ids` has no view to judge by;
+            // one that leaves after its lookup fails the scan.
+            let w = match self.wallet(&wallet).await {
+                Err(EngineError::WalletNotFound(_)) => continue,
+                w => w?,
             };
+            let (history, unspent) = self.op_view_of(wallet, &w).await?;
             out.extend(rows.into_iter().map(|r| {
                 let state = state_of(&r, &history, &unspent);
                 (r, state)

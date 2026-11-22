@@ -184,7 +184,7 @@ impl NetworkSession {
         let w = self.wallet(&fence.wallet_id()).await?;
         let coins = self.input_coins(fence, &w, tx, false).await?;
         let inputs: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
-        Ok(self.summary_of(&w, tx, &inputs, fee, change).await)
+        Ok(self.summary_of(&w, tx, &inputs, fee, change).await?)
     }
 
     /// The coordinator's send (§3.1 step 5, D24): once every other party's
@@ -323,7 +323,7 @@ impl NetworkSession {
         let pending = self.spends.snapshot(&wallet);
         let w = self.wallet(&wallet).await?;
         let coin = {
-            let state = w.state().await;
+            let state = crate::wallet_read::info_of(&w).await?;
             read_coins(&state.core_wallet)
                 .coins
                 .into_iter()
@@ -401,7 +401,7 @@ impl NetworkSession {
                 .ok_or(MasternodesError::SharedSessionNotFound)?;
             let summary = self
                 .summary_of(&w, &tx, std::slice::from_ref(&utxo), fee, Some(&address))
-                .await;
+                .await?;
             self.deliver_abandon(wallet, &row.id, tx, summary, charge, fence, !logged)
                 .await
                 .map(drop)
