@@ -309,7 +309,7 @@ impl NetworkSession {
             .await?;
         if !also.is_empty() {
             let others = self.held_by_others(fence.wallet_id(), id).await?;
-            let state = w.state().await;
+            let state = crate::wallet_read::info_of(w).await?;
             for c in read_coins(&state.core_wallet).coins {
                 if also.contains(&c.utxo.outpoint)
                     && !others.contains(&c.utxo.outpoint)
@@ -406,7 +406,7 @@ impl NetworkSession {
             return Err(dead());
         }
         let w = self.wallet(&wallet).await?;
-        let state = w.state().await;
+        let state = crate::wallet_read::info_of(&w).await?;
         let coins = read_coins(&state.core_wallet).coins;
         outpoints
             .iter()

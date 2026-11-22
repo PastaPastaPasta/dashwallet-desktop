@@ -1151,6 +1151,161 @@ fn send_metadata_is_written_only_for_a_sent_payment_and_never_relabels() {
     assert_eq!(book(), want);
 }
 
+/// #263: the payment's metadata is written after the hand-off; a wallet
+/// closed by then skips it, and the payment stays sent.
+#[test]
+fn a_wallet_closed_before_the_payment_metadata_keeps_the_payment_sent() {
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![pay(FOREIGN, 10_000_000)]);
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    f.engine
+        .block_on(f.session.unload_wallet(f.wallet))
+        .unwrap();
+    let recorded = f
+        .engine
+        .block_on(f.session.record_send_metadata(f.wallet, &p));
+    assert!(recorded.is_ok(), "{recorded:?}");
+}
+
+#[test]
+fn a_wallet_closed_inside_an_accepted_broadcast_keeps_the_payment_sent() {
+    struct CloseOnAccept {
+        session: Arc<NetworkSession>,
+        wallet: WalletId,
+        pause: Arc<crate::coins::TestPause>,
+        unloaded: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+    }
+    impl super::TestBroadcaster for CloseOnAccept {
+        fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            Box::pin(async {})
+        }
+        fn broadcast(
+            &self,
+            tx: &Transaction,
+            _first: bool,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<dashcore::Txid, platform_wallet::PlatformWalletError>,
+                    > + Send,
+            >,
+        > {
+            *self.session.hub.pause_metadata.lock().unwrap() = Some(Arc::clone(&self.pause));
+            let (session, wallet, pause, unloaded) = (
+                Arc::clone(&self.session),
+                self.wallet,
+                Arc::clone(&self.pause),
+                Arc::clone(&self.unloaded),
+            );
+            tokio::spawn(async move {
+                let unload = async {
+                    while !pause.reached.load(std::sync::atomic::Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    session.unload_wallet(wallet).await
+                };
+                let result = tokio::time::timeout(Duration::from_secs(60), unload).await;
+                *unloaded.lock().unwrap() = Some(match result {
+                    Ok(r) => r.map_err(|e| e.to_string()),
+                    Err(_) => Err("the unload timed out".into()),
+                });
+                pause.release.notify_one();
+            });
+            let txid = tx.txid();
+            Box::pin(async move { Ok(txid) })
+        }
+    }
+
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![Recipient {
+        label: Some("Bob".into()),
+        message: Some("rent".into()),
+        ..pay(FOREIGN, 10_000_000)
+    }]);
+    let unloaded = Arc::new(std::sync::Mutex::new(None));
+    *draft.broadcaster.lock().unwrap() = Some(Arc::new(CloseOnAccept {
+        session: Arc::clone(&f.session),
+        wallet: f.wallet,
+        pause: Arc::new(crate::coins::TestPause::default()),
+        unloaded: Arc::clone(&unloaded),
+    }));
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = p.summary.txid.clone();
+    let sent = f.engine.block_on(draft.broadcast(p)).unwrap();
+    assert_eq!(sent.txid, txid);
+    assert_eq!(*unloaded.lock().unwrap(), Some(Ok(())));
+    assert!(matches!(
+        f.engine.block_on(f.session.wallet(&f.wallet)),
+        Err(EngineError::WalletNotFound(_))
+    ));
+    let appdb = Arc::clone(&f.session.live().unwrap().appdb);
+    let marks = crate::tx_actions::load_sent(&appdb, f.wallet).0;
+    assert!(
+        marks.keys().any(|t| t.to_string() == txid),
+        "the sent mark survives"
+    );
+    let w = f.wallet.to_string();
+    assert_eq!(appdb.tx_message(&w, &txid).unwrap(), None);
+    assert!(appdb.book_entry(&w, FOREIGN).unwrap().is_none());
+}
+
+/// A wallet closed between a PSBT broadcast's lookup of it and its
+/// ownership read refuses the broadcast with `WalletNotFound`: nothing is
+/// sent, and offline it is not mistaken for `NoPeers`.
+#[test]
+fn a_wallet_closed_after_its_psbt_broadcast_lookup_refuses_it() {
+    use std::str::FromStr;
+    let f = fixture(false);
+    let prev = f.credit_with_prev(108, COIN);
+    let unsigned = Transaction {
+        version: 2,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: OutPoint::new(prev.txid(), 0),
+            ..Default::default()
+        }],
+        output: vec![TxOut {
+            value: COIN - 1_000,
+            script_pubkey: dashcore::Address::from_str(FOREIGN)
+                .unwrap()
+                .assume_checked()
+                .script_pubkey(),
+        }],
+        special_transaction_payload: None,
+    };
+    let mut psbt = dw_psbt::PartiallySignedTransaction::from_unsigned_tx(unsigned).unwrap();
+    psbt.inputs[0].non_witness_utxo = Some(prev);
+    let signed = f.sign_psbt(&psbt, f.spend_grant(COIN)).unwrap();
+    let pause = Arc::new(crate::coins::TestPause::default());
+    *f.session.coin_fences.pause_ownership.lock().unwrap() = Some(Arc::clone(&pause));
+    let s = Arc::clone(&f.session);
+    let broadcast = f
+        .session
+        .rt
+        .spawn(async move { s.broadcast_psbt(signed).await });
+    assert!(pause.wait_reached(Duration::from_secs(60)), "the lookup");
+    f.engine
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(60), f.session.unload_wallet(f.wallet)).await
+        })
+        .expect("the unload waited for the broadcast")
+        .unwrap();
+    pause.release.notify_one();
+    let sent = f.engine.block_on(broadcast).unwrap();
+    assert!(
+        matches!(sent, Err(EngineError::WalletNotFound(_))),
+        "{sent:?}"
+    );
+}
+
 // ---- PSBT signing caps (review H1) ----
 
 impl Fixture {

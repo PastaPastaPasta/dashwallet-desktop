@@ -283,7 +283,7 @@ impl NetworkSession {
                     plan.funding.fee,
                     plan.change.as_ref(),
                 )
-                .await;
+                .await?;
             self.deliver(
                 wallet,
                 Delivery {
