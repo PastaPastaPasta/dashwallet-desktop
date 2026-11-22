@@ -1,5 +1,5 @@
-# A red CI or Release run on main (a push or the 02:47 UTC run) is a stop: the batch it covers is
-# reverted or fixed before anything else merges (docs/ci.md, "Pull request tiers"). While the
+# A red CI or Release run on main (a push or the 02:47 UTC run) is a stop: main is fixed, by a
+# forward fix on top or a revert, before anything else merges (docs/ci.md, "Pull request tiers"). While the
 # newest finished run of that workflow is red, one open issue labelled nightly-failure names its
 # failed jobs and the pull requests merged since that workflow's last green run on main. The next
 # green run closes it. A cancelled run (a pending main run replaced by a newer one) reports nothing.
@@ -76,4 +76,4 @@ jobs:
             batch="Merged since the last green run (${green:0:8}):"$'\n'"${batch:-(no merge commits)}"
           fi
           ci/github/nightly-issue.sh failed "$NAME on main" \
-            "$what failed: $RUN_URL"$'\n\n'"$failed"$'\n\n'"$batch"$'\n\n'"Revert or fix this batch before anything else merges."
+            "$what failed: $RUN_URL"$'\n\n'"$failed"$'\n\n'"$batch"$'\n\n'"Fix main before anything else merges: a forward fix on top is fine; a revert is not required."

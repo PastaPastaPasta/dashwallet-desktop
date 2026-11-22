@@ -60,9 +60,10 @@ itself a required check: cancelled or failed, it blocks the merge.
 **A red main is a stop.** The full matrix (Playwright, tauri-driver E2E, deep links, Linux Swift, macOS,
 Windows and the release bundles) runs on every push to `main`. `main-result.yml` runs when a `ci.yml` or
 `release.yml` run on `main` finishes: while the newest finished run of a workflow is red, one open issue
-labelled `nightly-failure` ("Nightly failure: CI on main" or "Release on main") names its failed jobs and the
-pull requests merged since that workflow's last green run, the batch to revert or fix before anything else
-merges; the next green run closes it. A cancelled run (a pending main run replaced by a newer one) reports
+labelled `nightly-failure` ("Nightly failure: CI on main" or "Nightly failure: Release on main") names its
+failed jobs and the pull requests merged since that workflow's last green run (the batch that broke it); the
+next green run closes it. Main is fixed before anything else merges. A forward fix on top is fine; a revert is
+not required. A cancelled run (a pending main run replaced by a newer one) reports
 nothing.
 
 **Downloads are pinned and verified** before anything runs them, except the Windows Swift installer (last
