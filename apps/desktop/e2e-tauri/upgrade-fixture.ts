@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { accountTpub } from "./bip32.ts";
 import { Dashd, freePort, paysTo, type RawTx } from "./dashd.ts";
-import { ownedListeners, snapshotOf } from "./listeners.ts";
+import { ownedProbe } from "./listeners.ts";
 import { type Coin, outpointProblem, type TxOut } from "./outpoint.ts";
 import { APP, CHAIN, driverGone, driverReady, env, poll, spawnDriver, stopDriver, WebDriver } from "./driver.ts";
 
@@ -83,17 +83,18 @@ const answers = (port: number) =>
     ),
   ).then((r) => r.some(Boolean));
 
-/** One `ss` listing of every TCP listener, judged for `ports` as a single snapshot. */
-function listenerSnapshot(ports: number[]) {
+function ssListing() {
   const r = spawnSync("ss", ["-Hltnp"], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`ss: ${r.stderr}`);
-  return snapshotOf(r.stdout, ports, (pid) => {
-    try {
-      return Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[2]);
-    } catch {
-      return null;
-    }
-  });
+  return r.stdout;
+}
+
+function processGroup(pid: string) {
+  try {
+    return Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[2]);
+  } catch {
+    return null;
+  }
 }
 
 /** tauri-driver and WebKitWebDriver on two free ports, refused if either answered before the
@@ -105,7 +106,7 @@ async function startOwnDriver() {
   for (const p of [port, native]) if (await answers(p)) throw new Error(`port ${p} already answers: no driver is started beside it`);
   driver = spawnDriver(port, LOGS, native);
   const group = driver.pid;
-  await poll(30_000, "both drivers to listen", async () => ownedListeners(listenerSnapshot([port, native]), group));
+  await poll(30_000, "both drivers to listen", ownedProbe(ssListing, [port, native], group, processGroup));
   const base = await driverReady(port);
   step(`tauri-driver on ${port}, WebKitWebDriver on ${native}, both owned by group ${group}`);
   return { driver, base };

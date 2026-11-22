@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ownedListeners, snapshotOf } from "./listeners.ts";
+import { ownedListeners, ownedProbe, snapshotOf } from "./listeners.ts";
 
 describe("the fixture writer's drivers are owned before the first request (#101)", () => {
   it("waits while a port has no listener, and accepts only both ports owned in one snapshot", () => {
@@ -30,5 +30,20 @@ describe("one ss listing per poll (#101)", () => {
     expect(snapshotOf(line(4774), [4774], groupOf)).toEqual([{ port: 4774, groups: [null] }]);
     expect(() => ownedListeners(snapshotOf([line(4774, 100), line(4775, 200)].join("\n"), [4774, 4775], groupOf), 7)).toThrow(/port 4775/);
     expect(snapshotOf(line(14774, 100), [4774], groupOf)).toEqual([{ port: 4774, groups: [] }]);
+  });
+});
+
+describe("the writer's readiness probe (#101)", () => {
+  const line = (port: number, pid: number) => `LISTEN 0      128        127.0.0.1:${port}      0.0.0.0:*    users:(("drv",pid=${pid},fd=3))`;
+  it("reads one listing per poll and stays unready while listings alternate between the two ports", async () => {
+    const listings = [line(4774, 100), line(4775, 101), line(4774, 100), line(4775, 101)];
+    let reads = 0;
+    const probe = ownedProbe(() => listings[reads++]!, [4774, 4775], 7, () => 7);
+    for (let i = 0; i < listings.length; i++) {
+      expect(await probe()).toBeUndefined();
+      expect(reads).toBe(i + 1);
+    }
+    const both = ownedProbe(() => [line(4774, 100), line(4775, 101)].join("\n"), [4774, 4775], 7, () => 7);
+    expect(await both()).toBe(true);
   });
 });

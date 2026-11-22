@@ -24,3 +24,8 @@ export function ownedListeners(snapshot: { port: number; groups: (number | null)
   }
   return snapshot.every(({ groups }) => groups.length > 0) ? true : undefined;
 }
+
+/** The readiness probe for `poll`: each call reads one listing and judges both ports from it. */
+export function ownedProbe(read: () => string, ports: number[], group: number | undefined, groupOf: (pid: string) => number | null) {
+  return async () => ownedListeners(snapshotOf(read(), ports, groupOf), group);
+}
