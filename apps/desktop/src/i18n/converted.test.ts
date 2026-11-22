@@ -43,13 +43,16 @@ const AREAS: Record<string, string[]> = {
 
   tools: ["screens/tools"],
 
-  transfer: [],
+  transfer: ["screens/TransferSheet.tsx", "screens/PlatformMoveSheet.tsx", "screens/PlatformFundSheet.tsx", "screens/ShieldedSheet.tsx"],
 };
 
 export const CONVERTED = Object.values(AREAS).flat();
 
 /** Text that may stay literal: `file: [text, …]`. Keep it short and say why. */
-const ALLOWED: Record<string, string[]> = {};
+const ALLOWED: Record<string, string[]> = {
+  // The route header's hidden " to " between two pool names: needs a whole-sentence key.
+  "screens/TransferSheet.tsx": ["to"],
+};
 
 /** Attributes whose value a user reads or hears. Props of our components that carry copy too. */
 const TEXT_ATTRIBUTES = new Set(["title", "aria-label", "aria-description", "aria-placeholder", "aria-roledescription", "placeholder", "alt", "label", "text", "why", "confirm", "message", "submitLabel"]);
