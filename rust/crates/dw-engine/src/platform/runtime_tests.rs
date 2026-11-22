@@ -2,7 +2,7 @@
 //! cadence. The end-to-end behaviour is in `tests/e0_05_bringup.rs`.
 
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use dw_vault::{KdfParams, KdfPolicy, LockState, MemoryOsStore, VaultConfig};
@@ -486,6 +486,56 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     eprintln!("the next start_spv took {took:?}");
     assert!(took < Duration::from_millis(100), "{took:?}");
     assert_eq!(s.spv_state().unwrap(), SpvState::Starting);
+    engine.block_on(engine.shutdown()).unwrap();
+}
+
+/// Reads `spv_state` as each `SpvStateChanged{running: true}` is emitted.
+#[derive(Default)]
+struct StateAtRunning {
+    session: OnceLock<Weak<NetworkSession>>,
+    seen: Mutex<Vec<SpvState>>,
+}
+
+impl EventSink for StateAtRunning {
+    fn emit(&self, event: EngineEvent) {
+        if let EngineEvent::SpvStateChanged { running: true, .. } = event
+            && let Some(s) = self.session.get().and_then(Weak::upgrade)
+        {
+            guard(&self.seen).push(s.spv_state().unwrap());
+        }
+    }
+}
+
+/// #231: a renderer that refreshes on `SpvStateChanged{running: true}` must
+/// read `Running`, from the bring-up's start and from `rotate_peers`'
+/// restart. Before the fix the supervisor announced the start before
+/// marking itself running, so the read was `Starting` and no later event
+/// corrected it. The pause holds the supervisor between the two.
+#[test]
+fn spv_reads_running_when_its_running_event_arrives() {
+    let _serial = serial();
+    let dir = dw_testutil::private_tempdir();
+    let rec = Arc::new(StateAtRunning::default());
+    let (engine, s) = session_with(
+        engine_with(dir.path(), 4, Arc::clone(&rec) as Arc<dyn EventSink>),
+        vec!["http://127.0.0.1:1".into()],
+        false,
+    );
+    rec.session.set(Arc::downgrade(&s)).unwrap();
+    let pause = Arc::new(TestPause::default());
+    *guard(&s.platform.pause_before_running) = Some(Arc::clone(&pause));
+    engine.block_on(s.start_spv()).unwrap();
+    wait_until("the start, held", Duration::from_secs(5), || {
+        pause.reached.load(Ordering::SeqCst)
+    });
+    pause.release.notify_one();
+    wait_until("the running event", Duration::from_secs(5), || {
+        !guard(&rec.seen).is_empty()
+    });
+    assert_eq!(*guard(&rec.seen), [SpvState::Running]);
+
+    engine.block_on(s.rotate_peers()).unwrap();
+    assert_eq!(*guard(&rec.seen), [SpvState::Running, SpvState::Running]);
     engine.block_on(engine.shutdown()).unwrap();
 }
 
