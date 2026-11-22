@@ -338,6 +338,28 @@ fn session_with(
     urls: Vec<String>,
     encrypted: bool,
 ) -> (Engine, Arc<NetworkSession>) {
+    session_with_timeout(engine, urls, encrypted, None)
+}
+
+/// As [`session_on`], with DAPI attempt timeouts disabled: a request to
+/// `hole` stays open until those listeners are closed.
+fn session_held(
+    dir: &std::path::Path,
+    hole: &[std::net::TcpListener],
+) -> (Engine, Arc<NetworkSession>) {
+    let urls = hole
+        .iter()
+        .map(|l| format!("http://{}", l.local_addr().unwrap()))
+        .collect();
+    session_with_timeout(engine(dir, 4), urls, false, Some(Duration::ZERO))
+}
+
+fn session_with_timeout(
+    engine: Engine,
+    urls: Vec<String>,
+    encrypted: bool,
+    dapi_request_timeout: Option<Duration>,
+) -> (Engine, Arc<NetworkSession>) {
     let s = engine
         .block_on(engine.open_network(
             DashNetwork::Regtest,
@@ -345,6 +367,7 @@ fn session_with(
                 quorum_url: Some(urls[0].clone()),
                 dapi_addresses: urls,
                 spv_peers: vec!["127.0.0.1:1".into()],
+                dapi_request_timeout,
                 ..Default::default()
             },
         ))
@@ -449,17 +472,43 @@ fn the_stop_check_takes_whichever_blackholed_loops_are_stuck() {
     ))));
 }
 
+/// Closes the black-hole listeners a pass is blocked on. Dropped if the
+/// test fails first, so a pass with no request deadline cannot hold the
+/// engine's shutdown.
+struct ReleaseListeners(Vec<std::net::TcpListener>);
+
+impl Drop for ReleaseListeners {
+    fn drop(&mut self) {
+        // Reset the connections the passes are blocked on.
+        self.0.clear();
+    }
+}
+
 /// Review DW-E0-05-r1-gpt M1: a loop pass that outlives the drain deadline
 /// makes `stop_spv` fail visibly (SPV is stopped anyway), and the next
 /// `start_spv` does not wait for that pass: the drain is retried inside the
 /// start task. Before the fix the stop returned `Ok`, and the start waited
 /// another full drain budget (10 s).
+///
+/// The pass and that budget are the same length. A DAPI attempt ends at
+/// 10 s (rs-dapi-client `request_settings.rs:9`, applied in
+/// `dapi_client.rs:1198`) and `quiesce` waits
+/// `COORDINATOR_DRAIN_BUDGET`, also 10 s (rs-platform-wallet
+/// `manager/mod.rs:95`, `dashpay_sync.rs:287`). On a loaded runner the
+/// attempt finishes as the budget runs out, the stop finds nothing left,
+/// and it returns `Ok(())`. This session disables the attempt deadline
+/// (`dapi_request_timeout: Some(0)`) and holds the listeners until after
+/// the stop and the next start, then closes them.
 #[test]
 fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     let _serial = serial();
     let dir = dw_testutil::private_tempdir();
     let hole = blackhole();
-    let (engine, s) = session_on(dir.path(), &hole, false);
+    let (engine, s) = session_held(dir.path(), &hole);
+    // After the engine, so a panic — the stop, restart, and shutdown
+    // bounds below included — drops this first and closes the listeners
+    // before the engine's drop thread joins the passes.
+    let release = ReleaseListeners(hole);
     let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
     give_identity(&engine, &s, id);
     engine.block_on(s.start_spv()).unwrap();
@@ -472,7 +521,12 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     });
 
     let stopping = Instant::now();
-    let stopped = engine.block_on(s.stop_spv());
+    // `block_on` drives this on the engine's tokio runtime. The outer
+    // bound fails the test if a stop stops draining, instead of hanging
+    // the job. With no attempt deadline the pass does not end on its own.
+    let stopped = engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), s.stop_spv()).await })
+        .expect("the stop returned within 60 s");
     eprintln!(
         "stop with a stuck pass took {:?}: {stopped:?}",
         stopping.elapsed()
@@ -480,13 +534,30 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     assert!(names_only_stuck_loops(&stopped), "{stopped:?}");
     assert_eq!(s.spv_state().unwrap(), SpvState::Stopped);
 
-    let starting = Instant::now();
-    engine.block_on(s.start_spv()).unwrap();
-    let took = starting.elapsed();
-    eprintln!("the next start_spv took {took:?}");
-    assert!(took < Duration::from_millis(100), "{took:?}");
-    assert_eq!(s.spv_state().unwrap(), SpvState::Starting);
-    engine.block_on(engine.shutdown()).unwrap();
+    // Allow scheduler delay, but not a full 10 s coordinator drain. A
+    // restart that waits for the held pass hits this bound and drops
+    // `release` on the way out, so the test fails instead of hanging.
+    engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(5), s.start_spv()).await })
+        .expect("restart returned before the drain budget")
+        .unwrap();
+    assert!(
+        manager.dashpay_sync().is_syncing(),
+        "restart returned while the DashPay pass was still in flight"
+    );
+    assert_ne!(s.spv_state().unwrap(), SpvState::Stopped);
+    drop(release);
+    wait_until("the held passes end", Duration::from_secs(10), || {
+        !manager.dashpay_sync().is_syncing()
+            && !manager.identity_sync().is_syncing()
+            && !manager.dpns_sync().is_syncing()
+            && !manager.platform_address_sync().is_syncing()
+            && !manager.shielded_sync().is_syncing()
+    });
+    engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(60), engine.shutdown()).await })
+        .expect("the shutdown returned within 60 s")
+        .unwrap();
 }
 
 /// Reads `spv_state` as each `SpvStateChanged{running: true}` is emitted.

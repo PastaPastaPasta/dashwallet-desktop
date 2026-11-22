@@ -393,7 +393,7 @@ impl NetworkSession {
         self.save_operation(wallet, row, Vec::new()).await?;
         drop(updating);
         let w = self.wallet(&wallet).await?;
-        let summary = self.summary_of(&w, &tx, &[], fee, None).await;
+        let summary = self.summary_of(&w, &tx, &[], fee, None).await?;
         self.deliver(
             wallet,
             Delivery {

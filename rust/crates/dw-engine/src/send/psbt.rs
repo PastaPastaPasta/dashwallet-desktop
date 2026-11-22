@@ -267,7 +267,7 @@ impl TxDraft {
                 check_against_plan(&tx, &r.plan, &change).map_err(|m| m.into_error())?;
                 let fingerprint = session.master_fingerprint(&this.wallet_id).await;
                 let history = session.hub.history.snapshot(&this.wallet_id);
-                let state = wallet.state().await;
+                let state = crate::wallet_read::info_of(&wallet).await?;
                 let info = &state.core_wallet;
                 let network = this.network();
                 let inputs = tx
@@ -359,7 +359,7 @@ impl NetworkSession {
             };
             let w = this.wallet(&id).await?;
             let owned = {
-                let state = w.state().await;
+                let state = crate::wallet_read::info_of(&w).await?;
                 ownership(&state.core_wallet, &psbt, network)
             };
             let external_sent = base
@@ -438,7 +438,7 @@ impl NetworkSession {
             }
             let network = this.network.core_network();
             let owned = {
-                let state = w.state().await;
+                let state = crate::wallet_read::info_of(&w).await?;
                 ownership(&state.core_wallet, &psbt, network)
             };
             let fee = dw_psbt::analyze(&psbt, network)
@@ -534,8 +534,10 @@ impl NetworkSession {
                 let Ok(w) = this.wallet(&id).await else {
                     continue;
                 };
+                #[cfg(test)]
+                crate::coins::pause_at(&this.coin_fences.pause_ownership).await;
                 let owns = {
-                    let state = w.state().await;
+                    let state = crate::wallet_read::info_of(&w).await?;
                     !ownership(&state.core_wallet, &psbt, network)
                         .paths
                         .is_empty()

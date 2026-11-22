@@ -15,9 +15,11 @@ import type { GrantModel } from "../../tools/grant";
 import { PsbtModel, SESSION_BROADCASTS } from "../../tools/psbt";
 import { useAcrossLock } from "../../app/acrossLock";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { NotYet, Outcome, ToolCard } from "./common";
 
 export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; walletId: string | null; network: NetworkInfo }) {
+  const t = useT();
   const b = useBackend();
   // Amounts in the display unit (U-04 D4); General changes it on another route, which remounts this.
   const shown = useDisplay(network);
@@ -55,11 +57,11 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
   return (
     <div className="tool-stack" data-testid="tools-psbt">
       <ToolCard
-        title="Load a PSBT"
+        title={t("tools.psbt.loadTitle")}
         testId="psbt-load"
         actions={
           <DashButton variant="tintedBlue" size="small" data-testid="psbt-open-file" disabled={busy} onClick={() => void load()}>
-            Load from file…
+            {t("tools.psbt.loadFromFile")}
           </DashButton>
         }
       >
@@ -70,7 +72,7 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
             void model.loadText(pasted);
           }}
         >
-          <label htmlFor={`${id}-paste`}>Or paste a PSBT (base64)</label>
+          <label htmlFor={`${id}-paste`}>{t("tools.psbt.pasteLabel")}</label>
           <textarea
             id={`${id}-paste`}
             className="tool-field tool-message mono"
@@ -82,20 +84,20 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
           />
           <div className="tool-actions">
             <DashButton type="submit" variant="tintedBlue" size="small" data-testid="psbt-load-text" disabled={busy || pasted.trim() === ""}>
-              Load
+              {t("tools.psbt.loadButton")}
             </DashButton>
           </div>
         </form>
       </ToolCard>
       <Outcome ok={false} text={model.error} testId="psbt-error" />
-      {step === "loading" && <LoadingState testId="psbt-loading" text="Reading the PSBT" />}
+      {step === "loading" && <LoadingState testId="psbt-loading" text={t("tools.psbt.loading")} />}
       {model.psbt && (
         <ToolCard
-          title="PSBT Operations"
+          title={t("tools.psbt.operationsTitle")}
           testId="psbt-operations"
           actions={
             <DashButton variant="plainBlue" size="small" data-testid="psbt-close" disabled={busy} onClick={() => model.close()}>
-              Close
+              {t("tools.psbt.close")}
             </DashButton>
           }
         >
@@ -117,10 +119,10 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
           )}
           <div className="tool-actions">
             <DashButton variant="filledBlue" size="small" data-testid="psbt-sign" disabled={!model.canSign} onClick={() => void model.sign()}>
-              {step === "signing" ? "Signing…" : "Sign Tx"}
+              {step === "signing" ? t("tools.psbt.signing") : t("tools.psbt.signButton")}
             </DashButton>
             <DashButton variant="filledBlue" size="small" data-testid="psbt-broadcast" disabled={!model.canBroadcast} onClick={() => void model.broadcast()}>
-              {step === "broadcasting" ? "Broadcasting…" : "Broadcast Tx"}
+              {step === "broadcasting" ? t("tools.psbt.broadcasting") : t("tools.psbt.broadcastButton")}
             </DashButton>
             <DashButton
               variant="tintedGray"
@@ -130,16 +132,16 @@ export function PsbtTab({ grants, walletId, network }: { grants: GrantModel; wal
               data-copied={copied || undefined}
               onClick={() => void copy(model.psbt!).then((ok) => ok && model.copied())}
             >
-              {copied ? <CopiedLabel /> : "Copy to Clipboard"}
+              {copied ? <CopiedLabel /> : t("tools.psbt.copyToClipboard")}
             </DashButton>
             <DashButton variant="tintedGray" size="small" data-testid="psbt-save" disabled={busy || !model.psbt} onClick={() => void model.save()}>
-              Save…
+              {t("tools.psbt.save")}
             </DashButton>
           </div>
         </ToolCard>
       )}
-      <NotYet title="External signer" testId="psbt-external-signer-not-yet">
-        Signing with a hardware wallet is coming soon.
+      <NotYet title={t("tools.psbt.externalSignerTitle")} testId="psbt-external-signer-not-yet">
+        {t("tools.psbt.externalSignerSoon")}
       </NotYet>
     </div>
   );

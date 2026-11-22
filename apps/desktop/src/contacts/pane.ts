@@ -8,7 +8,6 @@ import type { ContactActivityItem } from "../api/generated/ContactActivityItem";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CostTable } from "../api/generated/CostTable";
 import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
-import { contacts } from "../i18n/catalog/contacts";
 import { t } from "../i18n";
 import { relationTitle, shownName } from "./model";
 
@@ -20,9 +19,6 @@ export type PaneActions =
   | { kind: "contact"; payBlocked: string | null; payNote: string | null }
   | { kind: "ignored" }
   | { kind: "none" };
-
-/** English, for Pay and Notifications until their areas read `contacts.pane.enableFirst`. */
-export const ENABLE_FIRST: string = contacts.pane.enableFirst;
 
 /** The actions of `c`'s relation; `hasKeys` is whether the main identity has its DashPay keys
  * (`undefined` while unknown: Accept stays offered and the engine refuses if need be). */
@@ -40,9 +36,6 @@ export function paneActions(c: Pick<ContactSummaryInfo, "relation" | "channel">,
       return { kind: "none" };
   }
 }
-
-/** English, for Pay until its area reads `contacts.pane.broken`. */
-export const BROKEN: string = contacts.pane.broken;
 
 /** D9, by the DIP-15 channel: only a broken one holds Pay back (DP3-01 D19: a payment finishes a
  * channel's setup); the others say why a payment may not go through yet. */

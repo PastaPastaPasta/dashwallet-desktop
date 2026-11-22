@@ -3488,9 +3488,22 @@ mod tests {
         line: &str,
         bound: Duration,
     ) -> Result<Value, CliError> {
+        let cmd = parse(line).unwrap();
+        abandoned_after(engine, session, bound, |engine, session| {
+            super::run(engine, session, passphrase, cmd)
+        })
+    }
+
+    /// [`assert_abandoned`] for any `command`.
+    fn abandoned_after(
+        engine: Engine,
+        session: Arc<NetworkSession>,
+        bound: Duration,
+        command: impl FnOnce(&Engine, &Arc<NetworkSession>) -> Result<Value, CliError>,
+    ) -> Result<Value, CliError> {
         let _exclusive = crate::teardown::exclusive();
         let start = std::time::Instant::now();
-        let result = super::run(&engine, &session, passphrase, parse(line).unwrap());
+        let result = command(&engine, &session);
         let teardown = crate::teardown::shut_down(engine, &session, false);
         let elapsed = start.elapsed();
         let why = teardown.expect_err("the engine was shut down");
@@ -3504,9 +3517,11 @@ mod tests {
     /// r5's sketch). The engine has two workers. One task parks whichever
     /// is free, however long it takes to come free; a second is queued for
     /// the other, which is the emitting one until its task has unwound.
+    /// `wedged` is set once both are, just before the panic.
     struct WedgeOn {
         when: fn(&EngineEvent) -> bool,
         armed: AtomicBool,
+        wedged: AtomicBool,
         session: std::sync::Mutex<Option<Arc<NetworkSession>>>,
     }
 
@@ -3525,9 +3540,37 @@ mod tests {
                     .queued
                     .recv_timeout(WEDGE_WAIT)
                     .expect("the second parked task was never queued");
+                self.wedged.store(true, Ordering::SeqCst);
                 panic!("injected event callback panic");
             }
         }
+    }
+
+    /// A session's stdin that ends once its [`WedgeOn`] has wedged the
+    /// engine and the panic has marked it poisoned, so the teardown after
+    /// the session cannot run before.
+    struct EndsOnceWedged(Arc<WedgeOn>);
+
+    impl Read for EndsOnceWedged {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            self.fill_buf().map(<[u8]>::len)
+        }
+    }
+
+    impl BufRead for EndsOnceWedged {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            let start = std::time::Instant::now();
+            while !(self.0.wedged.load(Ordering::SeqCst) && dw_engine::engine_poisoned()) {
+                assert!(
+                    start.elapsed() < WEDGE_WAIT * 2,
+                    "the engine was never wedged"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(&[])
+        }
+
+        fn consume(&mut self, _: usize) {}
     }
 
     /// An open regtest session whose sink is a [`WedgeOn`], not armed yet.
@@ -3539,6 +3582,7 @@ mod tests {
         let sink = Arc::new(WedgeOn {
             when,
             armed: AtomicBool::new(false),
+            wedged: AtomicBool::new(false),
             session: std::sync::Mutex::new(None),
         });
         let engine = Engine::new(
@@ -3590,7 +3634,10 @@ mod tests {
     /// `start_spv` call has returned) as it announces SPV running, so
     /// `--spv` goes on to the command. The panic marked the engine
     /// poisoned: it fails its probe before SPV is stopped or the engine is
-    /// shut down.
+    /// shut down. `spv_state` reads `Running` before the event is sent, so
+    /// the command is a session whose stdin ends only once the engine is
+    /// wedged and poisoned: a one-shot command could reach the SPV stop
+    /// first (#252).
     #[test]
     fn a_panic_in_the_spv_start_task_abandons_a_failed_engine() {
         let dir = dw_testutil::private_tempdir();
@@ -3598,12 +3645,19 @@ mod tests {
             matches!(e, EngineEvent::SpvStateChanged { running: true, .. })
         });
         sink.armed.store(true, Ordering::SeqCst);
+        let mut stdin = EndsOnceWedged(sink);
+        let cmd = parse("dashpay session --spv").unwrap();
         let bound = crate::teardown::PROBE_TIMEOUT * 3;
-        let _ = assert_abandoned(engine, session, None, "dashpay status --spv", bound);
-        assert!(
-            !sink.armed.load(Ordering::SeqCst),
-            "the start task never ran"
-        );
+        let result = abandoned_after(engine, session, bound, |engine, session| {
+            let ctx = Ctx {
+                engine,
+                session,
+                passphrase: None,
+                wallet: None,
+            };
+            exec(&ctx, cmd, &mut stdin, &mut std::io::sink())
+        });
+        assert_eq!(result.unwrap(), json!({"requests": 0}));
     }
 
     /// Sol r5 finding 2: the SPV stop's task panics after an ordinary
