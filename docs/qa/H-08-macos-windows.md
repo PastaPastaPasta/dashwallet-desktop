@@ -215,6 +215,10 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
           `robocopy $Bak $Root /E; if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }`;
           `Compare-Object (Get-Tree $Bak) (Get-Tree $Root)` prints nothing.
 
+        Run these one at a time, and if any of them prints an error or a `False`/`True` other than the one expected,
+        stop there: do not run the next command, and do not open the app. A failed move leaves the live root where it
+        was, and the copy that follows would write into it.
+
         Open the candidate. Expected: the unlock (E) or open (S) as in step 8; the wallet name, the address book, the
         receive request, the labels, the Settings values and the signature as in baseline 1. Once the wallet has
         synced: the balance of baseline 2, and exactly one Activity row with step 10's txid.
