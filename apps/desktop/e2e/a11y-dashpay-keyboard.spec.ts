@@ -550,7 +550,7 @@ test("defect (#287): Tab past the bell popover's last control moves focus behind
   await expect.poll(() => bellState(page)).toMatch(/^(closed|focus kept)$/);
 });
 
-test("defect (#288): while a contact payment is sent, Confirm payment leaves focus on <body>", async ({ page }) => {
+test("keyboard only: while a contact payment is sent, Confirm payment keeps focus in the dialog, then the result's Close takes it (#288)", async ({ page }) => {
   const errors = await open(page, "dashpay-registered");
   await goTo(page, "pay");
   await toPayReview(page);
@@ -558,20 +558,21 @@ test("defect (#288): while a contact payment is sent, Confirm payment leaves foc
   const passphrase = page.getByTestId("pay-confirm-passphrase");
   await expect(passphrase).toBeFocused();
   await page.keyboard.type("demo");
-  // The network holds the broadcast, as a slow one would.
-  await page.evaluate(() => void window.__dwFixture!.hold("draft_broadcast"));
+  // The network holds the broadcast, as a slow one would. Enter disables the passphrase field
+  // while the payment is authorized, prepared and broadcast: the dialog itself keeps the focus.
+  const release = await page.evaluateHandle(() => window.__dwFixture!.hold("draft_broadcast"));
   await page.keyboard.press("Enter");
   await expect.poll(() => page.evaluate(() => window.__dwFixture!.calls.includes("draft_broadcast"))).toBe(true);
   const confirm = page.getByTestId("pay-confirm");
   await expect(confirm).toBeVisible();
   await expect(passphrase).toBeDisabled();
   await rendered(page);
-  expect(errors).toEqual([]);
-  test.fail(
-    true,
-    "Pay ▸ Confirm payment: Enter disables the passphrase field while the payment is authorized, prepared and broadcast, and focus falls to <body> until the result; expected focus kept in the dialog (on the dialog itself or its sending status).",
-  );
   await expect.poll(async () => ((await holdsFocus(confirm)) ? "in Confirm payment" : await focusName(page))).toBe("in Confirm payment");
+  // The result replaces it and focuses its Close button.
+  await release.evaluate((r) => r());
+  await expect(page.getByTestId("pay-result")).toBeVisible();
+  await expect(page.getByTestId("pay-result-close")).toBeFocused();
+  expect(errors).toEqual([]);
 });
 
 // A contact action's result goes in `Outcome` (src/screens/tools/common.tsx). A status region that
