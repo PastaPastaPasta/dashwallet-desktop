@@ -3,6 +3,7 @@
 // lock screen's policy (`LockModel.attempt`): `authorize` counts a failure as `unlock` does.
 
 import type { Backend } from "../api/backend";
+import { t } from "../i18n";
 import { LockModel } from "./lock";
 import { failureText, Model, type WalletChoice } from "./model";
 import { wordsOf } from "./words";
@@ -10,11 +11,18 @@ import { wordsOf } from "./words";
 export type RecoveryStep = "loading" | "wallet" | "confirm" | "working" | "shown" | "unavailable" | "failed";
 
 export const RecoveryText = {
-  title: "Recovery phrase",
-  warning:
-    "Anyone with your recovery phrase can take your Dash. Never share it, and make sure no one can see your screen.",
-  writeDown: "Write down these words in order and keep them somewhere safe. Anyone with them can spend your funds.",
-  noPhrase: "No wallet on this network has a recovery phrase in Dash Wallet.",
+  get title() {
+    return t("onboarding.recovery.title");
+  },
+  get warning() {
+    return t("onboarding.recovery.warning");
+  },
+  get writeDown() {
+    return t("onboarding.recovery.writeDown");
+  },
+  get noPhrase() {
+    return t("onboarding.recovery.noPhrase");
+  },
 };
 
 type Api = Pick<Backend, "lockStatus" | "unlock" | "unlockMixingOnly" | "listWallets" | "authorize" | "revealMnemonic" | "revokeGrant">;

@@ -24,7 +24,8 @@ import { usePlatformHold } from "./PlatformMoveSheet";
 import { ShieldedSheet, useFormats } from "./ShieldedSheet";
 import { GrantSheet } from "./tools/common";
 
-const ACTION_LABEL: Record<CardAction, string> = { finish: C.finish, finishAll: C.finishAll, checkAgain: C.checkAgain, details: C.details, retry: C.retry, dismiss: C.dismiss };
+/** Read when drawn, so the labels follow the language in use. */
+const actionLabel = (a: CardAction): string => C[a];
 
 export function UnfinishedTransfersCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
   const backend = useBackend();
@@ -151,7 +152,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
             <div className="shielded-card-actions">
               {view.actions.map((a) => (
                 <DashButton key={a} variant="tintedBlue" size="small" data-testid={`unfinished-${a}`} onClick={run[a]}>
-                  {ACTION_LABEL[a]}
+                  {actionLabel(a)}
                 </DashButton>
               ))}
             </div>

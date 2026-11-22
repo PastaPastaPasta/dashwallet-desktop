@@ -54,7 +54,8 @@ pub struct ShieldedStatus {
     pub unrecorded_spends: Vec<UnrecordedSpend>,
     /// The note-tree position scanned to; `null` before a completed scan.
     pub synced_index: Option<u64>,
-    /// Unix seconds of the last completed sync pass.
+    /// When the pool was last scanned, or last proved unchanged with nothing
+    /// to scan. Unix seconds, this session.
     pub last_sync_at: Option<u64>,
     pub syncing: bool,
     /// The prover is ready, so a spend proves at once.
