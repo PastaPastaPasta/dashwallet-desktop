@@ -71,17 +71,25 @@ env:
   DWD_SWIFT_LINUX_SUITES: DashKitTests|DesignTokensTests|RepoChecksTests|WalletRuntimeTests|WalletFeaturesTests|PlatformServicesDesktopTests|SwiftCrossUIPatchTests
 
 jobs:
-  # A pull request that changes only documentation (docs/ outside docs/contracts and the generated
-  # E0-13 coverage table, or *.md elsewhere) and whose paths are valid on Windows skips the four required
-  # jobs, which then report success. Every other event, and any failure here, runs them. This job is a
-  # required check too: a run cancelled while it is pending skips the four jobs, and its own cancelled
-  # check then blocks the merge.
+  # What a pull request runs, by its changed files (docs/ci.md, "Pull request tiers"):
+  # - docs: every file is documentation (docs/ outside docs/contracts and the generated E0-13
+  #   coverage table, or *.md elsewhere): the four required jobs are skipped.
+  # - fast: every file is documentation, an i18n catalog, a renderer stylesheet, a renderer unit
+  #   test, a Playwright spec or baseline, or renderer source in one of the listed areas whose
+  #   path names no funds word: only desktop-renderer runs (tokens, tsc, vitest, bundle checks).
+  #   Playwright and the platform matrix run on main after the merge.
+  # - full: anything else, including every funds path (send, signing, CoinJoin, keys, wallet
+  #   storage, fees and coin selection, the engine, the IPC layer and the Swift and Rust
+  #   bindings) and every path not listed: all four jobs.
+  # Skipped required jobs report success. Every other event, and any failure here, runs them all.
+  # This job is a required check too: a run cancelled while it is pending skips the four jobs,
+  # and its own cancelled check then blocks the merge.
   changes:
     name: What this pull request changes
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      code: ${{ steps.diff.outputs.code }}
+      tier: ${{ steps.diff.outputs.tier }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ github.event_name == 'pull_request' }}
@@ -90,23 +98,35 @@ jobs:
           persist-credentials: false
       - id: diff
         run: |
-          code=true
+          tier=full
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             changed=$(git diff --no-renames --name-only HEAD^1 HEAD)
-            printf '%s\n' "$changed"
-            if [[ -n "$changed" ]] \
-              && ! grep -vE '^docs/|\.md$' <<<"$changed" >/dev/null \
-              && ! grep -E '^docs/contracts/|^docs/design/E0-13-facade-coverage\.md$' <<<"$changed" >/dev/null; then
-              code=false
-              ci/github/windows-paths.py
-            fi
+            docs_code='^docs/contracts/|^docs/design/E0-13-facade-coverage\.md$'
+            docs='^docs/|\.md$'
+            copy_or_test='^apps/desktop/(src/i18n/catalog/[^/]+\.ts|src/styles/[^/]+\.css|src/.+\.test\.tsx?|e2e/.+)$'
+            funds='send|sign|psbt|coin|fee|key|seed|phrase|mnemonic|vault|wallet|backup|restore|recover|lock|secur|biometr|transfer|withdraw|shield|mix|protx|masternode|collateral|governance|top-?up|fund|pay|utxo|balance|credit|regist|asset|spend|amount|address|invit|tx|pin'
+            ui_src='^apps/desktop/src/(components|contacts|dashpay|fiat|fixture|format|history|i18n|network|notifications|screens|settings|styles|tools)/.+\.(ts|tsx|css)$'
+            tier=docs
+            while IFS= read -r f; do
+              if [[ $f =~ $docs_code ]]; then kind=full
+              elif [[ $f =~ $docs ]]; then kind=docs
+              elif [[ $f =~ $copy_or_test ]]; then kind=fast
+              elif [[ ${f,,} =~ $funds ]]; then kind=full
+              elif [[ $f =~ $ui_src ]]; then kind=fast
+              else kind=full
+              fi
+              echo "$kind $f"
+              case $kind in full) tier=full ;; fast) [[ $tier == full ]] || tier=fast ;; esac
+            done <<<"$changed"
+            [[ -n "$changed" ]] || tier=full
+            [[ $tier == full ]] || ci/github/windows-paths.py
           fi
-          echo "code=$code" | tee -a "$GITHUB_OUTPUT"
+          echo "tier=$tier" | tee -a "$GITHUB_OUTPUT"
 
   lint:
     name: Rust lint (fmt, clippy)
     needs: changes
-    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && (needs.changes.outputs.tier == 'docs' || needs.changes.outputs.tier == 'fast')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     defaults:
@@ -157,7 +177,7 @@ jobs:
   rust-linux:
     name: Rust tests (Linux)
     needs: changes
-    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && (needs.changes.outputs.tier == 'docs' || needs.changes.outputs.tier == 'fast')) }}
     runs-on: ubuntu-24.04
     # Cold runs (no cache restored) take about 45 min, warm ones under 20. This job alone saves
     # the ci-Linux cache, only on main and only when it succeeds, so it must be able to finish cold.
@@ -256,7 +276,7 @@ jobs:
   desktop-renderer:
     name: Tauri renderer (tokens, tsc, vitest)
     needs: changes
-    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.tier == 'docs') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -297,7 +317,7 @@ jobs:
   ui-playwright:
     name: UI tests (Playwright, axe)
     needs: changes
-    if: ${{ !cancelled() && !(needs.changes.result == 'success' && needs.changes.outputs.code == 'false') }}
+    if: ${{ !cancelled() && !(needs.changes.result == 'success' && (needs.changes.outputs.tier == 'docs' || needs.changes.outputs.tier == 'fast')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     # The browsers and their libraries, pinned to @playwright/test in package.json (bump both).
