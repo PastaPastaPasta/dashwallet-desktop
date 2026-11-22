@@ -97,7 +97,8 @@ fn a_payment_sent_before_a_crash_stays_pending_and_keeps_its_coin_out() {
 
 /// The payment never left (the app quit just before the hand-off, which
 /// the next start cannot tell apart). Abandoning it frees A once the scan
-/// passes its funding block, and the mark goes at the next load.
+/// passes its funding block. Its mark stays (an abandoned payment's does
+/// until it is ChainLocked) and claims nothing.
 #[test]
 fn a_payment_marked_before_a_crash_can_be_abandoned() {
     let (_dir, engine, session, id, paid, payment) = sent_unrecorded();
@@ -121,7 +122,10 @@ fn a_payment_marked_before_a_crash_can_be_abandoned() {
 
     let session = reopen(&engine, session);
     assert_holds(&engine, &session, id, &want, "then a restart");
-    assert!(!sent_marks(&session, id).contains(&payment.txid()));
+    assert!(
+        sent_marks(&session, id).contains(&payment.txid()),
+        "the mark went"
+    );
     assert!(
         (session.hub.history.get(&id, &payment.txid())).is_none_or(|e| e.is_abandoned()),
         "not live in the history"
@@ -172,8 +176,9 @@ fn a_payment_sent_before_a_crash_and_relayed_later_counts_once() {
     assert_holds(&engine, &session, id, &want, "then a restart");
 }
 
-/// The payment is mined after the restart: A stays out, its change counts,
-/// and the mark goes at the next load.
+/// The payment is mined after the restart: A stays out and its change
+/// counts. Its mark stays until the payment is ChainLocked, and claims
+/// nothing meanwhile.
 #[test]
 fn a_payment_sent_before_a_crash_and_mined_later_settles() {
     let (_dir, engine, session, id, paid, payment) = sent_unrecorded();
@@ -193,7 +198,10 @@ fn a_payment_sent_before_a_crash_and_mined_later_settles() {
 
     let session = reopen(&engine, session);
     assert_holds(&engine, &session, id, &want, "then a restart");
-    assert!(!sent_marks(&session, id).contains(&payment.txid()));
+    assert!(
+        sent_marks(&session, id).contains(&payment.txid()),
+        "the mark went"
+    );
 }
 
 /// A mark an earlier build wrote names the coins alone. With no record of
