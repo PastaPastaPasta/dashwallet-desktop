@@ -35,7 +35,8 @@ fn listed(f: &SendFailure) {
         | F::NoPeers
         | F::BroadcastRejected { .. }
         | F::BroadcastUnknown { .. }
-        | F::Cancelled => {}
+        | F::Cancelled
+        | F::HeldUntilRestart => {}
     }
 }
 
@@ -71,6 +72,7 @@ fn failures() -> Vec<SendFailure> {
         F::BroadcastRejected { reason: "r".into() },
         F::BroadcastUnknown { reason: "r".into() },
         F::Cancelled,
+        F::HeldUntilRestart,
     ]
 }
 

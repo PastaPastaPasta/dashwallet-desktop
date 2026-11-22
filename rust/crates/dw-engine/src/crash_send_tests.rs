@@ -686,10 +686,15 @@ fn a_mark_that_cannot_be_dropped_keeps_the_payment_held() {
     let prepared = prepared.unwrap();
     let path = session.data_dir().join(dw_appdb::APP_DB_FILE);
     *draft.broadcaster.lock().unwrap() = Some(Arc::new(RefuseAndBreakTheMarks(path.clone())) as _);
+    let sent = engine.block_on(draft.broadcast(Arc::clone(&prepared)));
     assert!(
-        engine
-            .block_on(draft.broadcast(Arc::clone(&prepared)))
-            .is_err()
+        matches!(
+            sent,
+            Err(crate::EngineError::Send(
+                crate::send::SendFailure::HeldUntilRestart
+            ))
+        ),
+        "{sent:?}"
     );
     dw_appdb::fault::disarm(&path);
     let txid: Txid = prepared.summary().txid.parse().unwrap();
@@ -705,6 +710,26 @@ fn a_mark_that_cannot_be_dropped_keeps_the_payment_held() {
         "{abandoned:?}"
     );
     assert!(!spendable(&engine, &session, id, a), "its coin is offered");
+    drop(draft);
+
+    // The way out: after a restart the payment is listed pending from its
+    // copy, and its Abandon frees A.
+    let session = reopen(&engine, session);
+    assert!(
+        listed(&engine, &session, id, txid),
+        "listed after the restart"
+    );
+    let extras = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
+    assert!(extras.can_abandon, "{extras:?}");
+    abandon(&engine, &session, id, txid);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert_holds(
+        &engine,
+        &session,
+        id,
+        &outputs(&paid),
+        "abandoned, then scanned",
+    );
 }
 
 /// The app stops after an Abandon's sweep removed the payment's stored
@@ -726,7 +751,10 @@ fn an_abandon_stopped_after_its_sweep_stays_abandoned_after_a_restart() {
     super::own_spend_disk_tests::wait_stored(&session, id, &[payment.txid()]);
     assert!(sent_marks(&session, id).contains(&payment.txid()), "marked");
 
-    crate::tx_actions::stop_after_sweep::arm(&*session.live().unwrap().persister);
+    crate::tx_actions::sweep_stop::arm(
+        &*session.live().unwrap().persister,
+        crate::tx_actions::sweep_stop::Stop::AfterFlush,
+    );
     let (s, txid) = (Arc::clone(&session), payment.txid());
     let stopped = engine.block_on(session.on_runtime(async move {
         let manager = s.manager()?;

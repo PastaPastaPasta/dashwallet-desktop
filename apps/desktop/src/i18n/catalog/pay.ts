@@ -56,6 +56,8 @@ export const pay = {
     rejectedReason: "The network rejected the transaction: {reason}. The payment was not sent.",
     broadcastUnknown: "The payment may have been sent: the network did not answer in time.",
     cancelled: "The payment was cancelled before anything was sent.",
+    heldUntilRestart:
+      "The payment was not sent, but its coins stay reserved until you restart Dash Wallet. After the restart it's listed as pending in Activity; abandon it there to get the coins back.",
     contactLocked: "Another payment to this contact is still being sent or may have been sent. Pay again once it is settled.",
     pendingIncoming: "Accept the contact request first, or use Accept and pay.",
     ineligible: "This contact cannot be paid now.",

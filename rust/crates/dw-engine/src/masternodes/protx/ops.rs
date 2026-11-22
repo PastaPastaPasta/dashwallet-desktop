@@ -101,6 +101,7 @@ pub(crate) fn error_code(e: &EngineError) -> String {
         F::BroadcastRejected { .. } => "broadcast_rejected",
         F::BroadcastUnknown { .. } => "broadcast_unknown",
         F::Cancelled => "cancelled",
+        F::HeldUntilRestart => "held_until_restart",
     };
     format!("send.{name}")
 }

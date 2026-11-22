@@ -195,6 +195,10 @@ pub enum SendFailure {
     /// `send.cancelled`).
     #[error("cancelled before anything was sent")]
     Cancelled,
+    /// Not sent, but its saved copy could not be removed: its coins stay
+    /// reserved until a restart lists it pending, to be abandoned.
+    #[error("not sent; its coins stay reserved until a restart")]
+    HeldUntilRestart,
 }
 
 impl From<SendFailure> for EngineError {
@@ -1578,7 +1582,7 @@ impl TxDraft {
             *prepared.phase() = next;
             return Err(e);
         }
-        let (outcome, mut next) = match &prepared.lease {
+        let (mut outcome, mut next) = match &prepared.lease {
             Some((lease, artifact)) => self.fenced(&prepared, lease, *artifact, first).await,
             None => {
                 let outcome = self.dispatch(&prepared, first, None).await;
@@ -1592,6 +1596,7 @@ impl TxDraft {
             || (first && next == Phase::Pending && attempt_outcome(&outcome) == Outcome::NotSent);
         if unsent && !self.drop_mark(&prepared).await {
             next = Phase::Unknown;
+            outcome = Err(SendFailure::HeldUntilRestart.into());
         }
         // The contact settles before the phase leaves `Broadcasting`.
         self.settle_contact(&prepared, first, next).await;

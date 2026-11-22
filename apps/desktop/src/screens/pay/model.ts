@@ -253,6 +253,8 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
       return { text: t("pay.error.broadcastUnknown"), field: null };
     case "send.cancelled":
       return { text: t("pay.error.cancelled"), field: null };
+    case "send.held_until_restart":
+      return { text: t("pay.error.heldUntilRestart"), field: null };
     // A payment to a contact (DP3-06 D13).
     case "contact.payment_locked":
       return { text: t("pay.error.contactLocked"), field: null };
@@ -474,6 +476,8 @@ export function broadcastFailure(
   unit: Unit = "DASH",
   contact = false,
 ): Outcome {
+  // Not sent, but its coins stay reserved until a restart: no retry, which would send it.
+  if (hasCode(e, "send.held_until_restart")) return { kind: "failed", text: failureText(e, chain, unit) };
   const gone = hasCode(e, "app.unknown_handle");
   const notSent = [...RELEASED, ...(contact ? CONTACT_HELD : [])];
   if (first && (gone || notSent.some((c) => hasCode(e, c)))) return { kind: "failed", text: failureText(e, chain, unit) };

@@ -900,6 +900,7 @@ public final class SendViewModel {
         case .sendPreparedTxSpent: message = L10n.Send.preparedTxSpent
         case .sendNoPeers: message = L10n.Send.noPeers
         case .sendCancelled: message = L10n.Send.cancelled
+        case .sendHeldUntilRestart: message = L10n.Send.heldUntilRestart
         case EngineCode.sendInsufficientMixedFunds: message = L10n.Send.insufficientMixedFunds
         case EngineCode.sendOutpointUnavailable: message = L10n.Send.preselectedCoinsInsufficient
         case EngineCode.sendTxTooLarge: message = L10n.Send.txTooLarge

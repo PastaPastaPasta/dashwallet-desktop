@@ -1222,8 +1222,15 @@ fn an_abandon_whose_sweep_fails_after_its_mark_loads_abandoned() {
         (session.hub.history.get(&id, &txid)).is_some_and(|e| e.is_abandoned()),
         "the payment loads abandoned"
     );
-    mined(&engine, &session, id, TIP, vec![paid]);
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
     assert!(held(&engine, &session, id).contains(&a), "A is credited");
+    assert_holds(
+        &engine,
+        &session,
+        id,
+        &paid_outputs(&paid),
+        "its change is not credited",
+    );
 }
 
 /// An abandoned payment relayed again unlocked by a peer is ignored. Its
@@ -1310,4 +1317,169 @@ fn a_load_with_an_unreadable_abandoned_mark_claims_nothing() {
     assert!(held(&engine, &session, id).contains(&a));
     assert!(stored_unspent(&session, id, a));
     assert!(!sent_marks(&session, id).contains(&payment.txid()));
+}
+
+fn paid_outputs(paid: &Transaction) -> BTreeSet<OutPoint> {
+    (0..paid.output.len() as u32)
+        .map(|v| OutPoint::new(paid.txid(), v))
+        .collect()
+}
+
+fn fail_the_next_sweep(session: &NetworkSession) {
+    (session.hub.fail_abandon_sweep).store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// An abandon whose sweep is not stored in the session: key-wallet dropped
+/// the payment in memory, so its change C is neither held nor offered, and
+/// the payment stays listed pending with Abandon offered. After a restart
+/// the load stores the sweep: C stays out and A comes back.
+#[test]
+fn an_abandon_whose_sweep_fails_offers_no_change_in_the_session() {
+    let (_dir, engine, session, id, payment, _a, paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    let c = change_of(&payment, &own_scripts(&engine, &session, id));
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    assert!(!held(&engine, &session, id).contains(&c), "C is held");
+    assert!(!spendable(&engine, &session, id, c), "C is offered");
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned()),
+        "listed pending in the session"
+    );
+    let extras = engine.block_on(session.tx_detail_extras(id, txid)).unwrap();
+    assert!(extras.can_abandon, "{extras:?}");
+
+    let session = reopen(&engine, session);
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_some_and(|e| e.is_abandoned()),
+        "abandoned after the restart"
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert_holds(
+        &engine,
+        &session,
+        id,
+        &paid_outputs(&paid),
+        "after a restart",
+    );
+}
+
+/// Abandon again after a sweep that was not stored stores it: the record
+/// and C are gone, and A comes back once its funding is scanned.
+#[test]
+fn abandoning_again_after_a_failed_sweep_stores_it() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (_dir, engine, session, id, payment, _a, paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    let c = change_of(&payment, &own_scripts(&engine, &session, id));
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    assert_eq!(
+        try_abandon(&engine, &session, id, txid).unwrap(),
+        BTreeSet::from([txid])
+    );
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    persister.flush(id.0).unwrap();
+    assert!(
+        persister.get_core_tx_record(id.0, &txid).unwrap().is_none(),
+        "the record is swept"
+    );
+    drop(persister);
+    assert!(!stored_unspent(&session, id, c), "C stays stored");
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_some_and(|e| e.is_abandoned()),
+        "listed abandoned"
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert_holds(
+        &engine,
+        &session,
+        id,
+        &paid_outputs(&paid),
+        "abandoned again, then scanned",
+    );
+}
+
+/// The app stops after the sweep was handed to the store but before it was
+/// flushed: the next start loads the payment abandoned, C is not credited,
+/// and A comes back.
+#[test]
+fn an_abandon_stopped_before_its_sweep_is_flushed_loads_abandoned() {
+    let (_dir, engine, session, id, payment, _a, paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    crate::tx_actions::sweep_stop::arm(
+        &*persister,
+        crate::tx_actions::sweep_stop::Stop::BeforeFlush,
+    );
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    assert!(
+        !crate::tx_actions::sweep_stop::armed(&*persister),
+        "the stop was hit"
+    );
+    drop(persister);
+
+    let session = reopen(&engine, session);
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_some_and(|e| e.is_abandoned()),
+        "the payment loads abandoned"
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert_holds(
+        &engine,
+        &session,
+        id,
+        &paid_outputs(&paid),
+        "after a restart",
+    );
+}
+
+/// The load sweeps only payments marked abandoned: a pending payment E
+/// beside an abandoned one whose sweep was not stored keeps its record and
+/// its change.
+#[test]
+fn the_load_sweeps_only_payments_marked_abandoned() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let pay = |coin| {
+        send(
+            &engine,
+            &session,
+            id,
+            CoinSource::Outpoints(vec![coin]),
+            COIN / 2,
+            false,
+        )
+    };
+    let (d, e) = (pay(a), pay(b));
+    mempool(&engine, &session, id, &d);
+    mempool(&engine, &session, id, &e);
+    wait_stored(&session, id, &[d.txid(), e.txid()]);
+    let ce = change_of(&e, &own_scripts(&engine, &session, id));
+    fail_the_next_sweep(&session);
+    assert!(try_abandon(&engine, &session, id, d.txid()).is_err());
+
+    let session = reopen(&engine, session);
+    assert!(
+        (session.hub.history.get(&id, &d.txid())).is_some_and(|x| x.is_abandoned()),
+        "D loads abandoned"
+    );
+    assert!(
+        (session.hub.history.get(&id, &e.txid())).is_some_and(|x| !x.is_abandoned()),
+        "E stays pending"
+    );
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    assert!(
+        persister
+            .get_core_tx_record(id.0, &e.txid())
+            .unwrap()
+            .is_some(),
+        "E's record stays stored"
+    );
+    drop(persister);
+    assert!(
+        held(&engine, &session, id).contains(&ce),
+        "E's change stays"
+    );
 }

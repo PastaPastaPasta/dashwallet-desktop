@@ -93,25 +93,38 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// signed.
 pub(crate) const SENT_PREFIX: &str = "sent:";
 
-/// Tests: the next abandon of a session's wallet store stops right after
-/// its sweep is stored, as if the process stopped there.
+/// Tests: the next abandon sweep of a session's wallet store stops at
+/// `Stop`, as if the process stopped there.
 #[cfg(test)]
-pub(crate) mod stop_after_sweep {
+pub(crate) mod sweep_stop {
     use std::sync::Mutex;
 
-    static ARMED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Stop {
+        /// Stored, not flushed.
+        BeforeFlush,
+        /// Stored and flushed.
+        AfterFlush,
+    }
+
+    static ARMED: Mutex<Vec<(usize, Stop)>> = Mutex::new(Vec::new());
 
     fn key<T>(store: &T) -> usize {
         std::ptr::from_ref(store) as usize
     }
 
-    pub(crate) fn arm<T>(store: &T) {
-        ARMED.lock().unwrap().push(key(store));
+    pub(crate) fn arm<T>(store: &T, stop: Stop) {
+        ARMED.lock().unwrap().push((key(store), stop));
     }
 
-    pub(crate) fn take<T>(store: &T) -> bool {
+    /// Whether a stop is still armed for `store`.
+    pub(crate) fn armed<T>(store: &T) -> bool {
+        ARMED.lock().unwrap().iter().any(|(k, _)| *k == key(store))
+    }
+
+    pub(crate) fn take<T>(store: &T, stop: Stop) -> bool {
         let mut armed = ARMED.lock().unwrap();
-        let found = armed.iter().position(|k| *k == key(store));
+        let found = armed.iter().position(|a| *a == (key(store), stop));
         found.map(|i| armed.remove(i)).is_some()
     }
 }
@@ -267,6 +280,88 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Vec<(Txid, Tra
         let tx: Transaction = deserialize(&hex::decode(hex).ok()?).ok()?;
         (tx.txid() == txid).then_some((txid, tx))
     })
+}
+
+/// Finishes in the wallet store the abandons whose marks are stored but
+/// whose sweeps are not (the mark is the commit point): of `wallets`, each
+/// payment marked abandoned whose record, height-only row or outputs are
+/// still stored is swept, and the coins it spent that no other stored
+/// record spends are released. Only marked payments are swept. Run before
+/// the wallets load, so their change is never credited. A sweep that cannot
+/// be stored fails the load.
+pub(crate) fn finish_marked_abandons(
+    persister: &platform_wallet_storage::SqlitePersister,
+    appdb: &AppDb,
+    db_path: &std::path::Path,
+    wallets: &[WalletId],
+) -> Result<(), EngineError> {
+    let storage = |e: &dyn std::fmt::Display| {
+        EngineError::Storage(format!("finishing an abandoned payment: {e}"))
+    };
+    let mut listed = None;
+    for &wallet in wallets {
+        let (marks, _) = load_abandoned(appdb, wallet);
+        if marks.is_empty() {
+            continue;
+        }
+        let all = match &mut listed {
+            Some(all) => all,
+            None => listed
+                .insert(crate::history_ops::persisted_txids(db_path).map_err(|e| storage(&e))?),
+        };
+        let persisted = all.get(&wallet.0).cloned().unwrap_or_default();
+        let outputs =
+            crate::history_ops::txids_with_outputs(db_path, wallet, marks.iter().map(|(t, _)| *t))
+                .map_err(|e| storage(&e))?;
+        let pending: BTreeMap<Txid, Transaction> = (marks.into_iter())
+            .filter(|(t, _)| {
+                persisted.records.contains(t)
+                    || persisted.recordless.contains(t)
+                    || outputs.contains(t)
+            })
+            .collect();
+        let Some(&root) = pending.keys().next() else {
+            continue;
+        };
+        let mut spent_by_others = HashSet::new();
+        for t in persisted
+            .records
+            .iter()
+            .filter(|t| !pending.contains_key(*t))
+        {
+            match persister.get_core_tx_record(wallet.0, t) {
+                Ok(Some(r)) => {
+                    spent_by_others.extend(r.transaction.input.iter().map(|i| i.previous_output))
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(%wallet, error = %e, "unreadable record beside an abandoned payment's sweep")
+                }
+            }
+        }
+        let released: BTreeSet<OutPoint> = (pending.values())
+            .flat_map(|tx| tx.input.iter().map(|i| i.previous_output))
+            .filter(|o| !pending.contains_key(&o.txid) && !spent_by_others.contains(o))
+            .collect();
+        tracing::info!(%wallet, payments = pending.len(), "finishing abandoned payments the wallet store still holds");
+        let changeset = PlatformWalletChangeSet {
+            core: Some(CoreChangeSet {
+                sweeps: vec![SweepBatch {
+                    txids: pending.keys().copied().collect(),
+                    superseded_by: root,
+                    winner_mined_height: None,
+                    released_outpoints: released.into_iter().collect(),
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        persister
+            .store(wallet.0, changeset)
+            .and_then(|()| persister.flush(wallet.0))
+            .map_err(|e| storage(&e))?;
+    }
+    Ok(())
 }
 
 /// What decides a transaction's actions.
@@ -531,9 +626,13 @@ impl NetworkSession {
                 ..Default::default()
             };
             persister.store(wallet.0, changeset)?;
+            #[cfg(test)]
+            if sweep_stop::take(&*persister, sweep_stop::Stop::BeforeFlush) {
+                return Err(platform_wallet::changeset::PersistenceError::LockPoisoned);
+            }
             persister.flush(wallet.0)?;
             #[cfg(test)]
-            if stop_after_sweep::take(&*persister) {
+            if sweep_stop::take(&*persister, sweep_stop::Stop::AfterFlush) {
                 return Err(platform_wallet::changeset::PersistenceError::LockPoisoned);
             }
             Ok::<_, platform_wallet::changeset::PersistenceError>(())
@@ -828,13 +927,18 @@ impl NetworkSession {
                     .map(|(t, _)| t)
                     .collect();
                 for txid in damaged {
-                    this.abandon_inner(&manager, id, txid).await?;
-                    this.appdb_op(move |db| {
-                        forget_sent(db, id, &[txid]);
-                        Ok(())
-                    })
-                    .await?;
-                    dropped += 1;
+                    match this.abandon_inner(&manager, id, txid).await {
+                        Ok(set) => {
+                            this.appdb_op(move |db| {
+                                forget_sent(db, id, &[txid]);
+                                Ok(())
+                            })
+                            .await?;
+                            dropped += set.len() as u32;
+                        }
+                        Err(EngineError::TxActionRefused(_)) => {}
+                        Err(e) => return Err(e),
+                    }
                 }
             }
             Ok(dropped)

@@ -126,12 +126,12 @@ impl RecordFault {
 /// One wallet's stored transactions: those whose record is stored, and the
 /// recordless ones (height-only rows, kept for their coins).
 #[derive(Default, Clone)]
-struct Persisted {
-    records: Vec<Txid>,
-    recordless: HashSet<Txid>,
+pub(crate) struct Persisted {
+    pub(crate) records: Vec<Txid>,
+    pub(crate) recordless: HashSet<Txid>,
     /// Spends the store's open dropped as not signed by their coins'
     /// owner (`core_dropped_unsigned_spends`): never restored from a mark.
-    dropped: HashSet<Txid>,
+    pub(crate) dropped: HashSet<Txid>,
 }
 
 /// Txids of the stored transactions per wallet, read from `wallet.sqlite`
@@ -164,7 +164,9 @@ fn read_records<'a, E: std::fmt::Display>(
     (records, clean)
 }
 
-fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Persisted>, rusqlite::Error> {
+pub(crate) fn persisted_txids(
+    db_path: &Path,
+) -> Result<HashMap<[u8; 32], Persisted>, rusqlite::Error> {
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -192,16 +194,50 @@ fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Persisted>, rusql
             persisted.records.push(txid);
         }
     }
-    let mut stmt = conn.prepare("SELECT wallet_id, txid FROM core_dropped_unsigned_spends")?;
-    let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
-    })?;
-    for row in rows {
-        let (wallet, txid) = row?;
-        let (Ok(wallet), Ok(txid)) = (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid)) else {
-            continue;
-        };
-        out.entry(wallet).or_default().dropped.insert(txid);
+    type Row = (Vec<u8>, Vec<u8>);
+    let dropped = || -> Result<Vec<Row>, rusqlite::Error> {
+        let mut stmt = conn.prepare("SELECT wallet_id, txid FROM core_dropped_unsigned_spends")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    };
+    match dropped() {
+        Ok(rows) => {
+            for (wallet, txid) in rows {
+                let (Ok(wallet), Ok(txid)) =
+                    (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid))
+                else {
+                    continue;
+                };
+                out.entry(wallet).or_default().dropped.insert(txid);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read the spends the store dropped as unsigned")
+        }
+    }
+    Ok(out)
+}
+
+/// Of `txids`, those with an output of theirs stored for `wallet`.
+pub(crate) fn txids_with_outputs(
+    db_path: &Path,
+    wallet: WalletId,
+    txids: impl IntoIterator<Item = Txid>,
+) -> Result<HashSet<Txid>, rusqlite::Error> {
+    let conn = rusqlite::Connection::open_with_flags(
+        db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    let mut stmt = conn.prepare(
+        "SELECT 1 FROM core_utxos WHERE wallet_id = ?1 AND substr(outpoint, 2, 32) = ?2 LIMIT 1",
+    )?;
+    let mut out = HashSet::new();
+    for txid in txids {
+        let txid_bytes: &[u8] = txid.as_ref();
+        if stmt.exists(rusqlite::params![wallet.0.as_slice(), txid_bytes])? {
+            out.insert(txid);
+        }
     }
     Ok(out)
 }

@@ -443,6 +443,21 @@ impl NetworkSession {
             })
             .await??,
         );
+        // Before any wallet loads: an abandon marked but not swept is swept,
+        // so its change is never credited.
+        {
+            let (persister, appdb) = (Arc::clone(&persister), Arc::clone(&appdb));
+            let db_path = data_dir.join(WALLET_DB_FILE);
+            tokio::task::spawn_blocking(move || {
+                let wallets: Vec<WalletId> = crate::store::registered_wallet_ids(&db_path)
+                    .map_err(|e| EngineError::Storage(format!("wallet list: {e}")))?
+                    .into_iter()
+                    .map(WalletId)
+                    .collect();
+                crate::tx_actions::finish_marked_abandons(&persister, &appdb, &db_path, &wallets)
+            })
+            .await??;
+        }
         // dash-qt loads only the wallets of its settings list; a missing
         // list loads every wallet, and so does one that would load none of
         // them: with no wallet open, closed ones cannot be reached. Such a

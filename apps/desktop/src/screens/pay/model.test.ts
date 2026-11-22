@@ -173,6 +173,14 @@ describe("the engine's refusals", () => {
     expect(broadcastFailure(err("internal"), "test", held, true)).toMatchObject({ kind: "unknown", retry: true });
   });
 
+  it("says a payment not sent whose coins stay reserved needs a restart, with no retry", () => {
+    const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 5, fee: 1 };
+    const text =
+      "The payment was not sent, but its coins stay reserved until you restart Dash Wallet. After the restart it's listed as pending in Activity; abandon it there to get the coins back.";
+    expect(sendErrorText(err("send.held_until_restart"), "test")).toEqual({ text, field: null });
+    for (const first of [true, false]) expect(broadcastFailure(err("send.held_until_restart"), "test", held, first)).toEqual({ kind: "failed", text });
+  });
+
   it("never turns an unknown payment into not sent on a retry", () => {
     const held = { txid: "ab".repeat(32), draft: 1, prepared: 2, amount: 5, fee: 1 };
     expect(broadcastFailure(err("send.no_peers"), "test", held, false)).toMatchObject({ kind: "unknown", retry: true });
