@@ -9,6 +9,7 @@ import { useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { DetailRow } from "../../components/detail";
 import { dashpayKeys } from "../../dashpay/queries";
+import { useT } from "../../i18n";
 import { failureText } from "../../onboarding/model";
 import { dashpayInfo, INFO_COPY } from "../../tools/dashpayInfo";
 import { Outcome, ToolCard, useReloadOnSync } from "./common";
@@ -23,6 +24,7 @@ const trustKeys = {
 const SYNC_NOW_REREAD_MS = 5_000;
 
 export function DashPayInfoCard() {
+  const t = useT();
   const b = useBackend();
   const noteId = useId();
   const walletId = useUi((s) => s.walletId);
@@ -78,7 +80,7 @@ export function DashPayInfoCard() {
       setOutcome({ ok: true, text: INFO_COPY.requested });
       setAsked((n) => n + 1);
     } catch (e) {
-      setOutcome({ ok: false, text: `Could not ask for a DashPay pass: ${failureText(e)}` });
+      setOutcome({ ok: false, text: t("tools.dashpayInfo.requestFailed", { error: failureText(e) }) });
     } finally {
       setAsking(false);
     }
@@ -98,7 +100,7 @@ export function DashPayInfoCard() {
   );
 
   return (
-    <ToolCard title="DashPay" testId="information-dashpay" actions={button}>
+    <ToolCard title={t("tools.dashpayInfo.title")} testId="information-dashpay" actions={button}>
       <div className="dashpay-info-state" role="status" data-testid="information-dashpay-state" data-state={info.state}>
         <span className={`chip chip-${info.tone}`}>{info.chip}</span>
         <span className="dashpay-info-headline">{info.headline}</span>
@@ -118,7 +120,7 @@ export function DashPayInfoCard() {
       {info.state === "error" && (
         <div className="tool-actions">
           <DashButton variant="tintedGray" size="small" data-testid="information-dashpay-retry" onClick={() => void (wallets.isError ? wallets.refetch() : sync.refetch())}>
-            Try again
+            {t("tools.common.tryAgain")}
           </DashButton>
         </div>
       )}

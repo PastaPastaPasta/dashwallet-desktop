@@ -4,6 +4,7 @@
 
 import { hasCode, type Backend } from "../api/backend";
 import type { PeerSummary } from "../api/generated/PeerSummary";
+import { messageTable, t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { NONE } from "./information";
 
@@ -31,7 +32,7 @@ export function formatDuration(secs: number): string {
 
 export interface PeerRow {
   address: string;
-  direction: "Inbound" | "Outbound";
+  direction: string;
   userAgent: string;
   version: string;
   height: string;
@@ -46,7 +47,7 @@ const or = <T,>(v: T | null, show: (v: T) => string) => (v === null ? NONE : sho
 export function peerRow(p: PeerSummary, nowSecs: number): PeerRow {
   return {
     address: p.address,
-    direction: p.inbound ? "Inbound" : "Outbound",
+    direction: p.inbound ? t("tools.peers.inbound") : t("tools.peers.outbound"),
     userAgent: p.userAgent || NONE,
     version: or(p.protocolVersion, String),
     height: or(p.bestHeight, String),
@@ -57,10 +58,7 @@ export function peerRow(p: PeerSummary, nowSecs: number): PeerRow {
   };
 }
 
-export const PeersText = {
-  rotated: "Dropped every connection; connecting to other peers.",
-  noPeers: "No other peers are known yet. Try again later.",
-};
+export const PeersText = messageTable("tools.peers", ["rotated", "noPeers"]);
 
 type Api = Pick<Backend, "peers" | "rotatePeers">;
 
@@ -80,7 +78,7 @@ export class PeersModel extends Model {
       this.peers = await this.api.peers();
       this.error = null;
     } catch (e) {
-      this.error = `The peers could not be read: ${failureText(e)}`;
+      this.error = t("tools.peers.loadFailed", { error: failureText(e) });
     }
     this.changed();
   }

@@ -7,6 +7,7 @@ import type { DisplayUnit } from "../api/generated/DisplayUnit";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { UiSettings } from "../api/generated/UiSettings";
 import { useUi } from "../app/ui";
+import { t } from "../i18n";
 import { compact, formatWithUnit, full, masked, unitName, type Chain, type Unit } from "./amount";
 
 export const UNIT_OF: Record<DisplayUnit, Unit> = { dash: "DASH", milliDash: "mDASH", microDash: "uDASH", duffs: "duffs" };
@@ -49,7 +50,9 @@ export function display(prefs: Pick<UiSettings, "unit" | "decimalDigits">, netwo
     masked: () => masked(undefined, unit),
     withUnit: (amount) => formatWithUnit(unit, amount, false, "standard", chain),
     placeholder: duffs ? "0" : "0.00",
-    invalidAmount: `Enter an amount in ${UNIT_LABEL[prefs.unit]}, for example ${duffs ? "25000" : "0.25"}.`,
+    get invalidAmount() {
+      return t("common.invalidAmount", { unit: UNIT_LABEL[prefs.unit], example: duffs ? "25000" : "0.25" });
+    },
   };
 }
 

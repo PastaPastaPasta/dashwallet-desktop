@@ -7,6 +7,7 @@ import { useWallets } from "../../api/queries";
 import { ui } from "../../app/ui";
 import { showToast } from "../../components/toast";
 import type { ActionOutcome } from "../../contacts/actions";
+import { t } from "../../i18n";
 
 /** Says an outcome in a toast when the view it ran in cannot (D23): that view is gone (closed,
  * left) or shows no outcome of its own (`shownHere` false). An outcome that ends after the window
@@ -30,8 +31,8 @@ export function useActionToast(walletId: string): (outcome: ActionOutcome | null
       const shown = all.find((w) => w.walletId === ui.get().walletId) ?? all[0];
       const elsewhere = shown !== undefined && shown.walletId !== walletId;
       if (shownHere && !gone.current && !elsewhere) return;
-      const name = all.find((w) => w.walletId === walletId)?.name ?? "Another wallet";
-      showToast(elsewhere ? `${name}: ${o.text}` : o.text);
+      const wallet = all.find((w) => w.walletId === walletId)?.name ?? t("contacts.toast.anotherWallet");
+      showToast(elsewhere ? t("contacts.toast.inWallet", { wallet, text: o.text }) : o.text);
     },
     [walletId],
   );

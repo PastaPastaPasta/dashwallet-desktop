@@ -430,8 +430,18 @@ impl NetworkSession {
         wallet: WalletId,
     ) -> Result<(HashMap<Txid, TxEntry>, HashSet<OutPoint>), MasternodesError> {
         let w = self.wallet(&wallet).await?;
+        self.op_view_of(wallet, &w).await
+    }
+
+    /// [`Self::op_view`] of the wallet `w`, already looked up: a wallet that
+    /// left since is an error.
+    pub(crate) async fn op_view_of(
+        &self,
+        wallet: WalletId,
+        w: &platform_wallet::wallet::platform_wallet::PlatformWallet,
+    ) -> Result<(HashMap<Txid, TxEntry>, HashSet<OutPoint>), MasternodesError> {
         let unspent = {
-            let state = w.state().await;
+            let state = crate::wallet_read::info_of(w).await?;
             read_coins(&state.core_wallet)
                 .coins
                 .into_iter()
@@ -522,7 +532,7 @@ impl NetworkSession {
         if let Some(seam) = self.masternodes.protx_seam() {
             *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&seam.broadcaster));
         }
-        let prepared = draft.assembled(d.tx, d.summary, d.charge, d.fence, d.maybe_out);
+        let prepared = draft.assembled(d.tx, d.summary, d.charge, d.fence, d.maybe_out, None);
         let (w, id, now) = (wallet.to_string(), d.id.clone(), now_secs());
         let begun = self
             .appdb_op(move |db| db.begin_masternode_op_attempt(&w, &id, now))

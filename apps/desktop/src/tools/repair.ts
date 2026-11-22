@@ -13,6 +13,7 @@ import type { ShieldRepairBlocked } from "../api/generated/ShieldRepairBlocked";
 import type { StuckFundingRefusalName } from "../api/generated/StuckFundingRefusalName";
 import type { StuckShieldFunding } from "../api/generated/StuckShieldFunding";
 import type { StuckTopUpFunding } from "../api/generated/StuckTopUpFunding";
+import { messageTable, t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 import { REG_COPY } from "../dashpay/registration";
 import { forgetTopUp } from "../dashpay/topup";
@@ -20,69 +21,84 @@ import { finishGrant } from "../dashpay/wizard";
 import type { GrantModel } from "./grant";
 
 export const RepairText = {
-  resetChainData: "Reset chain data and resync",
-  resetChainDataQuestion:
-    "This deletes the downloaded block headers and filters and syncs them again. Your wallets, keys and settings are kept. Continue?",
-  dropUnconfirmed: "Remove unconfirmed transactions",
-  dropUnconfirmedQuestion:
-    "Abandon every unconfirmed transaction that the network does not have and rescan? A transaction that reached the network may still confirm.",
-  dropped: (n: number) => (n === 1 ? "1 transaction was removed; a rescan was scheduled." : `${n} transactions were removed; a rescan was scheduled.`),
-  rescanUnavailable: "Rescan unavailable: Wallet is currently rescanning. Abort existing rescan or wait.",
-  progress: (current: number, target: number) => `Rescanning… ${current} / ${target}`,
-  birthHeightInvalid: "Enter a block height.",
-  birthHeightSaved: (h: number) => `The wallet's birth height is now ${h}.`,
-  resetDone: "The chain data was deleted; syncing again.",
-  resolveStuck: "Resolve stuck funding",
+  get resetChainData() {
+    return t("tools.repair.resetChainData");
+  },
+  get resetChainDataQuestion() {
+    return t("tools.repair.resetChainDataQuestion");
+  },
+  get dropUnconfirmed() {
+    return t("tools.repair.dropUnconfirmed");
+  },
+  get dropUnconfirmedQuestion() {
+    return t("tools.repair.dropUnconfirmedQuestion");
+  },
+  dropped: (n: number) => t("tools.repair.dropped", { count: n }),
+  get rescanUnavailable() {
+    return t("tools.repair.rescanUnavailable");
+  },
+  progress: (current: number, target: number) => t("tools.repair.progress", { current: String(current), target: String(target) }),
+  get birthHeightInvalid() {
+    return t("tools.repair.birthHeightInvalid");
+  },
+  birthHeightSaved: (h: number) => t("tools.repair.birthHeightSaved", { height: String(h) }),
+  get resetDone() {
+    return t("tools.repair.resetDone");
+  },
+  get resolveStuck() {
+    return t("tools.repair.resolveStuck");
+  },
   /** An orphan funding step's line: its registration's row, and so its username, is gone. */
-  unnamedRegistration: "A registration's funding (its username is no longer known)",
-  stuckUnreadable: "This wallet's username registrations could not be read, so stuck funding cannot be checked here.",
-  stuckTopUpsUnreadable: "This wallet's credit top-ups could not be read, so their stuck funding cannot be checked here.",
-  resolveStuckQuestion:
-    "Send every coin of this wallet to yourself? Whether the registration's funding reached the network is settled either way; the payment costs only its fee.",
-  resolved: (txid: string) => `All coins were sent to yourself (transaction ${txid}). The registration can go on once it is confirmed.`,
+  get unnamedRegistration() {
+    return t("tools.repair.unnamedRegistration");
+  },
+  get stuckUnreadable() {
+    return t("tools.repair.stuckUnreadable");
+  },
+  get stuckTopUpsUnreadable() {
+    return t("tools.repair.stuckTopUpsUnreadable");
+  },
+  get resolveStuckQuestion() {
+    return t("tools.repair.resolveStuckQuestion");
+  },
+  resolved: (txid: string) => t("tools.repair.resolved", { txid }),
   /** A stuck top-up's line (DP1-10 D16): whose credits it tops up. */
-  topUp: (name: string | null) => (name ? `A top-up of @${name}'s credits` : "A top-up of an identity's credits"),
-  resolveStuckTopUpQuestion:
-    "Send every coin of this wallet to yourself? Whether the top-up's payment reached the network is settled either way; the payment costs only its fee.",
-  resolvedTopUp: (txid: string) => `All coins were sent to yourself (transaction ${txid}). You can top up again once it is confirmed.`,
+  topUp: (name: string | null) => (name ? t("tools.repair.topUpNamed", { username: `@${name}` }) : t("tools.repair.topUpUnnamed")),
+  get resolveStuckTopUpQuestion() {
+    return t("tools.repair.resolveStuckTopUpQuestion");
+  },
+  resolvedTopUp: (txid: string) => t("tools.repair.resolvedTopUp", { txid }),
   /** A stuck move into Shielded's line: what happened, and what Repair does about it. */
-  shield: (mixed: boolean) => (mixed ? "A move of mixed coins into Shielded may have been sent" : "A move into Shielded may have been sent"),
+  shield: (mixed: boolean) => (mixed ? t("tools.repair.shieldMixed") : t("tools.repair.shieldMain")),
   /** What Repair's payment for it spends: a move of mixed coins sends back only those coins, to the
    * main balance; a shield sends every spendable coin of the main balance. */
   shieldRepair: (mixed: boolean, coins: number, total: string, fee: string) =>
-    `Repair sends ${shieldCoins(mixed, coins)} (${total}) back to ${shieldCoinsTo(mixed)}, at a network fee of ${fee}. You can move Dash into Shielded again once that payment is confirmed.`,
+    t(mixed ? "tools.repair.shieldRepairMixed" : "tools.repair.shieldRepairMain", { count: coins, total, fee }),
   resolveStuckShieldQuestion: (mixed: boolean, coins: number, total: string, fee: string) =>
-    `Send ${shieldCoins(mixed, coins)} (${total}) back to ${shieldCoinsTo(mixed)}? You pay a network fee of ${fee}. Whether the move's payment reached the network is settled either way.`,
-  resolvedShield: (txid: string) => `The coins were sent back to your wallet (transaction ${txid}). You can move Dash into Shielded again once it is confirmed.`,
-  stuckShieldsUnreadable: "This wallet's moves into Shielded could not be read, so their stuck funding cannot be checked here.",
+    t(mixed ? "tools.repair.resolveStuckShieldMixed" : "tools.repair.resolveStuckShieldMain", { count: coins, total, fee }),
+  resolvedShield: (txid: string) => t("tools.repair.resolvedShield", { txid }),
+  get stuckShieldsUnreadable() {
+    return t("tools.repair.stuckShieldsUnreadable");
+  },
 };
 
-function shieldCoins(mixed: boolean, coins: number): string {
-  if (mixed) return coins === 1 ? "the move's mixed coin" : `the move's ${coins} mixed coins`;
-  return coins === 1 ? "the one spendable coin of your main balance" : `all ${coins} spendable coins of your main balance`;
-}
-
-const shieldCoinsTo = (mixed: boolean) => (mixed ? "your wallet's main balance" : "your wallet");
-
-const SHIELD_BLOCKED: Record<ShieldRepairBlocked["reason"], string> = {
-  notReady: "The wallet is still reading this move's records.",
-  spendUnsettled: "An earlier payment from this wallet is not confirmed yet.",
-  lockInputsSpent: "The coins this move spent are already spent.",
-  unattributedLock: "A payment of this wallet may be this move's, and it is not matched to it.",
-  noKnownLock: "No payment of this move is known, so nothing shows which coins to send back.",
-  coinsHeld: "A coin it would send back is locked or in use by another action.",
-  mixing: "The wallet is mixing.",
-  noCoins: "No coin of this move is left in the wallet.",
-  other: "The payment back could not be prepared.",
-};
+const SHIELD_BLOCKED = messageTable("tools.repair.shieldBlockedReason", [
+  "notReady",
+  "spendUnsettled",
+  "lockInputsSpent",
+  "unattributedLock",
+  "noKnownLock",
+  "coinsHeld",
+  "mixing",
+  "noCoins",
+  "otherReason",
+]);
 
 /** Why Repair cannot settle a move into Shielded now. A reason that can clear by itself says so; one
  * that cannot says that new moves into Shielded stay paused. */
 export function shieldBlockedText(b: ShieldRepairBlocked): string {
-  const why = SHIELD_BLOCKED[b.reason];
-  return b.retryLater
-    ? `Repair can't send these coins back yet: ${why} Check again later.`
-    : `Repair can't send these coins back: ${why} New moves into Shielded stay paused while this move is open.`;
+  const why = b.reason === "other" ? SHIELD_BLOCKED.otherReason : SHIELD_BLOCKED[b.reason];
+  return t(b.retryLater ? "tools.repair.shieldBlockedRetry" : "tools.repair.shieldBlockedPermanent", { why });
 }
 
 /** Copy for the engine's Repair refusals (the Swift `L10n.M2Errors`). */
@@ -90,17 +106,17 @@ export function repairErrorText(e: unknown): string {
   if (!isAppError(e)) return failureText(e);
   switch (e.code) {
     case "spv_running":
-      return "Stop syncing first.";
+      return t("tools.repair.errors.spvRunning");
     case "spv_not_running":
-      return "Sync is not running.";
+      return t("tools.repair.errors.spvNotRunning");
     case "rescan_in_progress":
       return RepairText.rescanUnavailable;
     case "height_out_of_range":
-      return "The height is above the current chain tip.";
+      return t("tools.repair.errors.heightOutOfRange");
     case "no_peers":
-      return "No peers are connected. Try again once the wallet is online.";
+      return t("tools.repair.errors.noPeers");
     case "not_implemented":
-      return "This feature is not available yet.";
+      return t("tools.repair.errors.notImplemented");
     case "stuck_funding":
       return e.data?.kind === "stuckFunding" ? stuckFundingText(e.data.refusal, e.data.retryLater) : e.message;
     default:
@@ -113,28 +129,28 @@ export function stuckFundingText(r: StuckFundingRefusalName, retryLater: boolean
   const text = ((): string => {
     switch (r.kind) {
       case "rowsUnknown":
-        return "The wallet does not know this funding's coins yet.";
+        return t("tools.repair.stuckRefusal.rowsUnknown");
       case "notStuck":
-        return "This funding is not stuck.";
+        return t("tools.repair.stuckRefusal.notStuck");
       case "noMarker":
-        return "There is no record of this funding.";
+        return t("tools.repair.stuckRefusal.noMarker");
       case "callRunning":
-        return "The funding is still being sent.";
+        return t("tools.repair.stuckRefusal.callRunning");
       case "journalUnavailable":
-        return "The payment record cannot be read right now.";
+        return t("tools.repair.stuckRefusal.journalUnavailable");
       case "spendUnsettled":
-        return `An earlier repair (transaction ${r.txid}) is not confirmed yet.`;
+        return t("tools.repair.stuckRefusal.spendUnsettled", { txid: r.txid });
       case "lockInputsSpent":
-        return `The funding's coins were already spent by transaction ${r.txid}.`;
+        return t("tools.repair.stuckRefusal.lockInputsSpent", { txid: r.txid });
       case "missesSignedLock":
-        return `The signed funding transaction ${r.txid} is missing.`;
+        return t("tools.repair.stuckRefusal.missesSignedLock", { txid: r.txid });
       case "unattributedLock":
-        return `Transaction ${r.txid} cannot be matched to this funding.`;
+        return t("tools.repair.stuckRefusal.unattributedLock", { txid: r.txid });
       case "noKnownLock":
-        return "No funding transaction is known for this registration.";
+        return t("tools.repair.stuckRefusal.noKnownLock");
     }
   })();
-  return retryLater ? `${text} Try again later.` : text;
+  return retryLater ? t("tools.repair.stuckRefusal.retryLater", { text }) : text;
 }
 
 /** A block height as typed: a whole number that fits a `u32`, else `null`. */

@@ -64,7 +64,8 @@ pub struct ShieldedStatus {
     /// Position in the pool's note tree the account is scanned up to
     /// (exclusive); `None` before a completed scan.
     pub synced_index: Option<u64>,
-    /// Unix seconds of the last completed sync pass this session.
+    /// When the pool was last scanned, or last proved unchanged with nothing
+    /// to scan. Unix seconds, this session.
     pub last_sync_at: Option<u64>,
     /// A sync pass is running now.
     pub syncing: bool,

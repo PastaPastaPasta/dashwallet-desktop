@@ -8,6 +8,7 @@ import type { ContactActivityItem } from "../api/generated/ContactActivityItem";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CostTable } from "../api/generated/CostTable";
 import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
+import { t } from "../i18n";
 import { relationTitle, shownName } from "./model";
 
 /** What the pane offers (D2): a request to answer, one sent, a contact, or an ignored sender. */
@@ -19,26 +20,22 @@ export type PaneActions =
   | { kind: "ignored" }
   | { kind: "none" };
 
-export const ENABLE_FIRST = "Enable DashPay first.";
-
 /** The actions of `c`'s relation; `hasKeys` is whether the main identity has its DashPay keys
  * (`undefined` while unknown: Accept stays offered and the engine refuses if need be). */
 export function paneActions(c: Pick<ContactSummaryInfo, "relation" | "channel">, hasKeys: boolean | undefined): PaneActions {
   switch (c.relation) {
     case "pendingIncoming":
-      return { kind: "request", acceptBlocked: hasKeys === false ? ENABLE_FIRST : null };
+      return { kind: "request", acceptBlocked: hasKeys === false ? t("contacts.pane.enableFirst") : null };
     case "pendingOutgoing":
       return { kind: "sent" };
     case "contact":
-      return { kind: "contact", payBlocked: c.channel === "broken" ? BROKEN : null, payNote: payNote(c.channel) };
+      return { kind: "contact", payBlocked: c.channel === "broken" ? t("contacts.pane.broken") : null, payNote: payNote(c.channel) };
     case "ignored":
       return { kind: "ignored" };
     default:
       return { kind: "none" };
   }
 }
-
-export const BROKEN = "Payments to this contact cannot be sent right now.";
 
 /** D9, by the DIP-15 channel: only a broken one holds Pay back (DP3-01 D19: a payment finishes a
  * channel's setup); the others say why a payment may not go through yet. */
@@ -48,9 +45,9 @@ export function payNote(channel: ContactSummaryInfo["channel"]): string | null {
     case "broken":
       return null;
     case "setupPending":
-      return "Payments with this contact are still being set up. The payment finishes the setup.";
+      return t("contacts.pane.setupPending");
     case "notEstablished":
-      return "Payments with this contact are not set up yet, so a payment may not go through.";
+      return t("contacts.pane.notEstablished");
   }
 }
 
@@ -98,19 +95,20 @@ export function creditsToDuffs(credits: string, perDuff: number): number {
 }
 
 /** Android's activity filter (AND-093). */
-export const ACTIVITY_FILTERS: { id: ActivityFilterName; title: string }[] = [
-  { id: "all", title: "All" },
-  { id: "sent", title: "Sent" },
-  { id: "received", title: "Received" },
-];
+export const ACTIVITY_FILTERS: { id: ActivityFilterName; readonly title: string }[] = (["all", "sent", "received"] as const).map((id) => ({
+  id,
+  get title() {
+    return t(`contacts.activity.${id}`);
+  },
+}));
 
 /** An activity row's title and signed amount. */
 export function activityRow(item: ContactActivityItem): { title: string; signed: number; pending: boolean } {
   const sent = item.direction === "sent";
-  return { title: sent ? "Sent" : "Received", signed: sent ? -item.amount : item.amount, pending: item.height === null };
+  return { title: sent ? t("contacts.activity.sent") : t("contacts.activity.received"), signed: sent ? -item.amount : item.amount, pending: item.height === null };
 }
 
 /** D14: what the detail slot announces when the selection changes. */
 export function selectionAnnouncement(c: Pick<ContactSummaryInfo, "alias" | "displayName" | "username" | "contact" | "relation"> | null): string {
-  return c ? `${shownName(c)}, ${relationTitle(c.relation)}` : "";
+  return c ? t("contacts.pane.announce", { name: shownName(c), relation: relationTitle(c.relation) }) : "";
 }

@@ -3,7 +3,7 @@
 // address of the same wallet; the outcome shows what moved, what remains, and a chunk whose
 // broadcast outcome is unknown, whose Try again sends the same signed transaction again. Into
 // Shielded it is one asset lock of every coin, applied as any add to Shielded (a lock not applied
-// yet is finished from Unfinished transfers on Home); above 50 coins the coins are combined first inside the
+// yet is finished from Unfinished transfers on Home); above `SHIELD_MOVE_MAX_COINS` (50) coins the coins are combined first inside the
 // CoinJoin account, then moved once that round confirms. The plan step reads the plan,
 // the confirm step asks for a spend grant of its total (U-05's GrantModel). Mixing has to stop
 // first: the engine refuses while it runs and the sheet offers Stop Mixing. One flow per wallet,
@@ -22,6 +22,8 @@ import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import { creditsToDuffs, SHIELDED_CODES } from "../api/pending";
 import type { MixedCoinsResendState } from "../api/generated/MixedCoinsResendState";
 import type { MixedCoinsSweepResult } from "../api/generated/MixedCoinsSweepResult";
+import { messageTable, t } from "../i18n";
+import { en } from "../i18n/en";
 import { failureText, Model } from "../onboarding/model";
 import { SHIELDED_COPY, shieldedErrorText, shieldedSettled } from "../shielded/flow";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
@@ -45,76 +47,152 @@ export type MoveMixedApi = Pick<
   | "unlockMixingOnly"
 >;
 
+/** The most coins one move to Shielded takes; more are combined first (the engine's limit). */
+const SHIELD_MOVE_MAX_COINS = 50;
+
 export const MOVE_COPY = {
   card: {
-    title: "Move mixed coins",
-    text: "Move the coins in your CoinJoin balance, mixed or not, back to your wallet's main balance.",
+    get title() {
+      return t("coinjoin.move.card.title");
+    },
+    get text() {
+      return t("coinjoin.move.card.text");
+    },
     /** Where the network has Shielded. */
-    textShielded: "Move the coins in your CoinJoin balance, mixed or not, back to your wallet's main balance or into Shielded.",
-    open: "Move to wallet",
-    shield: "Move to Shielded",
+    get textShielded() {
+      return t("coinjoin.move.card.textShielded");
+    },
+    get open() {
+      return t("coinjoin.move.card.open");
+    },
+    get shield() {
+      return t("coinjoin.move.card.shield");
+    },
   },
-  title: "Move mixed coins",
-  planning: "Reading your CoinJoin balance…",
+  get title() {
+    return t("coinjoin.move.title");
+  },
+  get planning() {
+    return t("coinjoin.move.planning");
+  },
   confirm: {
-    message: "Your CoinJoin balance moves to a new address of this wallet. Coins that are not fully mixed yet lose the privacy mixing has given them so far.",
-    fullyMixed: "Fully mixed",
-    notFullyMixed: "Not fully mixed",
-    combined: "These coins are combined on-chain, so the fully mixed amount loses some of its mixing privacy.",
-    fee: "Network fee",
-    receive: "You receive",
-    transactions: (n: number) => (n === 1 ? "This takes one transaction." : `This takes ${n} transactions.`),
-    waiting: (n: number) => (n === 1 ? "1 coin waits for a confirmation and stays in your CoinJoin balance." : `${n} coins wait for a confirmation and stay in your CoinJoin balance.`),
-    cancel: "Cancel",
-    move: "Move",
+    get message() {
+      return t("coinjoin.move.confirm.message");
+    },
+    get fullyMixed() {
+      return t("coinjoin.move.confirm.fullyMixed");
+    },
+    get notFullyMixed() {
+      return t("coinjoin.move.confirm.notFullyMixed");
+    },
+    get combined() {
+      return t("coinjoin.move.confirm.combined");
+    },
+    get fee() {
+      return t("coinjoin.move.confirm.fee");
+    },
+    get receive() {
+      return t("coinjoin.move.confirm.receive");
+    },
+    transactions: (n: number) => t("coinjoin.move.confirm.transactions", { count: n }),
+    waiting: (n: number) => t("coinjoin.move.confirm.waiting", { count: n }),
+    get cancel() {
+      return t("common.cancel");
+    },
+    get move() {
+      return t("coinjoin.move.confirm.move");
+    },
   },
   mixing: {
-    text: "Stop mixing first. Moving coins while they mix would take coins a mixing session holds.",
-    stop: "Stop Mixing",
+    get text() {
+      return t("coinjoin.move.mixing.text");
+    },
+    get stop() {
+      return t("coinjoin.move.mixing.stop");
+    },
   },
   running: {
-    title: "Moving coins…",
-    text: "You can close this: the result waits here.",
+    get title() {
+      return t("coinjoin.move.running.title");
+    },
+    get text() {
+      return t("coinjoin.move.running.text");
+    },
   },
   done: {
-    title: "Coins moved",
-    text: (received: string, fee: string) => `${received} is on its way to your wallet's main balance. Network fee: ${fee}.`,
+    get title() {
+      return t("coinjoin.move.done.title");
+    },
+    text: (received: string, fee: string) => t("coinjoin.move.done.text", { received, fee }),
   },
   partial: {
-    title: "Not everything moved",
-    text: (received: string, fee: string, remaining: string) =>
-      `${received} is on its way to your wallet's main balance (network fee ${fee}); ${remaining} stayed in your CoinJoin balance. Try again to move the rest.`,
+    get title() {
+      return t("coinjoin.move.partial.title");
+    },
+    text: (received: string, fee: string, remaining: string) => t("coinjoin.move.partial.text", { received, fee, remaining }),
   },
-  unknown: "One transaction may have reached the network. Its coins stay reserved until it confirms; the rest stayed in your CoinJoin balance. Try again sends the same transaction again.",
-  resent: {
-    sent: "Sent again. Its coins stay reserved until it confirms.",
-    unknown: "The network has still not answered. Its coins stay reserved, and the wallet sends it again when it reconnects.",
-    resolved: "It confirmed, or its coins were spent otherwise. Nothing is held for it any more.",
-  } satisfies Record<MixedCoinsResendState, string>,
+  get unknown() {
+    return t("coinjoin.move.unknown");
+  },
+  resent: messageTable(
+    "coinjoin.move.resent",
+    Object.keys(en.coinjoin.move.resent satisfies Record<MixedCoinsResendState, string>) as MixedCoinsResendState[],
+  ) satisfies Readonly<Record<MixedCoinsResendState, string>>,
   shielded: {
-    message: "Your whole CoinJoin balance goes into Shielded in one transaction. Dash Platform adds it to your private balance once the network has locked it.",
-    fee: "Network fee, at most",
-    poolFee: "Platform pool fee",
-    gain: "Added to Shielded, at least",
+    get message() {
+      return t("coinjoin.move.shielded.message");
+    },
+    get fee() {
+      return t("coinjoin.move.shielded.fee");
+    },
+    get poolFee() {
+      return t("coinjoin.move.shielded.poolFee");
+    },
+    get gain() {
+      return t("coinjoin.move.shielded.gain");
+    },
   },
   combine: {
-    text: (coins: number) =>
-      `Your CoinJoin balance holds ${coins} coins, more than one move to Shielded takes (50). Combine them first: they stay in your CoinJoin balance, and once they confirm you move them to Shielded.`,
-    after: "Coins after",
-    go: "Combine",
-    done: { title: "Coins combined", text: (fee: string) => `Your coins were combined inside your CoinJoin balance (network fee ${fee}). Move them to Shielded once they confirm.` },
-    partial: "Not every coin was combined; the rest stayed as they were. Try again to combine them.",
+    text: (coins: number) => t("coinjoin.move.combine.text", { coins, limit: SHIELD_MOVE_MAX_COINS }),
+    get after() {
+      return t("coinjoin.move.combine.after");
+    },
+    get go() {
+      return t("coinjoin.move.combine.go");
+    },
+    done: {
+      get title() {
+        return t("coinjoin.move.combine.done.title");
+      },
+      text: (fee: string) => t("coinjoin.move.combine.done.text", { fee }),
+    },
+    get partial() {
+      return t("coinjoin.move.combine.partial");
+    },
   },
-  unconfirmed: (n: number) =>
-    n === 1 ? "1 coin of your CoinJoin balance is still confirming. A move to Shielded takes every coin: try again once it has." : `${n} coins of your CoinJoin balance are still confirming. A move to Shielded takes every coin: try again once they have.`,
-  held: "Some of your mixed coins are held: locked in Coin Control, or by a move that may still reach the network. Unlock them or wait for it, then try again.",
-  nothing: "There are no mixed coins to move.",
-  otherMove: "Another move of your mixed coins is running. Try again when it ends.",
-  changed: "The approval no longer covers this move. Review it again.",
-  planChanged: "Your CoinJoin balance changed since you reviewed this move. Review it again.",
-  close: "Close",
-  again: "Try again",
-} as const;
+  unconfirmed: (n: number) => t("coinjoin.move.unconfirmed", { count: n }),
+  get held() {
+    return t("coinjoin.move.held");
+  },
+  get nothing() {
+    return t("coinjoin.move.nothing");
+  },
+  get otherMove() {
+    return t("coinjoin.move.otherMove");
+  },
+  get changed() {
+    return t("coinjoin.move.changed");
+  },
+  get planChanged() {
+    return t("coinjoin.move.planChanged");
+  },
+  get close() {
+    return t("coinjoin.move.close");
+  },
+  get again() {
+    return t("coinjoin.move.again");
+  },
+};
 
 export type MoveStep = "plan" | "confirm" | "combine" | "mixing" | "running" | "done" | "refused";
 
@@ -195,7 +273,7 @@ export class MoveMixedFlow extends Model {
   plan: MixedCoinsSweepPlan | null = null;
   /** A move to Shielded's quote. */
   shieldQuote: MixedShieldQuote | null = null;
-  /** The consolidation round a move to Shielded of more than 50 coins needs first. */
+  /** The consolidation round a move to Shielded of more than `SHIELD_MOVE_MAX_COINS` coins needs first. */
   consolidation: MixedCoinsConsolidationPlan | null = null;
   /** A move to the wallet's, or a consolidation round's (`combined`). */
   result: MixedCoinsSweepResult | null = null;
@@ -352,7 +430,7 @@ export class MoveMixedFlow extends Model {
     }
   }
 
-  /** The consolidation round a move to Shielded of more than 50 coins needs first. */
+  /** The consolidation round a move to Shielded of more than `SHIELD_MOVE_MAX_COINS` coins needs first. */
   async combine(): Promise<void> {
     const plan = this.consolidation;
     if (this.running || plan === null || this.step !== "combine") return;

@@ -268,7 +268,17 @@ impl NetworkSession {
             });
             return;
         }
-        if !self.platform.mark_running() || !self.platform.enabled {
+        #[cfg(test)]
+        {
+            let pause = guard(&self.platform.pause_before_running).take();
+            if let Some(pause) = pause {
+                pause.reached.store(true, Ordering::SeqCst);
+                pause.release.notified().await;
+            }
+        }
+        let marked = self.platform.mark_running();
+        self.emit_spv_running();
+        if !marked || !self.platform.enabled {
             return;
         }
         self.apply_cadence(&manager);
@@ -281,7 +291,7 @@ impl NetworkSession {
         if !loops_pending {
             self.kick_protocol_refresh();
             if shielded {
-                self.kick_shielded_pass(&manager);
+                self.kick_shielded_pass(&manager, epoch);
             }
         }
         let mut shielded_due = tokio::time::Instant::now() + manager.shielded_sync().interval();
@@ -324,7 +334,7 @@ impl NetworkSession {
                     if !loops_pending {
                         this.kick_protocol_refresh();
                         if shielded {
-                            this.kick_shielded_pass(&manager);
+                            this.kick_shielded_pass(&manager, epoch);
                             shielded_due = tokio::time::Instant::now() + manager.shielded_sync().interval();
                         }
                     }
@@ -333,7 +343,7 @@ impl NetworkSession {
                 // The shielded pass (0.1 E1), in the background.
                 () = tokio::time::sleep_until(shielded_due), if shielded => {
                     let Some(this) = session.upgrade() else { return };
-                    this.kick_shielded_pass(&manager);
+                    this.kick_shielded_pass(&manager, epoch);
                     shielded_due = tokio::time::Instant::now() + manager.shielded_sync().interval();
                     continue;
                 }
@@ -471,14 +481,17 @@ impl NetworkSession {
     /// loops (`undrained_loops`) and the close's `Manager::shutdown` drains
     /// it and seals the coordinator, so no pass starts after the close; one
     /// that outlives their budget is reported (`UncleanShutdown`). Nothing
-    /// drops it partway.
-    fn kick_shielded_pass(self: &Arc<Self>, manager: &Arc<Manager>) {
+    /// drops it partway. Its count read holds neither the session nor the
+    /// manager, and the pass starts only if the loops of `epoch` still run
+    /// (`shielded_pool::periodic_pass`).
+    fn kick_shielded_pass(self: &Arc<Self>, manager: &Arc<Manager>, epoch: u64) {
         let (this, manager) = (Arc::clone(self), Arc::clone(manager));
         self.rt.spawn(async move {
-            if !this.platform.loops_on.load(Ordering::Acquire) || this.enter().await.is_err() {
+            if !this.platform.loops_run(epoch) || this.enter().await.is_err() {
                 return;
             }
-            super::shielded_pool::guarded_pass(&this, &manager, false).await;
+            let runs = move |s: &Self| s.platform.loops_run(epoch);
+            super::shielded_pool::periodic_pass(this, manager, runs).await;
         });
     }
 
