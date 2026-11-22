@@ -1,10 +1,11 @@
 # H-08 by hand: install, upgrade and uninstall on macOS and Windows
 
 The steps a person runs on real Macs and PCs (or the VMs marked below) before the release candidate is called good.
-CI checks the upgrade path on Linux (`upgrade_path_tests`, see the H-08 section of [`PLAN-1.0.md`](../PLAN-1.0.md))
-and installs the bundles silently on hosted macOS and Windows runners. It does not check what this script does: the
-interactive installer, an upgrade in place over an older release, each OS's default data root and secret store,
-uninstalling, and the first launch of an unsigned app downloaded the ordinary way.
+CI checks the upgrade path on Linux (`upgrade_path_tests`, see the H-08 section of [`PLAN-1.0.md`](../PLAN-1.0.md)).
+On hosted runners it installs the Windows NSIS installer silently, and on macOS it mounts the dmg, copies the app to
+a temporary folder and launches it there. It does not check what this script does: the interactive installer, an
+upgrade in place over an older release, each OS's default data root and secret store, uninstalling, and the first
+launch of an unsigned app downloaded the ordinary way.
 
 ## Rules for the whole run
 
@@ -40,6 +41,20 @@ On each machine, a test user account that has never run Dash Wallet, with the OS
 on macOS and `%APPDATA%\org.dash.wallet.desktop` on Windows (`$env:APPDATA\org.dash.wallet.desktop` in PowerShell).
 Check that the folder does not exist before section 2.
 
+Paths used below. Set them once per run in the shell you use, with the run's own name (for example `0.1.0-E`):
+
+```sh
+# macOS (Terminal, zsh)
+ROOT="$HOME/Library/Application Support/org.dash.wallet.desktop"
+RUN="0.1.0-E"; BAK="$HOME/h08-backup-$RUN"
+```
+
+```powershell
+# Windows (PowerShell)
+$Root = "$env:APPDATA\org.dash.wallet.desktop"
+$Run = "0.1.0-E"; $Bak = "$env:USERPROFILE\h08-backup-$Run"
+```
+
 Download every bundle **on the machine under test, with its ordinary browser**. A file copied in through a shared
 folder, drag and drop, `curl` or `gh` carries no quarantine flag (macOS) or Mark of the Web (Windows), so Gatekeeper
 and SmartScreen never prompt and section 2 passes without testing anything.
@@ -64,36 +79,40 @@ On every machine, in the clean account, before anything else has been installed.
 ### macOS
 
 - [ ] Open the dmg. Expected: a window with Dash Wallet and an Applications link. Drag Dash Wallet to Applications.
-- [ ] Double-click Dash Wallet in Applications. Expected: macOS refuses to open it (for example "cannot be opened
-      because Apple cannot check it", or "Dash Wallet Not Opened"). Screenshot the prompt. Choose Done or Cancel,
-      not Move to Trash. If no prompt appears, note that and why it may not (was the file downloaded some other
-      way?).
-- [ ] Open it the documented way. macOS 14 and earlier: right-click the app ▸ **Open** ▸ **Open**. macOS 15 and
-      later: System Settings ▸ Privacy & Security ▸ **Open Anyway** next to the Dash Wallet message, then confirm.
-      Expected: the app opens, and the prompt does not come back on the next launch. Note the path that worked.
-      `xattr -dr com.apple.quarantine "/Applications/Dash Wallet.app"` is the fallback in the notes; if you need it,
-      the documented path failed, and it does not count as a pass for that path.
-- [ ] Time from the click to the first window (splash or notice), with a stopwatch, on the second launch. Note it.
-      The 1.0 target is two seconds (PLAN-1.0 lane B, P5).
+- [ ] Double-click Dash Wallet in Applications. Expected: macOS blocks it (for example "cannot be opened because
+      Apple cannot check it", or "Dash Wallet Not Opened"). Then branch:
+      - **Blocked** (expected): screenshot the prompt, choose Done or Cancel (not Move to Trash), and open it the
+        documented way. macOS 14 and earlier: right-click the app ▸ **Open** ▸ **Open**. macOS 15 and later: System
+        Settings ▸ Privacy & Security ▸ **Open Anyway** next to the Dash Wallet message, then confirm. Expected: the
+        app opens, and the prompt does not come back on the next launch. Note the path that worked.
+        `xattr -dr com.apple.quarantine "/Applications/Dash Wallet.app"` is the fallback in the notes: if you need
+        it, the documented path failed.
+      - **Opened directly**: note it with the macOS version and the Privacy & Security setting for apps, and mark
+        the override path **unexercised**. That is a finding, not a pass or a failure of the override.
 - [ ] Activity Monitor ▸ Dash Wallet ▸ the Kind column. Expected: "Apple" on Apple silicon, "Intel" on an Intel Mac
       (the app is universal, so never under Rosetta on Apple silicon).
 
 ### Windows
 
-- [ ] Run the installer. Expected: SmartScreen "Windows protected your PC". Screenshot it. Choose **More info ▸
-      Run anyway**. Expected: no administrator (UAC) prompt; the app installs for the current user only. If
-      SmartScreen does not prompt, note it.
+- [ ] Run the installer. Expected: SmartScreen "Windows protected your PC". Then branch:
+      - **Blocked** (expected): screenshot it and choose **More info ▸ Run anyway**;
+      - **Ran directly**: note it with the Windows version and the SmartScreen setting, and mark the override path
+        **unexercised** (a finding).
+
+      Expected either way: no administrator (UAC) prompt; the app installs for the current user only. On the
+      installer's last page, untick the option to run Dash Wallet now if there is one.
 - [ ] If WebView2 is missing (some Windows 10 installs), the installer itself tries to download and install it.
       Note whether that worked. If the installer or the app fails because of WebView2, note the stage and the
       message before you install WebView2 by hand.
 - [ ] Expected: a Start menu entry "Dash Wallet". Start it from there.
-- [ ] Time from the click to the first window, on the second launch. Note it.
 - [ ] Windows on Arm (optional): Task Manager ▸ Details ▸ the Architecture column shows `x64`; the app works the same.
 
 ### Both
 
 - [ ] Expected on the first launch: the notice "Dash Wallet is an early release". Choose **I understand**.
-      Expected: Welcome.
+      Expected: Welcome. Quit the app fully.
+- [ ] Second launch, timed: start the app from Applications (macOS) or the Start menu (Windows) and time, with a
+      stopwatch, from the click to the first window. Note it. The 1.0 target is two seconds (PLAN-1.0 lane B, P5).
 - [ ] Choose **Testnet** in the network picker on Welcome. If the app says the choice applies after a restart,
       quit and open it again. Expected: Testnet is active.
 - [ ] Create a wallet with a passphrase. Write the recovery phrase on paper only. Expected: Home with a zero
@@ -104,11 +123,12 @@ On every machine, in the clean account, before anything else has been installed.
       build; a higher-priority warning, such as the network one, may be the one shown). Note its text.
 - [ ] Screenshots in light and dark: Home, Activity, Settings, Settings ▸ About.
 
-**Fail if:** the documented way to open the app does not work; Windows asks for administrator rights; the app runs
-under Rosetta on Apple silicon; the window takes more than 5 seconds on the second launch; the notice or Welcome
-does not appear on the first launch; Testnet is not active after the restart; the wallet cannot be created or
-funded; About shows another version. A missing Gatekeeper or SmartScreen prompt on a browser download is a
-finding: write down the OS version and security settings.
+**Fail if:** the OS blocked the app and the documented way to open it does not work; Windows asks for administrator
+rights; the app runs under Rosetta on Apple silicon; the timed second launch takes more than 5 seconds; the notice
+or Welcome does not appear on the first launch; Testnet is not active after the restart; the wallet cannot be
+created or funded; About shows another version.
+**Finding** (note, not a failure): a second launch between 2 and 5 seconds (a P5 miss); an app that opened without
+a Gatekeeper or SmartScreen block.
 
 ## 3. Upgrade in place from 0.1.0, 0.2.0 and 0.3.0
 
@@ -133,7 +153,10 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
        and keeps wallet creation disabled until then: quit and open it again. 0.2.0 and 0.3.0 switch at once.
        Check that Testnet is active.
 3. [ ] Create wallet A. Run E: with a passphrase. Run S: **Continue without a passphrase**. Expected for S: the
-       warning that the key is kept in this computer's secret store. Fund it from the faucet.
+       warning that the key is kept in this computer's secret store. Run S: write the new secret-store entry into the
+       worksheet (keep it out of screenshots). macOS: Keychain Access, the item with account `dek` and service
+       `dash.platform-wallet-storage/<64 hex digits>`. Windows: Credential Manager ▸ Windows Credentials ▸ Generic
+       Credentials, the entry `dek.dash.platform-wallet-storage/<64 hex digits>`. Fund wallet A from the faucet.
 4. [ ] In wallet A:
        - send 0.1 tDASH back to the faucet's return address with a recipient label;
        - add a transaction label to the faucet payment in Activity;
@@ -141,15 +164,17 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
        - create a receive request with an amount, a label and a message;
        - Settings: unit mDASH, theme dark, CoinJoin rounds 6, and for run E auto-lock 5 minutes;
        - Tools ▸ Sign/Verify: sign `h08 upgrade` with the first receive address.
-5. [ ] Wait until both payments in Activity are confirmed. Write **baseline 1** into the worksheet: `OLD`'s
-       version, the wallet name, the balance, every Activity row (txid, amount, status, label), the address book,
-       the receive request, the Settings values above, the signing address and the signature. Screenshot Home,
-       Activity and Settings.
-6. [ ] Quit `OLD`. Copy the data root to a new folder for this run and check that the copy has the same files:
-       - macOS: `ditto ~/Library/Application\ Support/org.dash.wallet.desktop ~/h08-backup-<OLD>-<R>`, then
-         `diff -rq ~/Library/Application\ Support/org.dash.wallet.desktop ~/h08-backup-<OLD>-<R>` prints nothing;
-       - Windows (PowerShell): `robocopy "$env:APPDATA\org.dash.wallet.desktop" "$env:USERPROFILE\h08-backup-<OLD>-<R>" /E`,
-         and the robocopy summary shows no failed files.
+5. [ ] Wait until both payments in Activity are confirmed. Write `OLD`'s version into the worksheet as the run's
+       metadata. Write **baseline 1**: the wallet name, the balance, every Activity row (txid, amount, direction,
+       label), the address book, the receive request, the Settings values above, the signing address and the
+       signature. Statuses are not part of the baseline: a row may move on from a confirmation count to ChainLocked
+       at any time. Screenshot Home, Activity and Settings.
+6. [ ] Quit `OLD`. Set the run's paths (above), then copy the data root to a backup folder that does not exist yet,
+       and compare the two:
+       - macOS: `test ! -e "$BAK" && ditto "$ROOT" "$BAK" && diff -rq "$ROOT" "$BAK" && echo SAME`. Expected: `SAME`
+         and nothing else;
+       - Windows: `Test-Path $Bak` prints `False`; then `robocopy $Root $Bak /E`; then
+         `robocopy $Root $Bak /E /L /X /NJH /NJS /NDL /FP` prints no file. Any file listed is a difference.
 7. [ ] Install the candidate over it: drag it to Applications and choose **Replace** (macOS); run the candidate's
        `setup.exe` (Windows). Expected on Windows: the installer upgrades in place. If it asks to uninstall the old
        version first, note it, and leave **Delete the application data** unticked. Open the candidate.
@@ -157,31 +182,41 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
        - run E: the lock screen, not Welcome, and the passphrase unlocks. Run S: the wallet opens with no
          passphrase. A macOS Keychain prompt to let Dash Wallet use its own item is a finding if **Always Allow**
          makes it go away, and a failure if it does not or the wallet reports a missing key;
-       - the network is Testnet;
-       - everything in baseline 1 is the same;
+       - the network is Testnet; Settings ▸ About shows the candidate's `X.Y.Z`;
+       - everything in baseline 1 is the same (statuses may have moved on to more confirmations or ChainLocked);
        - Tools ▸ Sign/Verify verifies the baseline signature, and signing `h08 upgrade` with the same address gives
          the same signature.
 9. [ ] Quit and open again (a cold restart). Expected: the same as step 8, with no new prompt.
-10. [ ] Send 10 mDASH (0.01 tDASH) from wallet A to the faucet's return address, once. Wait until it confirms.
-        Write **baseline 2**: the new balance and Activity row; everything else as baseline 1.
+10. [ ] Send 0.01 tDASH from wallet A to the faucet's return address, once: enter `10` in the amount field, which
+        shows the unit `mtDASH` on testnet. Wait until it confirms. Write **baseline 2**: the new balance and the
+        new Activity row with its txid; everything else as baseline 1.
 11. [ ] Quit and open again. Expected: baseline 2, read only (do not send again).
 12. [ ] Downgrade: quit the candidate, install `OLD` over it and open it. Expected for 0.1.0: "Dash Wallet could not
         open the wallet: storage error: app database: migration: migration V2026110501__tx_fiat is missing from the
         filesystem" with Try again (seen on Linux). For 0.2.0 and 0.3.0: note what happens; a clear refusal like
         0.1.0's is expected. Quit it.
 13. [ ] Install the candidate again and open it. Expected: baseline 2, read only.
-14. [ ] Restore the step 6 copy: quit, replace the data root with the copy (macOS:
-        `rm -rf ~/Library/Application\ Support/org.dash.wallet.desktop && ditto ~/h08-backup-<OLD>-<R> ~/Library/Application\ Support/org.dash.wallet.desktop`;
-        Windows: delete `$env:APPDATA\org.dash.wallet.desktop`, then robocopy the backup back). Open the
-        candidate. Expected: as step 8, then the send from step 10 appears once the wallet syncs (it is on the
-        chain).
-15. [ ] If this is the machine's last run, keep the data root and go to section 4. Otherwise go to the next run.
+14. [ ] Restore the step 6 copy. Quit the candidate. Check the backup is there, move the live root aside (do not
+        delete it), copy the backup in and compare:
+        - macOS: `test -d "$BAK" && mv "$ROOT" "$ROOT.after-$RUN" && ditto "$BAK" "$ROOT" && diff -rq "$BAK" "$ROOT" && echo SAME`.
+          Expected: `SAME`;
+        - Windows: `Test-Path $Bak` prints `True`; `Rename-Item $Root "$Root.after-$Run"`; `robocopy $Bak $Root /E`;
+          `robocopy $Bak $Root /E /L /X /NJH /NJS /NDL /FP` prints no file.
+
+        Open the candidate. Expected: the unlock (E) or open (S) as in step 8; the wallet name, the address book, the
+        receive request, the labels, the Settings values and the signature as in baseline 1. Once the wallet has
+        synced: the balance of baseline 2, and exactly one Activity row with step 10's txid.
+15. [ ] Delete the moved-aside root (`$ROOT.after-$RUN` or `$Root.after-$Run`). If this is the machine's last run,
+        keep the data root (now in baseline 2's state) and go to section 4. Otherwise go to the next run.
 
 **Fail if** (blocker): Welcome shows instead of the lock screen (E) or the wallet (S); the passphrase does not
-unlock (E); the wallet asks for a passphrase or reports a missing key (S); anything in baseline 1 is missing or
-different in step 8 or 9; the network is not Testnet; the baseline signature does not verify or signing again
-gives another signature; the send in step 10 fails; baseline 2 differs in step 11 or 13; step 14 differs from
-step 8.
+unlock (E); the wallet asks for a passphrase or reports a missing key (S); anything in baseline 1 other than a
+status that moved on is missing or different in step 8 or 9; the network is not Testnet; About does not show the
+candidate's version; the baseline signature does not verify or signing again gives another signature; the send in
+step 10 fails; baseline 2 differs in step 11 or 13; after step 14's sync, a baseline 1 value, the baseline 2
+balance or the single step 10 row is missing or different.
+**Stop and redo the run** (not a product failure): a backup or restore comparison in step 6 or 14 shows a
+difference.
 **Fail if** (finding): the installer will not upgrade over `OLD`; the downgraded `OLD` crashes, shows a blank
 window or looks empty instead of refusing clearly.
 
@@ -197,8 +232,8 @@ On each machine, after its last run of section 3, with the candidate installed a
       dragging to the Trash keeps its data, as is usual on macOS).
 - [ ] Full removal: quit, delete the app, then delete
       `~/Library/Application Support/org.dash.wallet.desktop`, `~/Library/Caches/org.dash.wallet.desktop` and
-      `~/Library/WebKit/org.dash.wallet.desktop` if present. In Keychain Access, find this run's item: account
-      `dek`, service `dash.platform-wallet-storage/<hex>` (run S only). Delete that item only. Install again.
+      `~/Library/WebKit/org.dash.wallet.desktop` if present. In Keychain Access, delete the exact item written in
+      the worksheet at step 3 (run S only), and nothing else. Install again.
       Expected: the early-release notice, then Welcome with no wallet.
 
 ### Windows
@@ -210,9 +245,9 @@ On each machine, after its last run of section 3, with the candidate installed a
 - [ ] Install again and open it. Expected: the same wallet as baseline 2.
 - [ ] Uninstall again, this time ticking **Delete the application data**. Expected:
       `$env:APPDATA\org.dash.wallet.desktop` and `$env:LOCALAPPDATA\org.dash.wallet.desktop` are both gone.
-- [ ] Credential Manager ▸ Windows Credentials: find this run's entry (its name contains
-      `dash.platform-wallet-storage`; run S only). Note whether the uninstaller removed it, then remove it. Install
-      again. Expected: the early-release notice, then Welcome with no wallet.
+- [ ] Credential Manager ▸ Windows Credentials ▸ Generic Credentials: look for the exact entry written in the
+      worksheet at step 3 (run S only). Note whether the uninstaller removed it; if not, remove that entry and
+      nothing else. Install again. Expected: the early-release notice, then Welcome with no wallet.
 
 **Fail if:** removing the app without the checkbox removes the wallet; the checkbox is missing; with it ticked,
 either folder stays; the uninstaller asks for administrator rights; after full removal the app does not start at
@@ -222,10 +257,12 @@ the notice and Welcome. Deleting a folder by hand after the uninstaller left it 
 
 Quit the app first.
 
-- macOS: `rm -rf ~/Library/Application\ Support/org.dash.wallet.desktop`; after a run S, also delete that run's
-  Keychain item (account `dek`, service `dash.platform-wallet-storage/<hex>`).
-- Windows (PowerShell): `Remove-Item -Recurse -Force "$env:APPDATA\org.dash.wallet.desktop"`; after a run S, also
-  remove that run's Credential Manager entry.
+- macOS: `rm -rf "$ROOT"`; after a run S, also delete that run's Keychain item, the exact one in the worksheet.
+- Windows: `Remove-Item -Recurse -Force $Root`; after a run S, also remove that run's Credential Manager entry,
+  the exact one in the worksheet.
+
+**Stop before the next run if:** the data root still exists (`test -e "$ROOT"` succeeds, or `Test-Path $Root`
+prints `True`), or the previous run S's secret-store entry is still listed.
 
 ## 6. Optional: the fixture check on a Mac
 
@@ -235,24 +272,35 @@ On a Mac with a checkout of the candidate's commit and the Rust toolchain:
 `main`. It cannot run on Windows, where `dw-app`'s test binaries do not load ([`docs/ci.md`](../ci.md)); there,
 section 3 is the check.
 
+**Fail if:** the test fails, or `running 0 tests` (the name matched nothing).
+
 ## 7. Results
 
 One row per machine and run: pass, fail (with the issue number), skipped (with the reason), outstanding (a pair
 not yet run) or pending (the release is not published yet). The worksheet holds the values behind each cell.
 
-| Machine, OS | Run | Verify | First launch (path, seconds) | Fresh install | Upgrade (8, 9) | Send and reopen (10, 11) | Downgrade (12, 13) | Restore (14) | Uninstall keep / remove |
-|---|---|---|---|---|---|---|---|---|---|
-| Mac Apple silicon, macOS … | fresh | | | | — | — | — | — | |
-| Mac Apple silicon, macOS … | 0.1.0 E | | | — | | | | | — |
-| … | 0.1.0 S | | | — | | | | | — |
-| … | 0.2.0 E | | | — | | | | | — |
-| … | 0.2.0 S | | | — | | | | | — |
-| … | 0.3.0 E | | | — | pending | | | | — |
-| … | 0.3.0 S | | | — | pending | | | | — |
-| Mac Intel, macOS … | … | | | | | | | | |
-| PC x64, Windows 11 | … | | | | | | | | |
-| PC x64, Windows 10 22H2 | … | | | | | | | | |
-| PC Arm, Windows 11 (optional) | … | | | | | | | | |
+| Machine, OS | Run | Verify | First launch (path, seconds) | Fresh install | Upgrade (8, 9) | Send and reopen (10, 11) | Downgrade (12, 13) | Restore (14) |
+|---|---|---|---|---|---|---|---|---|
+| Mac Apple silicon, macOS … | fresh | | | | — | — | — | — |
+| Mac Apple silicon, macOS … | 0.1.0 E | | | — | | | | |
+| … | 0.1.0 S | | | — | | | | |
+| … | 0.2.0 E | | | — | | | | |
+| … | 0.2.0 S | | | — | | | | |
+| … | 0.3.0 E | | | — | pending | | | |
+| … | 0.3.0 S | | | — | pending | | | |
+| Mac Intel, macOS … | … | | | | | | | |
+| PC x64, Windows 11 | … | | | | | | | |
+| PC x64, Windows 10 22H2 | … | | | | | | | |
+| PC Arm, Windows 11 (optional) | … | | | | | | | |
+
+Uninstall, one row per machine (section 4, after its last run):
+
+| Machine, OS | Last run | Remove, data kept | Reinstall finds the wallet | Remove with data | Secret-store entry removed by the uninstaller | Clean reinstall |
+|---|---|---|---|---|---|---|
+| … | | | | | | |
+
+The report is **incomplete** while any row is outstanding or pending, a cell is empty, or a failure has no issue
+number.
 
 File each failure as an issue with the OS, the machine, the release pair, the run (E or S) and redacted
 screenshots, and link it here. A blocker or critical failure holds the release candidate. Post the screenshots on
