@@ -70,7 +70,9 @@ function CoinRow({ u, shown, selected, onToggle, detail }: Omit<Props, "coins"> 
           onChange={(e) => onToggle(key, e.target.checked)}
         />
       </td>
-      <td className="num">{shown.compact(u.amount)}</td>
+      <td className="num">
+        <bdi dir="ltr">{shown.compact(u.amount)}</bdi>
+      </td>
       {detail ? (
         <>
           <td>{coinLabel(u)}</td>
@@ -104,7 +106,9 @@ function GroupRow({ g, shown, selected, detail }: { g: CoinGroup; shown: Display
           onChange={() => detail.onToggleGroup(g)}
         />
       </td>
-      <td className="num">{shown.compact(g.total)}</td>
+      <td className="num">
+        <bdi dir="ltr">{shown.compact(g.total)}</bdi>
+      </td>
       <td>{g.label}</td>
       <td className="mono" title={g.address}>
         {shortAddress(g.address)}

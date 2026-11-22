@@ -1,5 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
-import { authorize, fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { authorize, fixtureUrl, openToolsTab, THEMES, trackPageErrors, type Theme } from "./helpers";
 import { checkArea, PSEUDO } from "./pseudo";
 
 // Localization (MP-14): CoinJoin under the two pseudo-locales (./pseudo.ts): the CoinJoin page
@@ -193,8 +193,8 @@ const SETTINGS_ENGLISH = [
 }
 
 /** The left edges of `re`'s two groups in the first text node under `root` that matches it. */
-async function lefts(page: Page, root: string, re: RegExp): Promise<[number, number] | null> {
-  return page.getByTestId(root).evaluate(
+async function lefts(page: Page, root: string | Locator, re: RegExp): Promise<[number, number] | null> {
+  return (typeof root === "string" ? page.getByTestId(root) : root).evaluate(
     (el, [source, flags]) => {
       const re = new RegExp(source, flags);
       const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -250,4 +250,20 @@ test.describe("numbers keep their order under ar-XB", () => {
     expect(at, "the (50) limit").not.toBeNull();
     expect(at![0]).toBeLessThan(at![1]);
   });
+
+  for (const mode of ["list", "tree"] as const)
+    test(`the coin table's amounts, ${mode}`, async ({ page }) => {
+      await page.goto(fixtureUrl("tools-coinjoin", "light", "&lang=ar-XB"));
+      await page.getByTestId("toolbar").waitFor();
+      await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+      await page.getByTestId("settings-unit-milliDash").click();
+      await expect(page.getByTestId("settings-unit-milliDash")).toHaveAttribute("aria-pressed", "true");
+      await openToolsTab(page, "coinSelection");
+      await page.getByTestId(`coins-mode-${mode}`).click();
+      const cell = page.getByTestId("coin-table").locator(mode === "tree" ? "tr.coin-group td.num" : "tbody tr:not(.coin-group) td.num");
+      const grouped = cell.filter({ hasText: /\p{Nd}\s\p{Nd}/u }).first();
+      const at = await lefts(page, grouped, /(\p{Nd})\p{Nd}*\s(\p{Nd})/u);
+      expect(at, "an amount with a digit group").not.toBeNull();
+      expect(at![0]).toBeLessThan(at![1]);
+    });
 });
