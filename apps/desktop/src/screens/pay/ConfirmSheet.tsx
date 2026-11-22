@@ -180,6 +180,10 @@ export function ConfirmSheet({
   useEffect(() => {
     if (!busy && error) field.current?.focus();
   }, [busy, error]);
+  const form = useRef<HTMLFormElement>(null);
+  const holdFocus = () => {
+    if (form.current?.contains(document.activeElement)) form.current.closest<HTMLElement>('[role="dialog"]')?.focus();
+  };
 
   // Set before the first await, so a second Send in the same frame (before `busy` renders) does
   // not run the accept, which cannot be undone, twice.
@@ -199,6 +203,7 @@ export function ConfirmSheet({
       setError(t("pay.confirm.needPassphrase"));
       return;
     }
+    holdFocus();
     setBusy(true);
     setError(null);
     const attempt = onSend({ amount: estimate.totalSent, fee: estimate.fee });
@@ -305,6 +310,7 @@ export function ConfirmSheet({
   // reaches the clipboard nor opens Tools.
   const createUnsigned = async () => {
     if (busy) return;
+    holdFocus();
     setBusy(true);
     setError(null);
     let psbt: string;
@@ -335,6 +341,7 @@ export function ConfirmSheet({
   return (
     <Sheet title={actions.unsignedFirst ? t("pay.confirm.titleUnsigned") : t("pay.confirm.title")} width="small" testId="pay-confirm" returnFocus={returnFocus} onClose={() => !busy && onCancel()}>
       <form
+        ref={form}
         className="confirm"
         onSubmit={(e) => {
           e.preventDefault();
