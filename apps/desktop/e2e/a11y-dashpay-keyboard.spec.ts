@@ -243,7 +243,8 @@ test("keyboard only: register a username", async ({ page }) => {
   await expect(screen.getByTestId("registration-progress-step")).toHaveText("(2/3) Creating identity");
   await expectSaid(progress, "polite", /\(2\/3\) Creating identity/);
 
-  // The network finishes the run; the welcome takes focus at its title, which a reader says.
+  // The network finishes the run; the welcome keeps focus at its title, and its status says it.
+  const announced = await liveRegion(page, '[data-testid="registration-announced"]', { empty: false });
   await page.evaluate((d) => {
     while (window.__dwFixture!.advanceRegistration(d));
   }, draft);
@@ -251,6 +252,7 @@ test("keyboard only: register a username", async ({ page }) => {
   const title = screen.getByRole("heading", { level: 2 });
   await expect(title).toHaveText("Welcome to DashPay, @alice-77");
   await expect(title).toBeFocused();
+  await expectSaid(announced, "polite", /Welcome to DashPay, @alice-77\./);
   await expect(page.getByTestId("toolbar-chip")).toContainText("@alice-77");
   await expectAxeClean(page);
   expect(errors).toEqual([]);
@@ -499,20 +501,28 @@ test("keyboard only: edit my profile", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("defect (#286): after Confirm & pay's passphrase, the registration progress screen leaves focus on <body>", async ({ page }) => {
+test("#286: after Confirm & pay's passphrase, focus moves to the registration progress screen", async ({ page }) => {
   const errors = await open(page, "dashpay-no-identity");
   const pay = await toConfirmAndPay(page, "alice-77");
   await page.keyboard.press("Enter");
   await authorizeFrom(page, pay);
+  // Confirm & pay is disabled as the run starts and goes with Step 2, so the grant sheet has
+  // nowhere to give focus back: the progress screen takes it at its title, not <body>.
   const screen = page.getByTestId("registration-screen");
   await expect(screen).toHaveAttribute("data-kind", "progress");
   await rendered(page);
   expect(errors).toEqual([]);
-  test.fail(
-    true,
-    "Join DashPay ▸ Confirm & pay: the button is disabled while the run starts, then goes with Step 2, so the grant sheet has nowhere to give focus back and it falls to <body>; expected on the progress screen (its title or first control).",
-  );
   await expect.poll(async () => ((await holdsFocus(screen)) ? "on the progress screen" : await focusName(page))).toBe("on the progress screen");
+  const title = screen.getByRole("heading", { level: 2 });
+  await expect(title).toBeFocused();
+  // The welcome then keeps focus at the title, which gets no new focus event, so it is announced.
+  await page.evaluate(() => {
+    const d = window.__dwFixture!.world.dashpay.registrations.at(-1)!.draft;
+    while (window.__dwFixture!.advanceRegistration(d));
+  });
+  await expect(screen).toHaveAttribute("data-kind", "done");
+  await expect(title).toBeFocused();
+  await expect(page.getByTestId("registration-announced")).toHaveText("Welcome to DashPay, @alice-77. Your username is ready. Friends can now find you and pay you by name.");
 });
 
 /** The bell popover now, read in one go: "closed" (absent or not rendered), "focus kept" (it

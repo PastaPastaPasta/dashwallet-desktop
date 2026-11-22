@@ -287,14 +287,25 @@ export function RegistrationScreen({
   const section = useRef<HTMLElement>(null);
   const title = useRef<HTMLHeadingElement>(null);
   const [announced, setAnnounced] = useState("");
+  const shown = useRef<boolean | null>(null);
   // The progress screen's controls go when it turns into the welcome, and focus with them; start
-  // keyboard users at the title then. Focus still somewhere else stays, and the welcome is
-  // announced instead.
+  // keyboard users at the title then, and on any screen that appears with focus lost. Focus still
+  // somewhere else stays, and the welcome is announced instead, as it is when the title already
+  // has focus and so does not take it anew.
   useEffect(() => {
-    if (!welcome) return setAnnounced("");
+    const from = shown.current;
+    shown.current = welcome;
+    const lost = () => document.activeElement === null || document.activeElement === document.body;
+    if (!welcome) {
+      setAnnounced("");
+      const take = () => lost() && title.current?.focus();
+      take();
+      const frame = requestAnimationFrame(take);
+      return () => cancelAnimationFrame(frame);
+    }
     const active = document.activeElement;
-    if (active === null || active === document.body || section.current?.contains(active)) title.current?.focus();
-    else setAnnounced(`${model.title}. ${model.lines.join(" ")}`);
+    if (active !== title.current && (lost() || section.current?.contains(active))) title.current?.focus();
+    else if (active !== title.current || from === false) setAnnounced(`${model.title}. ${model.lines.join(" ")}`);
     // Only the switch to the welcome moves focus or speaks, not a later change of its text.
   }, [welcome]);
   return (
@@ -317,7 +328,7 @@ export function RegistrationScreen({
           className="registration-title"
           id={`${id}-title`}
           ref={title}
-          tabIndex={welcome ? -1 : undefined}
+          tabIndex={-1}
           aria-describedby={welcome ? `${id}-lines` : undefined}
         >
           {model.title}
