@@ -93,6 +93,29 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// signed.
 pub(crate) const SENT_PREFIX: &str = "sent:";
 
+/// Tests: the next abandon of a session's wallet store stops right after
+/// its sweep is stored, as if the process stopped there.
+#[cfg(test)]
+pub(crate) mod stop_after_sweep {
+    use std::sync::Mutex;
+
+    static ARMED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+    fn key<T>(store: &T) -> usize {
+        std::ptr::from_ref(store) as usize
+    }
+
+    pub(crate) fn arm<T>(store: &T) {
+        ARMED.lock().unwrap().push(key(store));
+    }
+
+    pub(crate) fn take<T>(store: &T) -> bool {
+        let mut armed = ARMED.lock().unwrap();
+        let found = armed.iter().position(|k| *k == key(store));
+        found.map(|i| armed.remove(i)).is_some()
+    }
+}
+
 /// Settings key prefix (wallet scope) of the signed transaction of a sent
 /// mark, its consensus hex, written and dropped with the mark (#170 case
 /// 1). Apart from the mark, so a build that knows no such key still reads
@@ -466,6 +489,9 @@ impl NetworkSession {
             if let Some(checkpoint) = checkpoint {
                 self.record_rewind_locked(wallet, info, checkpoint).await?;
             }
+            // Durable before anything is applied: a later load must never
+            // see the payment live with its coins released.
+            self.write_abandoned_marks(wallet, &planned).await?;
             let abandoned = abandon_with(&mut info.core_wallet, root, &descendants);
             if !abandoned.is_empty() {
                 info.core_wallet.update_balance();
@@ -482,11 +508,6 @@ impl NetworkSession {
         if abandoned.is_empty() {
             return Err(EngineError::TxActionRefused(TxActionRefusal::Confirmed));
         }
-        let txs: Vec<(Txid, Transaction)> = abandoned
-            .iter()
-            .filter_map(|t| self.hub.history.get(&wallet, t).map(|e| (*t, e.tx)))
-            .collect();
-
         let live = self.live()?;
         let persister = Arc::clone(&live.persister);
         let sweep = SweepBatch {
@@ -497,6 +518,10 @@ impl NetworkSession {
             winner_mined_height: None,
             released_outpoints: released.clone(),
         };
+        #[cfg(test)]
+        if (self.hub.fail_abandon_sweep).swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Storage("abandon: test sweep failure".into()));
+        }
         tokio::task::spawn_blocking(move || {
             let changeset = PlatformWalletChangeSet {
                 core: Some(CoreChangeSet {
@@ -506,23 +531,15 @@ impl NetworkSession {
                 ..Default::default()
             };
             persister.store(wallet.0, changeset)?;
-            persister.flush(wallet.0)
+            persister.flush(wallet.0)?;
+            #[cfg(test)]
+            if stop_after_sweep::take(&*persister) {
+                return Err(platform_wallet::changeset::PersistenceError::LockPoisoned);
+            }
+            Ok::<_, platform_wallet::changeset::PersistenceError>(())
         })
         .await?
         .map_err(|e| EngineError::Storage(format!("abandon: {e}")))?;
-
-        let rows: Vec<(String, String)> = txs
-            .iter()
-            .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(tx)))
-            .collect();
-        let scope = wallet.to_string();
-        self.appdb_op(move |db| {
-            for (key, hex) in &rows {
-                db.set_setting(&scope, key, Some(hex))?;
-            }
-            Ok(())
-        })
-        .await?;
 
         self.hub.history.with_wallet(wallet, |h| {
             for t in &abandoned {
@@ -548,6 +565,33 @@ impl NetworkSession {
         self.hub.pump.mark_history(wallet, Some(&changed));
         self.hub.pump.mark_balances(wallet);
         Ok(abandoned)
+    }
+
+    /// Writes the abandoned marks of `txids` in one durable write.
+    async fn write_abandoned_marks(
+        &self,
+        wallet: WalletId,
+        txids: &BTreeSet<Txid>,
+    ) -> Result<(), EngineError> {
+        let rows: Vec<(String, String)> = (txids.iter())
+            .filter_map(|t| self.hub.history.get(&wallet, t).map(|e| (*t, e.tx)))
+            .map(|(t, tx)| (format!("{ABANDONED_PREFIX}{t}"), serialize_hex(&tx)))
+            .collect();
+        if rows.is_empty() {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if (self.hub.fail_abandon_mark).swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return Err(EngineError::Storage("abandon: test mark failure".into()));
+        }
+        let scope = wallet.to_string();
+        self.appdb_op(move |db| {
+            let writes: Vec<(&str, Option<&str>)> = (rows.iter())
+                .map(|(k, v)| (k.as_str(), Some(v.as_str())))
+                .collect();
+            db.set_settings_durable(&scope, &writes)
+        })
+        .await
     }
 
     /// The history's transactions out of a block that descend from `root`,

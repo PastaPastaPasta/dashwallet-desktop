@@ -129,6 +129,9 @@ impl RecordFault {
 struct Persisted {
     records: Vec<Txid>,
     recordless: HashSet<Txid>,
+    /// Spends the store's open dropped as not signed by their coins'
+    /// owner (`core_dropped_unsigned_spends`): never restored from a mark.
+    dropped: HashSet<Txid>,
 }
 
 /// Txids of the stored transactions per wallet, read from `wallet.sqlite`
@@ -188,6 +191,17 @@ fn persisted_txids(db_path: &Path) -> Result<HashMap<[u8; 32], Persisted>, rusql
         } else {
             persisted.records.push(txid);
         }
+    }
+    let mut stmt = conn.prepare("SELECT wallet_id, txid FROM core_dropped_unsigned_spends")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+    })?;
+    for row in rows {
+        let (wallet, txid) = row?;
+        let (Ok(wallet), Ok(txid)) = (<[u8; 32]>::try_from(wallet), Txid::from_slice(&txid)) else {
+            continue;
+        };
+        out.entry(wallet).or_default().dropped.insert(txid);
     }
     Ok(out)
 }
@@ -306,7 +320,8 @@ impl NetworkSession {
                         Vec::new()
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
-                    let (sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
+                    let (mut sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
+                    sent.retain(|t, _| !persisted.dropped.contains(t));
                     LoadedHistory {
                         wallet,
                         records,
@@ -569,7 +584,8 @@ impl NetworkSession {
             }
             let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
             history.mark_abandoned(&abandoned);
-            let (sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
+            let (mut sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
+            sent.retain(|t, _| !persisted.dropped.contains(t));
             if !(read && marks_read && sent_read) {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
                 return (history, crate::tx_actions::Sent::new());

@@ -706,3 +706,115 @@ fn a_mark_that_cannot_be_dropped_keeps_the_payment_held() {
     );
     assert!(!spendable(&engine, &session, id, a), "its coin is offered");
 }
+
+/// The app stops after an Abandon's sweep removed the payment's stored
+/// record: the next start keeps it abandoned, not pending from its saved
+/// copy, and A comes back once its funding is scanned.
+#[test]
+fn an_abandon_stopped_after_its_sweep_stays_abandoned_after_a_restart() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    super::own_spend_disk_tests::wait_stored(&session, id, &[payment.txid()]);
+    assert!(sent_marks(&session, id).contains(&payment.txid()), "marked");
+
+    crate::tx_actions::stop_after_sweep::arm(&*session.live().unwrap().persister);
+    let (s, txid) = (Arc::clone(&session), payment.txid());
+    let stopped = engine.block_on(session.on_runtime(async move {
+        let manager = s.manager()?;
+        s.abandon_inner(&manager, id, txid).await
+    }));
+    assert!(stopped.is_err(), "stopped after the sweep: {stopped:?}");
+
+    let session = reopen(&engine, session);
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_none_or(|e| e.is_abandoned()),
+        "restored as pending"
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert_holds(&engine, &session, id, &outputs(&paid), "then scanned");
+}
+
+/// The store's open dropped a pending spend whose input isn't signed by its
+/// coin's owner and gave the coin back: a sent mark of that spend neither
+/// lists it nor keeps the coin out after the restart.
+#[test]
+fn a_spend_the_store_dropped_as_unsigned_is_not_restored_from_its_mark() {
+    use key_wallet::account::{AccountType, StandardAccountType};
+    use key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use key_wallet::transaction_checking::TransactionContext;
+    use key_wallet::transaction_checking::transaction_router::TransactionType;
+    use platform_wallet::changeset::{
+        CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+    };
+
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let claim = Transaction {
+        version: 3,
+        lock_time: 0,
+        input: vec![dashcore::TxIn {
+            previous_output: a,
+            script_sig: dashcore::ScriptBuf::from_bytes(vec![0x4c, 0xff, 0x01]),
+            sequence: u32::MAX,
+            witness: Default::default(),
+        }],
+        output: vec![dashcore::TxOut {
+            value: COIN / 2,
+            script_pubkey: dashcore::ScriptBuf::from_bytes(vec![0x6a]),
+        }],
+        special_transaction_payload: None,
+    };
+    let record = TransactionRecord::new(
+        claim.clone(),
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        TransactionContext::Mempool,
+        TransactionType::Standard,
+        TransactionDirection::Internal,
+        Vec::new(),
+        Vec::new(),
+        0,
+    );
+    let live = session.live().unwrap();
+    let changeset = PlatformWalletChangeSet {
+        core: Some(CoreChangeSet {
+            records: vec![record],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    live.persister.store(id.0, changeset).unwrap();
+    live.persister.flush(id.0).unwrap();
+    let (scope, txid) = (id.to_string(), claim.txid());
+    let mark = |prefix: &str, value: String| {
+        (live.appdb)
+            .set_setting(&scope, &format!("{prefix}{txid}"), Some(&value))
+            .unwrap();
+    };
+    mark(crate::tx_actions::SENT_PREFIX, a.to_string());
+    mark(
+        crate::tx_actions::SENT_TX_PREFIX,
+        dashcore::consensus::encode::serialize_hex(&claim),
+    );
+    drop(live);
+
+    let session = reopen(&engine, session);
+    assert!(
+        !listed(&engine, &session, id, txid),
+        "restored from its mark"
+    );
+    assert!(spendable(&engine, &session, id, a), "A is held");
+}

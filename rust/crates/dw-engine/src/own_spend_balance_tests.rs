@@ -1109,6 +1109,123 @@ fn a_load_with_an_unreadable_record_claims_nothing_until_a_clean_load() {
     assert_holds(&engine, &session, id, &clean, "a clean load");
 }
 
+/// A payment of the wallet's coin A, sent and stored unmined; returns
+/// it with A and the funding transaction.
+fn pending_payment_of_one_coin() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+    OutPoint,
+    Transaction,
+) {
+    let (dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    (dir, engine, session, id, payment, a, paid)
+}
+
+fn try_abandon(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    txid: Txid,
+) -> Result<BTreeSet<Txid>, crate::EngineError> {
+    let s = Arc::clone(session);
+    engine.block_on(session.on_runtime(async move {
+        let manager = s.manager()?;
+        s.abandon_inner(&manager, id, txid).await
+    }))
+}
+
+fn abandoned_marks(session: &NetworkSession, id: WalletId) -> BTreeSet<Txid> {
+    (crate::tx_actions::load_abandoned(&session.live().unwrap().appdb, id).0)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect()
+}
+
+/// #170 case 7: an abandon writes its abandoned marks durably before it is
+/// applied. When that write fails the abandon is refused with nothing
+/// changed: the payment stays stored and pending and keeps its claim on A
+/// across a restart, so A is never released while no mark says so.
+#[test]
+fn a_failed_abandoned_mark_write_refuses_the_abandon() {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let (_dir, engine, session, id, payment, a, paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    session
+        .hub
+        .fail_abandon_mark
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    assert!(
+        !session
+            .hub
+            .fail_abandon_mark
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the fault was hit"
+    );
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    persister.flush(id.0).unwrap();
+    assert!(
+        persister.get_core_tx_record(id.0, &txid).unwrap().is_some(),
+        "the record stays stored"
+    );
+    drop(persister);
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_some_and(|e| !e.is_abandoned()),
+        "the payment stays pending"
+    );
+    assert!(abandoned_marks(&session, id).is_empty());
+
+    let session = reopen(&engine, session);
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(!held(&engine, &session, id).contains(&a), "A stays claimed");
+    assert!(sent_marks(&session, id).contains(&txid));
+}
+
+/// The marks are durable before the sweep that removes the payment's
+/// record: an abandon whose sweep fails after them (as a crash between the
+/// two writes leaves it) loads abandoned at the next start, claims nothing,
+/// and the funding block scanned again credits A.
+#[test]
+fn an_abandon_whose_sweep_fails_after_its_mark_loads_abandoned() {
+    let (_dir, engine, session, id, payment, a, paid) = pending_payment_of_one_coin();
+    let txid = payment.txid();
+    session
+        .hub
+        .fail_abandon_sweep
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(try_abandon(&engine, &session, id, txid).is_err());
+    assert!(
+        !session
+            .hub
+            .fail_abandon_sweep
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the fault was hit"
+    );
+    assert_eq!(abandoned_marks(&session, id), BTreeSet::from([txid]));
+
+    let session = reopen(&engine, session);
+    assert!(
+        (session.hub.history.get(&id, &txid)).is_some_and(|e| e.is_abandoned()),
+        "the payment loads abandoned"
+    );
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(held(&engine, &session, id).contains(&a), "A is credited");
+}
+
 /// An abandoned payment relayed again unlocked by a peer is ignored. Its
 /// record can still be stored again while its sent mark stands (the abandon
 /// sweeps the record, not the mark), as a relay after a restart stores it.
