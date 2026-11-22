@@ -138,8 +138,9 @@ export function spawnDriver(port: number, out: string, nativePort = port + 1): C
 /** Waits until tauri-driver on `port` answers `GET /status`. */
 export async function driverReady(port: number): Promise<string> {
   const base = `http://127.0.0.1:${port}`;
+  const until = Date.now() + 30_000;
   await poll(30_000, "tauri-driver to answer", () =>
-    fetch(`${base}/status`).then(
+    fetch(`${base}/status`, { signal: AbortSignal.timeout(Math.max(1, until - Date.now())) }).then(
       (r) => (r.ok ? true : undefined),
       () => undefined,
     ),

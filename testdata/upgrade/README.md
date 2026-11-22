@@ -53,9 +53,10 @@ The drivers also listen on the host's loopback without authentication while the 
    multi-session, 3 sessions, 6 rounds, 25 DASH; theme dark, unit mDASH, 4 decimals, hidden balance, auto-lock
    900 s, subtract fee by default, masternodes shown;
 4. the app quits, opens again offline (`--no-sync`), is unlocked, and its answers are recorded and checked against
-   dashd (each balance equals the deposits less the payment and dashd's fee for it; from v0.2.0 every recorded coin
-   of the two wallets with keys is first matched against dashd's unspent output, same amount and address, and every
-   funded address then signs a message dashd verifies); it quits again and the data root is copied here.
+   dashd (each balance equals the deposits less the payment and dashd's fee for it; from v0.2.0 every funded address
+   of the two wallets with keys signs a message dashd verifies; a wallet's funded addresses sign only after each of
+   that wallet's recorded coins matches dashd's unspent output in amount and address, a check the v0.2.0 fixture
+   predates); it quits again and the data root is copied here.
 
 A new release is covered by running the script for its tag, committing the directory, and adding the tag with
 the SHA-256 of its `expected.json` (as `sha256sum` prints it) to `SNAPSHOT_SHA256` in the test. A committed

@@ -27,6 +27,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { accountTpub } from "./bip32.ts";
 import { Dashd, freePort, paysTo, type RawTx } from "./dashd.ts";
+import { ownedListeners } from "./listeners.ts";
 import { type Coin, outpointProblem, type TxOut } from "./outpoint.ts";
 import { APP, CHAIN, driverGone, driverReady, env, poll, spawnDriver, stopDriver, WebDriver } from "./driver.ts";
 
@@ -111,11 +112,7 @@ async function startOwnDriver() {
   for (const p of [port, native]) if (await answers(p)) throw new Error(`port ${p} already answers: no driver is started beside it`);
   driver = spawnDriver(port, LOGS, native);
   const group = driver.pid;
-  await poll(30_000, "both drivers to listen", async () => ([port, native].every((p) => listenerGroups(p).length > 0) ? true : undefined));
-  for (const p of [port, native]) {
-    const groups = listenerGroups(p);
-    if (groups.some((g) => g !== group)) throw new Error(`port ${p} has a listener this run did not start (groups ${groups.join(", ")}, want ${group})`);
-  }
+  await poll(30_000, "both drivers to listen", async () => ownedListeners([port, native].map((p) => ({ port: p, groups: listenerGroups(p) })), group));
   const base = await driverReady(port);
   step(`tauri-driver on ${port}, WebKitWebDriver on ${native}, both owned by group ${group}`);
   return { driver, base };
