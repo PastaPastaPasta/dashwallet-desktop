@@ -126,26 +126,37 @@ export class WebDriver {
  * logging to `out`, in its own process group so `stopDriver` ends the driver, WebKitWebDriver and
  * the app, and waits until it listens; `spawned` gets the child at once, so a signal while it
  * starts can still stop it. */
+export function spawnDriver(port: number, out: string, nativePort = port + 1): ChildProcess {
+  // A file, not a pipe: the app logs through the driver, and `spawnSync` (dwcli) blocks the event
+  // loop that would drain a pipe, so a full one would stop the app.
+  const log = openSync(join(out, "tauri-driver.log"), "w");
+  const driver = spawn(DRIVER, ["--port", String(port), "--native-port", String(nativePort)], { stdio: ["ignore", log, log], detached: true });
+  closeSync(log);
+  return driver;
+}
+
+/** Waits until tauri-driver on `port` answers `GET /status`. */
+export async function driverReady(port: number): Promise<string> {
+  const base = `http://127.0.0.1:${port}`;
+  const until = Date.now() + 30_000;
+  await poll(30_000, "tauri-driver to answer", () =>
+    fetch(`${base}/status`, { signal: AbortSignal.timeout(Math.max(1, until - Date.now())) }).then(
+      (r) => (r.ok ? true : undefined),
+      () => undefined,
+    ),
+  );
+  return base;
+}
+
 export async function startDriver(
   port: number,
   out: string,
   spawned?: (driver: ChildProcess) => void,
   nativePort = port + 1,
 ): Promise<{ driver: ChildProcess; base: string }> {
-  // A file, not a pipe: the app logs through the driver, and `spawnSync` (dwcli) blocks the event
-  // loop that would drain a pipe, so a full one would stop the app.
-  const log = openSync(join(out, "tauri-driver.log"), "w");
-  const driver = spawn(DRIVER, ["--port", String(port), "--native-port", String(nativePort)], { stdio: ["ignore", log, log], detached: true });
-  closeSync(log);
+  const driver = spawnDriver(port, out, nativePort);
   spawned?.(driver);
-  const base = `http://127.0.0.1:${port}`;
-  await poll(30_000, "tauri-driver to listen", () =>
-    fetch(`${base}/status`).then(
-      (r) => (r.ok ? true : undefined),
-      () => undefined,
-    ),
-  );
-  return { driver, base };
+  return { driver, base: await driverReady(port) };
 }
 
 /** Ends the driver's process group: tauri-driver, WebKitWebDriver and the app. Gone already is fine. */

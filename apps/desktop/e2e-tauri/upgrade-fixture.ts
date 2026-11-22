@@ -27,7 +27,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { accountTpub } from "./bip32.ts";
 import { Dashd, freePort, paysTo, type RawTx } from "./dashd.ts";
-import { APP, CHAIN, driverGone, env, poll, startDriver, stopDriver, WebDriver } from "./driver.ts";
+import { ownedProbe } from "./listeners.ts";
+import { type Coin, outpointProblem, type TxOut } from "./outpoint.ts";
+import { APP, CHAIN, driverGone, driverReady, env, poll, spawnDriver, stopDriver, WebDriver } from "./driver.ts";
 
 if (process.env.DW_UPGRADE_PRIVATE_SESSION !== "1" || process.env.GDK_BACKEND !== "x11" || process.env.WAYLAND_DISPLAY) {
   console.error("upgrade-fixture: run it through scripts/upgrade-fixture.sh, which gives it a private X display and session bus");
@@ -81,24 +83,18 @@ const answers = (port: number) =>
     ),
   ).then((r) => r.some(Boolean));
 
-/** The process groups of every TCP listener on `port`; null for one whose owner is not visible (another account's). */
-function listenerGroups(port: number): (number | null)[] {
+function ssListing() {
   const r = spawnSync("ss", ["-Hltnp"], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`ss: ${r.stderr}`);
-  return r.stdout
-    .split("\n")
-    .filter((l) => l.split(/\s+/)[3]?.endsWith(`:${port}`))
-    .flatMap((l) => {
-      const pids = [...l.matchAll(/pid=(\d+)/g)].map((m) => m[1]!);
-      if (pids.length === 0) return [null];
-      return pids.map((pid) => {
-        try {
-          return Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[2]);
-        } catch {
-          return null;
-        }
-      });
-    });
+  return r.stdout;
+}
+
+function processGroup(pid: string) {
+  try {
+    return Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[2]);
+  } catch {
+    return null;
+  }
 }
 
 /** tauri-driver and WebKitWebDriver on two free ports, refused if either answered before the
@@ -108,15 +104,12 @@ async function startOwnDriver() {
   let native = await freePort();
   while (native === port) native = await freePort();
   for (const p of [port, native]) if (await answers(p)) throw new Error(`port ${p} already answers: no driver is started beside it`);
-  const started = await startDriver(port, LOGS, (d) => (driver = d), native);
-  const group = started.driver.pid;
-  await poll(30_000, "WebKitWebDriver to listen", async () => (listenerGroups(native).length > 0 ? true : undefined));
-  for (const p of [port, native]) {
-    const groups = listenerGroups(p);
-    if (groups.length === 0 || groups.some((g) => g !== group)) throw new Error(`port ${p} has a listener this run did not start (groups ${groups.join(", ")}, want ${group})`);
-  }
+  driver = spawnDriver(port, LOGS, native);
+  const group = driver.pid;
+  await poll(30_000, "both drivers to listen", ownedProbe(ssListing, [port, native], group, processGroup));
+  const base = await driverReady(port);
   step(`tauri-driver on ${port}, WebKitWebDriver on ${native}, both owned by group ${group}`);
-  return started;
+  return { driver, base };
 }
 
 async function launch(dataRoot: string, args: string[]) {
@@ -325,7 +318,12 @@ async function main() {
     };
     signatures.push(await signed((await invoke<{ address: string }>("current_receive_address", { walletId })).address));
     if (v010) continue;
-    const coins = calls.findLast((c) => c.cmd === "utxos" && c.args.walletId === walletId)!.result as { address: string }[];
+    const coins = calls.findLast((c) => c.cmd === "utxos" && c.args.walletId === walletId)!.result as Coin[];
+    for (const coin of coins) {
+      const out = chain.cli("gettxout", coin.outpoint.txid, String(coin.outpoint.vout), "true");
+      const problem = outpointProblem(coin, out ? (JSON.parse(out) as TxOut) : null);
+      if (problem) throw new Error(problem);
+    }
     for (const address of [...new Set(coins.map((c) => c.address))].sort()) fundedSignatures.push(await signed(address));
   }
   await close(wd, dataRoot);

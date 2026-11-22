@@ -84,7 +84,7 @@ owner updates the State column as items land and reports against it daily.
 | Version | Date | Contents |
 |---|---|---|
 | 0.2 | Thu 11-19; published Fri 11-20 | `main` at #72 plus the `release/0.2` fixes; instant incoming payments and the fast launch move to 0.3 |
-| 0.3 | Mon 11-23 | instant incoming payments, the fast launch, masternode screens (MG-10), Platform ↔ Shielded, CoinJoin fixes, legacy `wallet.dat`, empty states, unlock once |
+| 0.3 | Mon 11-23; published Sun 11-22 | instant incoming payments, the fast launch, masternode screens (MG-10), Platform ↔ Shielded, CoinJoin fixes, legacy `wallet.dat`, empty states, unlock once |
 | 0.4 | Thu 11-26 | the rest of the core: shared masternodes (MG-10b), the lane C items that have merged by then, CoinJoin V24, PSBT under Advanced, the screens whose copy is in the message catalog by then (English) |
 | 0.5 | — | not released: its contents (commerce, BIP70) are cut to 1.0.x |
 | 0.6 | Sun 11-29 | hardening: fuzzing, kill -9 matrix, performance, trust gate, auto-update; the lane C items kept and merged after 0.4; the last screens' copy in the catalog; the translations |
@@ -112,8 +112,8 @@ thread; "MG" is the masternode and governance thread, which is also the release 
 | P Localization | PO | MP-14, translated in this repository by agents (no Transifex): the message catalog, locale choice, plurals and the right-to-left check, with one screen converted as the pattern (11-19 → 11-21) → every screen's copy moved into the catalog, one small pull request per screen area, each after that area's open pull requests have merged (11-21 → 11-26) → copy freeze 11-27 → the translations, each checked by a second pass (11-27 → 11-29) | 11-19 → 11-29 | the foundation merged (#146, 11-20): the catalog, the language choice, plurals and two fixture-only pseudo-locales, with the shell, the lock screen and Settings ▸ General converted; what must be fixed before the first translation and the first right-to-left language ship is listed in #155; the per-area conversions start 11-21 |
 | L Commerce | PO | Cut: MP-09 Explore, MP-13 CrowdNode withdraw, MP-10, MP-11, MP-12 | — | cut to 1.0.x |
 | M Hardening | PO | H-02 fuzzing → H-03 kill -9 matrix → H-06 performance → H-09 trust gate on by default → **H-01 security review (11-27 → 11-29)**. Cut: H-10 node pinning, Tor/SOCKS5, MP-03, MP-15 | 11-19 → 11-29 | H-02 merged (#149, 11-20): ten fuzz targets, a seed replay in the test suite and a nightly job, with its gaps listed in #166; a PSBT defect its fuzzing found is fixed (#130, 11-20); the rest not started |
-| N Release and packaging | MG | cut 0.2 → `parity.md` redone for the Tauri app → PK-03 auto-update → W-02 Windows services → Flatpak → SBOM and checklist → retire Swift (U-08) → each release cut. Cut: Windows Hello in W-02 (passphrase only on Windows), and what is left of the tray companion on Windows and Linux | 11-19 → 12-02 | 0.2.0 published 11-20; `parity.md` redone (#32); SBOM and checklist merged (#54); Flatpak in review (#56) |
-| O Test suites and QA | PO | DP2-06 (never-cut), DP1-07, DP3-05 suites → visual baselines refresh, issue #29 → iOS/Android restore test → H-04 real-node flows → H-08 full QA pass on three OSes → H-05 accessibility → H-07 mainnet canary, all done by 11-30 for the release candidate; 12-01 is for its fixes | 11-19 → 11-30 | the three suites merged (#129, 11-20), with the harness gaps listed in #168; their nightly on testnet is not installed yet, because where its failure messages go is not decided; the upgrade-path checks from v0.1.0 (#102) and from v0.2.0 (#152) merged on 11-20, and what is left is in #101; visual baselines refresh not started, and it now has to cover the whole set (about 150 images differ on `main`) |
+| N Release and packaging | MG | cut 0.2 → `parity.md` redone for the Tauri app → PK-03 auto-update → W-02 Windows services → Flatpak → SBOM and checklist → retire Swift (U-08) → each release cut. Cut: Windows Hello in W-02 (passphrase only on Windows), and what is left of the tray companion on Windows and Linux | 11-19 → 12-02 | 0.2.0 published 11-20; 0.3.0 published 11-22, the first release that can update itself; `parity.md` redone (#32); SBOM and checklist merged (#54); Flatpak merged (#56) |
+| O Test suites and QA | PO | DP2-06 (never-cut), DP1-07, DP3-05 suites → visual baselines refresh, issue #29 → iOS/Android restore test → H-04 real-node flows → H-08 full QA pass on three OSes → H-05 accessibility → H-07 mainnet canary, all done by 11-30 for the release candidate; 12-01 is for its fixes | 11-19 → 11-30 | the three suites merged (#129, 11-20), with the harness gaps listed in #168; their nightly on testnet is not installed yet, because where its failure messages go is not decided; the upgrade-path checks from v0.1.0 (#102) and from v0.2.0 (#152) merged on 11-20, and the #152 review items closed in #280 and #281 (11-22); the v0.3.0 fixture for #101 is captured from the tagged release; the by-hand H-08 script for macOS and Windows is written (`docs/qa/H-08-macos-windows.md`, #278, for pasta around 11-28); keyboard-only DashPay journeys merged (#289), and the defects they found (#286, #287, #288, #291) are the H-05 fixes; visual baselines refresh not started, and it now has to cover the whole set (about 150 images differ on `main`) |
 
 ## Cuts applied 2026-11-19
 
@@ -197,39 +197,13 @@ macOS job on `main`. A new release is covered by committing its directory:
 (cd rust && cargo test -p dw-app --lib upgrade_path_tests)                # test upgrade_path_tests::… ok
 ```
 
-**macOS and Windows, by hand in the QA pass** (not run yet; a test user account with no
-`org.dash.wallet.desktop` data root: `~/Library/Application Support/org.dash.wallet.desktop` on macOS,
-`%APPDATA%\org.dash.wallet.desktop` on Windows). The automated check does not cover each OS's installer
-upgrading in place, its default data root or its keychain, so the steps below do. The Touch ID and Windows Hello
-steps (marked "biometric") apply only to a release pair whose shipped app has quick-unlock enrolment and unlock
-in both releases. Neither 0.1.0 nor the 0.2 line has them yet (Settings ▸ Security shows the row as not yet
-available), so skip them for an upgrade from 0.1.0:
-
-1. macOS only: the same fixture check, from a checkout: `cd rust && cargo test -p dw-app --lib upgrade_path_tests`.
-   Expected: `test upgrade_path_tests::every_release_data_root_opens_with_the_same_answers ... ok`. (CI runs it on
-   macOS on `main`. It cannot run on Windows, where `dw-app`'s test binaries do not load (docs/ci.md); there,
-   steps 2 to 5 are the check.)
-2. Install the previous release from its GitHub release after checking it against `SHA256SUMS`
-   (`shasum -a 256 -c SHA256SUMS --ignore-missing` on macOS; on Windows compare
-   `(Get-FileHash dash-wallet-0.1.0-windows-x64-setup.exe).Hash` with its line). Open it, choose testnet in
-   Settings, create a wallet with a passphrase, fund it from the testnet faucet, pay 0.1 tDASH back with a
-   recipient label, add an address-book entry and a receive request, set unit mDASH, auto-lock 15 minutes, dark
-   theme and CoinJoin rounds 6; biometric: enrol Touch ID or Windows Hello. In Tools ▸ Sign/Verify sign
-   `h08 upgrade` with the first receive address. Write down the balance, every Activity row (txid, amount, status), the labels and the
-   signature, and take screenshots of Home, Activity and Settings.
-3. Quit the app (⌘Q on macOS, File ▸ Exit on Windows) and keep a copy of the data root:
-   `ditto ~/Library/Application\ Support/org.dash.wallet.desktop ~/h08-backup` (macOS) or
-   `robocopy "%APPDATA%\org.dash.wallet.desktop" "%USERPROFILE%\h08-backup" /E` (Windows).
-4. Install the release candidate over it (drag to Applications and replace; or run the new `setup.exe`). Open it.
-   Expected: the lock screen, not Welcome; the old passphrase unlocks (biometric: so do Touch ID or Windows Hello,
-   with the spending limit set before); the same
-   wallet name, balance, Activity rows, labels, address book, receive request and Settings values; the network is
-   still testnet; Tools ▸ Sign/Verify accepts the old signature, and signing the same text again gives the same
-   signature. Quit and open again: the same.
-5. Downgrade, after step 4: install the previous release again and open it. Expected for 0.1.0 (seen on Linux):
-   "Dash Wallet could not open the wallet: storage error: app database: migration: migration
-   V2026110501__tx_fiat is missing from the filesystem" with Try again, and the release candidate still opens the
-   data root afterwards with nothing changed. Restore the copy from step 3 before going on.
+**macOS and Windows, by hand in the QA pass** (not run yet): [`docs/qa/H-08-macos-windows.md`](qa/H-08-macos-windows.md).
+The automated check does not cover each OS's installer upgrading in place, its default data root, its secret store,
+uninstalling or the unsigned first launch, so that script does: on a Mac with Apple silicon, an Intel Mac, Windows 11
+and Windows 10, it installs the release candidate fresh, then upgrades in place from 0.1.0, 0.2.0 and 0.3.0 twice
+each, once with the vault behind a passphrase and once with its key in the OS secret store (one vault per network,
+so these are two runs from an empty data root), downgrades, restores, and uninstalls with the data kept and removed. From a clean data root the network is chosen on Welcome, and 0.1.0 applies it only after a restart (#101
+item 12). No release has quick unlock, so there is no Touch ID or Windows Hello step.
 
 ## What the funds fixes leave for the release candidate
 
