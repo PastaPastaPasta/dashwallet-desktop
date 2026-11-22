@@ -2299,6 +2299,8 @@ impl NetworkSession {
         let Ok(wallet) = self.wallet(&wallet_id).await else {
             return skipped();
         };
+        #[cfg(test)]
+        crate::coins::pause_at(&self.hub.pause_metadata).await;
         let owned: Vec<bool> = {
             let Ok(state) = crate::wallet_read::info_of(&wallet).await else {
                 return skipped();

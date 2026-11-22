@@ -438,7 +438,7 @@ impl NetworkSession {
             }
             let network = this.network.core_network();
             let owned = {
-                let state = w.state().await;
+                let state = crate::wallet_read::info_of(&w).await?;
                 ownership(&state.core_wallet, &psbt, network)
             };
             let fee = dw_psbt::analyze(&psbt, network)

@@ -89,7 +89,12 @@ fn unloaded_during_appdb_job<T: Send + 'static>(
     });
     let _release = ReleaseOnDrop(Arc::clone(&pause));
     wait_until("the held job", || pause.reached.load(Ordering::SeqCst));
-    engine.block_on(s.unload_wallet(id)).unwrap();
+    engine
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(60), s.unload_wallet(id)).await
+        })
+        .expect("unload waited for the held read")
+        .unwrap();
     pause.release.notify_one();
     let joined = engine.block_on(task);
     assert!(
@@ -197,7 +202,12 @@ fn unloading_a_wallet_while_a_coin_read_waits_for_its_fence_does_not_panic() {
     wait_until("the read waits for the fence", || {
         s.coin_fences.waiting(id) > 0
     });
-    engine.block_on(s.unload_wallet(id)).unwrap();
+    engine
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(60), s.unload_wallet(id)).await
+        })
+        .expect("unload waited for the held read")
+        .unwrap();
     drop(fence);
     let joined = engine.block_on(task);
     assert!(

@@ -1171,6 +1171,92 @@ fn a_wallet_closed_before_the_payment_metadata_keeps_the_payment_sent() {
     assert!(recorded.is_ok(), "{recorded:?}");
 }
 
+#[test]
+fn a_wallet_closed_inside_an_accepted_broadcast_keeps_the_payment_sent() {
+    struct CloseOnAccept {
+        session: Arc<NetworkSession>,
+        wallet: WalletId,
+        pause: Arc<crate::coins::TestPause>,
+        unloaded: Arc<std::sync::Mutex<Option<Result<(), String>>>>,
+    }
+    impl super::TestBroadcaster for CloseOnAccept {
+        fn before_entry(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+            Box::pin(async {})
+        }
+        fn broadcast(
+            &self,
+            tx: &Transaction,
+            _first: bool,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<dashcore::Txid, platform_wallet::PlatformWalletError>,
+                    > + Send,
+            >,
+        > {
+            *self.session.hub.pause_metadata.lock().unwrap() = Some(Arc::clone(&self.pause));
+            let (session, wallet, pause, unloaded) = (
+                Arc::clone(&self.session),
+                self.wallet,
+                Arc::clone(&self.pause),
+                Arc::clone(&self.unloaded),
+            );
+            tokio::spawn(async move {
+                let unload = async {
+                    while !pause.reached.load(std::sync::atomic::Ordering::SeqCst) {
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                    session.unload_wallet(wallet).await
+                };
+                let result = tokio::time::timeout(Duration::from_secs(60), unload).await;
+                *unloaded.lock().unwrap() = Some(match result {
+                    Ok(r) => r.map_err(|e| e.to_string()),
+                    Err(_) => Err("the unload timed out".into()),
+                });
+                pause.release.notify_one();
+            });
+            let txid = tx.txid();
+            Box::pin(async move { Ok(txid) })
+        }
+    }
+
+    let f = fixture(false);
+    f.credit(1, COIN);
+    let draft = f.draft(vec![Recipient {
+        label: Some("Bob".into()),
+        message: Some("rent".into()),
+        ..pay(FOREIGN, 10_000_000)
+    }]);
+    let unloaded = Arc::new(std::sync::Mutex::new(None));
+    *draft.broadcaster.lock().unwrap() = Some(Arc::new(CloseOnAccept {
+        session: Arc::clone(&f.session),
+        wallet: f.wallet,
+        pause: Arc::new(crate::coins::TestPause::default()),
+        unloaded: Arc::clone(&unloaded),
+    }));
+    let p = f
+        .engine
+        .block_on(draft.prepare(f.spend_grant(10_000_000 + FEE_ROOM)))
+        .unwrap();
+    let txid = p.summary.txid.clone();
+    let sent = f.engine.block_on(draft.broadcast(p)).unwrap();
+    assert_eq!(sent.txid, txid);
+    assert_eq!(*unloaded.lock().unwrap(), Some(Ok(())));
+    assert!(matches!(
+        f.engine.block_on(f.session.wallet(&f.wallet)),
+        Err(EngineError::WalletNotFound(_))
+    ));
+    let appdb = Arc::clone(&f.session.live().unwrap().appdb);
+    let marks = crate::tx_actions::load_sent(&appdb, f.wallet).0;
+    assert!(
+        marks.keys().any(|t| t.to_string() == txid),
+        "the sent mark survives"
+    );
+    let w = f.wallet.to_string();
+    assert_eq!(appdb.tx_message(&w, &txid).unwrap(), None);
+    assert!(appdb.book_entry(&w, FOREIGN).unwrap().is_none());
+}
+
 // ---- PSBT signing caps (review H1) ----
 
 impl Fixture {
