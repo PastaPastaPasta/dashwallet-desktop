@@ -11,7 +11,7 @@ use dashcore::{OutPoint, Transaction, Txid};
 use super::own_spend_disk_tests::{
     COIN, TIP, abandon, assert_holds, coins, send, spendable, synced, wallet_funded_unmined,
 };
-use super::{mempool, mined, reopen, rows};
+use super::{instant_lock, mempool, mined, reopen, rows, wait_stored_locked};
 use crate::send::CoinSource;
 use crate::session::NetworkSession;
 use crate::{Engine, WalletId};
@@ -125,6 +125,29 @@ fn a_payment_marked_before_a_crash_can_be_abandoned() {
     assert!(
         (session.hub.history.get(&id, &payment.txid())).is_none_or(|e| e.is_abandoned()),
         "not live in the history"
+    );
+}
+
+/// Coverage: the payment, listed pending after the restart, is relayed
+/// InstantSend-locked and stays unmined. Its mark stays, so after another
+/// restart its coin stays out even when its funding block is scanned again.
+#[test]
+fn a_payment_restored_after_a_crash_and_then_locked_keeps_its_coin_out() {
+    let (_dir, engine, session, id, paid, payment) = sent_unrecorded();
+    let a = OutPoint::new(paid.txid(), 0);
+    assert!(listed(&engine, &session, id, payment.txid()), "listed");
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored_locked(&session, id, payment.txid());
+
+    let session = reopen(&engine, session);
+    assert!(sent_marks(&session, id).contains(&payment.txid()), "marked");
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    assert!(!held(&engine, &session, id).contains(&a), "A is credited");
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+    assert!(
+        (session.hub.history.get(&id, &payment.txid())).is_some_and(|e| !e.is_abandoned()),
+        "listed"
     );
 }
 
