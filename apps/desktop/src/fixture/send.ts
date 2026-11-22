@@ -89,7 +89,7 @@ export interface SendWorld {
   /** What `resolve_contact_payment_lock` finds for a lock whose payment the fixture did not hand
    * over itself (a scenario's lock); one it handed over is `sent`. */
   lockEvidence: LockResolutionName | null;
-  /** The engine could not read the wallet's payment records: every prepare is refused. */
+  /** The engine could not read the wallet's payment records: every prepare and PSBT signing is refused. */
   evidenceUnreadable: boolean;
 }
 

@@ -571,6 +571,7 @@ export function toolsHandlers(deps: ToolsDeps): Handlers {
       useGrant(world, grantId);
       if (a.signability === "watchOnly") throw fail("psbt.watch_only", "the wallet holds no private keys");
       if (a.total === null) throw fail("psbt.fee_unknown", "fee unknown");
+      if (world.send.evidenceUnreadable) throw fail("evidence_unreadable", "some of this wallet's payment records cannot be read; sending is paused");
       const cap = g.grant.purpose.kind === "spend" ? g.grant.purpose.maxDuffs : 0;
       if (a.total > cap) throw fail("psbt.grant_exceeded", "grant exceeded", { kind: "spendCap", maxDuffs: cap, outflow: a.total });
       if (a.signability !== "canSign" || p.signedInputs === p.inputs) return psbt;

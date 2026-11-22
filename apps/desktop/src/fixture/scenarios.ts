@@ -718,13 +718,13 @@ const SCENARIOS = {
     w.pending.platform!.dust = "400500000";
     return w;
   },
-  /** The next send to a Platform address gets no answer from Platform: it stays pending. */
-  /** The engine cannot read the wallet's payment records: a payment is refused at Send. */
+  /** The engine cannot read the wallet's payment records: a payment and a PSBT signing are refused. */
   "evidence-unreadable": (t) => {
     const w = base(t, "default", true);
     w.send.evidenceUnreadable = true;
     return w;
   },
+  /** The next send to a Platform address gets no answer from Platform: it stays pending. */
   "platform-send-pending": (t) => {
     const w = base(t);
     w.pending.platform!.nextSend = "pending";
