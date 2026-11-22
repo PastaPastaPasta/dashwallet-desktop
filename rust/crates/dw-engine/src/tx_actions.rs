@@ -90,9 +90,14 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// from at load. Written before the first broadcast, removed when it was
 /// never sent, and dropped at load once the payment is in a block,
 /// abandoned or gone from the store. Its value names the wallet's coins it
-/// signed, then, after `;`, the signed transaction's consensus hex (#170
-/// case 1); a mark an earlier build wrote has no transaction.
+/// signed.
 pub(crate) const SENT_PREFIX: &str = "sent:";
+
+/// Settings key prefix (wallet scope) of the signed transaction of a sent
+/// mark, its consensus hex, written and dropped with the mark (#170 case
+/// 1). Apart from the mark, so a build that knows no such key still reads
+/// the mark; one an earlier build wrote has none.
+pub(crate) const SENT_TX_PREFIX: &str = "senttx:";
 
 /// The marks of `wallet` under `prefix` that `parse` reads from their txid
 /// and value, and whether every one was read (each failure is logged).
@@ -127,40 +132,46 @@ fn load_marks<T>(
 /// signed and its transaction when the mark holds it ([`SENT_PREFIX`]),
 /// and whether every mark was read.
 pub(crate) fn load_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, bool) {
-    let (marks, read) = load_marks(appdb, wallet, SENT_PREFIX, |txid, value| {
-        let (coins, hex) = match value.split_once(';') {
-            Some((coins, hex)) => (coins, Some(hex)),
-            None => (value.as_str(), None),
-        };
+    let (marks, read) = load_marks(appdb, wallet, SENT_PREFIX, |txid, coins| {
         let coins = (coins.split(',').filter(|c| !c.is_empty()))
             .map(OutPoint::from_str)
             .collect::<Result<BTreeSet<_>, _>>()
             .ok()?;
-        let tx = match hex {
-            Some(hex) => Some(
-                deserialize::<Transaction>(&hex::decode(hex).ok()?)
-                    .ok()
-                    .filter(|tx| tx.txid() == txid)?,
-            ),
-            None => None,
-        };
-        Some((txid, SentMark { coins, tx }))
+        Some((txid, coins))
     });
-    (marks.into_iter().collect(), read)
-}
-
-/// The value of the mark of a payment this app sent ([`SENT_PREFIX`]).
-pub(crate) fn sent_mark_value(coins: &[OutPoint], tx: &Transaction) -> String {
-    let coins: Vec<String> = coins.iter().map(|c| c.to_string()).collect();
-    format!("{};{}", coins.join(","), serialize_hex(tx))
+    let txs: BTreeMap<Txid, Option<Transaction>> = match appdb
+        .settings_with_prefix(&wallet.to_string(), SENT_TX_PREFIX)
+    {
+        Ok(rows) => (rows.into_iter())
+            .filter_map(|(key, hex)| {
+                let txid = Txid::from_str(&key[SENT_TX_PREFIX.len()..]).ok()?;
+                let tx = (hex::decode(hex).ok()).and_then(|b| deserialize::<Transaction>(&b).ok());
+                Some((txid, tx.filter(|tx| tx.txid() == txid)))
+            })
+            .collect(),
+        Err(e) => {
+            tracing::warn!(%wallet, error = %e, "could not read the sent transactions");
+            return (Sent::new(), false);
+        }
+    };
+    let sent = (marks.into_iter())
+        .map(|(txid, coins)| {
+            let tx = txs.get(&txid);
+            let (kept, tx) = (tx.is_some(), tx.cloned().flatten());
+            (txid, SentMark { coins, tx, kept })
+        })
+        .collect();
+    (sent, read)
 }
 
 /// What a sent mark holds: the wallet's coins the app signed, and the
-/// signed transaction, which a mark an earlier build wrote lacks.
+/// signed transaction ([`SENT_TX_PREFIX`]), which a mark an earlier build
+/// wrote lacks. `kept`: a transaction is stored for it, read or not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SentMark {
     pub coins: BTreeSet<OutPoint>,
     pub tx: Option<Transaction>,
+    pub kept: bool,
 }
 
 /// The payments this app sent.
@@ -172,7 +183,9 @@ pub(crate) fn forget_sent(appdb: &AppDb, wallet: WalletId, gone: &[Txid]) {
     if gone.is_empty() {
         return;
     }
-    let keys: Vec<String> = gone.iter().map(|t| format!("{SENT_PREFIX}{t}")).collect();
+    let keys: Vec<String> = (gone.iter())
+        .flat_map(|t| [format!("{SENT_PREFIX}{t}"), format!("{SENT_TX_PREFIX}{t}")])
+        .collect();
     let writes: Vec<(&str, Option<&str>)> = keys.iter().map(|k| (k.as_str(), None)).collect();
     if let Err(e) = appdb.set_settings_durable(&wallet.to_string(), &writes) {
         tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments");
@@ -817,8 +830,10 @@ mod tests {
         }
     }
 
-    /// A mark holding the signed transaction (#170 case 1) reads back with
-    /// it, and one an earlier build wrote reads without it.
+    /// A mark with its signed transaction stored apart (#170 case 1) reads
+    /// back with it; one an earlier build wrote reads without it; and one
+    /// whose stored transaction does not decode reads without it but kept,
+    /// the read of the others whole.
     #[test]
     fn a_sent_mark_reads_back_its_transaction() {
         use dashcore::hashes::Hash;
@@ -836,28 +851,28 @@ mod tests {
             output: Vec::new(),
             special_transaction_payload: None,
         };
-        let old = Txid::from_byte_array([4; 32]);
-        let set = |key: &str, value: &str| db.set_setting(&scope, key, Some(value)).unwrap();
-        set(
-            &format!("{SENT_PREFIX}{}", tx.txid()),
-            &sent_mark_value(&[coin], &tx),
+        let (old, bad) = (
+            Txid::from_byte_array([4; 32]),
+            Txid::from_byte_array([5; 32]),
         );
-        set(&format!("{SENT_PREFIX}{old}"), &coin.to_string());
+        let set = |key: &str, value: &str| db.set_setting(&scope, key, Some(value)).unwrap();
+        for t in [tx.txid(), old, bad] {
+            set(&format!("{SENT_PREFIX}{t}"), &coin.to_string());
+        }
+        set(
+            &format!("{SENT_TX_PREFIX}{}", tx.txid()),
+            &serialize_hex(&tx),
+        );
+        set(&format!("{SENT_TX_PREFIX}{bad}"), "zz");
+        let mark = |tx, kept| SentMark {
+            coins: BTreeSet::from([coin]),
+            tx,
+            kept,
+        };
         let want = Sent::from([
-            (
-                tx.txid(),
-                SentMark {
-                    coins: BTreeSet::from([coin]),
-                    tx: Some(tx.clone()),
-                },
-            ),
-            (
-                old,
-                SentMark {
-                    coins: BTreeSet::from([coin]),
-                    tx: None,
-                },
-            ),
+            (tx.txid(), mark(Some(tx.clone()), true)),
+            (old, mark(None, false)),
+            (bad, mark(None, true)),
         ]);
         assert_eq!(load_sent(&db, wallet), (want, true));
     }
@@ -890,6 +905,7 @@ mod tests {
             SentMark {
                 coins: BTreeSet::from([coin]),
                 tx: None,
+                kept: false,
             },
         )]);
         assert_eq!(load_sent(&db, wallet), (sent.clone(), true));
@@ -904,11 +920,6 @@ mod tests {
             (
                 format!("{SENT_PREFIX}{other}"),
                 "not-an-outpoint".to_owned(),
-            ),
-            (format!("{SENT_PREFIX}{other}"), format!("{coin};zz")),
-            (
-                format!("{SENT_PREFIX}{other}"),
-                sent_mark_value(&[coin], &tx),
             ),
         ] {
             set(&key, Some(&value));

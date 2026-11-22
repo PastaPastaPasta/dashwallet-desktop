@@ -395,16 +395,18 @@ pub(crate) fn unmined_own_spends(
 }
 
 /// The payments this app sent that the history holds no longer out of a
-/// block and not abandoned, or does not hold when their mark names no
-/// transaction to restore: their marks can go.
+/// block and not abandoned, or does not hold when their mark keeps no
+/// transaction to restore or the store holds them (`stored`, a height-only
+/// row): their marks can go.
 pub(crate) fn settled_sends(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
+    stored: &HashSet<Txid>,
 ) -> Vec<Txid> {
     (sent.iter())
         .filter(|(t, mark)| match txs.get(*t) {
             Some(e) => e.context.block_info().is_some() || e.is_abandoned(),
-            None => mark.tx.is_none(),
+            None => !mark.kept || stored.contains(*t),
         })
         .map(|(t, _)| *t)
         .collect()
@@ -413,6 +415,9 @@ pub(crate) fn settled_sends(
 #[derive(Debug, Default)]
 pub(crate) struct WalletHistory {
     pub txs: HashMap<Txid, TxEntry>,
+    /// Transactions a conflict sweep removed this session: a load whose
+    /// marks were read before the sweep restores none of them.
+    pub swept: HashSet<Txid>,
     /// Transactions key-wallet held this session: its records when the
     /// history was filled at open and each one its events named since.
     /// Records only read from storage are not among them (platform-wallet
@@ -553,13 +558,28 @@ impl WalletHistory {
     /// Adds a pending entry for each payment of `sent` whose mark holds its
     /// transaction and that neither the history nor the store (`stored`)
     /// holds: one the app signed, and may have handed to the network,
-    /// before it quit with no record stored (#170 case 1).
-    pub fn add_unrecorded_sends(&mut self, sent: &crate::tx_actions::Sent, stored: &HashSet<Txid>) {
+    /// before it quit with no record stored (#170 case 1). Its inputs the
+    /// app signed are its own ones, resolved from their funding entries.
+    pub fn add_unrecorded_sends(
+        &mut self,
+        sent: &crate::tx_actions::Sent,
+        stored: &HashSet<Txid>,
+        network: Network,
+    ) {
         for (txid, mark) in sent {
             let Some(tx) = &mark.tx else { continue };
-            if stored.contains(txid) || self.txs.contains_key(txid) {
+            if stored.contains(txid) || self.txs.contains_key(txid) || self.swept.contains(txid) {
                 continue;
             }
+            let own_inputs = (tx.input.iter().enumerate())
+                .filter(|(_, i)| mark.coins.contains(&i.previous_output))
+                .filter_map(|(n, i)| {
+                    let o = i.previous_output;
+                    let out = self.txs.get(&o.txid)?.tx.output.get(o.vout as usize)?;
+                    let address = Address::from_script(&out.script_pubkey, network).ok()?;
+                    Some((n as u32, (out.value, address)))
+                })
+                .collect();
             self.txs.insert(
                 *txid,
                 TxEntry {
@@ -567,7 +587,7 @@ impl WalletHistory {
                     context: TransactionContext::Mempool,
                     instant_locked: false,
                     first_seen: None,
-                    own_inputs: BTreeMap::new(),
+                    own_inputs,
                     abandoned: false,
                 },
             );
@@ -2531,6 +2551,7 @@ mod tests {
         let mark = |coins: &[OutPoint], tx| crate::tx_actions::SentMark {
             coins: coins.iter().copied().collect(),
             tx,
+            kept: false,
         };
         let mut add = |e: TxEntry, signed: &[OutPoint]| {
             let txid = e.tx.txid();
@@ -2567,7 +2588,7 @@ mod tests {
         want.sort();
         assert_eq!(claims, want);
         assert!(claims.iter().all(|(_, t)| *t != beaten));
-        let mut settled = settled_sends(&txs, &sent);
+        let mut settled = settled_sends(&txs, &sent, &HashSet::new());
         settled.sort();
         let mut want = vec![mined, abandoned, unstored];
         want.sort();
@@ -2593,6 +2614,7 @@ mod tests {
                 crate::tx_actions::SentMark {
                     coins: [coin(1)].into(),
                     tx: Some(lost.clone()),
+                    kept: true,
                 },
             ),
             (
@@ -2600,12 +2622,13 @@ mod tests {
                 crate::tx_actions::SentMark {
                     coins: [coin(3)].into(),
                     tx: Some(stored.clone()),
+                    kept: true,
                 },
             ),
         ]);
         let mut h = WalletHistory::default();
-        assert!(settled_sends(&h.txs, &sent).is_empty());
-        h.add_unrecorded_sends(&sent, &HashSet::from([stored.txid()]));
+        assert!(settled_sends(&h.txs, &sent, &HashSet::new()).is_empty());
+        h.add_unrecorded_sends(&sent, &HashSet::from([stored.txid()]), Network::Regtest);
         let entry = h.txs.get(&lost.txid()).expect("restored");
         assert_eq!(entry.tx, lost);
         assert!(entry.context.block_info().is_none() && !entry.is_abandoned());
@@ -2614,6 +2637,11 @@ mod tests {
             unmined_own_spends(&h.txs, &sent),
             vec![(coin(1), lost.txid())]
         );
-        assert!(settled_sends(&h.txs, &sent).is_empty());
+        assert!(settled_sends(&h.txs, &sent, &HashSet::new()).is_empty());
+        let stored_rows = HashSet::from([stored.txid()]);
+        assert_eq!(
+            settled_sends(&h.txs, &sent, &stored_rows),
+            vec![stored.txid()]
+        );
     }
 }

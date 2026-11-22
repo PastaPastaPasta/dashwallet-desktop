@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashcore::address::Payload;
+use dashcore::consensus::encode::serialize_hex;
 use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, PubkeyHash, ScriptBuf, ScriptHash, Transaction, TxOut};
 use dw_uri::keyio::{AddressKind, Destination, classify_address};
@@ -2238,30 +2239,31 @@ impl TxDraft {
     /// coins it signed (`sent`), or removes the mark
     /// ([`crate::tx_actions::SENT_PREFIX`]).
     async fn mark_sent(&self, prepared: &PreparedTx, sent: bool) -> Result<(), EngineError> {
-        let (scope, key) = (
-            self.wallet_id.to_string(),
-            format!(
-                "{}{}",
-                crate::tx_actions::SENT_PREFIX,
-                prepared.summary.txid
-            ),
-        );
-        let value = sent.then(|| {
+        let txid = &prepared.summary.txid;
+        let scope = self.wallet_id.to_string();
+        let keys = [
+            format!("{}{txid}", crate::tx_actions::SENT_PREFIX),
+            format!("{}{txid}", crate::tx_actions::SENT_TX_PREFIX),
+        ];
+        let coins = sent.then(|| {
             let all = || prepared.summary.inputs.iter().map(|i| i.outpoint).collect();
-            let coins: Vec<OutPoint> = prepared.own_inputs.clone().unwrap_or_else(all);
-            match prepared.transaction() {
-                Some(tx) => crate::tx_actions::sent_mark_value(&coins, &tx),
-                None => (coins.iter())
-                    .map(OutPoint::to_string)
-                    .collect::<Vec<_>>()
-                    .join(","),
-            }
+            (prepared.own_inputs.clone().unwrap_or_else(all).iter())
+                .map(OutPoint::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
         });
+        let tx = (prepared.transaction())
+            .filter(|_| sent)
+            .map(|tx| serialize_hex(&tx));
         self.session
             .appdb_op(move |db| {
                 #[cfg(all(test, debug_assertions))]
                 db.fault_point(SENT_MARK_FAULT, dw_appdb::fault::Stage::Before)?;
-                db.set_setting_durable(&scope, &key, value.as_deref())
+                let writes = [
+                    (keys[0].as_str(), coins.as_deref()),
+                    (keys[1].as_str(), tx.as_deref()),
+                ];
+                db.set_settings_durable(&scope, &writes)
             })
             .await
     }

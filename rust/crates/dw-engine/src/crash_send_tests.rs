@@ -9,7 +9,7 @@ use std::sync::Arc;
 use dashcore::{OutPoint, Transaction, Txid};
 
 use super::own_spend_disk_tests::{
-    COIN, TIP, abandon, assert_holds, coins, send, spendable, wallet_funded_unmined,
+    COIN, TIP, abandon, assert_holds, coins, send, spendable, synced, wallet_funded_unmined,
 };
 use super::{mempool, mined, reopen, rows};
 use crate::send::CoinSource;
@@ -110,6 +110,11 @@ fn a_payment_marked_before_a_crash_can_be_abandoned() {
         (session.hub.history.get(&id, &payment.txid())).is_some_and(|e| e.is_abandoned()),
         "listed abandoned"
     );
+    assert_eq!(
+        synced(&engine, &session, id),
+        super::BIRTH - 1,
+        "the abandon rescans the unmined funding from the birth"
+    );
     mined(&engine, &session, id, TIP, vec![paid.clone()]);
     let want = outputs(&paid);
     assert_holds(&engine, &session, id, &want, "abandoned, then scanned");
@@ -187,4 +192,49 @@ fn an_old_mark_without_its_transaction_and_no_record_goes_at_the_load() {
     let session = reopen(&engine, session);
     assert!(held(&engine, &session, id).contains(&a), "A is held");
     assert!(!sent_marks(&session, id).contains(&txid), "the mark went");
+}
+
+/// A payment this app sent that a mined spend of its coin by another
+/// device beats, paying only someone else: key-wallet sweeps it, and the
+/// next launch neither lists it nor keeps its mark.
+#[test]
+fn a_swept_payment_stays_gone_after_a_restart() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    super::own_spend_disk_tests::wait_stored(&session, id, &[payment.txid()]);
+    let owner =
+        dashcore::Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest)
+            .unwrap();
+    let winner = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(a, vec![(super::elsewhere(), COIN - 1_000)]),
+    );
+    mined(&engine, &session, id, TIP, vec![winner]);
+    assert!(!listed(&engine, &session, id, payment.txid()), "swept");
+    assert!(
+        !sent_marks(&session, id).contains(&payment.txid()),
+        "the sweep drops the mark"
+    );
+
+    let session = reopen(&engine, session);
+    assert!(
+        !listed(&engine, &session, id, payment.txid()),
+        "listed after a restart"
+    );
+    assert!(
+        !sent_marks(&session, id).contains(&payment.txid()),
+        "marked after a restart"
+    );
 }

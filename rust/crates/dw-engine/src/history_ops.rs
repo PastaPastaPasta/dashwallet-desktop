@@ -385,7 +385,7 @@ impl NetworkSession {
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
                 h.mark_abandoned(&abandoned);
                 if complete {
-                    h.add_unrecorded_sends(&sent, &stored);
+                    h.add_unrecorded_sends(&sent, &stored, self.network.core_network());
                 }
                 // Stored apart from the records, which can still say mempool.
                 for t in info
@@ -400,11 +400,11 @@ impl NetworkSession {
                     }
                 }
             });
-            sends.push((wallet, sent, complete));
+            sends.push((wallet, sent, complete, stored));
         }
         drop(wm);
-        for (wallet, sent, complete) in sends {
-            self.restore_unmined_spends(&live.manager, wallet, &sent, complete)
+        for (wallet, sent, complete, stored) in sends {
+            self.restore_unmined_spends(&live.manager, wallet, &sent, complete, &stored)
                 .await;
         }
         Ok(())
@@ -425,6 +425,7 @@ impl NetworkSession {
         wallet: WalletId,
         sent: &crate::tx_actions::Sent,
         complete: bool,
+        stored: &HashSet<Txid>,
     ) {
         if !complete {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
@@ -433,7 +434,7 @@ impl NetworkSession {
         let (claims, settled) = self.hub.history.with_wallet(wallet, |h| {
             let mut claims = crate::history::unmined_own_spends(&h.txs, sent);
             claims.retain(|(_, spender)| !h.session_held.contains(spender));
-            (claims, crate::history::settled_sends(&h.txs, sent))
+            (claims, crate::history::settled_sends(&h.txs, sent, stored))
         });
         self.apply_spend_claims(manager, wallet, &claims).await;
         if !settled.is_empty() {
@@ -541,6 +542,7 @@ impl NetworkSession {
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
         #[cfg(test)]
         let unreadable = self.hub.unreadable_record.lock().unwrap().1.take();
+        let network = self.network.core_network();
         let stored = tokio::task::spawn_blocking(move || {
             let mut history = crate::history::WalletHistory::default();
             let persisted = match persisted_txids(&db_path) {
@@ -574,7 +576,7 @@ impl NetworkSession {
                 .chain(&persisted.recordless)
                 .copied()
                 .collect();
-            history.add_unrecorded_sends(&sent, &stored);
+            history.add_unrecorded_sends(&sent, &stored, network);
             (history, sent)
         })
         .await?;

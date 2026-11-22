@@ -804,6 +804,7 @@ impl NetworkSession {
     }
 
     fn start_pump(self: &Arc<Self>, manager: &Arc<Manager>, appdb: Arc<AppDb>) {
+        let _ = self.hub.appdb.set(Arc::clone(&appdb));
         let (stop, stop_rx) = watch::channel(false);
         let target = SessionPump {
             hub: Arc::clone(&self.hub),

@@ -426,6 +426,10 @@ fn the_payment_holds_its_coins(point: Point) {
             s.abandon_inner(&manager, id, root).await
         }))
         .unwrap();
+    assert!(
+        super::own_spend_disk_tests::synced(&engine, &session, r.wallet) < FUNDED_AT,
+        "{point:?}: the abandon schedules no rescan of the coins' block"
+    );
     mined(&engine, &session, r.wallet, FUNDED_AT, vec![funding_tx]);
     let (free, _, _) = state(&engine, &session, r.wallet);
     assert!(
