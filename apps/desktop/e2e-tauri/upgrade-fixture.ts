@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { accountTpub } from "./bip32.ts";
 import { Dashd, freePort, paysTo, type RawTx } from "./dashd.ts";
-import { ownedListeners } from "./listeners.ts";
+import { ownedListeners, snapshotOf } from "./listeners.ts";
 import { type Coin, outpointProblem, type TxOut } from "./outpoint.ts";
 import { APP, CHAIN, driverGone, driverReady, env, poll, spawnDriver, stopDriver, WebDriver } from "./driver.ts";
 
@@ -83,24 +83,17 @@ const answers = (port: number) =>
     ),
   ).then((r) => r.some(Boolean));
 
-/** The process groups of every TCP listener on `port`; null for one whose owner is not visible (another account's). */
-function listenerGroups(port: number): (number | null)[] {
+/** One `ss` listing of every TCP listener, judged for `ports` as a single snapshot. */
+function listenerSnapshot(ports: number[]) {
   const r = spawnSync("ss", ["-Hltnp"], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`ss: ${r.stderr}`);
-  return r.stdout
-    .split("\n")
-    .filter((l) => l.split(/\s+/)[3]?.endsWith(`:${port}`))
-    .flatMap((l) => {
-      const pids = [...l.matchAll(/pid=(\d+)/g)].map((m) => m[1]!);
-      if (pids.length === 0) return [null];
-      return pids.map((pid) => {
-        try {
-          return Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[2]);
-        } catch {
-          return null;
-        }
-      });
-    });
+  return snapshotOf(r.stdout, ports, (pid) => {
+    try {
+      return Number(readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "").split(" ")[2]);
+    } catch {
+      return null;
+    }
+  });
 }
 
 /** tauri-driver and WebKitWebDriver on two free ports, refused if either answered before the
@@ -112,7 +105,7 @@ async function startOwnDriver() {
   for (const p of [port, native]) if (await answers(p)) throw new Error(`port ${p} already answers: no driver is started beside it`);
   driver = spawnDriver(port, LOGS, native);
   const group = driver.pid;
-  await poll(30_000, "both drivers to listen", async () => ownedListeners([port, native].map((p) => ({ port: p, groups: listenerGroups(p) })), group));
+  await poll(30_000, "both drivers to listen", async () => ownedListeners(listenerSnapshot([port, native]), group));
   const base = await driverReady(port);
   step(`tauri-driver on ${port}, WebKitWebDriver on ${native}, both owned by group ${group}`);
   return { driver, base };
