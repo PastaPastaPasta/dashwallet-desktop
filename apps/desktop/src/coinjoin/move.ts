@@ -47,6 +47,9 @@ export type MoveMixedApi = Pick<
   | "unlockMixingOnly"
 >;
 
+/** The most coins one move to Shielded takes; more are combined first (the engine's limit). */
+const SHIELD_MOVE_MAX_COINS = 50;
+
 export const MOVE_COPY = {
   card: {
     get title() {
@@ -150,7 +153,7 @@ export const MOVE_COPY = {
     },
   },
   combine: {
-    text: (coins: number) => t("coinjoin.move.combine.text", { coins }),
+    text: (coins: number) => t("coinjoin.move.combine.text", { coins, limit: SHIELD_MOVE_MAX_COINS }),
     get after() {
       return t("coinjoin.move.combine.after");
     },
