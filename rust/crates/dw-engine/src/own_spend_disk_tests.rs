@@ -1237,6 +1237,162 @@ fn a_locked_payment_keeps_its_coin_from_selection_without_a_claim() {
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
 }
 
+/// The payments this app sent that `id` keeps a sent mark for.
+fn sent_marks(session: &NetworkSession, id: WalletId) -> BTreeSet<Txid> {
+    crate::tx_actions::load_sent(&session.live().unwrap().appdb, id)
+        .0
+        .into_keys()
+        .collect()
+}
+
+/// A payment of `amount` from `id` to `to`, broadcast and in the mempool.
+fn pay_to(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    to: &Address,
+    amount: u64,
+) -> Transaction {
+    let broadcaster = Arc::new(Accept::default());
+    let draft = session.new_tx_draft(id).unwrap();
+    *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&broadcaster) as _);
+    draft
+        .set_recipients(vec![Recipient {
+            address: to.to_string(),
+            amount,
+            subtract_fee_from_amount: false,
+            label: None,
+            message: None,
+        }])
+        .unwrap();
+    let grant = (session.vault())
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: amount + COIN,
+            },
+            Some(&id.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let prepared = engine.block_on(draft.prepare(grant)).unwrap();
+    engine.block_on(draft.broadcast(prepared)).unwrap();
+    let payment = broadcaster.0.lock().unwrap()[0].clone();
+    mempool(engine, session, id, &payment);
+    payment
+}
+
+/// Q, a payment mined at `height` whose block the wallet's ChainLock then
+/// names: once its mark is gone, a ChainLock's forgets have run.
+fn chain_locked_sentinel(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    height: u32,
+) -> Transaction {
+    let q = send(engine, session, id, CoinSource::Any, COIN / 3, false);
+    mempool(engine, session, id, &q);
+    mined(engine, session, id, height, vec![q.clone()]);
+    let block = super::block_with(vec![q.clone()]).block_hash();
+    chain_lock(engine, session, id, height, block);
+    eventually("the sentinel's mark goes", || {
+        !sent_marks(session, id).contains(&q.txid())
+    });
+    q
+}
+
+/// A ChainLock of a mined payment's own block while the app runs drops
+/// the payment's sent mark in the session.
+#[test]
+fn a_chainlock_of_a_payments_block_drops_its_mark_in_the_session() {
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let p = send(&engine, &session, id, CoinSource::Any, COIN / 2, false);
+    mempool(&engine, &session, id, &p);
+    mined(&engine, &session, id, TIP + 1, vec![p.clone()]);
+    assert!(sent_marks(&session, id).contains(&p.txid()));
+    let block = super::block_with(vec![p.clone()]).block_hash();
+    chain_lock(&engine, &session, id, TIP + 1, block);
+    eventually("the mark goes", || {
+        !sent_marks(&session, id).contains(&p.txid())
+    });
+}
+
+/// A payment's block reorged out (truncated in memory), then a ChainLock
+/// of the block that replaced it at that height: the payment, back out of
+/// a block, keeps its mark.
+#[test]
+fn a_chainlock_after_a_reorg_keeps_the_reorged_payments_mark() {
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let p = send(&engine, &session, id, CoinSource::Any, COIN / 2, false);
+    mempool(&engine, &session, id, &p);
+    mined(&engine, &session, id, TIP + 1, vec![p.clone()]);
+    super::deliver(&engine, &session, id, move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            wm.truncate_above(TIP).unwrap();
+        })
+    });
+    let other = super::block_with(vec![foreign()]).block_hash();
+    chain_lock(&engine, &session, id, TIP + 1, other);
+    chain_locked_sentinel(&engine, &session, id, TIP + 2);
+    assert!(sent_marks(&session, id).contains(&p.txid()));
+}
+
+/// A ChainLock of another block at a payment's height, applied before any
+/// reorg: key-wallet promotes the payment's record by height, but the lock
+/// names another block, so the mark stays.
+#[test]
+fn a_chainlock_of_another_block_at_its_height_keeps_a_payments_mark() {
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let p = send(&engine, &session, id, CoinSource::Any, COIN / 2, false);
+    mempool(&engine, &session, id, &p);
+    mined(&engine, &session, id, TIP + 1, vec![p.clone()]);
+    let other = super::block_with(vec![foreign()]).block_hash();
+    chain_lock(&engine, &session, id, TIP + 1, other);
+    chain_locked_sentinel(&engine, &session, id, TIP + 2);
+    assert!(sent_marks(&session, id).contains(&p.txid()));
+}
+
+/// Another loaded wallet, paid by the payment, applies the ChainLock of
+/// the payment's block while the sender is closed: its own forgets touch
+/// only its own marks, and the sender opened again keeps the payment's.
+#[test]
+fn another_wallets_chainlock_drops_no_mark_of_the_sender() {
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let other = engine
+        .block_on(
+            session.import_wallet(
+                zeroize::Zeroizing::new(
+                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
+                        .to_vec(),
+                ),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(BIRTH),
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+    let to = fresh_address(&engine, &session, other);
+    let p = pay_to(&engine, &session, id, &to, COIN / 2);
+    mined(&engine, &session, id, TIP + 1, vec![p.clone()]);
+    mined(&engine, &session, other, TIP + 1, vec![p.clone()]);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let block = super::block_with(vec![p.clone()]).block_hash();
+    chain_lock(&engine, &session, other, TIP + 1, block);
+    eventually("the other wallet reads the payment ChainLocked", || {
+        (session.hub.history.get(&other, &p.txid())).is_some_and(|e| {
+            matches!(
+                e.context,
+                key_wallet::transaction_checking::TransactionContext::InChainLockedBlock(_)
+            )
+        })
+    });
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert!(sent_marks(&session, id).contains(&p.txid()));
+}
+
 /// Unloads wallet `id` and opens it again; `paid`'s block is processed for
 /// it once it is registered, before its history loads. The coins it holds
 /// then, and once the load is done.

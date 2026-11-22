@@ -535,6 +535,9 @@ pub(crate) struct SessionHub {
     /// truncated the header chain, or Rebuild Index) checks every wallet
     /// for a truncation ([`Self::detect_truncation`]).
     header_tip: Mutex<Option<u32>>,
+    /// Payments whose own block a wallet's ChainLock named, by wallet:
+    /// their sent marks go at the next history flush.
+    final_sends: Mutex<Vec<(WalletId, Vec<Txid>)>>,
     /// Tests: the sweep row checks started, to wait for.
     #[cfg(test)]
     pub(crate) sweep_checks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -697,6 +700,7 @@ impl SessionHub {
             sweep_retry: OnceLock::new(),
             headers: RwLock::new(None),
             header_tip: Mutex::new(None),
+            final_sends: Mutex::new(Vec::new()),
             #[cfg(test)]
             sweep_checks: Mutex::new(Vec::new()),
             replay: OnceLock::new(),
@@ -1513,14 +1517,29 @@ impl SessionHub {
                 ..
             } => {
                 self.note_chainlock(chain_lock.block_height, chain_lock.block_hash);
-                let locked: Vec<Txid> = self.history.with_wallet(id, |h| {
-                    locked_transactions
-                        .values()
-                        .flatten()
+                let (locked, settled): (Vec<Txid>, Vec<Txid>) = self.history.with_wallet(id, |h| {
+                    // key-wallet promotes by height; only a record whose own
+                    // block the lock names is final for its sent mark.
+                    let settled = (locked_transactions.values().flatten())
+                        .filter(|t| {
+                            (h.txs.get(*t).and_then(|e| e.context.block_info())).is_some_and(|b| {
+                                b.height() == chain_lock.block_height
+                                    && b.block_hash() == chain_lock.block_hash
+                            })
+                        })
+                        .copied()
+                        .collect();
+                    let locked = (locked_transactions.values().flatten())
                         .filter(|t| h.set_chain_locked(t))
                         .copied()
-                        .collect()
+                        .collect();
+                    (locked, settled)
                 });
+                if !settled.is_empty() {
+                    self.pump.mark_history(id, Some(&settled));
+                    (self.final_sends.lock().unwrap_or_else(|p| p.into_inner()))
+                        .push((id, settled));
+                }
                 if !locked.is_empty() {
                     self.pump.mark_history(id, Some(&locked));
                 }
@@ -1722,7 +1741,9 @@ impl PumpTarget for SessionPump {
                 txids,
             });
         }
-        if seen.is_empty() {
+        let finals =
+            std::mem::take(&mut *(self.hub.final_sends.lock()).unwrap_or_else(|p| p.into_inner()));
+        if seen.is_empty() && finals.is_empty() {
             return;
         }
         // First-seen times keep a mempool payment's arrival time across
@@ -1741,6 +1762,9 @@ impl PumpTarget for SessionPump {
                 if let Err(e) = appdb.stamp_tx_fiat(&wallet_id.to_string(), &rows, now) {
                     tracing::warn!(%wallet_id, error = %e, "could not store price stamps");
                 }
+            }
+            for (wallet_id, txids) in finals {
+                crate::tx_actions::forget_sent(&appdb, wallet_id, &txids);
             }
         };
         #[cfg(test)]
