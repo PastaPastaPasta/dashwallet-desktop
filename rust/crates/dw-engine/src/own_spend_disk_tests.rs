@@ -1094,6 +1094,196 @@ fn a_locked_payment_a_chainlocked_foreign_spend_beat_is_swept() {
     }
 }
 
+/// #170 case 14, variant 1, with a restart between the winner's block and
+/// its ChainLock: a payment of A and B from a mined funding block,
+/// InstantSend-locked, and another device's spend of B that pays only
+/// someone else, mined in a plain block the lock spares. After a restart the
+/// block is ChainLocked and nothing is swept; then the user runs Rescan from
+/// the wallet's birth, which replays the funding block and the winner's,
+/// ChainLocked: the payment is swept on arrival and its change leaves.
+/// Returns the session, the funding transaction, A and B.
+fn swept_by_a_rescan_after_a_restart() -> (
+    tempfile::TempDir,
+    Engine,
+    Arc<NetworkSession>,
+    WalletId,
+    Transaction,
+    OutPoint,
+    OutPoint,
+) {
+    let (dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let change = change_of(&payment, &own_scripts(&engine, &session, id));
+    let owner =
+        Address::from_script(&paid.output[1].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let winner = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(b, vec![(elsewhere(), COIN - 1_000)]),
+    );
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    assert!(
+        in_history(&session, id, payment.txid()),
+        "the lock spares it"
+    );
+
+    let won = block_hash(std::slice::from_ref(&winner));
+    let session = chain_lock_after_a_restart(&engine, session, id, TIP + 1, won);
+    assert!(
+        in_history(&session, id, payment.txid()),
+        "a ChainLock after a restart sweeps nothing"
+    );
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "A is held before the rescan"
+    );
+
+    let funded = block_hash(std::slice::from_ref(&paid));
+    headers(&session, &[(TIP, funded), (TIP + 1, won)]);
+    start_spv(&engine, &session);
+    engine
+        .block_on(session.rescan(crate::RescanFrom::WalletBirth))
+        .unwrap();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    mined(&engine, &session, id, TIP + 1, vec![winner]);
+    assert!(
+        !in_history(&session, id, payment.txid()),
+        "the rescan's ChainLocked block sweeps it"
+    );
+    change_is_gone(&engine, &session, id, (&payment, change), "the rescan");
+    (dir, engine, session, id, paid, a, b)
+}
+
+/// After [`swept_by_a_rescan_after_a_restart`], a restart, and the next,
+/// load A and never B: the balance counts A and not B.
+#[test]
+fn a_locked_payment_a_foreign_spend_beat_before_a_restart_is_swept_by_a_rescan() {
+    let (_dir, engine, mut session, id, paid, a, b) = swept_by_a_rescan_after_a_restart();
+    let mut want = outputs(&paid);
+    want.remove(&b);
+    for round in ["a restart", "a second restart"] {
+        session = reopen(&engine, session);
+        assert!(held(&engine, &session, id).contains(&a), "{round}: A loads");
+        assert!(spendable(&engine, &session, id, a), "{round}: A is offered");
+        assert!(!spendable(&engine, &session, id, b), "{round}: B is not");
+        assert_holds(&engine, &session, id, &want, round);
+        assert_eq!(
+            balances(&session, id).total,
+            (COINS as u64 - 1) * COIN,
+            "{round}: the balance counts A, not B"
+        );
+    }
+}
+
+/// The rescan that sweeps the payment credits A in its own session.
+#[test]
+#[ignore = "case 11: a rescan replays A's funding block before the block that sweeps its claimant; A returns after a restart"]
+fn a_rescan_that_sweeps_a_beaten_payment_credits_a_in_its_session() {
+    let (_dir, engine, session, id, _paid, a, b) = swept_by_a_rescan_after_a_restart();
+    assert!(
+        held(&engine, &session, id).contains(&a),
+        "the rescan credits A"
+    );
+    assert!(spendable(&engine, &session, id, a), "A is offered");
+    assert!(!spendable(&engine, &session, id, b), "B is not");
+}
+
+/// A payment of A and B from a mined funding block, InstantSend-locked;
+/// after a restart another device's payment of A alone; after the next,
+/// another device's spend of B is mined and ChainLocked, which sweeps the
+/// locked payment. No block spends A: only the other payment holds it. The
+/// user drops the other payment. The wallet recorded it with no input of
+/// its own, so the drop rescans nothing and A is not credited in that
+/// session; the store frees A, and A loads after a restart, never B.
+#[test]
+fn a_coin_only_a_dropped_payment_held_after_a_sweep_returns_after_a_restart() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &payment);
+    instant_lock(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+
+    let session = reopen(&engine, session);
+    let owner =
+        Address::from_script(&paid.output[0].script_pubkey, dashcore::Network::Regtest).unwrap();
+    let back = fresh_address(&engine, &session, id);
+    let other = super::signed_by_wallet(
+        &engine,
+        &session,
+        id,
+        &owner,
+        super::spend_of(a, vec![(back.script_pubkey(), COIN - 2_000)]),
+    );
+    mempool(&engine, &session, id, &other);
+    wait_stored(&session, id, &[other.txid()]);
+
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, 1);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    wait_stored(&session, id, &[winner.txid()]);
+    let won = block_hash(std::slice::from_ref(&winner));
+    chain_lock(&engine, &session, id, TIP + 1, won);
+    assert!(
+        !in_history(&session, id, payment.txid()),
+        "the ChainLock sweeps it"
+    );
+    let funded = block_hash(std::slice::from_ref(&paid));
+    headers(&session, &[(TIP, funded), (TIP + 1, won)]);
+    start_spv(&engine, &session);
+    assert_eq!(
+        engine.block_on(session.drop_unconfirmed(Some(id))).unwrap(),
+        1,
+        "only the other payment"
+    );
+    assert!(abandoned(&engine, &session, id, other.txid()));
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "A is not credited"
+    );
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+    assert_eq!(
+        synced(&engine, &session, id),
+        TIP + 1,
+        "the drop rescans nothing"
+    );
+
+    let mut session = session;
+    let back = OutPoint::new(other.txid(), 0);
+    for round in ["a restart", "a second restart"] {
+        session = reopen(&engine, session);
+        assert!(held(&engine, &session, id).contains(&a), "{round}: A loads");
+        assert!(spendable(&engine, &session, id, a), "{round}: A is offered");
+        assert!(!spendable(&engine, &session, id, b), "{round}: B is not");
+        assert!(
+            !held(&engine, &session, id).contains(&back),
+            "{round}: the dropped payment's output is gone"
+        );
+    }
+}
+
 fn in_history(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
     session.hub.history.get(&id, &txid).is_some()
 }
@@ -1103,8 +1293,8 @@ fn in_history(session: &NetworkSession, id: WalletId, txid: Txid) -> bool {
 /// beside a spend of A that pays only someone else, which the wallet does not
 /// record, and ChainLocked in that session. The ChainLock sweeps the locked
 /// payment and its change. Its claim on A was disputed by the other payment's,
-/// so the sweep releases nothing: A stays spent, by the block's spend of it,
-/// and a restart leaves it spent.
+/// so the sweep releases nothing: A stays spent, by the block's spend of it.
+/// Dropping the other payment and a restart leave A spent too.
 #[test]
 fn a_locked_payment_a_chainlock_beat_beside_a_spend_of_its_other_coin_leaves_a_spent() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
@@ -1157,8 +1347,20 @@ fn a_locked_payment_a_chainlock_beat_beside_a_spend_of_its_other_coin_leaves_a_s
     change_is_gone(&engine, &session, id, (&payment, change), "swept");
     change_is_gone(&engine, &session, id, (&paid, a), "A, spent in the block");
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
+    headers(&session, &[(TIP + 1, block_hash(&block))]);
+    start_spv(&engine, &session);
+    assert_eq!(
+        engine.block_on(session.drop_unconfirmed(Some(id))).unwrap(),
+        1,
+        "only the other payment"
+    );
+    assert!(abandoned(&engine, &session, id, other.txid()));
 
     let session = reopen(&engine, session);
+    assert!(
+        !held(&engine, &session, id).contains(&a),
+        "A stays spent after a restart"
+    );
     assert!(!in_history(&session, id, payment.txid()), "a restart");
     change_is_gone(&engine, &session, id, (&paid, a), "A after a restart");
     assert!(
