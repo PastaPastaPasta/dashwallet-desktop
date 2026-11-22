@@ -14,7 +14,7 @@
 //! transactions, and `Other` for mixed debit transactions.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -319,6 +319,14 @@ fn merge_context(old: &TransactionContext, new: &TransactionContext) -> Transact
     }
 }
 
+/// A ChainLock covers the block `context` names: the record says so, or the
+/// block is at or below the best ChainLock (key-wallet's own rule).
+pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Option<u32>) -> bool {
+    let height = context.block_info().map(|b| b.height());
+    matches!(context, TransactionContext::InChainLockedBlock(_))
+        || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
+}
+
 /// The outpoints the wallet's transactions spend by Dash Core's
 /// `CWallet::IsSpent` (v24.0.0-rc.6 8d195f18 wallet/wallet.cpp:755-770): the
 /// spender is in a block, or out of one (depth 0, :4072-4082) and not
@@ -329,18 +337,33 @@ fn merge_context(old: &TransactionContext, new: &TransactionContext) -> Transact
 /// `RecursiveUpdateTxState` (:1388-1458). A block spending one of its
 /// inputs that is not the wallet's is not seen (BIP158 filters match the
 /// wallet's scripts only): such a spender holds its other inputs until it
-/// is abandoned.
-pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint> {
+/// is abandoned. An InstantSend-locked one is conflicted only by a block
+/// `chainlock` covers (key-wallet's finality order).
+pub(crate) fn spent_outpoints(
+    txs: &HashMap<Txid, TxEntry>,
+    chainlock: Option<u32>,
+) -> HashSet<OutPoint> {
     let mined = |e: &TxEntry| e.context.block_info().is_some();
-    let in_block: HashMap<OutPoint, Txid> = (txs.iter().filter(|(_, e)| mined(e)))
-        .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, *t)))
-        .collect();
+    let mut in_block: HashMap<OutPoint, Vec<(Txid, &TxEntry)>> = HashMap::new();
+    for (t, e) in txs.iter().filter(|(_, e)| mined(e)) {
+        for i in &e.tx.input {
+            in_block.entry(i.previous_output).or_default().push((*t, e));
+        }
+    }
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
     let mut todo = Vec::new();
     for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
         for i in &e.tx.input {
-            children.entry(i.previous_output.txid).or_default().push(*t);
-            if in_block.get(&i.previous_output).is_some_and(|b| b != t) {
+            if !instant_locked(e) {
+                children.entry(i.previous_output.txid).or_default().push(*t);
+            }
+            let beats = |(b, be): &(Txid, &TxEntry)| {
+                b != t && (!instant_locked(e) || chain_locked(&be.context, chainlock))
+            };
+            if in_block
+                .get(&i.previous_output)
+                .is_some_and(|v| v.iter().any(beats))
+            {
                 todo.push(*t);
             }
         }
@@ -362,29 +385,41 @@ pub(crate) fn spent_outpoints(txs: &HashMap<Txid, TxEntry>) -> HashSet<OutPoint>
 /// and not abandoned, each with its payment: key-wallet's spent-output
 /// claims (`restore_spent_outpoints`), which it rebuilds from no stored
 /// record (#88). A coin is claimed only when the app signed it for that
-/// payment and the payment's transaction spends it. A payment that a
-/// transaction in a block or InstantSend-locked beats on any input claims
-/// nothing: its coins are the winner's or free.
+/// payment and the payment's transaction spends it. A payment that another
+/// transaction beats on any input claims nothing: its coins are the
+/// winner's or free. Key-wallet's finality order decides the beat: a block
+/// or an InstantSend lock beats a payment without a lock, and only a block
+/// `chainlock` covers beats an InstantSend-locked one.
 pub(crate) fn unmined_own_spends(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
+    chainlock: Option<u32>,
 ) -> Vec<(OutPoint, Txid)> {
-    let settled = |e: &TxEntry| {
-        e.context.block_info().is_some()
-            || e.instant_locked
-            || matches!(e.context, TransactionContext::InstantSend(_))
+    let beats = |winner: &TxEntry, payment: &TxEntry| match instant_locked(payment) {
+        true => chain_locked(&winner.context, chainlock),
+        false => winner.context.block_info().is_some() || instant_locked(winner),
     };
+    let candidates: Vec<(&Txid, &BTreeSet<OutPoint>, &TxEntry)> = (sent.iter())
+        .filter_map(|(t, coins)| Some((t, coins, txs.get(t)?)))
+        .filter(|(_, _, e)| e.context.block_info().is_none() && !e.is_abandoned())
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let mut spenders: HashMap<OutPoint, Vec<(&Txid, &TxEntry)>> = HashMap::new();
+    for (w, we) in txs {
+        for i in &we.tx.input {
+            spenders.entry(i.previous_output).or_default().push((w, we));
+        }
+    }
     let beaten = |t: &Txid, e: &TxEntry| {
-        let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
-        (txs.iter()).any(|(w, we)| {
-            w != t
-                && settled(we)
-                && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
+        (e.tx.input.iter()).any(|i| {
+            (spenders.get(&i.previous_output))
+                .is_some_and(|v| v.iter().any(|(w, we)| *w != t && beats(we, e)))
         })
     };
-    (sent.iter())
-        .filter_map(|(t, coins)| Some((t, coins, txs.get(t)?)))
-        .filter(|(t, _, e)| e.context.block_info().is_none() && !e.is_abandoned() && !beaten(t, e))
+    (candidates.into_iter())
+        .filter(|(t, _, e)| !beaten(t, e))
         .flat_map(|(t, coins, e)| {
             (e.tx.input.iter())
                 .map(|i| i.previous_output)
@@ -394,18 +429,60 @@ pub(crate) fn unmined_own_spends(
         .collect()
 }
 
-/// The payments this app sent that the history holds no longer out of a
-/// block and not abandoned: their marks can go.
-pub(crate) fn settled_sends(
+/// Whether the history knows an InstantSend lock of `e`: its flag or its
+/// context.
+fn instant_locked(e: &TxEntry) -> bool {
+    e.instant_locked || matches!(e.context, TransactionContext::InstantSend(_))
+}
+
+/// The payments of `claims` the history holds InstantSend-locked.
+pub(crate) fn locked_claimants(
+    txs: &HashMap<Txid, TxEntry>,
+    claims: &[(OutPoint, Txid)],
+) -> HashSet<Txid> {
+    (claims.iter().map(|c| c.1))
+        .filter(|t| txs.get(t).is_some_and(instant_locked))
+        .collect()
+}
+
+/// The payments this app sent whose marks may go, each with its stored
+/// block: gone from the history (`None`), or in a block at or below the
+/// wallet's own ChainLock height. Every other payment keeps its mark, an
+/// abandoned or unmined one too ([`proven_settled`] decides the rest).
+pub(crate) fn settled_candidates(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
-) -> Vec<Txid> {
+    chainlock_height: Option<u32>,
+) -> Vec<(Txid, Option<(u32, dashcore::BlockHash)>)> {
     (sent.keys())
-        .filter(|t| {
-            txs.get(*t)
-                .is_none_or(|e| e.context.block_info().is_some() || e.is_abandoned())
+        .filter_map(|t| match txs.get(t) {
+            None => Some((*t, None)),
+            Some(e) => {
+                let b = e.context.block_info()?;
+                (b.height() <= chainlock_height?)
+                    .then_some((*t, Some((b.height(), b.block_hash()))))
+            }
         })
-        .copied()
+        .collect()
+}
+
+/// The `candidates` whose marks go: gone from the history, or in the block
+/// the header chain holds at their height while it holds the ChainLock's
+/// block too. A stored context, a height or a missing header proves
+/// nothing: a stored block a reorg replaced is not marked, and a later lock
+/// or reorg can make the payment live again.
+pub(crate) fn proven_settled(
+    candidates: Vec<(Txid, Option<(u32, dashcore::BlockHash)>)>,
+    chainlock: Option<(u32, dashcore::BlockHash)>,
+    headers: &HashMap<u32, dashcore::BlockHash>,
+) -> Vec<Txid> {
+    let locked = chainlock.is_some_and(|(height, hash)| headers.get(&height) == Some(&hash));
+    (candidates.into_iter())
+        .filter(|(_, block)| match block {
+            None => true,
+            Some((height, hash)) => locked && headers.get(height) == Some(hash),
+        })
+        .map(|(t, _)| t)
         .collect()
 }
 
@@ -836,9 +913,7 @@ pub(crate) fn status_of(
     all_from_me: bool,
 ) -> (TxStatus, bool) {
     let depth = depth(&entry.context, view.tip);
-    let height = entry.context.block_info().map(|b| b.height());
-    let chain_locked = matches!(entry.context, TransactionContext::InChainLockedBlock(_))
-        || matches!((height, view.chainlock_height), (Some(h), Some(cl)) if cl >= h);
+    let chain_locked = chain_locked(&entry.context, view.chainlock_height);
     let instant_locked =
         entry.instant_locked || matches!(entry.context, TransactionContext::InstantSend(_));
     let mut matures_in = None;
@@ -2532,16 +2607,184 @@ mod tests {
         let unstored = Txid::from_byte_array([9; 32]);
         sent.insert(unstored, [coin(9)].into());
 
-        let mut claims = unmined_own_spends(&txs, &sent);
+        let mut claims = unmined_own_spends(&txs, &sent, None);
         claims.sort();
         let mut want = vec![(coin(1), live), (coin(2), live), (coin(5), relocked)];
         want.sort();
         assert_eq!(claims, want);
         assert!(claims.iter().all(|(_, t)| *t != beaten));
-        let mut settled = settled_sends(&txs, &sent);
-        settled.sort();
-        let mut want = vec![mined, abandoned, unstored];
-        want.sort();
-        assert_eq!(settled, want);
+        let zeros = BlockHash::all_zeros();
+        let other = BlockHash::from_byte_array([1; 32]);
+        let tip = BlockHash::from_byte_array([2; 32]);
+        let settled = |txs: &HashMap<Txid, TxEntry>,
+                       cl: Option<(u32, BlockHash)>,
+                       headers: &[(u32, BlockHash)]| {
+            let candidates = settled_candidates(txs, &sent, cl.map(|c| c.0));
+            let mut s = proven_settled(candidates, cl, &headers.iter().copied().collect());
+            s.sort();
+            s
+        };
+        let mut gone_and_mined = vec![mined, unstored];
+        gone_and_mined.sort();
+        assert_eq!(settled(&txs, None, &[]), vec![unstored]);
+        assert_eq!(
+            settled(&txs, Some((9, tip)), &[(9, tip), (10, zeros)]),
+            vec![unstored]
+        );
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(10, zeros), (11, tip)]),
+            gone_and_mined,
+            "the header chain holds its block and the lock's"
+        );
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(10, other), (11, tip)]),
+            vec![unstored],
+            "the header chain holds another block at its height"
+        );
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(10, zeros)]),
+            vec![unstored],
+            "the lock's header is not known yet"
+        );
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(10, zeros), (11, other)]),
+            vec![unstored],
+            "the header chain holds another block at the lock's height"
+        );
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(11, tip)]),
+            vec![unstored],
+            "its header is not known yet"
+        );
+        assert!(!settled(&txs, Some((11, tip)), &[(10, zeros), (11, tip)]).contains(&abandoned));
+        let chainlocked = txs.get_mut(&mined).unwrap();
+        let block = chainlocked.context.block_info().cloned().unwrap();
+        chainlocked.context = TransactionContext::InChainLockedBlock(block);
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(10, other), (11, tip)]),
+            vec![unstored],
+            "a stored ChainLocked context proves nothing"
+        );
+        let reorged = txs.get_mut(&mined).unwrap();
+        reorged.context = TransactionContext::Mempool;
+        reorged.instant_locked = true;
+        assert!(
+            unmined_own_spends(&txs, &sent, None).contains(&(coin(3), mined)),
+            "a reorg back to the mempool, locked: the kept mark claims again"
+        );
+    }
+
+    /// #170 case 11: only a ChainLock beats an InstantSend lock
+    /// (key-wallet's finality order). A locked payment beaten on an input
+    /// by a plain block or another lock keeps its claims; a block the
+    /// wallet's ChainLock covers, by height or by the record's context,
+    /// beats it. A payment without a lock loses to any block or lock.
+    #[test]
+    fn only_a_chainlock_beats_a_locked_payments_claims() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let spend = |n: u8, coins: &[OutPoint], context| {
+            entry(
+                tx(
+                    coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                    vec![out(n.into(), &hash_addr(9))],
+                ),
+                context,
+            )
+        };
+        let locked = || TransactionContext::InstantSend(dashcore::InstantLock::default());
+        let chainlocked =
+            TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
+        let claims = |payment: TxEntry, winner: TxEntry, chainlock: Option<u32>| {
+            let txid = payment.tx.txid();
+            let sent = crate::tx_actions::Sent::from([(txid, [coin(1), coin(2)].into())]);
+            let txs = HashMap::from([(txid, payment), (winner.tx.txid(), winner)]);
+            let mut got = unmined_own_spends(&txs, &sent, chainlock);
+            got.sort();
+            got.into_iter().map(|(o, _)| o).collect::<Vec<_>>()
+        };
+        let all = vec![coin(1), coin(2)];
+        let payment = || spend(1, &[coin(1), coin(2)], locked());
+        let mut flagged = spend(1, &[coin(1), coin(2)], TransactionContext::Mempool);
+        flagged.instant_locked = true;
+        let plain = || spend(2, &[coin(2)], in_block(12, 0));
+
+        assert_eq!(claims(payment(), plain(), None), all, "a plain block");
+        assert_eq!(claims(payment(), plain(), Some(11)), all, "below it");
+        assert_eq!(claims(flagged.clone(), plain(), None), all, "lock flag");
+        assert_eq!(
+            claims(payment(), spend(2, &[coin(2)], locked()), Some(12)),
+            all
+        );
+        assert!(claims(payment(), plain(), Some(12)).is_empty());
+        assert!(claims(flagged, plain(), Some(13)).is_empty());
+        assert!(claims(payment(), spend(2, &[coin(2)], chainlocked), None).is_empty());
+
+        let unlocked = || spend(1, &[coin(1), coin(2)], TransactionContext::Mempool);
+        assert!(claims(unlocked(), plain(), None).is_empty());
+        assert!(claims(unlocked(), spend(2, &[coin(2)], locked()), None).is_empty());
+        assert_eq!(
+            claims(unlocked(), spend(2, &[coin(3)], in_block(12, 0)), None),
+            all
+        );
+    }
+
+    /// A locked payment P spends the output of an unlocked parent Q that a
+    /// plain block beats: P keeps its own inputs held (key-wallet's
+    /// `drop_conflicted_transactions` walks no InstantSend-locked child).
+    #[test]
+    fn a_locked_child_of_a_beaten_parent_keeps_its_inputs_held() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let q = entry(
+            tx(vec![input(coin(1).txid, 0)], vec![out(1, &hash_addr(9))]),
+            TransactionContext::Mempool,
+        );
+        let w = entry(
+            tx(vec![input(coin(1).txid, 0)], vec![out(2, &hash_addr(9))]),
+            in_block(12, 0),
+        );
+        let p = entry(
+            tx(
+                vec![input(q.tx.txid(), 0), input(coin(5).txid, 0)],
+                vec![out(3, &hash_addr(9))],
+            ),
+            TransactionContext::InstantSend(dashcore::InstantLock::default()),
+        );
+        let txs: HashMap<Txid, TxEntry> = [q, w, p].into_iter().map(|e| (e.tx.txid(), e)).collect();
+        assert!(
+            spent_outpoints(&txs, None).contains(&coin(5)),
+            "A stays held"
+        );
+    }
+
+    /// Two mined spends of one coin B (a fork's block the store kept) beside
+    /// a locked payment P of A and B: a ChainLocked one beats P whichever
+    /// spend the map visits last, so A is not held. 16 independent pairs, so
+    /// a rule that kept the last-visited spend fails with odds 1 - 2^-16.
+    #[test]
+    fn a_chainlocked_spend_beats_a_locked_payment_beside_a_plain_one() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let chainlocked =
+            TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
+        let locked = TransactionContext::InstantSend(dashcore::InstantLock::default());
+        let mut txs = HashMap::new();
+        for n in 0..16u8 {
+            let (a, b, v) = (coin(100 + n), coin(150 + n), u64::from(n) * 10);
+            let spends = |coins: &[OutPoint], value: u64, context| {
+                let ins = coins.iter().map(|c| input(c.txid, c.vout)).collect();
+                entry(tx(ins, vec![out(value, &hash_addr(9))]), context)
+            };
+            for e in [
+                spends(&[a, b], v + 1, locked.clone()),
+                spends(&[b], v + 2, in_block(13, 0)),
+                spends(&[b], v + 3, chainlocked.clone()),
+            ] {
+                txs.insert(e.tx.txid(), e);
+            }
+        }
+        let spent = spent_outpoints(&txs, None);
+        assert!(
+            (0..16).all(|n| !spent.contains(&coin(100 + n))),
+            "no A held"
+        );
     }
 }
