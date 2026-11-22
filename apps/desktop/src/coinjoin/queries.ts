@@ -10,6 +10,7 @@ import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { keys, settledBalance, useBackend, useBalance } from "../api/queries";
 import { useUi } from "../app/ui";
 import { useDisplay } from "../format/display";
+import { useT } from "../i18n";
 import { actionFailureText, coinjoinView, sameMarks, START_WINDOW_MS, type CoinJoinView, type MixerMarks, type SeenStart } from "./model";
 
 /** dw-coinjoin's fixed values: they never change while the app runs. */
@@ -52,6 +53,7 @@ export function useMaskedAmount(network: NetworkInfo): string | null {
 
 /** The wallet's mixing status and its view (S1–S14); `retry` reads it again. */
 export function useCoinJoinView(walletId: string, network: NetworkInfo): { view: CoinJoinView; status: CoinJoinStatus | undefined; retry: () => void } {
+  useT();
   const b = useBackend();
   const status = useQuery({ queryKey: keys.coinjoinStatus(walletId), queryFn: () => b.coinjoinStatus(walletId) });
   const amount = useCoinJoinAmount(network);

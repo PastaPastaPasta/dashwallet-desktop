@@ -9,9 +9,10 @@ import { DashButton } from "../../components/basics";
 import { QuestionSheet } from "../../components/sheet";
 import { checkSettings, CoinJoinText, formOf, settingsFailureText, type FormField, type SettingsForm } from "../../coinjoin/model";
 import { useCoinJoinLimits, useCoinJoinSettings, useSaveCoinJoinSettings } from "../../coinjoin/queries";
+import { useT } from "../../i18n";
 import { Done, Hint, pendingText, Problem, SettingsCard } from "./parts";
 
-const FIELDS: { field: FormField; label: string; hint?: string }[] = [
+const fields = (): { field: FormField; label: string; hint?: string }[] => [
   { field: "rounds", label: CoinJoinText.mixingRounds, hint: CoinJoinText.mixingRoundsTip },
   { field: "targetAmountDash", label: CoinJoinText.targetBalance, hint: CoinJoinText.targetBalanceTip },
   { field: "maxSessions", label: CoinJoinText.parallelSessions, hint: CoinJoinText.parallelSessionsTip },
@@ -34,8 +35,10 @@ export function CoinJoinTab() {
 }
 
 function CoinJoinForm({ current, limits }: { current: CoinJoinSettings; limits: CoinJoinLimits }) {
+  useT();
   const save = useSaveCoinJoinSettings();
   const id = useId();
+  const FIELDS = fields();
   /** The fields as typed; the rest show the saved values. */
   const [edits, setEdits] = useState<Partial<SettingsForm>>({});
   const [wrong, setWrong] = useState<FormField | null>(null);
