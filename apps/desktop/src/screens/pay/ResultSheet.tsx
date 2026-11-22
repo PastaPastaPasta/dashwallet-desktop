@@ -54,6 +54,7 @@ export function ResultSheet({
     if (outcome.kind !== "unknown" || !outcome.retry || busy) return;
     const settle = onRetry();
     if (!settle) return;
+    if (retryButton.current === document.activeElement) retryButton.current?.closest<HTMLElement>('[role="dialog"]')?.focus();
     setRunning(true);
     const { txid: held, draft: d, prepared, amount, fee, note } = outcome;
     try {
@@ -66,10 +67,21 @@ export function ResultSheet({
       setTries((n) => n + 1);
     }
   };
-  // The button was disabled while the retry ran: focus goes back to it, or to Close.
+  // The button was disabled while the retry ran: focus goes back to it, or to Close, unless the
+  // user moved it meanwhile.
   const closeButton = useRef<HTMLButtonElement>(null);
+  const heldAt = useRef<Element | null>(null);
   useEffect(() => {
-    if (!busy && outcome.kind === "unknown") (outcome.retry ? retryButton : closeButton).current?.focus();
+    if (busy) {
+      heldAt.current ??= document.activeElement;
+      return;
+    }
+    const held = heldAt.current;
+    heldAt.current = null;
+    if (outcome.kind !== "unknown") return;
+    const a = document.activeElement;
+    if (held && a !== held && a !== document.body && a !== closeButton.current?.closest('[role="dialog"]')) return;
+    (outcome.retry ? retryButton : closeButton).current?.focus();
   }, [busy, outcome]);
 
   return (
