@@ -13,8 +13,8 @@ use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
     COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, change_of, coins, eventually, foreign,
-    fresh_address, funding, own_scripts, rival, send, spendable, store_raw, synced, utxo,
-    wait_stored, wallet_funded_unmined,
+    fresh_address, funding, own_scripts, rival, second_wallet, send, sent_marks, spendable,
+    store_raw, synced, utxo, wait_stored, wallet_funded_unmined,
 };
 use super::{balances, engine_wallet, instant_lock, mempool, mined, reopen, wait_stored_locked};
 use crate::send::CoinSource;
@@ -916,17 +916,12 @@ fn a_beaten_payment_keeps_its_other_coin_out_until_it_is_abandoned() {
     assert!(!spendable(&engine, &session, id, b), "B is not");
 }
 
-fn sent_marks(session: &NetworkSession, id: WalletId) -> BTreeSet<Txid> {
-    crate::tx_actions::load_sent(&session.live().unwrap().appdb, id)
-        .0
-        .into_keys()
-        .collect()
-}
-
-/// The mark of a payment this app sent goes at the first load after it is
-/// mined; a pending one's stays.
+/// The mark of a payment this app sent, mined in a session that ended
+/// before its ChainLock, goes at a load whose header chain holds its block
+/// and the block of the wallet's ChainLock. Before that it stays, at a load
+/// with no header known too; a pending one's stays.
 #[test]
-fn a_payment_mark_goes_at_the_load_after_it_is_mined() {
+fn a_payment_mark_goes_at_a_load_whose_header_chain_proves_it_chainlocked() {
     let (_dir, engine, session, id) = funded_wallet();
     let mined_one = send(&engine, &session, id, CoinSource::Any, COIN, false);
     mempool(&engine, &session, id, &mined_one);
@@ -936,10 +931,59 @@ fn a_payment_mark_goes_at_the_load_after_it_is_mined() {
         sent_marks(&session, id),
         BTreeSet::from([mined_one.txid(), pending.txid()])
     );
-    mined(&engine, &session, id, TIP + 1, vec![mined_one]);
+    mined(&engine, &session, id, TIP + 1, vec![mined_one.clone()]);
 
     let session = reopen(&engine, session);
+    assert_eq!(
+        sent_marks(&session, id),
+        BTreeSet::from([mined_one.txid(), pending.txid()])
+    );
+    let block = super::block_with(vec![mined_one.clone()]).block_hash();
+    super::own_spend_disk_tests::chain_lock(&engine, &session, id, TIP + 1, block);
+    let session = reopen(&engine, session);
+    assert_eq!(
+        sent_marks(&session, id),
+        BTreeSet::from([mined_one.txid(), pending.txid()]),
+        "no header known at the load"
+    );
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    super::own_spend_disk_tests::header_chain(&session, &[(TIP + 1, block)]);
+    engine.block_on(session.load_wallet(id)).unwrap();
     assert_eq!(sent_marks(&session, id), BTreeSet::from([pending.txid()]));
+}
+
+/// The wallet's own ChainLock at a mined payment's height names another
+/// block (a reorg replaced the payment's, and the store keeps no reorg):
+/// its mark stays.
+#[test]
+fn a_payment_mark_stays_when_the_chainlock_names_another_block() {
+    let (_dir, engine, session, id) = funded_wallet();
+    let payment = send(&engine, &session, id, CoinSource::Any, COIN, false);
+    mempool(&engine, &session, id, &payment);
+    mined(&engine, &session, id, TIP + 1, vec![payment.clone()]);
+    let other = super::block_with(vec![foreign()]).block_hash();
+    assert_ne!(other, super::block_with(vec![payment.clone()]).block_hash());
+    super::own_spend_disk_tests::chain_lock(&engine, &session, id, TIP + 1, other);
+
+    let session = reopen(&engine, session);
+    assert!(sent_marks(&session, id).contains(&payment.txid()));
+}
+
+/// Another wallet's ChainLock of a mined payment's own block, applied while
+/// the payment's wallet was closed: the wallet opened again in the session
+/// keeps the payment's mark, as its own ChainLock is the only evidence.
+#[test]
+fn a_chainlock_another_wallet_applied_keeps_a_payment_mark() {
+    let (_dir, engine, session, id) = funded_wallet();
+    let payment = send(&engine, &session, id, CoinSource::Any, COIN, false);
+    mempool(&engine, &session, id, &payment);
+    mined(&engine, &session, id, TIP + 1, vec![payment.clone()]);
+    let other = second_wallet(&engine, &session);
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let block = super::block_with(vec![payment.clone()]).block_hash();
+    super::own_spend_disk_tests::chain_lock(&engine, &session, other, TIP + 1, block);
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert!(sent_marks(&session, id).contains(&payment.txid()));
 }
 
 /// #170 case 17 guard: a payment's mark names every coin it spends, all of
@@ -1320,7 +1364,7 @@ fn a_load_with_an_unreadable_abandoned_mark_claims_nothing() {
     let session = reopen(&engine, session);
     assert!(held(&engine, &session, id).contains(&a));
     assert!(stored_unspent(&session, id, a));
-    assert!(!sent_marks(&session, id).contains(&payment.txid()));
+    assert!(sent_marks(&session, id).contains(&payment.txid()));
 }
 
 fn paid_outputs(paid: &Transaction) -> BTreeSet<OutPoint> {

@@ -3,7 +3,7 @@ import { createElement, isValidElement, type ReactElement, type ReactNode } from
 import { DEFAULT_PREFS, ui } from "../app/ui";
 import { build, fill, flatten, pluralForm, pseudoCatalog, renderTag, tokenize, type Catalog, type Params } from "./core";
 import { en } from "./en";
-import { formatLocale, isComplete, LANGUAGES, resolveLanguage, systemLanguage, t, type Language } from "./index";
+import { formatLocale, isComplete, LANGUAGES, resolveLanguage, runtimeFormatLocale, systemLanguage, t, type Language } from "./index";
 
 const choose = (language: string | null) => ui.set({ prefs: { ...DEFAULT_PREFS, language } });
 afterEach(() => choose(null));
@@ -167,6 +167,44 @@ describe("the language in use", () => {
     } finally {
       LANGUAGES.pop();
     }
+  });
+
+  it("drops ICU's POSIX variant from the runtime's default locale, and only that", () => {
+    expect(runtimeFormatLocale("en-US-u-va-posix")).toBe("en-US");
+    expect(runtimeFormatLocale("en-US-POSIX")).toBe("en-US");
+    expect(runtimeFormatLocale("en-US")).toBe(undefined);
+    expect(runtimeFormatLocale("de-DE-u-nu-latn")).toBe(undefined);
+  });
+
+  it("keeps a POSIX locale's language and its other keywords, so it formats as that locale", () => {
+    expect(runtimeFormatLocale("de-DE-u-va-posix")).toBe("de-DE");
+    expect(new Intl.NumberFormat(runtimeFormatLocale("de-DE-u-va-posix")).format(1596000)).toBe("1.596.000");
+    expect(runtimeFormatLocale("en-US-u-nu-arab-va-posix")).toBe("en-US-u-nu-arab");
+    expect(runtimeFormatLocale("en-US-u-va-posix-nu-arab")).toBe("en-US-u-nu-arab");
+    expect(runtimeFormatLocale("ar-EG-u-nu-latn-va-posix")).toBe("ar-EG-u-nu-latn");
+    expect(new Intl.NumberFormat(runtimeFormatLocale("ar-EG-u-nu-latn-va-posix")).format(1596000)).toMatch(/^1\D596\D000$/);
+  });
+
+  it("groups digits when the runtime's default is POSIX, as WebKitGTK's is under LANG=C.UTF-8", () => {
+    const Real = Intl.NumberFormat;
+    // WebKitGTK under LANG=C.UTF-8: navigator.languages is ["C"] and the default is en-US-u-va-posix,
+    // which formats with no grouping; the same tag passed explicitly groups.
+    function PosixDefault(locales?: string | string[], options?: Intl.NumberFormatOptions) {
+      if (locales !== undefined) return new Real(locales, options);
+      const nf = new Real("en-US", { ...options, useGrouping: false });
+      nf.resolvedOptions = () => ({ ...Real.prototype.resolvedOptions.call(nf), locale: "en-US-u-va-posix" });
+      return nf;
+    }
+    Intl.NumberFormat = PosixDefault as unknown as typeof Intl.NumberFormat;
+    try {
+      expect(t("onboarding.options.startsAt", { height: 1596000 })).toBe("The scan starts at block 1,596,000.");
+      expect(formatLocale(undefined, null, ["C"])).toBe("en-US");
+      expect(formatLocale(undefined, "en", ["C"])).toBe("en");
+    } finally {
+      Intl.NumberFormat = Real;
+    }
+    expect(t("onboarding.options.startsAt", { height: 1596000 })).toBe("The scan starts at block 1,596,000.");
+    expect(formatLocale(undefined, null, ["C"])).toBe(undefined);
   });
 });
 

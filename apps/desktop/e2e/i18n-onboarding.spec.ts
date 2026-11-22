@@ -231,3 +231,32 @@ for (const theme of THEMES)
         await checkArea(page, info, theme, pseudo, { name: state.name, roots: state.roots, panes: panesOf(state.roots), data: [...SHARED, ...DATA, WORDS], open: (lang) => state.open(page, theme, lang) });
         expect(errors).toEqual([]);
       });
+
+test("Restore options' block height keeps its digit groups in order under ar-XB", async ({ page }) => {
+  await restore(page, "light", "ar-XB");
+  await page.getByTestId("restore-input").fill(SECOND_PHRASE);
+  await page.getByTestId("restore-valid").waitFor();
+  await page.getByTestId("restore-continue").click();
+  await page.getByTestId("restore-scan-height").check();
+  await page.getByTestId("restore-height").fill("1596000");
+  const hint = page.getByTestId("restore-scan-start");
+  await expect(hint).toContainText(/\p{Nd}[^\p{Nd}\s]\p{Nd}{3}[^\p{Nd}\s]\p{Nd}{3}/u);
+  const lefts = await hint.evaluate((el) => {
+    const re = /(\p{Nd})\p{Nd}*[^\p{Nd}\s](\p{Nd})\p{Nd}*[^\p{Nd}\s](\p{Nd})/du;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const m = re.exec(n.textContent ?? "");
+      if (!m?.indices) continue;
+      return [1, 2, 3].map((g) => {
+        const r = document.createRange();
+        r.setStart(n!, m.indices![g]![0]);
+        r.setEnd(n!, m.indices![g]![0] + 1);
+        return r.getBoundingClientRect().left;
+      });
+    }
+    return null;
+  });
+  expect(lefts, "the height's three digit groups").not.toBeNull();
+  expect(lefts![0]).toBeLessThan(lefts![1]);
+  expect(lefts![1]).toBeLessThan(lefts![2]);
+});

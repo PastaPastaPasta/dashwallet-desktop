@@ -88,9 +88,9 @@ const ABANDONED_PREFIX: &str = "abandoned:";
 /// Settings key prefix (wallet scope) of a payment this app signed and
 /// handed to the network (#88): the evidence a spend claim is restored
 /// from at load. Written before the first broadcast, removed when it was
-/// never sent, and dropped at load once the payment is in a block,
-/// abandoned or gone from the store. Its value names the wallet's coins it
-/// signed.
+/// never sent, and dropped once the payment is gone from the history or
+/// proven ChainLocked: in the session by its wallet's ChainLock of its own
+/// block, or at load by the SPV header chain.
 pub(crate) const SENT_PREFIX: &str = "sent:";
 
 /// Tests: the next abandon sweep of a session's wallet store stops right
@@ -247,27 +247,6 @@ fn parse_inputs(value: &str) -> BTreeMap<OutPoint, (u64, String)> {
         .collect()
 }
 
-/// The saved input details of `wallet`'s payments ([`SENT_IN_PREFIX`]),
-/// read apart from their sent marks: an abandoned payment's outlive its
-/// sent mark.
-pub(crate) fn load_sent_inputs(
-    appdb: &AppDb,
-    wallet: WalletId,
-) -> BTreeMap<Txid, BTreeMap<OutPoint, (u64, String)>> {
-    match appdb.settings_with_prefix_lossy(&wallet.to_string(), SENT_IN_PREFIX) {
-        Ok(rows) => (rows.into_iter())
-            .filter_map(|(key, value)| {
-                let txid = Txid::from_str(key.get(SENT_IN_PREFIX.len()..)?).ok()?;
-                Some((txid, parse_inputs(&value?)))
-            })
-            .collect(),
-        Err(e) => {
-            tracing::warn!(%wallet, error = %e, "could not read the saved input details");
-            BTreeMap::new()
-        }
-    }
-}
-
 /// What a sent mark holds: the wallet's coins the app signed, and the
 /// signed transaction ([`SENT_TX_PREFIX`]), which a mark an earlier build
 /// wrote lacks. `kept`: a transaction is stored for it, read or not.
@@ -283,27 +262,14 @@ pub(crate) struct SentMark {
 /// The payments this app sent.
 pub(crate) type Sent = BTreeMap<Txid, SentMark>;
 
-/// Drops the marks of the payments of `wallet` no longer out of a block
-/// in its history (`gone`): in a block, abandoned, or not stored. The
-/// input details of those in `keep_inputs` (abandoned) stay, for their
-/// rows.
-pub(crate) fn forget_sent(
-    appdb: &AppDb,
-    wallet: WalletId,
-    gone: &[Txid],
-    keep_inputs: &HashSet<Txid>,
-) {
+/// Drops the marks of the payments of `wallet` (`gone`) gone from the
+/// history or ChainLocked.
+pub(crate) fn forget_sent(appdb: &AppDb, wallet: WalletId, gone: &[Txid]) {
     if gone.is_empty() {
         return;
     }
     let keys: Vec<String> = (gone.iter())
-        .flat_map(|t| {
-            let inputs = (!keep_inputs.contains(t)).then_some(SENT_IN_PREFIX);
-            [Some(SENT_PREFIX), Some(SENT_TX_PREFIX), inputs]
-                .into_iter()
-                .flatten()
-                .map(move |p| format!("{p}{t}"))
-        })
+        .flat_map(|t| [SENT_PREFIX, SENT_TX_PREFIX, SENT_IN_PREFIX].map(|p| format!("{p}{t}")))
         .collect();
     let writes: Vec<(&str, Option<&str>)> = keys.iter().map(|k| (k.as_str(), None)).collect();
     if let Err(e) = appdb.set_settings_durable(&wallet.to_string(), &writes) {
@@ -1054,7 +1020,7 @@ impl NetworkSession {
                     match this.abandon_inner(&manager, id, txid).await {
                         Ok(set) => {
                             this.appdb_op(move |db| {
-                                forget_sent(db, id, &[txid], &HashSet::new());
+                                forget_sent(db, id, &[txid]);
                                 Ok(())
                             })
                             .await?;
