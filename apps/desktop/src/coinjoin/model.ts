@@ -547,18 +547,19 @@ export const formOf = (s: CoinJoinSettings): SettingsForm => ({
   denomsHardCap: String(s.denomsHardCap),
 });
 
-const fieldOutOfRangeText = (field: FormField, min: number, max: number): string => {
+const fieldOutOfRangeText = (field: FormField, low: number, high: number): string => {
+  const bounds = { min: low.toLocaleString("en-US"), max: high.toLocaleString("en-US") };
   switch (field) {
     case "rounds":
-      return t("coinjoin.settingsCheck.rounds", { min, max });
+      return t("coinjoin.settingsCheck.rounds", bounds);
     case "targetAmountDash":
-      return t("coinjoin.settingsCheck.targetAmountDash", { min, max });
+      return t("coinjoin.settingsCheck.targetAmountDash", bounds);
     case "maxSessions":
-      return t("coinjoin.settingsCheck.maxSessions", { min, max });
+      return t("coinjoin.settingsCheck.maxSessions", bounds);
     case "denomsGoal":
-      return t("coinjoin.settingsCheck.denomsGoal", { min, max });
+      return t("coinjoin.settingsCheck.denomsGoal", bounds);
     case "denomsHardCap":
-      return t("coinjoin.settingsCheck.denomsHardCap", { min, max });
+      return t("coinjoin.settingsCheck.denomsHardCap", bounds);
   }
 };
 

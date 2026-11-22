@@ -1,7 +1,7 @@
 // The CoinJoin view model (U-06): one test per S-row of docs/design/U-06-coinjoin.md, the level
 // mapping (D2), Settings ▸ CoinJoin's checks (D11) and the start/stop failure texts (D9).
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AppError } from "../api/generated/commands";
 import type { CoinJoinLimits } from "../api/generated/CoinJoinLimits";
 import type { CoinJoinStatus } from "../api/generated/CoinJoinStatus";
@@ -237,6 +237,22 @@ describe("checkSettings (D11)", () => {
       field: "denomsHardCap",
       text: "Inputs per denomination: Maximum must be a whole number from 10 to 100,000.",
     });
+  });
+
+  it("shows range bounds the form accepts, whatever the system's number format", () => {
+    const Real = Intl.NumberFormat;
+    const german = vi.spyOn(Intl, "NumberFormat").mockImplementation(function (locale?: string | string[], options?: Intl.NumberFormatOptions) {
+      return new Real(locale ?? "de-DE", options);
+    } as typeof Intl.NumberFormat);
+    try {
+      const wrong = checkSettings({ ...formOf(current), denomsHardCap: "5" }, current, LIMITS);
+      expect(wrong).toEqual({ field: "denomsHardCap", text: "Inputs per denomination: Maximum must be a whole number from 10 to 100,000." });
+      const [, low, high] = /from (\S+) to (\S+)\.$/.exec("text" in wrong ? wrong.text : "")!;
+      expect(checkSettings({ ...formOf(current), denomsHardCap: high }, current, LIMITS)).toMatchObject({ ok: { denomsHardCap: 100000 } });
+      expect(checkSettings({ ...formOf(current), denomsHardCap: low }, current, LIMITS)).toMatchObject({ field: "denomsGoal" });
+    } finally {
+      german.mockRestore();
+    }
   });
 
   it("refuses a target above the maximum", () => {

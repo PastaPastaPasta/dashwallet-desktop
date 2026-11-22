@@ -150,7 +150,7 @@ export const MOVE_COPY = {
     },
   },
   combine: {
-    text: (coins: number) => t("coinjoin.move.combine.text", { coins }),
+    text: (coins: number) => t("coinjoin.move.combine.text", { coins: String(coins) }),
     get after() {
       return t("coinjoin.move.combine.after");
     },
