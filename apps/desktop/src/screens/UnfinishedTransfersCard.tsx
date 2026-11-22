@@ -13,6 +13,7 @@ import { Sheet } from "../components/sheet";
 import { shortId } from "../dashpay/identities";
 import { known } from "../format/homeBalance";
 import { unreadText } from "../dashpay/registration";
+import { useT } from "../i18n";
 import { useModel } from "../onboarding/model";
 import { fundFor, fundRowView, FUND_COPY as F } from "../platform/fund";
 import { moveFor, MOVE_COPY as M } from "../platform/move";
@@ -28,6 +29,7 @@ import { GrantSheet } from "./tools/common";
 const actionLabel = (a: CardAction): string => C[a];
 
 export function UnfinishedTransfersCard({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  useT();
   const backend = useBackend();
   const model = recoveryFor(backend, walletId);
   useModel(model);
@@ -165,6 +167,7 @@ export function UnfinishedTransfersCard({ walletId, network }: { walletId: strin
 }
 
 export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: { model: RecoveryModel; walletId: string; network: NetworkInfo; onClose: () => void }) {
+  const tr = useT();
   useModel(model);
   const query = useUnfinishedTransfers(walletId);
   const fmt = useFormats(network);
@@ -188,12 +191,12 @@ export function UnfinishedTransfersSheet({ model, walletId, network, onClose }: 
             <div className="detail-row" key={key} data-testid="unfinished-row" data-state={result?.kind === "applied" ? "applied" : lock.state}>
               <dt className="detail-label">{C.sheet.kind[lock.kind]}</dt>
               <dd className="detail-value">
-                <span data-testid="unfinished-row-amount">{fmt.duffs(lock.duffs)}</span>{" "}
+                <bdi dir="ltr" data-testid="unfinished-row-amount">{fmt.duffs(lock.duffs)}</bdi>{" "}
                 <span className="chip" data-testid="unfinished-row-state">
                   {C.sheet.state[lock.state]}
                 </span>
                 <br />
-                <CopyValue value={lock.txid} display={shortId(lock.txid)} label="transaction id" mono />
+                <CopyValue value={lock.txid} display={shortId(lock.txid)} label={tr("home.unfinished.txid")} mono />
                 {result && (
                   <p className={result.kind === "notApplied" ? "form-problem" : "field-hint"} role="status" data-testid="unfinished-row-result">
                     {resultText(result, errorText, lock.kind)}
