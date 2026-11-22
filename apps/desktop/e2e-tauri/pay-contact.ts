@@ -10,24 +10,30 @@
 //
 // <dir> holds `<W>.mnemonic` (0600) and `fixture.json` (the identities). DW_PAY_PAYER and
 // DW_PAY_PAYEE pick the wallets (default A and B, contacts since the fixture's set-up), and
-// DW_PAY_USERNAME the payee's username (default dwrecoverb2, B's). The payment is recorded in
-// `<dir>/DP3-06.json`, written exclusively before Send is pressed: a rerun never pays again, it
+// DW_PAY_USERNAME the payee's username (default dwrecoverb2, B's), DW_PAY_DISPLAY_NAME its display
+// name (the payee card must show exactly that over @username; "" for none, the username alone;
+// unset, either shape). The payment is recorded in
+// `<dir>/DP3-06.json`, written exclusively before Send is pressed: a rerun never pays again (it
+// still picks the payee and checks its card, typing nothing), it
 // checks the payment already sent. Phrases go to dwcli on stdin, never argv; whatever happens, no
 // file of OUT (nor of DW_E2E_SCAN_EXTRA, the run's log directory) may hold a phrase or the
 // passphrase afterwards. `scripts/e2e-tauri-pay-contact.sh` builds the binaries and runs this file
 // under a private session bus, on the private X display in $DISPLAY.
 
 import { spawnSync, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { newPassphrase } from "./flow-secrets.ts";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { DWCLI, driverGone, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver, APP } from "./driver.ts";
+import { DWCLI, driverGone, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver, APP, fillSecret } from "./driver.ts";
+import { payeeCardMismatch, type PayeeCard } from "./payee-card.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const PAYER = env("DW_PAY_PAYER", "A");
 const PAYEE = env("DW_PAY_PAYEE", "B");
 const USERNAME = env("DW_PAY_USERNAME", "dwrecoverb2");
+/** The payee's display name: the card shows it over @username ("": it has none; unset: not known). */
+const DISPLAY_NAME = process.env.DW_PAY_DISPLAY_NAME;
 const BIRTH_HEIGHT = env("DW_PAY_BIRTH_HEIGHT", "1568806");
 /** The payment, in DASH as typed, and in duffs. */
 const AMOUNT = env("DW_PAY_AMOUNT", "0.001");
@@ -120,7 +126,7 @@ function keepLogs(roots: Record<string, string>) {
   }
 }
 
-interface Ledger {
+export interface Ledger {
   payer: string;
   payee: string;
   payerIdentity: string;
@@ -143,7 +149,7 @@ function earlier(from: string, to: string): Ledger | null {
   return ledger;
 }
 
-async function run(
+export async function run(
   passphrase: string,
   payee: string,
   wd: WebDriver,
@@ -155,7 +161,7 @@ async function run(
   const out: Record<string, unknown> = {};
   const textOf = (css: string) => wd.script<string>(`return document.querySelector('${css}')?.innerText.replace(/\\s+/g, " ").trim() ?? ""`);
   const disabled = (id: string) => wd.script<boolean>(`return !!document.querySelector('${tid(id)}')?.disabled`);
-  await wd.fill(tid("lock-field"), passphrase);
+  await fillSecret(wd, tid("lock-field"), passphrase);
   await wd.press(tid("lock-submit"));
   await wd.waitGone(tid("lock-screen"), "the lock screen");
   if (await wd.script<boolean>("return !!window.__dwFixture")) throw new Error("the app runs a fixture");
@@ -164,12 +170,9 @@ async function run(
   await poll(SEND_TIMEOUT_MS, "the wallet to sync", async () => ((await textOf(tid("status-bar"))).includes("Synced") ? true : undefined));
   step("the status bar says Synced");
 
-  if (ledgerIn) {
-    step(`the payment ${PAYER}→${PAYEE} was sent before (${ledgerIn.at}, ${ledgerIn.txid}); not paying again`);
-    await wd.press(tid("sidebar-activity"));
-    const row = await poll(SEND_TIMEOUT_MS, "the payment in Activity", async () => (await wd.find(`[data-txid="${ledgerIn!.txid}"]`)) ?? undefined);
-    await wd.click(row);
-  } else {
+  /** Pay ▸ To a contact ▸ the payee, and its card checked; nothing typed, nothing that can spend.
+   * `paying`: a form held back (any banner but a note) fails; on a rerun that pays nothing it is noted. */
+  const pickPayee = async (paying: boolean) => {
     await wd.press(tid("sidebar-pay"));
     await wd.press(tid("pay-tabs-contact"));
     // The strip and the picker fill once DashPay's bring-up has run.
@@ -185,15 +188,42 @@ async function run(
     step(`To a contact lists ${USERNAME} in ${via}; strip: ${JSON.stringify(out.frequent)}`);
     await wd.press(via === "the frequent strip" ? chip : row);
 
-    const payeeName = await poll(TIMEOUT_MS, `the payee card to name ${USERNAME}`, async () => {
-      const t = await textOf(tid("pay-payee-name"));
-      return t.includes(USERNAME) ? t : undefined;
+    // The card shows the display name and, under it, @username (the username alone when none is set).
+    const readCard = () =>
+      wd.script<PayeeCard>(
+        `const c = document.querySelector('${tid("pay-payee")}'); const t = (e) => e ? e.innerText.replace(/\\s+/g, " ").trim() : null; return { name: t(c?.querySelector('${tid("pay-payee-name")}')) ?? "", sub: t(c?.querySelector(".contact-row-username")) }`,
+      );
+    let mismatch: string | null = "the payee card is not shown";
+    const card = await poll(TIMEOUT_MS, `the payee card to show ${DISPLAY_NAME ? `${DISPLAY_NAME} over @${USERNAME}` : USERNAME}`, async () => {
+      const c = await readCard();
+      mismatch = payeeCardMismatch(c, USERNAME, DISPLAY_NAME);
+      return mismatch ? undefined : c;
+    }).catch((e: Error) => {
+      throw new Error(`${e.message}: ${mismatch}`);
     });
+    const payeeName = card.sub ? `${card.name} ${card.sub}` : card.name;
     const banner = await wd.script<{ kind: string; text: string } | null>(
       `const b = document.querySelector('${tid("pay-banner")}'); return b ? { kind: b.dataset.kind, text: b.innerText } : null`,
     );
     out.banner = banner;
-    if (banner && banner.kind !== "note") throw new Error(`the form is held back: ${banner.kind}: ${banner.text}`);
+    if (banner && banner.kind !== "note") {
+      if (paying) throw new Error(`the form is held back: ${banner.kind}: ${banner.text}`);
+      step(`the form is held back (${banner.kind}); nothing is paid on this run`);
+    }
+    return { payeeName, banner };
+  };
+
+  if (ledgerIn) {
+    step(`the payment ${PAYER}→${PAYEE} was sent before (${ledgerIn.at}, ${ledgerIn.txid}); not paying again`);
+    // The payee card is still checked, short of the amount: nothing is typed or reviewed.
+    const { payeeName } = await pickPayee(false);
+    await wd.screenshot("2-payee");
+    step(`payee card: ${payeeName}; not paying again`);
+    await wd.press(tid("sidebar-activity"));
+    const row = await poll(SEND_TIMEOUT_MS, "the payment in Activity", async () => (await wd.find(`[data-txid="${ledgerIn!.txid}"]`)) ?? undefined);
+    await wd.click(row);
+  } else {
+    const { payeeName, banner } = await pickPayee(true);
     await wd.fill(tid("pay-amount"), AMOUNT);
     await wd.fill(tid("pay-note"), NOTE);
     // Review is offered once the wallet has synced enough to spend and the engine estimated a fee.
@@ -208,7 +238,7 @@ async function run(
       if (!payTo.includes(USERNAME)) throw new Error(`the confirm sheet pays ${payTo}, not ${USERNAME}`);
       if (await wd.find(tid("pay-confirm-unsigned"))) throw new Error("the confirm sheet offers an unsigned transaction for a contact");
       out.confirm = await textOf(tid("pay-confirm-facts"));
-      await wd.fill(tid("pay-confirm-passphrase"), passphrase);
+      await fillSecret(wd, tid("pay-confirm-passphrase"), passphrase);
     };
     await confirm();
     await wd.screenshot("3-confirm");
@@ -293,7 +323,7 @@ async function main() {
   const payeeRoot = join(work, "payee");
   const appRoot = join(work, "app");
   const passFile = join(work, "passphrase");
-  const passphrase = randomBytes(18).toString("base64url");
+  const passphrase = newPassphrase();
   for (const w of [PAYER, PAYEE]) {
     const phrase = readFileSync(join(FIXTURE, `${w}.mnemonic`), "utf8").trim();
     secrets.push(phrase, phrase.split(/\s+/).join(" "));
@@ -387,19 +417,22 @@ async function interrupted(signal: NodeJS.Signals) {
   for (const f of [...leaks(OUT, secrets), ...(SCAN_EXTRA ? leaks(SCAN_EXTRA, secrets) : [])]) rmSync(f.replace(/ \(\d+\)$/, ""), { force: true });
   process.exit(1);
 }
-process.once("SIGINT", (s) => void interrupted(s));
-process.once("SIGTERM", (s) => void interrupted(s));
-
-main()
-  .catch((e) => {
-    console.error(`pay-contact: FAIL: ${mask(e instanceof Error ? e.message : String(e))}`);
-    process.exitCode = 1;
-  })
-  .finally(() => {
-    stopDriver(driver);
-    try {
-      if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
-    } catch (e) {
-      console.warn(`pay-contact: could not remove ${work}: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  });
+// Run as a script; vitest imports `run` with a stand-in driver (pay-contact.test.ts). A Node without
+// import.meta.main (before 24.2) runs it too, rather than pass having done nothing.
+if (import.meta.main ?? !process.env.VITEST) {
+  process.once("SIGINT", (s) => void interrupted(s));
+  process.once("SIGTERM", (s) => void interrupted(s));
+  main()
+    .catch((e) => {
+      console.error(`pay-contact: FAIL: ${mask(e instanceof Error ? e.message : String(e))}`);
+      process.exitCode = 1;
+    })
+    .finally(() => {
+      stopDriver(driver);
+      try {
+        if (work) rmSync(work, { recursive: true, force: true, maxRetries: 3 });
+      } catch (e) {
+        console.warn(`pay-contact: could not remove ${work}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+}

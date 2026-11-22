@@ -1,0 +1,193 @@
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { crc32, deflateSync } from "node:zlib";
+import { folded, longestPhraseRun, nearMatch, phraseWordsIn, scanArtifacts, singleColourPng, suspicious } from "./artifact-scan.ts";
+
+/** An 8-bit RGB PNG of `pixel`, its rows filtered with each of the five filters in turn. */
+function png(width: number, height: number, pixel: (x: number, y: number) => [number, number, number]): Buffer {
+  const chunk = (type: string, data: Buffer) => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 2;
+  const stride = width * 3;
+  const rows: Buffer[] = [];
+  let prev = Buffer.alloc(stride);
+  for (let y = 0; y < height; y++) {
+    const line = Buffer.from(Array.from({ length: width }, (_, x) => pixel(x, y)).flat());
+    const filter = y % 5;
+    const out = Buffer.alloc(stride + 1);
+    out[0] = filter;
+    for (let i = 0; i < stride; i++) {
+      const a = i >= 3 ? line[i - 3]! : 0;
+      const b = prev[i]!;
+      const c = i >= 3 ? prev[i - 3]! : 0;
+      const p = a + b - c;
+      const paeth = Math.abs(p - a) <= Math.abs(p - b) && Math.abs(p - a) <= Math.abs(p - c) ? a : Math.abs(p - b) <= Math.abs(p - c) ? b : c;
+      out[i + 1] = (line[i]! - [0, a, b, (a + b) >> 1, paeth][filter]!) & 0xff;
+    }
+    rows.push(out);
+    prev = line;
+  }
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(Buffer.concat(rows))), chunk("IEND", Buffer.alloc(0))]);
+}
+
+// The BIP39 test vector phrase, public.
+const VECTOR = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+describe("the testnet artifact check (H-04 O4a)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "dw-artifact-scan-"));
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("counts BIP39 word runs across punctuation, not through other words", () => {
+    expect(longestPhraseRun(`"${VECTOR}",`)).toBe(12);
+    expect(longestPhraseRun("abandon ability able zzz about above")).toBe(3);
+    expect(longestPhraseRun("contacts: the bell lists one request")).toBeLessThan(12);
+  });
+
+  it("reads a numbered phrase grid, capitalised words and a JSON word array as one run", () => {
+    const words = VECTOR.split(" ");
+    expect(longestPhraseRun(words.map((w, i) => `${i + 1} ${w}`).join("\n"))).toBe(12);
+    expect(longestPhraseRun(words.map((w, i) => `${i + 1}. ${w}`).join(" "))).toBe(12);
+    expect(longestPhraseRun(`Abandon ${words.slice(1).join(" ")}`)).toBe(12);
+    expect(longestPhraseRun(JSON.stringify(words))).toBe(12);
+  });
+
+  it("counts a known phrase's words in any order", () => {
+    const phrase = "legal winner thank year wave sausage worth useful legal winner thank yellow";
+    const columns = "1 legal 4 year 7 worth 10 winner\n2 winner 5 wave 8 useful 11 thank\n3 thank 6 sausage 9 legal 12 yellow";
+    expect(phraseWordsIn(columns, phrase)).toBe(9);
+    expect(phraseWordsIn("Welcome to DashPay, @dwo4aa2257", phrase)).toBe(0);
+  });
+
+  it("flags a phrase-length run and an extended private key, and nothing in ordinary logs", () => {
+    expect(suspicious(VECTOR)).toEqual(["bip39-run"]);
+    expect(suspicious(`key tprv${"8".repeat(107)}`)).toEqual(["extended-private-key"]);
+    expect(suspicious("registration: SPV at 1596581; paying 10000000 duffs from A to yXyz")).toEqual([]);
+  });
+
+  it("reports the path and the kind, never the text", () => {
+    mkdirSync(join(dir, "logs"));
+    writeFileSync(join(dir, "logs", "run.log"), `step\n${VECTOR}\n`);
+    writeFileSync(join(dir, "clean.json"), '{"ok":true}');
+    const r = scanArtifacts([dir], ["a known secret value"]);
+    expect(r.hits).toEqual([`${join(dir, "logs", "run.log")}: bip39-run`]);
+    expect(r.hits.join("")).not.toContain("abandon");
+    writeFileSync(join(dir, "clean.json"), "a known secret value");
+    expect(scanArtifacts([dir], ["a known secret value"]).hits).toContain(`${join(dir, "clean.json")} (0): known-secret`);
+  });
+
+  describe("screenshots", () => {
+    const path = process.env.PATH;
+    // A stand-in tesseract: --version answers, a read prints $FAKE_OCR_TEXT and exits $FAKE_OCR_EXIT.
+    const fakeTesseract = () => {
+      const bin = join(dir, "bin");
+      mkdirSync(bin);
+      writeFileSync(join(bin, "tesseract"), '#!/bin/sh\n[ "$1" = --version ] && exit 0\nprintf "%s\\n" "$FAKE_OCR_TEXT"\nexit "${FAKE_OCR_EXIT:-0}"\n');
+      chmodSync(join(bin, "tesseract"), 0o755);
+      process.env.PATH = `${bin}:${path}`;
+    };
+    const shot = () => {
+      mkdirSync(join(dir, "shots"));
+      writeFileSync(join(dir, "shots", "1-form.png"), "not really a png");
+      return join(dir, "shots");
+    };
+    afterEach(() => {
+      process.env.PATH = path;
+      delete process.env.FAKE_OCR_TEXT;
+      delete process.env.FAKE_OCR_EXIT;
+    });
+
+    it.skipIf(process.platform === "win32")("counts a screenshot it could not read as a hit: no tesseract, or a failed read", () => {
+      const shots = shot();
+      process.env.PATH = join(dir, "empty");
+      expect(scanArtifacts([shots], ["x"]).hits).toEqual([`${join(shots, "1-form.png")}: unread (no tesseract)`]);
+      fakeTesseract();
+      process.env.FAKE_OCR_EXIT = "1";
+      expect(scanArtifacts([shots], ["x"]).hits).toEqual([`${join(shots, "1-form.png")}: unread (tesseract exit 1)`]);
+      process.env.FAKE_OCR_EXIT = "0";
+      process.env.FAKE_OCR_TEXT = "Pay QA B";
+      expect(scanArtifacts([shots], ["x"]).hits).toEqual([]);
+    });
+
+    it("tells a one-colour screenshot from one of more colours, whatever the row filters", () => {
+      expect(singleColourPng(png(9, 7, () => [30, 40, 50]))).toBe(true);
+      expect(singleColourPng(png(9, 7, (x, y) => (x === 4 && y === 6 ? [31, 40, 50] : [30, 40, 50])))).toBe(false);
+      expect(singleColourPng(png(9, 7, (x, y) => [x * 20, y * 30, 7]))).toBe(false);
+      expect(singleColourPng(Buffer.from("not really a png"))).toBe(false);
+    });
+
+    it.skipIf(process.platform === "win32")("counts a screenshot of more than one colour that OCR read no text from as a hit", () => {
+      const shots = shot();
+      fakeTesseract();
+      process.env.FAKE_OCR_TEXT = "";
+      const text = join(shots, "2-form.png");
+      writeFileSync(text, png(40, 20, (x, y) => ((x + y) % 7 === 0 ? [0, 0, 0] : [255, 255, 255])));
+      const blank = join(shots, "3-blank.png");
+      writeFileSync(blank, png(40, 20, () => [255, 255, 255]));
+      rmSync(join(shots, "1-form.png"));
+      expect(scanArtifacts([shots], ["not-in-any-file"]).hits).toEqual([`${text}: unread (tesseract read no text from a screenshot of more than one colour)`]);
+      process.env.FAKE_OCR_TEXT = "   ";
+      expect(scanArtifacts([shots], ["not-in-any-file"]).hits).toHaveLength(1);
+    });
+
+    it.skipIf(process.platform === "win32")("finds a known passphrase or phrase in a screenshot whatever its case and line breaks", () => {
+      const shots = shot();
+      fakeTesseract();
+      const pass = "Zq7xK2mPw9";
+      const hit = [`${join(shots, "1-form.png")}: known-secret (ocr)`];
+      for (const text of [`Passphrase ${pass}`, `passphrase\nzq7xk2\nmpw9`, "ZQ7XK2MPW9"]) {
+        process.env.FAKE_OCR_TEXT = text;
+        expect(scanArtifacts([shots], [pass]).hits, text).toEqual(hit);
+      }
+      // A base64url passphrase read with look-alikes swapped.
+      for (const text of ["k1O-x0Il", "Kl0_XOI1"]) {
+        process.env.FAKE_OCR_TEXT = text;
+        expect(scanArtifacts([shots], ["kIo_xOl1"]).hits, text).toEqual(hit);
+      }
+      process.env.FAKE_OCR_TEXT = "legal winner thank\nyear wave sausage";
+      expect(scanArtifacts([shots], ["legal winner thank year wave sausage"]).hits).toEqual(hit);
+    });
+
+    it.skipIf(process.platform === "win32")("finds a passphrase OCR misread: a brace for a J, a dropped or an extra character", () => {
+      const shots = shot();
+      fakeTesseract();
+      const pass = "kQ7JxW2mPa9R";
+      const hit = [`${join(shots, "1-form.png")}: known-secret (ocr)`];
+      for (const text of ["Passphrase: kQ7}xW2mPa9R", "Passphrase kQ7xW2mPa9R", "kQ7J xW2m.Pa9R)", "kQ7]xW2rnPa9R"]) {
+        process.env.FAKE_OCR_TEXT = text;
+        expect(scanArtifacts([shots], [pass]).hits, text).toEqual(hit);
+      }
+      process.env.FAKE_OCR_TEXT = "Pay QA B 0.0001 tDASH Confirm with your passphrase";
+      expect(scanArtifacts([shots], [pass]).hits).toEqual([]);
+    });
+  });
+
+  it("matches a secret of eight or more characters within max(2, 20%) edits, a shorter one only exactly", () => {
+    const near = (text: string, secret: string) => nearMatch(folded(text), folded(secret));
+    expect(near("abc kQ7}xW2mPa9R xyz", "kQ7JxW2mPa9R")).toBe(true);
+    expect(near("kQ7xW2mPa9", "kQ7JxW2mPa9R")).toBe(true);
+    expect(near("kQ7xW2mPa", "kQ7JxW2mPa9R")).toBe(false);
+    const long = "Aa3Bb4Cc5Dd6Ee7Ff8Gg9H";
+    expect(near("Aa3Bb4Cc5Dd6Ee7Ff8", long)).toBe(true);
+    expect(near("Aa3Bb4Cc5Dd6Ee7F", long)).toBe(false);
+    expect(near("Zq7xK2m", "Zq7xK2mP")).toBe(true);
+    expect(near("Zq7xK2", "Zq7xK2mP")).toBe(true);
+    expect(near("Zq7xK", "Zq7xK2mP")).toBe(false);
+    expect(near("Zq7xK2m", "Zq7xK2m")).toBe(true);
+    expect(near("Zq7xKm", "Zq7xK2m")).toBe(false);
+  });
+});
