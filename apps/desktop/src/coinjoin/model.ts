@@ -505,7 +505,7 @@ export const LEVELS: Level[] = [
       return t("coinjoin.level.intermediate.description");
     },
     get time() {
-      return t("coinjoin.level.intermediate.time");
+      return t("coinjoin.level.intermediate.time", { minutes: 30 });
     },
   },
   {

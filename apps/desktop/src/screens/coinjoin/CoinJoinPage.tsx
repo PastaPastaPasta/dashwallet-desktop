@@ -217,11 +217,11 @@ function SessionDetails({ status, network }: { status: CoinJoinStatus; network: 
           <span className="field-hint coinjoin-detail-note">{CoinJoinText.averageRounds(progress.averageRounds.toFixed(2), ar.rounds)}</span>
         </DetailRow>
         <DetailRow label={CoinJoinText.amountAndRounds} testId="coinjoin-detail-amount">
-          {shown(ar.amount)} / {CoinJoinText.roundsOf(ar.rounds)}
+          <bdi dir="ltr">{shown(ar.amount)}</bdi> / {CoinJoinText.roundsOf(ar.rounds)}
           {ar.insufficientInputs && <span className="field-hint coinjoin-detail-note">{CoinJoinText.notEnoughInputs}</span>}
         </DetailRow>
         <DetailRow label={CoinJoinText.submittedDenominations} testId="coinjoin-detail-denoms">
-          {status.submittedDenominations.length === 0 ? "—" : status.submittedDenominations.map(shown).join(", ")}
+          {status.submittedDenominations.length === 0 ? "—" : <bdi dir="ltr">{status.submittedDenominations.map(shown).join(", ")}</bdi>}
         </DetailRow>
         <DetailRow label={CoinJoinText.queueSize} testId="coinjoin-detail-queue">
           {status.queueSize}
