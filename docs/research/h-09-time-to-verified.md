@@ -118,7 +118,7 @@ first citation too. `00000033…` was asked once per fresh install, at
   `Skipped(UnknownBlock)`, which can depend on where the chain is in its DKG cycle; this sample covered about one
   hour of rotations (12 quorums) per run.
 - The longest offline gap before a restart was 20 minutes (r2). A restart after days offline (a stale tip several cycles
-  behind) was not measured.
+  behind) was not measured. A restart after days offline is still to be measured (1.0.x).
 - 30 s query cadence: first-verified times for fresh installs are rounded up to the next query after masternode
   sync.
 - Parallel clients on one host, at load 35–80: sync times are likely upper bounds for an idle desktop.
