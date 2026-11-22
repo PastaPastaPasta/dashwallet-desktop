@@ -1506,6 +1506,10 @@ fn beaten_beside_a_spend_of_a(shape: Beside) {
         "only the other payment"
     );
     assert!(abandoned(&engine, &session, id, other.txid()));
+    assert!(
+        !spendable(&engine, &session, id, a),
+        "A is not offered after the drop"
+    );
 
     let session = reopen(&engine, session);
     assert!(
