@@ -790,6 +790,79 @@ fn a_lock_arriving_before_the_claims_are_installed_keeps_a_locked_payments_claim
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
 }
 
+/// The same payment paid to another loaded wallet, its lock delivered
+/// once the claims are installed: the lock reaches only the recipient
+/// wallet, so the sender's history never sees it and A is credited and
+/// offered until the payment is mined.
+#[test]
+#[ignore = "a lock after the load reaches only the recipient wallet, see #245"]
+fn a_lock_arriving_after_the_load_keeps_a_locked_payments_claims() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let other = engine
+        .block_on(
+            session.import_wallet(
+                zeroize::Zeroizing::new(
+                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
+                        .to_vec(),
+                ),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(BIRTH),
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+    engine
+        .block_on(session.set_load_on_startup(other, true))
+        .unwrap();
+    let to = fresh_address(&engine, &session, other);
+    let broadcaster = Arc::new(Accept::default());
+    let draft = session.new_tx_draft(id).unwrap();
+    *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&broadcaster) as _);
+    draft
+        .set_recipients(vec![Recipient {
+            address: to.to_string(),
+            amount: 2 * COIN,
+            subtract_fee_from_amount: true,
+            label: None,
+            message: None,
+        }])
+        .unwrap();
+    draft.set_source(CoinSource::Outpoints(vec![a, b])).unwrap();
+    let grant = (session.vault())
+        .authorize(
+            GrantPurpose::Spend {
+                max_duffs: 3 * COIN,
+            },
+            Some(&id.0),
+            Credential::None,
+        )
+        .unwrap()
+        .id;
+    let prepared = engine.block_on(draft.prepare(grant)).unwrap();
+    engine.block_on(draft.broadcast(prepared)).unwrap();
+    let payment = broadcaster.0.lock().unwrap()[0].clone();
+    assert_eq!(payment.output.len(), 1, "no change");
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, 1);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    wait_stored(&session, id, &[winner.txid()]);
+    let session = reopen(&engine, session);
+
+    instant_lock(&engine, &session, id, &payment);
+    assert!(
+        (session.hub.history.get(&other, &payment.txid())).is_some_and(|e| e.instant_locked),
+        "the recipient wallet reads the payment locked"
+    );
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(!held(&engine, &session, id).contains(&a), "A stays claimed");
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+}
+
 /// Another device's spend of B that pays only someone else, in a block a
 /// wallet opened later sees before its claims are set: the history never
 /// holds it, only key-wallet's note of the spent coin. A plain block does
