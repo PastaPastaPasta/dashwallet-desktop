@@ -191,7 +191,7 @@ function PaneButtons({ contact: c, pane, locked }: { contact: ContactSummaryInfo
           {note}
         </p>
       )}
-      <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-pane-outcome" />
+      <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-pane-outcome" polite />
     </div>
   );
 }
@@ -266,7 +266,7 @@ function PrivateDetails({ walletId, contact: c, detail, actions }: { walletId: s
             {saving ? t("contacts.details.saving") : t("contacts.details.save")}
           </DashButton>
         </span>
-        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-details-outcome" />
+        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contact-details-outcome" polite />
       </form>
     </section>
   );

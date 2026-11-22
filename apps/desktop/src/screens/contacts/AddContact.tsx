@@ -250,7 +250,7 @@ function CandidateCard({ ctx, candidate: c }: { ctx: AddContext; candidate: Cand
           )
         )}
         {button && <span className="add-contact-actions">{button}</span>}
-        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="add-contact-outcome" />
+        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="add-contact-outcome" polite />
         <EnableFailure actions={actions} testId="add-contact-enable-outcome" />
       </div>
     </div>

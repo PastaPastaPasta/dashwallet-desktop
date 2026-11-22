@@ -396,7 +396,7 @@ function EnableDashPay({ banner, actions, onDone }: { banner: EnableBanner; acti
             ? t("contacts.enable.text")
             : t.rich("contacts.enable.textWithFee", { fee: banner.fee, amount: (text) => <span data-testid="contacts-enable-fee">{text}</span> })}
         </span>
-        <Outcome ok={outcome?.ok ?? true} text={outcome?.text ?? null} testId="contacts-enable-outcome" />
+        <Outcome ok={false} text={outcome?.text ?? null} testId="contacts-enable-outcome" />
       </span>
       <DashButton variant="tintedBlue" size="small" data-testid="contacts-enable" disabled={actions.busy} onClick={() => void actions.enable().then(onDone)}>
         {actions.isRunning("enable", null) ? t("contacts.enable.busy") : t("contacts.enable.button")}
