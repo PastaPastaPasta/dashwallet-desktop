@@ -14,7 +14,7 @@
 //! transactions, and `Other` for mixed debit transactions.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use dashcore::blockdata::transaction::special_transaction::TransactionPayload;
@@ -399,12 +399,17 @@ pub(crate) fn unmined_own_spends(
         true => chain_locked(&winner.context, chainlock),
         false => winner.context.block_info().is_some() || instant_locked(winner),
     };
+    let candidates: Vec<(&Txid, &BTreeSet<OutPoint>, &TxEntry)> = (sent.iter())
+        .filter_map(|(t, coins)| Some((t, coins, txs.get(t)?)))
+        .filter(|(_, _, e)| e.context.block_info().is_none() && !e.is_abandoned())
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
     let mut spenders: HashMap<OutPoint, Vec<(&Txid, &TxEntry)>> = HashMap::new();
-    if !sent.is_empty() {
-        for (w, we) in txs {
-            for i in &we.tx.input {
-                spenders.entry(i.previous_output).or_default().push((w, we));
-            }
+    for (w, we) in txs {
+        for i in &we.tx.input {
+            spenders.entry(i.previous_output).or_default().push((w, we));
         }
     }
     let beaten = |t: &Txid, e: &TxEntry| {
@@ -413,9 +418,8 @@ pub(crate) fn unmined_own_spends(
                 .is_some_and(|v| v.iter().any(|(w, we)| *w != t && beats(we, e)))
         })
     };
-    (sent.iter())
-        .filter_map(|(t, coins)| Some((t, coins, txs.get(t)?)))
-        .filter(|(t, _, e)| e.context.block_info().is_none() && !e.is_abandoned() && !beaten(t, e))
+    (candidates.into_iter())
+        .filter(|(t, _, e)| !beaten(t, e))
         .flat_map(|(t, coins, e)| {
             (e.tx.input.iter())
                 .map(|i| i.previous_output)
@@ -442,19 +446,23 @@ pub(crate) fn locked_claimants(
 }
 
 /// The payments this app sent that the history no longer holds or holds
-/// ChainLocked (by its context, or a block at or below `chainlock`): their
-/// marks can go. An abandoned or merely mined payment keeps its mark, as a
-/// later lock or reorg can make it live again.
+/// ChainLocked: their record says so, or its block is the one the wallet's
+/// own ChainLock `(height, hash)` names. Their marks can go. Every other
+/// payment keeps its mark, an abandoned or mined one too, even below the
+/// lock's height: a stored block a reorg replaced is not marked, and a
+/// later lock or reorg can make the payment live again.
 pub(crate) fn settled_sends(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
-    chainlock: Option<u32>,
+    chainlock: Option<(u32, dashcore::BlockHash)>,
 ) -> Vec<Txid> {
+    let final_block = |e: &TxEntry| {
+        matches!(e.context, TransactionContext::InChainLockedBlock(_))
+            || matches!((e.context.block_info(), chainlock),
+                (Some(b), Some((height, hash))) if b.height() == height && b.block_hash() == hash)
+    };
     (sent.keys())
-        .filter(|t| {
-            txs.get(*t)
-                .is_none_or(|e| chain_locked(&e.context, chainlock))
-        })
+        .filter(|t| txs.get(*t).is_none_or(final_block))
         .copied()
         .collect()
 }
@@ -2586,9 +2594,21 @@ mod tests {
         want.sort();
         assert_eq!(claims, want);
         assert!(claims.iter().all(|(_, t)| *t != beaten));
+        let zeros = BlockHash::all_zeros();
+        let other = BlockHash::from_byte_array([1; 32]);
         assert_eq!(settled_sends(&txs, &sent, None), vec![unstored]);
-        assert_eq!(settled_sends(&txs, &sent, Some(9)), vec![unstored]);
-        let mut settled = settled_sends(&txs, &sent, Some(10));
+        assert_eq!(settled_sends(&txs, &sent, Some((9, zeros))), vec![unstored]);
+        assert_eq!(
+            settled_sends(&txs, &sent, Some((10, other))),
+            vec![unstored],
+            "a ChainLock of another block at its height keeps the mark"
+        );
+        assert_eq!(
+            settled_sends(&txs, &sent, Some((11, zeros))),
+            vec![unstored],
+            "below the lock's height, with no ancestry known, the mark stays"
+        );
+        let mut settled = settled_sends(&txs, &sent, Some((10, zeros)));
         settled.sort();
         let mut want = vec![mined, unstored];
         want.sort();

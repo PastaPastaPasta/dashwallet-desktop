@@ -950,6 +950,54 @@ fn a_payment_mark_goes_at_the_load_after_it_is_chainlocked() {
     assert_eq!(sent_marks(&session, id), BTreeSet::from([pending.txid()]));
 }
 
+/// The wallet's own ChainLock at a mined payment's height names another
+/// block (a reorg replaced the payment's, and the store keeps no reorg):
+/// its mark stays.
+#[test]
+fn a_payment_mark_stays_when_the_chainlock_names_another_block() {
+    let (_dir, engine, session, id) = funded_wallet();
+    let payment = send(&engine, &session, id, CoinSource::Any, COIN, false);
+    mempool(&engine, &session, id, &payment);
+    mined(&engine, &session, id, TIP + 1, vec![payment.clone()]);
+    let other = super::block_with(vec![foreign()]).block_hash();
+    assert_ne!(other, super::block_with(vec![payment.clone()]).block_hash());
+    super::own_spend_disk_tests::chain_lock(&engine, &session, id, TIP + 1, other);
+
+    let session = reopen(&engine, session);
+    assert!(sent_marks(&session, id).contains(&payment.txid()));
+}
+
+/// Another wallet's ChainLock of a mined payment's own block, applied while
+/// the payment's wallet was closed: the wallet opened again in the session
+/// keeps the payment's mark, as its own ChainLock is the only evidence.
+#[test]
+fn a_chainlock_another_wallet_applied_keeps_a_payment_mark() {
+    let (_dir, engine, session, id) = funded_wallet();
+    let payment = send(&engine, &session, id, CoinSource::Any, COIN, false);
+    mempool(&engine, &session, id, &payment);
+    mined(&engine, &session, id, TIP + 1, vec![payment.clone()]);
+    let other = engine
+        .block_on(
+            session.import_wallet(
+                zeroize::Zeroizing::new(
+                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
+                        .to_vec(),
+                ),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(super::BIRTH),
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let block = super::block_with(vec![payment.clone()]).block_hash();
+    super::own_spend_disk_tests::chain_lock(&engine, &session, other, TIP + 1, block);
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert!(sent_marks(&session, id).contains(&payment.txid()));
+}
+
 /// #170 case 17 guard: a payment's mark names every coin it spends, all of
 /// them the wallet's.
 #[test]
