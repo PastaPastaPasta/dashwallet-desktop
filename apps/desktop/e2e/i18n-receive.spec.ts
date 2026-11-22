@@ -115,6 +115,15 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
       await expect(page.locator(".field-error")).toBeVisible();
     },
   },
+  "gap-limit": {
+    roots: ["page-receive"],
+    open: async (page, theme, lang) => {
+      await openReceive(page, theme, lang);
+      const problem = page.getByTestId("page-receive").getByRole("alert");
+      for (let i = 0; i < 25 && !(await problem.isVisible()); i++) await page.getByTestId("receive-new-address").click();
+      await expect(problem).toBeVisible();
+    },
+  },
   "qr-too-long": {
     roots: ["request-sheet"],
     panes: [SHEET],
@@ -152,3 +161,23 @@ for (const theme of THEMES)
         });
         expect(errors).toEqual([]);
       });
+
+async function copyLabels(page: Page) {
+  const sheet = page.getByTestId("request-sheet");
+  return sheet.locator(".copy-button").evaluateAll((els) => els.map((el) => [el.getAttribute("aria-label"), el.getAttribute("title")]));
+}
+
+test("the request sheet's copy actions are whole messages", async ({ page }) => {
+  await openReceive(page, "light", "en");
+  await createRequest(page, { label: "Invoice 104" });
+  expect(await copyLabels(page)).toEqual([
+    ["Copy payment link", "Copy payment link"],
+    ["Copy address", "Copy address"],
+  ]);
+  await openReceive(page, "light", "en-XA");
+  await createRequest(page, { label: "Invoice 104" });
+  for (const [label, title] of await copyLabels(page)) {
+    expect(label).toMatch(/^\u27e6[^\u27e7]*\u27e7$/);
+    expect(title).toBe(label);
+  }
+});

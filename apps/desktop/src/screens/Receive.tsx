@@ -358,10 +358,10 @@ function RequestSheet({ walletId, request: read, network, onClose }: { walletId:
       </div>
       <dl className="detail-list card-l1" data-testid="request-facts">
         <DetailRow label={t("receive.sheet.link")} testId="request-uri">
-          <CopyValue value={request.uri} label={t("receive.sheet.copyLink")} />
+          <CopyValue value={request.uri} action={t("receive.sheet.copyLink")} />
         </DetailRow>
         <DetailRow label={t("receive.sheet.address")} testId="request-address">
-          <CopyValue value={request.address} label={t("receive.sheet.copyAddress")} />
+          <CopyValue value={request.address} action={t("receive.copyAddress")} />
         </DetailRow>
         {request.amount !== null && (
           <DetailRow label={t("receive.sheet.amount")} testId="request-amount-value">
