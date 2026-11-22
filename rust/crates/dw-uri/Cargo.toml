@@ -10,7 +10,7 @@ description = "dash: URI parsing/writing (dash-qt exact and iOS superset), deep-
 [dependencies]
 # Same git source and revision that the platform pin (rust/Cargo.toml) pins, so the
 # workspace resolves one copy whether or not it declares the dependency.
-dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "1a39959f77c4b2713ff446ae2840f6272d07725f", default-features = false, features = ["secp-recovery"] }
+dashcore = { git = "https://github.com/PastaPastaPasta/rust-dashcore", rev = "13f3f27e711c9dadc1c8f99e316b8df250efa0fe", default-features = false, features = ["secp-recovery"] }
 dw-units = { path = "../dw-units" }
 zeroize = "1.8"
 # Module matrices only: the image/svg renderers stay off.
