@@ -76,6 +76,7 @@ pub struct TestSupportProbe;
 
 mod tools;
 mod tx_actions;
+mod wallet_read;
 mod wallets;
 
 pub use backup::{BackupFailure, BackupInfo, BackupPolicy};

@@ -5,6 +5,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { assertCaptureAllowed } from "./flow-secrets.ts";
 
 export const env = (name: string, fallback?: string): string => {
   const v = process.env[name] ?? fallback;
@@ -113,11 +114,37 @@ export class WebDriver {
   scriptAsync = <T>(script: string, args: unknown[] = []) => this.call<T>("POST", this.s("/execute/async"), { script, args });
 
   async screenshot(name: string) {
+    assertCaptureAllowed();
     const png = await this.call<string>("GET", this.s("/screenshot"));
     writeFileSync(join(this.out, `${name}.png`), Buffer.from(png, "base64"));
   }
 
   end = () => this.call<null>("DELETE", this.s(""));
+}
+
+// ------------------------------------------------------------------ secrets into the app
+
+/** Why `e` may not take a secret, or null: it must be an <input type="password"> with no reveal
+ * toggle in its form or dialog (a control naming it in aria-controls, marked data-reveal, or whose
+ * label, title or text says show, reveal, hide or unmask). Runs in the page (serialised), so it uses nothing from outside itself. */
+export function maskedFieldProblem(e: any): string | null {
+  if (!e) return "no such field";
+  if (String(e.tagName).toUpperCase() !== "INPUT" || e.type !== "password") return `not a masked field (${String(e.tagName).toLowerCase()}${e.type ? ` type=${e.type}` : ""})`;
+  const scopes = [e.form, e.closest && e.closest("[role=dialog], [role=alertdialog]"), e.parentElement].filter(Boolean);
+  const controls: any[] = scopes.flatMap((s: any) => Array.from(s.querySelectorAll("button, [role=button], [role=switch], input[type=checkbox]")));
+  const said = (c: any) => [c.getAttribute("aria-label"), c.getAttribute("title"), c.textContent, ...Array.from(c.labels || []).map((l: any) => l.textContent)].join(" ");
+  const reveals = (c: any) => c.hasAttribute("data-reveal") || (e.id && c.getAttribute("aria-controls") === e.id) || /\b(show|reveal|hide|unmask)\b/i.test(said(c));
+  return controls.some(reveals) ? "a reveal toggle beside it" : null;
+}
+
+/** The one way a flow types a secret (H-04 O4a): only into a masked field, checked first, so no
+ * screenshot can show it whatever OCR makes of it. `prefix` (keys such as select-all and delete)
+ * goes before it. Throws, typing nothing, when the field is not masked. */
+export async function fillSecret(wd: WebDriver, css: string, value: string, prefix = ""): Promise<void> {
+  const el = await wd.waitFor(css);
+  const problem = await wd.script<string | null>(`return (${maskedFieldProblem.toString()})(document.querySelector(arguments[0]))`, [css]);
+  if (problem) throw new Error(`refusing to type a secret into ${css}: ${problem}`);
+  await wd.type(el, `${prefix}${value}`);
 }
 
 // ------------------------------------------------------------------ tauri-driver and dwcli
@@ -126,26 +153,37 @@ export class WebDriver {
  * logging to `out`, in its own process group so `stopDriver` ends the driver, WebKitWebDriver and
  * the app, and waits until it listens; `spawned` gets the child at once, so a signal while it
  * starts can still stop it. */
+export function spawnDriver(port: number, out: string, nativePort = port + 1): ChildProcess {
+  // A file, not a pipe: the app logs through the driver, and `spawnSync` (dwcli) blocks the event
+  // loop that would drain a pipe, so a full one would stop the app.
+  const log = openSync(join(out, "tauri-driver.log"), "w");
+  const driver = spawn(DRIVER, ["--port", String(port), "--native-port", String(nativePort)], { stdio: ["ignore", log, log], detached: true });
+  closeSync(log);
+  return driver;
+}
+
+/** Waits until tauri-driver on `port` answers `GET /status`. */
+export async function driverReady(port: number): Promise<string> {
+  const base = `http://127.0.0.1:${port}`;
+  const until = Date.now() + 30_000;
+  await poll(30_000, "tauri-driver to answer", () =>
+    fetch(`${base}/status`, { signal: AbortSignal.timeout(Math.max(1, until - Date.now())) }).then(
+      (r) => (r.ok ? true : undefined),
+      () => undefined,
+    ),
+  );
+  return base;
+}
+
 export async function startDriver(
   port: number,
   out: string,
   spawned?: (driver: ChildProcess) => void,
   nativePort = port + 1,
 ): Promise<{ driver: ChildProcess; base: string }> {
-  // A file, not a pipe: the app logs through the driver, and `spawnSync` (dwcli) blocks the event
-  // loop that would drain a pipe, so a full one would stop the app.
-  const log = openSync(join(out, "tauri-driver.log"), "w");
-  const driver = spawn(DRIVER, ["--port", String(port), "--native-port", String(nativePort)], { stdio: ["ignore", log, log], detached: true });
-  closeSync(log);
+  const driver = spawnDriver(port, out, nativePort);
   spawned?.(driver);
-  const base = `http://127.0.0.1:${port}`;
-  await poll(30_000, "tauri-driver to listen", () =>
-    fetch(`${base}/status`).then(
-      (r) => (r.ok ? true : undefined),
-      () => undefined,
-    ),
-  );
-  return { driver, base };
+  return { driver, base: await driverReady(port) };
 }
 
 /** Ends the driver's process group: tauri-driver, WebKitWebDriver and the app. Gone already is fine. */

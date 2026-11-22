@@ -15,6 +15,7 @@ import {
   contactConfirmActions,
   PAY_CHECKING,
   PAY_INCOMPLETE,
+  PAY_INCOMPLETE_CONTACT,
   reviewBlockedReason,
   confirmedOf,
   credentialPrompt,
@@ -382,5 +383,13 @@ describe("why a payment cannot be reviewed yet (P15)", () => {
   it("falls back to incomplete or still being checked", () => {
     expect(reviewBlockedReason(false, [null, undefined, ""], false)).toBe(PAY_INCOMPLETE);
     expect(reviewBlockedReason(false, [null], true)).toBe(PAY_CHECKING);
+  });
+
+  it("asks the contact form only for an amount, and the address form for both", () => {
+    expect(PAY_INCOMPLETE_CONTACT).toBe("Enter an amount first.");
+    expect(PAY_INCOMPLETE).toBe("Enter an address and an amount first.");
+    expect(reviewBlockedReason(false, [null], false, "contact")).toBe(PAY_INCOMPLETE_CONTACT);
+    expect(reviewBlockedReason(false, [null], false, "address")).toBe(PAY_INCOMPLETE);
+    expect(reviewBlockedReason(false, [null], true, "contact")).toBe(PAY_CHECKING);
   });
 });

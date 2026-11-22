@@ -6,6 +6,7 @@ import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo"
 import type { UserHit } from "../../api/generated/UserHit";
 import { Chip, DashButton } from "../../components/basics";
 import { avatarLetters, initials, moveFocus, relationTitle, rowChips, rowNote, shownName, subtitle, type Group, type RowChip } from "../../contacts/model";
+import { useT } from "../../i18n";
 import { Avatar } from "./Avatar";
 
 /** A row's chips, each with what it means as its tooltip. */
@@ -38,7 +39,11 @@ export function Row({
         <Avatar letters={letters} identity={identity} />
         <span className="contact-row-text tx-row-text">
           <span className="contact-row-name tx-row-title">{name}</span>
-          {sub && <span className="contact-row-username">{sub}</span>}
+          {sub && (
+            <span className="contact-row-username">
+              <bdi>{sub}</bdi>
+            </span>
+          )}
         </span>
         <span className="contact-row-trailing">{trailing}</span>
       </button>
@@ -153,28 +158,29 @@ export function NetworkResults({
   onPick: (hit: UserHit) => void;
   onMore: () => void;
 }) {
+  const t = useT();
   const titleId = useId();
   return (
     <section className="tx-group card-l1" aria-labelledby={titleId} aria-busy={state === "loading"} data-testid="contacts-network">
       <h2 className="contacts-group-title" id={titleId}>
-        Others on DashPay
+        {t("contacts.network.title")}
       </h2>
       {state === "loading" && (
         <p className="contacts-network-note" role="status">
-          Searching…
+          {t("contacts.searching")}
         </p>
       )}
       {state === "error" && (
         <p className="contacts-network-note" role="alert" data-testid="contacts-network-error">
-          Could not search the Dash network.{" "}
+          {t("contacts.searchFailed")}{" "}
           <DashButton variant="plainBlue" size="small" onClick={onRetry}>
-            Try again
+            {t("contacts.tryAgain")}
           </DashButton>
         </p>
       )}
       {state === "done" && shown.length === 0 && (
         <p className="contacts-network-note" data-testid="contacts-network-none">
-          No usernames found
+          {t("contacts.noUsernames")}
         </p>
       )}
       {state === "done" && shown.length > 0 && (
@@ -191,7 +197,7 @@ export function NetworkResults({
                 trailing={
                   <>
                     {h.relation !== "stranger" && <span className="contact-row-note">{relationTitle(h.relation)}</span>}
-                    {h.unverified && <Chip tone="warning">Unverified</Chip>}
+                    {h.unverified && <Chip tone="warning">{t("contacts.unverified")}</Chip>}
                   </>
                 }
                 data-testid="network-row"
@@ -204,7 +210,7 @@ export function NetworkResults({
       )}
       {state === "done" && more && (
         <DashButton variant="plainBlue" size="small" className="contacts-more" data-testid="contacts-network-more" onClick={onMore}>
-          Show more results
+          {t("contacts.network.more")}
         </DashButton>
       )}
     </section>

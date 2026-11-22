@@ -44,7 +44,8 @@ unrecordedSpends: Array<UnrecordedSpend>,
  */
 syncedIndex: number | null,
 /**
- * Unix seconds of the last completed sync pass.
+ * When the pool was last scanned, or last proved unchanged with nothing
+ * to scan. Unix seconds, this session.
  */
 lastSyncAt: number | null, syncing: boolean,
 /**

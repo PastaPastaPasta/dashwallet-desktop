@@ -30,7 +30,7 @@ export type At<T, K extends string> = K extends `${infer H}.${infer R}` ? (H ext
 
 type Placeholders<S> = S extends `${string}{${infer P}}${infer R}` ? P | Placeholders<R> : never;
 type Tags<S> = S extends `${string}<${infer T}>${infer R}` ? (T extends `/${string}` ? Tags<R> : T | Tags<R>) : never;
-type Texts<M> = M extends string ? M : M extends Plural ? NonNullable<M[keyof Plural]> : never;
+type Texts<M> = M extends string ? M : M extends Plural ? NonNullable<M[keyof M & keyof Plural]> : never;
 
 /** The named placeholders a message takes; a plural also takes `count`. */
 export type ParamNames<M> = Placeholders<Texts<M>> | (M extends Plural ? "count" : never);
@@ -40,8 +40,9 @@ export type TagNames<M> = Tags<Texts<M>>;
 export type Params<M, V> = { [P in ParamNames<M>]: P extends "count" ? (M extends Plural ? number : V) : V };
 
 /** Another language's catalog: any of English's keys, no other (an extra or mistyped key fails
- * `tsc`); a missing key falls back to English. */
-export type Catalog<T> = { readonly [K in keyof T]?: T[K] extends string ? string : T[K] extends Plural ? Plural : Catalog<T[K]> };
+ * `tsc`, and an area English has no messages in yet takes none); a missing key falls back to
+ * English. */
+export type Catalog<T> = { readonly [K in keyof T]?: T[K] extends string ? string : T[K] extends Plural ? Plural : [keyof T[K]] extends [never] ? never : Catalog<T[K]> };
 
 /** Every message of `tree` by its dotted key. */
 export function flatten(tree: Tree, prefix = "", into = new Map<string, Message>()): Map<string, Message> {
@@ -86,11 +87,20 @@ export function tokenize(message: string): Token[] {
 
 /** How placeholders are filled: numbers formatted for `locale`; with `isolate` (a right-to-left
  * language) each value is a bidi isolate (U+2068 … U+2069), so a name or an address keeps its own
- * direction inside the sentence. */
+ * direction inside the sentence. In a left-to-right language only a value with right-to-left
+ * letters or a bidi control is isolated, so English text stays as it was. */
 export interface Fill {
   locale: string | undefined;
   isolate: boolean;
 }
+
+/** Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan, Mandaic, the right-to-left scripts of the
+ * supplementary planes and their presentation forms, the right-to-left mark, and every bidi
+ * embedding, override and isolate control, so a value carrying an unterminated one cannot reorder
+ * the rest of the sentence. */
+const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFE\u200F\u202A-\u202E\u2066-\u2069]|\uD802[\uDC00-\uDFFF]|\uD803[\uDC00-\uDFFF]|\uD83A[\uDC00-\uDFFF]|\uD83B[\uDC00-\uDEFF]/;
+
+export const hasRtl = (text: string) => RTL.test(text);
 
 /** `message` with its placeholders filled. Tags are dropped, their text kept. */
 export function fill(message: string, values: Values, how: Fill): string {
@@ -101,7 +111,39 @@ export function fill(message: string, values: Values, how: Fill): string {
 
 export function show(value: unknown, { locale, isolate }: Fill): string {
   const text = typeof value === "number" ? new Intl.NumberFormat(locale).format(value) : String(value ?? "");
-  return isolate ? `\u2068${text}\u2069` : text;
+  return isolate || hasRtl(text) ? isolated(text) : text;
+}
+
+/** A bidi paragraph separator: an isolate cannot span one. */
+const PARAGRAPH = /(\r\n|[\n\r\x1C-\x1E\x85\u2029])/;
+
+/** `text` with `close` before and `open` after each paragraph separator, so an isolate opened
+ * around it is closed at the end of each paragraph and opened again in the next. */
+export const acrossParagraphs = (text: string, open: string, close: string) =>
+  text
+    .split(PARAGRAPH)
+    .map((part, i) => (i % 2 ? `${close}${part}${open}` : part))
+    .join("");
+
+/** `text` with each of its paragraphs isolated on its own, so no control in a later paragraph can
+ * reach the text after it. */
+function isolated(text: string): string {
+  return text
+    .split(PARAGRAPH)
+    .map((part, i) => (i % 2 ? part : `\u2068${balanced(part)}\u2069`))
+    .join("");
+}
+
+/** `text` with its isolates paired, so a stray U+2069 cannot close the isolate around it and an
+ * unclosed U+2066–U+2068 cannot carry on past it. */
+function balanced(text: string): string {
+  let open = 0;
+  let unopened = 0;
+  for (const c of text) {
+    if (c >= "\u2066" && c <= "\u2068") open++;
+    else if (c === "\u2069") open > 0 ? open-- : unopened++;
+  }
+  return "\u2068".repeat(unopened) + text + "\u2069".repeat(open);
 }
 
 /** Wraps a tag's children with the renderer given for it: an own property of `values` that is a
@@ -113,15 +155,17 @@ export function renderTag<N>(values: Values, tag: string, children: (N | string)
 }
 
 /** A rich-text message as a tree: text, filled placeholders, and each tag's children handed to
- * its renderer. Generic over the node type so it stays free of React. */
-export function build<N>(message: string, values: Values, how: Fill, wrap: (tag: string, children: (N | string)[]) => N): (N | string)[] {
+ * its renderer. An element given for a placeholder goes through `isolateNode` in every language
+ * (its text, unlike a string's, is not known here), so it keeps its own direction. Generic over the node type so it
+ * stays free of React. */
+export function build<N>(message: string, values: Values, how: Fill, wrap: (tag: string, children: (N | string)[]) => N, isolateNode: (node: N) => N = (n) => n): (N | string)[] {
   const stack: { tag: string; children: (N | string)[] }[] = [{ tag: "", children: [] }];
   for (const t of tokenize(message)) {
     const top = stack[stack.length - 1];
     if (t.kind === "text") top.children.push(t.text);
     else if (t.kind === "param") {
       const v = own(values, t.name);
-      top.children.push(typeof v === "string" || typeof v === "number" || v === undefined || v === null ? show(v, how) : (v as N));
+      top.children.push(typeof v === "string" || typeof v === "number" || v === undefined || v === null ? show(v, how) : isolateNode(v as N));
     } else if (t.kind === "open") stack.push({ tag: t.tag, children: [] });
     else if (stack.length > 1 && top.tag === t.tag) {
       stack.pop();

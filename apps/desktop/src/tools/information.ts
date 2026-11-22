@@ -9,10 +9,10 @@ import type { NodeSummary } from "../api/generated/NodeSummary";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { NodeWarning } from "../api/generated/NodeWarning";
 import type { WarningCodeName } from "../api/generated/WarningCodeName";
+import { messageTable, t } from "../i18n";
 import { failureText, Model } from "../onboarding/model";
 
 export const NONE = "—";
-export const REQUIRES_FULL_NODE = "Requires full-node data source";
 
 export interface InfoRow {
   title: string;
@@ -21,18 +21,19 @@ export interface InfoRow {
 }
 
 export interface InfoSection {
+  id: string;
   title: string;
   rows: InfoRow[];
 }
 
 /** QT-040's banner texts. */
-export const WARNING_TEXT: Record<WarningCodeName, string> = {
-  prereleaseBuild: "This is a pre-release test build - use at your own risk - do not use for mining or merchant applications",
-  uncleanShutdown: "The wallet was not shut down cleanly last time. It is checking its data.",
-  syncStalled: "Sync has not made progress for a while. Try changing peers.",
-  clockSkew: "Please check that your computer's date and time are correct! If your clock is wrong, Dash Wallet will not work properly.",
-  platformContextUnavailable: "Dash Platform data cannot be verified right now.",
-};
+export const WARNING_TEXT: Readonly<Record<WarningCodeName, string>> = messageTable("tools.information.warnings", [
+  "prereleaseBuild",
+  "uncleanShutdown",
+  "syncStalled",
+  "clockSkew",
+  "platformContextUnavailable",
+]);
 
 /** Most severe first: data being checked, then a clock that breaks everything, then sync. */
 const SEVERITY: WarningCodeName[] = ["uncleanShutdown", "clockSkew", "syncStalled", "platformContextUnavailable", "prereleaseBuild"];
@@ -70,55 +71,68 @@ export function dateText(secs: number, timeZone?: string): string {
 /** dash-qt `formatBytes`-style megabytes with one decimal. */
 export const megabytes = (bytes: number) => `${(bytes / 1_000_000).toFixed(1)} MB`;
 
-const counts = (c: MasternodeCounts | null) => (c ? `Total: ${c.total} (Enabled: ${c.enabled})` : NONE);
+const counts = (c: MasternodeCounts | null) =>
+  c ? t("tools.information.masternodeCounts", { total: String(c.total), enabled: String(c.enabled) }) : NONE;
 
 export function informationSections(launch: LaunchInfo, info: NodeSummary, timeZone?: string): InfoSection[] {
   const fullNode = (value: number | null, show: (v: number) => string): string | [string, string] =>
-    value === null ? [NONE, REQUIRES_FULL_NODE] : show(value);
+    value === null ? [NONE, t("tools.information.requiresFullNode")] : show(value);
   const row = (title: string, value: string | [string, string]): InfoRow =>
     typeof value === "string" ? { title, value } : { title, value: value[0], note: value[1] };
   const lock = info.bestChainlock;
   return [
     {
-      title: "General",
+      id: "general",
+      title: t("tools.information.sections.general"),
       rows: [
-        row("Client version", launch.appVersion),
-        row("Engine version", launch.engineVersion),
-        row("User Agent", info.userAgent),
-        row("Datadir", info.dataDir),
-        row("Startup time", dateText(info.startupTime, timeZone)),
+        row(t("tools.information.rows.clientVersion"), launch.appVersion),
+        row(t("tools.information.rows.engineVersion"), launch.engineVersion),
+        row(t("tools.information.rows.userAgent"), info.userAgent),
+        row(t("tools.information.rows.dataDir"), info.dataDir),
+        row(t("tools.information.rows.startupTime"), dateText(info.startupTime, timeZone)),
       ],
     },
     {
-      title: "Network",
+      id: "network",
+      title: t("tools.information.sections.network"),
       rows: [
-        row("Name", networkName(info.network)),
-        row("Number of connections", `${info.connectionsIn + info.connectionsOut} (In: ${info.connectionsIn} / Out: ${info.connectionsOut})`),
-        row("Local Addresses", info.localAddresses.length ? info.localAddresses.join(", ") : NONE),
-      ],
-    },
-    {
-      title: "Block chain",
-      rows: [
-        row("Current block height", info.tipHeight === null ? NONE : String(info.tipHeight)),
-        row("Last block time", info.tipTime === null ? NONE : dateText(info.tipTime, timeZone)),
-        row("Last block hash", info.tipHash ?? NONE),
-      ],
-    },
-    {
-      title: "Memory Pool",
-      rows: [
-        row("Current number of transactions", fullNode(info.mempoolTxCount, String)),
-        row("Memory usage", fullNode(info.mempoolUsageBytes, megabytes)),
-      ],
-    },
-    {
-      title: "Masternodes",
-      rows: [
-        row("Masternodes", counts(info.masternodes)),
-        row("EvoNodes", counts(info.evonodes)),
+        row(t("tools.information.rows.networkName"), networkName(info.network)),
         row(
-          "ChainLocks",
+          t("tools.information.rows.connections"),
+          t("tools.information.connectionsValue", {
+            total: String(info.connectionsIn + info.connectionsOut),
+            inCount: String(info.connectionsIn),
+            outCount: String(info.connectionsOut),
+          }),
+        ),
+        row(t("tools.information.rows.localAddresses"), info.localAddresses.length ? info.localAddresses.join(", ") : NONE),
+      ],
+    },
+    {
+      id: "block-chain",
+      title: t("tools.information.sections.blockChain"),
+      rows: [
+        row(t("tools.information.rows.blockHeight"), info.tipHeight === null ? NONE : String(info.tipHeight)),
+        row(t("tools.information.rows.lastBlockTime"), info.tipTime === null ? NONE : dateText(info.tipTime, timeZone)),
+        row(t("tools.information.rows.lastBlockHash"), info.tipHash ?? NONE),
+      ],
+    },
+    {
+      id: "memory-pool",
+      title: t("tools.information.sections.memoryPool"),
+      rows: [
+        row(t("tools.information.rows.mempoolTxCount"), fullNode(info.mempoolTxCount, String)),
+        row(t("tools.information.rows.mempoolUsage"), fullNode(info.mempoolUsageBytes, megabytes)),
+      ],
+    },
+    {
+      id: "masternodes",
+      title: t("tools.information.sections.masternodes"),
+      rows: [
+        row(t("tools.information.rows.masternodes"), counts(info.masternodes)),
+        row(t("tools.information.rows.evonodes"), counts(info.evonodes)),
+        row(
+          t("tools.information.rows.chainLocks"),
           lock ? [String(lock.height), lock.blockTime === null ? null : dateText(lock.blockTime, timeZone), lock.blockHash].filter((x) => x !== null).join(", ") : NONE,
         ),
       ],
@@ -153,7 +167,7 @@ export class InformationModel extends Model {
       this.error = null;
     } catch (e) {
       if (seq !== this.#seq) return;
-      this.error = `The node information could not be read: ${failureText(e)}`;
+      this.error = t("tools.information.loadFailed", { error: failureText(e) });
     }
     this.changed();
   }

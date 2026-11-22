@@ -39,19 +39,19 @@ function ConfirmStep({ flow, walletId, credits, amount, block }: { flow: Platfor
           <div className="detail-row">
             <dt className="detail-label">{C.rows.taken}</dt>
             <dd className="detail-value" data-testid="platform-move-quote-credits">
-              {credits(plannedWithdrawalCredits(q))}
+              <bdi dir="ltr">{credits(plannedWithdrawalCredits(q))}</bdi>
             </dd>
           </div>
           <div className="detail-row">
             <dt className="detail-label">{C.rows.fee}</dt>
             <dd className="detail-value" data-testid="platform-move-quote-fee">
-              {credits(q.feeCredits)}
+              <bdi dir="ltr">{credits(q.feeCredits)}</bdi>
             </dd>
           </div>
           <div className="detail-row topup-total">
             <dt className="detail-label">{C.rows.receive}</dt>
             <dd className="detail-value" data-testid="platform-move-quote-duffs">
-              {amount(q.expectedDuffs)}
+              <bdi dir="ltr">{amount(q.expectedDuffs)}</bdi>
             </dd>
           </div>
           <div className="detail-row">

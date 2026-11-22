@@ -10,9 +10,9 @@ import type { AuthGrant } from "../api/generated/AuthGrant";
 import type { GrantAction } from "../api/generated/GrantAction";
 import type { PrivateContactDetails } from "../api/generated/PrivateContactDetails";
 import type { PublishStateName } from "../api/generated/PublishStateName";
+import { t } from "../i18n";
 import { Model } from "../onboarding/model";
-import { eligibilityLine, SCAN_EXPIRED } from "./add";
-import { ENABLE_FIRST } from "./pane";
+import { AddText, eligibilityLine } from "./add";
 import type { GrantModel } from "../tools/grant";
 
 export type ActionApi = Pick<
@@ -40,17 +40,17 @@ export type Refresh = "contacts" | "identities" | "search";
 export function actionError(e: unknown): string {
   if (hasCode(e, "contact.ineligible") && e.data?.kind === "ineligible" && e.data.reason !== "noDashPayKeys")
     return eligibilityLine(e.data.reason).text ?? e.message;
-  if (hasCode(e, "contact.request_pending")) return "A contact request to this user is already being sent.";
-  if (hasCode(e, "contact.scan_expired")) return SCAN_EXPIRED;
-  if (hasCode(e, "contact.self")) return "This is you.";
+  if (hasCode(e, "contact.request_pending")) return t("contacts.errors.requestPending");
+  if (hasCode(e, "contact.scan_expired")) return AddText.scanExpired;
+  if (hasCode(e, "contact.self")) return t("contacts.errors.self");
   // A scanned code's sender confirms only once Platform's context is trusted (requests.rs).
-  if (hasCode(e, "platform.context_unavailable")) return "You can send this request once the wallet has synced.";
-  if (hasCode(e, "platform.insufficient_credits")) return "Not enough credits. Top up your credits and try again.";
-  if (hasCode(e, "contact.ineligible")) return ENABLE_FIRST;
-  if (hasCode(e, "contact.already_contact")) return "You are already contacts.";
-  if (hasCode(e, "contact.details_too_long")) return "The alias and note are too long.";
-  if (hasCode(e, "platform.unavailable") || hasCode(e, "platform.timeout")) return "Could not reach Dash Platform. Try again.";
-  if (hasCode(e, "vault.locked") || hasCode(e, "platform.signer_unavailable")) return "Unlock the wallet and try again.";
+  if (hasCode(e, "platform.context_unavailable")) return t("contacts.errors.notSynced");
+  if (hasCode(e, "platform.insufficient_credits")) return t("contacts.errors.credits");
+  if (hasCode(e, "contact.ineligible")) return t("contacts.pane.enableFirst");
+  if (hasCode(e, "contact.already_contact")) return t("contacts.errors.alreadyContact");
+  if (hasCode(e, "contact.details_too_long")) return t("contacts.errors.detailsTooLong");
+  if (hasCode(e, "platform.unavailable") || hasCode(e, "platform.timeout")) return t("contacts.errors.platform");
+  if (hasCode(e, "vault.locked") || hasCode(e, "platform.signer_unavailable")) return t("contacts.errors.locked");
   return isAppError(e) || e instanceof Error ? e.message : String(e);
 }
 
@@ -58,11 +58,11 @@ export function actionError(e: unknown): string {
 export function publishText(state: PublishStateName): string {
   switch (state) {
     case "published":
-      return "Saved";
+      return t("contacts.details.published");
     case "deferredUntilTwoContacts":
-      return "Saved. It is published once you have two contacts.";
+      return t("contacts.details.deferred");
     case "local":
-      return "Saved on this device.";
+      return t("contacts.details.local");
   }
 }
 
@@ -98,7 +98,7 @@ export class ContactActions extends Model {
     return this.#run("send", contact, ["contacts", "search"], async () => {
       const done = await this.#withPlatformGrant({ kind: "sendRequest" }, (grant) => this.api.dashpaySendRequest(this.walletId, this.identity, contact, scan, grant.id));
       if (!done) return null;
-      return done.kind === "established" ? { text: `You and ${name} are now contacts.`, established: true } : `Contact request sent to ${name}.`;
+      return done.kind === "established" ? { text: t("contacts.actions.established", { name }), established: true } : t("contacts.actions.sent", { name });
     });
   }
 
@@ -106,7 +106,7 @@ export class ContactActions extends Model {
    * contacts (another surface or device accepted first) is what was asked for. */
   accept(contact: string, name: string): Promise<ActionOutcome | null> {
     return this.#run("accept", contact, ["contacts"], async () => {
-      const text = `You and ${name} are now contacts.`;
+      const text = t("contacts.actions.established", { name });
       try {
         const done = await this.#withPlatformGrant({ kind: "acceptRequest" }, (grant) => this.api.dashpayAcceptRequest(this.walletId, this.identity, contact, grant.id));
         return done ? text : null;
@@ -121,7 +121,7 @@ export class ContactActions extends Model {
   ignore(contact: string): Promise<ActionOutcome | null> {
     return this.#run("ignore", contact, ["contacts"], async () => {
       await this.api.dashpayIgnoreContact(this.walletId, this.identity, contact);
-      return "Request ignored. You can find it under Hidden.";
+      return t("contacts.actions.ignored");
     });
   }
 
@@ -129,7 +129,7 @@ export class ContactActions extends Model {
   unignore(contact: string): Promise<ActionOutcome | null> {
     return this.#run("unignore", contact, ["contacts", "search"], async () => {
       await this.api.dashpayUnignoreContact(this.walletId, this.identity, contact);
-      return "The request is back in Contact Requests.";
+      return t("contacts.actions.unignored");
     });
   }
 
@@ -160,7 +160,7 @@ export class ContactActions extends Model {
         }
         return true;
       });
-      return done ? "DashPay is enabled." : null;
+      return done ? t("contacts.enable.done") : null;
     });
   }
 

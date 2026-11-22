@@ -80,7 +80,7 @@ test("PAY-6 a username that is no contact finds the user, who gets a contact req
   await expect(page.getByTestId("pay-found-send")).toHaveCount(0);
   await page.evaluate(() => window.__dwFixture!.fail("dashpay_eligibility", null));
   await expect(page.getByTestId("pay-found-status")).toBeFocused();
-  await expect(page.getByTestId("pay-found-outcome")).toHaveCount(0);
+  await expect(page.getByTestId("pay-found-outcome")).toBeEmpty();
   // Change goes back to the search as it was, focused; Marta is still found, as a request sent.
   await page.getByTestId("pay-found-back").click();
   await expect(searchField(page)).toHaveValue("mar");

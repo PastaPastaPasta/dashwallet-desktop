@@ -9,10 +9,12 @@ import { DashButton, ExperimentalBadge, Icon } from "../../components/basics";
 import { QuestionSheet } from "../../components/sheet";
 import { announcement, CoinJoinText, type CoinJoinView, type ViewActionKind } from "../../coinjoin/model";
 import { useCoinJoinView, useDismissedStop, useMixingAction } from "../../coinjoin/queries";
+import { useT } from "../../i18n";
 
 /** What the view's button does, the stop confirmation it may open (D8), and the call's busy state
  * and failure (D9). */
 export function useViewAction(walletId: string, network: NetworkInfo, retry: () => void) {
+  useT();
   const mixing = useMixingAction(walletId, network);
   const [confirming, setConfirming] = useState(false);
   const press = (kind: ViewActionKind) => {
@@ -44,6 +46,7 @@ export function useViewAction(walletId: string, network: NetworkInfo, retry: () 
 /** The view's percent bar, "X of Y" and status line; the card and the page show the same. The
  * live region says only the state and a stop's reason (`announcement`). */
 export function ViewFacts({ view, testId }: { view: CoinJoinView; testId: string }) {
+  const t = useT();
   return (
     <>
       <p className="sr-only" role="status">
@@ -51,7 +54,7 @@ export function ViewFacts({ view, testId }: { view: CoinJoinView; testId: string
       </p>
       {view.percent !== null && (
         <div className="coinjoin-progress-row">
-          <progress className="coinjoin-progress" max={100} value={view.percent} aria-label="Mixing progress" />
+          <progress className="coinjoin-progress" max={100} value={view.percent} aria-label={t("coinjoin.mixingProgress")} />
           <span data-testid={`${testId}-percent`}>{view.percent}%</span>
         </div>
       )}

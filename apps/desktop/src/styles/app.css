@@ -2438,6 +2438,10 @@ input[type="radio"]:disabled {
   justify-content: flex-end;
 }
 
+.requests .row-actions {
+  white-space: normal;
+}
+
 /* Scanners need dark modules on a light ground: the code keeps it in dark appearance too. */
 .qr {
   display: block;
@@ -2847,6 +2851,11 @@ input[type="radio"]:disabled {
 
 .form-ok {
   color: var(--dw-role-success-text);
+}
+
+.outcome:empty {
+  position: absolute;
+  margin: 0;
 }
 
 .onboarding-warning,

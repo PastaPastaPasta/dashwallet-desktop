@@ -3,14 +3,10 @@
 // window onboarding uses, so it reads as the first step.
 
 import { DashButton, DashLogo } from "../components/basics";
-
-export const PreReleaseText = {
-  title: "Dash Wallet is an early release",
-  body: "It has had no security review; use small amounts.",
-  dismiss: "I understand",
-};
+import { useT } from "../i18n";
 
 export function PreReleaseNotice({ onDismiss }: { onDismiss: () => void }) {
+  const t = useT();
   return (
     <div className="onboarding pre-release" role="alertdialog" aria-modal="true" aria-labelledby="pre-release-title" aria-describedby="pre-release-body" data-testid="pre-release-notice">
       <div className="onboarding-panel">
@@ -23,13 +19,13 @@ export function PreReleaseNotice({ onDismiss }: { onDismiss: () => void }) {
         </header>
         <main className="onboarding-body">
           <h1 className="onboarding-title" id="pre-release-title">
-            {PreReleaseText.title}
+            {t("onboarding.preRelease.title")}
           </h1>
           <p className="onboarding-text" id="pre-release-body">
-            {PreReleaseText.body}
+            {t("onboarding.preRelease.body")}
           </p>
           <DashButton variant="filledBlue" size="large" fill autoFocus data-testid="pre-release-dismiss" onClick={onDismiss}>
-            {PreReleaseText.dismiss}
+            {t("onboarding.preRelease.dismiss")}
           </DashButton>
         </main>
       </div>

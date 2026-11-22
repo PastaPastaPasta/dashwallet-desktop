@@ -146,6 +146,12 @@ pub(crate) static FAIL_COINJOIN_USE_READ: std::sync::Mutex<Vec<[u8; 32]>> =
 pub(crate) static FAIL_RANGES_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Tests: data dirs whose next attach sees SPV reach its replay's target
+/// before it publishes the replay.
+#[cfg(test)]
+pub(crate) static REACH_BEFORE_PUBLISH_IN: std::sync::Mutex<Vec<std::path::PathBuf>> =
+    std::sync::Mutex::new(Vec::new());
+
 /// Tests: wallets whose stored range and lookahead cannot be read.
 #[cfg(test)]
 pub(crate) static FAIL_RESTORE_READ: std::sync::Mutex<Vec<[u8; 32]>> =
@@ -1156,6 +1162,29 @@ impl NetworkSession {
                     && ranges.is_ok()
                 {
                     self.set_wide_scan(wallet_id, Some(WideScan::Done)).await;
+                }
+                // The replay it started holds spends: it shows as a rescan,
+                // unless SPV reached its target meanwhile.
+                let record = self.live()?.replay.get(wallet_id).await;
+                if let Err(e) = &record {
+                    tracing::warn!(%wallet_id, error = %e, "could not read the attach's replay to show it");
+                }
+                if let Ok(Some(r)) = record
+                    && !r.cancelled
+                {
+                    #[cfg(test)]
+                    if take_test_failure(&REACH_BEFORE_PUBLISH_IN, self.data_dir()) {
+                        let wm = manager.wallet_manager_arc();
+                        let mut wm = wm.write().await;
+                        let info = wm.get_wallet_info_mut(&wallet_id.0).unwrap();
+                        info.core_wallet.update_synced_height(r.target);
+                    }
+                    let wm = manager.wallet_manager_arc();
+                    let wm = wm.read().await;
+                    let info = wm.get_wallet_info(&wallet_id.0);
+                    if info.is_some_and(|i| i.core_wallet.synced_height() < r.target) {
+                        self.publish_replay(wallet_id, r.reached, r.target);
+                    }
                 }
                 self.refresh_wallet_state(&manager, wallet_id).await;
             }

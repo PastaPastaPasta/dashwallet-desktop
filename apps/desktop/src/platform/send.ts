@@ -13,101 +13,209 @@ import type { PlatformSendQuote } from "../api/generated/PlatformSendQuote";
 import type { WithdrawAmount } from "../api/generated/WithdrawAmount";
 import { CREDITS_PER_DUFF } from "../api/pending";
 import { failureText, Model } from "../onboarding/model";
+import { t } from "../i18n";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
 import { invalidArgumentText, isHeldOp, moveCanRetry, moveErrorText, onMoveSettledNotify } from "./move";
 
 export type PlatformSendApi = Pick<Backend, "platformSend" | "platformSendQuote" | "authorize" | "authorizePlatformSend" | "revokeGrant" | "lockStatus" | "paymentAuthentication" | "unlock" | "unlockMixingOnly">;
 
 export const SEND_COPY = {
-  title: "Pay from Platform",
-  intro: "This is a Dash Platform address. It is paid from your Platform balance.",
-  from: (balance: string) => `From your Platform balance: ${balance}`,
-  empty: "Your Platform balance is empty. Paying a Platform address from your Dash wallet is not supported yet.",
-  max: "Everything on your Platform addresses. The fee comes out of the amount.",
-  /** The form's fee line: the estimate; Max pays it from the amount. Platform meters the fee, so it is no maximum. */
-  fee: (fee: string, fromAmount: boolean) => (fromAmount ? `Platform fee usually about ${fee}, from the amount` : `Platform fee usually about ${fee}`),
-  quoting: "Working out the fee…",
-  rows: {
-    from: "From",
-    fromValue: "Your Platform balance",
-    to: "To",
-    amount: "Amount",
-    everything: "everything",
-    fee: "Platform fee",
-    total: "Taken from Platform, about",
-    feeSource: "Fee taken from",
-    totalExact: "Taken from Platform",
-    recipientGets: "Recipient gets, about",
+  get title() {
+    return t("pay.platform.title");
   },
-  feeValue: (fee: string) => `usually about ${fee}`,
+  get intro() {
+    return t("pay.platform.intro");
+  },
+  from: (balance: string) => t("pay.platform.from", { balance }),
+  get empty() {
+    return t("pay.platform.empty");
+  },
+  get max() {
+    return t("pay.platform.max");
+  },
+  /** The form's fee line: the estimate; Max pays it from the amount. Platform meters the fee, so it is no maximum. */
+  fee: (fee: string, fromAmount: boolean) => (fromAmount ? t("pay.platform.feeFromAmount", { fee }) : t("pay.platform.fee", { fee })),
+  get quoting() {
+    return t("pay.platform.quoting");
+  },
+  rows: {
+    get from() {
+      return t("pay.platform.rows.from");
+    },
+    get fromValue() {
+      return t("pay.platform.rows.fromValue");
+    },
+    get to() {
+      return t("pay.platform.rows.to");
+    },
+    get amount() {
+      return t("pay.platform.rows.amount");
+    },
+    get fee() {
+      return t("pay.platform.rows.fee");
+    },
+    get total() {
+      return t("pay.platform.rows.total");
+    },
+    get feeSource() {
+      return t("pay.platform.rows.feeSource");
+    },
+    get totalExact() {
+      return t("pay.platform.rows.totalExact");
+    },
+    get recipientGets() {
+      return t("pay.platform.rows.recipientGets");
+    },
+    amountEverything: (amount: string) => t("pay.platform.rows.amountEverything", { amount }),
+  },
+  feeValue: (fee: string) => t("pay.platform.feeValue", { fee }),
   /** Where Platform takes the fee from, and what it can reach there: what that address keeps (`keeps`), and more if
    * anything is sent to it before the payment goes through. */
-  feeSource: (fee: string, keeps: string) =>
-    `Platform takes the actual fee from the "Fee taken from" address when the payment goes through. It is usually about ${fee}, but it can be more: up to everything that address holds then (${keeps} after this payment, plus anything sent to it later).`,
-  feeFromAmount: "The fee comes out of the amount: the recipient gets the amount less the fee, which may be more than the estimate.",
-  confirmText: "Dash Platform pays the address below. This cannot be undone.",
-  cancel: "Cancel",
-  go: "Confirm & send",
-  running: { title: "Sending…", text: "Dash Platform confirms the payment. You can close this: Activity shows it." },
+  feeSource: (fee: string, keeps: string) => t("pay.platform.feeSource", { fee, keeps }),
+  get feeFromAmount() {
+    return t("pay.platform.feeFromAmountNote");
+  },
+  get confirmText() {
+    return t("pay.platform.confirmText");
+  },
+  get cancel() {
+    return t("common.cancel");
+  },
+  get go() {
+    return t("pay.platform.go");
+  },
+  running: {
+    get title() {
+      return t("pay.platform.running.title");
+    },
+    get text() {
+      return t("pay.platform.running.text");
+    },
+  },
   done: {
-    title: "Sent",
-    text: (taken: string, about: boolean) => `${about ? "About " : ""}${taken} left your Platform balance, the fee included. Activity shows the payment.`,
+    get title() {
+      return t("pay.platform.done.title");
+    },
+    text: (taken: string, about: boolean) => (about ? t("pay.platform.done.textAbout", { taken }) : t("pay.platform.done.text", { taken })),
   },
   pending: {
-    title: "Waiting for Platform",
-    text: "Dash Platform has not said whether the payment went through. Activity shows it when it does. Do not pay again until it does.",
+    get title() {
+      return t("pay.platform.pending.title");
+    },
+    get text() {
+      return t("pay.platform.pending.text");
+    },
   },
   failed: {
-    title: "Did not go through",
-    text: "Dash Platform did not take the payment in time. It may still go through later; Activity shows it if it does. Until it settles, only this same payment can be sent again.",
+    get title() {
+      return t("pay.platform.failed.title");
+    },
+    get text() {
+      return t("pay.platform.failed.text");
+    },
   },
-  replaced: { title: "Replaced by a retry", text: "This payment was replaced by a retry. Activity shows the retry." },
+  replaced: {
+    get title() {
+      return t("pay.platform.replaced.title");
+    },
+    get text() {
+      return t("pay.platform.replaced.text");
+    },
+  },
   /** How an unsettled payment ended, by Activity or by the send's own answer. */
   settled: {
-    went: { title: "Sent", text: "That payment went through. Activity shows it." },
+    went: {
+      get title() {
+        return t("pay.platform.settled.went.title");
+      },
+      get text() {
+        return t("pay.platform.settled.went.text");
+      },
+    },
     /** Platform refused the payment for good (failed, and it can no longer land). */
-    refused: { title: "Not sent", text: "Dash Platform refused this payment. Nothing was sent; you can send it again." },
+    refused: {
+      get title() {
+        return t("pay.platform.settled.refused.title");
+      },
+      get text() {
+        return t("pay.platform.settled.refused.text");
+      },
+    },
   },
   /** A retry was asked for but the engine did not answer it as that payment's retry. */
-  noRetry: "This payment can no longer be retried from here. Check Activity, then send it again if it did not go through.",
-  waiting: "A payment or move from Platform is not confirmed yet. Pay again once Activity shows that it went through.",
+  get noRetry() {
+    return t("pay.platform.noRetry");
+  },
+  get waiting() {
+    return t("pay.platform.waiting");
+  },
   /** `credits.move_pending` from the quote or the send, by what holds: a payment, which Retry that
    * payment re-sends; a move, which only Move to Dash wallet follows; or one Activity does not show. */
-  held: "An earlier payment from Platform may still go through. Wait for it to finish, or press Retry that payment: only that same payment can go now.",
-  heldMove: "A move to your Dash wallet may still go through. Wait for it to finish, or move again from Transfer on Home.",
-  heldOther: "An earlier payment or move from Platform may still go through. Wait for it to finish.",
+  get held() {
+    return t("pay.platform.held");
+  },
+  get heldMove() {
+    return t("pay.platform.heldMove");
+  },
+  get heldOther() {
+    return t("pay.platform.heldOther");
+  },
   /** `invalid_argument` from the send: its operation is unknown or used. */
-  expired: "This payment's details expired. Review it again.",
-  quoteChanged: "Balances changed since you reviewed this payment; review it again.",
-  reviewAgain: "Review again",
-  retry: "Retry this payment",
-  retrying: "Working out the fee…",
-  back: "Back",
-  close: "Close",
-  view: "View in Activity",
+  get expired() {
+    return t("pay.platform.expired");
+  },
+  get quoteChanged() {
+    return t("pay.platform.quoteChanged");
+  },
+  get reviewAgain() {
+    return t("pay.platform.reviewAgain");
+  },
+  get retry() {
+    return t("pay.platform.retry");
+  },
+  get retrying() {
+    return t("pay.platform.retrying");
+  },
+  get back() {
+    return t("pay.platform.back");
+  },
+  get close() {
+    return t("pay.platform.close");
+  },
+  get view() {
+    return t("pay.platform.view");
+  },
   /** A Confirm taken back to the form because Activity moved on. */
-  went: "That payment went through.",
+  get went() {
+    return t("pay.platform.went");
+  },
   /** Confirm shows it when the quote is the exact retry of an earlier payment. */
-  retryNote: "This retries your earlier payment. If that one went through, nothing more is sent.",
+  get retryNote() {
+    return t("pay.platform.retryNote");
+  },
   /** The form: an earlier payment that may still go through, and its retry. */
-  earlier: (amount: string, to: string) => `An earlier payment of ${amount} to ${to} may still go through.`,
-  retryThat: "Retry that payment",
-  gone: "That payment can no longer go through. Check the amount and send again.",
-} as const;
+  earlier: (amount: string, to: string) => t("pay.platform.earlier", { amount, to }),
+  get retryThat() {
+    return t("pay.platform.retryThat");
+  },
+  get gone() {
+    return t("pay.platform.gone");
+  },
+};
 
 /** Why `credits.recipient_invalid` refused the address (its `reason`). */
 export function recipientText(reason: string | undefined): string {
   switch (reason) {
     case "core":
-      return "This is a Dash address. Pay it from your Dash wallet.";
+      return t("pay.platform.recipient.core");
     case "shielded":
-      return "This is a shielded address. This wallet cannot pay shielded addresses from Platform yet.";
+      return t("pay.platform.recipient.shielded");
     case "network":
-      return "This Platform address is for another network.";
+      return t("pay.platform.recipient.network");
     case "own":
-      return "This is one of your own Platform addresses.";
+      return t("pay.platform.recipient.own");
     default:
-      return "This is not a valid Platform address. Please recheck.";
+      return t("pay.platform.recipient.invalid");
   }
 }
 
@@ -120,8 +228,8 @@ export function sendErrorText(e: unknown, credits: (c: string) => string, activi
     case "credits.send_out_of_range":
       // Also when one of the addresses it takes from would give less than that minimum.
       return e.data?.kind === "creditMinimum"
-        ? `Dash Platform cannot send this amount: the payment, and what it takes from each of your Platform addresses, must be at least ${credits(e.data.min)}. Try another amount, or Max.`
-        : "Dash Platform does not take a payment of this amount.";
+        ? t("pay.platform.outOfRangeMin", { min: credits(e.data.min) })
+        : t("pay.platform.outOfRange");
     case "credits.move_pending": {
       const id = e.data?.kind === "artifact" ? e.data.artifact : null;
       switch (activity?.find((a) => a.id === id)?.kind) {
@@ -136,7 +244,7 @@ export function sendErrorText(e: unknown, credits: (c: string) => string, activi
     case "credits.quote_changed":
       return SEND_COPY.quoteChanged;
     case "platform.trust_mismatch":
-      return "Your Platform addresses could not be verified against the network. Nothing was sent.";
+      return t("pay.platform.trustMismatch");
     case "invalid_argument":
       return invalidArgumentText(e);
     default:

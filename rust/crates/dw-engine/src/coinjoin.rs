@@ -1082,7 +1082,7 @@ impl NetworkSession {
         let settings = self.coinjoin.settings();
         let network = self.network.core_network();
         let (owned, paths) = {
-            let state = wallet.state().await;
+            let state = crate::wallet_read::info_of(&wallet).await?;
             let owned = crate::history_ops::owned_scripts(&state);
             let paths: HashMap<Address, DerivationPath> = snapshot
                 .coins
@@ -4083,6 +4083,10 @@ mod sweep_tests;
 #[cfg(test)]
 #[path = "close_pause_tests.rs"]
 mod close_pause_tests;
+
+#[cfg(test)]
+#[path = "unload_during_read_tests.rs"]
+mod unload_during_read_tests;
 
 #[cfg(test)]
 mod tests {

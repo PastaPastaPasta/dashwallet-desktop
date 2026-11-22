@@ -11,7 +11,8 @@ import { useDebounced } from "../../app/useDebounced";
 import { AmountText, DashButton } from "../../components/basics";
 import { FiatSecondary, FiatToggle, useFiatEntry } from "../../fiat/entry";
 import type { useDisplay } from "../../format/display";
-import { availableLabel, PAY_CHECKING, PAY_INCOMPLETE, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient, type Sending } from "./model";
+import { useT, t } from "../../i18n";
+import { availableLabel, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, incompleteText, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayForm, type PayRecipient, type Sending } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 /** How long a field stays unchanged before it is checked and the draft estimated (U-03 D5). */
@@ -234,7 +235,7 @@ export function useAmountField(shown: Shown, initial: string) {
     staleTime: Infinity,
   });
   const duffs = checked !== "" ? parsed.data : undefined;
-  const error = duffs === null ? shown.invalidAmount : duffs === 0 ? "The amount to pay must be larger than 0." : null;
+  const error = duffs === null ? shown.invalidAmount : duffs === 0 ? t("pay.error.invalidAmount") : null;
   return { text, setText, duffs, error, settled: checked === typed };
 }
 
@@ -298,9 +299,9 @@ export function useEstimate(walletId: string, draft: DraftApi, spec: DraftSpec |
   if (mixed) general = mixed;
   // A refusal of a field shows under it and here too: Review's reason is the footer's.
   else if (estimate.isError) general = refusal ? refusal.text : errorMessage(estimate.error);
-  else if (advanced.coins === "selected" && advanced.selected.length === 0) general = "Choose the coins to pay with.";
-  else if (!feeMode(advanced)) general = "Enter a custom fee rate.";
-  else if (advanced.changeAddress !== null && advanced.changeAddress.trim() === "") general = "Enter the custom change address.";
+  else if (advanced.coins === "selected" && advanced.selected.length === 0) general = t("pay.form.chooseCoins");
+  else if (!feeMode(advanced)) general = t("pay.form.enterRate");
+  else if (advanced.changeAddress !== null && advanced.changeAddress.trim() === "") general = t("pay.form.enterChangeAddress");
   const fieldError = (f: "address" | "amount") => (refusal?.field === f ? refusal.text : null);
   const ready = !!spec && estimate.isSuccess && !estimate.isFetching && !hold;
   return { estimate, general, fieldError, ready, offer: subtracted && offer.isSuccess ? offer.data.totalSent : null };
@@ -347,17 +348,18 @@ export function AmountFields({
   onSubtractFee: (on: boolean) => void;
   inputRef?: Ref<HTMLInputElement>;
 }) {
+  const t = useT();
   const { fiat } = amount;
   return (
     <>
       <FormField
-        label={`Amount (${fiat.unitName})`}
+        label={t("pay.form.amount", { unit: fiat.unitName })}
         error={fiat.error ?? amount.error ?? error ?? max.error}
         hint={
           (available !== undefined || fiat.toggle.shown) && (
             <>
               <FiatSecondary entry={fiat} duffs={amount.duffs} testId="pay-amount-other" />
-              {available !== undefined && <>{availableLabel(coins)}: {shown.full(available)} {shown.name}</>}
+              {available !== undefined && t("pay.form.availableLine", { label: availableLabel(coins), amount: shown.full(available), unit: shown.name })}
             </>
           )
         }
@@ -376,14 +378,14 @@ export function AmountFields({
             />
             <FiatToggle entry={fiat} shown={shown} testId="pay-amount-toggle" />
             <DashButton variant="tintedBlue" size="small" data-testid="pay-max" onClick={() => void max.run()} disabled={max.disabled}>
-              Max
+              {t("pay.form.max")}
             </DashButton>
           </span>
         )}
       </FormField>
       <label className="checkbox-row">
         <input type="checkbox" data-testid="pay-subtract-fee" checked={subtractFee} onChange={(e) => onSubtractFee(e.target.checked)} />
-        Subtract fee from amount
+        {t("pay.form.subtractFee")}
       </label>
     </>
   );
@@ -399,9 +401,12 @@ export function PayFooter({
   incomplete,
   reviewRef,
   offer,
-  reviewLabel = "Review",
+  reviewLabel,
+  form = "address",
 }: {
   reviewLabel?: string;
+  /** Which form this is, for what an incomplete one still needs. */
+  form?: PayForm;
   problem: string | null;
   /** Subtract fee would send this amount; its button turns it on (MX-FEE). Pass it only for settled fields. */
   offer?: { amount: number; accept: () => void } | null;
@@ -413,7 +418,8 @@ export function PayFooter({
   ready: boolean;
   reviewRef: Ref<HTMLButtonElement>;
 }) {
-  const waiting = incomplete ? PAY_INCOMPLETE : PAY_CHECKING;
+  const t = useT();
+  const waiting = incomplete ? incompleteText(form) : t("pay.checking");
   return (
     <div className="pay-footer" data-testid="pay-footer">
       <div className="pay-footer-text" aria-live="polite">
@@ -425,16 +431,17 @@ export function PayFooter({
             {/* Outside #pay-reason, so Review's description stays the reason alone. */}
             {offer && (
               <span className="form-problem" data-testid="pay-offer">
-                {" "}With Subtract fee it would send <AmountText text={shown.full(offer.amount)} unitName={shown.name} glyph={false} />.{" "}
+                {" "}
+                {t.rich("pay.form.offer", { amount: <AmountText text={shown.full(offer.amount)} unitName={shown.name} glyph={false} /> })}{" "}
                 <DashButton variant="tintedBlue" size="small" data-testid="pay-subtract-offer" onClick={offer.accept}>
-                  Turn on Subtract fee
+                  {t("pay.form.turnOnSubtractFee")}
                 </DashButton>
               </span>
             )}
           </>
         ) : fee !== null ? (
           <span className="pay-fee-line" id="pay-reason" data-testid="pay-fee-line">
-            Network fee <AmountText text={shown.full(fee)} unitName={shown.name} glyph={false} />
+            {t.rich("pay.form.networkFee", { amount: <AmountText text={shown.full(fee)} unitName={shown.name} glyph={false} /> })}
           </span>
         ) : !ready ? (
           <span className="field-hint" id="pay-reason" data-testid="pay-incomplete">
@@ -443,7 +450,7 @@ export function PayFooter({
         ) : null}
       </div>
       <DashButton ref={reviewRef} type="submit" variant="filledBlue" size="large" data-testid="pay-continue" disabled={!ready} why={problem ?? waiting} whyId="pay-reason">
-        {reviewLabel}
+        {reviewLabel ?? t("pay.form.review")}
       </DashButton>
     </div>
   );

@@ -8,6 +8,7 @@ import type { PlatformFundQuote } from "../api/generated/PlatformFundQuote";
 import type { ShieldedSpendQuote } from "../api/generated/ShieldedSpendQuote";
 import type { ShieldQuote } from "../api/generated/ShieldQuote";
 import { CREDITS_PER_DUFF, SHIELDED_CODES } from "../api/pending";
+import { messageTable, t } from "../i18n";
 import { Model } from "../onboarding/model";
 import { fundFor, type PlatformFundApi, type PlatformFundFlow } from "../platform/fund";
 import { MOVE_COPY, moveFor, type MoveBlock, type PlatformMoveApi, type PlatformMoveFlow } from "../platform/move";
@@ -35,45 +36,113 @@ export function routeOf(from: Pool, to: Pool): RouteId | "unsupported" | null {
 }
 
 export const TRANSFER_COPY = {
-  title: "Transfer",
-  shortcut: "Transfer",
-  from: "From",
-  to: "To",
-  pick: { from: "Transfer from", to: "Transfer to" },
-  swap: "Swap From and To",
-  pools: { core: "Dash wallet", shielded: "Shielded", platform: "Platform" } satisfies Record<Pool, string>,
+  get title() {
+    return t("transfer.title");
+  },
+  get shortcut() {
+    return t("transfer.shortcut");
+  },
+  get from() {
+    return t("transfer.from");
+  },
+  get to() {
+    return t("transfer.to");
+  },
+  pick: {
+    get from() {
+      return t("transfer.pick.from");
+    },
+    get to() {
+      return t("transfer.pick.to");
+    },
+  },
+  get swap() {
+    return t("transfer.swap");
+  },
+  pools: messageTable("transfer.pools", ["core", "shielded", "platform"]) satisfies Record<Pool, string>,
   /** After a pool card's title, it names the button that opens Transfer from that pool. */
-  unknownBalance: "—",
-  amount: "Amount",
-  max: "Max",
-  wholeBalance: "This moves the spendable balance on your Platform addresses.",
+  get unknownBalance() {
+    return t("transfer.unknownBalance");
+  },
+  get max() {
+    return t("transfer.max");
+  },
+  get wholeBalance() {
+    return t("transfer.wholeBalance");
+  },
   /** Platform → Dash wallet's form; its confirmation names the address (MOVE_COPY.message). */
-  platformToCoreIntro: "The spendable balance on your Platform addresses moves to your Dash wallet. Dash Platform pays it to an address in your Dash wallet.",
-  fee: (fee: string, receive: string) => `Fee about ${fee} · You receive about ${receive}`,
-  quoting: "Working out the fee…",
-  feeOnNextStep: "Fee shown on the next step",
-  invalidAmount: "Enter an amount.",
-  why: { amount: "Enter an amount first.", max: "Working out the most you can move…" },
-  continue: "Continue",
-  cancel: "Cancel",
-  unsupported: "Moving straight between Shielded and Platform isn't available on desktop yet. Move through your Dash wallet.",
+  get platformToCoreIntro() {
+    return t("transfer.platformToCoreIntro");
+  },
+  fee: (fee: string, receive: string) => t("transfer.fee", { fee, receive }),
+  get quoting() {
+    return t("transfer.quoting");
+  },
+  get feeOnNextStep() {
+    return t("transfer.feeOnNextStep");
+  },
+  get invalidAmount() {
+    return t("transfer.invalidAmount");
+  },
+  why: {
+    get amount() {
+      return t("transfer.why.amount");
+    },
+    get max() {
+      return t("transfer.why.max");
+    },
+  },
+  get continue() {
+    return t("transfer.continue");
+  },
+  get cancel() {
+    return t("common.cancel");
+  },
+  get unsupported() {
+    return t("transfer.unsupported");
+  },
   none: {
-    absent: "Transfers move Dash between your Dash wallet, Shielded and Platform. This version has neither Shielded nor Platform addresses.",
-    inactive: "Transfers move Dash between your Dash wallet, Shielded and Platform. Shielded is not active on this network yet, and this version has no Platform addresses.",
+    get absent() {
+      return t("transfer.none.absent");
+    },
+    get inactive() {
+      return t("transfer.none.inactive");
+    },
   },
-  platformEmpty: "Nothing on your Platform addresses to move yet.",
-  noCoreBalance: "Nothing in your Dash wallet to move yet.",
-  loading: "Reading your balances…",
-  running: (what: string) => `Running: ${what}.`,
-  show: "Show",
+  get platformEmpty() {
+    return t("transfer.platformEmpty");
+  },
+  get platformInactive() {
+    return t("transfer.platformInactive");
+  },
+  get noCoreBalance() {
+    return t("transfer.noCoreBalance");
+  },
+  get loading() {
+    return t("transfer.loading");
+  },
+  running: (what: string) => t("transfer.running", { what }),
+  get show() {
+    return t("transfer.show");
+  },
   routeNames: {
-    coreToShielded: SHIELDED_COPY.titles.add,
-    coreToPlatform: "Add to Platform",
-    shieldedToCore: "Move from Shielded to Dash wallet",
-    platformToCore: "Move from Platform to Dash wallet",
-    send: SHIELDED_COPY.titles.send,
+    get coreToShielded() {
+      return SHIELDED_COPY.titles.add;
+    },
+    get coreToPlatform() {
+      return t("transfer.routeNames.coreToPlatform");
+    },
+    get shieldedToCore() {
+      return t("transfer.routeNames.shieldedToCore");
+    },
+    get platformToCore() {
+      return t("transfer.routeNames.platformToCore");
+    },
+    get send() {
+      return SHIELDED_COPY.titles.send;
+    },
   },
-} as const;
+};
 
 /** What the sheet knows of the balances, from the reads the Home cards use. */
 export interface Pools {
@@ -163,11 +232,11 @@ export function routeWhy(route: RouteId, pools: Pools, flows: Flows): string | n
       return null;
     }
     case "coreToPlatform":
-      return pools.platform ? null : pools.platform === undefined ? TRANSFER_COPY.loading : "Platform addresses are not active on this network yet.";
+      return pools.platform ? null : pools.platform === undefined ? TRANSFER_COPY.loading : TRANSFER_COPY.platformInactive;
     case "platformToCore": {
       const p = pools.platform;
       if (p === undefined) return TRANSFER_COPY.loading;
-      if (!p) return "Platform addresses are not active on this network yet.";
+      if (!p) return TRANSFER_COPY.platformInactive;
       if (flows.move.pending || p.block === "pending") return p.waitingText;
       if (p.block === "checking") return MOVE_COPY.check.loading;
       if (p.block === "failed") return MOVE_COPY.check.failed;

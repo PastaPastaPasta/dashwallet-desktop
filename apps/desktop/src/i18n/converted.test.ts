@@ -8,24 +8,59 @@ import { join, relative, resolve } from "node:path";
 import { parseSync, Visitor } from "vite";
 import { describe, expect, it } from "vitest";
 
-/** Paths under src/ whose `.tsx` files take their text from the catalog. */
-export const CONVERTED = [
-  "components/shell.tsx",
-  "components/networkPicker.tsx",
-  "screens/LockScreen.tsx",
-  "screens/settings/General.tsx",
-  "screens/settings/LocalCurrency.tsx",
-  "screens/settings/Privacy.tsx",
-  "screens/settings/SettingsPage.tsx",
-  "screens/settings/Updates.tsx",
-  "screens/settings/parts.tsx",
-];
+/** Paths under src/ whose `.tsx` files take their text from the catalog, by screen area. Each area's
+ * pull request fills its own list. */
+const AREAS: Record<string, string[]> = {
+  shell: ["components/shell.tsx", "components/networkPicker.tsx"],
+
+  lock: ["screens/LockScreen.tsx"],
+
+  settings: ["screens/settings/General.tsx", "screens/settings/LocalCurrency.tsx", "screens/settings/Privacy.tsx", "screens/settings/SettingsPage.tsx", "screens/settings/Updates.tsx", "screens/settings/parts.tsx"],
+
+  components: ["components/basics.tsx", "components/coins.tsx", "components/copy.tsx", "components/detail.tsx", "components/emptyArt.tsx", "components/history.tsx", "components/passphrase.tsx", "components/phrase.tsx", "components/qr.tsx", "components/sheet.tsx", "components/toast.tsx"],
+
+  app: [],
+
+  onboarding: ["screens/Onboarding.tsx", "screens/ForgotPassphrase.tsx", "screens/RecoveryPhrase.tsx", "screens/PreReleaseNotice.tsx", "fiat/consent.tsx"],
+
+  home: [],
+
+  activity: [],
+
+  receive: ["screens/Receive.tsx"],
+
+  pay: ["screens/pay"],
+
+  contacts: ["screens/contacts"],
+
+  dashpay: [],
+
+  coinjoin: ["screens/coinjoin"],
+
+  notifications: ["screens/notifications"],
+
+  masternodes: [],
+
+  tools: ["screens/tools"],
+
+  transfer: ["screens/TransferSheet.tsx", "screens/PlatformMoveSheet.tsx", "screens/PlatformFundSheet.tsx", "screens/ShieldedSheet.tsx"],
+};
+
+export const CONVERTED = Object.values(AREAS).flat();
 
 /** Text that may stay literal: `file: [text, …]`. Keep it short and say why. */
-const ALLOWED: Record<string, string[]> = {};
+const ALLOWED: Record<string, string[]> = {
+  // The route header's hidden " to " between two pool names: needs a whole-sentence key.
+  "screens/TransferSheet.tsx": ["to"],
+  // The brand, the wordmark's name in every language (glossary).
+  "components/basics.tsx": ["Dash"],
+};
 
 /** Attributes whose value a user reads or hears. Props of our components that carry copy too. */
 const TEXT_ATTRIBUTES = new Set(["title", "aria-label", "aria-description", "aria-placeholder", "aria-roledescription", "placeholder", "alt", "label", "text", "why", "confirm", "message", "submitLabel"]);
+
+/** Functions whose arguments a user reads: a toast's text. */
+const TEXT_CALLS = new Set(["showToast"]);
 
 const src = resolve(import.meta.dirname, "..");
 const LETTER = /\p{L}/u;
@@ -57,16 +92,26 @@ export function hardCoded(file: string, source: string): string[] {
   const literals = (e: Node | null | undefined) => {
     if (!e) return;
     if (e.type === "Literal" && typeof e.value === "string") add(e.start, e.value);
-    else if (e.type === "TemplateLiteral") for (const q of e.quasis as { start: number; value: { cooked: string } }[]) add(q.start, q.value.cooked);
+    else if (e.type === "TemplateLiteral") {
+      for (const q of e.quasis as { start: number; value: { cooked: string } }[]) add(q.start, q.value.cooked);
+      for (const expression of e.expressions as Node[]) literals(expression);
+    }
     else if (e.type === "ConditionalExpression") {
       literals(e.consequent as Node);
       literals(e.alternate as Node);
-    } else if (e.type === "LogicalExpression") literals(e.right as Node);
+    } else if (e.type === "LogicalExpression" || (e.type === "BinaryExpression" && e.operator === "+")) {
+      literals(e.left as Node);
+      literals(e.right as Node);
+    }
   };
   const children = (nodes: Node[]) => {
     for (const c of nodes) if (c.type === "JSXExpressionContainer") literals(c.expression as Node);
   };
   new Visitor({
+    CallExpression: (n) => {
+      const callee = n.callee as unknown as Node;
+      if (callee.type === "Identifier" && TEXT_CALLS.has(callee.name as string)) for (const a of n.arguments as unknown as Node[]) literals(a);
+    },
     JSXText: (n) => add(n.start, n.value),
     JSXElement: (n) => children(n.children as unknown as Node[]),
     JSXFragment: (n) => children(n.children as unknown as Node[]),
@@ -102,10 +147,13 @@ describe("converted screens", () => {
         "    Some text {on && \"Yes\"} {`Count ${1}`} {t('ok')} {'…'}",
         '    <input placeholder="Type here" />',
         '    <Card why={"Because"} id="raw-id" />',
+        '    <p title={"Copy " + name}>{name ?? "Nobody"}{"Left" || name}</p>',
+        '    <i title={`${label ?? "Unnamed wallet"}`} />',
         "  </div>",
         ");",
+        'showToast("Copied"); other("not-copy");',
       ].join("\n"),
     );
-    expect(found).toEqual(["2: Hello", "2: Shown", "2: Hidden", "3: Some text", "3: Yes", "3: Count", "4: Type here", "5: Because"]);
+    expect(found).toEqual(["2: Hello", "2: Shown", "2: Hidden", "3: Some text", "3: Yes", "3: Count", "4: Type here", "5: Because", "6: Copy", "6: Nobody", "6: Left", "7: Unnamed wallet", "10: Copied"]);
   });
 });

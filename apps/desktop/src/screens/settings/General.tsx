@@ -16,7 +16,7 @@ import { NetworkPicker, useNetworkPicker } from "../../components/networkPicker"
 import { networkName } from "../../network/choice";
 import { CopyValue, DetailRow } from "../../components/detail";
 import { QuestionSheet, Sheet } from "../../components/sheet";
-import { LANGUAGES, systemLanguage, systemLanguages, useT } from "../../i18n";
+import { byTag, LANGUAGES, systemLanguage, systemLanguages, useT } from "../../i18n";
 import { failureText } from "../../onboarding/model";
 import { DEFAULT_DUST, dustThreshold, OptionsText, UNIT_CHOICES } from "../../settings/options";
 import { savePrefs, settledPending } from "../../settings/prefs";
@@ -261,7 +261,7 @@ function NetworkCard() {
           {network.kind === "devnet" ? network.dirName : networkName(network.kind)}
         </DetailRow>
         <DetailRow label={t("settings.general.dataDirectory")} testId="settings-data-dir">
-          {node.data ? <CopyValue value={node.data.dataDir} label={t("settings.general.dataDirectoryCopy")} mono /> : pendingText(node)}
+          {node.data ? <CopyValue value={node.data.dataDir} action={t("settings.general.dataDirectoryCopy")} mono /> : pendingText(node)}
         </DetailRow>
       </dl>
       <NetworkPicker state={picker} testId="settings-network-choice" />
@@ -277,6 +277,10 @@ function LanguageRow({ choice, save }: { choice: string | null; save: (patch: Pa
   const t = useT();
   const id = useId();
   const system = systemLanguage(systemLanguages());
+  // A saved tag is bound to its option whatever its case; one this build does not ship gets a row
+  // of its own, so it shows and choosing System default clears it.
+  const shipped = choice === null ? undefined : byTag(choice);
+  const value = choice === null ? "" : (shipped?.tag ?? choice);
   return (
     <>
       <div className="settings-row">
@@ -288,10 +292,11 @@ function LanguageRow({ choice, save }: { choice: string | null; save: (patch: Pa
           className="settings-select"
           data-testid="settings-language"
           aria-describedby={`${id}-language-hint`}
-          value={choice ?? ""}
+          value={value}
           onChange={(e) => void save({ language: e.target.value || null })}
         >
           <option value="">{t("settings.general.languageSystem", { language: system.name })}</option>
+          {choice !== null && !shipped && <option value={choice}>{t("settings.general.languageUnavailable", { tag: choice })}</option>}
           {LANGUAGES.map((l) => (
             <option key={l.tag} value={l.tag} lang={l.tag} dir={l.dir}>
               {l.name}

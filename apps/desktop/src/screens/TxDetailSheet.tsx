@@ -8,6 +8,7 @@ import { errorMessage } from "../api/backend";
 import type { NetworkKind } from "../api/generated/NetworkKind";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import type { TxCounterparty } from "../api/generated/TxCounterparty";
+import type { TxDetailExtrasInfo } from "../api/generated/TxDetailExtrasInfo";
 import type { TxDetails } from "../api/generated/TxDetails";
 import type { TxStatusInfo } from "../api/generated/TxStatusInfo";
 import type { TxFiat } from "../api/generated/TxFiat";
@@ -157,6 +158,15 @@ function LabelEditor({ walletId, txid, label }: { walletId: string; txid: string
   );
 }
 
+/** The abandon confirmation. Whether the wallet spent inputs decides it (`totalDebit`, the engine's
+ * `from_me`), not the amount's sign: a payment to yourself nets only the fee but spends this wallet's
+ * coins. An unknown debit takes the spending text. */
+export function abandonQuestion(x: Pick<TxDetailExtrasInfo, "totalDebit">): string {
+  return x.totalDebit === 0
+    ? "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again."
+    : "Abandon this transaction? Dash Wallet stops counting it. Coins it spent come back only if nothing else spent them. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.";
+}
+
 /** Abandon and Resend (QT-091), shown only when the engine says they apply. */
 function Actions({ walletId, txid }: { walletId: string; txid: string }) {
   const b = useBackend();
@@ -190,7 +200,7 @@ function Actions({ walletId, txid }: { walletId: string; txid: string }) {
       {confirming ? (
         <>
           <p className="tx-actions-question">
-            Abandon this transaction? Dash Wallet stops counting it. Coins it spent come back only if nothing else spent them; if the wallet later sees it confirmed, it counts again.
+            {abandonQuestion(x)}
           </p>
           <span className="tx-actions-row">
             <DashButton variant="tintedGray" size="small" disabled={busy} onClick={() => setConfirming(false)}>
