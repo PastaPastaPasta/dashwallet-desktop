@@ -29,7 +29,7 @@ function Row({ label, value, testId, total }: { label: string; value: string; te
     <div className={total ? "detail-row topup-total" : "detail-row"}>
       <dt className="detail-label">{label}</dt>
       <dd className="detail-value" data-testid={testId}>
-        {value}
+        <bdi dir="ltr">{value}</bdi>
       </dd>
     </div>
   );

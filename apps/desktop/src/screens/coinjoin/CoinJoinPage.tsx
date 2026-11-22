@@ -248,7 +248,7 @@ function SessionDetails({ status, network }: { status: CoinJoinStatus; network: 
               {status.sessions.map((s, i) => (
                 <tr key={s.proTxHash ?? i}>
                   <td className="mono">{s.service ? <bdi>{s.service}</bdi> : "—"}</td>
-                  <td>{s.denomination === null ? "—" : shown(s.denomination)}</td>
+                  <td>{s.denomination === null ? "—" : <bdi dir="ltr">{shown(s.denomination)}</bdi>}</td>
                   <td>{POOL_STATE_TEXT[s.state]}</td>
                   <td className="num">{s.entries}</td>
                   <td>{s.lastMessage === null ? "—" : poolMessageText(s.lastMessage)}</td>
