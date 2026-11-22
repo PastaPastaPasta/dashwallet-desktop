@@ -344,18 +344,26 @@ pub(crate) fn spent_outpoints(
     chainlock: Option<u32>,
 ) -> HashSet<OutPoint> {
     let mined = |e: &TxEntry| e.context.block_info().is_some();
-    let in_block: HashMap<OutPoint, (Txid, &TxEntry)> = (txs.iter().filter(|(_, e)| mined(e)))
-        .flat_map(|(t, e)| e.tx.input.iter().map(move |i| (i.previous_output, (*t, e))))
-        .collect();
+    let mut in_block: HashMap<OutPoint, Vec<(Txid, &TxEntry)>> = HashMap::new();
+    for (t, e) in txs.iter().filter(|(_, e)| mined(e)) {
+        for i in &e.tx.input {
+            in_block.entry(i.previous_output).or_default().push((*t, e));
+        }
+    }
     let mut children: HashMap<Txid, Vec<Txid>> = HashMap::new();
     let mut todo = Vec::new();
     for (t, e) in txs.iter().filter(|(_, e)| !mined(e)) {
         for i in &e.tx.input {
-            children.entry(i.previous_output.txid).or_default().push(*t);
+            if !instant_locked(e) {
+                children.entry(i.previous_output.txid).or_default().push(*t);
+            }
             let beats = |(b, be): &(Txid, &TxEntry)| {
                 b != t && (!instant_locked(e) || chain_locked(&be.context, chainlock))
             };
-            if in_block.get(&i.previous_output).is_some_and(beats) {
+            if in_block
+                .get(&i.previous_output)
+                .is_some_and(|v| v.iter().any(beats))
+            {
                 todo.push(*t);
             }
         }
@@ -2627,6 +2635,66 @@ mod tests {
         assert_eq!(
             claims(unlocked(), spend(2, &[coin(3)], in_block(12, 0)), None),
             all
+        );
+    }
+
+    /// A locked payment P spends the output of an unlocked parent Q that a
+    /// plain block beats: P keeps its own inputs held (key-wallet's
+    /// `drop_conflicted_transactions` walks no InstantSend-locked child).
+    #[test]
+    fn a_locked_child_of_a_beaten_parent_keeps_its_inputs_held() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let q = entry(
+            tx(vec![input(coin(1).txid, 0)], vec![out(1, &hash_addr(9))]),
+            TransactionContext::Mempool,
+        );
+        let w = entry(
+            tx(vec![input(coin(1).txid, 0)], vec![out(2, &hash_addr(9))]),
+            in_block(12, 0),
+        );
+        let p = entry(
+            tx(
+                vec![input(q.tx.txid(), 0), input(coin(5).txid, 0)],
+                vec![out(3, &hash_addr(9))],
+            ),
+            TransactionContext::InstantSend(dashcore::InstantLock::default()),
+        );
+        let txs: HashMap<Txid, TxEntry> = [q, w, p].into_iter().map(|e| (e.tx.txid(), e)).collect();
+        assert!(
+            spent_outpoints(&txs, None).contains(&coin(5)),
+            "A stays held"
+        );
+    }
+
+    /// Two mined spends of one coin B (a fork's block the store kept) beside
+    /// a locked payment P of A and B: a ChainLocked one beats P whichever
+    /// spend the map visits last, so A is not held. 16 independent pairs, so
+    /// a rule that kept the last-visited spend fails with odds 1 - 2^-16.
+    #[test]
+    fn a_chainlocked_spend_beats_a_locked_payment_beside_a_plain_one() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let chainlocked =
+            TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
+        let locked = TransactionContext::InstantSend(dashcore::InstantLock::default());
+        let mut txs = HashMap::new();
+        for n in 0..16u8 {
+            let (a, b, v) = (coin(100 + n), coin(150 + n), u64::from(n) * 10);
+            let spends = |coins: &[OutPoint], value: u64, context| {
+                let ins = coins.iter().map(|c| input(c.txid, c.vout)).collect();
+                entry(tx(ins, vec![out(value, &hash_addr(9))]), context)
+            };
+            for e in [
+                spends(&[a, b], v + 1, locked.clone()),
+                spends(&[b], v + 2, in_block(13, 0)),
+                spends(&[b], v + 3, chainlocked.clone()),
+            ] {
+                txs.insert(e.tx.txid(), e);
+            }
+        }
+        let spent = spent_outpoints(&txs, None);
+        assert!(
+            (0..16).all(|n| !spent.contains(&coin(100 + n))),
+            "no A held"
         );
     }
 }

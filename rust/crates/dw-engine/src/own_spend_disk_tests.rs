@@ -898,6 +898,43 @@ fn a_chainlock_applied_while_the_wallet_was_closed_beats_a_locked_payment() {
     assert!(held(&engine, &session, id).contains(&a), "after a restart");
 }
 
+/// The same, with the other wallet closed too before the wallet opens
+/// again: the session's ChainLock still beats the locked payment.
+#[test]
+fn a_chainlock_applied_while_both_wallets_were_closed_beats_a_locked_payment() {
+    let (_dir, engine, session, id, paid, winner) = locked_payment_with_a_plain_winner();
+    let a = OutPoint::new(paid.txid(), 0);
+    let other = engine
+        .block_on(
+            session.import_wallet(
+                zeroize::Zeroizing::new(
+                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
+                        .to_vec(),
+                ),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(BIRTH),
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap();
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let winner_block = super::block_with(vec![winner]).block_hash();
+    chain_lock(&engine, &session, other, TIP + 1, winner_block);
+    engine.block_on(session.unload_wallet(other)).unwrap();
+    engine.block_on(session.load_wallet(id)).unwrap();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(
+        held(&engine, &session, id).contains(&a),
+        "reopened: A is credited"
+    );
+    assert!(
+        spendable(&engine, &session, id, a),
+        "and a payment can spend it"
+    );
+}
+
 /// While a load claims nothing (another stored record is unreadable), the
 /// history keeps the locked payment's coins from selection against a plain
 /// block: A, which only the payment spends, is credited but not offered.

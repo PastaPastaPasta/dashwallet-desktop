@@ -1143,7 +1143,8 @@ impl NetworkSession {
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
         let chainlock = crate::history_ops::applied_chainlock(&*wallet.state().await)
-            .max(self.hub.tracker().chainlock_height());
+            .max(self.hub.tracker().chainlock_height())
+            .max(self.hub.best_chainlock().map(|(h, _)| h));
         let spent = (self.hub.history).read(&wallet_id, |txs| {
             crate::history::spent_outpoints(txs, chainlock)
         });

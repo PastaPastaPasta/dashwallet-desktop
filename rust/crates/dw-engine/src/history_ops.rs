@@ -494,7 +494,8 @@ impl NetworkSession {
         let chainlock = (wm.get_all_wallet_infos().values())
             .filter_map(applied_chainlock)
             .max()
-            .max(self.hub.tracker().chainlock_height());
+            .max(self.hub.tracker().chainlock_height())
+            .max(self.hub.best_chainlock().map(|(h, _)| h));
         let Some(info) = wm.get_wallet_info_mut(&wallet.0) else {
             return;
         };
