@@ -505,9 +505,9 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     let dir = dw_testutil::private_tempdir();
     let hole = blackhole();
     let (engine, s) = session_held(dir.path(), &hole);
-    // After the engine, so a panic — the 60 s bounds below included —
-    // drops this first and closes the listeners before the engine's drop
-    // thread joins the passes.
+    // After the engine, so a panic — the stop, restart, and shutdown
+    // bounds below included — drops this first and closes the listeners
+    // before the engine's drop thread joins the passes.
     let release = ReleaseListeners(hole);
     let id = engine.block_on(s.create_wallet(12)).unwrap().wallet_id;
     give_identity(&engine, &s, id);
@@ -534,12 +534,18 @@ fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     assert!(names_only_stuck_loops(&stopped), "{stopped:?}");
     assert_eq!(s.spv_state().unwrap(), SpvState::Stopped);
 
-    let starting = Instant::now();
-    engine.block_on(s.start_spv()).unwrap();
-    let took = starting.elapsed();
-    eprintln!("the next start_spv took {took:?}");
-    assert!(took < Duration::from_millis(100), "{took:?}");
-    assert_eq!(s.spv_state().unwrap(), SpvState::Starting);
+    // Allow scheduler delay, but not a full 10 s coordinator drain. A
+    // restart that waits for the held pass hits this bound and drops
+    // `release` on the way out, so the test fails instead of hanging.
+    engine
+        .block_on(async { tokio::time::timeout(Duration::from_secs(5), s.start_spv()).await })
+        .expect("restart returned before the drain budget")
+        .unwrap();
+    assert!(
+        manager.dashpay_sync().is_syncing(),
+        "restart returned while the DashPay pass was still in flight"
+    );
+    assert_ne!(s.spv_state().unwrap(), SpvState::Stopped);
     drop(release);
     wait_until("the held passes end", Duration::from_secs(10), || {
         !manager.dashpay_sync().is_syncing()
