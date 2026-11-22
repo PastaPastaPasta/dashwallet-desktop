@@ -17,8 +17,9 @@ launch of an unsigned app downloaded the ordinary way.
 - Keep a **worksheet** per machine (a local file, for example `h08-<machine>.md`, never uploaded as is). It holds the
   baselines each run compares against: wallet names, balances, txids, labels, addresses, the signature, settings.
   The results table at the end gets only pass, fail or skipped, with issue numbers.
-- Each section ends with **Fail if**. Any of those is a failure to file (section 7). Anything else that differs
-  from an "Expected" is a finding to note in the worksheet and the results.
+- Each section ends with its verdicts. **Fail if**: a failure to file (section 7). **Stop** or **incomplete**: not a
+  product failure; redo the step or finish the report before going on. Anything else that differs from an
+  "Expected" is a finding to note in the worksheet and the results.
 - Shorthand: **Home**, **Activity**, **Settings** are the sidebar items. "Quit" is ⌘Q on macOS and File ▸ Exit on
   Windows.
 
@@ -53,6 +54,13 @@ RUN="0.1.0-E"; BAK="$HOME/h08-backup-$RUN"
 # Windows (PowerShell)
 $Root = "$env:APPDATA\org.dash.wallet.desktop"
 $Run = "0.1.0-E"; $Bak = "$env:USERPROFILE\h08-backup-$Run"
+# Every folder and file under a root, with each file's SHA-256: two equal trees print the same list.
+function Get-Tree($p) {
+  Get-ChildItem -LiteralPath $p -Recurse -Force | ForEach-Object {
+    $rel = $_.FullName.Substring($p.Length)
+    if ($_.PSIsContainer) { "D $rel" } else { "F $rel $((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)" }
+  } | Sort-Object
+}
 ```
 
 Download every bundle **on the machine under test, with its ordinary browser**. A file copied in through a shared
@@ -173,8 +181,9 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
        and compare the two:
        - macOS: `test ! -e "$BAK" && ditto "$ROOT" "$BAK" && diff -rq "$ROOT" "$BAK" && echo SAME`. Expected: `SAME`
          and nothing else;
-       - Windows: `Test-Path $Bak` prints `False`; then `robocopy $Root $Bak /E`; then
-         `robocopy $Root $Bak /E /L /X /NJH /NJS /NDL /FP` prints no file. Any file listed is a difference.
+       - Windows: `Test-Path $Bak` prints `False`; then
+         `robocopy $Root $Bak /E; if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }`; then
+         `Compare-Object (Get-Tree $Root) (Get-Tree $Bak)` prints nothing. Any line it prints is a difference.
 7. [ ] Install the candidate over it: drag it to Applications and choose **Replace** (macOS); run the candidate's
        `setup.exe` (Windows). Expected on Windows: the installer upgrades in place. If it asks to uninstall the old
        version first, note it, and leave **Delete the application data** unticked. Open the candidate.
@@ -198,10 +207,12 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
 13. [ ] Install the candidate again and open it. Expected: baseline 2, read only.
 14. [ ] Restore the step 6 copy. Quit the candidate. Check the backup is there, move the live root aside (do not
         delete it), copy the backup in and compare:
-        - macOS: `test -d "$BAK" && mv "$ROOT" "$ROOT.after-$RUN" && ditto "$BAK" "$ROOT" && diff -rq "$BAK" "$ROOT" && echo SAME`.
+        - macOS: `test -d "$BAK" && test ! -e "$ROOT.after-$RUN" && mv "$ROOT" "$ROOT.after-$RUN" && ditto "$BAK" "$ROOT" && diff -rq "$BAK" "$ROOT" && echo SAME`.
           Expected: `SAME`;
-        - Windows: `Test-Path $Bak` prints `True`; `Rename-Item $Root "$Root.after-$Run"`; `robocopy $Bak $Root /E`;
-          `robocopy $Bak $Root /E /L /X /NJH /NJS /NDL /FP` prints no file.
+        - Windows: `Test-Path $Bak` prints `True` and `Test-Path "$Root.after-$Run"` prints `False`; then
+          `Rename-Item $Root "$Root.after-$Run" -ErrorAction Stop`;
+          `robocopy $Bak $Root /E; if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }`;
+          `Compare-Object (Get-Tree $Bak) (Get-Tree $Root)` prints nothing.
 
         Open the candidate. Expected: the unlock (E) or open (S) as in step 8; the wallet name, the address book, the
         receive request, the labels, the Settings values and the signature as in baseline 1. Once the wallet has
@@ -213,7 +224,7 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
 unlock (E); the wallet asks for a passphrase or reports a missing key (S); anything in baseline 1 other than a
 status that moved on is missing or different in step 8 or 9; the network is not Testnet; About does not show the
 candidate's version; the baseline signature does not verify or signing again gives another signature; the send in
-step 10 fails; baseline 2 differs in step 11 or 13; after step 14's sync, a baseline 1 value, the baseline 2
+step 10 fails; baseline 2 differs in step 11 or 13; after step 14's sync, one of the wallet details step 14 lists, the baseline 2
 balance or the single step 10 row is missing or different.
 **Stop and redo the run** (not a product failure): a backup or restore comparison in step 6 or 14 shows a
 difference.
@@ -277,7 +288,8 @@ section 3 is the check.
 ## 7. Results
 
 One row per machine and run: pass, fail (with the issue number), skipped (with the reason), outstanding (a pair
-not yet run) or pending (the release is not published yet). The worksheet holds the values behind each cell.
+not yet run) or pending (the release is not published yet). In the first-launch cell, an override path the OS
+never asked for is **unexercised** (with the OS version and security setting). The worksheet holds the values behind each cell.
 
 | Machine, OS | Run | Verify | First launch (path, seconds) | Fresh install | Upgrade (8, 9) | Send and reopen (10, 11) | Downgrade (12, 13) | Restore (14) |
 |---|---|---|---|---|---|---|---|---|
