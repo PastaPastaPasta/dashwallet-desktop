@@ -27,7 +27,7 @@ const AREAS: Record<string, string[]> = {
 
   activity: [],
 
-  receive: [],
+  receive: ["screens/Receive.tsx"],
 
   pay: ["screens/pay"],
 
