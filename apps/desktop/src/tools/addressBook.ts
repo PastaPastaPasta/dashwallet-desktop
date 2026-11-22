@@ -116,10 +116,11 @@ export class AddressBookModel extends Model {
     return this.purpose === "send" ? AddressBookText.sendingHeader : AddressBookText.receivingHeader;
   }
 
-  /** Export's suggested file name, dash-qt's, in English in every language: a translation could
-   * carry bidi controls the native file-name check keeps, saving a name other than the one shown. */
+  /** Export's suggested file name: only the stem is translated, without the bidi controls a
+   * translation can carry, so the saved name is the one the user sees and the extension stays `.csv`. */
   get exportFileName(): string {
-    return this.purpose === "send" ? "Sending addresses.csv" : "Receiving addresses.csv";
+    const stem = this.purpose === "send" ? t("tools.addressBook.exportFilenameSending") : t("tools.addressBook.exportFilenameReceiving");
+    return `${stem.replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")}.csv`;
   }
 
   /** dash-qt: New and Delete for sending addresses only. */

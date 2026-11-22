@@ -171,15 +171,21 @@ describe("Address Book (QT-095…098)", () => {
     expect(m.error).toBe(AddressBookText.existsAsReceiving(FRESH, "Savings"));
   });
 
-  it("suggests the export's file name in English in every language", async () => {
+  it("suggests the export's file name with a .csv extension in every language", async () => {
     const sending = (await model("send")).m;
     const receiving = (await model("receive")).m;
-    const english = ["Sending addresses.csv", "Receiving addresses.csv"];
-    expect([sending.exportFileName, receiving.exportFileName]).toEqual(english);
+    expect([sending.exportFileName, receiving.exportFileName]).toEqual(["Sending addresses.csv", "Receiving addresses.csv"]);
     for (const language of ["en-XA", "ar-XB"]) {
       ui.set({ prefs: { ...DEFAULT_PREFS, language } });
       try {
-        expect([sending.exportFileName, receiving.exportFileName], language).toEqual(english);
+        const names = [sending.exportFileName, receiving.exportFileName];
+        for (const name of names) {
+          expect(name, language).toMatch(/[^.]\.csv$/);
+          expect(name, language).not.toMatch(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/);
+        }
+        // ar-XB only reverses how English letters show, so without its controls the name is English.
+        if (language === "ar-XB") expect(names).toEqual(["Sending addresses.csv", "Receiving addresses.csv"]);
+        else for (const name of names) expect(name).not.toMatch(/^(Sending|Receiving) addresses/);
       } finally {
         ui.set({ prefs: DEFAULT_PREFS });
       }
