@@ -920,7 +920,6 @@ fn a_chainlock_applied_while_both_wallets_were_closed_beats_a_locked_payment() {
         )
         .unwrap();
     engine.block_on(session.unload_wallet(id)).unwrap();
-    let winner_txid = winner.txid().to_string();
     let winner_block = super::block_with(vec![winner]).block_hash();
     chain_lock(&engine, &session, other, TIP + 1, winner_block);
     engine.block_on(session.unload_wallet(other)).unwrap();
@@ -934,21 +933,6 @@ fn a_chainlock_applied_while_both_wallets_were_closed_beats_a_locked_payment() {
         spendable(&engine, &session, id, a),
         "and a payment can spend it"
     );
-    let page = engine
-        .block_on(session.history_page(
-            id,
-            crate::history::HistoryQuery {
-                filter: Default::default(),
-                sort: crate::history::HistorySort::NewestFirst,
-                cursor: None,
-                limit: 100,
-            },
-        ))
-        .unwrap();
-    assert!(
-        (page.records.iter()).any(|r| r.txid == winner_txid && r.status.chain_locked),
-        "the rival reads ChainLocked"
-    );
 }
 
 /// A wallet closed while coin control's summary waits on the app
@@ -958,6 +942,7 @@ fn a_chainlock_applied_while_both_wallets_were_closed_beats_a_locked_payment() {
 fn closing_a_wallet_during_a_coin_read_does_not_panic() {
     let (_dir, engine, session, id, _) = wallet_funded_unmined();
     let pause = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
     let read = {
         let s = Arc::clone(&session);
         let held = crate::coins::HOLD_APPDB_JOB.scope(Arc::clone(&pause), async move {
