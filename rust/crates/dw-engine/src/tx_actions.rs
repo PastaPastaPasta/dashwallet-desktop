@@ -146,7 +146,11 @@ pub(crate) fn load_sent(appdb: &AppDb, wallet: WalletId) -> (Sent, bool) {
             .filter_map(|(key, hex)| {
                 let txid = Txid::from_str(&key[SENT_TX_PREFIX.len()..]).ok()?;
                 let tx = (hex::decode(hex).ok()).and_then(|b| deserialize::<Transaction>(&b).ok());
-                Some((txid, tx.filter(|tx| tx.txid() == txid)))
+                let tx = tx.filter(|tx| tx.txid() == txid);
+                if tx.is_none() {
+                    tracing::warn!(%wallet, "a sent payment's stored transaction does not read back");
+                }
+                Some((txid, tx))
             })
             .collect(),
         Err(e) => {
@@ -504,7 +508,6 @@ impl NetworkSession {
             self.spends
                 .release(&wallet, crate::send::SpendOwner::Tx(*t));
         }
-        self.clear_abandoned_payment_locks(wallet, &abandoned).await;
 
         // The released coins come back when the filter scan passes their
         // funding blocks again.
@@ -598,7 +601,9 @@ impl NetworkSession {
                 .filter_map(|a| a.transactions().get(t))
                 .collect();
             let entry = self.hub.history.get(&wallet, t);
-            if records.is_empty() && entry.is_none() {
+            let unresolved =
+                || (self.hub.history).read_wallet(&wallet, |h| h.unresolved.contains(t));
+            if records.is_empty() && (entry.is_none() || unresolved()) {
                 return Some(birth);
             }
             let recorded = (records.iter())

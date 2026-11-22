@@ -589,27 +589,6 @@ impl NetworkSession {
         self.signal_payments(id, &pair.0);
     }
 
-    /// Clears the Core payment locks of the wallet's payments `txids`, which
-    /// the user abandoned.
-    pub(crate) async fn clear_abandoned_payment_locks(
-        &self,
-        id: WalletId,
-        txids: &std::collections::BTreeSet<Txid>,
-    ) {
-        let held: Vec<(Pair, String)> = (guard(&self.platform.payments.locks).get(&id))
-            .map(|locks| {
-                (locks.iter())
-                    .filter(|(_, l)| l.source == PaymentSource::Core)
-                    .filter(|(_, l)| l.txid.parse::<Txid>().is_ok_and(|t| txids.contains(&t)))
-                    .map(|(pair, l)| (*pair, l.txid.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        for (pair, txid) in held {
-            self.clear_payment_lock(id, pair, &txid).await;
-        }
-    }
-
     /// Clears `pair`'s lock, in memory and on disk, where it is still
     /// `txid`'s: its payment was accepted, or is provably unsent.
     pub(crate) async fn clear_payment_lock(&self, id: WalletId, pair: Pair, txid: &str) {
@@ -786,10 +765,6 @@ impl NetworkSession {
         // its mempool view before any peer took it (BL-76).
         if ours.is_some_and(|e| e.instant_locked || e.context != TransactionContext::Mempool) {
             return LockResolution::Sent;
-        }
-        // The user abandoned it: by their word it did not leave.
-        if ours.is_some_and(|e| e.is_abandoned()) {
-            return LockResolution::NotSent;
         }
         let inputs: Vec<OutPoint> = match ours {
             Some(e) => e.tx.input.iter().map(|i| i.previous_output).collect(),

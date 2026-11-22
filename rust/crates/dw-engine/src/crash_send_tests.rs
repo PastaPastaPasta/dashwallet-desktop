@@ -238,3 +238,33 @@ fn a_swept_payment_stays_gone_after_a_restart() {
         "marked after a restart"
     );
 }
+
+/// A payment marked before a crash whose signed coin's funding the history
+/// doesn't hold: abandoning it rescans from the birth height, as nothing
+/// says where that coin was funded.
+#[test]
+fn abandoning_a_marked_payment_of_an_unknown_coin_rescans_from_the_birth() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    let coin = OutPoint::new(
+        <Txid as dashcore::hashes::Hash>::from_byte_array([6; 32]),
+        0,
+    );
+    let payment = super::spend_of(coin, vec![(super::elsewhere(), COIN / 2)]);
+    let (scope, txid) = (id.to_string(), payment.txid());
+    let hex = dashcore::consensus::encode::serialize_hex(&payment);
+    {
+        let appdb = &session.live().unwrap().appdb;
+        (appdb.set_setting(&scope, &format!("sent:{txid}"), Some(&coin.to_string()))).unwrap();
+        (appdb.set_setting(&scope, &format!("senttx:{txid}"), Some(&hex))).unwrap();
+    }
+
+    let session = reopen(&engine, session);
+    assert!(session.hub.history.get(&id, &txid).is_some(), "restored");
+    abandon(&engine, &session, id, txid);
+    assert_eq!(
+        synced(&engine, &session, id),
+        super::BIRTH - 1,
+        "the abandon rescans from the birth"
+    );
+}

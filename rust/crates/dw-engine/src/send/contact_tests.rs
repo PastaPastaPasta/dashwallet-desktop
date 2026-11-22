@@ -2577,10 +2577,32 @@ mod pay;
 
 /// Where [`contact_payment_killed_child`] keeps its data and its report.
 const KILL_ROOT: &str = "DWD_CASE1_CONTACT_KILL_ROOT";
+/// Where the child dies: `handed` (the library holds the payment, its
+/// outcome awaited) or `marked` (its mark and Bob's lock written, before the
+/// library is entered).
+const KILL_POINT: &str = "DWD_CASE1_CONTACT_KILL_POINT";
 
-/// Run by [`a_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock`]
-/// in a child process: the fixture's coin stored, a payment to Bob handed
-/// off with its outcome awaited; then it reports and waits for its SIGKILL.
+/// A broadcaster that parks before the library is entered.
+struct ParkBeforeEntry(std::sync::atomic::AtomicBool);
+
+impl TestBroadcaster for ParkBeforeEntry {
+    fn before_entry(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+        self.0.store(true, Ordering::SeqCst);
+        Box::pin(std::future::pending())
+    }
+
+    fn broadcast(
+        &self,
+        _tx: &Transaction,
+        _first: bool,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Txid, PlatformWalletError>> + Send>> {
+        Box::pin(std::future::pending())
+    }
+}
+
+/// Run by [`killed_contact_payment`] in a child process: the fixture's coin
+/// stored, a payment to Bob under way to `KILL_POINT`; then it reports and
+/// waits for its SIGKILL.
 #[test]
 #[ignore = "the child process of the contact payment kill (#170 case 1)"]
 fn contact_payment_killed_child() {
@@ -2588,6 +2610,7 @@ fn contact_payment_killed_child() {
         return;
     };
     let root = std::path::PathBuf::from(root);
+    let handed = std::env::var(KILL_POINT).as_deref() != Ok("marked");
     let f = fixture_at(&root, true);
     let utxos = f.with_wallet(|w| async move {
         let state = w.state().await;
@@ -2602,7 +2625,13 @@ fn contact_payment_killed_child() {
         ..Default::default()
     });
     let d = f.draft(BOB);
-    let seam = Seam::install(&d, Net::Hold);
+    let (seam, park) = if handed {
+        (Some(Seam::install(&d, Net::Hold)), None)
+    } else {
+        let park = Arc::new(ParkBeforeEntry(Default::default()));
+        *d.broadcaster.lock().unwrap() = Some(park.clone());
+        (None, Some(park))
+    };
     let p = (f.engine)
         .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
         .unwrap();
@@ -2616,7 +2645,11 @@ fn contact_payment_killed_child() {
             let _ = d.broadcast(p).await;
         }
     });
-    wait_until(|| seam.entered.load(Ordering::SeqCst) > 0);
+    wait_until(|| {
+        seam.as_ref()
+            .is_some_and(|s| s.entered.load(Ordering::SeqCst) > 0)
+            || park.as_ref().is_some_and(|p| p.0.load(Ordering::SeqCst))
+    });
     assert_eq!(f.rows(), vec![(b58(BOB), txid.clone())]);
     let report = format!("{}\n{txid}\n{}\n", f.wallet, inputs.join(","));
     std::fs::write(root.join("reached.tmp"), report).unwrap();
@@ -2626,14 +2659,9 @@ fn contact_payment_killed_child() {
     }
 }
 
-/// #170 case 1 through a real kill: a contact payment to Bob handed off
-/// (its outcome awaited, Bob locked behind it), the app killed before the
-/// wallet stored it. The next launch keeps its coin out of coin control
-/// and the balance, lists the payment, and keeps Bob locked by it;
-/// abandoning it unlocks him.
-#[test]
-fn a_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock() {
-    use std::collections::BTreeSet;
+/// A contact payment to Bob killed at `point` in a child process; the next
+/// launch, with the payment's txid and the coins it signed.
+fn killed_contact_payment(point: &str) -> (Fixture, Txid, std::collections::BTreeSet<OutPoint>) {
     use std::str::FromStr;
     let dir = dw_testutil::private_tempdir();
     let log = std::fs::File::create(dir.path().join("child.log")).unwrap();
@@ -2645,6 +2673,7 @@ fn a_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock() {
             "--test-threads=1",
         ])
         .env(KILL_ROOT, dir.path())
+        .env(KILL_POINT, point)
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone().unwrap())
         .stderr(log)
@@ -2658,7 +2687,7 @@ fn a_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock() {
             let _ = child.kill();
             let _ = child.wait();
             let log = std::fs::read_to_string(dir.path().join("child.log")).unwrap_or_default();
-            panic!("the child never handed the payment off ({exited:?}): {log}");
+            panic!("the child never reached {point} ({exited:?}): {log}");
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
@@ -2666,11 +2695,11 @@ fn a_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock() {
     child.wait().unwrap();
     let report = std::fs::read_to_string(&reached).unwrap();
     let lines: Vec<&str> = report.lines().collect();
-    let (wallet, txid): (WalletId, String) = (lines[0].parse().unwrap(), lines[1].to_owned());
-    let inputs: BTreeSet<OutPoint> = (lines[2].split(','))
+    let wallet: WalletId = lines[0].parse().unwrap();
+    let txid: Txid = lines[1].parse().unwrap();
+    let inputs = (lines[2].split(','))
         .map(|o| OutPoint::from_str(o).unwrap())
         .collect();
-
     let engine = engine_at(dir.path());
     let session = open_session(&engine);
     let f = Fixture {
@@ -2679,25 +2708,140 @@ fn a_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock() {
         session,
         wallet,
     };
-    let free = || -> BTreeSet<OutPoint> {
+    (f, txid, inputs)
+}
+
+impl Fixture {
+    /// Closes the network and opens it again.
+    fn reopen(self) -> Self {
+        let Fixture {
+            _dir,
+            engine,
+            session,
+            wallet,
+        } = self;
+        drop(session);
+        assert!(
+            engine
+                .block_on(engine.close_network(DashNetwork::Regtest))
+                .unwrap()
+        );
+        let session = open_session(&engine);
+        Fixture {
+            _dir,
+            engine,
+            session,
+            wallet,
+        }
+    }
+
+    fn abandon(&self, txid: Txid) {
+        let (s, id) = (Arc::clone(&self.session), self.wallet);
+        (self.engine)
+            .block_on(self.session.on_runtime(async move {
+                let manager = s.manager()?;
+                s.abandon_inner(&manager, id, txid).await
+            }))
+            .unwrap();
+    }
+
+    /// Runs `op` on the wallet manager as dash-spv does and hands the hub
+    /// the events it emitted.
+    fn deliver<F>(&self, op: F)
+    where
+        F: for<'a> FnOnce(
+                &'a mut platform_wallet::key_wallet_manager::WalletManager<
+                    platform_wallet::PlatformWalletInfo,
+                >,
+            ) -> futures_util::future::BoxFuture<'a, ()>
+            + Send
+            + 'static,
+    {
+        use dash_spv::EventHandler;
+        let manager = self.session.manager().unwrap();
+        let events: Vec<_> = self.engine.block_on(async move {
+            let wm = manager.wallet_manager_arc();
+            let mut wm = wm.write().await;
+            let mut rx = wm.subscribe_events();
+            op(&mut wm).await;
+            std::iter::from_fn(|| rx.try_recv().ok()).collect()
+        });
+        for event in &events {
+            self.session.hub.on_wallet_event(event);
+        }
+    }
+
+    /// The scan processes the block at `height` holding `tx`, and commits.
+    fn mine(&self, height: u32, tx: Transaction) -> dashcore::BlockHash {
+        let mut block = dashcore::Block {
+            header: dashcore::blockdata::block::Header {
+                version: dashcore::blockdata::block::Version::from_consensus(1),
+                prev_blockhash: dashcore::BlockHash::all_zeros(),
+                merkle_root: dashcore::TxMerkleNode::all_zeros(),
+                time: 1_793_598_712,
+                bits: dashcore::CompactTarget::from_consensus(0x207f_ffff),
+                nonce: 0,
+            },
+            txdata: vec![tx],
+        };
+        block.header.merkle_root = block.compute_merkle_root().unwrap();
+        let (hash, id) = (block.block_hash(), self.wallet);
+        self.deliver(move |wm| {
+            Box::pin(async move {
+                use platform_wallet::key_wallet_manager::WalletInterface;
+                let ids = std::collections::BTreeSet::from([id.0]);
+                wm.process_block_for_wallets(&block, hash, height, &ids)
+                    .await;
+                wm.update_wallet_synced_height(&id.0, height);
+            })
+        });
+        hash
+    }
+
+    fn chain_lock(&self, height: u32, hash: dashcore::BlockHash) {
+        self.deliver(move |wm| {
+            Box::pin(async move {
+                use platform_wallet::key_wallet_manager::WalletInterface;
+                wm.apply_chain_lock(dashcore::ChainLock {
+                    block_height: height,
+                    block_hash: hash,
+                    signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+                });
+            })
+        });
+    }
+}
+
+/// #170 case 1 through a real kill: a contact payment to Bob handed off
+/// (its outcome awaited, Bob locked behind it), the app killed before the
+/// wallet stored it. The next launch keeps its coin out of coin control
+/// and the balance, lists the payment, and keeps Bob locked by it; an
+/// Abandon keeps him locked, as it may have left. The user's own payment
+/// of the freed coin to this wallet, once ChainLocked, proves it unsent:
+/// Check again unlocks him.
+#[test]
+fn a_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock() {
+    use std::collections::BTreeSet;
+    let (f, parsed, inputs) = killed_contact_payment("handed");
+    let txid = parsed.to_string();
+    let coins = |f: &Fixture| -> Vec<crate::CoinInfo> {
         let filter = crate::CoinFilter {
             include_locked: true,
             ..Default::default()
         };
-        let coins = f
-            .engine
+        (f.engine)
             .block_on(f.session.utxos(f.wallet, filter))
-            .unwrap();
-        coins.into_iter().map(|c| c.outpoint).collect()
+            .unwrap()
     };
+    let free =
+        |f: &Fixture| -> BTreeSet<OutPoint> { coins(f).into_iter().map(|c| c.outpoint).collect() };
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while !free().is_disjoint(&inputs) && std::time::Instant::now() < deadline {
+    while !free(&f).is_disjoint(&inputs) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    assert!(free().is_disjoint(&inputs), "its coin is offered again");
+    assert!(free(&f).is_disjoint(&inputs), "its coin is offered again");
     let total = f.session.balances(&f.wallet).unwrap().unwrap().total;
     assert!(total < COIN, "its coin counts: {total}");
-    let parsed: Txid = txid.parse().unwrap();
     assert!(
         f.session.hub.history.get(&f.wallet, &parsed).is_some(),
         "not listed"
@@ -2708,13 +2852,114 @@ fn a_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock() {
         "Bob is free"
     );
 
-    let (s, id) = (Arc::clone(&f.session), f.wallet);
-    (f.engine)
-        .block_on(f.session.on_runtime(async move {
-            let manager = s.manager()?;
-            s.abandon_inner(&manager, id, parsed).await
-        }))
-        .unwrap();
-    assert!(f.lock(BOB).is_none(), "the abandon unlocks Bob");
+    f.abandon(parsed);
+    assert_eq!(
+        f.lock(BOB).map(|l| l.txid),
+        Some(txid.clone()),
+        "the abandon unlocks Bob"
+    );
+    assert_eq!(f.rows(), vec![(b58(BOB), txid.clone())], "the lock's row");
+    assert_eq!(f.resolve(BOB), LockResolution::Unknown);
+
+    let f = f.reopen();
+    assert_eq!(f.lock(BOB).map(|l| l.txid), Some(txid.clone()), "restarted");
+    let coin = *inputs.iter().next().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !coins(&f).iter().any(|c| c.outpoint == coin && c.spendable)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(
+        coins(&f).iter().any(|c| c.outpoint == coin && c.spendable),
+        "coin control offers the freed coin"
+    );
+
+    let own = (f.engine)
+        .block_on(f.session.current_receive_address(f.wallet))
+        .unwrap()
+        .address;
+    let d = f.session.new_tx_draft(f.wallet).unwrap();
+    d.set_recipients(vec![Recipient {
+        address: own,
+        amount: COIN,
+        subtract_fee_from_amount: true,
+        label: None,
+        message: None,
+    }])
+    .unwrap();
+    d.set_source(CoinSource::Outpoints(vec![coin])).unwrap();
+    Seam::install(&d, Net::Accept);
+    let grant = (f.session.vault())
+        .authorize(
+            GrantPurpose::Spend { max_duffs: COIN },
+            Some(&f.wallet.0),
+            Credential::Passphrase(PASS),
+        )
+        .unwrap()
+        .id;
+    let p = f.engine.block_on(d.prepare(grant)).unwrap();
+    let self_send = p.transaction().unwrap();
+    f.engine.block_on(d.broadcast(p)).unwrap();
+
+    let hash = f.mine(10, self_send);
+    assert_eq!(
+        f.resolve(BOB),
+        LockResolution::Unknown,
+        "a self-send in a block not ChainLocked"
+    );
+    assert!(f.lock(BOB).is_some());
+    f.chain_lock(10, hash);
+    assert_eq!(f.resolve(BOB), LockResolution::NotSent, "Check again");
+    assert!(f.lock(BOB).is_none(), "Bob is unlocked");
     assert!(f.rows().is_empty(), "the lock's row went");
+}
+
+/// Killed before the library was entered: the next launch cannot tell it
+/// from a kill after the hand-off, so an Abandon keeps Bob locked too.
+#[test]
+fn a_contact_payment_killed_before_the_hand_off_keeps_its_lock_after_an_abandon() {
+    let (f, txid, _) = killed_contact_payment("marked");
+    let txid_s = txid.to_string();
+    assert_eq!(f.lock(BOB).map(|l| l.txid), Some(txid_s.clone()));
+    f.abandon(txid);
+    assert_eq!(
+        f.lock(BOB).map(|l| l.txid),
+        Some(txid_s.clone()),
+        "the abandon unlocks Bob"
+    );
+    assert_eq!(f.rows(), vec![(b58(BOB), txid_s)], "the lock's row");
+    assert_eq!(f.resolve(BOB), LockResolution::Unknown);
+}
+
+/// A contact payment handed off with its outcome unknown, then abandoned:
+/// it may have left, so Bob stays locked until the evidence.
+#[test]
+fn abandoning_a_contact_payment_of_unknown_outcome_keeps_the_contact_locked() {
+    let f = fixture(false);
+    let d = f.draft(BOB);
+    Seam::install(&d, Net::Unconfirmed);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let tx = p.transaction().unwrap();
+    let txid = p.summary().txid.clone();
+    assert!(matches!(
+        send_failure(f.engine.block_on(d.broadcast(Arc::clone(&p)))),
+        SendFailure::BroadcastUnknown { .. }
+    ));
+    f.deliver(move |wm| {
+        Box::pin(async move {
+            use platform_wallet::key_wallet_manager::WalletInterface;
+            wm.process_mempool_transaction(&tx, None).await;
+        })
+    });
+    f.abandon(txid.parse().unwrap());
+    assert_eq!(
+        f.lock(BOB).map(|l| l.txid),
+        Some(txid.clone()),
+        "the abandon unlocks Bob"
+    );
+    assert_eq!(f.rows(), vec![(b58(BOB), txid)], "the lock's row");
+    assert_eq!(f.resolve(BOB), LockResolution::Unknown);
 }

@@ -418,6 +418,9 @@ pub(crate) struct WalletHistory {
     /// Transactions a conflict sweep removed this session: a load whose
     /// marks were read before the sweep restores none of them.
     pub swept: HashSet<Txid>,
+    /// Payments restored from their sent marks (`add_unrecorded_sends`)
+    /// with a signed coin whose funding the history doesn't hold.
+    pub unresolved: HashSet<Txid>,
     /// Transactions key-wallet held this session: its records when the
     /// history was filled at open and each one its events named since.
     /// Records only read from storage are not among them (platform-wallet
@@ -579,7 +582,13 @@ impl WalletHistory {
                     let address = Address::from_script(&out.script_pubkey, network).ok()?;
                     Some((n as u32, (out.value, address)))
                 })
-                .collect();
+                .collect::<BTreeMap<_, _>>();
+            let signed = (tx.input.iter())
+                .filter(|i| mark.coins.contains(&i.previous_output))
+                .count();
+            if own_inputs.len() < signed {
+                self.unresolved.insert(*txid);
+            }
             self.txs.insert(
                 *txid,
                 TxEntry {
