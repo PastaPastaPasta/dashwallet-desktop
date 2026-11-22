@@ -17,8 +17,9 @@
 //
 // Idempotent and resumable: each write is recorded as intended before it is made, and a rerun
 // reads the network before writing again. A phrase is made once (a store entry is never
-// overwritten), the faucet is asked once (a request whose outcome is unknown stops the run for a
-// look; a definite refusal is cleared, so a later run asks again), A pays B, C and D once, a
+// overwritten), the faucet is asked once (the request stays on record unless the helper says it
+// refused; a rerun with it on record reads the address and stops rather than asks), A pays B, C
+// and D once, a
 // registration starts only when the wallet has no identity and no registration row (an idle one
 // is resumed under its quote's grant), and a contact request goes out only when the pair has no
 // relation and none was recorded. One run at a time (`.lock`); a fixture whose secrets exist
@@ -34,10 +35,11 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, randomInt } from "node:crypto";
 import { createInterface } from "node:readline";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { leaks } from "./scratch.ts";
+import { faucetOutcome, releaseLock, takeLock } from "./testnet-guards.ts";
 
 const env = (name: string, fallback?: string): string => {
   const v = process.env[name] ?? fallback;
@@ -239,13 +241,17 @@ function addressOf(w: W): string {
   return a;
 }
 
-/** One faucet payout to A, recorded as requesting before the helper runs. */
+/** One faucet payout to A, recorded as requesting before the helper runs. The record stays unless
+ * the helper says it refused (faucetOutcome); a rerun then reads the address on Insight and never
+ * asks again. */
 async function faucet() {
   if (state.faucet?.state === "paid") return;
   if (state.faucet?.state === "requesting") {
     const seen = await paidTo(state.faucet.address);
     if (seen.length === 0)
-      throw new Error(`fixture-state.json says the faucet was asked to pay ${state.faucet.address} at ${state.faucet.at} and Insight shows nothing: look (the faucet log, Insight) before running again`);
+      throw new Error(
+        `the faucet was asked to pay A's ${state.faucet.address} at ${state.faucet.at} and its outcome is unknown; Insight shows nothing paid to that address yet. Not asking again: check the address and logs/faucet-*.log, and only once it is clear nothing arrived, remove "faucet" from fixture-state.json`,
+      );
     state.faucet = { ...state.faucet, state: "paid", txid: seen[0]!.txid };
     step(`the faucet's earlier payout to ${state.faucet.address} arrived: ${seen[0]!.txid}`);
     return;
@@ -255,26 +261,16 @@ async function faucet() {
   step(`asking the faucet for ${FAUCET_TDASH} tDASH to A's ${address}`);
   const r = spawnSync("python3", ["-I", FAUCET_HELPER, address, "--amount", FAUCET_TDASH], { encoding: "utf8", timeout: 300_000 });
   writeFileSync(join(LOGS, `faucet-${Date.now()}.log`), `${r.stdout}\n${r.stderr}`, { mode: 0o600 });
-  const txid = (() => {
-    try {
-      return (JSON.parse(r.stdout) as { txid?: string }).txid;
-    } catch {
-      return undefined;
-    }
-  })();
-  if (r.status !== 0 || !txid) {
-    const stderr = r.stderr ?? "";
-    const why = r.error ? r.error.message : stderr.trim().split("\n").slice(-2).join(" ");
-    // Only a payout (exit 0) or an unknown outcome may have paid; any other refusal made no payment
-    // and a later run asks again.
-    if (r.status !== null && r.status !== 0 && !/Outcome unknown/.test(stderr)) {
-      delete state.faucet;
-      save();
-    }
-    throw new Fatal(`the faucet did not pay (${r.status ?? r.signal}): ${why}`);
+  const outcome = faucetOutcome(r);
+  if (outcome.kind === "refused") {
+    delete state.faucet;
+    save();
+    throw new Fatal(`the faucet refused, nothing was paid (wait out any window it names before running again): ${outcome.why}`);
   }
-  state.faucet = { ...state.faucet, state: "paid", txid };
-  step(`the faucet paid A ${FAUCET_TDASH} tDASH: ${txid}`);
+  if (outcome.kind === "unknown")
+    throw new Fatal(`the faucet's outcome is unknown (${outcome.why}); the request to ${address} stays on record, and a rerun checks that address instead of asking again`);
+  state.faucet = { ...state.faucet, state: "paid", txid: outcome.txid };
+  step(`the faucet paid A ${FAUCET_TDASH} tDASH: ${outcome.txid}`);
 }
 
 /** A pays B, C and D their share in one transaction, recorded as sending first. */
@@ -571,29 +567,10 @@ async function befriend(s: Session, from: W, to: W) {
 
 // ------------------------------------------------------------------ main
 
-/** One run at a time: `.lock` holds the pid; a lock whose process is gone is taken over. */
+/** One run at a time: `.lock` holds the pid (testnet-guards.ts). */
 function lock() {
-  for (let i = 0; i < 2; i++) {
-    try {
-      const fd = openSync(LOCK, "wx", 0o600);
-      writeFileSync(fd, `${process.pid}\n`);
-      closeSync(fd);
-      process.on("exit", () => rmSync(LOCK, { force: true }));
-      return;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      const pid = Number(readFileSync(LOCK, "utf8").trim());
-      try {
-        if (!Number.isInteger(pid) || pid <= 0) throw new Error("no pid");
-        process.kill(pid, 0);
-        throw new Fatal(`another fixture run (pid ${pid}) holds ${LOCK}`);
-      } catch (k) {
-        if (k instanceof Fatal || (k as NodeJS.ErrnoException).code === "EPERM") throw new Fatal(`${LOCK} is held (pid ${pid})`);
-        rmSync(LOCK, { force: true });
-      }
-    }
-  }
-  throw new Error(`could not take ${LOCK}`);
+  takeLock(LOCK);
+  process.on("exit", () => releaseLock(LOCK));
 }
 
 async function main() {
@@ -647,6 +624,7 @@ async function main() {
         identity_id: reg.identity,
         username: reg.label,
         expected_main_name: reg.label,
+        display_name: `QA ${w}`,
         birth_height: state.birthHeight,
         contacts: contacts.sort(),
         credits: balance,

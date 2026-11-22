@@ -8,15 +8,21 @@
 #   bell-accept (DP2-09, C→B)    pay-contact (DP3-06, A→B)
 #   profile-write (BL-162, A)
 #
-# A failed flow does not stop the run. Each flow's output and log go to <out>/<flow>/; at the end
-# <out>/summary.md and summary.json give each flow's result, duration and first error line, and
-# the phrase and key check (e2e-tauri/artifact-scan.ts: the fixture's phrases and passphrases as
-# plain text, BIP39 runs of 12+, xprv/tprv, screenshots through tesseract) runs over everything
-# kept. The writes are the flows' own, each guarded by its ledger in the fixture, so a rerun does
-# not repeat them; registration is skipped once its ledger says done. Wallet E's phrase (which
+# A failed flow does not stop the run. Each run gets a new directory <out>/<UTC time>-XXXX/ (the
+# symlink <out>/latest is pointed at it); nothing is ever emptied or deleted. Each
+# flow's output and log go to <run>/<flow>/; at the end <run>/summary.md and summary.json give each
+# flow's result, duration and first error line, and the phrase and key check
+# (e2e-tauri/artifact-scan.ts: the fixture's phrases and passphrases as plain text and in
+# screenshots through tesseract, BIP39 runs of 12+, xprv/tprv) runs over everything kept. The
+# writes are the flows' own, each guarded by its ledger in the fixture, so a rerun does not repeat
+# them; registration is skipped once its ledger says done, and profile-write once BL-162.json
+# says done (DW_PROFILE_WRITE_AGAIN=1 asks for another edit; a run that fails after its edit went
+# out records nothing, so the next edits again, which the flow allows: the edit is repeatable). Wallet E's phrase (which
 # registration.ts writes into the fixture) and the registration's passphrase (in DW_REG_STATE,
 # beside the fixture, not in it: registration.ts fails on a secret among the fixture's files) are
-# moved into the secret store as <prefix>-E-<wallet id>-{mnemonic,reg-passphrase} after it runs.
+# moved into the secret store as <prefix>-E-<wallet id>-{mnemonic,reg-passphrase} after it runs;
+# if that fails the run stops. Every run first checks that each phrase and passphrase file of the
+# fixture and its registration state is a link into the secret store, and stops if one is not.
 #
 # No window opens: without $DISPLAY the run starts under xvfb-run, and each flow gets a private
 # session bus (scripts/e2e-tauri.sh). Needs WebKitWebDriver, tauri-driver, xvfb-run, dbus-run-session
@@ -24,10 +30,13 @@
 #
 #   DW_TESTNET_FIXTURE=<dir>       the fixture (fixture.json, <W>.mnemonic); required
 #   DW_REG_STATE=<dir>             registration's app data root and passphrase (default <fixture>.reg-state)
-#   DW_SUITE_OUT=<dir>             default test-results/dashpay-testnet (emptied first; not the fixture)
+#   DW_SUITE_OUT=<dir>             runs go to <dir>/<UTC time>-XXXX/ (default test-results/dashpay-testnet);
+#                                  in a git work tree it must be git-ignored; not in the fixture
 #   DW_SUITE_FLOWS="a b …"         a subset, in the order given (default all seven)
 #   DW_SUITE_FLOW_TIMEOUT=<s>      per flow, then SIGTERM (default 7200)
 #   DW_E2E_SKIP_BUILD=1            reuse <target>/debug/{dash-wallet,dwcli}
+#   DW_PROFILE_WRITE_AGAIN=1       run profile-write although BL-162.json says it already wrote
+#   DW_SECRET_STORE=<dir>          where the store's links point (default ~/.secrets)
 #   DW_FIXTURE_SECRET_PREFIX       store names for E (default dwd-qa-testnet-<basename of the fixture>,
 #                                  as scripts/testnet-dashpay-fixture.sh)
 set -euo pipefail
@@ -39,22 +48,56 @@ reg=${DW_REG_STATE:-$fixture.reg-state}
 mkdir -p "$reg" && chmod 700 "$reg"
 export DW_REG_STATE
 DW_REG_STATE=$(cd "$reg" && pwd -P)
-out=${DW_SUITE_OUT:-$(cd "$(dirname "$0")/.." && pwd)/test-results/dashpay-testnet}
-mkdir -p "$out"
-out=$(cd "$out" && pwd -P)
-export DW_SUITE_OUT=$out
-[[ "$out" != / && "$out" != "$HOME" ]] || { echo "e2e-tauri-dashpay-testnet: $out may not be the run's output (it is emptied)" >&2; exit 2; }
+app=$(cd "$(dirname "$0")/.." && pwd -P)
+root=${DW_SUITE_OUT:-$app/test-results/dashpay-testnet}
+[[ "$root" == /* ]] || root=$PWD/$root
+# Inside a git work tree the output must be git-ignored (checked before anything is created).
+near=$root
+until [[ -d "$near" ]]; do near=$(dirname "$near"); done
+near_real=$(cd "$near" && pwd -P)
+root=$near_real${root#"$near"}
+[[ "$root" != / ]] || { echo "e2e-tauri-dashpay-testnet: / may not hold the runs" >&2; exit 2; }
+# Only "not a git repository" counts as outside one: any other git error refuses.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_CEILING_DIRECTORIES
+if where=$(LC_ALL=C git -C "$near_real" rev-parse --is-inside-git-dir --is-inside-work-tree 2>&1); then
+  [[ "${where%%$'\n'*}" != true ]] || { echo "e2e-tauri-dashpay-testnet: $root lies in a .git directory" >&2; exit 2; }
+  if [[ "${where##*$'\n'}" == true ]] && ! git -C "$near_real" check-ignore -q -- "$root/"; then
+    echo "e2e-tauri-dashpay-testnet: $root lies in a git work tree and is not git-ignored" >&2; exit 2
+  fi
+elif [[ "$where" != *"not a git repository"* ]]; then
+  echo "e2e-tauri-dashpay-testnet: cannot tell whether $root lies in a git work tree: $where" >&2; exit 2
+fi
 for keep in "$fixture" "$DW_REG_STATE"; do
-  case "$out/" in "$keep"/*) echo "e2e-tauri-dashpay-testnet: $out lies in $keep" >&2; exit 2 ;; esac
-  case "$keep/" in "$out"/*) echo "e2e-tauri-dashpay-testnet: $keep lies in $out, which the run empties" >&2; exit 2 ;; esac
+  case "$root/" in "$keep"/*) echo "e2e-tauri-dashpay-testnet: $root lies in $keep" >&2; exit 2 ;; esac
+  case "$keep/" in "$root"/*) echo "e2e-tauri-dashpay-testnet: $keep lies in $root" >&2; exit 2 ;; esac
 done
-cd "$(dirname "$0")/.."
+export DW_SUITE_OUT=$root
+store=${DW_SECRET_STORE:-$HOME/.secrets}
+[[ -d "$store" ]] || { echo "e2e-tauri-dashpay-testnet: no secret store at $store" >&2; exit 2; }
+store=$(cd "$store" && pwd -P)
+cd "$app"
 repo=$(cd ../.. && pwd)
 
 if [[ -z "${DISPLAY:-}" ]]; then
   command -v xvfb-run >/dev/null || { echo "e2e-tauri-dashpay-testnet: no DISPLAY and no xvfb-run" >&2; exit 2; }
   exec xvfb-run -a -s "-screen 0 1440x960x24" "$PWD/scripts/e2e-tauri-dashpay-testnet.sh" "$@"
 fi
+
+# The secrets the closing check looks for, before hours of flows (a link `secret sync` has not filled).
+node e2e-tauri/testnet-suite.ts secrets "$fixture"
+env_lines=$(node e2e-tauri/testnet-suite.ts env "$fixture")
+eval "$env_lines"
+in_store() { [[ -L "$1" && "$(readlink -f "$1")" == "$store"/* ]]; }
+# Every phrase and passphrase file is a link into the store, never a plain file.
+stored_only() {
+  local f bad=0
+  for f in "$fixture"/*.mnemonic "$fixture"/passphrase "$DW_REG_STATE"/passphrase "$fixture".reg-state*/passphrase; do
+    [[ -e "$f" || -L "$f" ]] || continue
+    in_store "$f" || { echo "e2e-tauri-dashpay-testnet: $f is not a link into the secret store ($store)" >&2; bad=1; }
+  done
+  return $bad
+}
+stored_only || exit 2
 
 if [[ "${DW_E2E_SKIP_BUILD:-}" != 1 ]]; then
   pnpm tauri build --debug --no-bundle
@@ -64,11 +107,10 @@ target=${CARGO_TARGET_DIR:-$repo/rust/target}
 for bin in dash-wallet dwcli; do
   [[ -x "$target/debug/$bin" ]] || { echo "e2e-tauri-dashpay-testnet: no $target/debug/$bin" >&2; exit 2; }
 done
-# The secrets the closing check looks for, before hours of flows (a link `secret sync` has not filled).
-node e2e-tauri/testnet-suite.ts secrets "$fixture"
-env_lines=$(node e2e-tauri/testnet-suite.ts env "$fixture")
-eval "$env_lines"
-find "$out" -mindepth 1 -delete
+mkdir -p "$root"
+out=$(mktemp -d "$root/$(date -u +%Y%m%dT%H%M%SZ)-XXXX") || exit 2
+if [[ -L "$root/latest" || ! -e "$root/latest" ]]; then ln -sfn "$(basename "$out")" "$root/latest"; fi
+echo "e2e-tauri-dashpay-testnet: this run's results go to $out"
 : >"$out/runs.tsv"
 profile_root=${TMPDIR:-/tmp}/dwd-dashpay-testnet-profile-$(date -u +%Y%m%dT%H%M%S)
 prefix=${DW_FIXTURE_SECRET_PREFIX:-dwd-qa-testnet-$(basename "$fixture")}
@@ -78,8 +120,16 @@ set +e
 adopt() {
   local path=$1 name=$2
   [[ -f "$path" && ! -L "$path" ]] || return 0
-  secret adopt --name "$name" --note "dwd QA testnet fixture (testnet only)" "$path" >/dev/null ||
+  if ! secret adopt --name "$name" --note "dwd QA testnet fixture (testnet only)" "$path" >/dev/null || ! in_store "$path"; then
     echo "e2e-tauri-dashpay-testnet: could not move $path into the secret store" >&2
+    return 1
+  fi
+}
+
+# Logs why this flow is skipped and adds its row.
+skip() {
+  echo "$1" >"$log"
+  printf '%s\tskip\t0\t%s\n' "$flow" "$log" >>"$out/runs.tsv"
 }
 
 flows=${DW_SUITE_FLOWS:-dashpay-status contacts registration add-contact bell-accept pay-contact profile-write}
@@ -88,8 +138,11 @@ for flow in $flows; do
   mkdir -p "$dir/logs"
   log="$dir/logs/run.log"
   if [[ "$flow" == registration && -f "$fixture/DP1-09.json" ]] && grep -q '"state": "done"' "$fixture/DP1-09.json"; then
-    echo "registration: already done in this fixture (DP1-09.json); skipped" >"$log"
-    printf '%s\tskip\t0\t%s\n' "$flow" "$log" >>"$out/runs.tsv"
+    skip "registration: already done in this fixture (DP1-09.json); skipped"
+    continue
+  fi
+  if [[ "$flow" == profile-write && "${DW_PROFILE_WRITE_AT:-synced}" != never && "${DW_PROFILE_WRITE_AGAIN:-}" != 1 && -f "$fixture/BL-162.json" ]] && grep -q '"state": "done"' "$fixture/BL-162.json"; then
+    skip "profile-write: already wrote in this fixture (BL-162.json); skipped (DW_PROFILE_WRITE_AGAIN=1 for another edit)"
     continue
   fi
   case $flow in
@@ -109,8 +162,15 @@ for flow in $flows; do
     # Named by E's wallet id; a run that stopped before the ledger had one still goes to the store.
     e=$(node -e 'try { console.log((JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).walletId ?? "").slice(0, 8)) } catch { console.log("") }' "$fixture/DP1-09.json")
     [[ "$e" =~ ^[0-9a-f]{8}$ ]] || e=pending-$(date -u +%Y%m%dT%H%M%S)
-    adopt "$fixture/E.mnemonic" "$prefix-E-$e-mnemonic"
-    adopt "$DW_REG_STATE/passphrase" "$prefix-E-$e-reg-passphrase"
+    if ! { adopt "$fixture/E.mnemonic" "$prefix-E-$e-mnemonic" && adopt "$DW_REG_STATE/passphrase" "$prefix-E-$e-reg-passphrase" && stored_only; } >"$dir/logs/secret-store.log" 2>&1; then
+      echo "secret-store: FAIL: wallet E's phrase or passphrase is not in the secret store; the run stops" >>"$dir/logs/secret-store.log"
+      printf 'secret-store\t1\t0\t%s\n' "$dir/logs/secret-store.log" >>"$out/runs.tsv"
+      echo "   wallet E's secrets did not reach the store; stopping (see $dir/logs/secret-store.log)"
+      break
+    fi
+  fi
+  if [[ "$flow" == profile-write && $rc == 0 && "${DW_PROFILE_WRITE_AT:-synced}" != never ]]; then
+    printf '{\n  "state": "done",\n  "at": "%s",\n  "run": "%s"\n}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$out" >"$fixture/BL-162.json"
   fi
 done
 

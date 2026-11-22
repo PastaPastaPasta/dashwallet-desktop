@@ -1,8 +1,8 @@
 // The phrase and key check every kept artifact of a testnet run passes before it leaves the box
 // (H-04 O4a): the known secrets as plain text (scratch.ts's `leaks`), any run of 12 or more BIP39
-// words, and any extended private key (xprv/tprv). PNGs are read through tesseract when it is
-// installed, so a screenshot of a phrase is caught too. Reports a path and the kind of hit, never
-// the text. Node built-ins only, so vitest checks it.
+// words, and any extended private key (xprv/tprv). PNGs are read through tesseract, so a
+// screenshot of a phrase or passphrase is caught too; a PNG it cannot read fails the check. Reports
+// a path and the kind of hit, never the text. Node built-ins only, so vitest checks it.
 
 import { spawnSync } from "node:child_process";
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
@@ -63,21 +63,45 @@ function files(dir: string): string[] {
 
 const hasTesseract = () => spawnSync("tesseract", ["--version"], { encoding: "utf8" }).status === 0;
 
-/** Every hit under `dirs`, as `<path>: <kind>`; `ocr` says whether PNGs were read. */
+/** How a secret is looked for in OCR text, which breaks lines, splits or joins words and confuses
+ * look-alikes: case folded, white space dropped, i/l/1/| as one, o/0 as one, -/_ as one. */
+const folded = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[il|]/g, "1")
+    .replace(/o/g, "0")
+    .replace(/_/g, "-");
+
+/** Every hit under `dirs`, as `<path>: <kind>`; `ocr` says whether tesseract was there. A PNG that
+ * cannot be read (no tesseract, an OCR run that fails) is a hit: unread is not clean. */
 export function scanArtifacts(dirs: string[], secrets: string[]): { hits: string[]; files: number; ocr: boolean } {
   const ocr = hasTesseract();
   const hits: string[] = [];
+  const known = [...new Set(secrets.map(folded).filter(Boolean))];
+  const phrases = secrets.filter((s) => s.trim().split(/\s+/).length >= PHRASE_RUN);
   let count = 0;
   for (const dir of dirs) {
     hits.push(...leaks(dir, secrets).map((f) => `${f}: known-secret`));
-    const phrases = secrets.filter((s) => s.trim().split(/\s+/).length >= PHRASE_RUN);
     for (const f of files(dir)) {
       count++;
-      const png = f.endsWith(".png");
-      if (png && !ocr) continue;
-      const text = png ? (spawnSync("tesseract", [f, "-", "--psm", "11"], { encoding: "utf8", maxBuffer: 1 << 26 }).stdout ?? "") : readFileSync(f).toString("latin1");
+      if (!f.endsWith(".png")) {
+        for (const kind of suspicious(readFileSync(f).toString("latin1"))) hits.push(`${f}: ${kind}`);
+        continue;
+      }
+      if (!ocr) {
+        hits.push(`${f}: unread (no tesseract)`);
+        continue;
+      }
+      const r = spawnSync("tesseract", [f, "-", "--psm", "11"], { encoding: "utf8", maxBuffer: 1 << 26 });
+      if (r.error || r.status !== 0) {
+        hits.push(`${f}: unread (tesseract ${r.error ? r.error.message : `exit ${r.status ?? r.signal}`})`);
+        continue;
+      }
+      const text = r.stdout ?? "";
       for (const kind of suspicious(text)) hits.push(`${f}: ${kind}`);
-      if (png && phrases.some((p) => phraseWordsIn(text, p) >= PHRASE_WORDS_SHOWN)) hits.push(`${f}: known-secret (ocr)`);
+      const flat = folded(text);
+      if (known.some((s) => flat.includes(s)) || phrases.some((p) => phraseWordsIn(text, p) >= PHRASE_WORDS_SHOWN)) hits.push(`${f}: known-secret (ocr)`);
     }
   }
   return { hits, files: count, ocr };

@@ -111,9 +111,11 @@ fixture and run the flows; neither opens a window.
 #    (`secret set dwd-qa-testnet-<dir name>-<W>-mnemonic`, …) and are linked into it.
 DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/testnet-dashpay-fixture.sh
 
-# 2. The seven flows: builds once, reads first, then writes; goes on past a failure. Results in
-#    test-results/dashpay-testnet/summary.{md,json} (each flow's result, duration, first error) and
-#    <flow>/ (screenshots, logs). Starts under xvfb-run when $DISPLAY is unset.
+# 2. The seven flows: builds once, reads first, then writes; goes on past a failure. Each run gets a
+#    new directory, test-results/dashpay-testnet/<UTC time>-XXXX/ (`latest` points at it), with
+#    summary.{md,json} (each flow's result, duration, first error) and <flow>/ (screenshots, logs);
+#    nothing is emptied. DW_SUITE_OUT moves that root; inside a git work tree it must be git-ignored.
+#    Starts under xvfb-run when $DISPLAY is unset.
 DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/e2e-tauri-dashpay-testnet.sh
 ```
 
@@ -121,11 +123,15 @@ Each write flow keeps a ledger in the fixture (`DP1-09.json`, `DP2-08.json`, `DP
 `DP3-06.json`), so a second run checks rather than repeats. Registration makes a new wallet E: its phrase
 and its app data root's passphrase (`DW_REG_STATE`, default `<fixture>.reg-state`, beside the fixture
 because registration fails on a secret among the fixture's files) go to the store as
-`<prefix>-E-<wallet id>-{mnemonic,reg-passphrase}`. Registration is skipped once done, and
+`<prefix>-E-<wallet id>-{mnemonic,reg-passphrase}`; if that move fails the run stops, and every run
+first checks that each phrase and passphrase file of the fixture and its registration state is a link
+into the store. Registration is skipped once done, profile-write once `BL-162.json` records its edit
+(`DW_PROFILE_WRITE_AGAIN=1` for another), and
 bell-accept's C→B pair is spent after one accept (move its ledger aside and pick B–D with
 `DW_BELL_SENDER`/`DW_BELL_RECEIVER`). The runner ends with a phrase and key check over everything it kept
 (`e2e-tauri/artifact-scan.ts`: the fixture's phrases and passphrases, any run of 12 BIP39 words,
-xprv/tprv, screenshots through tesseract when installed); the summary says whether it came back clean.
+xprv/tprv, and the phrases and passphrases in screenshots through tesseract; a screenshot it cannot read
+is a hit); the summary says whether it came back clean.
 `DW_SUITE_FLOWS` runs a subset, `DW_E2E_SKIP_BUILD=1` reuses the binaries.
 
 ## Fixture backend (U-07)

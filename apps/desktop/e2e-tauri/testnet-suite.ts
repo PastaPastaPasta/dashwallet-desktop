@@ -1,8 +1,8 @@
 // What scripts/e2e-tauri-dashpay-testnet.sh needs from node (H-04 O4a):
 //
 //   node e2e-tauri/testnet-suite.ts env <fixture>
-//     prints `export NAME=value` lines that point each flow at the fixture testnet-fixture.ts made
-//     (birth height, usernames, A's contacts); a variable already set is left alone.
+//     prints `export NAME='value'` lines that point each flow at the fixture testnet-fixture.ts made
+//     (birth height, usernames, B's display name, A's contacts); a variable already set is left alone.
 //   node e2e-tauri/testnet-suite.ts secrets <fixture>
 //     fails when a phrase or passphrase the closing check needs cannot be read (a dangling link).
 //   node e2e-tauri/testnet-suite.ts summary <out> <fixture> [<dir>…]
@@ -19,11 +19,12 @@ interface Row {
   wallet_id: string;
   identity_id: string;
   username: string;
+  display_name?: string;
   birth_height: number;
   contacts: string[];
 }
 
-const SAFE = /^[A-Za-z0-9,_.-]+$/;
+const SAFE = /^[A-Za-z0-9,_. -]+$/;
 
 function envLines(fixtureDir: string): string[] {
   const fixture = JSON.parse(readFileSync(join(fixtureDir, "fixture.json"), "utf8")) as Record<string, Row>;
@@ -38,12 +39,16 @@ function envLines(fixtureDir: string): string[] {
     DW_ADD_USERNAME: row("D").username,
     DW_PAY_USERNAME: row("B").username,
   };
+  // B's display name, unless the payee was pointed elsewhere.
+  const payee = process.env.DW_PAY_USERNAME ?? vars.DW_PAY_USERNAME;
+  const b = row("B");
+  if (b.display_name && payee === b.username) vars.DW_PAY_DISPLAY_NAME = b.display_name;
   for (const v of ["STATUS", "CONTACTS", "ADD", "BELL", "PAY", "PROFILE", "REG_FUNDER"]) vars[`DW_${v}_BIRTH_HEIGHT`] = String(birth);
   return Object.entries(vars)
     .filter(([k]) => process.env[k] === undefined)
     .map(([k, v]) => {
       if (!SAFE.test(v)) throw new Error(`${k} would be ${JSON.stringify(v)}`);
-      return `export ${k}=${v}`;
+      return `export ${k}='${v}'`;
     });
 }
 
@@ -106,7 +111,7 @@ function summary(out: string, fixtureDir: string, extra: string[]): number {
     "| --- | --- | --- | --- |",
     ...runs.map((r) => `| ${r.flow} | ${r.result.toUpperCase()} | ${Math.floor(r.seconds / 60)}m${String(r.seconds % 60).padStart(2, "0")}s | ${(r.error ?? "").replace(/\|/g, "\\|")} |`),
     "",
-    `Phrase and key check (known secrets, BIP39 runs of 12+, xprv/tprv${scan.ocr ? ", screenshots through tesseract" : "; no tesseract, screenshots not read"}): ${scan.files} files, ${scan.hits.length ? `${scan.hits.length} HITS:\n\n${scan.hits.map((h) => `- ${relative(out, h)}`).join("\n")}` : "clean"}.`,
+    `Phrase and key check (known secrets, BIP39 runs of 12+, xprv/tprv${scan.ocr ? ", screenshots through tesseract" : "; no tesseract, so every screenshot counts as a hit"}): ${scan.files} files, ${scan.hits.length ? `${scan.hits.length} HITS:\n\n${scan.hits.map((h) => `- ${relative(out, h)}`).join("\n")}` : "clean"}.`,
     "",
   ].join("\n");
   writeFileSync(join(out, "summary.md"), md);

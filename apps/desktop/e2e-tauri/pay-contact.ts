@@ -10,7 +10,9 @@
 //
 // <dir> holds `<W>.mnemonic` (0600) and `fixture.json` (the identities). DW_PAY_PAYER and
 // DW_PAY_PAYEE pick the wallets (default A and B, contacts since the fixture's set-up), and
-// DW_PAY_USERNAME the payee's username (default dwrecoverb2, B's). The payment is recorded in
+// DW_PAY_USERNAME the payee's username (default dwrecoverb2, B's), DW_PAY_DISPLAY_NAME its display
+// name (the payee card must show exactly that over @username; "" for none, the username alone;
+// unset, either shape). The payment is recorded in
 // `<dir>/DP3-06.json`, written exclusively before Send is pressed: a rerun never pays again, it
 // checks the payment already sent. Phrases go to dwcli on stdin, never argv; whatever happens, no
 // file of OUT (nor of DW_E2E_SCAN_EXTRA, the run's log directory) may hold a phrase or the
@@ -23,11 +25,14 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { DWCLI, driverGone, env, leaks, poll, startDriver, stopDriver, tid, TIMEOUT_MS, WebDriver, APP } from "./driver.ts";
+import { payeeCardMismatch, type PayeeCard } from "./payee-card.ts";
 
 const FIXTURE = resolve(env("DW_TESTNET_FIXTURE"));
 const PAYER = env("DW_PAY_PAYER", "A");
 const PAYEE = env("DW_PAY_PAYEE", "B");
 const USERNAME = env("DW_PAY_USERNAME", "dwrecoverb2");
+/** The payee's display name: the card shows it over @username ("": it has none; unset: not known). */
+const DISPLAY_NAME = process.env.DW_PAY_DISPLAY_NAME;
 const BIRTH_HEIGHT = env("DW_PAY_BIRTH_HEIGHT", "1568806");
 /** The payment, in DASH as typed, and in duffs. */
 const AMOUNT = env("DW_PAY_AMOUNT", "0.001");
@@ -185,11 +190,20 @@ async function run(
     step(`To a contact lists ${USERNAME} in ${via}; strip: ${JSON.stringify(out.frequent)}`);
     await wd.press(via === "the frequent strip" ? chip : row);
 
-    // The card shows the display name and, under it, @username (the name itself when none is set).
-    const payeeName = await poll(TIMEOUT_MS, `the payee card to name ${USERNAME}`, async () => {
-      const t = await textOf(tid("pay-payee"));
-      return t.includes(USERNAME) ? t : undefined;
+    // The card shows the display name and, under it, @username (the username alone when none is set).
+    const readCard = () =>
+      wd.script<PayeeCard>(
+        `const c = document.querySelector('${tid("pay-payee")}'); const t = (e) => e ? e.innerText.replace(/\\s+/g, " ").trim() : null; return { name: t(c?.querySelector('${tid("pay-payee-name")}')) ?? "", sub: t(c?.querySelector(".contact-row-username")) }`,
+      );
+    let mismatch: string | null = "the payee card is not shown";
+    const card = await poll(TIMEOUT_MS, `the payee card to show ${DISPLAY_NAME ? `${DISPLAY_NAME} over @${USERNAME}` : USERNAME}`, async () => {
+      const c = await readCard();
+      mismatch = payeeCardMismatch(c, USERNAME, DISPLAY_NAME);
+      return mismatch ? undefined : c;
+    }).catch((e: Error) => {
+      throw new Error(`${e.message}: ${mismatch}`);
     });
+    const payeeName = card.sub ? `${card.name} ${card.sub}` : card.name;
     const banner = await wd.script<{ kind: string; text: string } | null>(
       `const b = document.querySelector('${tid("pay-banner")}'); return b ? { kind: b.dataset.kind, text: b.innerText } : null`,
     );
