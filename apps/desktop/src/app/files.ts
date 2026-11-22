@@ -4,6 +4,7 @@
 
 import { hasCode, type Backend } from "../api/backend";
 import { failureText } from "../onboarding/model";
+import { t } from "../i18n";
 import type { FilePurpose } from "../api/generated/FilePurpose";
 import type { OpenedFile } from "../api/generated/OpenedFile";
 
@@ -41,9 +42,9 @@ export const chooseFilePath = (b: Pick<Backend, "chooseFilePath">, purpose: File
 /** Why a file call failed, for a line under the button. The too-large text is the caller's, which
  * knows what the file was (dash-qt: "PSBT file must be smaller than 100 MiB"). */
 export function fileErrorText(e: unknown): string {
-  if (hasCode(e, "app.file_dialog")) return "The file dialog could not be shown.";
-  if (hasCode(e, "app.file_too_large")) return "The file is too large.";
-  if (hasCode(e, "app.file_read")) return "The file could not be read.";
-  if (hasCode(e, "app.file_write")) return "The file could not be saved.";
+  if (hasCode(e, "app.file_dialog")) return t("app.file.dialog");
+  if (hasCode(e, "app.file_too_large")) return t("app.file.tooLarge");
+  if (hasCode(e, "app.file_read")) return t("app.file.read");
+  if (hasCode(e, "app.file_write")) return t("app.file.write");
   return failureText(e);
 }

@@ -5,7 +5,7 @@
 
 import { hasCode, isAppError, retryAfterSecs } from "../../api/backend";
 import { CREDITS_PER_DUFF } from "../../api/pending";
-import { RESCAN_INTERRUPTED, RESCAN_RUNNING } from "../../app/rescan";
+import { RESCAN_TEXT } from "../../app/rescan";
 import type { AddressClass } from "../../api/generated/AddressClass";
 import type { AppError } from "../../api/generated/AppError";
 import type { ChangePolicy } from "../../api/generated/ChangePolicy";
@@ -241,9 +241,9 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
     case "send.no_peers":
       return { text: t("pay.error.noPeers"), field: null };
     case "rescan_in_progress":
-      return { text: RESCAN_RUNNING, field: null };
+      return { text: RESCAN_TEXT.running, field: null };
     case "rescan_interrupted":
-      return { text: RESCAN_INTERRUPTED, field: null };
+      return { text: RESCAN_TEXT.interrupted, field: null };
     case "send.broadcast_rejected":
       return {
         text: e.data?.kind === "reason" ? t("pay.error.rejectedReason", { reason: e.data.reason }) : t("pay.error.rejected"),

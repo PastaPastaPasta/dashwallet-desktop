@@ -8,7 +8,7 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { ui, useUi, type PayTab, type Route } from "../app/ui";
 import { LoadingState } from "../components/history";
-import { useT } from "../i18n";
+import { useT, type Translate } from "../i18n";
 import { useDefaultPayTab } from "./pay/contactQueries";
 import { PayToAddress } from "./pay/PayToAddress";
 import { PayToContact } from "./pay/PayToContact";
@@ -121,12 +121,13 @@ export function Tabs<T extends string>({
   );
 }
 
-const PAY_TABS: Tab<PayTab>[] = [
-  { id: "contact", title: "To a contact" },
-  { id: "address", title: "To an address" },
+const PAY_TABS = (tr: Translate): Tab<PayTab>[] => [
+  { id: "contact", title: tr("app.pay.contact") },
+  { id: "address", title: tr("app.pay.address") },
 ];
 
 export function PayPage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const tr = useT();
   const chosen = useUi((s) => s.payTab);
   const prefill = useUi((s) => s.payPrefill);
   const links = useUi((s) => s.payLinks);
@@ -149,9 +150,9 @@ export function PayPage({ walletId, network }: { walletId: string; network: Netw
   return (
     <Page route="pay">
       {tab === null ? (
-        <LoadingState testId="pay-tab-loading" text="Loading…" />
+        <LoadingState testId="pay-tab-loading" text={tr("app.pay.loading")} />
       ) : (
-        <Tabs label="Pay" tabs={PAY_TABS} current={tab} onSelect={(payTab) => ui.set({ payTab })} testId="pay-tabs">
+        <Tabs label={tr("app.pay.tabs")} tabs={PAY_TABS(tr)} current={tab} onSelect={(payTab) => ui.set({ payTab })} testId="pay-tabs">
           {tab === "address" ? (
             // Keyed by the links that opened Pay and the wallet, so each one starts a fresh form.
             <PayToAddress key={`${links}:${walletId}`} prefill={prefill} coins={coins} walletId={walletId} network={network} />
