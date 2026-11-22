@@ -167,6 +167,12 @@ pub enum EngineError {
     /// wallets cannot be reached.
     #[error("at least one wallet opens at start")]
     LastStartupWallet,
+    /// A spend of a wallet whose stored transactions or payment marks
+    /// cannot be read (`history_ops::Evidence::Unreadable`): a coin a
+    /// pending payment spent could look free. Each refusal reads them
+    /// again first.
+    #[error("some of this wallet's payment records cannot be read; sending is paused")]
+    EvidenceUnreadable,
 }
 
 impl EngineError {
@@ -220,6 +226,7 @@ impl EngineError {
             EngineError::Contact(_) => "contact",
             EngineError::ShieldedSpendUnresolved => "shielded_spend_unresolved",
             EngineError::LastStartupWallet => "last_startup_wallet",
+            EngineError::EvidenceUnreadable => "evidence_unreadable",
         }
     }
 }

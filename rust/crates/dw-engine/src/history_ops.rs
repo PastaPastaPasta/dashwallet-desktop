@@ -123,6 +123,56 @@ impl RecordFault {
     }
 }
 
+/// What a read of a wallet's spend evidence missed: its stored records,
+/// their listing, and its abandoned and sent marks (#170 case 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Evidence {
+    /// A stored record: the coins the sent marks name are held from every
+    /// spend, the payment whose record is unread among them.
+    Held(HashSet<OutPoint>),
+    /// The listing or a mark: the wallet's spends are refused.
+    Unreadable,
+}
+
+impl Evidence {
+    /// What a read missed: `None` when it listed and read everything.
+    fn missed(
+        listed: bool,
+        records_read: bool,
+        marks_read: bool,
+        sent: &crate::tx_actions::Sent,
+    ) -> Option<Self> {
+        match (listed && marks_read, records_read) {
+            (false, _) => Some(Self::Unreadable),
+            (true, false) => Some(Self::Held(sent.values().flatten().copied().collect())),
+            (true, true) => None,
+        }
+    }
+
+    /// Whether `coin` is held from every spend.
+    pub(crate) fn holds(&self, coin: &OutPoint) -> bool {
+        match self {
+            Self::Held(coins) => coins.contains(coin),
+            Self::Unreadable => true,
+        }
+    }
+}
+
+/// How often a wallet whose spend evidence was missed reads it again,
+/// when a spend or a coin read asks.
+#[cfg(not(test))]
+const EVIDENCE_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(test)]
+const EVIDENCE_RETRY: std::time::Duration = std::time::Duration::ZERO;
+
+/// A wallet's stored spend evidence ([`NetworkSession::read_stored_spends`]).
+struct StoredRead {
+    history: crate::history::WalletHistory,
+    sent: crate::tx_actions::Sent,
+    abandoned: Vec<(Txid, dashcore::Transaction)>,
+    missed: Option<Evidence>,
+}
+
 /// One wallet's stored transactions: those whose record is stored, and the
 /// recordless ones (height-only rows, kept for their coins).
 #[derive(Default, Clone)]
@@ -245,6 +295,8 @@ struct LoadedHistory {
     /// Every stored transaction of the wallet, with a record or not, when
     /// every stored record was listed and read; else none.
     stored: HashSet<Txid>,
+    /// What the read missed.
+    missed: Option<Evidence>,
 }
 
 impl NetworkSession {
@@ -270,7 +322,11 @@ impl NetworkSession {
         #[cfg(test)]
         let fault = self.hub.record_read_fault.lock().unwrap().take();
         #[cfg(test)]
-        let unreadable = self.hub.unreadable_record.lock().unwrap().0.take();
+        let unreadable = (self.hub.unreadable_record.lock().unwrap().0.take()).or(*self
+            .hub
+            .unreadable_always
+            .lock()
+            .unwrap());
         #[cfg(test)]
         let hits = Arc::clone(&self.hub.unreadable_hits);
         let live = self.live()?;
@@ -320,6 +376,7 @@ impl NetworkSession {
                     });
                     let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
                     let (sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
+                    let missed = Evidence::missed(listed, read, marks_read && sent_read, &sent);
                     LoadedHistory {
                         wallet,
                         records,
@@ -334,6 +391,7 @@ impl NetworkSession {
                         } else {
                             HashSet::new()
                         },
+                        missed,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -360,8 +418,13 @@ impl NetworkSession {
             sent,
             complete,
             stored,
+            missed,
         } in loaded
         {
+            if missed.is_some() {
+                tracing::warn!(%wallet, ?missed, "spend evidence missed: spends held until a full read");
+            }
+            self.hub.note_evidence(wallet, missed);
             sends.push((wallet, sent, complete));
             let info = wm.get_wallet_info(&wallet.0);
             let in_memory: Vec<TransactionRecord> = info
@@ -546,21 +609,35 @@ impl NetworkSession {
         &self,
         wallet: WalletId,
     ) -> Result<StoredSpends, EngineError> {
+        let read = self.read_stored_spends(wallet).await?;
+        if read.missed.is_some() {
+            tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
+            return Ok((read.history, crate::tx_actions::Sent::new()));
+        }
+        Ok((read.history, read.sent))
+    }
+
+    /// `wallet`'s stored records, abandoned and sent marks, read from
+    /// wallet.sqlite and the app database, and what of them was missed.
+    async fn read_stored_spends(&self, wallet: WalletId) -> Result<StoredRead, EngineError> {
         let live = self.live()?;
         let db_path = self.data_dir().join(WALLET_DB_FILE);
         let (persister, appdb) = (Arc::clone(&live.persister), Arc::clone(&live.appdb));
         #[cfg(test)]
-        let unreadable = self.hub.unreadable_record.lock().unwrap().1.take();
+        let unreadable = (self.hub.unreadable_record.lock().unwrap().1.take()).or(*self
+            .hub
+            .unreadable_always
+            .lock()
+            .unwrap());
         #[cfg(test)]
         let hits = Arc::clone(&self.hub.unreadable_hits);
         let stored = tokio::task::spawn_blocking(move || {
             let mut history = crate::history::WalletHistory::default();
-            let persisted = match persisted_txids(&db_path) {
-                Ok((mut all, true)) => all.remove(&wallet.0).unwrap_or_default(),
-                Ok((_, false)) => return (history, crate::tx_actions::Sent::new()),
+            let (persisted, listed) = match persisted_txids(&db_path) {
+                Ok((mut all, listed)) => (all.remove(&wallet.0).unwrap_or_default(), listed),
                 Err(e) => {
                     tracing::warn!(%wallet, error = %e, "could not list stored transactions for spend claims");
-                    return (history, crate::tx_actions::Sent::new());
+                    (Persisted::default(), false)
                 }
             };
             // Read and marked abandoned as the history load does.
@@ -582,14 +659,50 @@ impl NetworkSession {
             let (abandoned, marks_read) = crate::tx_actions::load_abandoned(&appdb, wallet);
             history.mark_abandoned(&abandoned);
             let (sent, sent_read) = crate::tx_actions::load_sent(&appdb, wallet);
-            if !(read && marks_read && sent_read) {
-                tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
-                return (history, crate::tx_actions::Sent::new());
+            let missed = Evidence::missed(listed, read, marks_read && sent_read, &sent);
+            StoredRead {
+                history,
+                sent,
+                abandoned,
+                missed,
             }
-            (history, sent)
         })
         .await?;
         Ok(stored)
+    }
+
+    /// Reads `wallet`'s spend evidence again while its last read missed
+    /// some, at most once per [`EVIDENCE_RETRY`]. A clean read restores its
+    /// spend claims, marks its abandoned transactions and lifts the hold.
+    pub(crate) async fn recheck_evidence(&self, wallet: WalletId) {
+        let due = {
+            let evidence = self.hub.evidence.lock().unwrap_or_else(|p| p.into_inner());
+            match evidence.get(&wallet) {
+                Some((_, at)) => at.elapsed() >= EVIDENCE_RETRY,
+                None => return,
+            }
+        };
+        if !due {
+            return;
+        }
+        let (Ok(manager), Ok(read)) = (self.manager(), self.read_stored_spends(wallet).await)
+        else {
+            self.hub.note_evidence(wallet, Some(Evidence::Unreadable));
+            return;
+        };
+        if read.missed.is_some() {
+            self.hub.note_evidence(wallet, read.missed);
+            return;
+        }
+        self.hub
+            .history
+            .with_wallet(wallet, |h| h.mark_abandoned(&read.abandoned));
+        self.apply_stored_spends(&manager, wallet, (read.history, read.sent))
+            .await;
+        self.hub.note_evidence(wallet, None);
+        tracing::info!(%wallet, "spend evidence read in full: spends resume");
+        self.hub.pump.mark_history(wallet, None);
+        self.hub.pump.mark_balances(wallet);
     }
 
     /// Restores the spend claims of `stored` once `wallet` is registered,

@@ -719,6 +719,12 @@ const SCENARIOS = {
     return w;
   },
   /** The next send to a Platform address gets no answer from Platform: it stays pending. */
+  /** The engine cannot read the wallet's payment records: a payment is refused at Send. */
+  "evidence-unreadable": (t) => {
+    const w = base(t, "default", true);
+    w.send.evidenceUnreadable = true;
+    return w;
+  },
   "platform-send-pending": (t) => {
     const w = base(t);
     w.pending.platform!.nextSend = "pending";

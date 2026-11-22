@@ -567,6 +567,9 @@ pub(crate) struct SessionHub {
     /// (`.1`) cannot read this transaction's record.
     #[cfg(test)]
     pub(crate) unreadable_record: Mutex<(Option<dashcore::Txid>, Option<dashcore::Txid>)>,
+    /// Tests: every read of this transaction's record fails, until cleared.
+    #[cfg(test)]
+    pub(crate) unreadable_always: Mutex<Option<dashcore::Txid>>,
     /// Tests: how many reads [`Self::unreadable_record`] failed.
     #[cfg(test)]
     pub(crate) unreadable_hits: Arc<std::sync::atomic::AtomicUsize>,
@@ -598,6 +601,10 @@ pub(crate) struct SessionHub {
     /// is applied wholly before the wallet leaves or not at all; taken
     /// before every other lock of the hub's.
     unloaded: Mutex<HashSet<WalletId>>,
+    /// The loaded wallets whose spend evidence was last read incomplete,
+    /// with when it was read.
+    pub(crate) evidence:
+        Mutex<HashMap<WalletId, (crate::history_ops::Evidence, std::time::Instant)>>,
     /// Tests: holds the next event right after its wallet's check.
     #[cfg(test)]
     pub(crate) pause_event: Mutex<Option<(Arc<std::sync::Barrier>, Arc<std::sync::Barrier>)>>,
@@ -719,6 +726,8 @@ impl SessionHub {
             #[cfg(test)]
             unreadable_record: Mutex::default(),
             #[cfg(test)]
+            unreadable_always: Mutex::default(),
+            #[cfg(test)]
             unreadable_hits: Arc::default(),
             #[cfg(test)]
             pause_abandon: Mutex::new(None),
@@ -734,6 +743,7 @@ impl SessionHub {
             pause_truncation: Mutex::new(None),
             truncating: Mutex::new(()),
             unloaded: Mutex::new(HashSet::new()),
+            evidence: Mutex::default(),
             #[cfg(test)]
             pause_event: Mutex::new(None),
         }
@@ -1012,6 +1022,30 @@ impl SessionHub {
         if let Some(rescan) = self.rescan().as_mut() {
             rescan.wallets.remove(id);
         }
+        self.note_evidence(*id, None);
+    }
+
+    /// Records what the last read of `wallet`'s spend evidence missed;
+    /// `None` for a clean read.
+    pub(crate) fn note_evidence(
+        &self,
+        wallet: WalletId,
+        missed: Option<crate::history_ops::Evidence>,
+    ) {
+        let mut evidence = self.evidence.lock().unwrap_or_else(|p| p.into_inner());
+        match missed {
+            Some(e) => evidence.insert(wallet, (e, std::time::Instant::now())),
+            None => evidence.remove(&wallet),
+        };
+    }
+
+    /// What the last read of `wallet`'s spend evidence missed.
+    pub(crate) fn evidence_missed(
+        &self,
+        wallet: &WalletId,
+    ) -> Option<crate::history_ops::Evidence> {
+        let evidence = self.evidence.lock().unwrap_or_else(|p| p.into_inner());
+        evidence.get(wallet).map(|(e, _)| e.clone())
     }
 
     /// Publishes rescan state: `f` changes the running rescan under the

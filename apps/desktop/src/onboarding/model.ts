@@ -98,6 +98,7 @@ export function failureText(e: unknown): string {
   if (!isAppError(e)) return "Something went wrong.";
   if (e.code === "vault.throttled") return tryAgainIn(retryAfterSecs(e));
   if (e.code === "wallet" && /still opening/i.test(e.message)) return WALLET_OPENING_TEXT;
+  if (e.code === "evidence_unreadable") return t("pay.evidenceUnreadable");
   return BY_CODE[e.code] ?? `Something went wrong (${e.code}).`;
 }
 

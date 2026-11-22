@@ -839,6 +839,7 @@ fn platform_params(e: &PlatformError) -> Value {
         | P::NetworkNotOpen
         | P::WalletNotFound
         | P::RescanInterrupted
+        | P::EvidenceUnreadable
         | P::Identity(IdentityError::NotFound)
         | P::Profile(ProfileError::Empty | ProfileError::UnsupportedContract) => json!({}),
         P::InsufficientCredits { needed, available } => {

@@ -111,6 +111,10 @@ describe("the engine's refusals", () => {
       text: "The last rescan was interrupted. Finish it in Repair ▸ Rescan before sending.",
       field: null,
     });
+    expect(sendErrorText(err("evidence_unreadable"), "test")).toEqual({
+      text: "Dash Wallet can't read some of this wallet's payment records, so sending is paused. Try again in a moment, or restart Dash Wallet.",
+      field: null,
+    });
     expect(sendErrorText(err("wallet_not_found"), "test")).toBeNull();
     expect(sendErrorText(new Error("x"), "test")).toBeNull();
   });

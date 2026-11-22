@@ -1,6 +1,6 @@
 # M4 DashPay engine contract (`dw-engine` facade)
 
-Contract-Version: 74
+Contract-Version: 75
 
 Status: **contract**, 2026-10-08 (ROADMAP E0-08). Milestone M4, DashPay (DASHPAY.md). Code: the facade files of
 `rust/crates/dw-engine/src/platform/` (§0). Design background: DASHPAY §2.4 (a plain-Rust facade that the binding wraps
@@ -960,7 +960,7 @@ The exact public surface: records, enums, error enums, signatures and the header
 this file).
 
 <!-- BEGIN GENERATED: dashpay-surface -->
-<!-- surface-sha256: 9422d9117ef77de4c54b66c358d9f93dce8c5491a8825cce8627e9e9a13a66c9 version: 74 -->
+<!-- surface-sha256: 5a3b703639287b75770839b96d77e08ba5b371f4f4e9cbcc79818122f2126ebd version: 75 -->
 
 ```rust
 // src/platform/contacts.rs
@@ -1285,6 +1285,7 @@ pub enum PlatformError {
     NetworkNotOpen,
     WalletNotFound,
     RescanInterrupted,
+    EvidenceUnreadable,
     Storage { detail: String },
     Internal { detail: String },
 }
@@ -2651,7 +2652,7 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
 
 | Error enum | Codes |
 |---|---|
-| `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_interrupted`, `storage`, `internal` |
+| `PlatformError` | `platform.unavailable`, `platform.timeout`, `platform.proof_invalid`, `platform.trust_mismatch`, `platform.context_unavailable`, `platform.signer_unavailable`, `platform.seed_mismatch`, `platform.insufficient_credits`, `platform.grant_invalid`, `platform.grant_exceeded`, `platform.broadcast_unknown`, `platform.will_be_sent`, `platform.cancelled`, `platform.needs_grant`, `platform.lease_revoked`, `platform.lease_expired`, `platform.feature_off`, `platform.not_implemented`, `invalid_argument`, `network_not_open`, `wallet_not_found`, `rescan_interrupted`, `evidence_unreadable`, `storage`, `internal` |
 | `IdentityError` | `identity.not_found`, `identity.keys_missing` |
 | `ProfileError` | `profile.conflict`, `profile.empty`, `profile.too_long`, `profile.unsupported_contract` |
 | `RegistrationError` | `registration.in_progress`, `registration.funding_insufficient`, `registration.coins_locked`, `registration.islock_timeout`, `registration.recoverable`, `registration.already_has_username`, `registration.unsupported`, `registration.funded_elsewhere`, `registration.funding_cancelled`, `registration.not_synced`, `registration.funding_unknown_recent`, `registration.shielded_not_ready`, `registration.quote_changed` |
@@ -2677,6 +2678,13 @@ available}` and so on); a binding forwards them as parameters, as m1's review ru
   stored replay this build cannot read holds spends the same way, until a rescan from the birth height. After a fork
   the replay is done at the new chain's height, also across a restart. 0.1.x shows nothing for the transient in the
   UI.
+- `evidence_unreadable` (Contract-Version 75, #170 case 7) is the engine's refusal of every spend of a wallet whose
+  stored transactions could not be listed, or whose abandoned or sent marks could not be read, at its load: a coin a
+  pending payment spent could look free. Asset-lock funding and registration funding carry it as Core sends do. Each
+  refused spend, and each coin read, reads the evidence again first (at most every 5 s); a full read restores the
+  spend claims and the wallet spends again, with no restart. While only a stored record is unreadable, nothing is
+  refused: the coins the wallet's sent marks name are held from every spend (listed reserved). The balance, the
+  history and receiving keep working in both states.
 - `recovery.unsupported_output` (Contract-Version 54) is no enum's code: it is only a lock finish's
   `notApplied{error}` (§2.14) for a lock at an output other than 0, which this version cannot finish. Nothing is signed.
 - `IdentityError` is reached through `PlatformError::Identity`, so every domain can return `identity.*`.

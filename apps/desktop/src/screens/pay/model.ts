@@ -5,7 +5,7 @@
 
 import { hasCode, isAppError, retryAfterSecs } from "../../api/backend";
 import { CREDITS_PER_DUFF } from "../../api/pending";
-import { RESCAN_INTERRUPTED, RESCAN_RUNNING } from "../../app/rescan";
+import { evidenceUnreadable, RESCAN_INTERRUPTED, RESCAN_RUNNING } from "../../app/rescan";
 import type { AddressClass } from "../../api/generated/AddressClass";
 import type { AppError } from "../../api/generated/AppError";
 import type { ChangePolicy } from "../../api/generated/ChangePolicy";
@@ -244,6 +244,8 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
       return { text: RESCAN_RUNNING, field: null };
     case "rescan_interrupted":
       return { text: RESCAN_INTERRUPTED, field: null };
+    case "evidence_unreadable":
+      return { text: evidenceUnreadable(), field: null };
     case "send.broadcast_rejected":
       return {
         text: `The network rejected the transaction${e.data?.kind === "reason" ? `: ${e.data.reason}` : ""}. The payment was not sent.`,

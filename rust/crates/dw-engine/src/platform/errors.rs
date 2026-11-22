@@ -88,6 +88,10 @@ pub enum PlatformError {
     /// A rescan the user stopped part way must run again (0.1.x-bal §1).
     #[error("a rescan was interrupted")]
     RescanInterrupted,
+    /// The wallet's spend evidence cannot be read: no coin of it is spent
+    /// until a read succeeds (m4 §4).
+    #[error("some of this wallet's payment records cannot be read")]
+    EvidenceUnreadable,
     #[error("storage error: {detail}")]
     Storage { detail: String },
     #[error("internal error: {detail}")]
@@ -121,6 +125,7 @@ impl PlatformError {
             Self::NetworkNotOpen => "network_not_open",
             Self::WalletNotFound => "wallet_not_found",
             Self::RescanInterrupted => "rescan_interrupted",
+            Self::EvidenceUnreadable => "evidence_unreadable",
             Self::Storage { .. } => "storage",
             Self::Internal { .. } => "internal",
         }
@@ -907,6 +912,7 @@ impl From<crate::EngineError> for PlatformError {
             // A replay that runs: a wait for sync, as `PwLib::fence` reports it.
             E::RescanInProgress => Self::ContextUnavailable,
             E::RescanInterrupted => Self::RescanInterrupted,
+            E::EvidenceUnreadable => Self::EvidenceUnreadable,
             e @ (E::Storage(_) | E::StorageInUse(_) | E::StorageTooNew(_) | E::Io(_)) => {
                 Self::Storage {
                     detail: e.to_string(),
@@ -946,6 +952,7 @@ mod mapping_tests {
                 "platform.context_unavailable",
             ),
             (EngineError::RescanInterrupted, "rescan_interrupted"),
+            (EngineError::EvidenceUnreadable, "evidence_unreadable"),
             (EngineError::Storage("disk".into()), "storage"),
             (
                 EngineError::InsufficientCredits {

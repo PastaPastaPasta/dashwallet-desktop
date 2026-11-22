@@ -311,6 +311,7 @@ impl From<PlatformError> for AppError {
             P::NetworkNotOpen => (EngineCode::NetworkNotOpen.into(), None),
             P::WalletNotFound => (EngineCode::WalletNotFound.into(), None),
             P::RescanInterrupted => (EngineCode::RescanInterrupted.into(), None),
+            P::EvidenceUnreadable => (EngineCode::EvidenceUnreadable.into(), None),
             P::Storage { .. } => (EngineCode::Storage.into(), None),
             P::Internal { .. } => (EngineCode::Internal.into(), None),
         };
@@ -584,6 +585,7 @@ mod tests {
             PlatformError::NetworkNotOpen,
             PlatformError::WalletNotFound,
             PlatformError::RescanInterrupted,
+            PlatformError::EvidenceUnreadable,
             PlatformError::Storage { detail: s() },
             PlatformError::Internal { detail: s() },
         ];

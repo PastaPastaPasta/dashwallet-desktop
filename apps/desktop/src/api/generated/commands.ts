@@ -4063,6 +4063,7 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "stuck_funding",
   "shielded_spend_unresolved",
   "last_startup_wallet",
+  "evidence_unreadable",
   "vault.no_vault",
   "vault.already_exists",
   "vault.locked",

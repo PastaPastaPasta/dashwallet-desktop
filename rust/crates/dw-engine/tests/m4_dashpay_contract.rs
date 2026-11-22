@@ -993,6 +993,7 @@ fn error_codes_match_the_contract() {
             PlatformError::NetworkNotOpen,
             PlatformError::WalletNotFound,
             PlatformError::RescanInterrupted,
+            PlatformError::EvidenceUnreadable,
             PlatformError::Storage { detail: s() },
             PlatformError::Internal { detail: s() },
         ],

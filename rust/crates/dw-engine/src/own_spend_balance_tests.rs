@@ -12,9 +12,9 @@ use dashcore::{Address, OutPoint, Transaction, Txid};
 use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
-    COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, change_of, coins, eventually, foreign,
-    fresh_address, funding, own_scripts, rival, send, spendable, store_raw, synced, utxo,
-    wait_stored, wallet_funded_unmined,
+    Accept, COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, change_of, coins, eventually,
+    foreign, fresh_address, funding, own_scripts, prepare, rival, send, spendable, store_raw,
+    synced, utxo, wait_stored, wallet_funded_unmined,
 };
 use super::{balances, engine_wallet, instant_lock, mempool, mined, reopen, wait_stored_locked};
 use crate::send::CoinSource;
@@ -1344,4 +1344,130 @@ fn a_load_with_an_unreadable_abandoned_mark_claims_nothing() {
     assert!(held(&engine, &session, id).contains(&a));
     assert!(stored_unspent(&session, id, a));
     assert!(!sent_marks(&session, id).contains(&payment.txid()));
+}
+
+/// The coins of `id`'s coin control list that are reserved.
+fn reserved_coins(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+) -> BTreeSet<OutPoint> {
+    let rows = engine
+        .block_on(session.utxos(id, crate::coins::CoinFilter::default()))
+        .unwrap();
+    rows.iter()
+        .filter(|r| r.reserved)
+        .map(|r| r.outpoint)
+        .collect()
+}
+
+/// #170 case 7: a load that cannot read a payment's record, while it reads
+/// the marks, holds the coins the payment's sent mark names. The funding
+/// block credits A (no claim is made from incomplete evidence) and the
+/// balance counts it, but coin control lists it reserved and no payment
+/// can spend it. The next full read, here the next coin read once the
+/// record reads again, restores the claim and lifts the hold, with no
+/// restart.
+#[test]
+fn an_unread_payment_record_holds_its_coins_until_a_full_read() {
+    let (_dir, engine, session, id, payment, a, paid) = pending_payment_of_one_coin();
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    *session.hub.unreadable_always.lock().unwrap() = Some(payment.txid());
+    engine.block_on(session.load_wallet(id)).unwrap();
+    assert_eq!(
+        session.hub.evidence_missed(&id),
+        Some(crate::history_ops::Evidence::Held([a].into()))
+    );
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(held(&engine, &session, id).contains(&a), "credited");
+    assert!(
+        reserved_coins(&engine, &session, id).contains(&a),
+        "listed reserved"
+    );
+    assert!(!spendable(&engine, &session, id, a), "not spent");
+    let all = assert_holds(&engine, &session, id, &held(&engine, &session, id), "held");
+    assert!(all.total > 0, "the balance answers");
+
+    *session.hub.unreadable_always.lock().unwrap() = None;
+    let coins = held(&engine, &session, id);
+    reserved_coins(&engine, &session, id);
+    assert_eq!(
+        session.hub.evidence_missed(&id),
+        None,
+        "a full read lifts it"
+    );
+    assert!(!held(&engine, &session, id).contains(&a), "claimed again");
+    assert!(coins.contains(&a));
+}
+
+/// #170 case 7: a load that cannot read the payment marks refuses every
+/// spend of the wallet (`evidence_unreadable`) and lists every coin
+/// reserved; its balance and history still answer, and the automatic
+/// CoinJoin pass waits without a status. The next spend once the marks
+/// read again restores the claims and goes ahead, with no restart.
+#[test]
+fn unreadable_payment_marks_refuse_spends_until_a_full_read() {
+    let (_dir, engine, session, id, payment, a, paid) = pending_payment_of_one_coin();
+    let (scope, bad) = (id.to_string(), format!("sent:{}", paid.txid()));
+    let appdb = Arc::clone(&session.live().unwrap().appdb);
+    appdb.set_setting(&scope, &bad, Some("zz")).unwrap();
+    drop(appdb);
+    let session = reopen(&engine, session);
+    assert_eq!(
+        session.hub.evidence_missed(&id),
+        Some(crate::history_ops::Evidence::Unreadable)
+    );
+    mined(&engine, &session, id, TIP, vec![paid.clone()]);
+    let coins = held(&engine, &session, id);
+    assert!(coins.contains(&a), "no claim from incomplete evidence");
+    assert_holds(&engine, &session, id, &coins, "the balance answers");
+    assert!(
+        engine
+            .block_on(session.history_page(
+                id,
+                crate::HistoryQuery {
+                    filter: Default::default(),
+                    sort: crate::HistorySort::NewestFirst,
+                    cursor: None,
+                    limit: 10,
+                }
+            ))
+            .is_ok(),
+        "the history answers"
+    );
+    assert_eq!(
+        reserved_coins(&engine, &session, id),
+        coins,
+        "every coin listed reserved"
+    );
+    let free = OutPoint::new(paid.txid(), 1);
+    let (_draft, refused) = prepare(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![free]),
+        COIN / 2,
+        false,
+        &Arc::new(Accept::default()),
+    );
+    assert_eq!(refused.err().map(|e| e.code()), Some("evidence_unreadable"));
+    let quiet = {
+        let s = Arc::clone(&session);
+        engine.block_on(session.on_runtime(async move {
+            let fence = s.coin_fence(id).await?;
+            s.pass_view(&fence).await.map(|v| v.is_none())
+        }))
+    };
+    assert!(quiet.unwrap(), "the automatic pass waits");
+
+    (session.live().unwrap().appdb)
+        .set_setting(&scope, &bad, None)
+        .unwrap();
+    assert!(
+        spendable(&engine, &session, id, free),
+        "a full read lifts it"
+    );
+    assert_eq!(session.hub.evidence_missed(&id), None);
+    assert!(!held(&engine, &session, id).contains(&a), "claimed again");
+    assert!(sent_marks(&session, id).contains(&payment.txid()));
 }

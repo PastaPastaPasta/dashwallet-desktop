@@ -117,6 +117,7 @@ impl From<dw_engine::EngineError> for EngineError {
             // of theirs holds a shielded spend (0.1 E1, DEC-1046).
             E::ShieldedSpendUnresolved => Self::Wallet { detail },
             E::LastStartupWallet => Self::InvalidArgument { detail },
+            E::EvidenceUnreadable => Self::Storage { detail },
         }
     }
 }

@@ -1179,6 +1179,11 @@ impl NetworkSession {
             self.set_mix_status(fence.wallet_id(), StatusCode::SyncInProgress);
             return Ok(None);
         }
+        // Waits for a full read of the spend evidence, without a notice:
+        // a spend the user starts says why.
+        if let Err(EngineError::EvidenceUnreadable) = view {
+            return Ok(None);
+        }
         view.map(Some)
     }
 

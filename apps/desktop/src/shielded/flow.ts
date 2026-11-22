@@ -12,7 +12,7 @@ import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import { SHIELDED_CODES } from "../api/pending";
-import { RESCAN_INTERRUPTED } from "../app/rescan";
+import { evidenceUnreadable, RESCAN_INTERRUPTED } from "../app/rescan";
 import { COPY as DASHPAY_COPY } from "../dashpay/status";
 import { platformOp } from "../dashpay/topup";
 import { failureText, Model } from "../onboarding/model";
@@ -163,6 +163,8 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
       return "Waiting for the network to sync before Shielded can be used. Try again shortly.";
     case "rescan_interrupted":
       return RESCAN_INTERRUPTED;
+    case "evidence_unreadable":
+      return evidenceUnreadable();
     case "platform.trust_mismatch":
       return "Your Shielded account could not be verified against the network. Nothing was moved.";
     case "platform.feature_off":

@@ -1071,6 +1071,7 @@ impl NetworkSession {
             wallet_id.0,
             "the fence of another wallet"
         );
+        self.recheck_evidence(wallet_id).await;
         let (mut snapshot, lock_inputs, unseen) = {
             let state = wallet.state().await;
             let snapshot = read_coins(&state.core_wallet);
@@ -1143,6 +1144,7 @@ impl NetworkSession {
         // A replay re-credits a coin whose spender is still unconfirmed at
         // close until a block spends it (0.1.x-bal §1): held as Core holds it.
         let spent = (self.hub.history).read(&wallet_id, crate::history::spent_outpoints);
+        let missed = self.hub.evidence_missed(&wallet_id);
         for coin in &mut snapshot.coins {
             let o = coin.utxo.outpoint;
             let lock = locked.get(&lock_key(&o));
@@ -1155,7 +1157,8 @@ impl NetworkSession {
             let spend_reserved = reserved.contains(&o)
                 || swept.contains(&o)
                 || (spent.contains(&o) && !lock_held)
-                || unseen.contains(&o);
+                || unseen.contains(&o)
+                || missed.as_ref().is_some_and(|m| m.holds(&o));
             coin.lock_input = !spend_reserved && lock_held;
             coin.reserved = spend_reserved || lock_held;
             coin.awaiting_history = unseen.contains(&o);

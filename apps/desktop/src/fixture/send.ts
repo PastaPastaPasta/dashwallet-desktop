@@ -89,6 +89,8 @@ export interface SendWorld {
   /** What `resolve_contact_payment_lock` finds for a lock whose payment the fixture did not hand
    * over itself (a scenario's lock); one it handed over is `sent`. */
   lockEvidence: LockResolutionName | null;
+  /** The engine could not read the wallet's payment records: every prepare is refused. */
+  evidenceUnreadable: boolean;
 }
 
 export const newSendWorld = (): SendWorld => ({
@@ -100,6 +102,7 @@ export const newSendWorld = (): SendWorld => ({
   announced: {},
   contactIndex: {},
   lockEvidence: null,
+  evidenceUnreadable: false,
 });
 
 /** A (wallet, identity, contact) triple: the key of a contact's reservation and lock. */
@@ -709,6 +712,7 @@ export function sendHandlers({ wallet, spendGrant, useGrant, checkContact, charg
       // The engine refuses a wallet without keys when signing, not before: its estimate and
       // Create Unsigned work (dw-engine `prepare_inner`).
       if (w.summary.watchOnly) throw fail("send.watch_only", "the wallet has no keys");
+      if (world.send.evidenceUnreadable) throw fail("evidence_unreadable", "some of this wallet's payment records cannot be read; sending is paused");
       if (d.contact) checkContact(world, d.walletId, d.contact, "prepare");
       const built = build(world, w, d);
       const h = world.send.handles + 1;

@@ -305,6 +305,9 @@ impl NetworkSession {
         wallet_id: WalletId,
         floor: u32,
     ) -> Result<u32, EngineError> {
+        // Before the wallet's state is read: a full read restores claims
+        // under the manager's write lock.
+        self.recheck_evidence(wallet_id).await;
         let wallet = self.wallet(&wallet_id).await?;
         // The hub is written under the read lock, so a fork's truncation
         // (under the write lock) lowers the target after this raise.
@@ -332,7 +335,13 @@ impl NetworkSession {
             self.record_seen_rewind(wallet_id, live, target, &state)
                 .await;
         }
-        refused.map_or(Ok(live), Err)
+        let unreadable =
+            self.hub.evidence_missed(&wallet_id) == Some(crate::history_ops::Evidence::Unreadable);
+        match refused {
+            Some(e) => Err(e),
+            None if unreadable => Err(EngineError::EvidenceUnreadable),
+            None => Ok(live),
+        }
     }
 
     /// A rewind the guard reads that no replay record covers (platform-
