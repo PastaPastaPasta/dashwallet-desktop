@@ -106,7 +106,7 @@ jobs:
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             # NUL-separated: git quotes unusual names otherwise. A failed diff fails this job.
             git diff --no-renames --name-only -z HEAD^1 HEAD > "$RUNNER_TEMP/changed"
-            docs_code='^docs/contracts/|^docs/design/E0-13-facade-coverage\.md$'
+            docs_code='^docs/contracts/|^docs/design/E0-13-facade-coverage\.md$|\.(rs|swift|ts|tsx|js|mjs|json|toml|ya?ml|sh|py)$'
             docs='^docs/|\.md$'
             renderer_only='^apps/desktop/'
             # Renderer files the Rust tests read (docs/ci.md, "Pull request checks"): these run rust-linux.
@@ -120,7 +120,7 @@ jobs:
             rust=false renderer=false ui=false any=false
             while IFS= read -r -d '' f; do
               any=true
-              if [[ $f =~ $docs && ! $f =~ $docs_code ]]; then kind=docs
+              if [[ $f =~ $docs && ! $f =~ $docs_code && ! $f =~ $read_by_rust ]]; then kind=docs
               elif [[ $f =~ $renderer_only && ! $f =~ $read_by_rust ]]; then kind=renderer renderer=true
               else kind=all rust=true renderer=true
               fi

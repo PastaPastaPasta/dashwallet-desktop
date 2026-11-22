@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   report:
     name: Report ${{ github.event.workflow_run.name }} on main
@@ -68,9 +72,13 @@ jobs:
             batch="(no green $NAME run on main found)"
           else
             # First-parent history of main: one line per merge, whether merged, squashed or rebased.
-            batch=$(git log --first-parent --format='- %h %s' "$green..$sha" | head -n 50) ||
+            if ! git merge-base --is-ancestor "$green" "$sha" 2>/dev/null; then
+              batch="(the last green run's commit ${green:0:8} is not an ancestor of ${sha:0:8}: the batch could not be listed)"
+            elif ! batch=$(git log -n 50 --first-parent --format='- %h %s' "$green..$sha"); then
               batch="(the commits since ${green:0:8} could not be listed)"
-            batch="Merged since the last green run (${green:0:8}):"$'\n'"$batch"
+            else
+              batch="Merged since the last green run (${green:0:8}):"$'\n'"$batch"
+            fi
           fi
           ci/github/nightly-issue.sh failed "$NAME on main" \
             "$what failed: $url"$'\n\n'"$failed"$'\n\n'"$batch"$'\n\n'"Fix main before anything else merges: a forward fix on top is fine; a revert is not required."
