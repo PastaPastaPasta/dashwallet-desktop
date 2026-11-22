@@ -32,16 +32,22 @@
 #                                  as scripts/testnet-dashpay-fixture.sh)
 set -euo pipefail
 [[ -n "${DW_TESTNET_FIXTURE:-}" ]] || { echo "e2e-tauri-dashpay-testnet: set DW_TESTNET_FIXTURE" >&2; exit 2; }
-fixture=$(cd "$DW_TESTNET_FIXTURE" && pwd)
+fixture=$(cd "$DW_TESTNET_FIXTURE" && pwd -P)
 [[ -f "$fixture/fixture.json" ]] || { echo "e2e-tauri-dashpay-testnet: $fixture has no fixture.json; run scripts/testnet-dashpay-fixture.sh" >&2; exit 2; }
 export DW_TESTNET_FIXTURE=$fixture
-export DW_REG_STATE=${DW_REG_STATE:-$fixture.reg-state}
+reg=${DW_REG_STATE:-$fixture.reg-state}
+mkdir -p "$reg" && chmod 700 "$reg"
+export DW_REG_STATE
+DW_REG_STATE=$(cd "$reg" && pwd -P)
 out=${DW_SUITE_OUT:-$(cd "$(dirname "$0")/.." && pwd)/test-results/dashpay-testnet}
 mkdir -p "$out"
-out=$(cd "$out" && pwd)
+out=$(cd "$out" && pwd -P)
 export DW_SUITE_OUT=$out
-case "$out/" in "$fixture"/* | "$DW_REG_STATE"/*) echo "e2e-tauri-dashpay-testnet: $out lies in the fixture" >&2; exit 2 ;; esac
-case "$fixture/" in "$out"/*) echo "e2e-tauri-dashpay-testnet: the fixture lies in $out, which the run empties" >&2; exit 2 ;; esac
+[[ "$out" != / && "$out" != "$HOME" ]] || { echo "e2e-tauri-dashpay-testnet: $out may not be the run's output (it is emptied)" >&2; exit 2; }
+for keep in "$fixture" "$DW_REG_STATE"; do
+  case "$out/" in "$keep"/*) echo "e2e-tauri-dashpay-testnet: $out lies in $keep" >&2; exit 2 ;; esac
+  case "$keep/" in "$out"/*) echo "e2e-tauri-dashpay-testnet: $keep lies in $out, which the run empties" >&2; exit 2 ;; esac
+done
 cd "$(dirname "$0")/.."
 repo=$(cd ../.. && pwd)
 
@@ -58,6 +64,8 @@ target=${CARGO_TARGET_DIR:-$repo/rust/target}
 for bin in dash-wallet dwcli; do
   [[ -x "$target/debug/$bin" ]] || { echo "e2e-tauri-dashpay-testnet: no $target/debug/$bin" >&2; exit 2; }
 done
+# The secrets the closing check looks for, before hours of flows (a link `secret sync` has not filled).
+node e2e-tauri/testnet-suite.ts secrets "$fixture"
 env_lines=$(node e2e-tauri/testnet-suite.ts env "$fixture")
 eval "$env_lines"
 find "$out" -mindepth 1 -delete
@@ -97,12 +105,12 @@ for flow in $flows; do
   secs=$(($(date +%s) - start))
   printf '%s\t%s\t%s\t%s\n' "$flow" "$rc" "$secs" "$log" >>"$out/runs.tsv"
   echo "   exit $rc after $secs s"
-  if [[ "$flow" == registration && -f "$fixture/DP1-09.json" ]]; then
-    e=$(node -e 'console.log((JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).walletId ?? "").slice(0, 8))' "$fixture/DP1-09.json")
-    if [[ "$e" =~ ^[0-9a-f]{8}$ ]]; then
-      adopt "$fixture/E.mnemonic" "$prefix-E-$e-mnemonic"
-      adopt "$DW_REG_STATE/passphrase" "$prefix-E-$e-reg-passphrase"
-    fi
+  if [[ "$flow" == registration ]]; then
+    # Named by E's wallet id; a run that stopped before the ledger had one still goes to the store.
+    e=$(node -e 'try { console.log((JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).walletId ?? "").slice(0, 8)) } catch { console.log("") }' "$fixture/DP1-09.json")
+    [[ "$e" =~ ^[0-9a-f]{8}$ ]] || e=pending-$(date -u +%Y%m%dT%H%M%S)
+    adopt "$fixture/E.mnemonic" "$prefix-E-$e-mnemonic"
+    adopt "$DW_REG_STATE/passphrase" "$prefix-E-$e-reg-passphrase"
   fi
 done
 

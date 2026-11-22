@@ -3,6 +3,8 @@
 //   node e2e-tauri/testnet-suite.ts env <fixture>
 //     prints `export NAME=value` lines that point each flow at the fixture testnet-fixture.ts made
 //     (birth height, usernames, A's contacts); a variable already set is left alone.
+//   node e2e-tauri/testnet-suite.ts secrets <fixture>
+//     fails when a phrase or passphrase the closing check needs cannot be read (a dangling link).
 //   node e2e-tauri/testnet-suite.ts summary <out> <fixture> [<dir>…]
 //     reads <out>/runs.tsv (flow, exit status, seconds, log), writes <out>/summary.json and
 //     <out>/summary.md (each flow's result, duration and first error line), then runs the phrase and
@@ -60,7 +62,9 @@ function fixtureSecrets(fixtureDir: string): string[] {
   const parent = dirname(fixtureDir);
   const regPasses = [
     join(process.env.DW_REG_STATE ?? `${fixtureDir}.reg-state`, "passphrase"),
-    ...readdirSync(parent).filter((d) => d.startsWith(`${basename(fixtureDir)}.reg-state`)).map((d) => join(parent, d, "passphrase")),
+    ...readdirSync(parent, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name.startsWith(`${basename(fixtureDir)}.reg-state`))
+      .map((d) => join(parent, d.name, "passphrase")),
   ];
   const files = [...readdirSync(fixtureDir).filter((f) => f.endsWith(".mnemonic") || f === "passphrase").map((f) => join(fixtureDir, f)), ...new Set(regPasses)];
   for (const f of files) {
@@ -113,6 +117,7 @@ function summary(out: string, fixtureDir: string, extra: string[]): number {
 const [cmd, ...args] = process.argv.slice(2);
 try {
   if (cmd === "env" && args[0]) console.log(envLines(args[0]).join("\n"));
+  else if (cmd === "secrets" && args[0]) fixtureSecrets(args[0]);
   else if (cmd === "summary" && args[0] && args[1]) process.exitCode = summary(args[0], args[1], args.slice(2));
   else throw new Error("usage: testnet-suite.ts env <fixture> | summary <out> <fixture> [<dir>…]");
 } catch (e) {

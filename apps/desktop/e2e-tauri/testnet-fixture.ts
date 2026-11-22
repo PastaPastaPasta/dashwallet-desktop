@@ -99,6 +99,8 @@ interface State {
 }
 
 let state: State = { wallets: {}, registrations: {}, contacts: {}, steps: [] };
+/** Set once the ledger is this fixture's: a failure before that never writes one. */
+let loaded = false;
 function save() {
   writeFileSync(`${STATE_FILE}.tmp`, JSON.stringify(state, null, 2), { mode: 0o600 });
   renameSync(`${STATE_FILE}.tmp`, STATE_FILE);
@@ -261,9 +263,11 @@ async function faucet() {
     }
   })();
   if (r.status !== 0 || !txid) {
-    const why = r.stderr.trim().split("\n").slice(-2).join(" ");
-    // Only an unknown outcome may have paid; anything else made no payment and a later run asks again.
-    if (r.status !== null && !/Outcome unknown/.test(r.stderr)) {
+    const stderr = r.stderr ?? "";
+    const why = r.error ? r.error.message : stderr.trim().split("\n").slice(-2).join(" ");
+    // Only a payout (exit 0) or an unknown outcome may have paid; any other refusal made no payment
+    // and a later run asks again.
+    if (r.status !== null && r.status !== 0 && !/Outcome unknown/.test(stderr)) {
       delete state.faucet;
       save();
     }
@@ -318,6 +322,7 @@ class Session {
     stdio: ["pipe", "pipe", openSync(join(LOGS, `session-${Date.now()}.log`), "w", 0o600)],
   });
   #closed: Promise<number | null>;
+  #dead = false;
 
   constructor() {
     createInterface({ input: this.#child.stdout! }).on("line", (line) => {
@@ -333,7 +338,12 @@ class Session {
       }
     });
     this.#child.stdin!.on("error", () => undefined);
-    this.#closed = new Promise((r) => this.#child.on("exit", (code) => r(code)));
+    this.#closed = new Promise((r) =>
+      this.#child.on("exit", (code) => {
+        this.#dead = true;
+        r(code);
+      }),
+    );
     void this.#closed.then((code) => {
       for (const [, done] of this.#waiting) done({ ok: false, error: { code: "session_exit", message: `dwcli session exited (${code})` } });
       this.#waiting.clear();
@@ -347,7 +357,7 @@ class Session {
     const slow = setInterval(() => console.log(`fixture: dwcli ${what} still running (${Math.round((Date.now() - started) / 1000)} s)`), 120_000);
     let timer: NodeJS.Timeout | undefined;
     return new Promise<Answer>((r) => {
-      if (this.#child.exitCode !== null) return r({ ok: false, error: { code: "session_exit", message: `dwcli session exited (${this.#child.exitCode})` } });
+      if (this.#dead) return r({ ok: false, error: { code: "session_exit", message: `dwcli session exited (${this.#child.exitCode ?? this.#child.signalCode})` } });
       this.#waiting.set(id, r);
       timer = setTimeout(() => {
         this.#child.kill("SIGTERM");
@@ -511,7 +521,10 @@ const relationOf = async (s: Session, w: W, other: W) =>
  * session's own sync loop reads the network and the caller polls. */
 async function syncNow(s: Session, w: W) {
   const a = await s.ask("dashpay", "--wallet", idOf(w), "sync");
-  if (!a.ok && a.error?.code !== "platform.not_implemented") throw new Error(`dashpay sync: ${a.error?.code}: ${mask(a.error?.message ?? "")}`);
+  if (!a.ok && a.error?.code !== "platform.not_implemented") {
+    const E = a.error?.code === "session_exit" ? Fatal : Error;
+    throw new E(`dashpay sync: ${a.error?.code}: ${mask(a.error?.message ?? "")}`);
+  }
 }
 
 /** `from` asks `to`, `to` accepts: each write only when the relation says it is still needed. */
@@ -571,10 +584,11 @@ function lock() {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
       const pid = Number(readFileSync(LOCK, "utf8").trim());
       try {
+        if (!Number.isInteger(pid) || pid <= 0) throw new Error("no pid");
         process.kill(pid, 0);
         throw new Fatal(`another fixture run (pid ${pid}) holds ${LOCK}`);
       } catch (k) {
-        if (k instanceof Fatal) throw k;
+        if (k instanceof Fatal || (k as NodeJS.ErrnoException).code === "EPERM") throw new Fatal(`${LOCK} is held (pid ${pid})`);
         rmSync(LOCK, { force: true });
       }
     }
@@ -590,6 +604,7 @@ async function main() {
   if (existsSync(STATE_FILE)) state = { ...state, ...(JSON.parse(readFileSync(STATE_FILE, "utf8")) as State) };
   else if (existsSync(PASS_FILE) || WALLETS.some((w) => existsSync(join(FIXTURE, `${w}.mnemonic`))))
     throw new Error(`${FIXTURE} holds secrets but no fixture-state.json: its payments and registrations are unknown; use a new fixture directory`);
+  loaded = true;
   secrets.push(passphrase());
   await wallets();
   await faucet();
@@ -650,11 +665,13 @@ async function main() {
 main().catch((e) => {
   const msg = mask(e instanceof Error ? e.message : String(e));
   console.error(`fixture: FAIL: ${msg}`);
-  try {
-    state.steps.push(`${new Date().toISOString()} FAIL: ${msg}`);
-    save();
-  } catch {
-    // the state file is best effort here
+  if (loaded) {
+    try {
+      state.steps.push(`${new Date().toISOString()} FAIL: ${msg}`);
+      save();
+    } catch {
+      // the state file is best effort here
+    }
   }
   process.exitCode = 1;
 });
