@@ -4,6 +4,7 @@
 import { useEffect, useId, useState } from "react";
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useWalletGateClosed } from "../../api/lockGate";
+import { useBackend } from "../../api/queries";
 import { useUi } from "../../app/ui";
 import { showToast } from "../../components/toast";
 import { useDisplay, type Display } from "../../format/display";
@@ -57,6 +58,7 @@ export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId
   const shown = useDisplay(network);
   const discreet = useUi((s) => s.discreet);
   const titleId = useId();
+  const { locale } = useBackend();
   // The payments seen before the view opened: any other, including one that arrives while it is
   // open, is marked new until the view closes.
   const [seen] = useState<ReadonlySet<string>>(() => new Set(payments.filter((p) => p.read).map((p) => p.id)));
@@ -94,7 +96,7 @@ export function ReceivedSection({ walletId, network, limit, onOpen }: { walletId
                 {fresh && <span className="bell-dot" aria-hidden="true" />}
                 <span className="bell-row-text">
                   <span className="bell-row-title">{receivedText(p.duffs, shown, discreet)}</span>
-                  <span className="bell-row-sub">{detailDate(new Date(p.at))}</span>
+                  <span className="bell-row-sub">{detailDate(new Date(p.at), locale)}</span>
                 </span>
               </button>
             </li>

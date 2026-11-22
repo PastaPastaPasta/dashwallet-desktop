@@ -7,6 +7,7 @@ import type { ContactSummaryInfo } from "../../api/generated/ContactSummaryInfo"
 import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import type { DashPayEventInfo } from "../../api/generated/DashPayEventInfo";
 import { errorMessage } from "../../api/backend";
+import { useBackend } from "../../api/queries";
 import { navigate, ui, useUi } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { EmptyArt } from "../../components/emptyArt";
@@ -304,6 +305,7 @@ function Events({
 }) {
   const t = useT();
   const titleId = useId();
+  const { locale } = useBackend();
   return (
     <section className="bell-section" aria-labelledby={titleId} data-testid={testId}>
       <h3 className="bell-section-title" id={titleId}>
@@ -317,7 +319,7 @@ function Events({
               {e.contact && <Avatar letters={initials(nameOf(e.contact))} identity={e.contact} />}
               <span className="bell-row-text">
                 <span className="bell-row-title">{eventText(e, nameOf)}</span>
-                <span className="bell-row-sub">{detailDate(new Date(e.at * 1000))}</span>
+                <span className="bell-row-sub">{detailDate(new Date(e.at * 1000), locale)}</span>
               </span>
             </>
           );
