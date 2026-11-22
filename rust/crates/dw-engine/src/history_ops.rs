@@ -422,8 +422,9 @@ impl NetworkSession {
     /// claim. A block or InstantSend lock beats an unlocked payment; only a
     /// ChainLock-covered block beats an InstantSend-locked payment.
     /// Spends key-wallet holds a record of this session are left to it.
-    /// Then the marks of payments no longer out of a block go. A load that
-    /// did not read every stored record and mark does neither.
+    /// Then the marks of payments gone from the history or ChainLocked go,
+    /// by this wallet's own applied ChainLock. A load that did not read
+    /// every stored record and mark does neither.
     async fn restore_unmined_spends(
         &self,
         manager: &Manager,
@@ -441,7 +442,8 @@ impl NetworkSession {
                 for t in core.instant_send_locks() {
                     h.set_instant_locked(t);
                 }
-                settled = crate::history::settled_sends(&h.txs, sent, chainlock);
+                let own = (core.metadata.last_applied_chain_lock.as_ref()).map(|c| c.block_height);
+                settled = crate::history::settled_sends(&h.txs, sent, own);
                 let mut claims = crate::history::unmined_own_spends(&h.txs, sent, chainlock);
                 claims.retain(|(_, spender)| !h.session_held.contains(spender));
                 let locked = crate::history::locked_claimants(&h.txs, &claims);

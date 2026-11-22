@@ -442,8 +442,9 @@ pub(crate) fn locked_claimants(
 }
 
 /// The payments this app sent that the history no longer holds or holds
-/// ChainLocked: their marks can go. An abandoned or merely mined payment
-/// keeps its mark, as a later lock or reorg can make it live again.
+/// ChainLocked (by its context, or a block at or below `chainlock`): their
+/// marks can go. An abandoned or merely mined payment keeps its mark, as a
+/// later lock or reorg can make it live again.
 pub(crate) fn settled_sends(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
@@ -2593,6 +2594,10 @@ mod tests {
         want.sort();
         assert_eq!(settled, want);
         assert!(!settled.contains(&abandoned));
+        let chainlocked = txs.get_mut(&mined).unwrap();
+        let block = chainlocked.context.block_info().cloned().unwrap();
+        chainlocked.context = TransactionContext::InChainLockedBlock(block);
+        assert!(settled_sends(&txs, &sent, None).contains(&mined));
         let reorged = txs.get_mut(&mined).unwrap();
         reorged.context = TransactionContext::Mempool;
         reorged.instant_locked = true;
