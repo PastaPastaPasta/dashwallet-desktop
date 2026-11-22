@@ -380,6 +380,7 @@ impl NetworkSession {
             let seen: HashMap<String, u64> = seen.into_iter().collect();
             self.hub.history.with_wallet(wallet, |h| {
                 h.set_loaded_coins(loaded_coins);
+                h.load_incomplete = !complete;
                 for r in records.iter().chain(&in_memory) {
                     h.upsert(r, None);
                 }
@@ -482,6 +483,10 @@ impl NetworkSession {
             .map(|(o, t)| (*o, Some(*t)))
             .collect();
         let held = core.restore_spent_outpoints(&restore);
+        (self.hub.history).with_wallet(wallet, |h| {
+            h.claimed
+                .extend(restore.iter().filter_map(|(o, t)| Some((*o, (*t)?))))
+        });
         if held.is_empty() {
             return;
         }
@@ -649,12 +654,18 @@ impl NetworkSession {
                 .last_processed_height
                 .max(meta.synced_height)
                 .max(self.hub.wallet_state(wallet).map_or(0, |s| s.tip())),
-            chainlock_height: meta
-                .last_applied_chain_lock
-                .as_ref()
-                .map(|c| c.block_height)
-                .max(self.hub.tracker().chainlock_height()),
+            chainlock_height: self.chainlock_height(&info.core_wallet),
         }
+    }
+
+    /// Height of the best ChainLock the wallet applied or SPV reported.
+    pub(crate) fn chainlock_height(
+        &self,
+        core: &key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+    ) -> Option<u32> {
+        (core.metadata.last_applied_chain_lock.as_ref())
+            .map(|c| c.block_height)
+            .max(self.hub.tracker().chainlock_height())
     }
 
     /// Runs `f` with the wallet's chain view. `WalletNotFound` for an

@@ -692,6 +692,24 @@ const SCENARIOS = {
     w.pending.platform = null;
     return w;
   },
+  /** An InstantSend-locked payment a ChainLocked spend beat, sent before a restart: Abandon is
+   * offered, and refused until the wallet restarts and rescans. */
+  "abandon-rescan-first": (t) => {
+    const w = base(t);
+    const wallet = w.wallets[0];
+    const sent = wallet.rows.find((r) => r.category === "sent")!;
+    const row: TxRow = {
+      ...sent,
+      txid: "5e".repeat(32),
+      timestamp: (sent.timestamp ?? 0) + 60,
+      blockHeight: null,
+      label: null,
+      status: { kind: "unconfirmed", confirmations: 0, instantLocked: true, chainLocked: false, maturesIn: null },
+    };
+    wallet.rows = [row, ...wallet.rows];
+    w.send.rescanFirst = [row.txid];
+    return w;
+  },
   /** The network does not take shielded transitions yet: Home says so, and the actions are gone. */
   "shielded-inactive": (t) => {
     const w = base(t);

@@ -20077,6 +20077,11 @@ public enum TxActionRefusal: Equatable, Hashable {
      * The wallet did not fund it (resend only).
      */
     case notSentByWallet
+    /**
+     * Abandon can go through after a restart and a rescan from the
+     * wallet's birth.
+     */
+    case rescanFirst
 
 
 
@@ -20110,6 +20115,8 @@ public struct FfiConverterTypeTxActionRefusal: FfiConverterRustBuffer {
         
         case 6: return .notSentByWallet
         
+        case 7: return .rescanFirst
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -20140,6 +20147,10 @@ public struct FfiConverterTypeTxActionRefusal: FfiConverterRustBuffer {
         
         case .notSentByWallet:
             writeInt(&buf, Int32(6))
+        
+        
+        case .rescanFirst:
+            writeInt(&buf, Int32(7))
         
         }
     }
