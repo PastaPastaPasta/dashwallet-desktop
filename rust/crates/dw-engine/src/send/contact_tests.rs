@@ -1453,7 +1453,9 @@ use platform_wallet::changeset::{
 use platform_wallet::wallet::identity::{ContactProfileEntry, DashPayProfile};
 
 use crate::platform::money_gate::{Point, Refusal, Subject};
-use crate::platform::money_gate_tests::{FakePlatform, Proof, gate_session, show_username};
+use crate::platform::money_gate_tests::{
+    FakePlatform, Proof, gate_session, gate_session_unlatched, show_username,
+};
 use crate::platform::trust::TrustMode;
 
 impl Fixture {
@@ -1787,6 +1789,113 @@ fn a_verified_payee_stays_verified_across_a_relaunch() {
     f.prepare(&f.draft(BOB)).unwrap();
     assert_eq!(platform_after.fetches(), 0, "no fetch after the relaunch");
     assert!(started.elapsed() < Duration::from_secs(2), "no wait");
+}
+
+/// H-09: a wallet store this installation never named (copied in, or
+/// app.sqlite replaced) holds data fetched elsewhere, so its contacts start
+/// unverified and a payment to them is gated.
+#[test]
+fn a_wallet_store_from_elsewhere_starts_unverified() {
+    let mut f = fixture(false);
+    f.store(f.bobs_account(contact_xpub(BOB)));
+    f.store_bobs_contact(request(BOB, ME, 2_000_000), Some(0));
+    assert!(!f.bob_unverified(), "no fallback used here: verified");
+
+    let data_dir = f.session.data_dir().to_path_buf();
+    (f.engine)
+        .block_on(f.engine.close_network(DashNetwork::Regtest))
+        .unwrap();
+    rusqlite::Connection::open(data_dir.join(dw_appdb::APP_DB_FILE))
+        .unwrap()
+        .execute("DELETE FROM wallets", [])
+        .unwrap();
+    f.session = open_session(&f.engine);
+    assert!(f.bob_unverified(), "latched at open");
+
+    let platform = FakePlatform::new(Proof::Unverified);
+    platform.answer_requests(vec![
+        request(ME, BOB, 1_000_000),
+        request(BOB, ME, 2_000_000),
+    ]);
+    gate_session_unlatched(&f.session, TrustMode::Degraded, platform);
+    f.credit(1, COIN);
+    assert_eq!(
+        platform_error(f.prepare(&f.draft(BOB))),
+        "platform.context_unavailable"
+    );
+}
+
+/// H-09, M4: the library keeps our own QR-sent request without its
+/// `autoAcceptProof`, which Platform has. That request still verifies and
+/// the contact is paid; a differing xpub, or a local proof that differs,
+/// still refuses.
+#[test]
+fn a_qr_sent_contact_verifies_only_on_the_missing_proof() {
+    let proof = |p: u8| ContactRequest {
+        auto_accept_proof: Some(vec![p; 38]),
+        ..request(ME, BOB, 1_000_000)
+    };
+    let case = |ours: ContactRequest, on_platform: Vec<ContactRequest>| {
+        let f = fixture(false);
+        let incoming = request(BOB, ME, 2_000_000);
+        let stamp = Some(incoming.account_reference);
+        let mut contact = bobs_contact(incoming, stamp);
+        contact.outgoing_request = ours;
+        f.with_me(move |me| me.apply_established_contact(contact));
+        let platform = FakePlatform::new(Proof::Verified);
+        platform.answer_requests(on_platform);
+        gate_session(&f.session, TrustMode::Degraded, platform);
+        f.prepare(&f.draft(BOB))
+    };
+
+    case(
+        request(ME, BOB, 1_000_000),
+        vec![proof(9), request(BOB, ME, 2_000_000)],
+    )
+    .expect("the QR-sent contact is paid");
+    assert_eq!(
+        platform_error(case(
+            request(ME, BOB, 1_000_000),
+            vec![
+                proof(9),
+                ContactRequest {
+                    encrypted_public_key: vec![7; 96],
+                    ..request(BOB, ME, 2_000_000)
+                },
+            ],
+        )),
+        "platform.context_unavailable",
+        "Bob's xpub differs"
+    );
+    assert_eq!(
+        platform_error(case(proof(1), vec![proof(9), request(BOB, ME, 2_000_000)])),
+        "platform.context_unavailable",
+        "our copy has a proof that differs"
+    );
+}
+
+/// H-09, H3: the payee's data changes while the gate waits for it to
+/// verify. What verifies afterwards is not what the user was shown, so the
+/// gate refuses even though the new data verifies.
+#[test]
+fn a_payee_changed_during_the_wait_is_refused() {
+    let f = fixture(false);
+    let profile = |name: &str| DashPayProfile {
+        display_name: Some(name.into()),
+        ..Default::default()
+    };
+    f.cache_profile(BOB, profile("Bob"));
+    let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
+    platform.answer_profile(id(BOB), &profile("Mallory"));
+    f.credit(1, COIN);
+    let prepare = f.spawn_prepare(&f.draft(BOB));
+    wait_until(|| platform.fetches() > 0);
+    f.cache_profile(BOB, profile("Mallory"));
+    platform.set_proof(Proof::Verified);
+    assert_eq!(
+        platform_error(f.engine.block_on(prepare).unwrap()),
+        "platform.context_unavailable"
+    );
 }
 
 /// H-09: a release build ignores a trusted-only toggle a developer build

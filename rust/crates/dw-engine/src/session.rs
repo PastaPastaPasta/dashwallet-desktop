@@ -510,9 +510,22 @@ impl NetworkSession {
         ));
         let provenance = {
             let appdb = Arc::clone(&appdb);
+            let named: std::collections::HashSet<String> =
+                names.iter().map(|(id, _, _)| id.clone()).collect();
+            let db_path = data_dir.join(WALLET_DB_FILE);
             Arc::new(
                 tokio::task::spawn_blocking(move || {
-                    crate::platform::provenance::Provenance::open(appdb)
+                    let provenance = crate::platform::provenance::Provenance::open(appdb);
+                    // H-09: a wallet this installation never named came with
+                    // data fetched elsewhere, maybe through the fallback.
+                    let unnamed = crate::store::registered_wallet_ids(&db_path).map(|ids| {
+                        ids.iter()
+                            .any(|id| !named.contains(&WalletId(*id).to_string()))
+                    });
+                    if unnamed.unwrap_or(true) {
+                        provenance.data_fetched_elsewhere();
+                    }
+                    provenance
                 })
                 .await?,
             )

@@ -4577,7 +4577,10 @@ renames or reshapes them takes the next version bump:
     keep item 55's degraded reading (DP3-04 D4: they pay the wallet's own identity or addresses). An address a
     contact payment's broadcast gave back unsent keeps the re-check flag it had (a retry pays it again). The
     trusted-only toggle turns rule 5 off as before, and only in developer builds: a release build ignores a stored
-    `trust.trusted_only` and cannot set it.
+    `trust.trusted_only` and cannot set it. A contact's data that changes while the gate waits is
+    `platform.context_unavailable` too. Our own request held without the `autoAcceptProof` Platform has verifies when
+    every other field matches. A session whose wallet store holds a wallet app.sqlite never named treats Platform data
+    as unverified until re-fetched.
 
 ## 8. Release 0.1: network choice and SPV by default (`dw-app`, not the facade)
 

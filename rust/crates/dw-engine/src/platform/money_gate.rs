@@ -387,6 +387,10 @@ struct SessionEnv<'a> {
     /// The re-check: the address reserved for the payee (D12's strict
     /// reading, D21).
     reserved: Option<&'a Address>,
+    /// H-09: a payee's data as the gate first saw it. If it changes
+    /// during the wait the gate refuses: what verifies must be what was
+    /// shown.
+    seen: Mutex<Option<Vec<Held>>>,
 }
 
 impl SessionEnv<'_> {
@@ -436,15 +440,11 @@ impl SessionEnv<'_> {
             .find(|m| m.identity.id() == owner)
     }
 
-    /// The subject's entities `provenance` holds unverified; `None` if the
-    /// library no longer holds the subject.
-    fn unverified(
-        &self,
-        wm: &WalletManager<PlatformWalletInfo>,
-        provenance: &Provenance,
-    ) -> Option<Vec<Held>> {
+    /// Every entity the subject rests on; `None` if the library no longer
+    /// holds the subject.
+    fn held(&self, wm: &WalletManager<PlatformWalletInfo>) -> Option<Vec<Held>> {
         let m = self.managed(wm)?;
-        let held = match self.subject {
+        match self.subject {
             Subject::Payee(_, (_, contact)) => {
                 let username = self.session.platform.contacts.names.label(&contact);
                 payee_held(m, &contact, username.as_deref())
@@ -453,9 +453,18 @@ impl SessionEnv<'_> {
                 id,
                 keys: m.identity.public_keys().clone(),
             }]),
-        };
+        }
+    }
+
+    /// The subject's entities `provenance` holds unverified; `None` if the
+    /// library no longer holds the subject.
+    fn unverified(
+        &self,
+        wm: &WalletManager<PlatformWalletInfo>,
+        provenance: &Provenance,
+    ) -> Option<Vec<Held>> {
         Some(
-            (held?.into_iter())
+            (self.held(wm)?.into_iter())
                 .filter(|h| provenance.is_unverified(&h.entity()))
                 .collect(),
         )
@@ -471,6 +480,15 @@ impl GateEnv for SessionEnv<'_> {
         // they are checked against, under one read.
         if !self.payable(&wm) {
             return Err(Refusal::NotPayable);
+        }
+        if let Subject::Payee(..) = self.subject {
+            let now = self.held(&wm);
+            let mut seen = guard(&self.seen);
+            match &*seen {
+                None => *seen = Some(now.clone().unwrap_or_default()),
+                Some(first) if Some(first) != now.as_ref() => return Err(Refusal::Unverified),
+                Some(_) => {}
+            }
         }
         Ok(self.unverified(&wm, &live.provenance))
     }
@@ -516,6 +534,7 @@ impl NetworkSession {
             session: self,
             subject,
             reserved: None,
+            seen: Mutex::default(),
         };
         let gated = run(&env, || self.gate_refetcher(), signals, waits).await;
         if let Err(refusal) = &gated {
@@ -561,6 +580,7 @@ impl NetworkSession {
             session: self,
             subject,
             reserved: Some(address),
+            seen: Mutex::default(),
         };
         let checked = match rule {
             Rule5::Enforce => recheck(&env, || self.gate_refetcher(), waits).await,

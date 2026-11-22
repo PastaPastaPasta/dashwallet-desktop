@@ -398,6 +398,11 @@ async fn step_nonce(
     fault_after(env.db(), points::READ_NONCE)?;
     let h = read.read.height;
     let floor = raise_floor(env, id, nonce, floor, top).await?;
+    // H-09: nothing is decided, and nothing handed off, on a read rule 5
+    // did not pass.
+    if !read.passed {
+        return Ok(Err(Round::Undecidable(unverified("the nonce"))));
+    }
     let state = read.read.value;
     let tip = state & IDENTITY_NONCE_VALUE_FILTER;
     if takes(state, nonce, *id) {
@@ -410,9 +415,6 @@ async fn step_nonce(
         return Ok(Err(Round::Decided(Outcome::Stale)));
     }
     // (i) holds: n ≤ tip at H, and Drive no longer takes it.
-    if !read.passed {
-        return Ok(Err(Round::Undecidable(unverified("the nonce"))));
-    }
     Ok(Ok(Some((h, tip, floor))))
 }
 

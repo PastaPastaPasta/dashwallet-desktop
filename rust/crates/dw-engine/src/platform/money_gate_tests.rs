@@ -192,6 +192,15 @@ pub(crate) fn gate_session(session: &NetworkSession, mode: TrustMode, platform: 
         .provenance
         .fallback_in_use()
         .unwrap();
+    gate_session_unlatched(session, mode, platform);
+}
+
+/// [`gate_session`] without setting the latch.
+pub(crate) fn gate_session_unlatched(
+    session: &NetworkSession,
+    mode: TrustMode,
+    platform: Arc<FakePlatform>,
+) {
     session.trust.set_mode(mode);
     (session.platform.money_gate).set_waits(Waits {
         wait: Duration::from_secs(4),

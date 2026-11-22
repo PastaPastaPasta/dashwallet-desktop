@@ -156,6 +156,19 @@ impl Provenance {
         Ok(())
     }
 
+    /// The wallet store holds data this installation did not fetch (H-09):
+    /// latch as if the fallback had served it. A latch that cannot be made
+    /// durable still counts in memory. Blocking (app.sqlite).
+    pub(crate) fn data_fetched_elsewhere(&self) {
+        if self.fallback_used() {
+            return;
+        }
+        if let Err(e) = self.fallback_in_use() {
+            tracing::warn!(error = %e, "could not latch data from another installation");
+            self.fallback_used.store(true, Ordering::SeqCst);
+        }
+    }
+
     /// A fetch of `entity`, with this content, verified against SPV-held
     /// quorum keys (E0-10b). An entity without a digest records nothing.
     /// Blocking (app.sqlite).

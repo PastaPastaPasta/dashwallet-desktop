@@ -775,6 +775,20 @@ fn the_degraded_default_refuses_a_withdrawal_on_unverified_reads() {
     assert_eq!(r.unwrap().state, State::Sent);
 }
 
+/// H-09 (Astra M5): an identity read that is unverified at first, and
+/// verified a moment later, withdraws in the same call: `withdraw` waits
+/// for SPV within its bound rather than refusing on the first read.
+#[test]
+fn an_identity_read_verified_during_the_wait_withdraws() {
+    let fa = Fa::new(true);
+    fa.f.session
+        .trust
+        .set_mode(crate::platform::trust::TrustMode::Degraded);
+    fa.plat.deviate(Read::Identity, Dev::Unverified, 2);
+    let r = fa.withdraw(Key::Owner, AMOUNT, None);
+    assert_eq!(r.unwrap().state, State::Sent);
+}
+
 #[test]
 fn an_open_record_is_withdrawal_pending() {
     let fa = Fa::new(true);
