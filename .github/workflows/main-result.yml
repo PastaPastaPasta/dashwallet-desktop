@@ -77,7 +77,7 @@ jobs:
             elif ! batch=$(git log -n 50 --first-parent --format='- %h %s' "$green..$sha"); then
               batch="(the commits since ${green:0:8} could not be listed)"
             else
-              batch="Merged since the last green run (${green:0:8}):"$'\n'"$batch"
+              batch="Merged since the last green run (${green:0:8}; up to the 50 most recent, all at $GITHUB_SERVER_URL/$GH_REPO/compare/$green...$sha):"$'\n'"$batch"
             fi
           fi
           ci/github/nightly-issue.sh failed "$NAME on main" \
