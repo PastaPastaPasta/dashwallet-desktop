@@ -12,7 +12,7 @@ import { AmountText, DashButton } from "../../components/basics";
 import { FiatSecondary, FiatToggle, useFiatEntry } from "../../fiat/entry";
 import type { useDisplay } from "../../format/display";
 import { useT, t } from "../../i18n";
-import { availableLabel, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayRecipient, type Sending } from "./model";
+import { availableLabel, changePolicy, coinSource, DEFAULT_ADVANCED, feeMode, incompleteText, mixedFeeText, sendErrorText, withSubtractFee, type Advanced, type CoinChoice, type Confirmed, type Outcome, type PayForm, type PayRecipient, type Sending } from "./model";
 import type { DraftApi, DraftSpec } from "./useDraft";
 
 /** How long a field stays unchanged before it is checked and the draft estimated (U-03 D5). */
@@ -402,8 +402,11 @@ export function PayFooter({
   reviewRef,
   offer,
   reviewLabel,
+  form = "address",
 }: {
   reviewLabel?: string;
+  /** Which form this is, for what an incomplete one still needs. */
+  form?: PayForm;
   problem: string | null;
   /** Subtract fee would send this amount; its button turns it on (MX-FEE). Pass it only for settled fields. */
   offer?: { amount: number; accept: () => void } | null;
@@ -416,7 +419,7 @@ export function PayFooter({
   reviewRef: Ref<HTMLButtonElement>;
 }) {
   const t = useT();
-  const waiting = incomplete ? t("pay.incomplete") : t("pay.checking");
+  const waiting = incomplete ? incompleteText(form) : t("pay.checking");
   return (
     <div className="pay-footer" data-testid="pay-footer">
       <div className="pay-footer-text" aria-live="polite">

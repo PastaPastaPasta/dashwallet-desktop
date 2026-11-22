@@ -142,6 +142,10 @@ Documented English changes (copy fixes made on purpose, not by a conversion):
   outgoing text's coins and double payment don't apply to them. An abandoned payment that peers relay
   again is still ignored; it counts again only once it gets an InstantSend lock (shown as "InstantSend")
   or a confirmation.
+- On Pay ▸ To a contact, with a contact picked and no amount, the hint beside Review reads "Enter an
+  amount first." (`pay.incompleteContact`). The contact form has no address field, so the shared "Enter
+  an address and an amount first." asked for something the user could not enter. To an address keeps
+  that text.
 
 ### What the checks catch
 

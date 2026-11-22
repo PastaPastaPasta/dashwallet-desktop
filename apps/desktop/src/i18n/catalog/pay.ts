@@ -69,6 +69,8 @@ export const pay = {
     noRetryHere: "The payment may have been sent, and it can no longer be retried here.",
   },
   incomplete: "Enter an address and an amount first.",
+  /** The contact form has no address field: only the amount is missing. */
+  incompleteContact: "Enter an amount first.",
   checking: "Checking the payment…",
   auth: {
     throttled: "Too many attempts.",
