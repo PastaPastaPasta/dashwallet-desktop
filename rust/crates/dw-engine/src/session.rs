@@ -978,7 +978,8 @@ impl NetworkSession {
         Ok(config)
     }
 
-    /// Starts dash-spv and spawns its run loop.
+    /// Starts dash-spv and spawns its run loop. The caller announces the
+    /// start ([`Self::emit_spv_running`]) once `spv_state` reads `Running`.
     pub(crate) async fn start_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
         let config = self.spv_config()?;
         // Owner-only before dash-spv creates it with the umask's mode.
@@ -987,13 +988,16 @@ impl NetworkSession {
         spv.start(config).await?;
         spv.spawn_run_loop();
         self.hub.set_spv_running(true);
+        // E0-04 H6 part 2: the catch-up's resume pass, spawned.
+        self.leases.spv_started();
+        Ok(())
+    }
+
+    pub(crate) fn emit_spv_running(&self) {
         self.sink.emit(EngineEvent::SpvStateChanged {
             network: self.network.clone(),
             running: true,
         });
-        // E0-04 H6 part 2: the catch-up's resume pass, spawned.
-        self.leases.spv_started();
-        Ok(())
     }
 
     pub(crate) async fn stop_spv_inner(&self, manager: &Manager) -> Result<(), EngineError> {
