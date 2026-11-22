@@ -6,29 +6,9 @@ import { checkArea, PSEUDO } from "./pseudo";
 // (Payments, Contact requests, New, Earlier, empty, no-identity and error states) under the
 // two pseudo-locales, light and dark, at 1280×820 and 920×600, with axe.
 
-/** Text in the notifications views that is data, not copy:
- * - Fixture contact names and two-letter initials (`Grace Hopper`, `heidi`, `GH`, `BB`, …).
- * - `format/tx.ts` `detailDate` ("Oct 6, 2026 at 1:39 AM"). */
-const ALLOWED_DATA: RegExp[] = [
-  /^(Grace Hopper|heidi)$/,
-  /^\p{Lu}{2}$/u,
-  // `detailDate` in `format/tx.ts` formats the date/time in the display locale and joins with " at ";
-  // WebKit writes Arabic-Indic digits (`\p{Nd}`) and Arabic month/period names under `ar-XB`.
-  /^\S+ \S+,? \p{Nd}{4} at \p{Nd}{1,2}:\p{Nd}{2}(\s\S+)?$/u,
-];
-
-/** Still English, from components/emptyStates.ts (components lane). */
-const EMPTY_CARD: RegExp[] = [
-  /^No notifications yet$/,
-  /^Contact requests and payments from your contacts show up here\.$/,
-  /^Add contact$/,
-];
-
-const NO_IDENTITY_CARD: RegExp[] = [
-  /^No notifications yet$/,
-  /^Create a username to get contact requests and payments from contacts\.$/,
-  /^Join DashPay$/,
-];
+/** Text in the notifications views that is data, not copy: fixture contact names and two-letter
+ * initials (`Grace Hopper`, `heidi`, `GH`, `BB`, …). */
+const ALLOWED_DATA: RegExp[] = [/^(Grace Hopper|heidi)$/, /^\p{Lu}{2}$/u];
 
 /** Engine-supplied AppError.message from fixture `fail=dashpay_events:none` (not translated). */
 const FIXTURE_ERROR: RegExp[] = [/^fixture: an internal error with no data$/];
@@ -152,7 +132,6 @@ for (const theme of THEMES) {
       await checkArea(page, info, theme, pseudo, {
         name: "notifications-page-empty",
         roots: ["page-notifications"],
-        data: EMPTY_CARD,
         open: async (l) => {
           await openScenario(page, "dashpay-bell-empty", theme, l);
           await openPage(page);
@@ -168,7 +147,6 @@ for (const theme of THEMES) {
       await checkArea(page, info, theme, pseudo, {
         name: "notifications-page-no-identity",
         roots: ["page-notifications"],
-        data: NO_IDENTITY_CARD,
         open: async (l) => {
           await openScenario(page, "dashpay-no-identity", theme, l);
           await page.getByTestId("toolbar-bell").click();
