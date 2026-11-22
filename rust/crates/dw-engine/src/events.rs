@@ -491,9 +491,9 @@ pub(crate) struct SessionHub {
     pub tracker: Mutex<SyncTracker>,
     pub pump: EventPump,
     pub history: HistoryStore,
-    /// The session's app database, once the session is open: a sweep drops
-    /// the sent marks of the payments it removed.
-    pub appdb: std::sync::OnceLock<Arc<dw_appdb::AppDb>>,
+    /// The session's app database, once the session is open and until it
+    /// closes: a sweep drops the sent marks of the payments it removed.
+    pub appdb: std::sync::OnceLock<std::sync::Weak<dw_appdb::AppDb>>,
     pub wallets: RwLock<BTreeMap<WalletId, WalletState>>,
     pub names: RwLock<HashMap<WalletId, WalletName>>,
     /// The rescan the engine started, until it finishes or is cancelled.
@@ -1421,8 +1421,8 @@ impl SessionHub {
                         h.swept.insert(*t);
                     }
                 });
-                if let Some(appdb) = self.appdb.get() {
-                    crate::tx_actions::forget_sent(appdb, id, txids);
+                if let Some(appdb) = self.appdb.get().and_then(std::sync::Weak::upgrade) {
+                    crate::tx_actions::forget_sent(&appdb, id, txids);
                 }
                 self.pump.mark_history(id, Some(txids));
                 if self.update_balance(id, balance, account_balances) {
