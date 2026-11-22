@@ -1211,6 +1211,16 @@ fn a_rescan_that_sweeps_a_beaten_payment_credits_a_in_its_session() {
 /// session; the store frees A, and A loads after a restart, never B.
 #[test]
 fn a_coin_only_a_dropped_payment_held_after_a_sweep_returns_after_a_restart() {
+    only_a_removed_payment_held_a(false);
+}
+
+/// The same, with the other payment abandoned from its row.
+#[test]
+fn a_coin_only_an_abandoned_payment_held_after_a_sweep_returns_after_a_restart() {
+    only_a_removed_payment_held_a(true);
+}
+
+fn only_a_removed_payment_held_a(abandon: bool) {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     mined(&engine, &session, id, TIP, vec![paid.clone()]);
     let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
@@ -1253,11 +1263,14 @@ fn a_coin_only_a_dropped_payment_held_after_a_sweep_returns_after_a_restart() {
     let funded = block_hash(std::slice::from_ref(&paid));
     headers(&session, &[(TIP, funded), (TIP + 1, won)]);
     start_spv(&engine, &session);
-    assert_eq!(
-        engine.block_on(session.drop_unconfirmed(Some(id))).unwrap(),
-        1,
-        "only the other payment"
-    );
+    match abandon {
+        true => (engine.block_on(session.abandon_transaction(id, other.txid()))).unwrap(),
+        false => assert_eq!(
+            engine.block_on(session.drop_unconfirmed(Some(id))).unwrap(),
+            1,
+            "only the other payment"
+        ),
+    }
     assert!(abandoned(&engine, &session, id, other.txid()));
     assert!(
         !held(&engine, &session, id).contains(&a),
