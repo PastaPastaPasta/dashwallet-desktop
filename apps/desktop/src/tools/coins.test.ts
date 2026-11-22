@@ -8,7 +8,7 @@ import type { Utxo } from "../api/generated/Utxo";
 import { appError, settle, WALLET_A } from "../onboarding/testWorld";
 import { failureText } from "../onboarding/model";
 import { notSelectable, outpointKey } from "../screens/pay/model";
-import { COLUMN_TITLE, CoinSelectionModel, CoinText, coinLabel, copyText } from "./coins";
+import { CoinSelectionModel, CoinText, coinLabel, columnTitle, copyText } from "./coins";
 
 const txid = (n: number) => n.toString(16).padStart(64, "0");
 const key = (n: number) => `${txid(n)}:0`;
@@ -92,7 +92,7 @@ describe("Coin Selection (QT-069…074)", () => {
     expect(m.sort).toEqual({ column: "confirmations", ascending: true });
     m.setMode("tree");
     expect(m.mode).toBe("tree");
-    expect(COLUMN_TITLE.label).toBe("Label");
+    expect(columnTitle("label")).toBe("Label");
   });
 
   it("QT069_treeModeGroupsByAddressAndLabelsChange", () => {

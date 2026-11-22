@@ -15,18 +15,15 @@ export type CoinColumn = "amount" | "label" | "address" | "rounds" | "date" | "c
 
 /** dash-qt's column titles; "Received with label" and "Received with address" are shortened to
  * fit the window (D22). */
-export const COLUMN_TITLE: Record<CoinColumn, string> = {
-  amount: "Amount",
-  label: "Label",
-  address: "Address",
-  rounds: "Mixing Rounds",
-  date: "Date",
-  confirmations: "Confirmations",
-};
+export const columnTitle = (column: CoinColumn) => t(`tools.coins.columns.${column}`);
 
 export const CoinText = {
-  change: "(change)",
-  noLabel: "(no label)",
+  get change() {
+    return t("tools.coins.change");
+  },
+  get noLabel() {
+    return t("tools.coins.noLabel");
+  },
   locked: (n: number) => t("tools.coins.locked", { count: n }),
   get showAll() {
     return t("tools.coins.showAll");

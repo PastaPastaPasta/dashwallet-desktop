@@ -452,6 +452,17 @@ export const tools = {
   },
   coins: {
     loading: "Loading coins",
+    columns: {
+      amount: "Amount",
+      label: "Label",
+      address: "Address",
+      rounds: "Mixing Rounds",
+      date: "Date",
+      confirmations: "Confirmations",
+      actions: "Actions",
+    },
+    change: "(change)",
+    noLabel: "(no label)",
     loadFailed: "Could not load the coins: {error}",
     view: "View",
     listMode: "List mode",
