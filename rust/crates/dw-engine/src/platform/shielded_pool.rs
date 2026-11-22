@@ -116,6 +116,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, PoisonError, Weak};
 use std::time::Duration;
 
+use dash_sdk::platform::Fetch;
+use dash_sdk::query_types::{NoParamQuery, ShieldedNotesCount};
 use dashcore::{Address, Network, OutPoint, Txid};
 use dpp::address_funds::{OrchardAddress, PlatformAddress};
 use dpp::balances::credits::CREDITS_PER_DUFF;
@@ -137,7 +139,7 @@ use platform_wallet::wallet::shielded::store::StalePendingSpend;
 use platform_wallet::wallet::shielded::{
     CachedOrchardProver, DispatchRefused, FileShieldedStoreError, NetworkShieldedCoordinator,
     ShieldedActivityEntry, ShieldedActivityKind as Kind, ShieldedActivityStatus as Status,
-    ShieldedDirection as Direction, ShieldedDispatch, ShieldedDispatchKind,
+    ShieldedBalanceSource, ShieldedDirection as Direction, ShieldedDispatch, ShieldedDispatchKind,
     ShieldedDispatchPayload, ShieldedDispositionRefusal, ShieldedLocalBalanceState, ShieldedNote,
     ShieldedSpendDisposition, ShieldedStore, SubwalletId, UnresolvedReason,
 };
@@ -2513,11 +2515,14 @@ impl ShieldedLib for PwShielded {
         guarded_pass(&self.pw.session, &self.manager, true).await
     }
 
+    /// `last_sync_at`: the last pass's end, or a later skip's proof that
+    /// the pool is unchanged ([`periodic_pass`]).
     fn sync_state(&self) -> SyncState {
         let sync = self.manager.shielded_sync();
+        let checked = (self.pw.session.platform.shielded_checked_at).load(Ordering::Acquire);
         SyncState {
             syncing: sync.is_syncing(),
-            last_sync_at: sync.last_sync_unix_seconds(),
+            last_sync_at: (sync.last_sync_unix_seconds()).max((checked != 0).then_some(checked)),
         }
     }
 
@@ -3391,7 +3396,7 @@ async fn hold_passes(
 
 /// One shielded sync pass, the only way the engine runs one: after
 /// [`admit_pass`], started only while the session is open (the facade's
-/// calls in [`on_pool`], the supervisor's `kick_shielded_pass`), and
+/// calls in [`on_pool`], the supervisor's [`periodic_pass`]), and
 /// holding the session's pass lock from the admission to its end, so a
 /// lock's drain (`drain_shielded_pass`) waits for it and no pass admitted
 /// before the lock outlives it. Its tail reads the library's spend
@@ -3402,9 +3407,82 @@ pub(crate) async fn guarded_pass(
     manager: &Manager,
     force: bool,
 ) -> bool {
+    pass(session, manager, force, None, &|_| true).await
+}
+
+/// The supervisor's periodic pass (#178): Platform's note count is read
+/// first, by a task holding only the SDK, so neither a close nor a stop
+/// waits for it. Then, while the session is open and `runs` says the loops
+/// that kicked it still do (checked again under the pass's locks),
+/// [`guarded_pass`]'s pass, which skips the library's pass while
+/// [`pool_is_idle`]. `false` when it did not run or was held back.
+pub(crate) async fn periodic_pass(
+    session: Arc<NetworkSession>,
+    manager: Arc<Manager>,
+    runs: impl Fn(&NetworkSession) -> bool + Sync,
+) -> bool {
+    #[cfg(test)]
+    let (injected, pause, block) = (
+        *session.platform.notes_count.lock().unwrap(),
+        session.platform.probe_pause.lock().unwrap().take(),
+        session.platform.probe_block.lock().unwrap().take(),
+    );
+    let sdk = manager.sdk_arc();
+    let (weak_session, weak_manager) = (Arc::downgrade(&session), Arc::downgrade(&manager));
+    drop((session, manager));
+    // Its own task: verification can block its thread past any timer.
+    let probe = tokio::spawn(async move {
+        #[cfg(test)]
+        if let Some(block) = block {
+            tokio::task::block_in_place(|| block.recv().ok());
+        }
+        #[cfg(test)]
+        if let Some(count) = injected {
+            return count.map(|c| (c, crate::events::unix_now()));
+        }
+        notes_count(&sdk).await
+    });
+    let count = tokio::time::timeout(NOTES_COUNT_BUDGET, probe).await;
+    let count = count.ok().and_then(Result::ok).flatten();
+    #[cfg(test)]
+    if let Some(pause) = pause {
+        let _ = pause.reached.send(());
+        let _ = pause.resume.await;
+    }
+    let (Some(session), Some(manager)) = (weak_session.upgrade(), weak_manager.upgrade()) else {
+        return false;
+    };
+    if !runs(&session) || session.enter().await.is_err() {
+        return false;
+    }
+    let runs = |s: &NetworkSession| runs(s) && s.try_enter().is_ok();
+    pass(&session, &manager, false, count, &runs).await
+}
+
+/// [`guarded_pass`]'s pass, held back unless it still `runs` once its locks
+/// are taken and again as the library's pass starts; a periodic one's proved
+/// note `count`, with the time it was proved at, may skip it.
+async fn pass(
+    session: &Arc<NetworkSession>,
+    manager: &Manager,
+    force: bool,
+    count: Option<(u64, u64)>,
+    runs: &(dyn Fn(&NetworkSession) -> bool + Sync),
+) -> bool {
+    #[cfg(test)]
+    if let Some(queued) = session.platform.spends_queued.lock().unwrap().take() {
+        let _ = queued.send(());
+    }
     // A spend's hold first, then the drain's lock (always in this order).
     let _spends = session.platform.shielded_spends.read().await;
     let _pass = session.platform.shielded_passes.read().await;
+    if !runs(session) {
+        return false;
+    }
+    #[cfg(test)]
+    if let Some(admitting) = session.platform.admitting.lock().unwrap().take() {
+        let _ = admitting.send(());
+    }
     let coordinator = match admit_pass(session, manager).await {
         Ok(coordinator) => coordinator,
         Err(held) => {
@@ -3422,6 +3500,25 @@ pub(crate) async fn guarded_pass(
             let _ = pause.resume.await;
         }
     }
+    if let Some((count, proved_at)) = count
+        && pool_is_idle(session, manager, &coordinator, count)
+            .await
+            .is_some()
+    {
+        tracing::debug!(
+            count,
+            "the shielded pool is unchanged; the periodic pass is skipped"
+        );
+        (session.platform.shielded_checked_at).fetch_max(proved_at, Ordering::AcqRel);
+        return true;
+    }
+    // Again with no await until `sync_now` takes its slot: a stop moves the
+    // epoch before its quiesce, which waits for a pass in the slot.
+    if !runs(session) {
+        return false;
+    }
+    #[cfg(test)]
+    session.platform.passes_run.fetch_add(1, Ordering::SeqCst);
     let summary = manager.shielded_sync().sync_now(force).await;
     if summary.error_count() > 0 {
         tracing::info!(
@@ -3445,6 +3542,93 @@ pub(crate) async fn guarded_pass(
     }
     true
 }
+
+/// Whether a periodic pass would find nothing (#178): Platform's proved
+/// note `count` is the local tree's size, every bound account has scanned
+/// the whole tree in this session and its rest clock's first scan is
+/// marked, and no spend waits on a pass (stored, reserved, with an outcome
+/// or marked). `None` when any of it does not hold or cannot be read, so
+/// the pass runs.
+async fn pool_is_idle(
+    session: &NetworkSession,
+    manager: &Manager,
+    coordinator: &NetworkShieldedCoordinator,
+    count: u64,
+) -> Option<()> {
+    let tree = coordinator.store().read().await.tree_size().ok()?;
+    if count != tree {
+        return None;
+    }
+    let wallets = pass_wallets(manager, coordinator).await;
+    for &wallet in &wallets {
+        let scanned = match coordinator.local_balance_snapshot(wallet).await.ok()? {
+            ShieldedLocalBalanceState::Unbound => true,
+            ShieldedLocalBalanceState::RestoreIncomplete => false,
+            ShieldedLocalBalanceState::Ready(snapshot) => {
+                let appdb = session.live().ok()?.appdb;
+                let clock =
+                    tokio::task::spawn_blocking(move || read_rest_clock(&appdb, WalletId(wallet)));
+                clock.await.ok()?.ok()?.scanned
+                    && snapshot.accounts.values().all(|a| {
+                        a.source == ShieldedBalanceSource::ScannedThisSession
+                            && a.last_scanned_index >= Some(tree)
+                    })
+            }
+        };
+        let settled = coordinator
+            .spend_dispositions(wallet)
+            .await
+            .ok()?
+            .is_empty()
+            && !session.leases.marks_unrecorded(WalletId(wallet)).await;
+        if !scanned || !settled {
+            return None;
+        }
+    }
+    let subwallets = coordinator.registered_subwallets().await;
+    let store = coordinator.store().read().await;
+    let idle = wallets
+        .iter()
+        .all(|&w| (store.pending_redrives_for_wallet(w)).is_ok_and(|r| r.is_empty()))
+        && (subwallets.iter()).all(|&s| store.stale_pending_spends(s).is_ok_and(|r| r.is_empty()));
+    idle.then_some(())
+}
+
+/// The proved number of notes in Platform's shielded pool, and the proof's
+/// time (Unix seconds, no later than now); `None` if the read fails.
+/// [`NOTES_COUNT_TIMEOUT`] bounds each transport attempt, not the proof's
+/// verification, which can block for a quorum: [`periodic_pass`] gives up on
+/// it all after [`NOTES_COUNT_BUDGET`].
+async fn notes_count(sdk: &dash_sdk::Sdk) -> Option<(u64, u64)> {
+    if !sdk.prove() {
+        return None;
+    }
+    let settings = dash_sdk::RequestSettings {
+        timeout: Some(NOTES_COUNT_TIMEOUT),
+        retries: Some(1),
+        ban_failed_address: Some(false),
+        ..Default::default()
+    };
+    match ShieldedNotesCount::fetch_with_metadata(sdk, NoParamQuery {}, Some(settings)).await {
+        Ok((count, metadata)) => {
+            let proved_at = (metadata.time_ms / 1000).min(crate::events::unix_now());
+            count.map(|c| (c.0, proved_at))
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, "the shielded note count was not read");
+            None
+        }
+    }
+}
+
+/// How long one transport attempt of the note count's read waits.
+const NOTES_COUNT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a periodic pass waits for the note count, its two attempts and
+/// the proof's verification included, before it runs as if the read failed
+/// and ignores a later answer: a sixth of the 60 s pass interval. The read's
+/// task, holding only the SDK, may block on past it for a quorum.
+const NOTES_COUNT_BUDGET: Duration = Duration::from_secs(10);
 
 // MARK: the Platform side's start
 
