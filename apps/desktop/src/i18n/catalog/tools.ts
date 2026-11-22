@@ -331,8 +331,6 @@ export const tools = {
     ok: "OK",
     new: "New",
     export: "Export…",
-    exportFilenameSending: "Sending addresses",
-    exportFilenameReceiving: "Receiving addresses",
     exported: "Exported to {path}.",
     exportFailed: "There was an error trying to save the address list. {error}",
     copy: "Copy",
