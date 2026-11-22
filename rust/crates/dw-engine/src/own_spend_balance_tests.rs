@@ -13,8 +13,8 @@ use platform_wallet::key_wallet_manager::WalletInterface;
 
 use super::own_spend_disk_tests::{
     COIN, COINS, FUNDED_AT, TIP, abandon, assert_holds, change_of, coins, eventually, foreign,
-    fresh_address, funding, own_scripts, rival, send, spendable, store_raw, synced, utxo,
-    wait_stored, wallet_funded_unmined,
+    fresh_address, funding, own_scripts, rival, second_wallet, send, sent_marks, spendable,
+    store_raw, synced, utxo, wait_stored, wallet_funded_unmined,
 };
 use super::{balances, engine_wallet, instant_lock, mempool, mined, reopen, wait_stored_locked};
 use crate::send::CoinSource;
@@ -916,13 +916,6 @@ fn a_beaten_payment_keeps_its_other_coin_out_until_it_is_abandoned() {
     assert!(!spendable(&engine, &session, id, b), "B is not");
 }
 
-fn sent_marks(session: &NetworkSession, id: WalletId) -> BTreeSet<Txid> {
-    crate::tx_actions::load_sent(&session.live().unwrap().appdb, id)
-        .0
-        .into_keys()
-        .collect()
-}
-
 /// The mark of a payment this app sent goes at the first load after its
 /// block is ChainLocked; a mined one's stays until then, as a reorg can
 /// return it to the mempool, and a pending one's stays.
@@ -976,21 +969,7 @@ fn a_chainlock_another_wallet_applied_keeps_a_payment_mark() {
     let payment = send(&engine, &session, id, CoinSource::Any, COIN, false);
     mempool(&engine, &session, id, &payment);
     mined(&engine, &session, id, TIP + 1, vec![payment.clone()]);
-    let other = engine
-        .block_on(
-            session.import_wallet(
-                zeroize::Zeroizing::new(
-                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
-                        .to_vec(),
-                ),
-                zeroize::Zeroizing::new(Vec::new()),
-                crate::ImportOptions {
-                    birth_height: Some(super::BIRTH),
-                    ..Default::default()
-                },
-            ),
-        )
-        .unwrap();
+    let other = second_wallet(&engine, &session);
     engine.block_on(session.unload_wallet(id)).unwrap();
     let block = super::block_with(vec![payment.clone()]).block_hash();
     super::own_spend_disk_tests::chain_lock(&engine, &session, other, TIP + 1, block);

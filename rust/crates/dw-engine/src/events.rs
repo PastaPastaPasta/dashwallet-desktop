@@ -1535,13 +1535,14 @@ impl SessionHub {
                         .collect();
                     (locked, settled)
                 });
+                let mut changed = locked;
                 if !settled.is_empty() {
-                    self.pump.mark_history(id, Some(&settled));
+                    changed.extend(&settled);
                     (self.final_sends.lock().unwrap_or_else(|p| p.into_inner()))
                         .push((id, settled));
                 }
-                if !locked.is_empty() {
-                    self.pump.mark_history(id, Some(&locked));
+                if !changed.is_empty() {
+                    self.pump.mark_history(id, Some(&changed));
                 }
                 self.note_seen(id, locked_transactions.values().flatten().copied());
             }
@@ -1764,7 +1765,11 @@ impl PumpTarget for SessionPump {
                 }
             }
             for (wallet_id, txids) in finals {
-                crate::tx_actions::forget_sent(&appdb, wallet_id, &txids);
+                let (sent, _) = crate::tx_actions::load_sent(&appdb, wallet_id);
+                let marked: Vec<Txid> = (txids.into_iter())
+                    .filter(|t| sent.contains_key(t))
+                    .collect();
+                crate::tx_actions::forget_sent(&appdb, wallet_id, &marked);
             }
         };
         #[cfg(test)]

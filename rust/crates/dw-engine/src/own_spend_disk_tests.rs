@@ -95,7 +95,7 @@ pub(super) fn foreign() -> Transaction {
 }
 
 /// Prepares (signs and reserves, never broadcasts) a payment of `amount`
-/// from `source` through a real draft.
+/// from `source` to [`FOREIGN`] through a real draft.
 pub(super) fn prepare(
     engine: &Engine,
     session: &Arc<NetworkSession>,
@@ -108,11 +108,38 @@ pub(super) fn prepare(
     Arc<crate::send::TxDraft>,
     Result<Arc<crate::send::PreparedTx>, crate::EngineError>,
 ) {
+    prepare_to(
+        engine,
+        session,
+        id,
+        source,
+        FOREIGN,
+        amount,
+        subtract_fee,
+        broadcaster,
+    )
+}
+
+/// [`prepare`] to the address `to`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_to(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    source: CoinSource,
+    to: &str,
+    amount: u64,
+    subtract_fee: bool,
+    broadcaster: &Arc<Accept>,
+) -> (
+    Arc<crate::send::TxDraft>,
+    Result<Arc<crate::send::PreparedTx>, crate::EngineError>,
+) {
     let draft = session.new_tx_draft(id).unwrap();
     *draft.broadcaster.lock().unwrap() = Some(Arc::clone(broadcaster) as _);
     draft
         .set_recipients(vec![Recipient {
-            address: FOREIGN.into(),
+            address: to.into(),
             amount,
             subtract_fee_from_amount: subtract_fee,
             label: None,
@@ -135,8 +162,8 @@ pub(super) fn prepare(
     (draft, prepared)
 }
 
-/// Prepares and broadcasts a payment of `amount` from `source` through a
-/// real draft; returns the signed transaction.
+/// Prepares and broadcasts a payment of `amount` from `source` to
+/// [`FOREIGN`] through a real draft; returns the signed transaction.
 pub(super) fn send(
     engine: &Engine,
     session: &Arc<NetworkSession>,
@@ -145,12 +172,26 @@ pub(super) fn send(
     amount: u64,
     subtract_fee: bool,
 ) -> Transaction {
+    send_to(engine, session, id, source, FOREIGN, amount, subtract_fee)
+}
+
+/// [`send`] to the address `to`.
+pub(super) fn send_to(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    source: CoinSource,
+    to: &str,
+    amount: u64,
+    subtract_fee: bool,
+) -> Transaction {
     let broadcaster = Arc::new(Accept::default());
-    let (draft, prepared) = prepare(
+    let (draft, prepared) = prepare_to(
         engine,
         session,
         id,
         source,
+        to,
         amount,
         subtract_fee,
         &broadcaster,
@@ -824,9 +865,6 @@ fn a_lock_arriving_after_an_abandon_keeps_the_payments_sent_mark() {
     wait_stored(&session, id, &[p.txid(), q.txid()]);
     abandon(&engine, &session, id, p.txid());
     abandon(&engine, &session, id, q.txid());
-    let sent_marks = |session: &NetworkSession| {
-        crate::tx_actions::load_sent(&session.live().unwrap().appdb, id).0
-    };
 
     engine.block_on(session.unload_wallet(id)).unwrap();
     let copied = Arc::new(crate::coins::TestPause::default());
@@ -849,9 +887,9 @@ fn a_lock_arriving_after_an_abandon_keeps_the_payments_sent_mark() {
     instant_lock(&engine, &session, id, &p);
     installing.release.notify_one();
     engine.block_on(load).unwrap().unwrap();
-    let marks = sent_marks(&session);
-    assert!(marks.contains_key(&p.txid()), "P's sent mark stays");
-    assert!(marks.contains_key(&q.txid()), "Q's stays too");
+    let marks = sent_marks(&session, id);
+    assert!(marks.contains(&p.txid()), "P's sent mark stays");
+    assert!(marks.contains(&q.txid()), "Q's stays too");
 
     engine.block_on(session.unload_wallet(id)).unwrap();
     let copied = Arc::new(crate::coins::TestPause::default());
@@ -922,51 +960,20 @@ fn an_abandoned_payment_relayed_with_its_lock_keeps_its_coins_spent() {
 fn a_lock_arriving_after_the_load_keeps_a_locked_payments_claims() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
     let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
-    let other = engine
-        .block_on(
-            session.import_wallet(
-                zeroize::Zeroizing::new(
-                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
-                        .to_vec(),
-                ),
-                zeroize::Zeroizing::new(Vec::new()),
-                crate::ImportOptions {
-                    birth_height: Some(BIRTH),
-                    ..Default::default()
-                },
-            ),
-        )
-        .unwrap();
+    let other = second_wallet(&engine, &session);
     engine
         .block_on(session.set_load_on_startup(other, true))
         .unwrap();
     let to = fresh_address(&engine, &session, other);
-    let broadcaster = Arc::new(Accept::default());
-    let draft = session.new_tx_draft(id).unwrap();
-    *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&broadcaster) as _);
-    draft
-        .set_recipients(vec![Recipient {
-            address: to.to_string(),
-            amount: 2 * COIN,
-            subtract_fee_from_amount: true,
-            label: None,
-            message: None,
-        }])
-        .unwrap();
-    draft.set_source(CoinSource::Outpoints(vec![a, b])).unwrap();
-    let grant = (session.vault())
-        .authorize(
-            GrantPurpose::Spend {
-                max_duffs: 3 * COIN,
-            },
-            Some(&id.0),
-            Credential::None,
-        )
-        .unwrap()
-        .id;
-    let prepared = engine.block_on(draft.prepare(grant)).unwrap();
-    engine.block_on(draft.broadcast(prepared)).unwrap();
-    let payment = broadcaster.0.lock().unwrap()[0].clone();
+    let payment = send_to(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        &to.to_string(),
+        2 * COIN,
+        true,
+    );
     assert_eq!(payment.output.len(), 1, "no change");
     mempool(&engine, &session, id, &payment);
     wait_stored(&session, id, &[payment.txid()]);
@@ -1117,21 +1124,7 @@ fn a_chainlock_applied_before_the_claims_are_installed_beats_a_locked_payment() 
 fn a_chainlock_applied_while_the_wallet_was_closed_beats_a_locked_payment() {
     let (_dir, engine, session, id, paid, winner) = locked_payment_with_a_plain_winner();
     let a = OutPoint::new(paid.txid(), 0);
-    let other = engine
-        .block_on(
-            session.import_wallet(
-                zeroize::Zeroizing::new(
-                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
-                        .to_vec(),
-                ),
-                zeroize::Zeroizing::new(Vec::new()),
-                crate::ImportOptions {
-                    birth_height: Some(BIRTH),
-                    ..Default::default()
-                },
-            ),
-        )
-        .unwrap();
+    let other = second_wallet(&engine, &session);
     engine.block_on(session.unload_wallet(id)).unwrap();
     let winner_block = super::block_with(vec![winner]).block_hash();
     chain_lock(&engine, &session, other, TIP + 1, winner_block);
@@ -1156,21 +1149,7 @@ fn a_chainlock_applied_while_the_wallet_was_closed_beats_a_locked_payment() {
 fn a_chainlock_applied_while_both_wallets_were_closed_beats_a_locked_payment() {
     let (_dir, engine, session, id, paid, winner) = locked_payment_with_a_plain_winner();
     let a = OutPoint::new(paid.txid(), 0);
-    let other = engine
-        .block_on(
-            session.import_wallet(
-                zeroize::Zeroizing::new(
-                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
-                        .to_vec(),
-                ),
-                zeroize::Zeroizing::new(Vec::new()),
-                crate::ImportOptions {
-                    birth_height: Some(BIRTH),
-                    ..Default::default()
-                },
-            ),
-        )
-        .unwrap();
+    let other = second_wallet(&engine, &session);
     engine.block_on(session.unload_wallet(id)).unwrap();
     let winner_block = super::block_with(vec![winner]).block_hash();
     chain_lock(&engine, &session, other, TIP + 1, winner_block);
@@ -1237,49 +1216,31 @@ fn a_locked_payment_keeps_its_coin_from_selection_without_a_claim() {
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
 }
 
+/// A second wallet of the session, born at [`BIRTH`].
+pub(super) fn second_wallet(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
+    engine
+        .block_on(
+            session.import_wallet(
+                zeroize::Zeroizing::new(
+                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
+                        .to_vec(),
+                ),
+                zeroize::Zeroizing::new(Vec::new()),
+                crate::ImportOptions {
+                    birth_height: Some(BIRTH),
+                    ..Default::default()
+                },
+            ),
+        )
+        .unwrap()
+}
+
 /// The payments this app sent that `id` keeps a sent mark for.
-fn sent_marks(session: &NetworkSession, id: WalletId) -> BTreeSet<Txid> {
+pub(super) fn sent_marks(session: &NetworkSession, id: WalletId) -> BTreeSet<Txid> {
     crate::tx_actions::load_sent(&session.live().unwrap().appdb, id)
         .0
         .into_keys()
         .collect()
-}
-
-/// A payment of `amount` from `id` to `to`, broadcast and in the mempool.
-fn pay_to(
-    engine: &Engine,
-    session: &Arc<NetworkSession>,
-    id: WalletId,
-    to: &Address,
-    amount: u64,
-) -> Transaction {
-    let broadcaster = Arc::new(Accept::default());
-    let draft = session.new_tx_draft(id).unwrap();
-    *draft.broadcaster.lock().unwrap() = Some(Arc::clone(&broadcaster) as _);
-    draft
-        .set_recipients(vec![Recipient {
-            address: to.to_string(),
-            amount,
-            subtract_fee_from_amount: false,
-            label: None,
-            message: None,
-        }])
-        .unwrap();
-    let grant = (session.vault())
-        .authorize(
-            GrantPurpose::Spend {
-                max_duffs: amount + COIN,
-            },
-            Some(&id.0),
-            Credential::None,
-        )
-        .unwrap()
-        .id;
-    let prepared = engine.block_on(draft.prepare(grant)).unwrap();
-    engine.block_on(draft.broadcast(prepared)).unwrap();
-    let payment = broadcaster.0.lock().unwrap()[0].clone();
-    mempool(engine, session, id, &payment);
-    payment
 }
 
 /// Q, a payment mined at `height` whose block the wallet's ChainLock then
@@ -1353,41 +1314,39 @@ fn a_chainlock_of_another_block_at_its_height_keeps_a_payments_mark() {
     assert!(sent_marks(&session, id).contains(&p.txid()));
 }
 
-/// Another loaded wallet, paid by the payment, applies the ChainLock of
-/// the payment's block while the sender is closed: its own forgets touch
-/// only its own marks, and the sender opened again keeps the payment's.
+/// Another loaded wallet, paid by the payment P, applies the ChainLock of
+/// P's block while the sender is closed. The block also holds R, a payment
+/// of that wallet: R's mark going shows its forgets ran, in the same write
+/// as any for P, and they touch only its own marks. The sender opened again
+/// keeps P's.
 #[test]
 fn another_wallets_chainlock_drops_no_mark_of_the_sender() {
     let (_dir, engine, session, id, _) = wallet_funded_unmined();
-    let other = engine
-        .block_on(
-            session.import_wallet(
-                zeroize::Zeroizing::new(
-                    b"legal winner thank year wave sausage worth useful legal winner thank yellow"
-                        .to_vec(),
-                ),
-                zeroize::Zeroizing::new(Vec::new()),
-                crate::ImportOptions {
-                    birth_height: Some(BIRTH),
-                    ..Default::default()
-                },
-            ),
-        )
-        .unwrap();
+    let other = second_wallet(&engine, &session);
+    let funded = funding(9, &[fresh_address(&engine, &session, other)], COIN);
+    mined(&engine, &session, other, TIP, vec![funded]);
+    let r = send(&engine, &session, other, CoinSource::Any, COIN / 2, false);
+    mempool(&engine, &session, other, &r);
+    assert!(sent_marks(&session, other).contains(&r.txid()));
     let to = fresh_address(&engine, &session, other);
-    let p = pay_to(&engine, &session, id, &to, COIN / 2);
-    mined(&engine, &session, id, TIP + 1, vec![p.clone()]);
-    mined(&engine, &session, other, TIP + 1, vec![p.clone()]);
+    let p = send_to(
+        &engine,
+        &session,
+        id,
+        CoinSource::Any,
+        &to.to_string(),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    let txs = vec![p.clone(), r.clone()];
+    mined(&engine, &session, id, TIP + 1, txs.clone());
+    mined(&engine, &session, other, TIP + 1, txs.clone());
     engine.block_on(session.unload_wallet(id)).unwrap();
-    let block = super::block_with(vec![p.clone()]).block_hash();
+    let block = super::block_with(txs).block_hash();
     chain_lock(&engine, &session, other, TIP + 1, block);
-    eventually("the other wallet reads the payment ChainLocked", || {
-        (session.hub.history.get(&other, &p.txid())).is_some_and(|e| {
-            matches!(
-                e.context,
-                key_wallet::transaction_checking::TransactionContext::InChainLockedBlock(_)
-            )
-        })
+    eventually("the other wallet's own mark goes", || {
+        !sent_marks(&session, other).contains(&r.txid())
     });
     engine.block_on(session.load_wallet(id)).unwrap();
     assert!(sent_marks(&session, id).contains(&p.txid()));
