@@ -35,49 +35,42 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: main
+          fetch-depth: 0
+          filter: blob:none
           persist-credentials: false
           sparse-checkout: ci/github
+      # Reports the newest finished main run of the workflow, whichever completion started this job:
+      # a rerun of an older run, a replayed report or a report that replaced a pending one all
+      # reconcile the issue with the current result.
       - name: Open, update or close the issue
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           NAME: ${{ github.event.workflow_run.name }}
           WORKFLOW: ${{ github.event.workflow_run.workflow_id }}
-          RUN: ${{ github.event.workflow_run.id }}
-          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
-          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
-          # Only the newest finished main run, at its latest attempt, may open, update or close the
-          # issue: a rerun of an older run, or a replayed report of an older attempt, reports nothing.
-          finished=$(gh api "repos/$GH_REPO/actions/workflows/$WORKFLOW/runs?branch=main&status=completed&per_page=100" \
-            --jq '[.workflow_runs[] | select((.event == "push" or .event == "schedule")
-              and (.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out"))]')
-          newest=$(jq -r '.[0] | "\(.id) \(.run_attempt)"' <<<"$finished")
-          if [[ $newest != "$RUN $ATTEMPT" ]]; then
-            echo "the newest finished run is $newest, not $RUN $ATTEMPT: nothing reported"
+          finished=$(gh api --paginate "repos/$GH_REPO/actions/workflows/$WORKFLOW/runs?branch=main&status=completed&per_page=100" \
+            --jq '.workflow_runs[] | select((.event == "push" or .event == "schedule")
+              and (.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out"))' | jq -s 'sort_by(.created_at) | reverse')
+          [[ $(jq length <<<"$finished") -gt 0 ]] || { echo "::error::no finished $NAME run on main found" >&2; exit 1; }
+          read -r run attempt sha conclusion url < <(jq -r '.[0] | "\(.id) \(.run_attempt) \(.head_sha) \(.conclusion) \(.html_url)"' <<<"$finished")
+          what="$NAME on main at ${sha:0:8}"
+          if [[ $conclusion == success ]]; then
+            ci/github/nightly-issue.sh green "$NAME on main" "$what passed: $url"
             exit 0
           fi
-          what="$NAME on main at ${SHA:0:8}"
-          if [[ $CONCLUSION == success ]]; then
-            ci/github/nightly-issue.sh green "$NAME on main" "$what passed: $RUN_URL"
-            exit 0
-          fi
-          failed=$(gh api "repos/$GH_REPO/actions/runs/$RUN/attempts/$ATTEMPT/jobs?per_page=100" \
+          failed=$(gh api "repos/$GH_REPO/actions/runs/$run/attempts/$attempt/jobs?per_page=100" \
             --jq '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled") | "- [\(.name)](\(.html_url))"') ||
             failed="(the failed jobs could not be listed)"
           green=$(jq -r '[.[] | select(.conclusion == "success")][0].head_sha // empty' <<<"$finished")
           if [[ -z $green ]]; then
-            batch="(no green $NAME run on main among the last 50 finished runs)"
+            batch="(no green $NAME run on main found)"
           else
-            # Merge commits when there are any; squash and rebase merges leave only plain commits.
-            # shellcheck disable=SC2016 # $m is jq's
-            batch=$(gh api "repos/$GH_REPO/compare/$green...$SHA" \
-              --jq '[.commits[] | select(.parents | length > 1)] as $m | (if ($m | length) > 0 then $m else .commits end)
-                | .[-50:][] | "- \(.sha[0:8]) \(.commit.message | split("\n")[0])"') ||
+            # First-parent history of main: one line per merge, whether merged, squashed or rebased.
+            batch=$(git log --first-parent --format='- %h %s' "$green..$sha" | head -n 50) ||
               batch="(the commits since ${green:0:8} could not be listed)"
             batch="Merged since the last green run (${green:0:8}):"$'\n'"$batch"
           fi
           ci/github/nightly-issue.sh failed "$NAME on main" \
-            "$what failed: $RUN_URL"$'\n\n'"$failed"$'\n\n'"$batch"$'\n\n'"Fix main before anything else merges: a forward fix on top is fine; a revert is not required."
+            "$what failed: $url"$'\n\n'"$failed"$'\n\n'"$batch"$'\n\n'"Fix main before anything else merges: a forward fix on top is fine; a revert is not required."
