@@ -4,7 +4,8 @@
 
 import type { Backend } from "../api/backend";
 import { hasCode } from "../api/backend";
-import { failureText, Model, type WalletChoice } from "./model";
+import { t } from "../i18n";
+import { failureText, listed, Model, type WalletChoice } from "./model";
 import { passphraseProblem } from "./passphrase";
 import { PhraseEntry } from "./phraseEntry";
 
@@ -23,20 +24,22 @@ export type ForgotStep =
   | "failed";
 
 export const ForgotText = {
-  title: "Reset passphrase",
-  prompt: "Enter the recovery phrase of one of your wallets.",
-  reset: "Your passphrase was reset.",
+  get prompt() {
+    return t("onboarding.forgot.prompt");
+  },
+  get reset() {
+    return t("onboarding.forgot.reset");
+  },
   consequences: (names: string[]) =>
-    `Only the wallet whose recovery phrase you enter keeps its keys. ${names.join(", ")} will be watch-only until you import ${names.length === 1 ? "its recovery phrase" : "their recovery phrases"} again.`,
-  walletsWithoutSecrets: (names: string[]) =>
-    `These wallets are watch-only until you import their recovery phrases again: ${names.join(", ")}.`,
+    names.length === 1 ? t("onboarding.forgot.consequencesOne", { names: listed(names) }) : t("onboarding.forgot.consequencesSeveral", { names: listed(names) }),
+  walletsWithoutSecrets: (names: string[]) => t("onboarding.forgot.walletsWithoutSecrets", { names: listed(names) }),
 };
 
 /** `listWallets`: the wallets' ids and names, all a locked window may read of them. */
 type Api = Pick<Backend, "lockStatus" | "checkMnemonic" | "recoverWithMnemonic"> & { listWallets(): Promise<{ walletId: string; name: string }[]> };
 
 /** A wallet's name, or its id's first digits when the window has no summary for it. */
-const nameOf = (walletId: string, names: Map<string, string>) => names.get(walletId) ?? `Wallet ${walletId.slice(0, 8)}`;
+const nameOf = (walletId: string, names: Map<string, string>) => names.get(walletId) ?? t("onboarding.forgot.unnamedWallet", { id: walletId.slice(0, 8) });
 
 export class ForgotPassphraseModel extends Model {
   step: ForgotStep = "loading";
