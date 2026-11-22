@@ -755,8 +755,10 @@ fn the_degraded_default_refuses_a_withdrawal_on_unverified_reads() {
     let q = fa.quote().unwrap();
     assert_eq!(q.owner_destination, checking);
     assert_eq!(q.payout_destination, checking);
-    let e = (fa.withdraw_with(Key::Owner, AMOUNT, None, grant.clone())).unwrap_err();
-    assert_eq!(e.code(), "masternodes.withdrawal_destination_checking");
+    assert_eq!(
+        code(fa.withdraw_with(Key::Owner, AMOUNT, None, grant.clone())),
+        "masternodes.withdrawal_destination_checking"
+    );
     assert!(fa.plat.sent().is_empty());
     assert!(fa.records().is_empty());
 

@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use dashcore::hashes::Hash;
 use dashcore::{Address, OutPoint, TxOut, Txid};
@@ -1123,7 +1124,7 @@ const FAIL_LOCK_WRITES: &str = "\
 const DROP_FAIL_LOCK_WRITES: &str = "DROP TRIGGER fail_lock_insert; DROP TRIGGER fail_lock_update;";
 
 fn wait_until(mut done: impl FnMut() -> bool) {
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     while !done() {
         assert!(start.elapsed() < std::time::Duration::from_secs(30));
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1242,8 +1243,6 @@ fn a_lock_before_the_hand_off_cancels() {
 #[test]
 #[ignore = "public testnet; set DW_DP301_TESTNET_FIXTURE"]
 fn t2_testnet_pays_a_contact() {
-    use std::time::{Duration, Instant};
-
     use crate::{HistoryFilter, HistoryQuery, HistorySort};
 
     const PAY: u64 = 100_000;
@@ -1730,13 +1729,10 @@ fn the_degraded_default_pays_a_verified_payee_without_a_wait() {
 
     platform.set_proof(Proof::Unverified);
     let fetched = platform.fetches();
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     f.prepare(&f.draft(BOB)).unwrap();
     assert_eq!(platform.fetches(), fetched, "recorded: no fetch");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "no wait"
-    );
+    assert!(started.elapsed() < Duration::from_secs(2), "no wait");
 }
 
 /// H-09 test 3: a verification is of the request as it was. A replaced
@@ -1787,13 +1783,10 @@ fn a_verified_payee_stays_verified_across_a_relaunch() {
     let platform_after = f.gated(TrustMode::Degraded, Proof::Unverified);
     assert!(!f.bob_unverified(), "the record survived the relaunch");
     f.credit(1, COIN);
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     f.prepare(&f.draft(BOB)).unwrap();
     assert_eq!(platform_after.fetches(), 0, "no fetch after the relaunch");
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "no wait"
-    );
+    assert!(started.elapsed() < Duration::from_secs(2), "no wait");
 }
 
 /// H-09: a release build ignores a trusted-only toggle a developer build
@@ -1810,6 +1803,10 @@ fn a_release_build_ignores_the_stored_toggle() {
 
     f.relaunch_as(true);
     assert!(!f.session.trusted_quorums_only().unwrap(), "read as off");
+    assert!(matches!(
+        f.engine.block_on(f.session.set_trusted_quorums_only(true)),
+        Err(EngineError::InvalidArgument(_))
+    ));
     f.session.trust.set_trusted_only(true);
     assert!(!f.session.trust.trusted_only(), "and cannot be set");
     let platform = f.gated(TrustMode::Degraded, Proof::Unverified);
@@ -1906,7 +1903,7 @@ fn a_lock_during_the_gate_wait_moves_nothing() {
     let seam = Seam::install(&d, Net::Accept);
     let prepare = f.spawn_prepare(&d);
     wait_until(|| platform.fetches() > 0);
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     f.session.lock_vault_sync().unwrap();
     let refused = f.engine.block_on(prepare).unwrap();
     assert_eq!(send_failure(refused), SendFailure::VaultLocked);

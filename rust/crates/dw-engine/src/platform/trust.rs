@@ -89,7 +89,8 @@ pub(crate) const DEFAULT_MODE: TrustMode = TrustMode::Degraded;
 pub(crate) enum Rule5 {
     /// `Enforcing`: money waits until the data re-verifies against SPV.
     Enforce,
-    /// `Degraded`: rule 5 is suspended, a mismatch still refuses.
+    /// `Degraded`: rule 5 is suspended, a mismatch still refuses. Not for
+    /// contact payments or masternode withdrawals ([`TrustProvider::strict_rule_5`]).
     Probe,
     /// The trusted-only toggle: SPV is not consulted.
     Off,
@@ -338,7 +339,8 @@ impl TrustProvider {
     /// Platform writes must wait for masternode sync (rule 2). Only in
     /// `Enforcing`: the degraded mode suspends rule 5, and the toggle is the
     /// developer's choice. DP2-02's send reads it for a scan shown on the
-    /// fallback's word; H-09 wires it into every write flow.
+    /// fallback's word; wiring it into every write flow comes with
+    /// `Enforcing` as the default (1.0.x).
     pub(crate) fn writes_wait(&self) -> bool {
         self.mode() == TrustMode::Enforcing && !self.trusted_only() && !self.masternodes_synced()
     }
@@ -720,8 +722,14 @@ impl crate::NetworkSession {
 
     /// Sets the developer toggle, stored in app.sqlite (global) and applied
     /// to this session at once; other open sessions take it when reopened.
+    /// A release build refuses to turn it on (`invalid_argument`).
     pub async fn set_trusted_quorums_only(&self, on: bool) -> Result<(), crate::EngineError> {
         let _op = self.enter().await?;
+        if on && !self.trust.trusted_only_allowed() {
+            return Err(crate::EngineError::InvalidArgument(
+                "trusted-only quorum keys are a developer-build setting".into(),
+            ));
+        }
         let value = on.then(|| "1".to_string());
         self.appdb_op(move |db| {
             db.set_setting(dw_appdb::GLOBAL_SCOPE, TRUSTED_ONLY_KEY, value.as_deref())
