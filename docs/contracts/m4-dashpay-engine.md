@@ -4570,7 +4570,8 @@ renames or reshapes them takes the next version bump:
     `Enforcing` rule under the degraded default too (`TrustProvider::strict_rule_5`). A contact whose shown data has no
     `dp_trust_verified` record of its current content waits up to 60 s for a re-fetch on SPV-verified quorum keys, then
     is `platform.context_unavailable`; a withdrawal on an unverified identity read is
-    `masternodes.withdrawal_destination_checking{reason: unverified}` and its quote's destinations read `checking`.
+    `masternodes.withdrawal_destination_checking` (the engine's reason `unverified`, which dw-app does not carry; the
+    quote's destinations read `checking{reason: unverified}`).
     A record, once written, is durable and covers only the content it was written for, so a later payment to the same
     contact moves without a fetch, and a replaced request waits again. Top-up, credit transfer and credit withdrawal
     keep item 55's degraded reading (DP3-04 D4: they pay the wallet's own identity or addresses). An address a

@@ -16,19 +16,17 @@ export function withdrawDestinationText(d: WithdrawDestination): string {
   return d.kind === "fixed" ? d.address : t("masternodes.withdraw.checking");
 }
 
-const unverifiedText = () => t("masternodes.withdraw.unverified");
+/** What the sheet says under a destination that still checks; `null` for one that is fixed or
+ * checks for a reason other than unverified data. */
+export function destinationNote(d: WithdrawDestination | null | undefined): string | null {
+  return d?.kind === "checking" && d.reason === "unverified" ? t("masternodes.withdraw.unverified") : null;
+}
 
 /** The withdrawal's refusals over unverified identity data; `null` for any other. `destination`:
  * the quote's destination for the chosen key, which says why `withdrawal_destination_checking`
  * still checks (its error carries no reason). */
 export function withdrawUnverifiedText(e: unknown, destination?: WithdrawDestination | null): string | null {
-  if (hasCode(e, "masternodes.withdrawal_unverified")) return unverifiedText();
-  if (hasCode(e, "masternodes.withdrawal_destination_checking") && destination?.kind === "checking" && destination.reason === "unverified") return unverifiedText();
+  if (hasCode(e, "masternodes.withdrawal_unverified")) return t("masternodes.withdraw.unverified");
+  if (hasCode(e, "masternodes.withdrawal_destination_checking")) return destinationNote(destination);
   return null;
-}
-
-/** What the sheet says under a destination that still checks; `null` for one that is fixed or
- * checks for a reason other than unverified data. */
-export function destinationNote(d: WithdrawDestination | null | undefined): string | null {
-  return d?.kind === "checking" && d.reason === "unverified" ? unverifiedText() : null;
 }
