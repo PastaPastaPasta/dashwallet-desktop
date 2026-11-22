@@ -7,4 +7,4 @@ export const RESCAN_INTERRUPTED = "The last rescan was interrupted. Finish it in
 
 /** A spend refused while the wallet's payment records can't be read (`evidence_unreadable`); each
  * attempt reads them again. */
-export const evidenceUnreadable = (): string => t("pay.evidenceUnreadable");
+export const evidenceUnreadable = (): string => t("pay.error.evidenceUnreadable");

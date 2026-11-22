@@ -11,6 +11,7 @@ import type { SyncLoop } from "../api/generated/SyncLoop";
 import type { SyncLoopStatus } from "../api/generated/SyncLoopStatus";
 import type { SyncPassReport } from "../api/generated/SyncPassReport";
 import { COPY } from "../dashpay/status";
+import { messageTable, t } from "../i18n";
 import { dateText, NONE, type InfoRow } from "./information";
 
 /** The card's states (design note §2), in the order `dashpayInfo` decides them. */
@@ -68,87 +69,145 @@ export interface DashPayInfoInputs {
 }
 
 export const INFO_COPY = {
-  noWallet: "No wallet on this network yet",
-  error: "Could not read DashPay's sync state",
-  loading: "Reading DashPay's sync state",
-  passFailed: { title: "The last DashPay pass failed", message: (code: string) => `It stopped with ${code}.` },
-  notSetUp: { title: "No DashPay identity on this wallet", message: "Join DashPay to create a username." },
-  notSetUpWaiting: "Join DashPay once the wallet has synced.",
-  stopped: "DashPay sync is stopped",
-  startingUp: "DashPay is starting",
-  degraded: {
-    trusted: "Quorum keys from a trusted service",
-    trustedFallback: "Trusted quorum keys until masternode sync finishes",
-    trustedOnly: "SPV quorum checks are off (developer setting)",
+  get noWallet() {
+    return t("tools.dashpayInfo.noWallet");
   },
-  running: "Quorum keys verified by SPV",
-  syncNow: "Sync now",
-  loopsStopped: "DashPay's sync loops are not running. They run while the wallet is connected to the Dash network, and can take a little while to start after it connects.",
-  watchOnly: "A watch-only wallet can't use DashPay because it has no keys.",
+  get error() {
+    return t("tools.dashpayInfo.error");
+  },
+  get loading() {
+    return t("tools.dashpayInfo.loading");
+  },
+  passFailed: {
+    get title() {
+      return t("tools.dashpayInfo.passFailedTitle");
+    },
+    message: (code: string) => t("tools.dashpayInfo.passFailedMessage", { code }),
+  },
+  notSetUp: {
+    get title() {
+      return t("tools.dashpayInfo.notSetUpTitle");
+    },
+    get message() {
+      return t("tools.dashpayInfo.notSetUpMessage");
+    },
+  },
+  get notSetUpWaiting() {
+    return t("tools.dashpayInfo.notSetUpWaiting");
+  },
+  get stopped() {
+    return t("tools.dashpayInfo.stopped");
+  },
+  get startingUp() {
+    return t("tools.dashpayInfo.startingUp");
+  },
+  degraded: messageTable("tools.dashpayInfo.degraded", ["trusted", "trustedFallback", "trustedOnly"]),
+  get running() {
+    return t("tools.dashpayInfo.running");
+  },
+  get syncNow() {
+    return t("tools.dashpayInfo.syncNow");
+  },
+  get loopsStopped() {
+    return t("tools.dashpayInfo.loopsStopped");
+  },
+  get watchOnly() {
+    return t("tools.dashpayInfo.watchOnly");
+  },
   // n7: a pass syncs a known identity's contacts and payments; it does not look for one.
-  heldNoIdentityYet: "Sync now waits until DashPay finds this wallet's identity.",
-  heldNotSetUp: "Sync now waits until this wallet has a DashPay identity.",
-  heldStartingUp: "Sync now waits until DashPay has started.",
-  requested: "A DashPay pass was asked for. It runs in the background. Passes don't report their results yet, so this card may not show when it ends.",
-  pendingContactsNote: "They're built after an unlock or the DIP-15 contact rescan.",
+  get heldNoIdentityYet() {
+    return t("tools.dashpayInfo.heldNoIdentityYet");
+  },
+  get heldNotSetUp() {
+    return t("tools.dashpayInfo.heldNotSetUp");
+  },
+  get heldStartingUp() {
+    return t("tools.dashpayInfo.heldStartingUp");
+  },
+  get requested() {
+    return t("tools.dashpayInfo.requested");
+  },
+  get pendingContactsNote() {
+    return t("tools.dashpayInfo.pendingContactsNote");
+  },
 } as const;
 
-const CHIP: Record<DashPayInfoState, string> = {
-  noWallet: "No wallet",
-  error: "Unread",
-  loading: "Reading",
-  watchOnly: "Watch-only",
-  failed: "Failed",
-  notStarted: "Not started",
-  starting: "Starting",
-  notSetUp: "Not set up",
-  stopped: "Stopped",
-  degraded: "Degraded",
-  running: "Running",
-};
+const CHIP: Readonly<Record<DashPayInfoState, string>> = messageTable("tools.dashpayInfo.chip", [
+  "noWallet",
+  "error",
+  "loading",
+  "watchOnly",
+  "failed",
+  "notStarted",
+  "starting",
+  "notSetUp",
+  "stopped",
+  "degraded",
+  "running",
+]);
 
 /** The bring-up outcomes that are failures while no identity is known, as the Home card reads them
  * (status.ts `startupCard`). */
 const FAILED: ReadonlySet<StartupStatus> = new Set(["discoveryFailed", "identityScanIncomplete", "partialNoIdentity", "partialAccountsPending", "seedBindingUnverified"]);
 
 /** The scan verdict: the bring-up's outcome (DASHPAY §3.2 "Startup status values"). */
-export const STARTUP_TEXT: Record<StartupStatus, { value: string; note?: string }> = {
+export const STARTUP_TEXT: Readonly<Record<StartupStatus, { value: string; note?: string }>> = {
   // Also a watch-only wallet's, and a wallet's that Platform showed has no identity (bringup.rs).
-  notRun: { value: "Not run" },
-  starting: { value: "Looking for identities…" },
-  ready: { value: "Complete: identity found" },
-  noIdentity: { value: "Complete: no identity" },
-  partialNoIdentity: { value: "Incomplete: no identity found so far", note: "It looks again the next time the wallet starts." },
-  discoveryFailed: { value: "Failed: discovery did not finish", note: "It looks again the next time the wallet starts." },
+  get notRun() {
+    return { value: t("tools.dashpayInfo.startup.notRun") };
+  },
+  get starting() {
+    return { value: t("tools.dashpayInfo.startup.starting") };
+  },
+  get ready() {
+    return { value: t("tools.dashpayInfo.startup.ready") };
+  },
+  get noIdentity() {
+    return { value: t("tools.dashpayInfo.startup.noIdentity") };
+  },
+  get partialNoIdentity() {
+    return { value: t("tools.dashpayInfo.startup.partialNoIdentity"), note: t("tools.dashpayInfo.startup.looksAgainNextStart") };
+  },
+  get discoveryFailed() {
+    return { value: t("tools.dashpayInfo.startup.discoveryFailed"), note: t("tools.dashpayInfo.startup.looksAgainNextStart") };
+  },
   // The library's count is what is certain, not why (an unlock, the DIP-15 rescan, or no DashPay pass yet).
-  partialAccountsPending: { value: "Incomplete: some contact accounts are not built yet" },
-  seedBindingUnverified: { value: "Failed: keys not confirmed", note: COPY.unverified.message },
-  identityScanIncomplete: { value: "Incomplete: the identity scan did not finish", note: "It looks again the next time the wallet starts." },
-  identityUnsettled: { value: "Waiting for an unlock", note: COPY.unlockToLook.message },
+  get partialAccountsPending() {
+    return { value: t("tools.dashpayInfo.startup.partialAccountsPending") };
+  },
+  get seedBindingUnverified() {
+    return { value: t("tools.dashpayInfo.startup.seedBindingUnverified"), note: COPY.unverified.message };
+  },
+  get identityScanIncomplete() {
+    return { value: t("tools.dashpayInfo.startup.identityScanIncomplete"), note: t("tools.dashpayInfo.startup.looksAgainNextStart") };
+  },
+  get identityUnsettled() {
+    return { value: t("tools.dashpayInfo.startup.identityUnsettled"), note: COPY.unlockToLook.message };
+  },
 };
 
-const LOOP_TITLE: Record<SyncLoop, string> = {
-  identitySync: "Identities loop",
-  dashPaySync: "Contacts and payments loop",
-  dpnsSync: "Username contests loop",
-  platformAddressSync: "Platform addresses loop",
-};
+const LOOP_TITLE: Readonly<Record<SyncLoop, string>> = messageTable("tools.dashpayInfo.loops", [
+  "identitySync",
+  "dashPaySync",
+  "dpnsSync",
+  "platformAddressSync",
+]);
 
 /** D5: where Platform proofs get their quorum keys, and what that means for what the card shows. */
 export function quorumRow(source: QuorumSource | undefined, trustedOnly: TrustedOnlyRead): InfoRow {
-  const title = "Quorum keys";
+  const title = t("tools.dashpayInfo.quorumKeys");
   switch (source) {
     case undefined:
       return { title, value: NONE };
     case "spv":
-      return { title, value: "SPV (verified masternode list)" };
+      return { title, value: t("tools.dashpayInfo.quorum.spv") };
     case "trustedFallback":
-      return { title, value: "Trusted service until masternode sync finishes", note: "Platform data read meanwhile counts as unverified." };
+      return { title, value: t("tools.dashpayInfo.quorum.trustedFallback"), note: t("tools.dashpayInfo.quorum.trustedFallbackNote") };
     case "trusted":
-      if (trustedOnly === "failed") return { title, value: "Trusted service", note: "Could not read whether SPV checks of quorum keys are off." };
+      if (trustedOnly === "failed") return { title, value: t("tools.dashpayInfo.quorum.trustedFailed"), note: t("tools.dashpayInfo.quorum.trustedFailedNote") };
       return trustedOnly === true
-        ? { title, value: "Trusted service only (developer setting)", note: "SPV checks of quorum keys are off." }
-        : { title, value: "Trusted service (degraded mode)", note: "Checked against SPV's quorum keys where SPV holds them." };
+        ? { title, value: t("tools.dashpayInfo.quorum.trustedOnly"), note: t("tools.dashpayInfo.quorum.trustedOnlyNote") }
+        : { title, value: t("tools.dashpayInfo.quorum.trustedDegraded"), note: t("tools.dashpayInfo.quorum.trustedDegradedNote") };
   }
 }
 
@@ -162,30 +221,24 @@ export function clockText(secs: number, now: number, timeZone?: string): string 
 export function loopRow(loop: SyncLoopStatus, now: number, timeZone?: string): InfoRow {
   const clock = (s: number) => clockText(s, now, timeZone);
   const title = LOOP_TITLE[loop.syncLoop];
-  if (!loop.running) return { title, value: loop.lastRunAt === null ? "Stopped" : `Stopped · last run ${clock(loop.lastRunAt)}` };
-  if (loop.lastRunAt === null) return { title, value: "Running · no run yet" };
-  const next = loop.nextRunAt === null ? "" : ` · next ${clock(loop.nextRunAt)}`;
-  return { title, value: `Running · last run ${clock(loop.lastRunAt)}${next}` };
+  if (!loop.running) return { title, value: loop.lastRunAt === null ? t("tools.dashpayInfo.loopState.stopped") : t("tools.dashpayInfo.loopState.stoppedLastRun", { time: clock(loop.lastRunAt) }) };
+  if (loop.lastRunAt === null) return { title, value: t("tools.dashpayInfo.loopState.runningNoRun") };
+  if (loop.nextRunAt === null) return { title, value: t("tools.dashpayInfo.loopState.runningLastRun", { time: clock(loop.lastRunAt) }) };
+  return { title, value: t("tools.dashpayInfo.loopState.runningLastAndNext", { last: clock(loop.lastRunAt), next: clock(loop.nextRunAt) }) };
 }
-
-/** `contact_accounts_pending`: contact accounts waiting for an unlock or the DIP-15 rescan
- * (startup_status.rs). */
-const PENDING_TITLE = "Contact accounts waiting to be built";
-
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** D4: the last pass's end and what it found; "—" until a pass reports (`last_pass` is `None` today). */
 export function lastPassRow(pass: SyncPassReport | null, timeZone?: string): InfoRow {
-  const title = "Last pass";
-  if (!pass) return { title, value: NONE, note: "No pass has reported yet." };
+  const title = t("tools.dashpayInfo.lastPass");
+  if (!pass) return { title, value: NONE, note: t("tools.dashpayInfo.pass.noPassYet") };
   const value = dateText(pass.finishedAt, timeZone);
-  if (pass.failureCode !== null) return { title, value, note: `Failed: ${pass.failureCode}` };
+  if (pass.failureCode !== null) return { title, value, note: t("tools.dashpayInfo.pass.failed", { code: pass.failureCode }) };
   const found = [
-    pass.newRequests && plural(pass.newRequests, "new request", "new requests"),
-    pass.newContacts && plural(pass.newContacts, "new contact", "new contacts"),
-    pass.newPayments && plural(pass.newPayments, "new payment", "new payments"),
+    pass.newRequests ? t("tools.dashpayInfo.pass.newRequests", { count: pass.newRequests }) : "",
+    pass.newContacts ? t("tools.dashpayInfo.pass.newContacts", { count: pass.newContacts }) : "",
+    pass.newPayments ? t("tools.dashpayInfo.pass.newPayments", { count: pass.newPayments }) : "",
   ].filter(Boolean);
-  return { title, value, note: found.length ? found.join(", ") : "Nothing new" };
+  return { title, value, note: found.length ? found.join(t("common.listSeparator")) : t("tools.dashpayInfo.pass.nothingNew") };
 }
 
 function degradedHeadline(source: QuorumSource, trustedOnly: TrustedOnlyRead): string {
@@ -213,12 +266,13 @@ export function dashpayInfo(i: DashPayInfoInputs): DashPayInfo {
     return card("error", "danger", INFO_COPY.error, { line: i.syncError });
   }
   const verdict = STARTUP_TEXT[s.startup];
+  const pendingTitle = t("tools.dashpayInfo.pendingContacts");
   const rows: InfoRow[] = [
-    { title: "Identity scan", ...verdict },
+    { title: t("tools.dashpayInfo.identityScan"), ...verdict },
     lastPassRow(s.lastPass, i.timeZone),
     s.pendingContactCrypto === 0
-      ? { title: PENDING_TITLE, value: "None" }
-      : { title: PENDING_TITLE, value: String(s.pendingContactCrypto), note: INFO_COPY.pendingContactsNote },
+      ? { title: pendingTitle, value: t("tools.dashpayInfo.none") }
+      : { title: pendingTitle, value: String(s.pendingContactCrypto), note: INFO_COPY.pendingContactsNote },
     ...s.loops.map((l) => loopRow(l, i.now, i.timeZone)),
     quorum,
   ];

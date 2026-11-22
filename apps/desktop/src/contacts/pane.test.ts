@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { CostTable } from "../api/generated/CostTable";
-import { activityRow, creditsToDuffs, detailsChanged, detailsForm, detailsOf, enableBanner, ENABLE_FIRST, paneActions, selectionAnnouncement } from "./pane";
+import { activityRow, creditsToDuffs, detailsChanged, detailsForm, detailsOf, enableBanner, paneActions, selectionAnnouncement } from "./pane";
 
 const row = (patch: Partial<ContactSummaryInfo>): ContactSummaryInfo => ({
   contact: "GrAC3eQhZmKGwKu4R7PDuBkaxWDcXuspNwGM8RHm9ZsZ",
@@ -23,7 +23,7 @@ describe("paneActions", () => {
   it("IOS-074 offers Accept and Ignore for a request, held back without DashPay keys", () => {
     expect(paneActions(row({ relation: "pendingIncoming" }), true)).toEqual({ kind: "request", acceptBlocked: null });
     expect(paneActions(row({ relation: "pendingIncoming" }), undefined)).toEqual({ kind: "request", acceptBlocked: null });
-    expect(paneActions(row({ relation: "pendingIncoming" }), false)).toEqual({ kind: "request", acceptBlocked: ENABLE_FIRST });
+    expect(paneActions(row({ relation: "pendingIncoming" }), false)).toEqual({ kind: "request", acceptBlocked: "Enable DashPay first." });
   });
 
   it("IOS-074 offers Pay to a contact whose channel is ready, and says why not otherwise", () => {

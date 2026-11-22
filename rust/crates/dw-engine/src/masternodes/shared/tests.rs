@@ -36,6 +36,7 @@ use crate::{DashNetwork, Engine, EngineConfig, ImportOptions, NetworkSession, Wa
 
 mod dissolve;
 mod key_change;
+mod marker;
 mod reads;
 mod standby;
 mod together;
@@ -2577,6 +2578,26 @@ fn test_an_abandon_hand_off_records_a_refusal_and_an_unknown_outcome() {
         assert_eq!(log[0].2, row.last_error);
         assert!(row.abandon_tx.is_some());
     }
+}
+
+/// #170 18b: a sent mark that can't be written stops the spend's first
+/// hand-off before anything leaves: `not_sent`, its coin released.
+#[test]
+fn test_an_abandon_whose_sent_mark_fails_is_not_sent() {
+    let f = fx(3, true);
+    let id = abandoned_participant(&f);
+    let path = f.session.data_dir().join(dw_appdb::APP_DB_FILE);
+    let stage = dw_appdb::fault::Stage::Before;
+    dw_appdb::fault::arm(&path, crate::send::SENT_MARK_FAULT, stage);
+    f.abandon(1, &id).unwrap();
+    assert!(f.net.sent().is_empty(), "nothing handed off");
+    let row = f.row(1, &id);
+    let log = abandon_log(&row);
+    assert_eq!(log.len(), 1);
+    assert_eq!(log[0].1.as_deref(), Some("not_sent"));
+    let spend: Transaction = dashcore::consensus::deserialize(&row.abandon_tx.unwrap()).unwrap();
+    let coin = spend.input[0].previous_output;
+    assert!(!f.session.spends.snapshot(&f.wallets[1]).contains(&coin));
 }
 
 /// R2, the Sol r4 seam: a spend handed off and the engine gone before its

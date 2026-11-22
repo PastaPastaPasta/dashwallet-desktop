@@ -7,8 +7,9 @@ import type { CoinSelectionSummary } from "../api/generated/CoinSelectionSummary
 import type { Utxo } from "../api/generated/Utxo";
 import type { Display } from "../format/display";
 import { shortAddress } from "../format/tx";
+import { useT } from "../i18n";
 import { notSelectable, outpointKey } from "../screens/pay/model";
-import { COLUMN_TITLE, coinLabel, type CoinColumn, type CoinGroup, type CoinSort } from "../tools/coins";
+import { coinLabel, columnTitle, type CoinColumn, type CoinGroup, type CoinSort } from "../tools/coins";
 import { AmountText } from "./basics";
 
 /** Coin Selection's view of the table. */
@@ -43,7 +44,7 @@ const coinDate = (u: Utxo) => (u.timestamp === null ? "—" : new Date(u.timesta
 
 function SortHeader({ column, unit, detail }: { column: CoinColumn; unit: string; detail: CoinTableDetail }) {
   const current = detail.sort.column === column;
-  const title = column === "amount" ? `${COLUMN_TITLE.amount} (${unit})` : COLUMN_TITLE[column];
+  const title = column === "amount" ? `${columnTitle("amount")} (${unit})` : columnTitle(column);
   return (
     <th scope="col" className={NUMERIC.has(column) ? "num" : undefined} aria-sort={current ? (detail.sort.ascending ? "ascending" : "descending") : undefined}>
       <button type="button" className="sort-header" data-testid={`coin-sort-${column}`} onClick={() => detail.onSort(column)}>
@@ -115,6 +116,7 @@ function GroupRow({ g, shown, selected, detail }: { g: CoinGroup; shown: Display
 }
 
 export function CoinTable({ coins, shown, selected, onToggle, detail }: Props) {
+  const t = useT();
   const unit = shown.name;
   const row = (u: Utxo) => <CoinRow key={outpointKey(u.outpoint)} u={u} shown={shown} selected={selected} onToggle={onToggle} detail={detail} />;
   return (
@@ -132,7 +134,7 @@ export function CoinTable({ coins, shown, selected, onToggle, detail }: Props) {
               ))}
               <th scope="col">Status</th>
               <th scope="col">
-                <span className="sr-only">Actions</span>
+                <span className="sr-only">{t("tools.coins.columns.actions")}</span>
               </th>
             </>
           ) : (

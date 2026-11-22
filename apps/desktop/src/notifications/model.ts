@@ -8,6 +8,7 @@ import type { ContactSummaryInfo } from "../api/generated/ContactSummaryInfo";
 import type { DashPayEventInfo } from "../api/generated/DashPayEventInfo";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
 import { shortId, shownName } from "../contacts/model";
+import { t } from "../i18n";
 
 /** A contact id's name as the identity's contact list shows it, else its shortened id (D13). */
 export type NameOf = (contact: string) => string;
@@ -23,25 +24,25 @@ export function namesFrom(list: ContactList | undefined): NameOf {
 
 /** D13: an event's line. */
 export function eventText(e: Pick<DashPayEventInfo, "kind" | "contact" | "reference">, nameOf: NameOf): string {
-  const who = e.contact ? nameOf(e.contact) : "Someone";
-  const label = `@${e.reference ?? ""}`;
+  const who = e.contact ? nameOf(e.contact) : t("notifications.event.someone");
+  const username = `@${e.reference ?? ""}`;
   switch (e.kind) {
     case "requestReceived":
-      return `${who} sent you a contact request`;
+      return t("notifications.event.requestReceived", { who });
     case "requestAccepted":
-      return `${who} accepted your contact request`;
+      return t("notifications.event.requestAccepted", { who });
     case "contactEstablished":
-      return `You and ${who} are now contacts`;
+      return t("notifications.event.contactEstablished", { who });
     case "paymentReceived":
-      return `${who} sent you a payment`;
+      return t("notifications.event.paymentReceived", { who });
     case "usernameRegistered":
-      return `Your username ${label} is registered`;
+      return t("notifications.event.usernameRegistered", { username });
     case "contestWon":
-      return `You won the vote for ${label}`;
+      return t("notifications.event.contestWon", { username });
     case "contestLost":
-      return `You lost the vote for ${label}`;
+      return t("notifications.event.contestLost", { username });
     case "contestLocked":
-      return `The vote for ${label} ended locked`;
+      return t("notifications.event.contestLocked", { username });
   }
 }
 

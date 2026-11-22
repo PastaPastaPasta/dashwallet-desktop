@@ -4,7 +4,8 @@
 import { useSyncExternalStore } from "react";
 import { hasCode, isAppError, retryAfterSecs } from "../api/backend";
 import type { ErrorCode } from "../api/generated/ErrorCode";
-import { t } from "../i18n";
+import { messageTable, t } from "../i18n";
+import { flatten, type KeyOf } from "../i18n/core";
 import { en } from "../i18n/en";
 
 export abstract class Model {
@@ -30,6 +31,9 @@ export function useModel<M extends Model>(model: M): M {
   return model;
 }
 
+/** "a, b, c": a list of names or numbers inside a sentence. */
+export const listed = (items: readonly (string | number)[]) => items.join(t("common.listSeparator"));
+
 /** A wallet the user picks in a flow, by name. */
 export interface WalletChoice {
   walletId: string;
@@ -39,67 +43,24 @@ export interface WalletChoice {
 /** dash-qt `AskPassphraseDialog`. */
 export const WRONG_PASSPHRASE = en.lock.wrongPassphrase;
 export const PASSPHRASE_REQUIRED = en.lock.passphraseRequired;
-export const INVALID_PHRASE = "The recovery phrase is not valid. Check every word.";
+
+/** Each code with its own copy; `tsc` fails on a catalog key that is no error code. */
+type FailureCode = KeyOf<typeof en.onboarding.failure>;
+const FAILURE_CODES = [...flatten(en.onboarding.failure).keys()] as FailureCode[] satisfies ErrorCode[];
 
 /** Copy for a failure chosen by its code alone (U-02 D16): the engine's `message` can quote the
  * input (a mnemonic error names the word), so it is never shown. */
-const BY_CODE: Partial<Record<ErrorCode, string>> = {
-  invalid_mnemonic: INVALID_PHRASE,
-  wallet_already_exists: "This wallet has already been added.",
-  "vault.wallet_secret_exists": "This wallet's keys are already in the wallet.",
-  "vault.locked": "Unlock the wallet and try again.",
-  "vault.mixing_only": "Unlock the wallet fully and try again.",
-  "vault.passphrase_rejected": "The wallet rejected this passphrase. Choose another one.",
-  "vault.os_store_unavailable": "This computer has no secret store to keep an unencrypted wallet's key. Choose a passphrase instead.",
-  "vault.recovery_mismatch": "This recovery phrase does not belong to the selected wallet.",
-  "vault.wrong_passphrase": WRONG_PASSPHRASE,
-  "vault.no_secret": "This wallet has no recovery phrase.",
-  "vault.no_vault": "This network has no wallet yet.",
-  "vault.already_exists": "This network already has a wallet vault.",
-  network_not_open: "The wallet is not open.",
-  // Settings (U-04): the vault's credential, the wallets, backups and the Dash Core files.
-  "vault.already_encrypted": "The wallet is already encrypted.",
-  "vault.not_encrypted": "The wallet is not encrypted.",
-  "vault.not_empty": "The wallet vault still holds a wallet's keys.",
-  "vault.credential_required": "Enter your wallet passphrase.",
-  "vault.grant_invalid": "The authorization expired. Try again.",
-  wallet_not_found: "This wallet is not open.",
-  // DEC-1046: Close Wallet and a network close or switch wait for it.
-  shielded_spend_unresolved: "A shielded payment is still being confirmed. Wait, or quit and reopen the app.",
-  last_startup_wallet: "At least one wallet opens at start.",
-  invalid_xpub: "This is not an extended public key (tpub or xpub) of this network.",
-  not_implemented: "Dash Wallet cannot do this yet.",
-  io: "The file could not be read or written.",
-  "backup.already_exists": "A wallet in this backup is already in Dash Wallet.",
-  "backup.corrupt": "This file is not a Dash Wallet backup, or it is damaged.",
-  "backup.destination_unwritable": "The backup could not be written there: a file with that name exists, or the folder is read-only.",
-  "backup.network_mismatch": "This backup is of another network.",
-  "backup.passphrase_required": "Enter the passphrase that protects the backup.",
-  "backup.unsupported_version": "This backup was made by a newer Dash Wallet.",
-  "backup.vault_locked": "Unlock the wallet and try again.",
-  "backup.wrong_passphrase": "The passphrase does not open this backup.",
-  "compat.corrupt": "The file is damaged.",
-  "compat.destination_unwritable": "The file could not be written there: a file with that name exists, or the folder is read-only.",
-  "compat.file_unreadable": "The file could not be read. Check the path.",
-  "compat.invalid_key_material": "The key material is not valid.",
-  "compat.network_mismatch": "The keys in this file are of another network.",
-  "compat.no_hd_chain": "This file has no HD wallet: Dash Wallet imports HD wallets only.",
-  "compat.passphrase_required": "This wallet.dat is encrypted: enter its passphrase.",
-  "compat.unsupported_format": "Dash Wallet cannot read this kind of file.",
-  "compat.watch_only": "A watch-only wallet has no keys to export.",
-  "compat.wrong_passphrase": "The passphrase does not open this wallet.dat.",
-};
-
-/** The engine's `wallet` code carries one reason a person can act on (E1 r2): a wallet is still
- * opening. The code is generic otherwise, so only that detail is shown. */
-export const WALLET_OPENING_TEXT = "A wallet is still opening; close the network once it is open.";
+const BY_CODE: Partial<Record<ErrorCode, string>> = Object.defineProperty(messageTable("onboarding.failure", FAILURE_CODES), "vault.wrong_passphrase", {
+  enumerable: true,
+  get: () => t("lock.wrongPassphrase"),
+});
 
 export function failureText(e: unknown): string {
-  if (!isAppError(e)) return "Something went wrong.";
+  if (!isAppError(e)) return t("onboarding.error.generic");
   if (e.code === "vault.throttled") return tryAgainIn(retryAfterSecs(e));
-  if (e.code === "wallet" && /still opening/i.test(e.message)) return WALLET_OPENING_TEXT;
-  if (e.code === "evidence_unreadable") return t("pay.evidenceUnreadable");
-  return BY_CODE[e.code] ?? `Something went wrong (${e.code}).`;
+  if (e.code === "wallet" && /still opening/i.test(e.message)) return t("onboarding.error.walletOpening");
+  if (e.code === "evidence_unreadable") return t("pay.error.evidenceUnreadable");
+  return BY_CODE[e.code] ?? t("onboarding.error.withCode", { code: e.code });
 }
 
 /** "6 minutes", "4 hours": minutes below two hours (rounded up), hours above. */
@@ -116,6 +77,6 @@ export const tryAgainIn = (secs: number) => t("lock.tryAgainIn", { wait: waitTex
  * wait itself, or another failure. */
 export function unlockFailureText(e: unknown): string {
   const wait = retryAfterSecs(e);
-  if (hasCode(e, "vault.wrong_passphrase")) return wait > 0 ? `${WRONG_PASSPHRASE} ${tryAgainIn(wait)}` : WRONG_PASSPHRASE;
+  if (hasCode(e, "vault.wrong_passphrase")) return wait > 0 ? `${t("lock.wrongPassphrase")} ${tryAgainIn(wait)}` : t("lock.wrongPassphrase");
   return failureText(e);
 }

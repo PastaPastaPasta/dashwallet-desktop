@@ -19,8 +19,9 @@ import type { Recipient } from "../../api/generated/Recipient";
 import type { TxEstimate } from "../../api/generated/TxEstimate";
 import type { OutPoint } from "../../api/generated/OutPoint";
 import type { Utxo } from "../../api/generated/Utxo";
-import { BROKEN } from "../../contacts/pane";
 import { formatWithUnit, type Chain, type Unit } from "../../format/amount";
+import { t } from "../../i18n";
+import { en } from "../../i18n/en";
 
 /** The coins a payment may use (coin control, U-03 D7). */
 export type CoinChoice = "any" | "mixed" | "selected";
@@ -56,10 +57,10 @@ export function outpointOf(key: string): OutPoint {
  * Selection, U-05 D19). */
 export function notSelectable(u: Utxo): string | null {
   if (u.spendable) return null;
-  if (u.reserved) return "Reserved by a payment in progress";
-  if (u.userLocked) return "Locked";
-  if (u.isCoinbase) return "Immature";
-  return "Not spendable";
+  if (u.reserved) return t("pay.notSelectable.reserved");
+  if (u.userLocked) return t("pay.notSelectable.locked");
+  if (u.isCoinbase) return t("pay.notSelectable.immature");
+  return t("pay.notSelectable.notSpendable");
 }
 
 export function coinSource(a: Advanced): CoinSource {
@@ -112,8 +113,7 @@ export const withSubtractFee = (r: PayRecipient): PayRecipient => (isContact(r) 
  * amount is fee; `null` for any other refusal or payment. */
 export function mixedFeeText(e: unknown, spec: { recipient: PayRecipient; source: CoinSource }, chain: Chain, unit: Unit = "DASH"): string | null {
   if (spec.source.kind !== "fullyMixedOnly" || subtractsFee(spec.recipient) || !hasCode(e, "send.absurd_fee")) return null;
-  const fee = e.data?.kind === "fee" ? `the ${formatWithUnit(unit, e.data.fee, false, "standard", chain)} ` : "what is ";
-  return `Fully mixed coins are spent in whole denominations, so ${fee}left over would go to fees.`;
+  return e.data?.kind === "fee" ? t("pay.mixedFee", { fee: formatWithUnit(unit, e.data.fee, false, "standard", chain) }) : t("pay.mixedFeeUnknown");
 }
 
 export function recipientOf(input: PayInput): Recipient {
@@ -136,9 +136,9 @@ export function addressProblem(c: AddressClass): string | null {
       // A Platform address is paid from the Platform balance (PayFromPlatform).
       return null;
     case "shielded":
-      return "This is a shielded address. This wallet cannot pay shielded addresses yet.";
+      return t("pay.address.shielded");
     case "invalid":
-      return c.problem.kind === "invalidBase58Prefix" ? "This address is not valid on this network." : "The recipient address is not valid. Please recheck.";
+      return c.problem.kind === "invalidBase58Prefix" ? t("pay.address.otherNetwork") : t("pay.error.invalidAddress");
   }
 }
 
@@ -157,26 +157,26 @@ export interface MixHints {
 }
 
 /** The "Available" hint's label for the coin source it counts. */
-export const availableLabel = (coins: CoinChoice) => (coins === "mixed" ? "Available (fully mixed)" : coins === "selected" ? "Available (selected coins)" : "Available");
+export const availableLabel = (coins: CoinChoice) => t(`pay.available.${coins}`);
 
 /** The amount is over what a normal payment spends, on a wallet with mixed or mixing coins. */
 function overNormalFunds(spendable: string, { mixed, mixing, stalled }: MixHints): string {
-  const parts = [`The amount exceeds the ${spendable} a normal payment can spend.`];
-  if (mixed) parts.push("To spend fully mixed coins, choose Advanced: coins, fee and change ▸ Fully mixed funds only (CoinJoin).");
+  const parts = [t("pay.overNormal.exceeds", { spendable })];
+  if (mixed) parts.push(t("pay.overNormal.mixed"));
   if (mixing) {
     parts.push(
       mixed
-        ? "Coins still being mixed can be spent that way once mixing finishes."
-        : "Coins still being mixed stay apart from normal payments; once mixing finishes them, they can be spent with Fully mixed funds only (CoinJoin).",
+        ? t("pay.overNormal.mixingWithMixed")
+        : t("pay.overNormal.mixing"),
     );
   }
   if (stalled) {
     parts.push(
       mixed
-        ? "Denominations this wallet cannot mix use Selected coins there, which can link your coins."
+        ? t("pay.overNormal.stalledWithMixed")
         : mixing
-          ? "Denominations this wallet cannot mix use Advanced: coins, fee and change ▸ Selected coins, which can link your coins."
-          : "Denominations this wallet cannot mix stay apart; choose Advanced: coins, fee and change ▸ Selected coins to spend them, which can link your coins.",
+          ? t("pay.overNormal.stalledWithMixing")
+          : t("pay.overNormal.stalled"),
     );
   }
   return parts.join(" ");
@@ -189,57 +189,57 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
   const amount = (duffs: number) => formatWithUnit(unit, duffs, false, "standard", chain);
   switch (e.code) {
     case "send.no_recipients":
-      return { text: "Enter an address and an amount.", field: null };
+      return { text: t("pay.error.noRecipients"), field: null };
     case "send.invalid_address":
     case "invalid_address":
-      return { text: "The recipient address is not valid. Please recheck.", field: "address" };
+      return { text: t("pay.error.invalidAddress"), field: "address" };
     case "send.platform_address":
-      return { text: "This is a Dash Platform address. Pay it from Platform, not from this wallet.", field: "address" };
+      return { text: t("pay.error.platformAddress"), field: "address" };
     case "send.duplicate_address":
-      return { text: "Duplicate address found: addresses should only be used once each.", field: "address" };
+      return { text: t("pay.error.duplicateAddress"), field: "address" };
     case "send.invalid_amount":
-      return { text: "The amount to pay must be larger than 0.", field: "amount" };
+      return { text: t("pay.error.invalidAmount"), field: "amount" };
     case "send.dust_amount":
-      return { text: "The amount is too small to send: it is below the dust threshold.", field: "amount" };
+      return { text: t("pay.error.dustAmount"), field: "amount" };
     case "send.amount_too_small_after_fee":
-      return { text: "The amount is too small to pay its share of the fee.", field: "amount" };
+      return { text: t("pay.error.tooSmallAfterFee"), field: "amount" };
     case "send.amount_exceeds_balance":
-      return { text: e.data?.kind === "duffs" && mix && (mix.mixed || mix.mixing || mix.stalled) ? overNormalFunds(amount(e.data.available), mix) : "The amount exceeds your balance.", field: "amount" };
+      return { text: e.data?.kind === "duffs" && mix && (mix.mixed || mix.mixing || mix.stalled) ? overNormalFunds(amount(e.data.available), mix) : t("pay.error.exceedsBalance"), field: "amount" };
     case "send.amount_with_fee_exceeds_balance": {
       const fee = e.data?.kind === "fee" ? e.data.fee : null;
       return {
-        text: fee === null ? "The total exceeds your balance when the transaction fee is included." : `The total exceeds your balance when the ${amount(fee)} transaction fee is included.`,
+        text: fee === null ? t("pay.error.withFeeExceedsBalance") : t("pay.error.withFeeExceedsBalanceFee", { fee: amount(fee) }),
         field: "amount",
       };
     }
     case "send.insufficient_mixed_funds": {
       const available = e.data?.kind === "duffs" ? e.data.available : null;
-      return { text: available === null ? "Not enough fully mixed funds." : `Not enough fully mixed funds: ${amount(available)} available.`, field: "amount" };
+      return { text: available === null ? t("pay.error.insufficientMixed") : t("pay.error.insufficientMixedAvailable", { available: amount(available) }), field: "amount" };
     }
     case "send.outpoint_unavailable":
-      return { text: "A selected coin is spent, locked or no longer in the wallet. Choose the coins again.", field: null };
+      return { text: t("pay.error.outpointUnavailable"), field: null };
     case "send.absurd_fee": {
       const fee = e.data?.kind === "fee" ? e.data.fee : null;
-      return { text: fee === null ? "The fee is absurdly high." : `A fee of ${amount(fee)} is considered an absurdly high fee.`, field: null };
+      return { text: fee === null ? t("pay.error.absurdFee") : t("pay.error.absurdFeeAmount", { fee: amount(fee) }), field: null };
     }
     case "send.tx_too_large":
-      return { text: "The transaction is too large. Send a smaller amount, or choose fewer coins.", field: null };
+      return { text: t("pay.error.txTooLarge"), field: null };
     case "send.invalid_change_address":
-      return { text: "The custom change address is not valid.", field: null };
+      return { text: t("pay.error.invalidChangeAddress"), field: null };
     case "send.watch_only":
-      return { text: "This is a watch-only wallet: it cannot sign payments.", field: null };
+      return { text: t("pay.error.watchOnly"), field: null };
     case "send.vault_locked":
     case "vault.locked":
-      return { text: "The wallet is locked. Unlock it to send.", field: null };
+      return { text: t("pay.error.vaultLocked"), field: null };
     case "send.grant_invalid":
     case "vault.grant_invalid":
-      return { text: "The authorization expired. Send again.", field: null };
+      return { text: t("pay.error.grantInvalid"), field: null };
     case "send.grant_exceeded":
-      return { text: "The payment changed. Review it again.", field: null };
+      return { text: t("pay.error.changed"), field: null };
     case "send.prepared_tx_spent":
-      return { text: "Its coins were spent meanwhile. Review the payment again.", field: null };
+      return { text: t("pay.error.preparedSpent"), field: null };
     case "send.no_peers":
-      return { text: "No connection to the Dash network. The payment was not sent.", field: null };
+      return { text: t("pay.error.noPeers"), field: null };
     case "rescan_in_progress":
       return { text: RESCAN_RUNNING, field: null };
     case "rescan_interrupted":
@@ -248,42 +248,42 @@ export function sendErrorText(e: unknown, chain: Chain, unit: Unit = "DASH", mix
       return { text: evidenceUnreadable(), field: null };
     case "send.broadcast_rejected":
       return {
-        text: `The network rejected the transaction${e.data?.kind === "reason" ? `: ${e.data.reason}` : ""}. The payment was not sent.`,
+        text: e.data?.kind === "reason" ? t("pay.error.rejectedReason", { reason: e.data.reason }) : t("pay.error.rejected"),
         field: null,
       };
     case "send.broadcast_unknown":
-      return { text: "The payment may have been sent: the network did not answer in time.", field: null };
+      return { text: t("pay.error.broadcastUnknown"), field: null };
     case "send.cancelled":
-      return { text: "The payment was cancelled before anything was sent.", field: null };
+      return { text: t("pay.error.cancelled"), field: null };
     // A payment to a contact (DP3-06 D13).
     case "contact.payment_locked":
-      return { text: "Another payment to this contact is still being sent or may have been sent. Pay again once it is settled.", field: null };
+      return { text: t("pay.error.contactLocked"), field: null };
     case "contact.channel_broken":
-      return { text: BROKEN, field: null };
+      return { text: t("contacts.pane.broken"), field: null };
     case "contact.ineligible":
       return {
-        text: e.data?.kind === "ineligible" && e.data.reason === "pendingIncoming" ? "Accept the contact request first, or use Accept and pay." : "This contact cannot be paid now.",
+        text: e.data?.kind === "ineligible" && e.data.reason === "pendingIncoming" ? t("pay.error.pendingIncoming") : t("pay.error.ineligible"),
         field: null,
       };
     case "contact.self":
-      return { text: "This is you.", field: null };
+      return { text: t("pay.error.self"), field: null };
     case "identity.not_found":
-      return { text: "Your DashPay identity is not available. Try again once DashPay has synced.", field: null };
+      return { text: t("pay.error.noIdentity"), field: null };
     case "platform.unavailable":
     case "platform.timeout":
-      return { text: "Could not reach Dash Platform. Try again.", field: null };
+      return { text: t("pay.error.platformUnreachable"), field: null };
     case "platform.lease_revoked":
-      return { text: "The wallet locked during the payment.", field: null };
+      return { text: t("pay.error.leaseRevoked"), field: null };
     case "platform.lease_expired":
     case "platform.grant_invalid":
-      return { text: "The authorization expired. Send again.", field: null };
+      return { text: t("pay.error.grantInvalid"), field: null };
     case "platform.needs_grant":
     case "platform.signer_unavailable":
-      return { text: "Unlock the wallet and try again.", field: null };
+      return { text: t("pay.error.unlockAndRetry"), field: null };
     case "platform.grant_exceeded":
-      return { text: "The payment changed. Review it again.", field: null };
+      return { text: t("pay.error.changed"), field: null };
     case "storage":
-      return { text: "The payment could not be recorded in this wallet.", field: null };
+      return { text: t("pay.error.storage"), field: null };
     default:
       return null;
   }
@@ -337,14 +337,14 @@ export function contactConfirmActions(watchOnly: boolean | undefined): ReturnTyp
   return { send, credential: send, unsignedFirst: false };
 }
 
-export const PAY_INCOMPLETE = "Enter an address and an amount first.";
-export const PAY_CHECKING = "Checking the payment…";
+export const PAY_INCOMPLETE = en.pay.incomplete;
+export const PAY_CHECKING = en.pay.checking;
 
 /** Why a payment cannot be reviewed yet (P15): the first field problem the form shows, then the
  * draft's own, then whether it is still incomplete or being checked; `null` once it can. */
 export function reviewBlockedReason(ready: boolean, problems: (string | null | undefined)[], complete: boolean): string | null {
   if (ready) return null;
-  return problems.find((p): p is string => !!p) ?? (complete ? PAY_CHECKING : PAY_INCOMPLETE);
+  return problems.find((p): p is string => !!p) ?? (complete ? t("pay.checking") : t("pay.incomplete"));
 }
 
 /** What an `authorize` refusal means for the confirm sheet. */
@@ -359,8 +359,8 @@ export function authRefusal(e: AppError): AuthRefusal {
   if (e.code === "vault.wrong_passphrase" || e.code === "vault.throttled") {
     const wait = retryAfterSecs(e);
     const attempts = e.data?.kind === "wrongPassphrase" ? e.data.failedAttempts : null;
-    const base = e.code === "vault.throttled" ? "Too many attempts." : "The passphrase you entered was incorrect.";
-    const count = attempts !== null && attempts > 1 ? ` ${attempts} failed attempts.` : "";
+    const base = e.code === "vault.throttled" ? t("pay.auth.throttled") : t("pay.auth.wrongPassphrase");
+    const count = attempts !== null && attempts > 1 ? ` ${t("pay.auth.failedAttempts", { count: attempts })}` : "";
     return { kind: "wrongPassphrase", text: `${base}${count}`, waitSecs: wait };
   }
   return { kind: "other" };
@@ -455,9 +455,6 @@ export type Outcome =
 /** A signed payment handed to the broadcast, its outcome not yet known. */
 export type Sending = { amount: number; fee: number; note?: string };
 
-/** A first broadcast the window refused because the vault locked: it never reached the engine. */
-export const LOCKED_BEFORE_SEND = "The wallet locked before the payment was sent. Nothing was sent.";
-
 /** The engine's codes for a first broadcast that released the transaction (E0-13 D8, `released`
  * in send.rs): nothing was sent and its handle is gone. */
 const RELEASED = ["send.no_peers", "send.broadcast_rejected", "send.prepared_tx_spent", "send.cancelled"] as const;
@@ -483,7 +480,7 @@ export function broadcastFailure(
   const notSent = [...RELEASED, ...(contact ? CONTACT_HELD : [])];
   if (first && (gone || notSent.some((c) => hasCode(e, c)))) return { kind: "failed", text: failureText(e, chain, unit) };
   // The handle went with the draft (a lock or network switch closed it): nothing to retry here.
-  const text = gone ? "The payment may have been sent, and it can no longer be retried here." : failureText(e, chain, unit);
+  const text = gone ? t("pay.error.noRetryHere") : failureText(e, chain, unit);
   return { kind: "unknown", text, retry: !gone, ...held };
 }
 
