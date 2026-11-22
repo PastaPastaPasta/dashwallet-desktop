@@ -147,6 +147,10 @@ pub struct SessionOptions {
     /// fails. Absent from production builds.
     #[cfg(test)]
     pub dapi_request_timeout: Option<Duration>,
+    /// Tests: the session as a release build opens it (the trusted-only
+    /// toggle ignored).
+    #[cfg(test)]
+    pub as_release_build: bool,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -408,15 +412,23 @@ impl NetworkSession {
         ));
         init_quorum_context(&context, &network, sink.as_ref()).await?;
 
-        let trust = Arc::new(TrustProvider::new(
+        let trust = TrustProvider::new(
             trust::DEFAULT_MODE,
             Arc::new(Arc::clone(&context)),
             Arc::clone(&sink),
             network.clone(),
-        ));
+        );
+        #[cfg(test)]
+        let trust = if opts.as_release_build {
+            trust.in_release_build()
+        } else {
+            trust
+        };
+        let trust = Arc::new(trust);
+        let allowed = trust.trusted_only_allowed();
         trust.set_trusted_only({
             let appdb = Arc::clone(&appdb);
-            tokio::task::spawn_blocking(move || read_trusted_only(&appdb)).await?
+            tokio::task::spawn_blocking(move || read_trusted_only(&appdb, allowed)).await?
         });
         let protocol = Arc::new(crate::platform::protocol::ProtocolRuntime::default());
         let sdk = build_sdk(
@@ -1309,9 +1321,16 @@ fn load_ca(path: &Path) -> Result<Certificate, EngineError> {
 }
 
 /// The developer toggle (`trust.trusted_only`). A read error leaves it off:
-/// SPV keeps being compared.
-fn read_trusted_only(appdb: &AppDb) -> bool {
+/// SPV keeps being compared. A release build ignores it (H-09): a data
+/// root a developer build turned it on in does not carry it over.
+fn read_trusted_only(appdb: &AppDb, allowed: bool) -> bool {
     match appdb.setting(dw_appdb::GLOBAL_SCOPE, trust::TRUSTED_ONLY_KEY) {
+        Ok(v) if !allowed => {
+            if v.as_deref() == Some("1") {
+                tracing::warn!("the trusted-only toggle is set but ignored in a release build");
+            }
+            false
+        }
         Ok(v) => v.as_deref() == Some("1"),
         Err(e) => {
             tracing::warn!(error = %e, "could not read the trusted-only toggle; it stays off");

@@ -735,6 +735,44 @@ fn each_failing_condition_is_withdrawal_destination_checking_with_its_reason() {
     assert!(fa.plat.sent().is_empty());
 }
 
+/// H-09 (MG's 1.0 ruling): in the degraded default a masternode
+/// withdrawal holds rule 5 too. An identity read SPV did not verify, its
+/// probe unverified as well, never shows a destination as checked and
+/// sends nothing; an unverified nonce read refuses. Once the reads verify,
+/// the same grant withdraws.
+#[test]
+fn the_degraded_default_refuses_a_withdrawal_on_unverified_reads() {
+    let fa = Fa::new(true);
+    fa.f.session
+        .trust
+        .set_mode(crate::platform::trust::TrustMode::Degraded);
+    assert_eq!(fa.f.session.trust.rule_5(), Rule5::Probe);
+    let grant = fa.grant(AMOUNT + fee(), None);
+    fa.plat.deviate(Read::Identity, Dev::Unverified, ALWAYS);
+    let checking = Some(WithdrawalDestinationCheck::Checking {
+        reason: WithdrawalCheckingReason::Unverified,
+    });
+    let q = fa.quote().unwrap();
+    assert_eq!(q.owner_destination, checking);
+    assert_eq!(q.payout_destination, checking);
+    let e = (fa.withdraw_with(Key::Owner, AMOUNT, None, grant.clone())).unwrap_err();
+    assert_eq!(e.code(), "masternodes.withdrawal_destination_checking");
+    assert!(fa.plat.sent().is_empty());
+    assert!(fa.records().is_empty());
+
+    fa.plat.calm();
+    fa.plat.deviate(Read::Nonce, Dev::Unverified, ALWAYS);
+    assert_eq!(
+        code(fa.withdraw_with(Key::Owner, AMOUNT, None, grant.clone())),
+        "masternodes.withdrawal_unverified"
+    );
+    assert!(fa.plat.sent().is_empty());
+
+    fa.plat.calm();
+    let r = fa.withdraw_with(Key::Owner, AMOUNT, None, grant);
+    assert_eq!(r.unwrap().state, State::Sent);
+}
+
 #[test]
 fn an_open_record_is_withdrawal_pending() {
     let fa = Fa::new(true);
