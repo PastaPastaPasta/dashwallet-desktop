@@ -180,7 +180,7 @@ pub(crate) async fn read(
     let read = async {
         let wallet = session.wallet(&id).await?;
         let snapshot = session.coin_snapshot(fence, &wallet).await?;
-        let state = wallet.state().await;
+        let state = crate::wallet_read::info_of(&wallet).await?;
         let info = &state.core_wallet;
         let account: HashMap<_, _> = (info.accounts.standard_bip44_accounts.get(&0))
             .map(|a| {

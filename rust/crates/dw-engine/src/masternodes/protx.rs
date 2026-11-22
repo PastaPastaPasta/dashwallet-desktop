@@ -152,7 +152,7 @@ impl Masternodes {
                 let existing = match &reg.collateral {
                     Collateral::Existing { outpoint } => {
                         let fee_held = s.unseen_proposal_fee_inputs(&wallet)?;
-                        let state = w.state().await;
+                        let state = crate::wallet_read::info_of(&w).await?;
                         Some(existing_coin(
                             &snapshot,
                             &fee_held,
@@ -252,7 +252,7 @@ impl Masternodes {
                 ops::crash_at(&s, ops::CrashPoint::Saved)?;
                 let summary = s
                     .summary_of(&w, &tx, &utxos, funding.fee, change.as_ref())
-                    .await;
+                    .await?;
                 s.deliver(
                     wallet,
                     Delivery {
@@ -396,7 +396,7 @@ impl Masternodes {
                     return Err(MasternodesError::OperationNotFound);
                 }
                 let utxos: Vec<_> = coins.iter().map(|(u, _)| u.clone()).collect();
-                let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await;
+                let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await?;
                 s.deliver(
                     wallet,
                     Delivery {
@@ -629,7 +629,7 @@ impl Masternodes {
                 ops::crash_at(&s, ops::CrashPoint::Saved)?;
                 let summary = s
                     .summary_of(&w, &tx, &utxos, funding.fee, change.as_ref())
-                    .await;
+                    .await?;
                 s.deliver(
                     wallet,
                     Delivery {
@@ -752,7 +752,7 @@ impl Masternodes {
                 let coins = s.input_coins(&fence, &w, &tx, false).await?;
                 let (charge, _) = charge_fee(&lease, debit)?;
                 let utxos: Vec<_> = coins.into_iter().map(|(u, _)| u).collect();
-                let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await;
+                let summary = s.summary_of(&w, &tx, &utxos, row.fee, None).await?;
                 s.deliver(
                     wallet,
                     Delivery {
@@ -865,7 +865,7 @@ impl NetworkSession {
         };
         let snapshot = self.coin_snapshot(fence, w).await?;
         let fee_held = self.unseen_proposal_fee_inputs(&wallet)?;
-        let state = w.state().await;
+        let state = crate::wallet_read::info_of(w).await?;
         let (coin, _, _) = existing_coin(
             &snapshot,
             &fee_held,
@@ -937,7 +937,7 @@ impl NetworkSession {
         unspent: bool,
     ) -> Result<Vec<(key_wallet::Utxo, key_wallet::DerivationPath)>, MasternodesError> {
         let snapshot = self.coin_snapshot(fence, w).await?;
-        let state = w.state().await;
+        let state = crate::wallet_read::info_of(w).await?;
         let mut out = Vec::new();
         for input in &tx.input {
             let found = snapshot
@@ -992,11 +992,11 @@ impl NetworkSession {
         inputs: &[key_wallet::Utxo],
         fee: u64,
         change: Option<&dashcore::Address>,
-    ) -> crate::send::PreparedSummary {
+    ) -> Result<crate::send::PreparedSummary, EngineError> {
         let network = self.network.core_network();
-        let state = w.state().await;
+        let state = crate::wallet_read::info_of(w).await?;
         let change = change.map(|a| a.script_pubkey());
-        summarize(
+        Ok(summarize(
             tx,
             inputs,
             fee,
@@ -1006,7 +1006,7 @@ impl NetworkSession {
                     .is_ok_and(|a| wallet_funds_address(&state.core_wallet, &a))
             },
             network,
-        )
+        ))
     }
 
     async fn set_collateral_lock(
