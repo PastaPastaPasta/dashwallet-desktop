@@ -37,7 +37,7 @@ const AREAS: Record<string, string[]> = {
 
   coinjoin: [],
 
-  notifications: [],
+  notifications: ["screens/notifications"],
 
   masternodes: [],
 
