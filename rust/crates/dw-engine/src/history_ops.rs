@@ -725,8 +725,9 @@ impl NetworkSession {
         }
     }
 
-    /// Runs `f` with the wallet's chain view. `WalletNotFound` for an
-    /// unknown wallet.
+    /// Runs `f` with the wallet's chain view, over the history store's own
+    /// entries under its read lock, with no copy (H-06); `f` must not touch
+    /// the history store. `WalletNotFound` for an unknown wallet.
     pub(crate) async fn with_view<R>(
         &self,
         manager: &Manager,
@@ -740,8 +741,11 @@ impl NetworkSession {
             .ok_or_else(|| EngineError::WalletNotFound(wallet.to_string()))?;
         let parts = self.view_parts(info, &wallet);
         drop(wm);
-        let history = self.hub.history.snapshot(&wallet);
-        Ok(f(&parts.view(&history, self.network.core_network())))
+        let network = self.network.core_network();
+        Ok(self
+            .hub
+            .history
+            .read(&wallet, |history| f(&parts.view(history, network))))
     }
 
     /// One page of dash-qt history records (QT-086…089, IOS-027/028).
