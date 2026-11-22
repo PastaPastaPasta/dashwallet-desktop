@@ -16,7 +16,7 @@ export const FONT_SIZES = { min: 4, max: 40, default: 12 };
 export const ConsoleText = {
   welcome: (mac: boolean) => {
     const [clear, bigger, smaller] = mac ? ["⌘L", "⌘+", "⌘-"] : ["Ctrl+L", "Ctrl++", "Ctrl+-"];
-    return t("tools.console.welcome", { clear, bigger, smaller });
+    return t("tools.console.welcome", { clear, bigger, smaller, help: "help", helpConsole: "help-console" });
   },
   get scamWarning() {
     return t("tools.console.scamWarning");
@@ -32,7 +32,7 @@ export const ConsoleText = {
     return t("tools.console.notAvailable");
   },
   get walletRequired() {
-    return t("tools.console.walletRequired");
+    return t("tools.console.walletRequired", { path: "/wallet/<filename>" });
   },
   get authorizationCancelled() {
     return t("tools.console.authorizationCancelled");

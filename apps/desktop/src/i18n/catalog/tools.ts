@@ -173,14 +173,14 @@ export const tools = {
     running: "Running…",
     run: "Run",
     welcome:
-      "Welcome to the Dash Wallet RPC console.\nUse up and down arrows to navigate history, and {clear} to clear screen.\nUse {bigger} and {smaller} to increase or decrease the font size.\nType help for an overview of available commands.\nFor more information on using this console, type help-console.",
+      "Welcome to the Dash Wallet RPC console.\nUse up and down arrows to navigate history, and {clear} to clear screen.\nUse {bigger} and {smaller} to increase or decrease the font size.\nType {help} for an overview of available commands.\nFor more information on using this console, type {helpConsole}.",
     scamWarning:
       "WARNING: Scammers have been active, telling users to type commands here, stealing their wallet contents. Do not use this console without fully understanding the ramifications of a command.",
     executingWith: 'Executing command using "{wallet}" wallet',
     executingWithout: "Executing command without any wallet",
     invalidCommandLine: "Error: Invalid command line",
     notAvailable: "Not available in SPV mode.",
-    walletRequired: "Wallet file not specified (must request wallet RPC through /wallet/<filename> uri-path).",
+    walletRequired: "Wallet file not specified (must request wallet RPC through {path} uri-path).",
     authorizationCancelled: "Authorization cancelled.",
     grantInvalid: "The authorization expired. Please try again.",
   },
