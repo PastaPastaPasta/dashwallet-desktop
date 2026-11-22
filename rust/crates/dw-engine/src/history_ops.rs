@@ -476,19 +476,35 @@ impl NetworkSession {
         candidates: Vec<(Txid, Option<(u32, dashcore::BlockHash)>)>,
         chainlock: Option<(u32, dashcore::BlockHash)>,
     ) -> Vec<Txid> {
-        let mut headers = HashMap::new();
-        if let Some((height, hash)) = chainlock
-            && candidates.iter().any(|(_, b)| b.is_some())
-            && self.hub.header_hash(height).await == Some(hash)
-        {
-            headers.insert(height, hash);
-            let heights = candidates
-                .iter()
-                .filter_map(|(_, b)| b.map(|b| b.0))
-                .collect();
-            headers.extend(self.hub.header_hashes(heights).await);
+        let heights: BTreeSet<u32> = (candidates.iter())
+            .filter_map(|(_, b)| b.map(|b| b.0))
+            .collect();
+        let headers = match chainlock {
+            Some(cl) if !heights.is_empty() => self.headers_under(cl, heights).await,
+            _ => None,
+        };
+        crate::history::proven_settled(candidates, chainlock, &headers.unwrap_or_default())
+    }
+
+    /// The SPV header chain's hashes at `heights` and at the ChainLock's,
+    /// read after any guard, if the chain holds the ChainLock's block
+    /// before and after (a Rebuild Index keeps the lock but not the
+    /// headers): what [`crate::history::proven_final`] reads.
+    pub(crate) async fn headers_under(
+        &self,
+        (height, hash): (u32, dashcore::BlockHash),
+        heights: BTreeSet<u32>,
+    ) -> Option<HashMap<u32, dashcore::BlockHash>> {
+        let holds = || async { self.hub.header_hash(height).await == Some(hash) };
+        if !holds().await {
+            return None;
         }
-        crate::history::proven_settled(candidates, chainlock, &headers)
+        let mut headers = self.hub.header_hashes(heights).await;
+        if !holds().await {
+            return None;
+        }
+        headers.insert(height, hash);
+        Some(headers)
     }
 
     /// Restores the claims `select` chooses, given the wallet and the best

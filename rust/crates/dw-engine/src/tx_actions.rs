@@ -232,14 +232,14 @@ fn abandon_with(
     abandoned
 }
 
-/// What [`chainlock_beaten`] reads: the height of the wallet's ChainLock
-/// when the SPV header chain holds its block, and that chain's block hash
-/// at each height it has of those asked. `blocked`: the locked
+/// What [`chainlock_beaten`] reads: the wallet's ChainLock when the SPV
+/// header chain holds its block, and that chain's block hash at each
+/// height it has of those asked. `blocked`: the locked
 /// transactions out of a block the exception cannot apply to
 /// ([`override_blocked`]) when it was read.
 #[derive(Default)]
 struct ChainProof {
-    chainlock: Option<u32>,
+    chainlock: Option<(u32, BlockHash)>,
     active: HashMap<u32, BlockHash>,
     blocked: HashSet<Txid>,
 }
@@ -650,7 +650,8 @@ impl NetworkSession {
                 return Ok(None);
             }
             let synced = core.synced_height();
-            let (Some(chainlock), Some(state)) = (proof.chainlock, self.hub.wallet_state(&wallet))
+            let (Some((chainlock, _)), Some(state)) =
+                (proof.chainlock, self.hub.wallet_state(&wallet))
             else {
                 return refused;
             };
@@ -734,17 +735,15 @@ impl NetworkSession {
                 blocked,
             )
         };
-        let Some(cl) = chainlock else {
+        let Some(cl) = chainlock.map(|c| (c.block_height, c.block_hash)) else {
             return ChainProof::default();
         };
-        let holds = || async { self.hub.header_hash(cl.block_height).await == Some(cl.block_hash) };
-        if !holds().await {
-            return ChainProof::default();
-        }
         let heights = self.hub.history.read(&wallet, rival_heights);
-        let active = self.hub.header_hashes(heights).await;
+        let Some(active) = self.headers_under(cl, heights).await else {
+            return ChainProof::default();
+        };
         ChainProof {
-            chainlock: holds().await.then_some(cl.block_height),
+            chainlock: Some(cl),
             active,
             blocked,
         }

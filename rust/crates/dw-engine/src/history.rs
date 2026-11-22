@@ -327,30 +327,28 @@ pub(crate) fn chain_locked(context: &TransactionContext, chainlock_height: Optio
         || matches!((height, chainlock_height), (Some(h), Some(cl)) if cl >= h)
 }
 
-/// Whether another transaction in a block of the SPV header chain at or
-/// below `chainlock` spends one of `txid`'s inputs: a ChainLock outranks an
-/// InstantSend lock (DIP-10, as key-wallet's conflict sweep orders them),
-/// so `txid` can never confirm. `chainlock` is the height of the wallet's
-/// ChainLock when that chain holds its block, `active` the chain's block
-/// hash at each height it has: a record's ChainLocked context can come
-/// from its height alone, a record of a block a fork replaced comes back
-/// from wallet.sqlite after a restart, and an unknown header proves
-/// nothing.
+/// Whether another transaction in a block the SPV header chain proves
+/// final ([`proven_final`] under the wallet's own `chainlock`, `active`
+/// the chain's block hash at each height it has) spends one of `txid`'s
+/// inputs: a ChainLock outranks an InstantSend lock (DIP-10, as
+/// key-wallet's conflict sweep orders them), so `txid` can never confirm.
+/// A record's ChainLocked context can come from its height alone, and a
+/// record of a block a fork replaced comes back from wallet.sqlite after a
+/// restart.
 pub(crate) fn chainlock_beaten(
     txs: &HashMap<Txid, TxEntry>,
     txid: &Txid,
-    chainlock: Option<u32>,
+    chainlock: Option<(u32, dashcore::BlockHash)>,
     active: &HashMap<u32, dashcore::BlockHash>,
 ) -> bool {
-    let (Some(chainlock), Some(e)) = (chainlock, txs.get(txid)) else {
+    let Some(e) = txs.get(txid) else {
         return false;
     };
     let inputs: HashSet<OutPoint> = e.tx.input.iter().map(|i| i.previous_output).collect();
     (txs.iter()).any(|(w, we)| {
         w != txid
-            && (we.context.block_info()).is_some_and(|b| {
-                b.height() <= chainlock && active.get(&b.height()) == Some(&b.block_hash())
-            })
+            && (we.context.block_info())
+                .is_some_and(|b| proven_final((b.height(), b.block_hash()), chainlock, active))
             && (we.tx.input.iter()).any(|i| inputs.contains(&i.previous_output))
     })
 }
@@ -518,14 +516,24 @@ pub(crate) fn proven_settled(
     chainlock: Option<(u32, dashcore::BlockHash)>,
     headers: &HashMap<u32, dashcore::BlockHash>,
 ) -> Vec<Txid> {
-    let locked = chainlock.is_some_and(|(height, hash)| headers.get(&height) == Some(&hash));
     (candidates.into_iter())
-        .filter(|(_, block)| match block {
-            None => true,
-            Some((height, hash)) => locked && headers.get(height) == Some(hash),
-        })
+        .filter(|(_, block)| block.is_none_or(|b| proven_final(b, chainlock, headers)))
         .map(|(t, _)| t)
         .collect()
+}
+
+/// Whether the SPV header chain `headers` proves the block `(height, hash)`
+/// final: it holds that block, at or below the block of the wallet's own
+/// `chainlock`, which it holds too. A stored context, a height or a
+/// missing header proves nothing.
+pub(crate) fn proven_final(
+    (height, hash): (u32, dashcore::BlockHash),
+    chainlock: Option<(u32, dashcore::BlockHash)>,
+    headers: &HashMap<u32, dashcore::BlockHash>,
+) -> bool {
+    chainlock.is_some_and(|(cl_height, cl_hash)| {
+        height <= cl_height && headers.get(&cl_height) == Some(&cl_hash)
+    }) && headers.get(&height) == Some(&hash)
 }
 
 #[derive(Debug, Default)]
@@ -2855,10 +2863,20 @@ mod tests {
         let payment = spend(1, &[coin(1), coin(2)], locked());
         let txid = payment.tx.txid();
         let active = HashMap::from([(12, BlockHash::all_zeros())]);
-        let beaten_on = |winner: TxEntry, chainlock: Option<u32>, active| {
-            let txs = HashMap::from([(txid, payment.clone()), (winner.tx.txid(), winner)]);
-            chainlock_beaten(&txs, &txid, chainlock, active)
-        };
+        let beaten_on =
+            |winner: TxEntry, chainlock: Option<u32>, active: &HashMap<u32, BlockHash>| {
+                let mut active = active.clone();
+                let chainlock = chainlock.map(|h| {
+                    (
+                        h,
+                        *active
+                            .entry(h)
+                            .or_insert(BlockHash::from_byte_array([7; 32])),
+                    )
+                });
+                let txs = HashMap::from([(txid, payment.clone()), (winner.tx.txid(), winner)]);
+                chainlock_beaten(&txs, &txid, chainlock, &active)
+            };
         let beaten = |winner, chainlock| beaten_on(winner, chainlock, &active);
         let chainlocked =
             TransactionContext::InChainLockedBlock(BlockInfo::new(12, BlockHash::all_zeros(), 0));
@@ -2879,13 +2897,20 @@ mod tests {
             "a fork replaced it"
         );
         assert!(!beaten_on(winner(), Some(12), &HashMap::new()), "no header");
+        let txs = HashMap::from([(txid, payment.clone()), (winner().tx.txid(), winner())]);
+        let lock = Some((13, BlockHash::from_byte_array([7; 32])));
+        assert!(
+            !chainlock_beaten(&txs, &txid, lock, &active),
+            "the ChainLock's header is not known"
+        );
         let alone = HashMap::from([(txid, payment.clone())]);
-        assert!(!chainlock_beaten(&alone, &txid, Some(12), &active));
+        let lock = Some((12, BlockHash::all_zeros()));
+        assert!(!chainlock_beaten(&alone, &txid, lock, &active));
         let mut mined = payment.clone();
         mined.context = in_block(12, 0);
         let alone = HashMap::from([(txid, mined)]);
         assert!(
-            !chainlock_beaten(&alone, &txid, Some(12), &active),
+            !chainlock_beaten(&alone, &txid, lock, &active),
             "not by itself"
         );
         let txs = HashMap::from([(txid, payment.clone()), (winner().tx.txid(), winner())]);
