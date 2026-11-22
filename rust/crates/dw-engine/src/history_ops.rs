@@ -218,28 +218,34 @@ pub(crate) fn persisted_txids(
     Ok(out)
 }
 
-/// Of `txids`, those with an output of theirs stored for `wallet`.
-pub(crate) fn txids_with_outputs(
+/// Of `txids`, those with an output of theirs stored for `wallet`, and
+/// those with an InstantSend lock stored for them.
+pub(crate) fn txids_with_outputs_and_locks(
     db_path: &Path,
     wallet: WalletId,
     txids: impl IntoIterator<Item = Txid>,
-) -> Result<HashSet<Txid>, rusqlite::Error> {
+) -> Result<(HashSet<Txid>, HashSet<Txid>), rusqlite::Error> {
     let conn = rusqlite::Connection::open_with_flags(
         db_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
-    let mut stmt = conn.prepare(
+    let mut outputs = conn.prepare(
         "SELECT 1 FROM core_utxos WHERE wallet_id = ?1 AND substr(outpoint, 2, 32) = ?2 LIMIT 1",
     )?;
-    let mut out = HashSet::new();
+    let mut locks =
+        conn.prepare("SELECT 1 FROM core_instant_locks WHERE wallet_id = ?1 AND txid = ?2")?;
+    let (mut with_outputs, mut locked) = (HashSet::new(), HashSet::new());
     for txid in txids {
-        let txid_bytes: &[u8] = txid.as_ref();
-        if stmt.exists(rusqlite::params![wallet.0.as_slice(), txid_bytes])? {
-            out.insert(txid);
+        let key = rusqlite::params![wallet.0.as_slice(), AsRef::<[u8]>::as_ref(&txid)];
+        if outputs.exists(key)? {
+            with_outputs.insert(txid);
+        }
+        if locks.exists(key)? {
+            locked.insert(txid);
         }
     }
-    Ok(out)
+    Ok((with_outputs, locked))
 }
 
 /// The parts of a [`ChainView`] read from the library's state.

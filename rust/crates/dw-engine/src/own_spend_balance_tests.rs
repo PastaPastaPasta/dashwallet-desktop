@@ -1483,3 +1483,79 @@ fn the_load_sweeps_only_payments_marked_abandoned() {
         "E's change stays"
     );
 }
+
+/// A payment abandoned and then mined anyway (Abandon is local) counts
+/// again: the load leaves it, so its coins stay spent, its change stays and
+/// it is listed confirmed after a restart.
+#[test]
+fn a_payment_abandoned_and_then_mined_is_left_by_the_load() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        COIN * 3 / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    abandon(&engine, &session, id, p.txid());
+    mined(
+        &engine,
+        &session,
+        id,
+        TIP + 1,
+        vec![paid.clone(), p.clone()],
+    );
+    wait_stored(&session, id, &[p.txid()]);
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+
+    let session = reopen(&engine, session);
+    let coins = held(&engine, &session, id);
+    assert!(
+        !coins.contains(&a) && !coins.contains(&b),
+        "spent coins credited: {coins:?}"
+    );
+    assert!(coins.contains(&change), "its change is gone: {coins:?}");
+    assert!(!spendable(&engine, &session, id, a), "A is offered");
+    assert!(
+        (session.hub.history.get(&id, &p.txid()))
+            .is_some_and(|e| e.context.block_info().is_some() && !e.is_abandoned()),
+        "listed confirmed"
+    );
+}
+
+/// The same for a payment abandoned and then relayed with its InstantSend
+/// lock after a reload: the load leaves it.
+#[test]
+fn a_payment_abandoned_and_then_locked_is_left_by_the_load() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let a = OutPoint::new(paid.txid(), 0);
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a]),
+        COIN / 2,
+        false,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    abandon(&engine, &session, id, p.txid());
+    let session = reopen(&engine, session);
+    mempool(&engine, &session, id, &p);
+    instant_lock(&engine, &session, id, &p);
+    wait_stored_locked(&session, id, p.txid());
+    let change = change_of(&p, &own_scripts(&engine, &session, id));
+
+    let session = reopen(&engine, session);
+    let coins = held(&engine, &session, id);
+    assert!(!coins.contains(&a), "A credited: {coins:?}");
+    assert!(coins.contains(&change), "its change is gone: {coins:?}");
+    assert!(
+        (session.hub.history.get(&id, &p.txid())).is_some_and(|e| !e.is_abandoned()),
+        "listed abandoned"
+    );
+}
