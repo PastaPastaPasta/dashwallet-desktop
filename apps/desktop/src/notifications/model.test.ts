@@ -1,9 +1,10 @@
 // The bell's rules (DP2-09 D11–D13), by parity ID.
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ContactList } from "../api/generated/ContactList";
 import type { DashPayEventInfo } from "../api/generated/DashPayEventInfo";
 import type { DashPayEventPage } from "../api/generated/DashPayEventPage";
+import { DEFAULT_PREFS, ui } from "../app/ui";
 import { eventLink, eventText, feedOf, namesFrom, newestId, popoverCut } from "./model";
 
 const BOB = "8GopLQQPjKr2gXjNEt9G8k2PzRZrdbBqQBNTCXV2DYiN";
@@ -44,12 +45,22 @@ const ev = (id: number, patch: Partial<DashPayEventInfo> = {}): DashPayEventInfo
 
 describe("event lines", () => {
   const names = namesFrom(list);
+  afterEach(() => ui.set({ prefs: { ...DEFAULT_PREFS, language: null } }));
 
   it("IOS-075 names the contact as the list shows it, else its short id", () => {
     expect(eventText(ev(1, { kind: "requestReceived" }), names)).toBe("Bob Builder sent you a contact request");
     expect(eventText(ev(1, { kind: "requestAccepted", contact: UNKNOWN }), names)).toBe("MALLoR…Hbnm accepted your contact request");
     expect(eventText(ev(1, { kind: "contactEstablished" }), names)).toBe("You and Bob Builder are now contacts");
     expect(eventText(ev(1, { kind: "paymentReceived", reference: "b0" }), names)).toBe("Bob Builder sent you a payment");
+    expect(eventText(ev(1, { kind: "paymentReceived", contact: null, reference: "b0" }), names)).toBe("Someone sent you a payment");
+  });
+
+  it("follows the chosen language", () => {
+    ui.set({ prefs: { ...DEFAULT_PREFS, language: "en-XA" } });
+    expect(eventText(ev(1, { kind: "paymentReceived", reference: "b0" }), names)).toMatch(/^⟦Bob Builder .+⟧$/);
+    expect(eventText(ev(1, { kind: "usernameRegistered", contact: null, reference: "alice" }), names)).toMatch(/^⟦.+@alice.+⟧$/);
+    ui.set({ prefs: { ...DEFAULT_PREFS, language: "ar-XB" } });
+    expect(eventText(ev(1, { kind: "usernameRegistered", contact: null, reference: "alice" }), names)).toContain("\u2068@alice\u2069");
   });
 
   it("says the username events with their label", () => {

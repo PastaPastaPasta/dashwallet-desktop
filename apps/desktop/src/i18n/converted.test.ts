@@ -27,7 +27,7 @@ const AREAS: Record<string, string[]> = {
 
   activity: [],
 
-  receive: [],
+  receive: ["screens/Receive.tsx"],
 
   pay: ["screens/pay"],
 
@@ -35,13 +35,13 @@ const AREAS: Record<string, string[]> = {
 
   dashpay: [],
 
-  coinjoin: [],
+  coinjoin: ["screens/coinjoin"],
 
-  notifications: [],
+  notifications: ["screens/notifications"],
 
   masternodes: [],
 
-  tools: [],
+  tools: ["screens/tools"],
 
   transfer: [],
 };

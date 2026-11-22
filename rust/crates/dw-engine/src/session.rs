@@ -141,6 +141,12 @@ pub struct SessionOptions {
     /// txindex on) in place of DAPI for the ProRegTxs governance resolves
     /// vote outpoints with (MG-02 D80); regtest has no DAPI.
     pub collateral_rpc: Option<String>,
+    /// Tests: this session's DAPI attempt timeout. `None` leaves the SDK
+    /// default (10 s, rs-dapi-client `request_settings.rs`). `Some(0)`
+    /// disables that deadline, so a request waits until the connection
+    /// fails. Absent from production builds.
+    #[cfg(test)]
+    pub dapi_request_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for SessionOptions {
@@ -1345,6 +1351,18 @@ fn build_sdk(
     }
     if let Some(observer) = observer {
         builder = builder.with_protocol_version_observer(observer);
+    }
+    // Tests only: a session can hold a DAPI attempt open (`Some(0)` is
+    // "no deadline" in rs-dapi-client) or cut it sooner than the default.
+    #[cfg(test)]
+    if let Some(timeout) = opts.dapi_request_timeout {
+        builder = builder.with_settings(dash_sdk::RequestSettings {
+            connect_timeout: None,
+            timeout: Some(timeout),
+            retries: None,
+            ban_failed_address: None,
+            max_decoding_message_size: None,
+        });
     }
     Ok(builder.build()?)
 }

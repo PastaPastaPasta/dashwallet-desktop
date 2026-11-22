@@ -23,6 +23,7 @@ import { useUi } from "../app/ui";
 import { FiatSecondary, FiatToggle, useFiatEntry } from "../fiat/entry";
 import { FiatLine, useFiat } from "../fiat/rates";
 import { useDisplay } from "../format/display";
+import { useT } from "../i18n";
 import { useHeldAddress } from "../payments/hold";
 import { useLookupPending, useReceived } from "../payments/received";
 import { receivedText } from "./notifications/Received";
@@ -36,14 +37,13 @@ const QR_SIDE = 200;
 
 /** The QR of `text`, or why there is none (dash-qt "Resulting URI too long"). */
 export function Qr({ text, label, testId }: { text: string | undefined; label: string; testId: string }) {
+  const t = useT();
   const qr = useQrMatrix(text);
   if (qr.data) return <QrCode matrix={qr.data} size={QR_SIDE} label={label} testId={testId} />;
   if (qr.isError)
     return (
       <p className="qr-problem" role="alert">
-        {hasCode(qr.error, "uri.too_long_for_qr")
-          ? "Resulting URI too long, try to reduce the text for label / message."
-          : `Could not draw the QR code: ${errorMessage(qr.error)}`}
+        {hasCode(qr.error, "uri.too_long_for_qr") ? t("receive.qr.tooLong") : t("receive.qr.failed", { error: errorMessage(qr.error) })}
       </p>
     );
   return <div className="qr-placeholder" style={{ width: QR_SIDE, height: QR_SIDE }} aria-hidden="true" />;
@@ -59,6 +59,7 @@ function qrUsername(included: boolean | undefined, username: UseQueryResult<stri
 }
 
 function useDashReceiveContent(walletId: string, network: NetworkInfo) {
+  const t = useT();
   const b = useBackend();
   const current = useReceiveAddress(walletId);
   // "New address" issues one (dash-qt getNewDestination); it is shown until the page closes.
@@ -96,20 +97,20 @@ function useDashReceiveContent(walletId: string, network: NetworkInfo) {
     try {
       setFresh(await b.nextReceiveAddress(walletId, null));
     } catch (e) {
-      setProblem(hasCode(e, "gap_limit") ? "Every address inside the gap limit is in use already. Wait for a payment to one of them." : errorMessage(e));
+      setProblem(hasCode(e, "gap_limit") ? t("receive.dash.gapLimit") : errorMessage(e));
     }
   };
   return {
     before: <>
       <h2 id="receive-address-title" className="card-title">
-        Your Dash address
+        {t("receive.dash.title")}
       </h2>
       {current.isError && !fresh ? (
         <p className="form-problem" role="alert">
-          Could not load the receiving address: {errorMessage(current.error)}
+          {t("receive.dash.loadFailed", { error: errorMessage(current.error) })}
         </p>
       ) : !shown ? (
-        <LoadingState testId="receive-loading" text="Loading address" />
+        <LoadingState testId="receive-loading" text={t("receive.dash.loading")} />
       ) : (
         <>
           {paid.length > 0 && (
@@ -118,7 +119,7 @@ function useDashReceiveContent(walletId: string, network: NetworkInfo) {
             </p>
           )}
           <div className={paid.length > 0 ? "receive-qr is-used" : "receive-qr"}>
-            <Qr text={uri.data} label={`QR code of ${shown.address}`} testId="receive-qr" />
+            <Qr text={uri.data} label={t("receive.qr.ofAddress", { address: shown.address })} testId="receive-qr" />
           </div>
         </>
       )}
@@ -131,13 +132,13 @@ function useDashReceiveContent(walletId: string, network: NetworkInfo) {
           </p>
           <div className="card-actions">
             <CopyDashButton variant="tintedBlue" data-testid="receive-copy-address" text={shown.address}>
-              Copy address
+              {t("receive.copyAddress")}
             </CopyDashButton>
-            <CopyDashButton variant="tintedBlue" data-testid="receive-copy-uri" disabled={!uri.data} why="The payment link is not ready yet." text={uri.data ?? null}>
-              Copy link
+            <CopyDashButton variant="tintedBlue" data-testid="receive-copy-uri" disabled={!uri.data} why={t("receive.dash.linkNotReady")} text={uri.data ?? null}>
+              {t("receive.dash.copyLink")}
             </CopyDashButton>
             <DashButton variant="plainBlue" data-testid="receive-new-address" onClick={() => void newAddress()}>
-              New address
+              {t("receive.dash.newAddress")}
             </DashButton>
           </div>
         </>
@@ -151,16 +152,9 @@ function useDashReceiveContent(walletId: string, network: NetworkInfo) {
   };
 }
 
-export const PLATFORM_RECEIVE_COPY = {
-  text: "This address holds Dash on Dash Platform. Anyone with a Platform address can pay it.",
-  warning: "Most Dash wallets and exchanges cannot pay this address.",
-  loading: "Loading Platform address",
-  copy: "Copy address",
-  failed: "Could not load the Platform address:",
-} as const;
-
 /** The selected Platform address uses a bare QR; Dash payment URIs cannot carry it. */
 function usePlatformReceiveContent(walletId: string, enabled: boolean) {
+  const t = useT();
   const b = useBackend();
   const client = useQueryClient();
   const address = usePlatformReceiveAddress(walletId, enabled);
@@ -174,20 +168,19 @@ function usePlatformReceiveContent(walletId: string, enabled: boolean) {
       live = false;
     };
   }, [b, client, walletId, enabled]);
-  const C = PLATFORM_RECEIVE_COPY;
   return {
     before: <>
-      <h2 id="receive-address-title" className="card-title">Your Platform address</h2>
+      <h2 id="receive-address-title" className="card-title">{t("receive.platform.title")}</h2>
       {address.isError ? (
         <p className="form-problem" role="alert" data-testid="platform-receive-error">
-          {C.failed} {errorMessage(address.error)}
+          {t("receive.platform.loadFailed", { error: errorMessage(address.error) })}
         </p>
       ) : !address.data ? (
-        <LoadingState testId="platform-receive-loading" text={C.loading} />
+        <LoadingState testId="platform-receive-loading" text={t("receive.platform.loading")} />
       ) : (
         <>
           <div className="receive-qr">
-            <Qr text={address.data.address} label={`QR code of ${address.data.address}`} testId="platform-receive-qr" />
+            <Qr text={address.data.address} label={t("receive.qr.ofAddress", { address: address.data.address })} testId="platform-receive-qr" />
           </div>
         </>
       )}
@@ -200,7 +193,7 @@ function usePlatformReceiveContent(walletId: string, enabled: boolean) {
           </p>
           <div className="card-actions">
             <CopyDashButton variant="tintedBlue" data-testid="platform-receive-copy" text={address.data.address}>
-              {C.copy}
+              {t("receive.copyAddress")}
             </CopyDashButton>
           </div>
         </>
@@ -209,29 +202,29 @@ function usePlatformReceiveContent(walletId: string, enabled: boolean) {
   };
 }
 
-const ABOUT_COPY = { title: "About this address", dashOnly: "Payment requests are for Dash addresses only." } as const;
-
 /** The request column on Platform and Shielded: no payment URI carries those addresses (`build_payment_uri`
  * is Core's), so it says what the address is for and who can pay it. */
 function RequestUnavailable({ pool }: { pool: "platform" | "shielded" }) {
+  const t = useT();
   return (
     <section className="receive-card card-l1 request-unavailable" aria-labelledby="request-unavailable-title" data-testid="receive-request-unavailable" data-pool={pool}>
       <h2 id="request-unavailable-title" className="card-title">
-        {ABOUT_COPY.title}
+        {t("receive.about.title")}
       </h2>
-      <p>{pool === "platform" ? PLATFORM_RECEIVE_COPY.text : SHIELDED_COPY.receive.text}</p>
+      <p>{pool === "platform" ? t("receive.platform.about") : SHIELDED_COPY.receive.text}</p>
       {pool === "platform" && (
         <p className="field-hint" data-testid="platform-receive-warning">
-          {PLATFORM_RECEIVE_COPY.warning}
+          {t("receive.platform.warning")}
         </p>
       )}
-      <p className="placeholder-note">{ABOUT_COPY.dashOnly}</p>
+      <p className="placeholder-note">{t("receive.about.dashOnly")}</p>
     </section>
   );
 }
 
 /** `inactive`: another tab is shown; the form keeps what was typed and its place, out of sight and reach. */
 function RequestForm({ walletId, network, onCreated, inactive }: { walletId: string; network: NetworkInfo; onCreated: (r: ReceiveRequest) => void; inactive: boolean }) {
+  const t = useT();
   const b = useBackend();
   const client = useQueryClient();
   const id = useId();
@@ -255,7 +248,7 @@ function RequestForm({ walletId, network, onCreated, inactive }: { walletId: str
   const fiat = useFiatEntry(shown, { text: amountText, setText: setAmountText, duffs: checked !== "" ? parsed.data : undefined });
   const amountError =
     fiat.error ??
-    (checked === "" ? null : parsed.data === null ? shown.invalidAmount : parsed.data === 0 ? "The amount must be larger than 0, or empty." : null);
+    (checked === "" ? null : parsed.data === null ? shown.invalidAmount : parsed.data === 0 ? t("receive.request.amountZero") : null);
   // Fiat that is not an amount, or too large, leaves the DASH text empty: never an "any amount"
   // request from a fiat field holding text.
   const fiatLeftEmpty = fiat.active && fiat.value.trim() !== "" && amt === "";
@@ -296,22 +289,22 @@ function RequestForm({ walletId, network, onCreated, inactive }: { walletId: str
       }}
     >
       <h2 id={`${id}-title`} className="card-title">
-        Request payment
+        {t("receive.request.title")}
       </h2>
-      <p className="placeholder-note">Use this form to request payments. All fields are optional.</p>
+      <p className="placeholder-note">{t("receive.request.intro")}</p>
       <div className="form-field">
-        <label htmlFor={`${id}-label`}>Label</label>
+        <label htmlFor={`${id}-label`}>{t("receive.request.label")}</label>
         <input id={`${id}-label`} data-testid="request-label" value={label} autoComplete="off" onChange={(e) => setLabel(e.target.value)} />
       </div>
       <div className="form-field">
-        <label htmlFor={`${id}-amount`}>Amount ({fiat.unitName})</label>
+        <label htmlFor={`${id}-amount`}>{t("receive.request.amount", { unit: fiat.unitName })}</label>
         <span className="amount-entry">
           <input
             id={`${id}-amount`}
             data-testid="request-amount"
             value={fiat.value}
             inputMode="decimal"
-            placeholder="Any amount"
+            placeholder={t("receive.request.amountPlaceholder")}
             autoComplete="off"
             aria-invalid={!!amountError}
             aria-describedby={amountError ? `${id}-amount-error` : undefined}
@@ -327,12 +320,12 @@ function RequestForm({ walletId, network, onCreated, inactive }: { walletId: str
         )}
       </div>
       <div className="form-field">
-        <label htmlFor={`${id}-message`}>Message</label>
+        <label htmlFor={`${id}-message`}>{t("receive.request.message")}</label>
         <input id={`${id}-message`} data-testid="request-message" value={message} autoComplete="off" onChange={(e) => setMessage(e.target.value)} />
       </div>
       <label className="checkbox-row">
         <input type="checkbox" data-testid="request-include-username" disabled={allowed === undefined} checked={includeUsername ?? allowed === true} onChange={(e) => setIncludeUsername(e.target.checked)} />
-        Include my username in this request
+        {t("receive.request.includeUsername")}
       </label>
       {problem && (
         <p className="form-problem" role="alert">
@@ -341,10 +334,10 @@ function RequestForm({ walletId, network, onCreated, inactive }: { walletId: str
       )}
       <div className="card-actions">
         <DashButton variant="tintedGray" onClick={clear}>
-          Clear
+          {t("receive.request.clear")}
         </DashButton>
-        <DashButton type="submit" variant="filledBlue" data-testid="request-create" disabled={!ready} why={allowed === undefined ? "Loading username preference." : "Enter an amount first."}>
-          Create request
+        <DashButton type="submit" variant="filledBlue" data-testid="request-create" disabled={!ready} why={allowed === undefined ? t("receive.request.loadingUsername") : t("receive.request.enterAmount")}>
+          {t("receive.request.create")}
         </DashButton>
       </div>
     </form>
@@ -352,33 +345,42 @@ function RequestForm({ walletId, network, onCreated, inactive }: { walletId: str
 }
 
 function RequestSheet({ walletId, request: read, network, onClose }: { walletId: string; request: ReceiveRequest; network: NetworkInfo; onClose: () => void }) {
+  const t = useT();
   const shown = useDisplay(network);
   // A request's explicit choice overrides the wallet default; legacy requests follow it.
   const allowed = useUsernameAllowed(walletId);
   const request = (read.includeUsername ?? allowed) === true ? read : withoutUsername(read);
-  const title = `Request payment to ${request.label || shortAddress(request.address)}`;
+  const title = t("receive.sheet.title", { to: request.label || shortAddress(request.address) });
   return (
     <Sheet title={title} width="medium" testId="request-sheet" onClose={onClose}>
       <div className="request-qr">
-        <Qr text={request.uri} label={`QR code of the payment request to ${request.address}`} testId="request-qr" />
+        <Qr text={request.uri} label={t("receive.sheet.qrLabel", { address: request.address })} testId="request-qr" />
       </div>
       <dl className="detail-list card-l1" data-testid="request-facts">
-        <DetailRow label="Link" testId="request-uri">
-          <CopyValue value={request.uri} label="payment link" />
+        <DetailRow label={t("receive.sheet.link")} testId="request-uri">
+          <CopyValue value={request.uri} action={t("receive.sheet.copyLink")} />
         </DetailRow>
-        <DetailRow label="Address" testId="request-address">
-          <CopyValue value={request.address} label="address" />
+        <DetailRow label={t("receive.sheet.address")} testId="request-address">
+          <CopyValue value={request.address} action={t("receive.copyAddress")} />
         </DetailRow>
         {request.amount !== null && (
-          <DetailRow label="Amount" testId="request-amount-value">
+          <DetailRow label={t("receive.sheet.amount")} testId="request-amount-value">
             <AmountText text={shown.full(request.amount)} unitName={shown.name} glyph={false} />
           </DetailRow>
         )}
-        {request.label && <DetailRow label="Label">{request.label}</DetailRow>}
-        {request.message && <DetailRow label="Message">{request.message}</DetailRow>}
+        {request.label && (
+          <DetailRow label={t("receive.sheet.label")}>
+            <bdi>{request.label}</bdi>
+          </DetailRow>
+        )}
+        {request.message && (
+          <DetailRow label={t("receive.sheet.message")}>
+            <bdi>{request.message}</bdi>
+          </DetailRow>
+        )}
         {request.username && (
-          <DetailRow label="DashPay username" testId="request-username">
-            @{request.username}
+          <DetailRow label={t("receive.sheet.username")} testId="request-username">
+            <bdi>{`@${request.username}`}</bdi>
           </DetailRow>
         )}
       </dl>
@@ -387,6 +389,7 @@ function RequestSheet({ walletId, request: read, network, onClose }: { walletId:
 }
 
 function RequestList({ walletId, network, onShow }: { walletId: string; network: NetworkInfo; onShow: (r: ReceiveRequest) => void }) {
+  const t = useT();
   const b = useBackend();
   const client = useQueryClient();
   const requests = useReceiveRequests(walletId);
@@ -407,27 +410,27 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
   return (
     <section className="requests" aria-labelledby="requests-title" data-testid="requests">
       <h2 id="requests-title" className="history-title">
-        Requested payments
+        {t("receive.list.title")}
       </h2>
       {requests.isError ? (
-        <p className="form-problem">Could not load the requests: {errorMessage(requests.error)}</p>
+        <p className="form-problem">{t("receive.list.loadFailed", { error: errorMessage(requests.error) })}</p>
       ) : rows.length === 0 ? (
         <p className="placeholder-note" data-testid="requests-empty">
-          {requests.isPending ? "Loading requests…" : "Requests you create show up here."}
+          {requests.isPending ? t("receive.list.loading") : t("receive.list.empty")}
         </p>
       ) : (
         <div className="card-l1 table-card">
           <table className="data-table" data-testid="requests-table">
             <thead>
               <tr>
-                <th scope="col">Date</th>
-                <th scope="col">Label</th>
-                <th scope="col">Message</th>
+                <th scope="col">{t("receive.list.date")}</th>
+                <th scope="col">{t("receive.list.label")}</th>
+                <th scope="col">{t("receive.list.message")}</th>
                 <th scope="col" className="num">
-                  Requested ({shown.name})
+                  {t("receive.list.requested", { unit: shown.name })}
                 </th>
                 <th scope="col">
-                  <span className="sr-only">Actions</span>
+                  <span className="sr-only">{t("receive.list.actions")}</span>
                 </th>
               </tr>
             </thead>
@@ -435,24 +438,24 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
               {rows.map((r) => (
                 <tr key={r.id} data-testid={`request-row-${r.id}`}>
                   <td>{new Date(r.createdAt * 1000).toLocaleDateString(b.locale, { year: "numeric", month: "short", day: "numeric" })}</td>
-                  <td>{r.label || <span className="text-secondary">(no label)</span>}</td>
-                  <td>{r.message || <span className="text-secondary">(no message)</span>}</td>
+                  <td>{r.label ? <bdi>{r.label}</bdi> : <span className="text-secondary">{t("receive.list.noLabel")}</span>}</td>
+                  <td>{r.message ? <bdi>{r.message}</bdi> : <span className="text-secondary">{t("receive.list.noMessage")}</span>}</td>
                   <td className="num">
                     {r.amount === null ? (
-                      <span className="text-secondary">(no amount requested)</span>
+                      <span className="text-secondary">{t("receive.list.noAmount")}</span>
                     ) : (
                       <>
-                        {shown.full(r.amount)}
+                        <bdi dir="ltr">{shown.full(r.amount)}</bdi>
                         <FiatLine fiat={fiat} duffs={r.amount} hidden={discreet} className="request-fiat" testId={`request-fiat-${r.id}`} />
                       </>
                     )}
                   </td>
                   <td className="row-actions">
                     <DashButton variant="plainBlue" size="small" data-testid={`request-show-${r.id}`} onClick={() => onShow(r)}>
-                      Show
+                      {t("receive.list.show")}
                     </DashButton>
-                    <DashButton variant="plainRed" size="small" data-testid={`request-remove-${r.id}`} aria-label={`Remove the request ${r.label || shortAddress(r.address)}`} onClick={() => void remove(r)}>
-                      Remove
+                    <DashButton variant="plainRed" size="small" data-testid={`request-remove-${r.id}`} aria-label={t("receive.list.removeLabel", { request: r.label || shortAddress(r.address) })} onClick={() => void remove(r)}>
+                      {t("receive.list.remove")}
                     </DashButton>
                   </td>
                 </tr>
@@ -471,12 +474,13 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
 }
 
 export function ReceivePage({ walletId, network }: { walletId: string; network: NetworkInfo }) {
+  const t = useT();
   const [shown, setShown] = useState<ReceiveRequest | null>(null);
   const [pool, setPool] = useState<"dash" | "platform" | "shielded">("dash");
   const platform = usePlatformAddresses(walletId);
   const shielded = useShieldedStatus(walletId);
   const selector = (
-    <div className="segmented receive-selector" role="group" aria-label="Receive in">
+    <div className="segmented receive-selector" role="group" aria-label={t("receive.selector.label")}>
       {(["dash", "platform", "shielded"] as const).map((p) => (
         <button
           type="button"
@@ -487,7 +491,7 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
           disabled={p === "platform" ? !platform.data : p === "shielded" ? !shielded.data?.active : false}
           onClick={() => setPool(p)}
         >
-          {p === "dash" ? "Dash" : p === "platform" ? "Platform" : "Shielded"}
+          {t(`receive.selector.${p}`)}
         </button>
       ))}
     </div>
@@ -498,7 +502,7 @@ export function ReceivePage({ walletId, network }: { walletId: string; network: 
   const shieldedContent = useShieldedReceiveContent(walletId, network, pool === "shielded" && !syncing);
   const content = pool === "dash" ? dashContent : pool === "platform" ? platformContent : {
     before: <>
-      <h2 id="receive-address-title" className="card-title">Your Shielded address</h2>
+      <h2 id="receive-address-title" className="card-title">{t("receive.shielded.title")}</h2>
       {syncing ? <p className="field-hint" data-testid="shielded-receive-why">{SHIELDED_SYNCING_TEXT}</p> : shieldedContent.before}
     </>,
     after: syncing ? null : shieldedContent.after,

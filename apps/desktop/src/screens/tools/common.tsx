@@ -8,35 +8,37 @@ import { ui } from "../../app/ui";
 import { DashButton } from "../../components/basics";
 import { PassphrasePrompt } from "../../components/passphrase";
 import { Sheet } from "../../components/sheet";
+import { messageTable, useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
-import type { GrantModel } from "../../tools/grant";
+import { PAYMENT_PROMPT, type GrantModel, type GrantRequest } from "../../tools/grant";
 import { EmptyState } from "../../components/history";
 import { copyWithToast } from "../../components/toast";
 
-const PURPOSE_TEXT: Record<string, string> = {
-  spend: "Enter your passphrase to authorize this payment.",
-  signMessage: "Enter your passphrase to sign the message.",
-  platformOp: "Enter your passphrase to authorize this Dash Platform operation.",
-  platformSend: "Enter your passphrase to authorize this payment.",
-};
+const PURPOSE_TEXT: Readonly<Record<string, string>> = messageTable("tools.grant", ["spend", "signMessage", "platformOp", "platformSend"]);
 
 /** The passphrase for the grant a tab is waiting on, with U-02's lockout policy. */
 export function GrantSheet({ grants }: { grants: GrantModel }) {
   // The grant model passes on its lock model's changes.
   useModel(grants);
-  const { lock } = grants;
   const request = grants.pending;
   if (!request) return null;
+  return <GrantSheetOpen grants={grants} request={request} />;
+}
+
+function GrantSheetOpen({ grants, request }: { grants: GrantModel; request: GrantRequest }) {
+  const t = useT();
+  const { lock } = grants;
+  const prompt = grants.prompt === PAYMENT_PROMPT ? t("tools.grant.spend") : grants.prompt;
   return (
     // Not closed while the passphrase is checked: the grant it brings has to find its request.
-    <Sheet title="Authorize" width="small" testId="grant-sheet" closable={!lock.working} onClose={() => grants.cancel()}>
-      <p className="sheet-text">{grants.prompt ?? PURPOSE_TEXT[request.purpose.kind] ?? "Enter your passphrase to continue."}</p>
+    <Sheet title={t("tools.grant.title")} width="small" testId="grant-sheet" closable={!lock.working} onClose={() => grants.cancel()}>
+      <p className="sheet-text">{prompt ?? PURPOSE_TEXT[request.purpose.kind] ?? t("tools.grant.continue")}</p>
       <PassphrasePrompt
         testId="grant-sheet"
         error={lock.message}
         busy={lock.working}
         disabled={lock.blocked}
-        submitLabel="Authorize"
+        submitLabel={t("tools.grant.submit")}
         onSubmit={(p) => grants.submit(p)}
       />
     </Sheet>
@@ -57,11 +59,12 @@ export function ToolCard({ title, testId, actions, children }: { title: string; 
 
 /** A row whose engine call or data source comes with a later task: said, not stubbed. */
 export function NotYet({ title, children, testId }: { title: string; children: ReactNode; testId: string }) {
+  const t = useT();
   return (
     <section className="tool-card tool-not-yet card-l1" data-testid={testId} aria-label={title}>
       <h2 className="card-title">{title}</h2>
       <p className="placeholder-note">
-        {children} <span className="tool-owner">Coming soon.</span>
+        {children} <span className="tool-owner">{t("tools.common.comingSoon")}</span>
       </p>
     </section>
   );
@@ -69,15 +72,16 @@ export function NotYet({ title, children, testId }: { title: string; children: R
 
 /** A tab that needs a wallet, on a network without one. */
 export function NeedsWallet({ testId }: { testId: string }) {
+  const t = useT();
   return (
     <EmptyState
       testId={testId}
       art="wallet"
-      title="No wallet on this network yet"
-      message="Create or restore a wallet to use this tool."
+      title={t("tools.common.noWalletTitle")}
+      message={t("tools.common.noWalletMessage")}
       action={
         <DashButton variant="filledBlue" data-testid={`${testId}-create`} onClick={() => ui.set({ onboarding: true })}>
-          Create a wallet
+          {t("tools.common.createWallet")}
         </DashButton>
       }
     />
@@ -102,7 +106,7 @@ export function Outcome({ ok, text, testId }: { ok: boolean; text: string | null
 }
 
 /** One item of a row's menu: a copy (`copy`; an empty text is disabled) or an action. */
-export type MenuItem = { title: string; copy: string } | { title: string; run: () => void; disabled?: boolean };
+export type MenuItem = { id: string; title: string; copy: string } | { id: string; title: string; run: () => void; disabled?: boolean };
 
 /** A row's menu, as dash-qt's context menus: copies and actions behind one summary. */
 /** `name` says whose menu it is to a screen reader ("Actions for …"), as rows look alike. */
@@ -125,9 +129,9 @@ export function RowMenu({ label, name, items, testId }: { label: string; name: s
       <div className="row-menu-items">
         {items.map((item) => (
           <button
-            key={item.title}
+            key={item.id}
             type="button"
-            data-testid={`${testId}-${item.title.toLowerCase().replace(/\W+/g, "-")}`}
+            data-testid={`${testId}-${item.id}`}
             disabled={"copy" in item ? item.copy === "" : item.disabled}
             onClick={(e) => {
               e.currentTarget.closest("details")?.removeAttribute("open");

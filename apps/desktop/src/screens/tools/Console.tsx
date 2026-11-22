@@ -5,12 +5,14 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { WalletSummary } from "../../api/generated/WalletSummary";
 import { DashButton } from "../../components/basics";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { FONT_SIZES, type ConsoleModel } from "../../tools/console";
 
 /** `model` is the page's, one per window wallet: lines, history and font size outlive a tab
  * change (D1, D8). */
 export function ConsoleTab({ model, wallets }: { model: ConsoleModel; wallets: WalletSummary[] }) {
+  const t = useT();
   useModel(model);
   const [line, setLine] = useState("");
   const log = useRef<HTMLDivElement>(null);
@@ -56,9 +58,9 @@ export function ConsoleTab({ model, wallets }: { model: ConsoleModel; wallets: W
       <div className="console-bar">
         {model.showsWalletSelector && (
           <label className="inline-field">
-            Wallet
+            {t("tools.console.wallet")}
             <select data-testid="console-wallet" value={model.walletId ?? ""} onChange={(e) => model.selectWallet(e.target.value || null)}>
-              <option value="">(none)</option>
+              <option value="">{t("tools.console.noWallet")}</option>
               {model.wallets.map((w) => (
                 <option key={w.walletId} value={w.walletId}>
                   {w.name}
@@ -67,16 +69,16 @@ export function ConsoleTab({ model, wallets }: { model: ConsoleModel; wallets: W
             </select>
           </label>
         )}
-        <span className="console-font" role="group" aria-label="Font size">
-          <DashButton variant="tintedGray" size="small" data-testid="console-font-smaller" aria-label="Decrease font size" disabled={model.fontSize <= FONT_SIZES.min} onClick={() => model.setFontSize(model.fontSize - 1)}>
-            A−
+        <span className="console-font" role="group" aria-label={t("tools.console.fontSize")}>
+          <DashButton variant="tintedGray" size="small" data-testid="console-font-smaller" aria-label={t("tools.console.fontSmaller")} disabled={model.fontSize <= FONT_SIZES.min} onClick={() => model.setFontSize(model.fontSize - 1)}>
+            {t("tools.console.fontSmallerButton")}
           </DashButton>
-          <DashButton variant="tintedGray" size="small" data-testid="console-font-larger" aria-label="Increase font size" disabled={model.fontSize >= FONT_SIZES.max} onClick={() => model.setFontSize(model.fontSize + 1)}>
-            A+
+          <DashButton variant="tintedGray" size="small" data-testid="console-font-larger" aria-label={t("tools.console.fontLarger")} disabled={model.fontSize >= FONT_SIZES.max} onClick={() => model.setFontSize(model.fontSize + 1)}>
+            {t("tools.console.fontLargerButton")}
           </DashButton>
         </span>
         <DashButton variant="tintedGray" size="small" data-testid="console-clear" onClick={() => model.clear()}>
-          Clear console
+          {t("tools.console.clear")}
         </DashButton>
       </div>
       <div
@@ -84,14 +86,14 @@ export function ConsoleTab({ model, wallets }: { model: ConsoleModel; wallets: W
         className="console-log card-l1"
         role="log"
         aria-live="polite"
-        aria-label="Console output"
+        aria-label={t("tools.console.output")}
         tabIndex={0}
         data-testid="console-log"
         style={{ fontSize: `${model.fontSize}px` }}
       >
         {model.entries.map((entry) => (
           <div key={entry.id} className={`console-entry console-${entry.kind}`} data-testid={`console-entry-${entry.kind}`}>
-            {entry.kind === "command" && <span aria-hidden="true">&gt; </span>}
+            {entry.kind === "command" && <span aria-hidden="true">{"> "}</span>}
             {entry.isJson ? <pre className="console-json">{entry.text}</pre> : <span className="console-text">{entry.text}</span>}
           </div>
         ))}
@@ -104,7 +106,7 @@ export function ConsoleTab({ model, wallets }: { model: ConsoleModel; wallets: W
         }}
       >
         <label className="sr-only" htmlFor={id}>
-          Console command
+          {t("tools.console.command")}
         </label>
         <input
           id={id}
@@ -126,7 +128,7 @@ export function ConsoleTab({ model, wallets }: { model: ConsoleModel; wallets: W
           ))}
         </datalist>
         <DashButton type="submit" variant="filledBlue" size="small" data-testid="console-run" disabled={model.running || line.trim() === ""}>
-          {model.running ? "Running…" : "Run"}
+          {model.running ? t("tools.console.running") : t("tools.console.run")}
         </DashButton>
       </form>
       {model.error && (

@@ -1,6 +1,6 @@
 // "Move mixed coins" (IOS-057): to the wallet, the plan's fully and not fully mixed
 // amounts, the fee and the number of transactions; into Shielded, the lock's fees and what Shielded
-// gains, or the consolidation round more than 50 coins need first. Stop Mixing when mixing runs,
+// gains, or the consolidation round more than `SHIELD_MOVE_MAX_COINS` (coinjoin/move.ts) coins need first. Stop Mixing when mixing runs,
 // progress, and the outcome. The flow is coinjoin/move.ts; the sheet can close while the move runs
 // and reopen to its result.
 
@@ -20,6 +20,7 @@ import {
   type MoveMixedFlow,
 } from "../../coinjoin/move";
 import { useCoinJoinAmount, useMaskedAmount } from "../../coinjoin/queries";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import { GrantSheet } from "../tools/common";
 
@@ -28,13 +29,14 @@ function Row({ label, value, testId, total }: { label: string; value: string; te
     <div className={total ? "detail-row topup-total" : "detail-row"}>
       <dt className="detail-label">{label}</dt>
       <dd className="detail-value" data-testid={testId}>
-        {value}
+        <bdi dir="ltr">{value}</bdi>
       </dd>
     </div>
   );
 }
 
 export function MoveMixedSheet({ flow, network }: { flow: MoveMixedFlow; network: NetworkInfo }) {
+  useT();
   useModel(flow);
   const plain = useCoinJoinAmount(network);
   const masked = useMaskedAmount(network);
