@@ -2192,6 +2192,66 @@ mod tests {
         assert!(hub.pump.sync_marked());
     }
 
+    /// A ChainLock over a plain block whose spend beat a locked payment: the
+    /// sweep it makes comes first, then the ChainLock. The history drops the
+    /// payment and takes the sweep's balance, then ChainLocks the winner.
+    #[test]
+    fn a_chain_lock_sweep_then_the_chain_lock_drop_the_payment_and_lock_the_winner() {
+        let hub = SessionHub::new(DashNetwork::Regtest, Arc::new(NoEvents));
+        let (payment, winner) = (tx(1), tx(2));
+        let lock = dashcore::InstantLock {
+            txid: payment.txid(),
+            ..Default::default()
+        };
+        hub.apply_wallet_event(&detected(seen(
+            &payment,
+            TransactionContext::InstantSend(lock),
+        )));
+        hub.apply_wallet_event(&detected(in_block(&winner, 101)));
+        hub.pump.take_wallet_marks();
+        let block = BlockInfo::new(101, BlockHash::from_byte_array([9; 32]), 0);
+
+        hub.apply_wallet_event(&WalletEvent::TransactionsSwept {
+            wallet_id: W.0,
+            txids: vec![payment.txid()],
+            superseded_by: winner.txid(),
+            winner_block: Some(block),
+            released_outpoints: vec![OutPoint::new(Txid::from_byte_array([1; 32]), 0)],
+            balance: WalletCoreBalance::new(400, 0, 0, 0),
+            account_balances: BTreeMap::new(),
+        });
+        hub.apply_wallet_event(&WalletEvent::ChainLockProcessed {
+            wallet_id: W.0,
+            chain_lock: dashcore::ChainLock {
+                block_height: 101,
+                block_hash: block.block_hash(),
+                signature: dashcore::bls_sig_utils::BLSSignature::from([0; 96]),
+            },
+            locked_transactions: BTreeMap::from([(
+                AccountType::Standard {
+                    index: 0,
+                    standard_account_type: StandardAccountType::BIP44Account,
+                },
+                vec![winner.txid()],
+            )]),
+        });
+
+        assert!(
+            hub.history.get(&W, &payment.txid()).is_none(),
+            "the payment is swept"
+        );
+        let entry = hub.history.get(&W, &winner.txid()).unwrap();
+        assert!(entry.context.is_chain_locked(), "the winner is ChainLocked");
+        assert_eq!(hub.wallet_state(&W).unwrap().balances().confirmed, 400);
+        assert_eq!(hub.best_chainlock(), Some((101, block.block_hash())));
+        let (balances, history) = hub.pump.take_wallet_marks();
+        assert!(balances.contains(&W));
+        let Some(TxidSet::Some(changed)) = history.get(&W) else {
+            panic!("history marks: {history:?}");
+        };
+        assert!(changed.contains(&payment.txid()) && changed.contains(&winner.txid()));
+    }
+
     /// dash-spv truncated the wallet at a fork: the hub's history, heights and balance
     /// follow it, and hosts hear of each.
     #[test]

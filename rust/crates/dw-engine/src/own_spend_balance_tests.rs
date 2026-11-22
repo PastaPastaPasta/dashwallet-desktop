@@ -879,12 +879,12 @@ fn a_pending_spend_this_app_did_not_send_claims_nothing() {
     assert_holds(&engine, &session, id, &want, "the spend mined");
 }
 
-/// A restored payment of A and B that a mined spend of B by another device
-/// beats keeps A out (the engine leaves conflicts to key-wallet, which
-/// holds no record of it) until the user abandons it. The abandon gives
-/// back A, never B, which the winner spent.
+/// A restored payment of A and B, not InstantSend-locked, that a mined spend
+/// of B by another device beats is swept at once: it leaves the history with
+/// no Abandon, and A stays out until a restart (case 11). After the restart
+/// A loads, never B, which the winner spent, and a replay keeps it so.
 #[test]
-fn a_beaten_payment_keeps_its_other_coin_out_until_it_is_abandoned() {
+fn a_mined_spend_sweeps_a_restored_payment_it_beat() {
     let (_dir, engine, session, id, (a, b), paid, payment) =
         payment_claiming_two_coins_after_a_restart();
     let rival = rival(&engine, &session, id, &paid, 1);
@@ -893,11 +893,11 @@ fn a_beaten_payment_keeps_its_other_coin_out_until_it_is_abandoned() {
         .into_iter()
         .map(|c| c.0)
         .collect();
-    assert!(!held.contains(&a), "A stays out: {held:?}");
-    assert!(in_history(&session, id, payment.txid()));
-
-    abandon(&engine, &session, id, payment.txid());
-    assert_eq!(synced(&engine, &session, id), TIP - 1);
+    assert!(!held.contains(&a), "A stays out until a restart: {held:?}");
+    assert!(
+        !in_history(&session, id, payment.txid()),
+        "the mined spend sweeps it"
+    );
 
     let session = reopen(&engine, session);
     let held: BTreeSet<OutPoint> = coins(&engine, &session, id)
@@ -991,9 +991,9 @@ fn stored_unspent(session: &NetworkSession, id: WalletId, outpoint: OutPoint) ->
 }
 
 /// A payment of A and B beaten on A by another device's spend mined after
-/// a restart, after the funding block; the next restart replays both
-/// blocks, which credit B, stored unspent. Returns B, the coins then held
-/// and the winner.
+/// a restart, after the funding block, which sweeps the payment and its
+/// mark; the next restart replays both blocks, which credit B, stored
+/// unspent. Returns B, the coins then held and the winner.
 fn beaten_payment_with_its_other_coin_back() -> (
     tempfile::TempDir,
     Engine,
@@ -1028,7 +1028,10 @@ fn beaten_payment_with_its_other_coin_back() -> (
     let held = held(&engine, &session, id);
     assert!(held.contains(&b) && !held.contains(&a), "{held:?}");
     eventually("B stored unspent", || stored_unspent(&session, id, b));
-    assert!(sent_marks(&session, id).contains(&payment.txid()));
+    assert!(
+        !sent_marks(&session, id).contains(&payment.txid()),
+        "swept with its mark"
+    );
     (dir, engine, session, id, b, held, winner.txid())
 }
 
