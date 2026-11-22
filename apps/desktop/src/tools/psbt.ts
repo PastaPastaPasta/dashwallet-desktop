@@ -245,7 +245,7 @@ export class PsbtModel extends Model {
   /** dash-qt's Save suggestion: `<address>-<amount>` per paid output, `.psbt`. */
   get suggestedFileName(): string {
     const paid = (this.analysis?.outputs ?? []).filter((o) => !o.isMine);
-    const parts = paid.map((o) => `${o.address ?? PsbtText.unknownAddress}-${this.#amount(o.amount)}`);
+    const parts = paid.map((o) => `${o.address ?? "unknown address"}-${this.#amount(o.amount)}`);
     return (parts.length ? parts.join(" - ") : "transaction") + ".psbt";
   }
 
