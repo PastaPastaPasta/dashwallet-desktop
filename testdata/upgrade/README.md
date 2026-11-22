@@ -36,8 +36,8 @@ table below for a tag already captured; for a new tag, take it from a copy you v
 `docs/release/verifying.md` says, before the run, and add it to the table with the fixture.
 `e2e-tauri/upgrade-fixture.ts` drives that binary through tauri-driver under a private X display and session bus
 (nothing appears on a screen) against a fresh dashd regtest node. Each of its two launches picks free loopback
-ports for tauri-driver and WebKitWebDriver, refuses to start if either already answers, and asks for a session
-only once every listener on both ports belongs to the driver it spawned. That check and the session request are
+ports for tauri-driver and WebKitWebDriver, refuses to start if either already answers, and sends its first request
+(`GET /status`) only once every listener on both ports belongs to the driver it spawned. That check and the session request are
 separate steps, so it catches a foreign listener that is already there, not one that takes a port in between.
 The drivers also listen on the host's loopback without authentication while the run lasts (#101 items 8 and
 9): run it only where no other account can reach them.
@@ -54,7 +54,9 @@ The drivers also listen on the host's loopback without authentication while the 
    900 s, subtract fee by default, masternodes shown;
 4. the app quits, opens again offline (`--no-sync`), is unlocked, and its answers are recorded and checked against
    dashd (each balance equals the deposits less the payment and dashd's fee for it; from v0.2.0 every funded address
-   of the two wallets with keys signs a message dashd verifies); it quits again and the data root is copied here.
+   of the two wallets with keys signs a message dashd verifies; a wallet's funded addresses sign only after each of
+   that wallet's recorded coins matches dashd's unspent output in amount and address, a check the v0.2.0 fixture
+   predates); it quits again and the data root is copied here.
 
 A new release is covered by running the script for its tag, committing the directory, and adding the tag with
 the SHA-256 of its `expected.json` (as `sha256sum` prints it) to `SNAPSHOT_SHA256` in the test. A committed
