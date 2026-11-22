@@ -116,6 +116,11 @@ export class AddressBookModel extends Model {
     return this.purpose === "send" ? AddressBookText.sendingHeader : AddressBookText.receivingHeader;
   }
 
+  /** Export's suggested file name: only the stem is translated, so the extension stays `.csv`. */
+  get exportFileName(): string {
+    return `${this.purpose === "send" ? t("tools.addressBook.exportFilenameSending") : t("tools.addressBook.exportFilenameReceiving")}.csv`;
+  }
+
   /** dash-qt: New and Delete for sending addresses only. */
   get canCreate(): boolean {
     return this.purpose === "send";

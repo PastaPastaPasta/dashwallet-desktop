@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AddressBookEntry } from "../api/generated/AddressBookEntry";
 import type { AddressClass } from "../api/generated/AddressClass";
 import type { AddressPurposeName } from "../api/generated/AddressPurposeName";
+import { DEFAULT_PREFS, ui } from "../app/ui";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { AddressBookModel, AddressBookText, wildcard } from "./addressBook";
 
@@ -168,5 +169,22 @@ describe("Address Book (QT-095…098)", () => {
     );
     expect(await m.save(FRESH, "x", false)).toBe(false);
     expect(m.error).toBe(AddressBookText.existsAsReceiving(FRESH, "Savings"));
+  });
+
+  it("suggests the export's file name with a .csv extension in every language", async () => {
+    const sending = (await model("send")).m;
+    const receiving = (await model("receive")).m;
+    expect([sending.exportFileName, receiving.exportFileName]).toEqual(["Sending addresses.csv", "Receiving addresses.csv"]);
+    for (const language of ["en-XA", "ar-XB"]) {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language } });
+      try {
+        for (const name of [sending.exportFileName, receiving.exportFileName]) {
+          expect(name).toMatch(/[^.]\.csv$/);
+          expect(name).not.toMatch(/^(Sending|Receiving) addresses/);
+        }
+      } finally {
+        ui.set({ prefs: DEFAULT_PREFS });
+      }
+    }
   });
 });

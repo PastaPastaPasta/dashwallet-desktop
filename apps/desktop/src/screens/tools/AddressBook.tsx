@@ -221,7 +221,7 @@ export function AddressBookTab({ walletId, network }: { walletId: string; networ
   const exportCsv = async () => {
     setSaved(null);
     try {
-      const path = await saveText(b, "csv", model.purpose === "send" ? t("tools.addressBook.exportFilenameSending") : t("tools.addressBook.exportFilenameReceiving"), model.exportCsv());
+      const path = await saveText(b, "csv", model.exportFileName, model.exportCsv());
       if (path !== null) setSaved({ ok: true, text: t("tools.addressBook.exported", { path }) });
     } catch (e) {
       setSaved({ ok: false, text: t("tools.addressBook.exportFailed", { error: fileErrorText(e) }) });
