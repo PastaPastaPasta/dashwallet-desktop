@@ -200,9 +200,9 @@ macOS job on `main`. A new release is covered by committing its directory:
 **macOS and Windows, by hand in the QA pass** (not run yet): [`docs/qa/H-08-macos-windows.md`](qa/H-08-macos-windows.md).
 The automated check does not cover each OS's installer upgrading in place, its default data root, its secret store,
 uninstalling or the unsigned first launch, so that script does: on a Mac with Apple silicon, an Intel Mac, Windows 11
-and Windows 10, it installs the release candidate fresh, upgrades in place from 0.1.0, 0.2.0 and 0.3.0 with one
-wallet behind a passphrase and one in the OS secret store, downgrades, and uninstalls with the data kept and
-removed. From a clean data root the network is chosen on Welcome, and 0.1.0 applies it only after a restart (#101
+and Windows 10, it installs the release candidate fresh, then upgrades in place from 0.1.0, 0.2.0 and 0.3.0 twice
+each, once with the vault behind a passphrase and once with its key in the OS secret store (one vault per network,
+so these are two runs from an empty data root), downgrades, restores, and uninstalls with the data kept and removed. From a clean data root the network is chosen on Welcome, and 0.1.0 applies it only after a restart (#101
 item 12). No release has quick unlock, so there is no Touch ID or Windows Hello step.
 
 ## What the funds fixes leave for the release candidate
