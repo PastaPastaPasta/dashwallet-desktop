@@ -13,10 +13,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: main-result-${{ github.event.workflow_run.name }}
-  cancel-in-progress: false
-
 jobs:
   report:
     name: Report ${{ github.event.workflow_run.name }} on main
@@ -25,6 +21,11 @@ jobs:
       && github.event.workflow_run.head_repository.full_name == github.repository
       && (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule')
       && (github.event.workflow_run.conclusion == 'success' || github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'timed_out') }}
+    # On the job, not the workflow: a pull request's completion is skipped by `if` before it can
+    # take the group and replace a pending main report.
+    concurrency:
+      group: main-result-${{ github.event.workflow_run.name }}
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -48,14 +49,14 @@ jobs:
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
-          # Main runs finish in order, but a rerun of an older one can finish after a newer one:
-          # only the newest finished run may open, update or close the issue.
-          finished=$(gh api "repos/$GH_REPO/actions/workflows/$WORKFLOW/runs?branch=main&status=completed&per_page=50" \
+          # Only the newest finished main run, at its latest attempt, may open, update or close the
+          # issue: a rerun of an older run, or a replayed report of an older attempt, reports nothing.
+          finished=$(gh api "repos/$GH_REPO/actions/workflows/$WORKFLOW/runs?branch=main&status=completed&per_page=100" \
             --jq '[.workflow_runs[] | select((.event == "push" or .event == "schedule")
               and (.conclusion == "success" or .conclusion == "failure" or .conclusion == "timed_out"))]')
-          newest=$(jq -r '.[0].id // empty' <<<"$finished")
-          if [[ -n $newest && $newest != "$RUN" && $newest -gt $RUN ]]; then
-            echo "run $newest is newer: nothing reported for run $RUN"
+          newest=$(jq -r '.[0] | "\(.id) \(.run_attempt)"' <<<"$finished")
+          if [[ $newest != "$RUN $ATTEMPT" ]]; then
+            echo "the newest finished run is $newest, not $RUN $ATTEMPT: nothing reported"
             exit 0
           fi
           what="$NAME on main at ${SHA:0:8}"
@@ -70,10 +71,13 @@ jobs:
           if [[ -z $green ]]; then
             batch="(no green $NAME run on main among the last 50 finished runs)"
           else
+            # Merge commits when there are any; squash and rebase merges leave only plain commits.
+            # shellcheck disable=SC2016 # $m is jq's
             batch=$(gh api "repos/$GH_REPO/compare/$green...$SHA" \
-              --jq '.commits[] | select(.parents | length > 1) | "- \(.sha[0:8]) \(.commit.message | split("\n")[0])"') ||
+              --jq '[.commits[] | select(.parents | length > 1)] as $m | (if ($m | length) > 0 then $m else .commits end)
+                | .[-50:][] | "- \(.sha[0:8]) \(.commit.message | split("\n")[0])"') ||
               batch="(the commits since ${green:0:8} could not be listed)"
-            batch="Merged since the last green run (${green:0:8}):"$'\n'"${batch:-(no merge commits)}"
+            batch="Merged since the last green run (${green:0:8}):"$'\n'"$batch"
           fi
           ci/github/nightly-issue.sh failed "$NAME on main" \
             "$what failed: $RUN_URL"$'\n\n'"$failed"$'\n\n'"$batch"$'\n\n'"Fix main before anything else merges: a forward fix on top is fine; a revert is not required."

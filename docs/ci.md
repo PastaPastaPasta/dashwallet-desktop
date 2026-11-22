@@ -3,7 +3,8 @@
 DEC-13 and roadmap task T-03. `main` is pushed to
 [`PastaPastaPasta/dashwallet-desktop`](https://github.com/PastaPastaPasta/dashwallet-desktop), which is
 public, so the hosted Linux, macOS and Windows runners cost nothing. No workflow needs a secret, and every
-job's `GITHUB_TOKEN` is read-only (`contents: read`).
+job's `GITHUB_TOKEN` is read-only (`contents: read`) except release publishing and the jobs that open the
+failure issues (`issues: write`: the nightly's `report` and `main-result.yml`).
 
 | Workflow | Triggers | What it runs |
 |---|---|---|
@@ -59,11 +60,13 @@ cancelling a run while `changes` is pending skips the four jobs, so `changes` ("
 changes") is itself a required check: cancelled or failed, it blocks the merge.
 
 **A red main is a stop.** The full matrix (Playwright, tauri-driver E2E, deep links, Linux Swift, macOS,
-Windows and the release bundles) runs on every push to `main`. `main-result.yml` runs when a `ci.yml` or
+Windows and the release bundles) runs on pushes to `main`; a burst of merges is covered by one run (see the
+concurrency note above). `main-result.yml` runs when a `ci.yml` or
 `release.yml` run on `main` finishes: while the newest finished run of a workflow is red, one open issue
 labelled `nightly-failure` ("Nightly failure: CI on main" or "Nightly failure: Release on main") names its
 failed jobs and the pull requests merged since that workflow's last green run (the batch that broke it); the
-next green run closes it. Main is fixed before anything else merges. A forward fix on top is fine; a revert is
+next green run closes it. Main is fixed before anything else merges; the issue says so, and the required
+pull request checks do not enforce it. A forward fix on top is fine; a revert is
 not required. A cancelled run (a pending main run replaced by a newer one) reports
 nothing.
 
