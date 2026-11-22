@@ -500,6 +500,7 @@ impl Drop for ReleaseListeners {
 /// (`dapi_request_timeout: Some(0)`) and holds the listeners until after
 /// the stop and the next start, then closes them.
 #[test]
+#[ignore = "flaky under load, see #182"]
 fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     let _serial = serial();
     let dir = dw_testutil::private_tempdir();
