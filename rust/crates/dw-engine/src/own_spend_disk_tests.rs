@@ -736,6 +736,60 @@ fn a_wallet_opened_later_keeps_a_locked_payments_claims_until_a_chainlock() {
     assert!(loaded.contains(&a), "and stays after its history loads");
 }
 
+/// A payment of A and B with no change, stored before its InstantSend
+/// lock, and another device's spend of B mined in a plain block. After a
+/// restart the lock arrives after the history load copied the wallet's
+/// locks and before the claims are installed. The wallet holds no record
+/// or coin of the payment, so no lock event reaches its history: the
+/// claims read the lock under the guard that installs them, and A stays
+/// claimed.
+#[test]
+fn a_lock_arriving_before_the_claims_are_installed_keeps_a_locked_payments_claims() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let payment = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        2 * COIN,
+        true,
+    );
+    assert_eq!(payment.output.len(), 1, "no change");
+    mempool(&engine, &session, id, &payment);
+    wait_stored(&session, id, &[payment.txid()]);
+    let session = reopen(&engine, session);
+    let winner = rival(&engine, &session, id, &paid, 1);
+    mined(&engine, &session, id, TIP + 1, vec![winner.clone()]);
+    wait_stored(&session, id, &[winner.txid()]);
+    let session = reopen(&engine, session);
+
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    let copied = Arc::new(crate::coins::TestPause::default());
+    let _copied = crate::held_writes::ReleaseOnDrop(Arc::clone(&copied));
+    *session.hub.pause_history.lock().unwrap() = Some(Arc::clone(&copied));
+    let load = {
+        let s = Arc::clone(&session);
+        session.rt.spawn(async move { s.load_wallet(id).await })
+    };
+    eventually("the history load's pause", || {
+        copied.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    let installing = Arc::new(crate::coins::TestPause::default());
+    let _installing = crate::held_writes::ReleaseOnDrop(Arc::clone(&installing));
+    *session.hub.pause_spend_claims.lock().unwrap() = Some(Arc::clone(&installing));
+    copied.release.notify_one();
+    eventually("the claims' pause", || {
+        installing.reached.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    instant_lock(&engine, &session, id, &payment);
+    installing.release.notify_one();
+    engine.block_on(load).unwrap().unwrap();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    assert!(!held(&engine, &session, id).contains(&a), "A stays claimed");
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
+}
+
 /// Another device's spend of B that pays only someone else, in a block a
 /// wallet opened later sees before its claims are set: the history never
 /// holds it, only key-wallet's note of the spent coin. A plain block does
@@ -766,6 +820,7 @@ fn a_block_seen_before_the_claims_beats_a_locked_payment_only_once_chainlocked()
     let credited = |chainlock: Option<u32>| {
         engine.block_on(session.unload_wallet(id)).unwrap();
         let pause = Arc::new(crate::coins::TestPause::default());
+        let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
         *session.hub.pause_claims.lock().unwrap() = Some(Arc::clone(&pause));
         let load = {
             let s = Arc::clone(&session);
@@ -842,6 +897,7 @@ fn a_chainlock_applied_before_the_claims_are_installed_beats_a_locked_payment() 
     let a = OutPoint::new(paid.txid(), 0);
     engine.block_on(session.unload_wallet(id)).unwrap();
     let pause = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
     *session.hub.pause_spend_claims.lock().unwrap() = Some(Arc::clone(&pause));
     let load = {
         let s = Arc::clone(&session);
@@ -996,6 +1052,7 @@ fn opened_later(
 ) -> (BTreeSet<OutPoint>, BTreeSet<OutPoint>) {
     engine.block_on(session.unload_wallet(id)).unwrap();
     let pause = Arc::new(crate::coins::TestPause::default());
+    let _release = crate::held_writes::ReleaseOnDrop(Arc::clone(&pause));
     *session.hub.pause_load.lock().unwrap() = Some(Arc::clone(&pause));
     let load = {
         let s = Arc::clone(session);
