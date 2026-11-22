@@ -1,6 +1,6 @@
 // "Move mixed coins" (IOS-057): to the wallet, the plan's fully and not fully mixed
 // amounts, the fee and the number of transactions; into Shielded, the lock's fees and what Shielded
-// gains, or the consolidation round more than 50 coins need first. Stop Mixing when mixing runs,
+// gains, or the consolidation round more than `SHIELD_MOVE_MAX_COINS` (coinjoin/move.ts) coins need first. Stop Mixing when mixing runs,
 // progress, and the outcome. The flow is coinjoin/move.ts; the sheet can close while the move runs
 // and reopen to its result.
 

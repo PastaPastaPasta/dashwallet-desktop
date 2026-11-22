@@ -37,7 +37,7 @@ export const coinjoin = {
     intermediate: {
       title: "Intermediate",
       description: "Advanced users who have a very high level of technical expertise can determine your transaction history",
-      time: "up to 30 minutes",
+      time: "up to {minutes} minutes",
     },
     advanced: {
       title: "Advanced",
@@ -209,7 +209,7 @@ export const coinjoin = {
       gain: "Added to Shielded, at least",
     },
     combine: {
-      text: "Your CoinJoin balance holds {coins} coins, more than one move to Shielded takes (50). Combine them first: they stay in your CoinJoin balance, and once they confirm you move them to Shielded.",
+      text: "Your CoinJoin balance holds {coins} coins, more than one move to Shielded takes ({limit}). Combine them first: they stay in your CoinJoin balance, and once they confirm you move them to Shielded.",
       after: "Coins after",
       go: "Combine",
       done: {

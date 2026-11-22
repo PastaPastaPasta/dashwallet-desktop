@@ -1,5 +1,5 @@
-import { expect, test, type Page } from "@playwright/test";
-import { authorize, fixtureUrl, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { expect, test, type Locator, type Page } from "@playwright/test";
+import { authorize, fixtureUrl, openToolsTab, THEMES, trackPageErrors, type Theme } from "./helpers";
 import { checkArea, PSEUDO } from "./pseudo";
 
 // Localization (MP-14): CoinJoin under the two pseudo-locales (./pseudo.ts): the CoinJoin page
@@ -191,3 +191,79 @@ const SETTINGS_ENGLISH = [
     expect(errors).toEqual([]);
   });
 }
+
+/** The left edges of `re`'s two groups in the first text node under `root` that matches it. */
+async function lefts(page: Page, root: string | Locator, re: RegExp): Promise<[number, number] | null> {
+  return (typeof root === "string" ? page.getByTestId(root) : root).evaluate(
+    (el, [source, flags]) => {
+      const re = new RegExp(source, flags);
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const m = re.exec(n.textContent ?? "");
+        if (!m?.indices) continue;
+        const left = (g: number) => {
+          const r = document.createRange();
+          r.setStart(n!, m.indices![g]![0]);
+          r.setEnd(n!, m.indices![g]![0] + 1);
+          return r.getBoundingClientRect().left;
+        };
+        return [left(1), left(2)] as [number, number];
+      }
+      return null;
+    },
+    [re.source, `${re.flags}d`] as const,
+  );
+}
+
+test.describe("numbers keep their order under ar-XB", () => {
+  async function openDetails(page: Page) {
+    await openCoinJoin(page, "coinjoin-mixing", "light", "ar-XB");
+    await page.getByTestId("coinjoin-details").locator("summary").click();
+  }
+
+  test("the session details' amount comes before its unit", async ({ page }) => {
+    await openDetails(page);
+    const at = await lefts(page, "coinjoin-detail-amount", /(\p{Nd})[\p{Nd}.,]* (t?DASH)/u);
+    expect(at, "an amount and its unit").not.toBeNull();
+    expect(at![0]).toBeLessThan(at![1]);
+  });
+
+  test("the submitted denominations come before their unit", async ({ page }) => {
+    await openDetails(page);
+    const at = await lefts(page, "coinjoin-detail-denoms", /(\p{Nd})[\p{Nd}.,]* (t?DASH)/u);
+    expect(at, "a denomination and its unit").not.toBeNull();
+    expect(at![0]).toBeLessThan(at![1]);
+  });
+
+  test("the intermediate level's 30 minutes", async ({ page }) => {
+    await openCoinJoin(page, "coinjoin-mixing", "light", "ar-XB");
+    const at = await lefts(page, "coinjoin-level-intermediate", /(\p{Nd})(\p{Nd})\p{Cf}* minutes/u);
+    expect(at, "30 in the intermediate level").not.toBeNull();
+    expect(at![0]).toBeLessThan(at![1]);
+  });
+
+  test("the combine prompt's limit of 50", async ({ page }) => {
+    await openCoinJoin(page, "coinjoin-move-many", "light", "ar-XB");
+    await page.getByTestId("coinjoin-move-shield").click();
+    await expect(page.getByTestId("move-mixed-body")).toHaveAttribute("data-step", "combine");
+    const at = await lefts(page, "move-mixed-combine-text", /(\p{Nd})(\p{Nd})\p{Cf}*\)/u);
+    expect(at, "the (50) limit").not.toBeNull();
+    expect(at![0]).toBeLessThan(at![1]);
+  });
+
+  for (const mode of ["list", "tree"] as const)
+    test(`the coin table's amounts, ${mode}`, async ({ page }) => {
+      await page.goto(fixtureUrl("tools-coinjoin", "light", "&lang=ar-XB"));
+      await page.getByTestId("toolbar").waitFor();
+      await page.evaluate(() => window.__dwFixture!.shellCommand({ kind: "navigate", route: "settings" }));
+      await page.getByTestId("settings-unit-milliDash").click();
+      await expect(page.getByTestId("settings-unit-milliDash")).toHaveAttribute("aria-pressed", "true");
+      await openToolsTab(page, "coinSelection");
+      await page.getByTestId(`coins-mode-${mode}`).click();
+      const cell = page.getByTestId("coin-table").locator(mode === "tree" ? "tr.coin-group td.num" : "tbody tr:not(.coin-group) td.num");
+      const grouped = cell.filter({ hasText: /\p{Nd}\s\p{Nd}/u }).first();
+      const at = await lefts(page, grouped, /(\p{Nd})\p{Nd}*\s(\p{Nd})/u);
+      expect(at, "an amount with a digit group").not.toBeNull();
+      expect(at![0]).toBeLessThan(at![1]);
+    });
+});
