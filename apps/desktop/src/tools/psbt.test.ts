@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LockStatus } from "../api/generated/LockStatus";
 import type { PsbtAnalysis } from "../api/generated/PsbtAnalysis";
 import { bytesToBase64, textToBase64 } from "../app/files";
+import { DEFAULT_PREFS, ui } from "../app/ui";
 import { appError, WALLET_A } from "../onboarding/testWorld";
 import { GrantModel } from "./grant";
 import { BroadcastLog, PsbtModel, psbtErrorText, psbtOfFile, PsbtText } from "./psbt";
@@ -136,6 +137,24 @@ describe("PSBT (QT-076…079)", () => {
     await m.loadText(UNSIGNED);
     expect(m.lines).toEqual([" * Sends 0.00000005 tDASH to unknown address", PsbtText.feeUnknown, "Transaction has 2 unsigned inputs."]);
     expect(m.status).toBe(PsbtText.missingInputInfo);
+  });
+
+  it("suggests the same save name in every language, translating only the on-screen lines", async () => {
+    const { m, byPsbt } = psbt();
+    byPsbt[UNSIGNED] = analysis({ outputs: [{ address: null, amount: 5, isMine: false }, ...analysis().outputs] });
+    await m.loadText(UNSIGNED);
+    const english = m.suggestedFileName;
+    const line = m.lines[0];
+    expect(english).toBe("unknown address-0.00000005 tDASH - yPayee000000000000000000000000001-1.50000000 tDASH.psbt");
+    for (const language of ["en-XA", "ar-XB"]) {
+      ui.set({ prefs: { ...DEFAULT_PREFS, language } });
+      try {
+        expect(m.suggestedFileName, language).toBe(english);
+        expect(m.lines[0], language).not.toBe(line);
+      } finally {
+        ui.set({ prefs: DEFAULT_PREFS });
+      }
+    }
   });
 
   it("QT079_signNeedsASpendGrantCoveringTheOutflow", async () => {

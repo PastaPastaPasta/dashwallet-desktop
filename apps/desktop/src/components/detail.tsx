@@ -13,11 +13,11 @@ export function DetailRow({ label, children, testId }: { label: string; children
 }
 
 /** `value` with a copy button; `display` is shown in its place when given (a shortened id). */
-export function CopyValue({ value, label, mono = false, display }: { value: string; label: string; mono?: boolean; display?: string }) {
+export function CopyValue({ value, label, action, mono = false, display }: { value: string; mono?: boolean; display?: string } & ({ label: string; action?: undefined } | { label?: undefined; action: string })) {
   return (
     <span className="copy-value">
       <span className={mono ? "mono" : undefined}>{display ?? value}</span>
-      <CopyIconButton text={value} label={`Copy ${label}`} />
+      <CopyIconButton text={value} label={action ?? `Copy ${label}`} />
     </span>
   );
 }

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ConsoleOutput } from "../api/generated/ConsoleOutput";
 import type { GrantPurposeSpec } from "../api/generated/GrantPurposeSpec";
 import type { LockStatus } from "../api/generated/LockStatus";
+import { DEFAULT_PREFS, ui } from "../app/ui";
 import { appError, status, summary, WALLET_A, WALLET_B } from "../onboarding/testWorld";
 import { ConsoleModel, ConsoleText, FONT_SIZES, HISTORY_LIMIT } from "./console";
 import { GrantModel, needsPassphrase } from "./grant";
@@ -154,13 +155,30 @@ describe("Console (QT-145)", () => {
     model.selectWallet(null);
     expect(model.entries.at(-1)?.text).toBe("Executing command without any wallet");
     await model.run("getbalance");
-    expect(model.entries.at(-1)?.text).toBe(ConsoleText.walletRequired);
+    expect(model.entries.at(-1)?.text).toBe("Wallet file not specified (must request wallet RPC through /wallet/<filename> uri-path).");
     for (let i = 0; i < 50; i++) model.setFontSize(model.fontSize + 1);
     expect(model.fontSize).toBe(FONT_SIZES.max);
     model.setFontSize(0);
     expect(model.fontSize).toBe(FONT_SIZES.min);
     expect(model.completions("get")).toEqual(["getbalance", "getblockcount", "getnetworkinfo"]);
     expect(model.completions("help")).toEqual(["help", "help-console"]);
+  });
+
+  it("keeps the path example and the command names literal in every language", () => {
+    expect(ConsoleText.welcome(false)).toBe(
+      "Welcome to the Dash Wallet RPC console.\nUse up and down arrows to navigate history, and Ctrl+L to clear screen.\nUse Ctrl++ and Ctrl+- to increase or decrease the font size.\nType help for an overview of available commands.\nFor more information on using this console, type help-console.",
+    );
+    ui.set({ prefs: { ...DEFAULT_PREFS, language: "en-XA" } });
+    try {
+      const welcome = ConsoleText.welcome(false);
+      expect(welcome).not.toContain("Type help for");
+      expect(welcome).toMatch(/(^|[^\w-])help([^\w-]|$)/m);
+      expect(welcome).toMatch(/(^|[^\w-])help-console([^\w-]|$)/m);
+      expect(ConsoleText.walletRequired).toContain("/wallet/<filename>");
+      expect(ConsoleText.walletRequired).not.toContain("Wallet file not specified");
+    } finally {
+      ui.set({ prefs: DEFAULT_PREFS });
+    }
   });
 
   it("one wallet: no selector, and that wallet runs the line", async () => {

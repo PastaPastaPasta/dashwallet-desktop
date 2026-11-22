@@ -180,6 +180,7 @@ const unlocked = (walletIds: string[]): LockStatus => ({
 });
 
 function wallet(variant: HistoryVariant, plainWords: boolean): FixtureWallet {
+  const rows = buildRows(variant, plainWords);
   return {
     summary: {
       walletId: FIXTURE_WALLET_ID,
@@ -191,8 +192,8 @@ function wallet(variant: HistoryVariant, plainWords: boolean): FixtureWallet {
       createdAt: null,
       balances: variant === "empty" ? ZERO_BALANCES : FUNDED_BALANCES,
     },
-    rows: buildRows(variant, plainWords),
-    coins: buildCoins(variant),
+    rows,
+    coins: buildCoins(variant, rows.find((r) => r.amount > 0 && r.status.kind === "unconfirmed" && !r.status.instantLocked)?.txid),
     receive: newReceiveWorld(),
   };
 }

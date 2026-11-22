@@ -13,6 +13,7 @@ import { unreadText } from "../../dashpay/registration";
 import { DashButton } from "../../components/basics";
 import { Sheet } from "../../components/sheet";
 import { useDisplay } from "../../format/display";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import type { GrantModel } from "../../tools/grant";
 import { isShield, isTopUp, RepairModel, RepairText, shieldBlockedText, type Confirmation } from "../../tools/repair";
@@ -21,13 +22,8 @@ import { NotYet, Outcome, ToolCard, useReloadOnSync } from "./common";
 /** The rescan's progress is read this often while one runs (D10). */
 const POLL_MS = 1000;
 
-const QUESTION: Record<Confirmation, { title: string; text: string; action: string }> = {
-  resetChainData: { title: RepairText.resetChainData, text: RepairText.resetChainDataQuestion, action: "Reset and resync" },
-  dropUnconfirmed: { title: RepairText.dropUnconfirmed, text: RepairText.dropUnconfirmedQuestion, action: "Remove" },
-  resolveStuck: { title: RepairText.resolveStuck, text: RepairText.resolveStuckQuestion, action: "Send to yourself" },
-};
-
 export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wallet: WalletSummary; network: NetworkInfo }) {
+  const t = useT();
   const b = useBackend();
   const shown = useDisplay(network);
   const amount = (duffs: number) => `${shown.compact(duffs)} ${shown.name}`;
@@ -45,6 +41,11 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
     return () => clearInterval(timer);
   }, [model, model.rescanning]);
 
+  const questions: Record<Confirmation, { title: string; text: string; action: string }> = {
+    resetChainData: { title: RepairText.resetChainData, text: RepairText.resetChainDataQuestion, action: t("tools.repair.resetAction") },
+    dropUnconfirmed: { title: RepairText.dropUnconfirmed, text: RepairText.dropUnconfirmedQuestion, action: t("tools.repair.dropAction") },
+    resolveStuck: { title: RepairText.resolveStuck, text: RepairText.resolveStuckQuestion, action: t("tools.repair.resolveAction") },
+  };
   const { state } = model;
   const outcome = state.kind === "done" ? { ok: true, text: state.text } : state.kind === "failed" ? { ok: false, text: state.text } : null;
   const target = state.kind === "confirming" ? state.target : undefined;
@@ -55,32 +56,32 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
         ? {
             title: RepairText.resolveStuck,
             text: RepairText.resolveStuckShieldQuestion(target.repair.mixed, target.repair.inputs, amount(target.repair.totalDuffs), amount(target.repair.feeDuffs)),
-            action: `Send back and pay ${amount(target.repair.feeDuffs)}`,
+            action: t("tools.repair.sendBackAndPay", { fee: amount(target.repair.feeDuffs) }),
           }
         : target && isTopUp(target)
-          ? { ...QUESTION.resolveStuck, text: RepairText.resolveStuckTopUpQuestion }
-          : QUESTION[state.what];
+          ? { ...questions.resolveStuck, text: RepairText.resolveStuckTopUpQuestion }
+          : questions[state.what];
   const fraction = model.progressFraction;
   return (
     <div className="tool-stack" data-testid="tools-repair">
       {outcome && <Outcome ok={outcome.ok} text={outcome.text} testId="repair-outcome" />}
-      <ToolCard title="Rescan" testId="repair-rescan">
-        <p className="placeholder-note">Reads the block filters again to find this wallet's transactions.</p>
+      <ToolCard title={t("tools.repair.rescanTitle")} testId="repair-rescan">
+        <p className="placeholder-note">{t("tools.repair.rescanHint")}</p>
         {model.rescanning ? (
           <div className="tool-progress" data-testid="repair-progress">
-            <progress max={1} value={fraction ?? undefined} aria-label="Rescan progress" />
-            <span role="status">{model.progressText ?? "Rescanning…"}</span>
+            <progress max={1} value={fraction ?? undefined} aria-label={t("tools.repair.rescanProgress")} />
+            <span role="status">{model.progressText ?? t("tools.repair.rescanning")}</span>
             <DashButton variant="tintedGray" size="small" data-testid="repair-cancel-rescan" onClick={() => void model.cancelRescan()}>
-              Cancel
+              {t("common.cancel")}
             </DashButton>
           </div>
         ) : (
           <div className="tool-actions">
             <DashButton variant="tintedBlue" size="small" data-testid="repair-rescan-birth" disabled={model.busy} onClick={() => void model.rescan({ kind: "walletBirth" })}>
-              From the wallet's birth
+              {t("tools.repair.fromBirth")}
             </DashButton>
             <DashButton variant="tintedBlue" size="small" data-testid="repair-rescan-genesis" disabled={model.busy} onClick={() => void model.rescan({ kind: "genesis" })}>
-              From the first block
+              {t("tools.repair.fromGenesis")}
             </DashButton>
             <form
               className="tool-inline-form"
@@ -89,19 +90,18 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
                 void model.rescanFrom(from);
               }}
             >
-              <label htmlFor={`${id}-from`}>From height</label>
+              <label htmlFor={`${id}-from`}>{t("tools.repair.fromHeight")}</label>
               <input id={`${id}-from`} data-testid="repair-rescan-height" inputMode="numeric" value={from} onChange={(e) => setFrom(e.target.value)} />
               <DashButton type="submit" variant="tintedBlue" size="small" data-testid="repair-rescan-from" disabled={model.busy || from.trim() === ""}>
-                Rescan
+                {t("tools.repair.rescanButton")}
               </DashButton>
             </form>
           </div>
         )}
       </ToolCard>
-      <ToolCard title="Wallet birth height" testId="repair-birth">
+      <ToolCard title={t("tools.repair.birthTitle")} testId="repair-birth">
         <p className="placeholder-note">
-          The first block this wallet can have transactions in{wallet.birthHeight !== null ? <>: now {wallet.birthHeight}</> : null}. A lower height rescans
-          from it.
+          {wallet.birthHeight !== null ? t("tools.repair.birthHintCurrent", { height: String(wallet.birthHeight) }) : t("tools.repair.birthHint")}
         </p>
         <form
           className="tool-inline-form"
@@ -111,35 +111,32 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
             void model.setBirthHeight(birth).then(() => client.invalidateQueries({ queryKey: keys.wallets }));
           }}
         >
-          <label htmlFor={`${id}-birth`}>Birth height</label>
+          <label htmlFor={`${id}-birth`}>{t("tools.repair.birthHeight")}</label>
           <input id={`${id}-birth`} data-testid="repair-birth-height" inputMode="numeric" value={birth} onChange={(e) => setBirth(e.target.value)} />
           <DashButton type="submit" variant="tintedBlue" size="small" data-testid="repair-birth-save" disabled={model.busy || birth.trim() === ""}>
-            Save
+            {t("common.save")}
           </DashButton>
         </form>
       </ToolCard>
-      <ToolCard title="Repair the wallet" testId="repair-actions">
+      <ToolCard title={t("tools.repair.walletTitle")} testId="repair-actions">
         <div className="tool-actions">
           <DashButton variant="tintedBlue" size="small" data-testid="repair-drop-unconfirmed" disabled={model.busy} onClick={() => model.ask("dropUnconfirmed")}>
-            {RepairText.dropUnconfirmed}…
+            {t("tools.repair.dropUnconfirmedButton")}
           </DashButton>
           <DashButton variant="plainRed" size="small" data-testid="repair-reset-chain" disabled={model.busy} onClick={() => model.ask("resetChainData")}>
-            {RepairText.resetChainData}…
+            {t("tools.repair.resetChainDataButton")}
           </DashButton>
         </div>
       </ToolCard>
       {model.stuck.length > 0 && (
-        <ToolCard title="Stuck username funding" testId="repair-stuck">
-          <p className="placeholder-note">
-            Whether these registrations' funding reached the network is unknown. Sending every coin of the wallet to itself settles it either way; the
-            registration goes on once that is confirmed.
-          </p>
+        <ToolCard title={t("tools.repair.stuckTitle")} testId="repair-stuck">
+          <p className="placeholder-note">{t("tools.repair.stuckHint")}</p>
           <ul className="tool-list">
             {model.stuck.map((r) => (
               <li key={r.draft} data-testid={`repair-stuck-${r.draft}`}>
-                <span>{r.label || RepairText.unnamedRegistration}</span>
+                <span>{r.label ? <bdi>{r.label}</bdi> : RepairText.unnamedRegistration}</span>
                 <DashButton variant="tintedBlue" size="small" data-testid={`repair-resolve-${r.draft}`} disabled={model.busy} onClick={() => model.ask("resolveStuck", r)}>
-                  Resolve stuck funding: send all coins to yourself
+                  {t("tools.repair.resolveButton")}
                 </DashButton>
               </li>
             ))}
@@ -147,11 +144,8 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
         </ToolCard>
       )}
       {model.stuckTopUps.length > 0 && (
-        <ToolCard title="Stuck credit top-ups" testId="repair-stuck-top-ups">
-          <p className="placeholder-note">
-            Whether these top-ups' payment reached the network is unknown. Sending every coin of the wallet to itself settles it either way; you can top up
-            again once that is confirmed.
-          </p>
+        <ToolCard title={t("tools.repair.stuckTopUpsTitle")} testId="repair-stuck-top-ups">
+          <p className="placeholder-note">{t("tools.repair.stuckTopUpsHint")}</p>
           <ul className="tool-list">
             {model.stuckTopUps.map(({ funding, name }) => (
               <li key={funding.step} data-testid={`repair-stuck-${funding.step}`}>
@@ -163,7 +157,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
                   disabled={model.busy}
                   onClick={() => model.ask("resolveStuck", funding)}
                 >
-                  Resolve stuck funding: send all coins to yourself
+                  {t("tools.repair.resolveButton")}
                 </DashButton>
               </li>
             ))}
@@ -171,19 +165,20 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
         </ToolCard>
       )}
       {model.stuckShields.length > 0 && (
-        <ToolCard title="Stuck moves into Shielded" testId="repair-stuck-shields">
-          <p className="placeholder-note">
-            Whether these moves' payment reached the network is unknown, so no new move into Shielded can start. Repair settles each with a payment back to
-            your own wallet; you confirm its coins and its fee first.
-          </p>
+        <ToolCard title={t("tools.repair.stuckShieldsTitle")} testId="repair-stuck-shields">
+          <p className="placeholder-note">{t("tools.repair.stuckShieldsHint")}</p>
           <ul className="tool-list">
             {model.stuckShields.map((f) => (
               <li key={f.step} data-testid={`repair-stuck-${f.step}`}>
                 <span>
-                  {RepairText.shield(f.repair?.mixed ?? false)}.{" "}
-                  {f.repair
-                    ? RepairText.shieldRepair(f.repair.mixed, f.repair.inputs, amount(f.repair.totalDuffs), amount(f.repair.feeDuffs))
-                    : f.blocked && shieldBlockedText(f.blocked)}
+                  {t("tools.repair.shieldLine", {
+                    what: RepairText.shield(f.repair?.mixed ?? false),
+                    detail: f.repair
+                      ? RepairText.shieldRepair(f.repair.mixed, f.repair.inputs, amount(f.repair.totalDuffs), amount(f.repair.feeDuffs))
+                      : f.blocked
+                        ? shieldBlockedText(f.blocked)
+                        : "",
+                  })}
                 </span>
                 <DashButton
                   variant="tintedBlue"
@@ -192,7 +187,7 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
                   disabled={model.busy || !f.repair}
                   onClick={() => model.ask("resolveStuck", f)}
                 >
-                  Send the coins back…
+                  {t("tools.repair.sendCoinsBack")}
                 </DashButton>
               </li>
             ))}
@@ -214,10 +209,8 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
           {RepairText.stuckTopUpsUnreadable}
         </p>
       )}
-      <ToolCard title="Finish transfers" testId="repair-finish">
-        <p className="placeholder-note">
-          Finishes username registrations, credit top-ups, and transfers to Shielded or to your Platform addresses whose payment was sent but never completed. Nothing more is paid.
-        </p>
+      <ToolCard title={t("tools.repair.finishTitle")} testId="repair-finish">
+        <p className="placeholder-note">{t("tools.repair.finishHint")}</p>
         {unfinished.data && unfinished.data.unread.length > 0 && (
           <p className="placeholder-note" role="status" data-testid="repair-unfinished-unread">
             {unreadText(unfinished.data.unread)}
@@ -225,19 +218,19 @@ export function RepairTab({ grants, wallet, network }: { grants: GrantModel; wal
         )}
         <div className="tool-actions">
           <DashButton variant="tintedBlue" size="small" data-testid="repair-finish-transfers" disabled={model.busy} onClick={() => void model.finishTransfers()}>
-            Finish transfers
+            {t("tools.repair.finishButton")}
           </DashButton>
         </div>
       </ToolCard>
-      <NotYet title="Asset locks" testId="repair-asset-locks-not-yet">
-        Sending or cancelling unfinished transfers is coming soon.
+      <NotYet title={t("tools.repair.assetLocksTitle")} testId="repair-asset-locks-not-yet">
+        {t("tools.repair.assetLocksSoon")}
       </NotYet>
       {question && (
         <Sheet title={question.title} width="small" testId="repair-confirm" onClose={() => model.dismiss()}>
           <p className="sheet-text">{question.text}</p>
           <div className="sheet-actions">
             <DashButton variant="tintedGray" size="large" data-testid="repair-confirm-cancel" onClick={() => model.dismiss()}>
-              Cancel
+              {t("common.cancel")}
             </DashButton>
             {/* A resolved funding leaves the stuck lists at once (DP1-10 D3): My Profile reads them again. */}
             <DashButton

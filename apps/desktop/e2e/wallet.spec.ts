@@ -821,10 +821,31 @@ test.describe("Activity", () => {
     await page.getByTestId("tx-resend").click();
     await expect(page.getByTestId("tx-action-note")).toBeVisible();
     await page.getByTestId("tx-abandon").click();
+    await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
+      "Abandon this transaction? Its coins come back to the balance. If it reaches the network anyway, it still counts, so sending the same payment again could pay twice.",
+    );
     await page.getByTestId("tx-abandon-confirm").click();
     await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
     await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
     await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
+  });
+
+  test("abandons an unconfirmed incoming payment with its own warning and no Resend", async ({ page }) => {
+    const errors = await open(page);
+    await page.getByTestId("sidebar-activity").click();
+    await page.locator(".tx-row").first().click();
+    await expect(page.getByTestId("tx-detail")).toContainText("+0.20");
+    await expect(page.getByTestId("tx-abandon")).toBeVisible();
+    await expect(page.getByTestId("tx-resend")).toHaveCount(0);
+    await page.getByTestId("tx-abandon").click();
+    await expect(page.getByTestId("tx-detail-actions").locator(".tx-actions-question")).toHaveText(
+      "Abandon this transaction? Dash Wallet stops counting it. If it's locked or confirmed anyway, it counts again.",
+    );
+    await page.getByTestId("tx-abandon-confirm").click();
+    await expect(page.getByTestId("tx-detail")).toContainText("Abandoned");
+    await expect(page.getByTestId("tx-abandon")).toHaveCount(0);
+    await expect(page.getByTestId("tx-action-note")).toHaveText("The transaction was abandoned.");
+    expect(errors).toEqual([]);
   });
 });
 

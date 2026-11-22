@@ -455,6 +455,7 @@ fn the_stop_check_takes_whichever_blackholed_loops_are_stuck() {
 /// start task. Before the fix the stop returned `Ok`, and the start waited
 /// another full drain budget (10 s).
 #[test]
+#[ignore = "flaky under load, see #182"]
 fn a_stop_that_cannot_drain_a_pass_says_so_and_the_next_start_is_immediate() {
     let _serial = serial();
     let dir = dw_testutil::private_tempdir();

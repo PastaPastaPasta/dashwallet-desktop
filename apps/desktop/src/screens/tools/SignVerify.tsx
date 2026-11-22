@@ -8,6 +8,7 @@ import type { NetworkInfo } from "../../api/generated/NetworkInfo";
 import { useBackend } from "../../api/queries";
 import { DashButton } from "../../components/basics";
 import { CopyDashButton } from "../../components/copy";
+import { useT } from "../../i18n";
 import { useModel } from "../../onboarding/model";
 import type { GrantModel } from "../../tools/grant";
 import { SignVerifyModel } from "../../tools/signVerify";
@@ -25,6 +26,7 @@ function Field({ label, children }: { label: string; children: (id: string) => R
 }
 
 export function SignVerifyTab({ grants, walletId, network }: { grants: GrantModel; walletId: string; network: NetworkInfo }) {
+  const t = useT();
   const b = useBackend();
   const [model] = useState(() => new SignVerifyModel(b, grants, walletId, network.dirName));
   useModel(model);
@@ -46,11 +48,8 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
 
   return (
     <div className="tool-stack" data-testid="tools-signVerify">
-      <ToolCard title="Sign Message" testId="sign-card">
-        <p className="placeholder-note">
-          You can sign messages with your addresses to prove you can receive Dash sent to them. Be careful not to sign anything vague or random, as
-          phishing attacks may try to trick you into signing your identity over to them. Only sign fully-detailed statements you agree to.
-        </p>
+      <ToolCard title={t("tools.signVerify.signTitle")} testId="sign-card">
+        <p className="placeholder-note">{t("tools.signVerify.signIntro")}</p>
         <form
           className="tool-stack"
           onSubmit={(e) => {
@@ -58,7 +57,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
             void model.sign(signAddress, signMessage);
           }}
         >
-          <Field label="Address">
+          <Field label={t("tools.signVerify.address")}>
             {(id) => (
               <span className="tool-inline-form">
                 <input
@@ -68,19 +67,19 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
                   value={signAddress}
                   autoComplete="off"
                   spellCheck={false}
-                  placeholder="The Dash address to sign the message with"
+                  placeholder={t("tools.signVerify.signAddressPlaceholder")}
                   onChange={(e) => {
                     setSignAddress(e.target.value);
                     model.clearSign();
                   }}
                 />
                 <DashButton variant="tintedGray" size="small" data-testid="sign-choose" onClick={() => setPicking(true)}>
-                  Choose…
+                  {t("tools.signVerify.choose")}
                 </DashButton>
               </span>
             )}
           </Field>
-          <Field label="Message">
+          <Field label={t("tools.signVerify.message")}>
             {(id) => (
               <textarea
                 id={id}
@@ -88,7 +87,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
                 data-testid="sign-message"
                 value={signMessage}
                 rows={4}
-                placeholder="Enter the message you want to sign here"
+                placeholder={t("tools.signVerify.signMessagePlaceholder")}
                 onChange={(e) => {
                   setSignMessage(e.target.value);
                   model.clearSign();
@@ -97,12 +96,12 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
             )}
           </Field>
           {model.signature && (
-            <Field label="Signature">
+            <Field label={t("tools.signVerify.signature")}>
               {(id) => (
                 <span className="tool-inline-form">
                   <input id={id} className="tool-field mono" data-testid="sign-signature" value={model.signature} readOnly />
                   <CopyDashButton variant="tintedGray" size="small" data-testid="sign-copy" text={model.signature}>
-                    Copy
+                    {t("tools.signVerify.copy")}
                   </CopyDashButton>
                 </span>
               )}
@@ -111,7 +110,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
           {model.signResult && <Outcome ok={model.signResult.ok} text={model.signResult.text} testId="sign-result" />}
           <div className="tool-actions">
             <DashButton type="submit" variant="filledBlue" size="small" data-testid="sign-sign" disabled={model.signing || signAddress.trim() === ""}>
-              {model.signing ? "Signing…" : "Sign Message"}
+              {model.signing ? t("tools.signVerify.signing") : t("tools.signVerify.signButton")}
             </DashButton>
             <DashButton
               variant="tintedGray"
@@ -123,17 +122,13 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
                 model.clearSign();
               }}
             >
-              Clear All
+              {t("tools.signVerify.clearAll")}
             </DashButton>
           </div>
         </form>
       </ToolCard>
-      <ToolCard title="Verify Message" testId="verify-card">
-        <p className="placeholder-note">
-          Enter the receiver's address, message (ensure you copy line breaks, spaces, tabs, etc. exactly) and signature below to verify the message. Be
-          careful not to read more into the signature than what is in the signed message itself, to avoid being tricked by a man-in-the-middle attack.
-          Note that this only proves the signing party receives with the address, it cannot prove sendership of any transaction!
-        </p>
+      <ToolCard title={t("tools.signVerify.verifyTitle")} testId="verify-card">
+        <p className="placeholder-note">{t("tools.signVerify.verifyIntro")}</p>
         <form
           className="tool-stack"
           onSubmit={(e) => {
@@ -141,7 +136,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
             void model.verify(verifyAddress, signature, verifyMessage);
           }}
         >
-          <Field label="Address">
+          <Field label={t("tools.signVerify.address")}>
             {(id) => (
               <input
                 id={id}
@@ -150,7 +145,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
                 value={verifyAddress}
                 autoComplete="off"
                 spellCheck={false}
-                placeholder="The Dash address the message was signed with"
+                placeholder={t("tools.signVerify.verifyAddressPlaceholder")}
                 onChange={(e) => {
                   setVerifyAddress(e.target.value);
                   model.clearVerify();
@@ -158,7 +153,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
               />
             )}
           </Field>
-          <Field label="Message">
+          <Field label={t("tools.signVerify.message")}>
             {(id) => (
               <textarea
                 id={id}
@@ -173,7 +168,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
               />
             )}
           </Field>
-          <Field label="Signature">
+          <Field label={t("tools.signVerify.signature")}>
             {(id) => (
               <input
                 id={id}
@@ -192,7 +187,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
           {verified && <Outcome ok={model.verified} text={verified.text} testId="verify-result" />}
           <div className="tool-actions">
             <DashButton type="submit" variant="filledBlue" size="small" data-testid="verify-verify" disabled={verifyAddress.trim() === "" || signature.trim() === ""}>
-              Verify Message
+              {t("tools.signVerify.verifyButton")}
             </DashButton>
             <DashButton
               variant="tintedGray"
@@ -205,7 +200,7 @@ export function SignVerifyTab({ grants, walletId, network }: { grants: GrantMode
                 model.clearVerify();
               }}
             >
-              Clear All
+              {t("tools.signVerify.clearAll")}
             </DashButton>
           </div>
         </form>
