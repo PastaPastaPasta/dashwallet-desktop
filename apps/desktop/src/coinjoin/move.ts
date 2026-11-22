@@ -3,7 +3,7 @@
 // address of the same wallet; the outcome shows what moved, what remains, and a chunk whose
 // broadcast outcome is unknown, whose Try again sends the same signed transaction again. Into
 // Shielded it is one asset lock of every coin, applied as any add to Shielded (a lock not applied
-// yet is finished from Unfinished transfers on Home); above 50 coins the coins are combined first inside the
+// yet is finished from Unfinished transfers on Home); above `SHIELD_MOVE_MAX_COINS` (50) coins the coins are combined first inside the
 // CoinJoin account, then moved once that round confirms. The plan step reads the plan,
 // the confirm step asks for a spend grant of its total (U-05's GrantModel). Mixing has to stop
 // first: the engine refuses while it runs and the sheet offers Stop Mixing. One flow per wallet,
@@ -273,7 +273,7 @@ export class MoveMixedFlow extends Model {
   plan: MixedCoinsSweepPlan | null = null;
   /** A move to Shielded's quote. */
   shieldQuote: MixedShieldQuote | null = null;
-  /** The consolidation round a move to Shielded of more than 50 coins needs first. */
+  /** The consolidation round a move to Shielded of more than `SHIELD_MOVE_MAX_COINS` coins needs first. */
   consolidation: MixedCoinsConsolidationPlan | null = null;
   /** A move to the wallet's, or a consolidation round's (`combined`). */
   result: MixedCoinsSweepResult | null = null;
@@ -430,7 +430,7 @@ export class MoveMixedFlow extends Model {
     }
   }
 
-  /** The consolidation round a move to Shielded of more than 50 coins needs first. */
+  /** The consolidation round a move to Shielded of more than `SHIELD_MOVE_MAX_COINS` coins needs first. */
   async combine(): Promise<void> {
     const plan = this.consolidation;
     if (this.running || plan === null || this.step !== "combine") return;
