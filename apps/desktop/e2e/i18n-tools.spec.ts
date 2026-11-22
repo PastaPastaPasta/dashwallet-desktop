@@ -1,9 +1,8 @@
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import type { ToolsTab } from "../src/api/generated/ToolsTab";
 import { FIXTURE_NOW } from "../src/fixture/wallet";
-import { seriousAxeViolations } from "./axe";
-import { artifactPath, fixtureUrl, fontsReady, openToolsTab, THEMES, trackPageErrors, type Theme } from "./helpers";
-import { checkArea, PANES, PSEUDO, SIZES, untranslated } from "./pseudo";
+import { fixtureUrl, openToolsTab, THEMES, trackPageErrors, type Theme } from "./helpers";
+import { checkArea, PSEUDO } from "./pseudo";
 
 // Localization (MP-14): Tools under the two pseudo-locales (./pseudo.ts): all eight tabs,
 // Information's warning banner and DashPay card, Repair's confirmation and GrantSheet, Address
@@ -49,9 +48,6 @@ const EMPTY_ADDRESS_BOOK = [
   /^Add address$/,
 ];
 const COINS_SHARED = [
-  /^Amount \((t?DASH|mDASH|μDASH|duffs)\)$/,
-  /^(Label|Address|Mixing Rounds|Date|Confirmations)$/,
-  /^\((change|no label)\)$/,
   /^Status$/,
   /^Quantity$/,
   /^Amount$/,
@@ -63,12 +59,20 @@ const COINS_SHARED = [
   /^Unconfirmed$/,
   /^Reserved$/,
   /^Mixed, \p{Nd}+ rounds$/u,
-  /^(Coins of this wallet|Select|Actions)$/,
+  /^(Coins of this wallet|Select)$/,
   /^\p{Nd}{1,2}\/\p{Nd}{1,2}\/\p{Nd}{2,4},? \p{Nd}{1,2}:\p{Nd}{2}( [AP]M)?$/u,
 ];
 const GRANT_SHARED = [/^Passphrase$/];
 
-const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) => Promise<void>; roots?: string[]; data?: RegExp[]; panes?: string[]; wideTable?: true }> = {
+/** dash-qt's columns (D22): these tables scroll sideways inside their card in English too. */
+const PEERS_TABLE = '.table-card:has([data-testid="peers-table"])';
+const COIN_TABLE = '.table-card:has([data-testid="coin-table"])';
+
+/** components/coins.tsx's screen-reader-only header text is positioned outside the coin table's
+ * card and widens the document in English too (1143 at 920); contained here until it is fixed. */
+const CONTAIN_ENGLISH_COIN_TABLE_SR_ONLY_HEADERS = `${COIN_TABLE} { position: relative; }`;
+
+const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) => Promise<void>; roots?: string[]; data?: RegExp[]; panes?: string[]; scrollers?: string[] }> = {
   information: {
     open: async (page, theme, lang) => {
       await openTab(page, theme, lang, "information", "dashpay-info-spv");
@@ -101,7 +105,7 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
       await first.getByRole("button").click();
       await expect(page.getByTestId("peer-detail")).toBeVisible();
     },
-    wideTable: true,
+    scrollers: [PEERS_TABLE],
   },
   repair: {
     open: async (page, theme, lang) => {
@@ -222,9 +226,10 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
       await expect(page.getByTestId("coin-table")).toBeVisible();
       await page.getByTestId("coins-select-all").click();
       await expect(page.getByTestId("coins-selection")).toBeVisible();
+      await page.addStyleTag({ content: CONTAIN_ENGLISH_COIN_TABLE_SR_ONLY_HEADERS });
     },
     data: COINS_SHARED,
-    wideTable: true,
+    scrollers: [COIN_TABLE],
   },
   "no-wallet": {
     open: async (page, theme, lang) => {
@@ -235,48 +240,6 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
   },
 };
 
-/** `overflow` from ./pseudo.ts, less a `.table-card`'s own sideways scroll and what it scrolls:
- * Peers' and Coin Selection's dash-qt columns (D22) scroll inside their card in English too. The
- * document's width is not checked either: the coin table's screen-reader-only header text
- * (components/coins.tsx) already widens it in English at 920. Everything outside the card must
- * still stay inside its pane. */
-function overflowBesideTables(page: Page) {
-  return page.evaluate((panes) => {
-    const found: string[] = [];
-    const name = (el: Element) => `${el.tagName.toLowerCase()}${el.getAttribute("data-testid") ? `[${el.getAttribute("data-testid")}]` : ""}.${[...el.classList].join(".")}`;
-    const inTable = (el: Element) => el.parentElement?.closest(".table-card") != null || el.matches(".table-card");
-    for (const el of document.querySelectorAll<HTMLElement>("body *")) {
-      const x = getComputedStyle(el).overflowX;
-      if (!inTable(el) && (x === "auto" || x === "scroll") && el.scrollWidth > el.clientWidth + 1) found.push(`${name(el)} scrolls ${el.scrollWidth} > ${el.clientWidth}`);
-    }
-    for (const area of document.querySelectorAll(panes.join(", "))) {
-      const box = area.getBoundingClientRect();
-      for (const el of area.querySelectorAll("*")) {
-        if (el.parentElement?.closest(".table-card")) continue;
-        const b = el.getBoundingClientRect();
-        if (b.width > 0 && (b.right > box.right + 1 || b.left < box.left - 1)) found.push(`${name(el)} ${Math.round(b.left)}..${Math.round(b.right)} outside ${name(area)} ${Math.round(box.left)}..${Math.round(box.right)}`);
-      }
-    }
-    return found;
-  }, PANES);
-}
-
-/** `checkArea` for a state with a wide table: the same checks, with `overflowBesideTables`. */
-async function checkWideTable(page: Page, info: TestInfo, theme: Theme, [lang, kind]: (typeof PSEUDO)[number], name: string, open: () => Promise<void>, data: RegExp[]) {
-  for (const size of SIZES) {
-    await page.setViewportSize(size);
-    await open();
-    await expect(page.locator("html")).toHaveAttribute("dir", kind === "rtl" ? "rtl" : "ltr");
-    await fontsReady(page);
-    expect(await untranslated(page, ["page-tools"], kind, data), `${lang} at ${size.width}`).toEqual([]);
-    expect(await overflowBesideTables(page), `${lang} at ${size.width}`).toEqual([]);
-    if (size.width === 1280) {
-      await page.screenshot({ path: artifactPath(info, `i18n-tools-${name}-${lang}-${theme}.png`) });
-      expect(await seriousAxeViolations(page)).toEqual([]);
-    }
-  }
-}
-
 for (const theme of THEMES)
   for (const pseudo of PSEUDO)
     for (const [name, state] of Object.entries(STATES))
@@ -284,14 +247,13 @@ for (const theme of THEMES)
         test.setTimeout(120_000);
         const errors = trackPageErrors(page);
         const data = [...TOOLS_DATA, ...(state.data ?? [])];
-        if (state.wideTable) await checkWideTable(page, info, theme, pseudo, name, () => state.open(page, theme, pseudo[0]), data);
-        else
-          await checkArea(page, info, theme, pseudo, {
-            name: `tools-${name}`,
-            roots: state.roots ?? ["page-tools"],
-            data,
-            panes: state.panes,
-            open: (lang) => state.open(page, theme, lang),
-          });
+        await checkArea(page, info, theme, pseudo, {
+          name: `tools-${name}`,
+          roots: state.roots ?? ["page-tools"],
+          data,
+          panes: state.panes,
+          scrollers: state.scrollers,
+          open: (lang) => state.open(page, theme, lang),
+        });
         expect(errors).toEqual([]);
       });

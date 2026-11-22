@@ -56,26 +56,30 @@ export async function untranslated(page: Page, areas: string[], kind: PseudoKind
 /** The panes whose descendants must stay inside them: the shell, the page and the lock column. */
 export const PANES = ['[data-testid="toolbar"]', '[data-testid="sidebar"]', '[data-testid="status-bar"]', "main.page", '[data-testid="lock-column"]'];
 
-/** What scrolls sideways or sticks out of the window or its pane. */
-export function overflow(page: Page, panes: string[] = PANES) {
-  return page.evaluate((panes) => {
+/** What scrolls sideways or sticks out of the window or its pane. A `scrollers` element and its
+ * descendants may scroll sideways, and its descendants may stick out of their pane. */
+export function overflow(page: Page, panes: string[] = PANES, scrollers: string[] = []) {
+  return page.evaluate(([panes, scrollers]) => {
     const found: string[] = [];
     const doc = document.scrollingElement!;
     if (doc.scrollWidth > doc.clientWidth) found.push(`document ${doc.scrollWidth} > ${doc.clientWidth}`);
     const name = (el: Element) => `${el.tagName.toLowerCase()}${el.getAttribute("data-testid") ? `[${el.getAttribute("data-testid")}]` : ""}.${[...el.classList].join(".")}`;
+    const scroller = scrollers.join(", ");
+    const inScroller = (el: Element | null) => scroller !== "" && el?.closest(scroller) != null;
     for (const el of document.querySelectorAll<HTMLElement>("body *")) {
       const x = getComputedStyle(el).overflowX;
-      if ((x === "auto" || x === "scroll") && el.scrollWidth > el.clientWidth + 1) found.push(`${name(el)} scrolls ${el.scrollWidth} > ${el.clientWidth}`);
+      if (!inScroller(el) && (x === "auto" || x === "scroll") && el.scrollWidth > el.clientWidth + 1) found.push(`${name(el)} scrolls ${el.scrollWidth} > ${el.clientWidth}`);
     }
     for (const area of document.querySelectorAll(panes.join(", "))) {
       const box = area.getBoundingClientRect();
       for (const el of area.querySelectorAll("*")) {
+        if (inScroller(el.parentElement)) continue;
         const b = el.getBoundingClientRect();
         if (b.width > 0 && (b.right > box.right + 1 || b.left < box.left - 1)) found.push(`${name(el)} ${Math.round(b.left)}..${Math.round(b.right)} outside ${name(area)} ${Math.round(box.left)}..${Math.round(box.right)}`);
       }
     }
     return found;
-  }, panes);
+  }, [panes, scrollers]);
 }
 
 export interface AreaCheck {
@@ -90,6 +94,9 @@ export interface AreaCheck {
   /** Selectors of further panes (a sheet, a dialog) whose descendants must stay inside them, on top
    * of `PANES`. */
   panes?: string[];
+  /** Selectors of elements that scroll sideways inside their pane in English too (a wide table's
+   * card): what is inside them may overflow them; they themselves must still fit. */
+  scrollers?: string[];
 }
 
 /** Runs `check.open` at both window sizes under `lang`, and fails on text that bypasses the catalog,
@@ -103,7 +110,7 @@ export async function checkArea(page: Page, info: TestInfo, theme: Theme, [lang,
     await fontsReady(page);
     expect(await untranslated(page, check.roots, kind, check.data), `${lang} at ${size.width}`).toEqual([]);
     for (const pane of check.panes ?? []) await expect(page.locator(pane).first(), `pane ${pane} at ${size.width}`).toBeVisible();
-    expect(await overflow(page, [...PANES, ...(check.panes ?? [])]), `${lang} at ${size.width}`).toEqual([]);
+    expect(await overflow(page, [...PANES, ...(check.panes ?? [])], check.scrollers), `${lang} at ${size.width}`).toEqual([]);
     if (size.width === 1280) {
       await page.screenshot({ path: artifactPath(info, `i18n-${check.name}-${lang}-${theme}.png`) });
       expect(await seriousAxeViolations(page)).toEqual([]);
