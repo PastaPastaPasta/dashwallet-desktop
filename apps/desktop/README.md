@@ -96,6 +96,35 @@ paint and 170 MB of memory on agentbox). Set the variable yourself to override t
 The gate harness that measured G-UI (Xvfb + AT-SPI, the UIA walk, `ci/gate/`) stays on branch
 `dw/g-02-tauri-measure`. Results and method: [ADR 0003](../../docs/adr/0003-ui-stack.md).
 
+## DashPay flows on testnet (H-04 O4a)
+
+Seven tauri-driver flows in `e2e-tauri/` drive the real app against public testnet: `dashpay-status`
+(DP1-08), `contacts` (DP2-07), `registration` (DP1-09), `add-contact` (DP2-08), `bell-accept` (DP2-09),
+`pay-contact` (DP3-06) and `profile-write` (BL-162). They read a fixture of four wallets A–D, each with an
+identity and a username, whose contacts are A:{B,C}, B:{A}, C:{A,D}, D:{C}. Two scripts make the
+fixture and run the flows; neither opens a window.
+
+```sh
+# 1. The fixture (once; a rerun resumes and never pays, registers or sends twice). Writes to testnet:
+#    one faucet payout (dash-faucet skill's helper), A→B,C,D, four identities, three contact pairs.
+#    The directory must lie under $HOME: each phrase and the vault passphrase go to the secret store
+#    (`secret set dwd-qa-testnet-<dir name>-<W>-mnemonic`, …) and are linked into it.
+DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/testnet-dashpay-fixture.sh
+
+# 2. The seven flows: builds once, reads first, then writes; goes on past a failure. Results in
+#    test-results/dashpay-testnet/summary.{md,json} (each flow's result, duration, first error) and
+#    <flow>/ (screenshots, logs). Starts under xvfb-run when $DISPLAY is unset.
+DW_TESTNET_FIXTURE=~/.local/state/dwd-qa-testnet/<name> scripts/e2e-tauri-dashpay-testnet.sh
+```
+
+Each write flow keeps a ledger in the fixture (`DP1-09.json`, `DP2-08.json`, `DP2-09.json`,
+`DP3-06.json`), so a second run checks rather than repeats; registration is skipped once done, and
+bell-accept's C→B pair is spent after one accept (move its ledger aside and pick B–D with
+`DW_BELL_SENDER`/`DW_BELL_RECEIVER`). The runner ends with a phrase and key check over everything it kept
+(`e2e-tauri/artifact-scan.ts`: the fixture's phrases and passphrases, any run of 12 BIP39 words,
+xprv/tprv, screenshots through tesseract when installed); the summary says whether it came back clean.
+`DW_SUITE_FLOWS` runs a subset, `DW_E2E_SKIP_BUILD=1` reuses the binaries.
+
 ## Fixture backend (U-07)
 
 `src/fixture/` stands in for dw-app at the IPC boundary. It installs Tauri's mock IPC
