@@ -1155,7 +1155,7 @@ impl TxDraft {
         }
         let r = self.resolve(&fence).await?;
         let wallet = session.wallet(&wallet_id).await?;
-        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
+        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await?;
 
         // What the grant caps: everything that leaves the wallet, fee
         // included (the same outflow `sign_psbt` caps).
@@ -1199,7 +1199,7 @@ impl TxDraft {
     ) -> Result<Arc<PreparedTx>, EngineError> {
         let r = self.resolve(&fence).await?;
         let wallet = self.session.wallet(&self.wallet_id).await?;
-        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await;
+        let (recipient_mine, change_mine, external_sent) = self.outflow_of(&r, &wallet).await?;
         let outflow = external_sent.saturating_add(r.plan.fee);
         // One J step: a payment exactly at the cap is charged and signs.
         let (charge, signer) = lease
@@ -1227,9 +1227,13 @@ impl TxDraft {
     /// Which recipients and change stay in the wallet's funds, and what
     /// leaves it: the outputs to any other script, a provider key's
     /// address of the wallet's included (MG-04 D55).
-    async fn outflow_of(&self, r: &Resolved, wallet: &PlatformWallet) -> (Vec<bool>, bool, u64) {
+    async fn outflow_of(
+        &self,
+        r: &Resolved,
+        wallet: &PlatformWallet,
+    ) -> Result<(Vec<bool>, bool, u64), EngineError> {
         let (recipient_mine, change_mine) = {
-            let state = wallet.state().await;
+            let state = crate::wallet_read::info_of(wallet).await?;
             let owns = |a: &Address| crate::coins::wallet_funds_address(&state.core_wallet, a);
             let recipients: Vec<bool> = r.recipients.iter().map(|rc| owns(&rc.address)).collect();
             let change = match &r.change {
@@ -1253,7 +1257,7 @@ impl TxDraft {
             }
             // A data output's value leaves the wallet (MG-06 D10).
             + r.data.as_ref().map_or(0, |d| d.value);
-        (recipient_mine, change_mine, external_sent)
+        Ok((recipient_mine, change_mine, external_sent))
     }
 
     /// Signs the plan with `signer`, checks it and reserves its inputs,
@@ -2286,9 +2290,21 @@ impl NetworkSession {
             Some(_) => &[][..],
             None => &prepared.records[..],
         };
-        let wallet = self.wallet(&wallet_id).await?;
+        // After the hand-off: a wallet closed meanwhile keeps the payment
+        // sent and skips what only it would show.
+        let skipped = || {
+            tracing::warn!(wallet = %wallet_id, "the wallet closed: a payment's message and address-book entries were not stored");
+            Ok(())
+        };
+        let Ok(wallet) = self.wallet(&wallet_id).await else {
+            return skipped();
+        };
+        #[cfg(test)]
+        crate::coins::pause_at(&self.hub.pause_metadata).await;
         let owned: Vec<bool> = {
-            let state = wallet.state().await;
+            let Ok(state) = crate::wallet_read::info_of(&wallet).await else {
+                return skipped();
+            };
             records
                 .iter()
                 .map(|(a, _, _)| {

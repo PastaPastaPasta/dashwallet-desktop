@@ -2,6 +2,7 @@
 // about 1.5 s after the copy worked. The toast stays (copyWithToast).
 
 import { useCallback, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useT } from "../i18n";
 import { DashButton, Icon } from "./basics";
 import { copyWithToast } from "./toast";
 
@@ -28,9 +29,10 @@ export function useCopy(ms: number = COPIED_MS): { copied: boolean; copy: (text:
 
 /** The label of a copy button while it says "Copied". */
 export function CopiedLabel() {
+  const t = useT();
   return (
     <span className="copied-label" data-testid="copied">
-      <span aria-hidden="true">✓</span> Copied
+      <span aria-hidden="true">✓</span> {t("components.copy.copied")}
     </span>
   );
 }

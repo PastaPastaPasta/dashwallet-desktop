@@ -81,6 +81,10 @@ const SNAPSHOT_SHA256: &[(&str, &str)] = &[
         "v0.2.0",
         "0c013e154937c2d28112d630173a9588a1e719d1150b983224b791fb2fa4a37d",
     ),
+    (
+        "v0.3.0",
+        "42c4ad4fd72815d379b538ae3aad637965e5253987f63503c455cd2cee440b59",
+    ),
 ];
 
 /// Why `text` is not the snapshot committed for `tag`, if so.
@@ -93,6 +97,38 @@ fn snapshot_digest_problem(tag: &str, text: &str) -> Option<String> {
             "expected.json's SHA-256 is {digest}, not the one pinned for {tag}"
         )),
         None => Some(format!("no SHA-256 is pinned for {tag}")),
+    }
+}
+
+/// Each tag pinned in `SNAPSHOT_SHA256` without its directory under
+/// `testdata/upgrade`, and each directory without a pinned tag.
+fn pinned_tag_problems(tags: &[String]) -> Vec<String> {
+    let mut problems: Vec<String> = SNAPSHOT_SHA256
+        .iter()
+        .filter(|(pinned, _)| !tags.iter().any(|t| t == pinned))
+        .map(|(pinned, _)| format!("{pinned} is pinned but has no fixture directory"))
+        .collect();
+    problems.extend(
+        tags.iter()
+            .filter(|t| !SNAPSHOT_SHA256.iter().any(|(pinned, _)| pinned == t))
+            .map(|t| format!("{t} has a fixture directory but no pinned SHA-256")),
+    );
+    problems
+}
+
+/// `fixtures_in(root)`, refused unless its directories are exactly the
+/// tags pinned in `SNAPSHOT_SHA256`.
+fn pinned_fixtures_in(root: &Path) -> Result<Vec<(PathBuf, Value)>, String> {
+    let fixtures = fixtures_in(root)?;
+    let tags: Vec<String> = fixtures
+        .iter()
+        .map(|(f, _)| f.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    let unmatched = pinned_tag_problems(&tags);
+    if unmatched.is_empty() {
+        Ok(fixtures)
+    } else {
+        Err(unmatched.join("; "))
     }
 }
 
@@ -306,11 +342,14 @@ fn balance_problems(wallets: &[&Value], calls: &[Value], dashd: &Value) -> Vec<S
     for (id, deposited) in deposits {
         let id = Value::String(id.clone());
         let spent = if payment["walletId"] == id {
-            paid + fee
+            paid.checked_add(fee)
         } else {
-            0
+            Some(0)
         };
-        let want = deposited.as_u64().and_then(|d| d.checked_sub(spent));
+        let want = deposited
+            .as_u64()
+            .zip(spent)
+            .and_then(|(d, s)| d.checked_sub(s));
         let got = first_answer(calls, "balance", &id).and_then(|b| b["confirmed"].as_u64());
         if want.is_none() || want != got {
             problems.push(format!(
@@ -318,11 +357,10 @@ fn balance_problems(wallets: &[&Value], calls: &[Value], dashd: &Value) -> Vec<S
             ));
         }
         let total = first_answer(calls, "balance", &id).and_then(|b| b["total"].as_u64());
-        let coins = every_coin(calls, &id).map(|coins| {
+        let coins = every_coin(calls, &id).and_then(|coins| {
             coins
                 .iter()
-                .filter_map(|u| u["amount"].as_u64())
-                .sum::<u64>()
+                .try_fold(0u64, |sum, u| sum.checked_add(u["amount"].as_u64()?))
         });
         if coins.is_none() || coins != total {
             problems.push(format!(
@@ -374,7 +412,7 @@ fn every_release_data_root_opens_with_the_same_answers() {
         return;
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../testdata/upgrade");
-    let fixtures = fixtures_in(&root).unwrap_or_else(|e| panic!("{e}"));
+    let fixtures = pinned_fixtures_in(&root).unwrap_or_else(|e| panic!("{e}"));
     assert!(
         !fixtures.is_empty(),
         "no testdata/upgrade/<tag>/expected.json"
@@ -851,6 +889,77 @@ fn discovery_names_a_release_directory_without_a_readable_snapshot() {
     assert!(e.contains("v9.9.9"), "{e}");
 }
 
+#[test]
+fn every_pinned_release_has_its_fixture_and_every_fixture_is_pinned() {
+    let pinned: Vec<String> = SNAPSHOT_SHA256.iter().map(|(t, _)| t.to_string()).collect();
+    assert_eq!(pinned_tag_problems(&pinned), Vec::<String>::new());
+    let missing = &pinned[1..];
+    let problems = pinned_tag_problems(missing);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains(&pinned[0]), "{problems:?}");
+    let mut extra = pinned.clone();
+    extra.push("v9.9.9".to_string());
+    let problems = pinned_tag_problems(&extra);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("v9.9.9"), "{problems:?}");
+
+    let root = dw_testutil::private_tempdir();
+    for tag in &pinned {
+        std::fs::create_dir(root.path().join(tag)).unwrap();
+        std::fs::write(root.path().join(tag).join("expected.json"), "{}").unwrap();
+    }
+    assert_eq!(pinned_fixtures_in(root.path()).unwrap().len(), pinned.len());
+    std::fs::remove_dir_all(root.path().join(&pinned[0])).unwrap();
+    let e = pinned_fixtures_in(root.path()).unwrap_err();
+    assert!(
+        e.contains(&pinned[0]) && e.contains("no fixture directory"),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_coin_without_an_amount_or_a_sum_past_u64_is_a_problem() {
+    let full = v0_2_0_snapshot();
+    let payer = full["dashd"]["payment"]["walletId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let edit_coins = |amount: Value| {
+        let mut snapshot = full.clone();
+        for call in snapshot["calls"].as_array_mut().unwrap() {
+            if call["cmd"] == "utxos" && call["args"]["walletId"] == payer.as_str() {
+                for coin in call["result"].as_array_mut().unwrap() {
+                    coin["amount"] = amount.clone();
+                }
+            }
+        }
+        snapshot_problems("v0.2.0", &snapshot)
+    };
+    let problems = edit_coins(json!("10"));
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("recorded coins add up to None")),
+        "{problems:?}"
+    );
+    let problems = edit_coins(json!(u64::MAX));
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("recorded coins add up to None")),
+        "{problems:?}"
+    );
+    let mut fee_overflows = full.clone();
+    fee_overflows["dashd"]["payment"]["feeDuffs"] = json!(u64::MAX);
+    let problems = snapshot_problems("v0.2.0", &fee_overflows);
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains(&payer) && p.contains("less payment and fee None")),
+        "{problems:?}"
+    );
+}
+
 fn snapshot_text(tag: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../testdata/upgrade")
@@ -991,7 +1100,11 @@ fn a_snapshot_without_a_funded_signature_or_with_an_unaccounted_balance_is_refus
         narrow_first["fundedSignatures"].as_array().unwrap().len(),
         full["fundedSignatures"].as_array().unwrap().len() - 1
     );
-    assert!(!snapshot_problems("v0.2.0", &narrow_first).is_empty());
+    let problems = snapshot_problems("v0.2.0", &narrow_first);
+    assert!(
+        problems.iter().any(|p| p.contains("funded addresses")),
+        "{problems:?}"
+    );
     let watch_only = full["watchOnly"]["walletId"].as_str().unwrap().to_string();
     let mut watch_only_dropped = full.clone();
     watch_only_dropped

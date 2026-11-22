@@ -17,7 +17,7 @@ const AREAS: Record<string, string[]> = {
 
   settings: ["screens/settings/General.tsx", "screens/settings/LocalCurrency.tsx", "screens/settings/Privacy.tsx", "screens/settings/SettingsPage.tsx", "screens/settings/Updates.tsx", "screens/settings/parts.tsx"],
 
-  components: [],
+  components: ["components/basics.tsx", "components/coins.tsx", "components/copy.tsx", "components/detail.tsx", "components/emptyArt.tsx", "components/history.tsx", "components/passphrase.tsx", "components/phrase.tsx", "components/qr.tsx", "components/sheet.tsx", "components/toast.tsx"],
 
   app: [],
 
@@ -52,6 +52,8 @@ export const CONVERTED = Object.values(AREAS).flat();
 const ALLOWED: Record<string, string[]> = {
   // The route header's hidden " to " between two pool names: needs a whole-sentence key.
   "screens/TransferSheet.tsx": ["to"],
+  // The brand, the wordmark's name in every language (glossary).
+  "components/basics.tsx": ["Dash"],
 };
 
 /** Attributes whose value a user reads or hears. Props of our components that carry copy too. */

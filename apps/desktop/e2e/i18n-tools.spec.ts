@@ -40,29 +40,8 @@ const TOOLS_DATA = [
   /^(Alice|Bob's shop|Payroll|Savings|Savings \(mixed\)|alice|bob|carol)$/,
 ];
 
-/** Still English, from shared components (`components/emptyStates.ts`, `components/coins.tsx`,
- * `components/passphrase.tsx`, `components/sheet.tsx`, `components/detail.tsx`). */
-const EMPTY_ADDRESS_BOOK = [
-  /^No sending addresses yet$/,
-  /^Save an address you pay often\.$/,
-  /^Add address$/,
-];
-const COINS_SHARED = [
-  /^Status$/,
-  /^Quantity$/,
-  /^Amount$/,
-  /^Fee$/,
-  /^After fee$/,
-  /^Bytes$/,
-  /^Change$/,
-  /^Locked$/,
-  /^Unconfirmed$/,
-  /^Reserved$/,
-  /^Mixed, \p{Nd}+ rounds$/u,
-  /^(Coins of this wallet|Select)$/,
-  /^\p{Nd}{1,2}\/\p{Nd}{1,2}\/\p{Nd}{2,4},? \p{Nd}{1,2}:\p{Nd}{2}( [AP]M)?$/u,
-];
-const GRANT_SHARED = [/^Passphrase$/];
+/** A coin's date in the coin table, written by the browser in the display locale. */
+const COIN_DATE = [/^\p{Nd}{1,2}\/\p{Nd}{1,2}\/\p{Nd}{2,4},? \p{Nd}{1,2}:\p{Nd}{2}( [AP]M)?$/u];
 
 /** dash-qt's columns (D22): these tables scroll sideways inside their card in English too. */
 const PEERS_TABLE = '.table-card:has([data-testid="peers-table"])';
@@ -144,7 +123,6 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
     },
     roots: ["page-tools", "grant-sheet"],
     panes: ['[data-testid="grant-sheet"]'],
-    data: GRANT_SHARED,
   },
   "address-book": {
     open: async (page, theme, lang) => {
@@ -184,7 +162,6 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
       await openToolsTab(page, "addressBook");
       await expect(page.getByTestId("address-book-none")).toBeVisible();
     },
-    data: EMPTY_ADDRESS_BOOK,
   },
   "sign-verify": {
     open: async (page, theme, lang) => {
@@ -227,7 +204,7 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
       await expect(page.getByTestId("coins-selection")).toBeVisible();
       await page.addStyleTag({ content: CONTAIN_ENGLISH_COIN_TABLE_SR_ONLY_HEADERS });
     },
-    data: COINS_SHARED,
+    data: COIN_DATE,
     scrollers: [COIN_TABLE],
   },
   "no-wallet": {
