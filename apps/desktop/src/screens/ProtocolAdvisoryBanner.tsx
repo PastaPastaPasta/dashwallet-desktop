@@ -2,9 +2,9 @@ import { useState } from "react";
 import type { NetworkInfo } from "../api/generated/NetworkInfo";
 import { useBackend, useProtocolCompatibility } from "../api/queries";
 import { DashButton } from "../components/basics";
+import { useT } from "../i18n";
 import {
   dismissProtocolAdvisory,
-  PROTOCOL_ADVISORY_COPY as C,
   shouldShowProtocolAdvisory,
   useProtocolAdvisoryDismissed,
 } from "../protocol/advisory";
@@ -31,7 +31,8 @@ export function ProtocolAdvisoryBanner({ network }: { network: NetworkInfo }) {
   const backend = useBackend();
   const compat = useProtocolCompatibility();
   const dismissed = useProtocolAdvisoryDismissed(network.dirName);
-  const [problem, setProblem] = useState<string | null>(null);
+  const tr = useT();
+  const [problem, setProblem] = useState(false);
   const [opening, setOpening] = useState(false);
 
   if (compat.isError || !shouldShowProtocolAdvisory(compat.data, dismissed)) return null;
@@ -40,7 +41,7 @@ export function ProtocolAdvisoryBanner({ network }: { network: NetworkInfo }) {
     <section
       className="protocol-advisory-banner card-l1"
       data-testid="protocol-advisory-banner"
-      aria-label={C.label}
+      aria-label={tr("home.advisory.label")}
     >
       <svg className="protocol-advisory-icon" viewBox="0 0 20 20" aria-hidden="true">
         <circle cx="10" cy="10" r="7.5" />
@@ -48,11 +49,11 @@ export function ProtocolAdvisoryBanner({ network }: { network: NetworkInfo }) {
       </svg>
       <div className="protocol-advisory-body" role="status">
         <p className="protocol-advisory-text" data-testid="protocol-advisory-text">
-          {C.text}
+          {tr("home.advisory.text")}
         </p>
         {problem && (
           <p className="field-error" role="alert" data-testid="protocol-advisory-error">
-            {problem}
+            {tr("home.advisory.openFailed")}
           </p>
         )}
       </div>
@@ -63,15 +64,15 @@ export function ProtocolAdvisoryBanner({ network }: { network: NetworkInfo }) {
           data-testid="protocol-advisory-link"
           disabled={opening}
           onClick={() => {
-            setProblem(null);
+            setProblem(false);
             setOpening(true);
             void backend
               .openReleasesPage()
-              .catch(() => setProblem(C.openFailed))
+              .catch(() => setProblem(true))
               .finally(() => setOpening(false));
           }}
         >
-          {C.link}
+          {tr("home.advisory.link")}
         </button>
         <DashButton
           variant="tintedGray"
@@ -82,7 +83,7 @@ export function ProtocolAdvisoryBanner({ network }: { network: NetworkInfo }) {
             requestAnimationFrame(focusHomeAfterDismiss);
           }}
         >
-          {C.dismiss}
+          {tr("home.advisory.dismiss")}
         </DashButton>
       </div>
     </section>
