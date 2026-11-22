@@ -445,7 +445,7 @@ function RequestList({ walletId, network, onShow }: { walletId: string; network:
                       <span className="text-secondary">{t("receive.list.noAmount")}</span>
                     ) : (
                       <>
-                        {shown.full(r.amount)}
+                        <bdi dir="ltr">{shown.full(r.amount)}</bdi>
                         <FiatLine fiat={fiat} duffs={r.amount} hidden={discreet} className="request-fiat" testId={`request-fiat-${r.id}`} />
                       </>
                     )}

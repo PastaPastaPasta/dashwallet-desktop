@@ -115,6 +115,20 @@ const STATES: Record<string, { open: (page: Page, theme: Theme, lang: string) =>
       await expect(page.locator(".field-error")).toBeVisible();
     },
   },
+  ...Object.fromEntries(
+    (["current_receive_address", "platform_receive_address", "receive_requests"] as const).map((command) => [
+      `${command}-failed`,
+      {
+        roots: ["page-receive"],
+        open: async (page: Page, theme: Theme, lang: string) => {
+          await page.goto(fixtureUrl("funded", theme, `&fail=${command}:none&lang=${lang}`));
+          await page.getByTestId("sidebar-receive").click();
+          if (command === "platform_receive_address") await page.getByTestId(TAB.platform).click();
+          await expect(page.getByTestId("page-receive").locator(".form-problem, [role=alert]").first()).toBeVisible();
+        },
+      },
+    ]),
+  ),
   "gap-limit": {
     roots: ["page-receive"],
     open: async (page, theme, lang) => {
@@ -180,4 +194,30 @@ test("the request sheet's copy actions are whole messages", async ({ page }) => 
     expect(label).toMatch(/^\u27e6[^\u27e7]*\u27e7$/);
     expect(title).toBe(label);
   }
+});
+
+test("a requested amount keeps its digit groups in order under ar-XB", async ({ page }) => {
+  await openReceive(page, "light", "ar-XB");
+  await createRequest(page, { amount: "12345" });
+  await page.keyboard.press("Escape");
+  const cell = page.getByTestId("requests-table").locator("tbody tr td.num").first();
+  const groups = await cell.evaluate((td) => {
+    const walker = document.createTreeWalker(td, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const text = n.textContent ?? "";
+      const runs = [...text.matchAll(/\p{Nd}+/gu)];
+      if (runs.length < 2) continue;
+      const box = (m: RegExpMatchArray) => {
+        const r = document.createRange();
+        r.setStart(n!, m.index!);
+        r.setEnd(n!, m.index! + m[0].length);
+        return r.getBoundingClientRect().left;
+      };
+      return { text, first: box(runs[0]), second: box(runs[1]) };
+    }
+    return null;
+  });
+  expect(groups, "a grouped amount in the list").not.toBeNull();
+  expect(groups!.text).toMatch(/^12\D345/u);
+  expect(groups!.first, groups!.text).toBeLessThan(groups!.second);
 });
