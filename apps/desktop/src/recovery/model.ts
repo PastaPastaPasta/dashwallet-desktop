@@ -15,6 +15,8 @@ import type { UnfinishedTransfers } from "../api/generated/UnfinishedTransfers";
 import { REG_COPY } from "../dashpay/registration";
 import { platformOp } from "../dashpay/topup";
 import { finishGrant } from "../dashpay/wizard";
+import { messageTable, t } from "../i18n";
+import { en } from "../i18n/en";
 import { Model } from "../onboarding/model";
 import { onMoveSettledNotify } from "../platform/move";
 import { GrantModel, PAYMENT_PROMPT } from "../tools/grant";
@@ -33,46 +35,63 @@ export const lockKinds = (locks: readonly { kind: LockKind }[]): LockKinds => {
 };
 
 export const RECOVERY_COPY = {
-  title: "Unfinished transfers",
+  get title() {
+    return t("onboarding.unfinished.title");
+  },
   one: (amount: string, kind: LockKind = "shielded") =>
-    kind === "platformAddress"
-      ? `${amount} was funded on Core to add to your Platform address, and this wallet hasn't seen it added on Platform. Finishing adds it at most once.`
-      : `${amount} was funded on Core for Shielded, and this wallet hasn't seen it added on Platform. Finishing adds it at most once.`,
+    kind === "platformAddress" ? t("onboarding.unfinished.oneToPlatformAddress", { amount }) : t("onboarding.unfinished.oneToShielded", { amount }),
   several: (n: number, total: string, kinds: LockKinds = "shielded") =>
     kinds === "mixed"
-      ? `${n} transfers (${total}) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.`
-      : `${n} transfers to ${kinds === "platformAddress" ? "your Platform address" : "Shielded"} (${total}) were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.`,
-  running: "Finishing…",
-  checking: (n: number) => `${n} ${n === 1 ? "transfer may" : "transfers may"} already be finished. We can't confirm it yet.`,
-  finish: "Finish",
-  finishAll: "Finish all",
-  checkAgain: "Check again",
-  details: "Details",
-  retry: "Retry",
-  dismiss: "Dismiss",
+      ? t("onboarding.unfinished.severalMixed", { count: n, total })
+      : kinds === "platformAddress"
+        ? t("onboarding.unfinished.severalToPlatformAddress", { count: n, total })
+        : t("onboarding.unfinished.severalToShielded", { count: n, total }),
+  get running() {
+    return t("onboarding.unfinished.running");
+  },
+  checking: (n: number) => t("onboarding.unfinished.checking", { count: n }),
+  get finish() {
+    return t("onboarding.unfinished.finish");
+  },
+  get finishAll() {
+    return t("onboarding.unfinished.finishAll");
+  },
+  get checkAgain() {
+    return t("onboarding.unfinished.checkAgain");
+  },
+  get details() {
+    return t("onboarding.unfinished.details");
+  },
+  get retry() {
+    return t("onboarding.unfinished.retry");
+  },
+  get dismiss() {
+    return t("onboarding.unfinished.dismiss");
+  },
   sheet: {
-    title: "Unfinished transfers",
-    intro: (kinds: LockKinds = "shielded") =>
-      kinds === "shielded"
-        ? "These transfers were funded on Core before the restore, and this wallet hasn't seen them added on Platform. Finishing adds each at most once."
-        : "These transfers were funded on Core, and this wallet hasn't seen them added on Platform. Finishing adds each at most once.",
-    footer: "Nothing more is paid: finishing only adds money that's already locked.",
-    close: "Close",
-    kind: { shielded: "Shielded", platformAddress: "Add from Dash wallet" } satisfies Record<LockKind, string>,
-    state: {
-      ready: "Ready",
-      checking: "Checking",
-      reportedUsed: "Checking",
-      confirming: "Waiting for the network to confirm",
-      notActive: "Not active on this network yet",
-      unsupported: "Can't be finished in this version",
-      tooSmall: "Too small to finish: worth less than the Platform fee",
-    } satisfies Record<UnfinishedState, string>,
+    get title() {
+      return t("onboarding.unfinished.sheet.title");
+    },
+    intro: (kinds: LockKinds = "shielded") => (kinds === "shielded" ? t("onboarding.unfinished.sheet.introShielded") : t("onboarding.unfinished.sheet.introOther")),
+    get footer() {
+      return t("onboarding.unfinished.sheet.footer");
+    },
+    get close() {
+      return t("onboarding.unfinished.sheet.close");
+    },
+    kind: messageTable("onboarding.unfinished.sheet.kind", Object.keys(en.onboarding.unfinished.sheet.kind satisfies Record<LockKind, string>) as LockKind[]),
+    state: messageTable("onboarding.unfinished.sheet.state", Object.keys(en.onboarding.unfinished.sheet.state satisfies Record<UnfinishedState, string>) as UnfinishedState[]),
     done: {
-      applied: (kind: LockKind = "shielded") => (kind === "platformAddress" ? "Added to your Platform address" : "Added to Shielded"),
-      checking: "Checking: this amount may already be in your balance; we can't confirm it yet.",
-      proofWaiting: "Waiting for the network to confirm",
-      reportedUsed: "The network says this was already added. There's nothing left to finish.",
+      applied: (kind: LockKind = "shielded") => (kind === "platformAddress" ? t("onboarding.unfinished.sheet.done.appliedPlatformAddress") : t("onboarding.unfinished.sheet.done.appliedShielded")),
+      get checking() {
+        return t("onboarding.unfinished.sheet.done.checking");
+      },
+      get proofWaiting() {
+        return t("onboarding.unfinished.sheet.done.proofWaiting");
+      },
+      get reportedUsed() {
+        return t("onboarding.unfinished.sheet.done.reportedUsed");
+      },
     },
   },
 } as const;

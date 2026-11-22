@@ -550,7 +550,9 @@ impl crate::NetworkSession {
                 return Err(crate::EngineError::SpvNotRunning);
             }
             this.stop_spv_inner(&manager).await?;
-            this.start_spv_inner(&manager).await
+            this.start_spv_inner(&manager).await?;
+            this.emit_spv_running();
+            Ok(())
         })
         .await
     }
