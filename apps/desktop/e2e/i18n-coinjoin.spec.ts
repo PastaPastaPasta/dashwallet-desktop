@@ -237,7 +237,7 @@ test.describe("numbers keep their order under ar-XB", () => {
 
   test("the intermediate level's 30 minutes", async ({ page }) => {
     await openCoinJoin(page, "coinjoin-mixing", "light", "ar-XB");
-    const at = await lefts(page, "coinjoin-level-intermediate", /(3)(0)/u);
+    const at = await lefts(page, "coinjoin-level-intermediate", /(\p{Nd})(\p{Nd})\p{Cf}* minutes/u);
     expect(at, "30 in the intermediate level").not.toBeNull();
     expect(at![0]).toBeLessThan(at![1]);
   });
@@ -246,7 +246,7 @@ test.describe("numbers keep their order under ar-XB", () => {
     await openCoinJoin(page, "coinjoin-move-many", "light", "ar-XB");
     await page.getByTestId("coinjoin-move-shield").click();
     await expect(page.getByTestId("move-mixed-body")).toHaveAttribute("data-step", "combine");
-    const at = await lefts(page, "move-mixed-combine-text", /(5)(0)\p{Cf}*\)/u);
+    const at = await lefts(page, "move-mixed-combine-text", /(\p{Nd})(\p{Nd})\p{Cf}*\)/u);
     expect(at, "the (50) limit").not.toBeNull();
     expect(at![0]).toBeLessThan(at![1]);
   });
