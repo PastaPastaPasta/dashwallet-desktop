@@ -59,7 +59,14 @@ on:
     # A dev tag is made by the publish job itself (with GITHUB_TOKEN, which starts no run); this keeps a
     # hand-pushed one from starting one either.
     tags: ["v*", "!v*-dev.*"]
+  # A pull request runs only script-tests and decide, which test the release scripts against fakes:
+  # only when it changes them, this workflow, the packaging or the app version.
   pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - ci/**
+      - packaging/**
+      - rust/crates/dw-app/tauri.conf.json
   schedule:
     - cron: "47 2 * * *"
   workflow_dispatch:
