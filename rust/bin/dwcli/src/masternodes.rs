@@ -2308,4 +2308,19 @@ mod tests {
             Some(K::MissingRequiredArgument)
         );
     }
+
+    #[test]
+    fn a_spend_refused_for_unreadable_payment_records_prints_its_code_and_message() {
+        let f = Failure::from(MasternodesError::from(EngineError::EvidenceUnreadable));
+        assert_eq!(
+            error_line(&f.code, &f.message),
+            json!({
+                "ok": false,
+                "error": {
+                    "code": "evidence_unreadable",
+                    "message": "some of this wallet's payment records cannot be read; sending is paused",
+                },
+            })
+        );
+    }
 }
