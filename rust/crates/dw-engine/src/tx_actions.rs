@@ -121,6 +121,26 @@ pub(crate) mod sweep_stop {
     }
 }
 
+/// Tests: the load's step fails once for a wallet with marks, in the
+/// session of `db_path`.
+#[cfg(test)]
+pub(crate) mod finish_fault {
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static ARMED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    pub(crate) fn arm(db_path: &Path) {
+        ARMED.lock().unwrap().push(db_path.to_path_buf());
+    }
+
+    pub(crate) fn take(db_path: &Path) -> bool {
+        let mut armed = ARMED.lock().unwrap();
+        let found = armed.iter().position(|p| p == db_path);
+        found.map(|i| armed.remove(i)).is_some()
+    }
+}
+
 /// Settings key prefix (wallet scope) of the signed transaction of a sent
 /// mark, its consensus hex, written and dropped with the mark (#170 case
 /// 1). Apart from the mark, so a build that knows no such key still reads
@@ -282,7 +302,9 @@ pub(crate) fn load_abandoned(appdb: &AppDb, wallet: WalletId) -> (Vec<(Txid, Tra
 /// Only marked payments are swept; one mined or InstantSend-locked since
 /// (a height-only row, a record in a block or locked, a stored lock) counts
 /// again and is left. Run before the wallets load, so a swept payment's
-/// change is never credited. A sweep that cannot be stored fails the load.
+/// change is never credited. A mark is known by its key, so one whose copy
+/// does not read back still counts. A read that fails (the marks, a stored
+/// record) or a sweep that cannot be stored fails the load.
 pub(crate) fn finish_marked_abandons(
     persister: &platform_wallet_storage::SqlitePersister,
     appdb: &AppDb,
@@ -294,9 +316,25 @@ pub(crate) fn finish_marked_abandons(
     };
     let mut listed = None;
     for &wallet in wallets {
-        let (marks, _) = load_abandoned(appdb, wallet);
+        // Each mark by its key: one whose copy does not read back still
+        // names its payment.
+        let rows = (appdb.settings_with_prefix_lossy(&wallet.to_string(), ABANDONED_PREFIX))
+            .map_err(|e| storage(&e))?;
+        let marks: BTreeMap<Txid, Option<Transaction>> = (rows.into_iter())
+            .filter_map(|(key, value)| {
+                let txid = Txid::from_str(&key[ABANDONED_PREFIX.len()..]).ok()?;
+                let copy = (value.and_then(|v| hex::decode(v).ok()))
+                    .and_then(|b| deserialize::<Transaction>(&b).ok())
+                    .filter(|tx| tx.txid() == txid);
+                Some((txid, copy))
+            })
+            .collect();
         if marks.is_empty() {
             continue;
+        }
+        #[cfg(test)]
+        if finish_fault::take(db_path) {
+            return Err(EngineError::Storage("test: the load's step fails".into()));
         }
         let all = match &mut listed {
             Some(all) => all,
@@ -307,30 +345,38 @@ pub(crate) fn finish_marked_abandons(
         let (outputs, locked) = crate::history_ops::txids_with_outputs_and_locks(
             db_path,
             wallet,
-            marks.iter().map(|(t, _)| *t),
+            marks.keys().copied(),
         )
         .map_err(|e| storage(&e))?;
-        let unswept = |t: &Txid| {
-            if persisted.recordless.contains(t) || locked.contains(t) {
-                return false;
+        let mut pending: BTreeMap<Txid, Option<Transaction>> = BTreeMap::new();
+        for (t, copy) in marks {
+            if persisted.recordless.contains(&t) || locked.contains(&t) {
+                continue;
             }
-            if !persisted.records.contains(t) {
-                return outputs.contains(t);
-            }
-            match persister.get_core_tx_record(wallet.0, t) {
-                Ok(Some(r)) => matches!(
-                    r.context,
-                    key_wallet::transaction_checking::TransactionContext::Mempool
-                ),
-                Ok(None) => outputs.contains(t),
-                Err(e) => {
-                    tracing::warn!(%wallet, error = %e, "unreadable record of an abandoned payment: left as stored");
-                    false
+            if !persisted.records.contains(&t) {
+                if outputs.contains(&t) {
+                    pending.insert(t, copy);
                 }
+                continue;
             }
-        };
-        let pending: BTreeMap<Txid, Transaction> =
-            (marks.into_iter()).filter(|(t, _)| unswept(t)).collect();
+            match persister
+                .get_core_tx_record(wallet.0, &t)
+                .map_err(|e| storage(&e))?
+            {
+                Some(r) => {
+                    if matches!(
+                        r.context,
+                        key_wallet::transaction_checking::TransactionContext::Mempool
+                    ) {
+                        pending.insert(t, Some(r.transaction));
+                    }
+                }
+                None if outputs.contains(&t) => {
+                    pending.insert(t, copy);
+                }
+                None => {}
+            }
+        }
         let Some(&root) = pending.keys().next() else {
             continue;
         };
@@ -340,17 +386,14 @@ pub(crate) fn finish_marked_abandons(
             .iter()
             .filter(|t| !pending.contains_key(*t))
         {
-            match persister.get_core_tx_record(wallet.0, t) {
-                Ok(Some(r)) => {
-                    spent_by_others.extend(r.transaction.input.iter().map(|i| i.previous_output))
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(%wallet, error = %e, "unreadable record beside an abandoned payment's sweep")
-                }
+            if let Some(r) = persister
+                .get_core_tx_record(wallet.0, t)
+                .map_err(|e| storage(&e))?
+            {
+                spent_by_others.extend(r.transaction.input.iter().map(|i| i.previous_output));
             }
         }
-        let released: BTreeSet<OutPoint> = (pending.values())
+        let released: BTreeSet<OutPoint> = (pending.values().flatten())
             .flat_map(|tx| tx.input.iter().map(|i| i.previous_output))
             .filter(|o| !pending.contains_key(&o.txid) && !spent_by_others.contains(o))
             .collect();

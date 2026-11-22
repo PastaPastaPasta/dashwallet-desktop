@@ -425,8 +425,10 @@ confirms at once; coinbase Immature/NotAccepted. `counts_toward_balance = false`
   the wallet sees them spent, by the payment itself or by a conflicting transaction: every coin read drops the
   reservation of a coin the wallet no longer holds unspent. Over SPV the broadcast is fed into the wallet's own
   mempool view, so its inputs usually show as spent (the transaction appears unconfirmed in the history) right
-  away. Reservations live in the session: closing the network (or restarting) drops them. Nothing that merely
-  elapses releases them, as with platform-wallet's pending-spend fence: re-selecting those coins could sign a
+  away. The reservation lives in the session, but a payment is recorded as sent before it is handed to the
+  network: after closing the network or a restart its inputs are claimed again from that record, and stay
+  reserved until the wallet sees them spent or the payment is abandoned. Nothing that merely elapses releases
+  them, as with platform-wallet's pending-spend fence: re-selecting those coins could sign a
   second spend of coins the first transaction may still take.
 - **Address book after a send (final review M7).** Written only once a broadcast was accepted or its outcome is
   unknown, never for a payment that was not sent. Like dash-qt's `sendCoins`, every recipient not yet in the
