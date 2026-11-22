@@ -16,7 +16,7 @@ launch of an unsigned app downloaded the ordinary way.
   image with the state it shows and the release it was taken on.
 - Keep a **worksheet** per machine (a local file, for example `h08-<machine>.md`, never uploaded as is). It holds the
   baselines each run compares against: wallet names, balances, txids, labels, addresses, the signature, settings.
-  The results table at the end gets only pass, fail or skipped, with issue numbers.
+  The results table at the end gets only the statuses section 7 lists, with issue numbers.
 - Each section ends with its verdicts. **Fail if**: a failure to file (section 7). **Stop** or **incomplete**: not a
   product failure; redo the step or finish the report before going on. Anything else that differs from an
   "Expected" is a finding to note in the worksheet and the results.
@@ -56,9 +56,10 @@ $Root = "$env:APPDATA\org.dash.wallet.desktop"
 $Run = "0.1.0-E"; $Bak = "$env:USERPROFILE\h08-backup-$Run"
 # Every folder and file under a root, with each file's SHA-256: two equal trees print the same list.
 function Get-Tree($p) {
-  Get-ChildItem -LiteralPath $p -Recurse -Force | ForEach-Object {
+  $p = (Get-Item -LiteralPath $p -Force -ErrorAction Stop).FullName.TrimEnd('\')
+  Get-ChildItem -LiteralPath $p -Recurse -Force -ErrorAction Stop | ForEach-Object {
     $rel = $_.FullName.Substring($p.Length)
-    if ($_.PSIsContainer) { "D $rel" } else { "F $rel $((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)" }
+    if ($_.PSIsContainer) { "D $rel" } else { "F $rel $((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256 -ErrorAction Stop).Hash)" }
   } | Sort-Object
 }
 ```
@@ -148,7 +149,7 @@ inherits the vault's protection. So each release pair needs **two runs**, each f
 
 That is six runs per machine (0.1.0, 0.2.0 and 0.3.0, each E and S). If a machine cannot do all six, record each
 pair it skips as **outstanding** in the results, not as covered by another machine. Do the Apple silicon Mac and
-Windows 11 in full first.
+Windows 11 in full first. End each machine with a run S, so section 4 has a secret-store entry to check.
 
 Touch ID and Windows Hello are not in these releases or in the candidate, so there is no biometric step.
 
@@ -210,7 +211,7 @@ Touch ID and Windows Hello are not in these releases or in the candidate, so the
         - macOS: `test -d "$BAK" && test ! -e "$ROOT.after-$RUN" && mv "$ROOT" "$ROOT.after-$RUN" && ditto "$BAK" "$ROOT" && diff -rq "$BAK" "$ROOT" && echo SAME`.
           Expected: `SAME`;
         - Windows: `Test-Path $Bak` prints `True` and `Test-Path "$Root.after-$Run"` prints `False`; then
-          `Rename-Item $Root "$Root.after-$Run" -ErrorAction Stop`;
+          `Move-Item -LiteralPath $Root -Destination "$Root.after-$Run" -ErrorAction Stop`;
           `robocopy $Bak $Root /E; if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }`;
           `Compare-Object (Get-Tree $Bak) (Get-Tree $Root)` prints nothing.
 
@@ -227,7 +228,8 @@ candidate's version; the baseline signature does not verify or signing again giv
 step 10 fails; baseline 2 differs in step 11 or 13; after step 14's sync, one of the wallet details step 14 lists, the baseline 2
 balance or the single step 10 row is missing or different.
 **Stop and redo the run** (not a product failure): a backup or restore comparison in step 6 or 14 shows a
-difference.
+difference. Before the redo, delete that attempt's backup folder (`rm -rf "$BAK"` or
+`Remove-Item -Recurse -Force $Bak`), and restore the moved-aside root if step 14 moved it.
 **Fail if** (finding): the installer will not upgrade over `OLD`; the downgraded `OLD` crashes, shows a blank
 window or looks empty instead of refusing clearly.
 
@@ -238,13 +240,16 @@ On each machine, after its last run of section 3, with the candidate installed a
 ### macOS
 
 - [ ] Quit the app. Drag Dash Wallet from Applications to the Trash and empty it. Expected: nothing in
-      Applications; the data root is still there (`ls ~/Library/Application\ Support/org.dash.wallet.desktop`).
+      Applications; the data root is still there (`ls ~/Library/Application\ Support/org.dash.wallet.desktop`); the
+      Keychain item written in the worksheet at step 3 is still listed (data kept, so the next install can open the
+      wallet).
 - [ ] Install the candidate again and open it. Expected: the same wallet as baseline 2 (an app removed by
       dragging to the Trash keeps its data, as is usual on macOS).
 - [ ] Full removal: quit, delete the app, then delete
       `~/Library/Application Support/org.dash.wallet.desktop`, `~/Library/Caches/org.dash.wallet.desktop` and
       `~/Library/WebKit/org.dash.wallet.desktop` if present. In Keychain Access, delete the exact item written in
-      the worksheet at step 3 (run S only), and nothing else. Install again.
+      the worksheet at step 3, and nothing else (macOS has no uninstaller, so removing the item by hand is part of
+      this step). Install again.
       Expected: the early-release notice, then Welcome with no wallet.
 
 ### Windows
@@ -252,17 +257,19 @@ On each machine, after its last run of section 3, with the candidate installed a
 - [ ] Quit the app. Settings ▸ Apps ▸ Installed apps (Windows 11) or Apps & features (Windows 10) ▸ Dash Wallet ▸
       Uninstall. Expected: no UAC prompt; the uninstaller shows a **Delete the application data** checkbox. Leave it
       unticked. Expected: the Start menu entry and the install folder go; `$env:APPDATA\org.dash.wallet.desktop`
-      stays.
+      stays; the Credential Manager entry written in the worksheet at step 3 is still listed (data kept, so the next
+      install can open the wallet).
 - [ ] Install again and open it. Expected: the same wallet as baseline 2.
 - [ ] Uninstall again, this time ticking **Delete the application data**. Expected:
       `$env:APPDATA\org.dash.wallet.desktop` and `$env:LOCALAPPDATA\org.dash.wallet.desktop` are both gone.
 - [ ] Credential Manager ▸ Windows Credentials ▸ Generic Credentials: look for the exact entry written in the
-      worksheet at step 3 (run S only). Note whether the uninstaller removed it; if not, remove that entry and
-      nothing else. Install again. Expected: the early-release notice, then Welcome with no wallet.
+      worksheet at step 3. Expected: gone. If it is still listed, record the failure (section 7) **before** you
+      touch it; then remove that entry and nothing else. Install again. Expected: the early-release notice, then
+      Welcome with no wallet.
 
-**Fail if:** removing the app without the checkbox removes the wallet; the checkbox is missing; with it ticked,
-either folder stays; the uninstaller asks for administrator rights; after full removal the app does not start at
-the notice and Welcome. Deleting a folder by hand after the uninstaller left it does not turn a failure into a pass.
+**Fail if:** removing the app without the checkbox removes the wallet or its secret-store entry; the checkbox is
+missing; with it ticked, either folder or the secret-store entry stays; the uninstaller asks for administrator rights; after full removal the app does not start at
+the notice and Welcome. Deleting a folder or an entry by hand after the uninstaller left it does not turn a failure into a pass.
 
 ## 5. Emptying the data root between runs
 
