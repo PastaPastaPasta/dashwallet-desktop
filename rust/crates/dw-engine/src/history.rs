@@ -441,16 +441,18 @@ pub(crate) fn locked_claimants(
         .collect()
 }
 
-/// The payments this app sent that the history holds no longer out of a
-/// block and not abandoned: their marks can go.
+/// The payments this app sent that the history no longer holds or holds
+/// ChainLocked: their marks can go. An abandoned or merely mined payment
+/// keeps its mark, as a later lock or reorg can make it live again.
 pub(crate) fn settled_sends(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
+    chainlock: Option<u32>,
 ) -> Vec<Txid> {
     (sent.keys())
         .filter(|t| {
             txs.get(*t)
-                .is_none_or(|e| e.context.block_info().is_some() || e.is_abandoned())
+                .is_none_or(|e| chain_locked(&e.context, chainlock))
         })
         .copied()
         .collect()
@@ -2583,11 +2585,21 @@ mod tests {
         want.sort();
         assert_eq!(claims, want);
         assert!(claims.iter().all(|(_, t)| *t != beaten));
-        let mut settled = settled_sends(&txs, &sent);
+        assert_eq!(settled_sends(&txs, &sent, None), vec![unstored]);
+        assert_eq!(settled_sends(&txs, &sent, Some(9)), vec![unstored]);
+        let mut settled = settled_sends(&txs, &sent, Some(10));
         settled.sort();
-        let mut want = vec![mined, abandoned, unstored];
+        let mut want = vec![mined, unstored];
         want.sort();
         assert_eq!(settled, want);
+        assert!(!settled.contains(&abandoned));
+        let reorged = txs.get_mut(&mined).unwrap();
+        reorged.context = TransactionContext::Mempool;
+        reorged.instant_locked = true;
+        assert!(
+            unmined_own_spends(&txs, &sent, None).contains(&(coin(3), mined)),
+            "a reorg back to the mempool, locked: the kept mark claims again"
+        );
     }
 
     /// #170 case 11: only a ChainLock beats an InstantSend lock

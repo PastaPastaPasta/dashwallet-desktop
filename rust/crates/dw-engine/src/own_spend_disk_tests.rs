@@ -792,9 +792,9 @@ fn a_lock_arriving_before_the_claims_are_installed_keeps_a_locked_payments_claim
 
 /// Two abandoned payments: P of A and B, whose InstantSend lock arrives
 /// between the wallet's next load's history copy and its claims' install,
-/// and Q of C with no lock. The load restores P's claims and keeps its sent
-/// mark; Q's goes. With the lock known at the following load, P still
-/// claims A.
+/// and Q of C with no lock. The load restores P's claims and keeps both
+/// sent marks. With the lock known at the following load, P still claims
+/// A and B, and Q's kept mark claims nothing.
 #[test]
 fn a_lock_arriving_after_an_abandon_keeps_the_payments_sent_mark() {
     let (_dir, engine, session, id, paid) = wallet_funded_unmined();
@@ -851,7 +851,7 @@ fn a_lock_arriving_after_an_abandon_keeps_the_payments_sent_mark() {
     engine.block_on(load).unwrap().unwrap();
     let marks = sent_marks(&session);
     assert!(marks.contains_key(&p.txid()), "P's sent mark stays");
-    assert!(!marks.contains_key(&q.txid()), "Q's goes");
+    assert!(marks.contains_key(&q.txid()), "Q's stays too");
 
     engine.block_on(session.unload_wallet(id)).unwrap();
     let copied = Arc::new(crate::coins::TestPause::default());
@@ -870,7 +870,47 @@ fn a_lock_arriving_after_an_abandon_keeps_the_payments_sent_mark() {
     mined(&engine, &session, id, TIP, vec![paid]);
     let held_now = held(&engine, &session, id);
     assert!(!held_now.contains(&a), "P claims A");
+    assert!(!held_now.contains(&b), "and B");
     assert!(held_now.contains(&c), "Q's coin is credited");
+}
+
+/// An abandoned payment P of A and B whose mark a load could drop, then
+/// relayed again with its InstantSend lock: the wallet stores it locked,
+/// and after the next load and the funding block scanned again A and B
+/// stay spent and are not offered.
+#[test]
+fn an_abandoned_payment_relayed_with_its_lock_keeps_its_coins_spent() {
+    let (_dir, engine, session, id, paid) = wallet_funded_unmined();
+    let (a, b) = (OutPoint::new(paid.txid(), 0), OutPoint::new(paid.txid(), 1));
+    let p = send(
+        &engine,
+        &session,
+        id,
+        CoinSource::Outpoints(vec![a, b]),
+        2 * COIN,
+        true,
+    );
+    mempool(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    abandon(&engine, &session, id, p.txid());
+    let reload = || {
+        engine.block_on(session.unload_wallet(id)).unwrap();
+        engine.block_on(session.load_wallet(id)).unwrap();
+    };
+    reload();
+
+    instant_lock(&engine, &session, id, &p);
+    wait_stored(&session, id, &[p.txid()]);
+    assert!(
+        (session.hub.history.get(&id, &p.txid())).is_some_and(|e| e.instant_locked),
+        "the relay is taken locked"
+    );
+    reload();
+    mined(&engine, &session, id, TIP, vec![paid]);
+    let held_now = held(&engine, &session, id);
+    assert!(!held_now.contains(&a), "A stays spent");
+    assert!(!held_now.contains(&b), "B stays spent");
+    assert!(!spendable(&engine, &session, id, a), "A is not offered");
 }
 
 /// The same payment paid to another loaded wallet, its lock delivered
@@ -1226,7 +1266,7 @@ fn opened_later(
 
 /// The wallet's ChainLock of block `hash` at `height`, as dash-spv
 /// applies it; waits for the store to hold it.
-fn chain_lock(
+pub(super) fn chain_lock(
     engine: &Engine,
     session: &NetworkSession,
     id: WalletId,

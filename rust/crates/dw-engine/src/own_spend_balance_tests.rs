@@ -923,10 +923,11 @@ fn sent_marks(session: &NetworkSession, id: WalletId) -> BTreeSet<Txid> {
         .collect()
 }
 
-/// The mark of a payment this app sent goes at the first load after it is
-/// mined; a pending one's stays.
+/// The mark of a payment this app sent goes at the first load after its
+/// block is ChainLocked; a mined one's stays until then, as a reorg can
+/// return it to the mempool, and a pending one's stays.
 #[test]
-fn a_payment_mark_goes_at_the_load_after_it_is_mined() {
+fn a_payment_mark_goes_at_the_load_after_it_is_chainlocked() {
     let (_dir, engine, session, id) = funded_wallet();
     let mined_one = send(&engine, &session, id, CoinSource::Any, COIN, false);
     mempool(&engine, &session, id, &mined_one);
@@ -936,8 +937,15 @@ fn a_payment_mark_goes_at_the_load_after_it_is_mined() {
         sent_marks(&session, id),
         BTreeSet::from([mined_one.txid(), pending.txid()])
     );
-    mined(&engine, &session, id, TIP + 1, vec![mined_one]);
+    mined(&engine, &session, id, TIP + 1, vec![mined_one.clone()]);
 
+    let session = reopen(&engine, session);
+    assert_eq!(
+        sent_marks(&session, id),
+        BTreeSet::from([mined_one.txid(), pending.txid()])
+    );
+    let block = super::block_with(vec![mined_one]).block_hash();
+    super::own_spend_disk_tests::chain_lock(&engine, &session, id, TIP + 1, block);
     let session = reopen(&engine, session);
     assert_eq!(sent_marks(&session, id), BTreeSet::from([pending.txid()]));
 }
@@ -1187,5 +1195,5 @@ fn a_load_with_an_unreadable_abandoned_mark_claims_nothing() {
     let session = reopen(&engine, session);
     assert!(held(&engine, &session, id).contains(&a));
     assert!(stored_unspent(&session, id, a));
-    assert!(!sent_marks(&session, id).contains(&payment.txid()));
+    assert!(sent_marks(&session, id).contains(&payment.txid()));
 }
