@@ -12,7 +12,7 @@ import type { GrantRequest } from "../api/generated/GrantRequest";
 import type { ShieldedSpendOutcome } from "../api/generated/ShieldedSpendOutcome";
 import type { ShieldOutcome } from "../api/generated/ShieldOutcome";
 import { SHIELDED_CODES } from "../api/pending";
-import { RESCAN_INTERRUPTED } from "../app/rescan";
+import { RESCAN_TEXT } from "../app/rescan";
 import { COPY as DASHPAY_COPY } from "../dashpay/status";
 import { platformOp } from "../dashpay/topup";
 import { t } from "../i18n";
@@ -319,7 +319,7 @@ export function shieldedErrorText(e: unknown, credits: (c: string) => string, du
     case "platform.context_unavailable":
       return t("transfer.shielded.error.contextUnavailable");
     case "rescan_interrupted":
-      return RESCAN_INTERRUPTED;
+      return RESCAN_TEXT.interrupted;
     case "platform.trust_mismatch":
       return t("transfer.shielded.error.trustMismatch");
     case "platform.feature_off":

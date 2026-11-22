@@ -14,7 +14,7 @@ import type { RegistrationRequest } from "../api/generated/RegistrationRequest";
 import type { RegistrationStatus } from "../api/generated/RegistrationStatus";
 import type { RegistrationWaitName } from "../api/generated/RegistrationWaitName";
 import type { StartupStatus } from "../api/generated/StartupStatus";
-import { RESCAN_INTERRUPTED } from "../app/rescan";
+import { RESCAN_TEXT } from "../app/rescan";
 
 /** Each rendered state of the Home card (the design's state inventory, S2–S17; DP1-10's S19, S20). */
 export type CardState =
@@ -202,7 +202,7 @@ export function failureText(failure: RegistrationFailure, amount: (duffs: number
     case "registration.not_synced":
       return "The wallet had not finished syncing.";
     case "rescan_interrupted":
-      return RESCAN_INTERRUPTED;
+      return RESCAN_TEXT.interrupted;
     // A funding budget below the lock and its fee; Continue asks for a new approval.
     case "platform.grant_exceeded":
       return "The cost went above what you approved.";
