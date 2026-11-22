@@ -445,25 +445,44 @@ pub(crate) fn locked_claimants(
         .collect()
 }
 
-/// The payments this app sent that the history no longer holds or holds
-/// ChainLocked: their record says so, or its block is the one the wallet's
-/// own ChainLock `(height, hash)` names. Their marks can go. Every other
-/// payment keeps its mark, an abandoned or mined one too, even below the
-/// lock's height: a stored block a reorg replaced is not marked, and a
-/// later lock or reorg can make the payment live again.
-pub(crate) fn settled_sends(
+/// The payments this app sent whose marks may go, each with its stored
+/// block: gone from the history (`None`), or in a block at or below the
+/// wallet's own ChainLock height. Every other payment keeps its mark, an
+/// abandoned or unmined one too ([`proven_settled`] decides the rest).
+pub(crate) fn settled_candidates(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
-    chainlock: Option<(u32, dashcore::BlockHash)>,
-) -> Vec<Txid> {
-    let final_block = |e: &TxEntry| {
-        matches!(e.context, TransactionContext::InChainLockedBlock(_))
-            || matches!((e.context.block_info(), chainlock),
-                (Some(b), Some((height, hash))) if b.height() == height && b.block_hash() == hash)
-    };
+    chainlock_height: Option<u32>,
+) -> Vec<(Txid, Option<(u32, dashcore::BlockHash)>)> {
     (sent.keys())
-        .filter(|t| txs.get(*t).is_none_or(final_block))
-        .copied()
+        .filter_map(|t| match txs.get(t) {
+            None => Some((*t, None)),
+            Some(e) => {
+                let b = e.context.block_info()?;
+                (b.height() <= chainlock_height?)
+                    .then_some((*t, Some((b.height(), b.block_hash()))))
+            }
+        })
+        .collect()
+}
+
+/// The `candidates` whose marks go: gone from the history, or in the block
+/// the header chain holds at their height while it holds the ChainLock's
+/// block too. A stored context, a height or a missing header proves
+/// nothing: a stored block a reorg replaced is not marked, and a later lock
+/// or reorg can make the payment live again.
+pub(crate) fn proven_settled(
+    candidates: Vec<(Txid, Option<(u32, dashcore::BlockHash)>)>,
+    chainlock: Option<(u32, dashcore::BlockHash)>,
+    headers: &HashMap<u32, dashcore::BlockHash>,
+) -> Vec<Txid> {
+    let locked = chainlock.is_some_and(|(height, hash)| headers.get(&height) == Some(&hash));
+    (candidates.into_iter())
+        .filter(|(_, block)| match block {
+            None => true,
+            Some((height, hash)) => locked && headers.get(height) == Some(hash),
+        })
+        .map(|(t, _)| t)
         .collect()
 }
 
@@ -2596,28 +2615,56 @@ mod tests {
         assert!(claims.iter().all(|(_, t)| *t != beaten));
         let zeros = BlockHash::all_zeros();
         let other = BlockHash::from_byte_array([1; 32]);
-        assert_eq!(settled_sends(&txs, &sent, None), vec![unstored]);
-        assert_eq!(settled_sends(&txs, &sent, Some((9, zeros))), vec![unstored]);
+        let tip = BlockHash::from_byte_array([2; 32]);
+        let settled = |txs: &HashMap<Txid, TxEntry>,
+                       cl: Option<(u32, BlockHash)>,
+                       headers: &[(u32, BlockHash)]| {
+            let candidates = settled_candidates(txs, &sent, cl.map(|c| c.0));
+            let mut s = proven_settled(candidates, cl, &headers.iter().copied().collect());
+            s.sort();
+            s
+        };
+        let mut gone_and_mined = vec![mined, unstored];
+        gone_and_mined.sort();
+        assert_eq!(settled(&txs, None, &[]), vec![unstored]);
         assert_eq!(
-            settled_sends(&txs, &sent, Some((10, other))),
-            vec![unstored],
-            "a ChainLock of another block at its height keeps the mark"
+            settled(&txs, Some((9, tip)), &[(9, tip), (10, zeros)]),
+            vec![unstored]
         );
         assert_eq!(
-            settled_sends(&txs, &sent, Some((11, zeros))),
-            vec![unstored],
-            "below the lock's height, with no ancestry known, the mark stays"
+            settled(&txs, Some((11, tip)), &[(10, zeros), (11, tip)]),
+            gone_and_mined,
+            "the header chain holds its block and the lock's"
         );
-        let mut settled = settled_sends(&txs, &sent, Some((10, zeros)));
-        settled.sort();
-        let mut want = vec![mined, unstored];
-        want.sort();
-        assert_eq!(settled, want);
-        assert!(!settled.contains(&abandoned));
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(10, other), (11, tip)]),
+            vec![unstored],
+            "the header chain holds another block at its height"
+        );
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(10, zeros)]),
+            vec![unstored],
+            "the lock's header is not known yet"
+        );
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(10, zeros), (11, other)]),
+            vec![unstored],
+            "the header chain holds another block at the lock's height"
+        );
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(11, tip)]),
+            vec![unstored],
+            "its header is not known yet"
+        );
+        assert!(!settled(&txs, Some((11, tip)), &[(10, zeros), (11, tip)]).contains(&abandoned));
         let chainlocked = txs.get_mut(&mined).unwrap();
         let block = chainlocked.context.block_info().cloned().unwrap();
         chainlocked.context = TransactionContext::InChainLockedBlock(block);
-        assert!(settled_sends(&txs, &sent, None).contains(&mined));
+        assert_eq!(
+            settled(&txs, Some((11, tip)), &[(10, other), (11, tip)]),
+            vec![unstored],
+            "a stored ChainLocked context proves nothing"
+        );
         let reorged = txs.get_mut(&mined).unwrap();
         reorged.context = TransactionContext::Mempool;
         reorged.instant_locked = true;

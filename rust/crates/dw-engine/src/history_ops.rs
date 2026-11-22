@@ -422,10 +422,10 @@ impl NetworkSession {
     /// claim. A block or InstantSend lock beats an unlocked payment; only a
     /// ChainLock-covered block beats an InstantSend-locked payment.
     /// Spends key-wallet holds a record of this session are left to it.
-    /// Then the marks of payments gone from the history or ChainLocked go:
-    /// by their record, or by this wallet's own applied ChainLock naming
-    /// their block. A load that did not read every stored record and mark
-    /// does neither.
+    /// Then the marks of payments gone from the history go, and of those
+    /// the SPV header chain proves final: it holds their block, at or below the
+    /// block of this wallet's own applied ChainLock, which it holds too. A
+    /// load that did not read every stored record and mark does neither.
     async fn restore_unmined_spends(
         &self,
         manager: &Manager,
@@ -437,15 +437,15 @@ impl NetworkSession {
             tracing::warn!(%wallet, "history load incomplete: no spend claim restored");
             return;
         }
-        let mut settled = Vec::new();
+        let (mut candidates, mut own) = (Vec::new(), None);
         self.apply_spend_claims(manager, wallet, |core, chainlock| {
             self.hub.history.with_wallet(wallet, |h| {
                 for t in core.instant_send_locks() {
                     h.set_instant_locked(t);
                 }
-                let own = (core.metadata.last_applied_chain_lock.as_ref())
+                own = (core.metadata.last_applied_chain_lock.as_ref())
                     .map(|c| (c.block_height, c.block_hash));
-                settled = crate::history::settled_sends(&h.txs, sent, own);
+                candidates = crate::history::settled_candidates(&h.txs, sent, own.map(|c| c.0));
                 let mut claims = crate::history::unmined_own_spends(&h.txs, sent, chainlock);
                 claims.retain(|(_, spender)| !h.session_held.contains(spender));
                 let locked = crate::history::locked_claimants(&h.txs, &claims);
@@ -453,6 +453,7 @@ impl NetworkSession {
             })
         })
         .await;
+        let settled = self.proven_settled(candidates, own).await;
         if !settled.is_empty() {
             let forgotten = self
                 .appdb_op(move |db| {
@@ -464,6 +465,29 @@ impl NetworkSession {
                 tracing::warn!(%wallet, error = %e, "could not drop the marks of settled payments");
             }
         }
+    }
+
+    /// [`crate::history::proven_settled`] against the SPV header chain,
+    /// read after the claims' guard: the lock's header first, and the
+    /// candidates' only when it holds the lock's block.
+    async fn proven_settled(
+        &self,
+        candidates: Vec<(Txid, Option<(u32, dashcore::BlockHash)>)>,
+        chainlock: Option<(u32, dashcore::BlockHash)>,
+    ) -> Vec<Txid> {
+        let mut headers = HashMap::new();
+        if let Some((height, hash)) = chainlock
+            && candidates.iter().any(|(_, b)| b.is_some())
+            && self.hub.header_hash(height).await == Some(hash)
+        {
+            headers.insert(height, hash);
+            let heights = candidates
+                .iter()
+                .filter_map(|(_, b)| b.map(|b| b.0))
+                .collect();
+            headers.extend(self.hub.header_hashes(heights).await);
+        }
+        crate::history::proven_settled(candidates, chainlock, &headers)
     }
 
     /// Restores the claims `select` chooses, given the wallet and the best

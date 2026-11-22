@@ -1519,7 +1519,10 @@ impl SessionHub {
                 self.note_chainlock(chain_lock.block_height, chain_lock.block_hash);
                 let (locked, settled): (Vec<Txid>, Vec<Txid>) = self.history.with_wallet(id, |h| {
                     // key-wallet promotes by height; only a record whose own
-                    // block the lock names is final for its sent mark.
+                    // block the lock names is final for its sent mark. This
+                    // relies on dash-spv dispatching only validated locks
+                    // (BLS-verified, header-matched): recheck that on any
+                    // rust-dashcore bump.
                     let settled = (locked_transactions.values().flatten())
                         .filter(|t| {
                             (h.txs.get(*t).and_then(|e| e.context.block_info())).is_some_and(|b| {

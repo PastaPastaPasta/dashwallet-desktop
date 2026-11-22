@@ -1216,6 +1216,97 @@ fn a_locked_payment_keeps_its_coin_from_selection_without_a_claim() {
     assert!(!spendable(&engine, &session, id, a), "A is not offered");
 }
 
+/// Answers the session's header lookups from `chain` alone: a height it
+/// does not name has no header yet.
+pub(super) fn header_chain(session: &NetworkSession, chain: &[(u32, dashcore::BlockHash)]) {
+    let chain: std::collections::HashMap<u32, dashcore::BlockHash> =
+        chain.iter().copied().collect();
+    session.hub.attach_headers(Arc::new(move |height| {
+        let hash = chain.get(&height).copied();
+        Box::pin(async move { hash })
+    }));
+}
+
+/// P, a payment of `id` whose block the scan reaches after the wallet
+/// applied a ChainLock at its height naming `locked(P)`: the record is
+/// stored ChainLocked by height (key-wallet's catch-up), and no ChainLock
+/// of the session names it.
+fn mined_below_a_chainlock(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    locked: impl FnOnce(&Transaction) -> dashcore::BlockHash,
+) -> Transaction {
+    use platform_wallet::changeset::PlatformWalletPersistence;
+    let p = send(engine, session, id, CoinSource::Any, COIN / 2, false);
+    mempool(engine, session, id, &p);
+    chain_lock(engine, session, id, TIP + 1, locked(&p));
+    mined(engine, session, id, TIP + 1, vec![p.clone()]);
+    let persister = Arc::clone(&session.live().unwrap().persister);
+    eventually("the record stored ChainLocked", || {
+        persister.flush(id.0).unwrap();
+        (persister.get_core_tx_record(id.0, &p.txid()).unwrap()).is_some_and(|r| {
+            matches!(
+                r.context,
+                key_wallet::transaction_checking::TransactionContext::InChainLockedBlock(_)
+            )
+        })
+    });
+    p
+}
+
+/// Wallet `id` closed and opened again with `chain` as the header chain.
+fn reload_with_headers(
+    engine: &Engine,
+    session: &Arc<NetworkSession>,
+    id: WalletId,
+    chain: &[(u32, dashcore::BlockHash)],
+) {
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    header_chain(session, chain);
+    engine.block_on(session.load_wallet(id)).unwrap();
+}
+
+/// A record stored ChainLocked in block X at H, while the header chain
+/// holds Y at H, the block the wallet's ChainLock names: a stored context
+/// proves nothing, and the mark stays.
+#[test]
+fn a_record_stored_chainlocked_in_a_block_the_header_chain_replaced_keeps_its_mark() {
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let y = super::block_with(vec![foreign()]).block_hash();
+    let p = mined_below_a_chainlock(&engine, &session, id, |_| y);
+    reload_with_headers(&engine, &session, id, &[(TIP + 1, y)]);
+    assert!(sent_marks(&session, id).contains(&p.txid()));
+}
+
+/// A payment mined after its ChainLock was applied (stored ChainLocked by
+/// height at catch-up), whose block the session's locks never named: its
+/// mark goes at the next load whose header chain holds its block, which is
+/// the block the wallet's ChainLock names.
+#[test]
+fn a_record_chainlocked_at_catch_up_loses_its_mark_once_the_header_chain_proves_it() {
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let p = mined_below_a_chainlock(&engine, &session, id, |p| {
+        super::block_with(vec![p.clone()]).block_hash()
+    });
+    let x = super::block_with(vec![p.clone()]).block_hash();
+    reload_with_headers(&engine, &session, id, &[(TIP + 1, x)]);
+    assert!(!sent_marks(&session, id).contains(&p.txid()));
+}
+
+/// The same payment with the header chain behind its height: no proof,
+/// and the mark stays.
+#[test]
+fn a_header_chain_behind_a_payments_block_keeps_its_mark() {
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let p = mined_below_a_chainlock(&engine, &session, id, |p| {
+        super::block_with(vec![p.clone()]).block_hash()
+    });
+    let x = super::block_with(vec![p.clone()]).block_hash();
+    reload_with_headers(&engine, &session, id, &[(TIP, x)]);
+    assert!(sent_marks(&session, id).contains(&p.txid()));
+}
+
 /// A second wallet of the session, born at [`BIRTH`].
 pub(super) fn second_wallet(engine: &Engine, session: &Arc<NetworkSession>) -> WalletId {
     engine
@@ -1311,6 +1402,26 @@ fn a_chainlock_of_another_block_at_its_height_keeps_a_payments_mark() {
     let other = super::block_with(vec![foreign()]).block_hash();
     chain_lock(&engine, &session, id, TIP + 1, other);
     chain_locked_sentinel(&engine, &session, id, TIP + 2);
+    assert!(sent_marks(&session, id).contains(&p.txid()));
+}
+
+/// A ChainLock of a later block (the next one, at another height): it
+/// covers the payment's block, and key-wallet promotes its record by
+/// height, but it names another block, so the payment's mark stays.
+#[test]
+fn a_chainlock_of_a_later_block_keeps_an_earlier_payments_mark() {
+    let (_dir, engine, session, id, _) = wallet_funded_unmined();
+    let p = send(&engine, &session, id, CoinSource::Any, COIN / 2, false);
+    mempool(&engine, &session, id, &p);
+    mined(&engine, &session, id, TIP + 1, vec![p.clone()]);
+    chain_locked_sentinel(&engine, &session, id, TIP + 2);
+    assert!(
+        (session.hub.history.get(&id, &p.txid())).is_some_and(|e| matches!(
+            e.context,
+            key_wallet::transaction_checking::TransactionContext::InChainLockedBlock(_)
+        )),
+        "the later lock promoted it"
+    );
     assert!(sent_marks(&session, id).contains(&p.txid()));
 }
 

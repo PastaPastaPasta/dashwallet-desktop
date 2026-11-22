@@ -916,11 +916,12 @@ fn a_beaten_payment_keeps_its_other_coin_out_until_it_is_abandoned() {
     assert!(!spendable(&engine, &session, id, b), "B is not");
 }
 
-/// The mark of a payment this app sent goes at the first load after its
-/// block is ChainLocked; a mined one's stays until then, as a reorg can
-/// return it to the mempool, and a pending one's stays.
+/// The mark of a payment this app sent, mined in a session that ended
+/// before its ChainLock, goes at a load whose header chain holds its block
+/// and the block of the wallet's ChainLock. Before that it stays, at a load
+/// with no header known too; a pending one's stays.
 #[test]
-fn a_payment_mark_goes_at_the_load_after_it_is_chainlocked() {
+fn a_payment_mark_goes_at_a_load_whose_header_chain_proves_it_chainlocked() {
     let (_dir, engine, session, id) = funded_wallet();
     let mined_one = send(&engine, &session, id, CoinSource::Any, COIN, false);
     mempool(&engine, &session, id, &mined_one);
@@ -937,9 +938,17 @@ fn a_payment_mark_goes_at_the_load_after_it_is_chainlocked() {
         sent_marks(&session, id),
         BTreeSet::from([mined_one.txid(), pending.txid()])
     );
-    let block = super::block_with(vec![mined_one]).block_hash();
+    let block = super::block_with(vec![mined_one.clone()]).block_hash();
     super::own_spend_disk_tests::chain_lock(&engine, &session, id, TIP + 1, block);
     let session = reopen(&engine, session);
+    assert_eq!(
+        sent_marks(&session, id),
+        BTreeSet::from([mined_one.txid(), pending.txid()]),
+        "no header known at the load"
+    );
+    engine.block_on(session.unload_wallet(id)).unwrap();
+    super::own_spend_disk_tests::header_chain(&session, &[(TIP + 1, block)]);
+    engine.block_on(session.load_wallet(id)).unwrap();
     assert_eq!(sent_marks(&session, id), BTreeSet::from([pending.txid()]));
 }
 
