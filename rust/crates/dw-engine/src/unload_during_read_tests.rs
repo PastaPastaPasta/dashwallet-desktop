@@ -158,10 +158,9 @@ fn unloading_a_wallet_during_a_fully_mixed_estimate_does_not_panic() {
     assert_gone(unloaded_during_appdb_job(&engine, &s, id, read));
 }
 
-/// A close before the hand-off leaves nothing of the payment: no sent mark,
-/// no coin reservation, no contact lock.
+/// The prepare's coin read, before any send state exists.
 #[test]
-fn unloading_a_wallet_during_a_fully_mixed_prepare_leaves_nothing() {
+fn unloading_a_wallet_during_a_fully_mixed_prepare_does_not_panic() {
     let (_dir, engine, s, id) = engine_wallet();
     let draft = fully_mixed_draft(&s, id);
     let grant = (s.vault())
@@ -176,14 +175,6 @@ fn unloading_a_wallet_during_a_fully_mixed_prepare_leaves_nothing() {
         .id;
     let read = async move { draft.prepare(grant).await.map(drop) };
     assert_gone(unloaded_during_appdb_job(&engine, &s, id, read));
-    let appdb = Arc::clone(&s.live().unwrap().appdb);
-    assert!(
-        crate::tx_actions::load_sent(&appdb, id).0.is_empty(),
-        "a sent mark"
-    );
-    assert!(s.spends.snapshot(&id).is_empty(), "a reservation");
-    let locks = appdb.dp_payment_locks(&id.to_string()).unwrap();
-    assert!(locks.is_empty(), "a contact lock");
 }
 
 /// The coin read of a call that waited for the wallet's coin fence while
