@@ -952,7 +952,12 @@ fn a_payments_mark_names_each_coin_it_spends() {
     let tx = send(&engine, &session, id, source, COIN * 3 / 2, false);
     let (sent, read) = crate::tx_actions::load_sent(&session.live().unwrap().appdb, id);
     assert!(read);
-    assert_eq!(sent.get(&tx.txid()), Some(&coins));
+    assert_eq!(sent.get(&tx.txid()).map(|m| &m.coins), Some(&coins));
+    assert_eq!(
+        sent[&tx.txid()].tx.as_ref(),
+        Some(&tx),
+        "the mark holds the payment"
+    );
 }
 
 fn held(engine: &Engine, session: &NetworkSession, id: WalletId) -> BTreeSet<OutPoint> {

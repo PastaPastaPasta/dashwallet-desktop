@@ -167,7 +167,7 @@ impl TestBroadcaster for Seam {
 }
 
 struct Fixture {
-    _dir: tempfile::TempDir,
+    _dir: Option<tempfile::TempDir>,
     engine: Engine,
     session: Arc<NetworkSession>,
     wallet: WalletId,
@@ -177,9 +177,15 @@ struct Fixture {
 /// Carol's request waiting; one confirmed coin.
 fn fixture(encrypted: bool) -> Fixture {
     let dir = dw_testutil::private_tempdir();
-    let engine = Engine::new(
+    let mut f = fixture_at(dir.path(), encrypted);
+    f._dir = Some(dir);
+    f
+}
+
+fn engine_at(root: &std::path::Path) -> Engine {
+    Engine::new(
         EngineConfig {
-            data_root: dir.path().join("data"),
+            data_root: root.join("data"),
             worker_threads: Some(2),
             vault: VaultConfig {
                 kdf: KdfPolicy::Fixed(KdfParams::TEST),
@@ -189,7 +195,12 @@ fn fixture(encrypted: bool) -> Fixture {
         },
         Arc::new(NullSink),
     )
-    .unwrap();
+    .unwrap()
+}
+
+/// [`fixture`] in the data root `root`, which it does not own.
+fn fixture_at(root: &std::path::Path, encrypted: bool) -> Fixture {
+    let engine = engine_at(root);
     let session = open_session(&engine);
     let pass: Option<&'static [u8]> = encrypted.then_some(PASS);
     engine
@@ -210,7 +221,7 @@ fn fixture(encrypted: bool) -> Fixture {
         ))
         .unwrap();
     let f = Fixture {
-        _dir: dir,
+        _dir: None,
         engine,
         session,
         wallet,
@@ -2563,3 +2574,147 @@ fn t2_testnet_the_money_gate_verifies_a_contact() {
 
 #[path = "contact_pay_tests.rs"]
 mod pay;
+
+/// Where [`contact_payment_killed_child`] keeps its data and its report.
+const KILL_ROOT: &str = "DWD_CASE1_CONTACT_KILL_ROOT";
+
+/// Run by [`a_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock`]
+/// in a child process: the fixture's coin stored, a payment to Bob handed
+/// off with its outcome awaited; then it reports and waits for its SIGKILL.
+#[test]
+#[ignore = "the child process of the contact payment kill (#170 case 1)"]
+fn contact_payment_killed_child() {
+    let Some(root) = std::env::var_os(KILL_ROOT) else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let f = fixture_at(&root, true);
+    let utxos = f.with_wallet(|w| async move {
+        let state = w.state().await;
+        let account = state.core_wallet.accounts.standard_bip44_accounts.get(&0);
+        (account.unwrap().utxos.values().cloned()).collect::<Vec<_>>()
+    });
+    f.store(PlatformWalletChangeSet {
+        core: Some(platform_wallet::changeset::CoreChangeSet {
+            new_utxos: utxos,
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    let d = f.draft(BOB);
+    let seam = Seam::install(&d, Net::Hold);
+    let p = (f.engine)
+        .block_on(d.prepare(f.spend(AMOUNT + FEE_ROOM)))
+        .unwrap();
+    let txid = p.summary().txid.clone();
+    let inputs: Vec<String> = (p.summary().inputs.iter())
+        .map(|i| i.outpoint.to_string())
+        .collect();
+    f.session.rt.spawn({
+        let (d, p) = (Arc::clone(&d), Arc::clone(&p));
+        async move {
+            let _ = d.broadcast(p).await;
+        }
+    });
+    wait_until(|| seam.entered.load(Ordering::SeqCst) > 0);
+    assert_eq!(f.rows(), vec![(b58(BOB), txid.clone())]);
+    let report = format!("{}\n{txid}\n{}\n", f.wallet, inputs.join(","));
+    std::fs::write(root.join("reached.tmp"), report).unwrap();
+    std::fs::rename(root.join("reached.tmp"), root.join("reached")).unwrap();
+    loop {
+        std::thread::park();
+    }
+}
+
+/// #170 case 1 through a real kill: a contact payment to Bob handed off
+/// (its outcome awaited, Bob locked behind it), the app killed before the
+/// wallet stored it. The next launch keeps its coin out of coin control
+/// and the balance, lists the payment, and keeps Bob locked by it;
+/// abandoning it unlocks him.
+#[test]
+fn a_contact_payment_killed_after_the_hand_off_keeps_its_coin_and_its_lock() {
+    use std::collections::BTreeSet;
+    use std::str::FromStr;
+    let dir = dw_testutil::private_tempdir();
+    let log = std::fs::File::create(dir.path().join("child.log")).unwrap();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "send::contact_tests::contact_payment_killed_child",
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+        ])
+        .env(KILL_ROOT, dir.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .spawn()
+        .unwrap();
+    let reached = dir.path().join("reached");
+    let start = std::time::Instant::now();
+    while !reached.exists() {
+        let exited = child.try_wait().unwrap();
+        if exited.is_some() || start.elapsed() > std::time::Duration::from_secs(180) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let log = std::fs::read_to_string(dir.path().join("child.log")).unwrap_or_default();
+            panic!("the child never handed the payment off ({exited:?}): {log}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let report = std::fs::read_to_string(&reached).unwrap();
+    let lines: Vec<&str> = report.lines().collect();
+    let (wallet, txid): (WalletId, String) = (lines[0].parse().unwrap(), lines[1].to_owned());
+    let inputs: BTreeSet<OutPoint> = (lines[2].split(','))
+        .map(|o| OutPoint::from_str(o).unwrap())
+        .collect();
+
+    let engine = engine_at(dir.path());
+    let session = open_session(&engine);
+    let f = Fixture {
+        _dir: Some(dir),
+        engine,
+        session,
+        wallet,
+    };
+    let free = || -> BTreeSet<OutPoint> {
+        let filter = crate::CoinFilter {
+            include_locked: true,
+            ..Default::default()
+        };
+        let coins = f
+            .engine
+            .block_on(f.session.utxos(f.wallet, filter))
+            .unwrap();
+        coins.into_iter().map(|c| c.outpoint).collect()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !free().is_disjoint(&inputs) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(free().is_disjoint(&inputs), "its coin is offered again");
+    let total = f.session.balances(&f.wallet).unwrap().unwrap().total;
+    assert!(total < COIN, "its coin counts: {total}");
+    let parsed: Txid = txid.parse().unwrap();
+    assert!(
+        f.session.hub.history.get(&f.wallet, &parsed).is_some(),
+        "not listed"
+    );
+    assert_eq!(
+        f.lock(BOB).map(|l| l.txid),
+        Some(txid.clone()),
+        "Bob is free"
+    );
+
+    let (s, id) = (Arc::clone(&f.session), f.wallet);
+    (f.engine)
+        .block_on(f.session.on_runtime(async move {
+            let manager = s.manager()?;
+            s.abandon_inner(&manager, id, parsed).await
+        }))
+        .unwrap();
+    assert!(f.lock(BOB).is_none(), "the abandon unlocks Bob");
+    assert!(f.rows().is_empty(), "the lock's row went");
+}

@@ -383,7 +383,7 @@ pub(crate) fn unmined_own_spends(
         })
     };
     (sent.iter())
-        .filter_map(|(t, coins)| Some((t, coins, txs.get(t)?)))
+        .filter_map(|(t, mark)| Some((t, &mark.coins, txs.get(t)?)))
         .filter(|(t, _, e)| e.context.block_info().is_none() && !e.is_abandoned() && !beaten(t, e))
         .flat_map(|(t, coins, e)| {
             (e.tx.input.iter())
@@ -395,17 +395,18 @@ pub(crate) fn unmined_own_spends(
 }
 
 /// The payments this app sent that the history holds no longer out of a
-/// block and not abandoned: their marks can go.
+/// block and not abandoned, or does not hold when their mark names no
+/// transaction to restore: their marks can go.
 pub(crate) fn settled_sends(
     txs: &HashMap<Txid, TxEntry>,
     sent: &crate::tx_actions::Sent,
 ) -> Vec<Txid> {
-    (sent.keys())
-        .filter(|t| {
-            txs.get(*t)
-                .is_none_or(|e| e.context.block_info().is_some() || e.is_abandoned())
+    (sent.iter())
+        .filter(|(t, mark)| match txs.get(*t) {
+            Some(e) => e.context.block_info().is_some() || e.is_abandoned(),
+            None => mark.tx.is_none(),
         })
-        .copied()
+        .map(|(t, _)| *t)
         .collect()
 }
 
@@ -546,6 +547,30 @@ impl WalletHistory {
                     abandoned: true,
                 })
                 .abandoned = true;
+        }
+    }
+
+    /// Adds a pending entry for each payment of `sent` whose mark holds its
+    /// transaction and that neither the history nor the store (`stored`)
+    /// holds: one the app signed, and may have handed to the network,
+    /// before it quit with no record stored (#170 case 1).
+    pub fn add_unrecorded_sends(&mut self, sent: &crate::tx_actions::Sent, stored: &HashSet<Txid>) {
+        for (txid, mark) in sent {
+            let Some(tx) = &mark.tx else { continue };
+            if stored.contains(txid) || self.txs.contains_key(txid) {
+                continue;
+            }
+            self.txs.insert(
+                *txid,
+                TxEntry {
+                    tx: tx.clone(),
+                    context: TransactionContext::Mempool,
+                    instant_locked: false,
+                    first_seen: None,
+                    own_inputs: BTreeMap::new(),
+                    abandoned: false,
+                },
+            );
         }
     }
 
@@ -2503,11 +2528,15 @@ mod tests {
         };
         let mut txs = HashMap::new();
         let mut sent = crate::tx_actions::Sent::new();
+        let mark = |coins: &[OutPoint], tx| crate::tx_actions::SentMark {
+            coins: coins.iter().copied().collect(),
+            tx,
+        };
         let mut add = |e: TxEntry, signed: &[OutPoint]| {
             let txid = e.tx.txid();
             txs.insert(txid, e);
             if !signed.is_empty() {
-                sent.insert(txid, signed.iter().copied().collect());
+                sent.insert(txid, mark(signed, None));
             }
             txid
         };
@@ -2530,7 +2559,7 @@ mod tests {
         );
         add(spend(7, &[coin(11)], in_block(11, 0)), &[]);
         let unstored = Txid::from_byte_array([9; 32]);
-        sent.insert(unstored, [coin(9)].into());
+        sent.insert(unstored, mark(&[coin(9)], None));
 
         let mut claims = unmined_own_spends(&txs, &sent);
         claims.sort();
@@ -2543,5 +2572,48 @@ mod tests {
         let mut want = vec![mined, abandoned, unstored];
         want.sort();
         assert_eq!(settled, want);
+    }
+
+    /// #170 case 1: a payment whose mark holds its transaction and that
+    /// no record holds stays marked, gets a pending entry unless the store
+    /// holds it, and then claims the coins the app signed.
+    #[test]
+    fn a_marked_payment_without_a_record_is_restored_pending() {
+        let coin = |n: u8| OutPoint::new(Txid::from_byte_array([n; 32]), 0);
+        let pay = |coins: &[OutPoint]| {
+            tx(
+                coins.iter().map(|c| input(c.txid, c.vout)).collect(),
+                vec![out(1, &hash_addr(9))],
+            )
+        };
+        let (lost, stored) = (pay(&[coin(1), coin(2)]), pay(&[coin(3)]));
+        let sent = crate::tx_actions::Sent::from([
+            (
+                lost.txid(),
+                crate::tx_actions::SentMark {
+                    coins: [coin(1)].into(),
+                    tx: Some(lost.clone()),
+                },
+            ),
+            (
+                stored.txid(),
+                crate::tx_actions::SentMark {
+                    coins: [coin(3)].into(),
+                    tx: Some(stored.clone()),
+                },
+            ),
+        ]);
+        let mut h = WalletHistory::default();
+        assert!(settled_sends(&h.txs, &sent).is_empty());
+        h.add_unrecorded_sends(&sent, &HashSet::from([stored.txid()]));
+        let entry = h.txs.get(&lost.txid()).expect("restored");
+        assert_eq!(entry.tx, lost);
+        assert!(entry.context.block_info().is_none() && !entry.is_abandoned());
+        assert!(!h.txs.contains_key(&stored.txid()));
+        assert_eq!(
+            unmined_own_spends(&h.txs, &sent),
+            vec![(coin(1), lost.txid())]
+        );
+        assert!(settled_sends(&h.txs, &sent).is_empty());
     }
 }

@@ -349,7 +349,6 @@ impl NetworkSession {
             stored,
         } in loaded
         {
-            sends.push((wallet, sent, complete));
             let info = wm.get_wallet_info(&wallet.0);
             let in_memory: Vec<TransactionRecord> = info
                 .map(|info| {
@@ -385,6 +384,9 @@ impl NetworkSession {
                 }
                 h.session_held.extend(in_memory.iter().map(|r| r.txid));
                 h.mark_abandoned(&abandoned);
+                if complete {
+                    h.add_unrecorded_sends(&sent, &stored);
+                }
                 // Stored apart from the records, which can still say mempool.
                 for t in info
                     .into_iter()
@@ -398,6 +400,7 @@ impl NetworkSession {
                     }
                 }
             });
+            sends.push((wallet, sent, complete));
         }
         drop(wm);
         for (wallet, sent, complete) in sends {
@@ -567,6 +570,11 @@ impl NetworkSession {
                 tracing::warn!(%wallet, "stored spends incomplete: none claimed before the history load");
                 return (history, crate::tx_actions::Sent::new());
             }
+            let stored: HashSet<Txid> = (persisted.records.iter())
+                .chain(&persisted.recordless)
+                .copied()
+                .collect();
+            history.add_unrecorded_sends(&sent, &stored);
             (history, sent)
         })
         .await?;

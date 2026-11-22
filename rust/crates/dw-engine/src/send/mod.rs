@@ -2146,6 +2146,14 @@ impl PreparedTx {
             .or_else(|| self.mixed.as_ref().map(dashcore::consensus::serialize))
     }
 
+    /// The signed transaction.
+    fn transaction(&self) -> Option<Transaction> {
+        self.signed()
+            .as_ref()
+            .map(|s| s.transaction().clone())
+            .or_else(|| self.mixed.clone())
+    }
+
     fn phase(&self) -> std::sync::MutexGuard<'_, Phase> {
         self.phase.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -2238,18 +2246,22 @@ impl TxDraft {
                 prepared.summary.txid
             ),
         );
-        let coins = sent.then(|| {
+        let value = sent.then(|| {
             let all = || prepared.summary.inputs.iter().map(|i| i.outpoint).collect();
-            (prepared.own_inputs.clone().unwrap_or_else(all).iter())
-                .map(OutPoint::to_string)
-                .collect::<Vec<_>>()
-                .join(",")
+            let coins: Vec<OutPoint> = prepared.own_inputs.clone().unwrap_or_else(all);
+            match prepared.transaction() {
+                Some(tx) => crate::tx_actions::sent_mark_value(&coins, &tx),
+                None => (coins.iter())
+                    .map(OutPoint::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            }
         });
         self.session
             .appdb_op(move |db| {
                 #[cfg(all(test, debug_assertions))]
                 db.fault_point(SENT_MARK_FAULT, dw_appdb::fault::Stage::Before)?;
-                db.set_setting_durable(&scope, &key, coins.as_deref())
+                db.set_setting_durable(&scope, &key, value.as_deref())
             })
             .await
     }
