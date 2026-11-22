@@ -52,6 +52,10 @@ pub(crate) mod kind {
     pub(crate) const DPNS_LABEL: &str = "dpns_label";
     /// A contact request; the key is [`super::contact_request_key`].
     pub(crate) const CONTACT_REQUEST: &str = "contact_request";
+    /// The wallet's own sent copy of a contact request, same key: it may
+    /// verify without its `autoAcceptProof`, so it never shares a record
+    /// with a received copy.
+    pub(crate) const CONTACT_REQUEST_SENT: &str = "contact_request_sent";
     /// A DashPay payment; the key is the txid.
     #[expect(
         dead_code,

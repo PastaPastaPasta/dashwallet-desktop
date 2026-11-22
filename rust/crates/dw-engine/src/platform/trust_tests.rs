@@ -813,6 +813,31 @@ fn a_verified_contact_request_records_the_contacts_model_key() {
     );
 }
 
+/// H-09 (Astra round 3): one installation holds both copies of a request,
+/// ours as sent and the other party's as received. A record our sent copy
+/// earned under the missing-proof tolerance never vouches for the received
+/// copy, across a reopen too, and verifying one side leaves the other's
+/// record in place.
+#[test]
+fn a_sent_copys_record_never_vouches_for_the_received_copy() {
+    let r = rig(TrustMode::Degraded);
+    r.trusted.set(A, REAL);
+    r.lookup(A).unwrap();
+    let copy = request(7, 8, 1_700_000_000_123);
+    let sent = Held::SentRequest(copy.clone());
+    let received = Held::ContactRequest(copy);
+    assert_eq!(sent.entity().key, received.entity().key, "one document");
+    r.provenance.record_verified(&sent.entity()).unwrap();
+    assert!(!r.provenance.is_unverified(&sent.entity()));
+    assert!(r.provenance.is_unverified(&received.entity()));
+    let reopened = Provenance::open(Arc::new(AppDb::open(&r.path).unwrap()));
+    assert!(!reopened.is_unverified(&sent.entity()));
+    assert!(reopened.is_unverified(&received.entity()), "after a reopen");
+    reopened.record_verified(&received.entity()).unwrap();
+    assert!(!reopened.is_unverified(&sent.entity()), "not overwritten");
+    assert!(!reopened.is_unverified(&received.entity()));
+}
+
 /// Design §5: a verified fetch is recorded only if the library still holds
 /// the entity unchanged (and unverified) when the record is written.
 #[test]

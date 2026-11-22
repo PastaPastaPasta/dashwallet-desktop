@@ -758,10 +758,17 @@ fn record(j: &Joins, h: Held) {
 }
 
 fn record_request(j: &Joins, sender: u8, recipient: u8, created_at: u64) {
-    record(
-        j,
-        Held::ContactRequest(request(sender, recipient, created_at)),
-    );
+    record(j, held_request(sender, recipient, created_at));
+}
+
+/// A request as the library holds it: ours as sent, any other as received.
+fn held_request(sender: u8, recipient: u8, created_at: u64) -> Held {
+    let r = request(sender, recipient, created_at);
+    if sender == ME {
+        Held::SentRequest(r)
+    } else {
+        Held::ContactRequest(r)
+    }
 }
 
 /// The profile shown as `display_name`, as provenance holds it.
@@ -1321,7 +1328,7 @@ fn reads_use_the_sessions_provenance() {
     provenance.fallback_in_use().unwrap();
     assert!(unverified());
     for (s, r, at) in [(ME, BOB, 1_000), (BOB, ME, 2_000)] {
-        let held = Held::ContactRequest(request(s, r, at));
+        let held = held_request(s, r, at);
         provenance.record_verified(&held.entity()).unwrap();
     }
     assert!(!unverified());
@@ -1449,7 +1456,7 @@ fn shown_usernames_reach_the_refetch() {
     let provenance = f.s.live().unwrap().provenance;
     provenance.fallback_in_use().unwrap();
     for (s, r, at) in [(ME, BOB, 1_000), (BOB, ME, 2_000)] {
-        let held = Held::ContactRequest(request(s, r, at));
+        let held = held_request(s, r, at);
         provenance.record_verified(&held.entity()).unwrap();
     }
     let names = &f.s.platform.contacts.names;

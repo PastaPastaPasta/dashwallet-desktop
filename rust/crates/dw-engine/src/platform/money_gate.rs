@@ -302,7 +302,21 @@ pub(super) fn payee_held(
     username: Option<&str>,
 ) -> Option<Vec<Held>> {
     let dp = m.dashpay();
-    let requests = if let Some(c) = dp.established_contacts().get(contact) {
+    let requests = payee_requests(m, contact)?;
+    let cached = (dp.contact_profiles.get(contact)).and_then(|e| e.profile.as_ref());
+    let profile = cached.map(|p| Held::Profile {
+        id: *contact,
+        shown: ShownProfile::of(p),
+    });
+    let label = username.map(|name| Held::label(name, *contact));
+    Some((profile.into_iter()).chain(requests).chain(label).collect())
+}
+
+/// The requests a payment to `contact` rests on, by the read model's
+/// precedence (see `payee_held`).
+fn payee_requests(m: &ManagedIdentity, contact: &Identifier) -> Option<Vec<Held>> {
+    let dp = m.dashpay();
+    Some(if let Some(c) = dp.established_contacts().get(contact) {
         vec![
             Held::SentRequest(c.outgoing_request.clone()),
             Held::ContactRequest(c.incoming_request.clone()),
@@ -315,14 +329,20 @@ pub(super) fn payee_held(
         vec![Held::SentRequest(
             dp.sent_contact_requests().get(contact)?.clone(),
         )]
+    })
+}
+
+/// H-09: a request held under `contact` that is not between us and it.
+/// What a payment verifies and pays is then always this contact's, never
+/// another identity's, in every mode.
+fn names_another_party(m: &ManagedIdentity, contact: &Identifier) -> bool {
+    let me = m.identity.id();
+    let ours = |r: &Held| match r {
+        Held::SentRequest(r) => r.sender_id == me && r.recipient_id == *contact,
+        Held::ContactRequest(r) => r.sender_id == *contact && r.recipient_id == me,
+        _ => false,
     };
-    let cached = (dp.contact_profiles.get(contact)).and_then(|e| e.profile.as_ref());
-    let profile = cached.map(|p| Held::Profile {
-        id: *contact,
-        shown: ShownProfile::of(p),
-    });
-    let label = username.map(|name| Held::label(name, *contact));
-    Some((profile.into_iter()).chain(requests).chain(label).collect())
+    payee_requests(m, contact).is_some_and(|requests| !requests.iter().all(ours))
 }
 
 /// Design D12: the account a payment to `contact` derives its address
@@ -396,14 +416,17 @@ impl SessionEnv<'_> {
     /// the reserved address is not in that account (D21). Whether or not
     /// anything came through the fallback, and in every mode: it is where
     /// the money goes, not what the data was verified by. A missing stamp
-    /// is a stale account too (D28).
+    /// is a stale account too (D28). A payee holding a request between
+    /// other parties is not payable either (H-09).
     fn payable(&self, wm: &WalletManager<PlatformWalletInfo>) -> bool {
         let Subject::Payee(wallet, pair) = self.subject else {
             return true;
         };
         // A subject the library no longer holds is `unverified`'s `None`.
-        let stale = (self.managed(wm))
-            .is_some_and(|m| paying_account_stale(m, &pair.1, self.reserved.is_some()));
+        let stale = (self.managed(wm)).is_some_and(|m| {
+            names_another_party(m, &pair.1)
+                || paying_account_stale(m, &pair.1, self.reserved.is_some())
+        });
         !stale
             && self
                 .reserved
