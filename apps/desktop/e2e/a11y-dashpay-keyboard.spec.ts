@@ -390,7 +390,7 @@ test("keyboard only: edit my profile", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
-test("defect: after Confirm & pay's passphrase, the registration progress screen leaves focus on <body>", async ({ page }) => {
+test("defect (#286): after Confirm & pay's passphrase, the registration progress screen leaves focus on <body>", async ({ page }) => {
   await open(page, "dashpay-no-identity");
   const pay = await toConfirmAndPay(page, "alice-77");
   await page.keyboard.press("Enter");
@@ -405,7 +405,7 @@ test("defect: after Confirm & pay's passphrase, the registration progress screen
   await expect.poll(async () => ((await holdsFocus(screen)) ? "on the progress screen" : await focusName(page))).toBe("on the progress screen");
 });
 
-test("defect: Tab past the bell popover's last control moves focus behind it while it stays open", async ({ page }) => {
+test("defect (#287): Tab past the bell popover's last control moves focus behind it while it stays open", async ({ page }) => {
   await open(page, "dashpay-registered");
   const { bell, popover } = await openBell(page);
   await tabTo(page, popover.getByTestId("bell-see-all"));
@@ -420,7 +420,7 @@ test("defect: Tab past the bell popover's last control moves focus behind it whi
     .toBe("kept or closed");
 });
 
-test("defect: while a contact payment is sent, Confirm payment leaves focus on <body>", async ({ page }) => {
+test("defect (#288): while a contact payment is sent, Confirm payment leaves focus on <body>", async ({ page }) => {
   await open(page, "dashpay-registered");
   await goTo(page, "pay");
   await toPayReview(page);
